@@ -3,10 +3,12 @@
 mod error;
 mod input;
 mod rules;
+mod scan;
 
 pub use error::ParseError;
 pub use input::Input;
 pub use rules::{NoRules, ParseRules};
+pub use scan::Scan;
 
 #[cfg(test)]
 mod tests {
@@ -108,5 +110,65 @@ mod tests {
         assert!(!input.is_empty());
         input.advance(2);
         assert!(input.is_empty());
+    }
+
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    struct TestKeyword;
+
+    impl Scan<'_> for TestKeyword {
+        const PATTERN: &'static str = r"test";
+
+        fn regex() -> &'static Regex {
+            static REGEX: OnceLock<Regex> = OnceLock::new();
+            REGEX.get_or_init(|| Regex::new(r"\Atest").unwrap())
+        }
+
+        fn from_match(_matched: &str) -> Result<Self, ParseError> {
+            Ok(TestKeyword)
+        }
+    }
+
+    struct TestIdent<'input>(&'input str);
+
+    impl<'input> Scan<'input> for TestIdent<'input> {
+        const PATTERN: &'static str = r"[a-zA-Z_][a-zA-Z0-9_]*";
+
+        fn regex() -> &'static Regex {
+            static REGEX: OnceLock<Regex> = OnceLock::new();
+            REGEX.get_or_init(|| Regex::new(r"\A[a-zA-Z_][a-zA-Z0-9_]*").unwrap())
+        }
+
+        fn from_match(matched: &'input str) -> Result<Self, ParseError> {
+            Ok(TestIdent(matched))
+        }
+    }
+
+    #[test]
+    fn scan_keyword_peek() {
+        let input = Input::<NoRules>::new("test foo");
+        assert!(TestKeyword::peek(&input));
+    }
+
+    #[test]
+    fn scan_keyword_peek_fails() {
+        let input = Input::<NoRules>::new("foo bar");
+        assert!(!TestKeyword::peek(&input));
+    }
+
+    #[test]
+    fn scan_keyword_parse() {
+        let mut input = Input::<NoRules>::new("test foo");
+        let _kw = TestKeyword::parse(&mut input).unwrap();
+        assert_eq!(input.cursor(), 4);
+    }
+
+    #[test]
+    fn scan_ident_parse_captures() {
+        let mut input = Input::<NoRules>::new("hello world");
+        let ident = TestIdent::parse(&mut input).unwrap();
+        assert_eq!(ident.0, "hello");
+        assert_eq!(input.cursor(), 5);
     }
 }
