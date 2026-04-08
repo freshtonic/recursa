@@ -227,6 +227,22 @@ struct Input<'input, R: ParseRules> {
 - Tracks byte offset; line/column computed on demand for error spans
 - Scannerless: lexing is driven by parsing context, no pre-tokenisation pass
 
+## Regex Caching
+
+Regex compilation is expensive and must only happen once per type. All compiled regexes are cached in `OnceLock<Regex>` statics, initialised on first use:
+
+```rust
+fn regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(Self::PATTERN).unwrap())
+}
+```
+
+This applies to:
+- Individual `Scan` types (one regex per token)
+- Combined `Scan` enums (one merged regex per enum)
+- Multi-token lookahead peek regexes for `Parse` enums (with `IGNORE` spliced between patterns)
+
 ## Error Handling
 
 Errors are paramount. The framework uses `miette` for rich, rustc-quality diagnostics.
