@@ -73,7 +73,7 @@ This means `Scan` types are leaf parsers that don't skip whitespace — whitespa
 
 ### Structs (Sequence)
 
-Parse each field in source order. Call `Rules::consume_ignored(input)` before each field. Fork input before starting; commit on success, return error on failure.
+Parse each field in source order. Before each field, skip any content matching `Rules::IGNORE` via `input.consume_ignored()`. Fork input before starting; commit on success, return error on failure.
 
 ```rust
 #[derive(Parse)]
