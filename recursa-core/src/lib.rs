@@ -2,11 +2,13 @@
 
 mod error;
 mod input;
+mod parse;
 mod rules;
 mod scan;
 
 pub use error::ParseError;
 pub use input::Input;
+pub use parse::Parse;
 pub use rules::{NoRules, ParseRules};
 pub use scan::Scan;
 
@@ -148,27 +150,47 @@ mod tests {
     #[test]
     fn scan_keyword_peek() {
         let input = Input::<NoRules>::new("test foo");
-        assert!(TestKeyword::peek(&input));
+        assert!(<TestKeyword as Scan>::peek(&input));
     }
 
     #[test]
     fn scan_keyword_peek_fails() {
         let input = Input::<NoRules>::new("foo bar");
-        assert!(!TestKeyword::peek(&input));
+        assert!(!<TestKeyword as Scan>::peek(&input));
     }
 
     #[test]
     fn scan_keyword_parse() {
         let mut input = Input::<NoRules>::new("test foo");
-        let _kw = TestKeyword::parse(&mut input).unwrap();
+        let _kw = <TestKeyword as Scan>::parse(&mut input).unwrap();
         assert_eq!(input.cursor(), 4);
     }
 
     #[test]
     fn scan_ident_parse_captures() {
         let mut input = Input::<NoRules>::new("hello world");
-        let ident = TestIdent::parse(&mut input).unwrap();
+        let ident = <TestIdent as Scan>::parse(&mut input).unwrap();
         assert_eq!(ident.0, "hello");
         assert_eq!(input.cursor(), 5);
+    }
+
+    #[test]
+    fn scan_type_implements_parse() {
+        // TestKeyword implements Scan, so it should also implement Parse
+        let mut input = Input::<NoRules>::new("test foo");
+        let _kw = <TestKeyword as Parse>::parse(&mut input).unwrap();
+        assert_eq!(input.cursor(), 4);
+    }
+
+    #[test]
+    fn scan_type_peek_through_parse() {
+        let input = Input::<NoRules>::new("test foo");
+        assert!(<TestKeyword as Parse>::peek(&input));
+    }
+
+    #[test]
+    fn scan_type_peek_through_parse_fails() {
+        let input = Input::<NoRules>::new("foo bar");
+        assert!(!<TestKeyword as Parse>::peek(&input));
     }
 }
