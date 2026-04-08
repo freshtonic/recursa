@@ -302,6 +302,31 @@ Error: failed to parse let binding
   |     --- while parsing let binding starting here
 ```
 
+## Spanned Trait
+
+A `Spanned` trait provides access to the `SourceSpan` of any AST node. For `Scan` types, the span is the matched token's byte range. For structs and enums, the span is computed from the start of the first child's span to the end of the last child's span.
+
+```rust
+trait Spanned {
+    fn span(&self) -> SourceSpan;
+}
+```
+
+Derivable automatically: the derive macros for `Parse` and `Scan` can also derive `Spanned`. A `Scan` type stores its span at parse time. A struct's span is `first_field.span().start..last_field.span().end`. An enum delegates to whichever variant was parsed.
+
+This means `Scan` types need to store their byte range (not just the matched text), and `Input` must provide the current position when a token is scanned. For zero-copy tuple structs this changes the struct shape slightly:
+
+```rust
+#[derive(Scan)]
+#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+struct Ident<'input> {
+    value: &'input str,
+    span: SourceSpan,  // populated by the derived Scan impl
+}
+```
+
+Or the span could be stored as a wrapper at the framework level rather than in every token type. Design detail to be resolved during implementation.
+
 ## FirstSet (Deferred)
 
 The `Parse` trait includes `type FirstSet` as an associated type to enable compile-time lookahead analysis. The exact representation is deferred to the implementation planning phase. Key requirements:
