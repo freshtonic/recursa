@@ -13,3 +13,4 @@ proc-macro2 = "1"
 
 [dev-dependencies]
 recursa-core = { path = "../recursa-core" }
+regex = "1"
