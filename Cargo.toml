@@ -10,3 +10,4 @@ edition = "2024"
 [dependencies]
 recursa-core = { path = "recursa-core" }
 recursa-derive = { path = "recursa-derive" }
+regex = "1"

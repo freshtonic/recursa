@@ -2,6 +2,7 @@
 
 mod error;
 mod input;
+mod macros;
 mod parse;
 mod rules;
 mod scan;
