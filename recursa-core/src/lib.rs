@@ -1,9 +1,11 @@
 //! Core traits and types for the recursa parser framework.
 
 mod error;
+mod input;
 mod rules;
 
 pub use error::ParseError;
+pub use input::Input;
 pub use rules::{NoRules, ParseRules};
 
 #[cfg(test)]
@@ -59,5 +61,52 @@ mod tests {
     fn parse_error_display_with_found() {
         let err = ParseError::new("abc", 0..3, "digit").with_found("letter");
         assert_eq!(format!("{err}"), "expected digit but found letter");
+    }
+
+    #[test]
+    fn input_starts_at_zero() {
+        let input = Input::<NoRules>::new("hello world");
+        assert_eq!(input.cursor(), 0);
+        assert_eq!(input.remaining(), "hello world");
+    }
+
+    #[test]
+    fn input_advance() {
+        let mut input = Input::<NoRules>::new("hello world");
+        input.advance(5);
+        assert_eq!(input.cursor(), 5);
+        assert_eq!(input.remaining(), " world");
+    }
+
+    #[test]
+    fn input_fork_does_not_affect_original() {
+        let input = Input::<NoRules>::new("hello world");
+        let mut fork = input.fork();
+        fork.advance(5);
+        assert_eq!(input.cursor(), 0);
+        assert_eq!(fork.cursor(), 5);
+    }
+
+    #[test]
+    fn input_fork_commit() {
+        let mut input = Input::<NoRules>::new("hello world");
+        let mut fork = input.fork();
+        fork.advance(5);
+        input.commit(fork);
+        assert_eq!(input.cursor(), 5);
+    }
+
+    #[test]
+    fn input_source() {
+        let input = Input::<NoRules>::new("hello world");
+        assert_eq!(input.source(), "hello world");
+    }
+
+    #[test]
+    fn input_is_empty_at_end() {
+        let mut input = Input::<NoRules>::new("hi");
+        assert!(!input.is_empty());
+        input.advance(2);
+        assert!(input.is_empty());
     }
 }

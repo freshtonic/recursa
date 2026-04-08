@@ -116,9 +116,7 @@ impl Diagnostic for ParseError {
         if self.context.is_empty() {
             return None;
         }
-        Some(Box::new(
-            self.context.iter().map(|c| c as &dyn Diagnostic),
-        ))
+        Some(Box::new(self.context.iter().map(|c| c as &dyn Diagnostic)))
     }
 
     fn help<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
