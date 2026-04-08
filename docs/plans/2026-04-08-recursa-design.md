@@ -40,11 +40,13 @@ trait Parse<'input>: Sized {
 
 ### ParseRules
 
-Configuration point for a grammar. Called between fields during struct parsing.
+Configuration point for a grammar. An associated const `IGNORE` provides the regex pattern for content to skip between tokens (whitespace, comments, etc.).
+
+This must be a const rather than a method because the ignore pattern needs to be available at compile time — the derive macro splices it between token patterns when building multi-token lookahead regexes for enum dispatch (e.g., `pub{IGNORE}fn|pub{IGNORE}struct`).
 
 ```rust
 trait ParseRules {
-    fn consume_ignored(input: &mut Input<Self>) where Self: Sized;
+    const IGNORE: &'static str; // regex pattern for ignored content
 }
 ```
 
@@ -55,7 +57,7 @@ Every `Scan` type automatically implements `Parse` with `NoRules`:
 ```rust
 struct NoRules;
 impl ParseRules for NoRules {
-    fn consume_ignored(_input: &mut Input<Self>) {}
+    const IGNORE: &'static str = "";
 }
 
 impl<'input, T: Scan<'input>> Parse<'input> for T {
@@ -299,7 +301,7 @@ The `Parse` trait includes `type FirstSet` as an associated type to enable compi
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Lexing approach | Scannerless (context-driven) | Which tokens are valid depends on parse context; pre-scanning is impossible |
-| Whitespace handling | `ParseRules` on `Parse`, not `Scan` | Keeps `Scan` pure; rules are grammar-level configuration |
+| Whitespace handling | `ParseRules::IGNORE` const on `Parse`, not `Scan` | Keeps `Scan` pure; const enables compile-time regex composition for lookahead |
 | Rules threading | Associated type on `Parse` | Simpler than generic parameter; each AST is bound to one grammar |
 | Enum dispatch | Peek-based, no backtracking | Predictable, efficient; first-set analysis catches ambiguity |
 | Backtracking | Fork/commit model | Safe by construction; original input untouched on failure |
