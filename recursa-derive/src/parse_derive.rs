@@ -120,7 +120,9 @@ fn derive_parse_struct(
             type Rules = #rules_type;
 
             fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
-                let rebound = input.rebind::<<#first_field_type as ::recursa_core::Parse>::Rules>();
+                let mut peek_input = input.fork();
+                peek_input.consume_ignored();
+                let rebound = peek_input.rebind::<<#first_field_type as ::recursa_core::Parse>::Rules>();
                 <#first_field_type as ::recursa_core::Parse>::peek(&rebound)
             }
 
@@ -199,12 +201,16 @@ fn derive_parse_enum(
             type Rules = #rules_type;
 
             fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
+                let mut peek_input = input.fork();
+                peek_input.consume_ignored();
+                let input = &peek_input;
                 #(#peek_arms)*
                 false
             }
 
             fn parse(input: &mut ::recursa_core::Input<#lt, Self::Rules>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
-                let fork = input.fork();
+                let mut fork = input.fork();
+                fork.consume_ignored();
                 let mut errors = ::std::vec::Vec::new();
                 #(#parse_arms)*
                 // None matched -- collect errors for all variants

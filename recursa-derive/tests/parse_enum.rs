@@ -85,6 +85,19 @@ fn parse_enum_peek_fails() {
 }
 
 #[test]
+fn parse_enum_with_leading_whitespace() {
+    let mut input = Input::<WsRules>::new("  let x = 42;");
+    let stmt = Statement::parse(&mut input).unwrap();
+    assert!(matches!(stmt, Statement::Let(_)));
+}
+
+#[test]
+fn parse_enum_peek_with_leading_whitespace() {
+    let input = Input::<WsRules>::new("  return 42;");
+    assert!(Statement::peek(&input));
+}
+
+#[test]
 fn parse_enum_error_reports_all_variants() {
     let mut input = Input::<WsRules>::new("if true {}");
     let result = Statement::parse(&mut input);
