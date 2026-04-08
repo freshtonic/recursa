@@ -193,4 +193,54 @@ mod tests {
         let input = Input::<NoRules>::new("foo bar");
         assert!(!<TestKeyword as Parse>::peek(&input));
     }
+
+    struct WhitespaceRules;
+
+    impl ParseRules for WhitespaceRules {
+        const IGNORE: &'static str = r"\s+";
+    }
+
+    #[test]
+    fn input_consume_ignored_skips_whitespace() {
+        let mut input = Input::<WhitespaceRules>::new("   hello");
+        input.consume_ignored();
+        assert_eq!(input.remaining(), "hello");
+    }
+
+    #[test]
+    fn input_consume_ignored_noop_when_no_whitespace() {
+        let mut input = Input::<WhitespaceRules>::new("hello");
+        input.consume_ignored();
+        assert_eq!(input.remaining(), "hello");
+    }
+
+    #[test]
+    fn input_consume_ignored_noop_for_no_rules() {
+        let mut input = Input::<NoRules>::new("   hello");
+        input.consume_ignored();
+        assert_eq!(input.remaining(), "   hello");
+    }
+
+    #[test]
+    fn input_rebind_preserves_cursor() {
+        let mut input = Input::<WhitespaceRules>::new("hello world");
+        input.advance(6);
+        let rebound: Input<'_, NoRules> = input.rebind();
+        assert_eq!(rebound.cursor(), 6);
+        assert_eq!(rebound.remaining(), "world");
+        assert_eq!(rebound.source(), "hello world");
+    }
+
+    #[test]
+    fn input_rebind_roundtrip() {
+        let mut input = Input::<WhitespaceRules>::new("  hello");
+        input.consume_ignored();
+        let mut rebound: Input<'_, NoRules> = input.rebind();
+        let _kw = <TestIdent as Scan>::parse(&mut rebound).unwrap();
+        // Commit the rebound back via rebind
+        let back: Input<'_, WhitespaceRules> = rebound.rebind();
+        input.commit(back);
+        assert_eq!(input.cursor(), 7);
+        assert!(input.is_empty());
+    }
 }

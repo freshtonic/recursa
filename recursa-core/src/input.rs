@@ -1,4 +1,7 @@
 use std::marker::PhantomData;
+use std::sync::Mutex;
+
+use regex::Regex;
 
 use crate::ParseRules;
 
@@ -60,5 +63,52 @@ impl<'input, R: ParseRules> Input<'input, R> {
     /// Whether the cursor is at the end of the source.
     pub fn is_empty(&self) -> bool {
         self.cursor >= self.source.len()
+    }
+
+    /// Skip any ignored content (whitespace, comments) at the current position.
+    /// Uses the `IGNORE` pattern from the associated `ParseRules`.
+    pub fn consume_ignored(&mut self) {
+        if R::IGNORE.is_empty() {
+            return;
+        }
+
+        // Cache compiled ignore regexes keyed by pattern string.
+        // Since IGNORE is a `&'static str` const, the number of distinct
+        // patterns is bounded by the number of ParseRules implementations.
+        static PATTERNS: Mutex<Vec<(&'static str, Regex)>> = Mutex::new(Vec::new());
+
+        let ignore_regex = {
+            let patterns = PATTERNS.lock().unwrap();
+            patterns
+                .iter()
+                .find(|(p, _)| *p == R::IGNORE)
+                .map(|(_, r)| r.clone())
+        };
+
+        let regex = match ignore_regex {
+            Some(r) => r,
+            None => {
+                let anchored = format!(r"\A(?:{})", R::IGNORE);
+                let r = Regex::new(&anchored).expect("invalid IGNORE pattern");
+                PATTERNS.lock().unwrap().push((R::IGNORE, r.clone()));
+                r
+            }
+        };
+
+        if let Some(m) = regex.find(self.remaining()) {
+            self.cursor += m.len();
+        }
+    }
+
+    /// Create a view of this input with different rules.
+    ///
+    /// Used internally when a struct's `Parse` impl (with custom `Rules`)
+    /// needs to call a field's `Parse` impl (with `NoRules` for `Scan` types).
+    pub fn rebind<R2: ParseRules>(&self) -> Input<'input, R2> {
+        Input {
+            source: self.source,
+            cursor: self.cursor,
+            _rules: PhantomData,
+        }
     }
 }
