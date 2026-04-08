@@ -82,13 +82,32 @@ fn derive_scan_unit_struct(
 }
 
 fn derive_scan_tuple_struct(
-    _name: &syn::Ident,
-    _pattern: &str,
-    _generics: &syn::Generics,
+    name: &syn::Ident,
+    pattern: &str,
+    generics: &syn::Generics,
 ) -> syn::Result<TokenStream> {
-    // Placeholder -- implemented in Task 9
-    Err(syn::Error::new_spanned(
-        _name,
-        "derive(Scan) for tuple structs is not yet implemented",
-    ))
+    let anchored_pattern = format!(r"\A(?:{})", pattern);
+
+    // Extract the lifetime parameter (tuple Scan structs must have one)
+    let lifetime = generics.lifetimes().next().ok_or_else(|| {
+        syn::Error::new_spanned(name, "tuple Scan structs must have a lifetime parameter")
+    })?;
+    let lt = &lifetime.lifetime;
+
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    Ok(quote! {
+        impl #impl_generics ::recursa_core::Scan<#lt> for #name #ty_generics #where_clause {
+            const PATTERN: &'static str = #pattern;
+
+            fn regex() -> &'static ::regex::Regex {
+                static REGEX: ::std::sync::OnceLock<::regex::Regex> = ::std::sync::OnceLock::new();
+                REGEX.get_or_init(|| ::regex::Regex::new(#anchored_pattern).unwrap())
+            }
+
+            fn from_match(matched: &#lt str) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+                Ok(#name(matched))
+            }
+        }
+    })
 }
