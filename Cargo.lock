@@ -198,6 +198,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "recursa-core",
+ "regex",
  "syn",
 ]
 
