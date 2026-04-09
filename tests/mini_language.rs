@@ -1,5 +1,7 @@
 //! End-to-end test: parse a tiny language with let bindings and expressions.
 
+#![allow(dead_code)]
+
 use recursa::{Input, Parse, ParseRules, Scan};
 
 // -- Token types --
