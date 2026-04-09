@@ -59,14 +59,18 @@ fn get_scan_attrs(input: &DeriveInput) -> syn::Result<ScanAttrs> {
                     Err(meta.error("expected `pattern` or `case_insensitive`"))
                 }
             })?;
-            let pattern = pattern
-                .ok_or_else(|| syn::Error::new_spanned(attr, "missing `pattern` in #[scan(...)]"))?;
+            let pattern = pattern.ok_or_else(|| {
+                syn::Error::new_spanned(attr, "missing `pattern` in #[scan(...)]")
+            })?;
             let pattern = if case_insensitive {
                 format!("(?i:{})", pattern)
             } else {
                 pattern
             };
-            return Ok(ScanAttrs { pattern, case_insensitive });
+            return Ok(ScanAttrs {
+                pattern,
+                case_insensitive,
+            });
         }
     }
     Err(syn::Error::new_spanned(

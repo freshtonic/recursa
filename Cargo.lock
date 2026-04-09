@@ -161,6 +161,8 @@ name = "pg-sql"
 version = "0.1.0"
 dependencies = [
  "recursa",
+ "recursa-core",
+ "recursa-derive",
  "regex",
 ]
 

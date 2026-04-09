@@ -74,7 +74,8 @@ impl recursa::Visit for StringLit {
         visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::Break<V::Error>> {
         match visitor.enter(self) {
-            std::ops::ControlFlow::Continue(()) | std::ops::ControlFlow::Break(recursa::Break::SkipChildren) => {}
+            std::ops::ControlFlow::Continue(())
+            | std::ops::ControlFlow::Break(recursa::Break::SkipChildren) => {}
             other => return other,
         }
         visitor.exit(self)
@@ -109,7 +110,8 @@ impl recursa::Visit for IntegerLit {
         visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::Break<V::Error>> {
         match visitor.enter(self) {
-            std::ops::ControlFlow::Continue(()) | std::ops::ControlFlow::Break(recursa::Break::SkipChildren) => {}
+            std::ops::ControlFlow::Continue(())
+            | std::ops::ControlFlow::Break(recursa::Break::SkipChildren) => {}
             other => return other,
         }
         visitor.exit(self)
@@ -129,9 +131,9 @@ pub struct Ident(pub String);
 
 /// All SQL keywords (uppercase) for identifier exclusion.
 const SQL_KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "AS", "AND", "OR", "NOT", "TRUE", "FALSE",
-    "NULL", "IS", "UNKNOWN", "CREATE", "TABLE", "INSERT", "INTO", "VALUES",
-    "DROP", "ORDER", "BY", "BOOL", "BOOLEAN", "TEXT", "INT",
+    "SELECT", "FROM", "WHERE", "AS", "AND", "OR", "NOT", "TRUE", "FALSE", "NULL", "IS", "UNKNOWN",
+    "CREATE", "TABLE", "INSERT", "INTO", "VALUES", "DROP", "ORDER", "BY", "BOOL", "BOOLEAN",
+    "TEXT", "INT",
 ];
 
 fn is_keyword(s: &str) -> bool {
@@ -165,10 +167,7 @@ impl<'input> Parse<'input> for Ident {
         }
     }
 
-    fn parse<R: ParseRules>(
-        input: &mut Input<'input>,
-        _rules: &R,
-    ) -> Result<Self, ParseError> {
+    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
         match Self::regex().find(input.remaining()) {
             Some(m) if m.start() == 0 => {
                 let matched = &input.source()[input.cursor()..input.cursor() + m.len()];
@@ -198,7 +197,8 @@ impl recursa::Visit for Ident {
         visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::Break<V::Error>> {
         match visitor.enter(self) {
-            std::ops::ControlFlow::Continue(()) | std::ops::ControlFlow::Break(recursa::Break::SkipChildren) => {}
+            std::ops::ControlFlow::Continue(())
+            | std::ops::ControlFlow::Break(recursa::Break::SkipChildren) => {}
             other => return other,
         }
         visitor.exit(self)
