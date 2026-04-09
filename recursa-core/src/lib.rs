@@ -195,6 +195,23 @@ mod tests {
         assert!(!<TestKeyword as Parse>::peek(&input));
     }
 
+    #[test]
+    fn scan_type_is_terminal() {
+        assert!(<TestKeyword as Parse>::IS_TERMINAL);
+    }
+
+    #[test]
+    fn scan_type_first_patterns() {
+        let patterns = <TestKeyword as Parse>::first_patterns();
+        assert_eq!(patterns, &["test"]);
+    }
+
+    #[test]
+    fn scan_ident_first_patterns() {
+        let patterns = <TestIdent as Parse>::first_patterns();
+        assert_eq!(patterns, &[r"[a-zA-Z_][a-zA-Z0-9_]*"]);
+    }
+
     struct WhitespaceRules;
 
     impl ParseRules for WhitespaceRules {

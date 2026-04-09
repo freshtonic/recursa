@@ -119,6 +119,13 @@ fn derive_parse_struct(
         impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
             type Rules = #rules_type;
 
+            const IS_TERMINAL: bool = false;
+
+            fn first_patterns() -> &'static [&'static str] {
+                // Stub: will be fully implemented in a later task.
+                &[]
+            }
+
             fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
                 let mut peek_input = input.fork();
                 peek_input.consume_ignored();
@@ -199,6 +206,13 @@ fn derive_parse_enum(
     Ok(quote! {
         impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
             type Rules = #rules_type;
+
+            const IS_TERMINAL: bool = false;
+
+            fn first_patterns() -> &'static [&'static str] {
+                // Stub: will be fully implemented in a later task.
+                &[]
+            }
 
             fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
                 let mut peek_input = input.fork();
@@ -399,6 +413,13 @@ fn derive_parse_pratt_enum(
 
             impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
                 type Rules = #rules_type;
+
+                const IS_TERMINAL: bool = false;
+
+                fn first_patterns() -> &'static [&'static str] {
+                    // Stub: will be fully implemented in a later task.
+                    &[]
+                }
 
                 fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
                     #(#atom_peek_arms)*
