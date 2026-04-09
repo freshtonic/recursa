@@ -33,10 +33,7 @@ fn scan_tuple_struct_is_terminal() {
 
 #[test]
 fn scan_tuple_struct_first_pattern() {
-    assert_eq!(
-        <Ident as Parse>::first_pattern(),
-        r"[a-zA-Z_][a-zA-Z0-9_]*"
-    );
+    assert_eq!(<Ident as Parse>::first_pattern(), r"[a-zA-Z_][a-zA-Z0-9_]*");
 }
 
 #[test]

@@ -55,10 +55,7 @@ macro_rules! impl_parse_for_scan {
                 <$ty as $crate::Scan>::PATTERN
             }
 
-            fn peek<R: $crate::ParseRules>(
-                input: &$crate::Input<'input>,
-                _rules: &R,
-            ) -> bool {
+            fn peek<R: $crate::ParseRules>(input: &$crate::Input<'input>, _rules: &R) -> bool {
                 <$ty as $crate::Scan>::peek(input)
             }
 

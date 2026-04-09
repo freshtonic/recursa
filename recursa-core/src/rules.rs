@@ -23,9 +23,10 @@ pub trait ParseRules {
         if Self::IGNORE.is_empty() {
             return None;
         }
-        Some(Self::ignore_cache().get_or_init(|| {
-            Regex::new(&format!(r"\A(?:{})", Self::IGNORE)).unwrap()
-        }))
+        Some(
+            Self::ignore_cache()
+                .get_or_init(|| Regex::new(&format!(r"\A(?:{})", Self::IGNORE)).unwrap()),
+        )
     }
 }
 
