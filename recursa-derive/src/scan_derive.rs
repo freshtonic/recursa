@@ -78,14 +78,26 @@ fn generate_parse_for_scan(
                 input: &::recursa_core::Input<#lt>,
                 _rules: &R,
             ) -> bool {
-                <Self as ::recursa_core::Scan<#lt>>::peek(input)
+                <Self as ::recursa_core::Scan<#lt>>::regex().is_match(input.remaining())
             }
 
             fn parse<R: ::recursa_core::ParseRules>(
                 input: &mut ::recursa_core::Input<#lt>,
                 _rules: &R,
             ) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
-                <Self as ::recursa_core::Scan<#lt>>::parse(input)
+                match <Self as ::recursa_core::Scan<#lt>>::regex().find(input.remaining()) {
+                    ::std::option::Option::Some(m) if m.start() == 0 => {
+                        let matched = &input.source()[input.cursor()..input.cursor() + m.len()];
+                        let result = <Self as ::recursa_core::Scan<#lt>>::from_match(matched)?;
+                        input.advance(m.len());
+                        ::std::result::Result::Ok(result)
+                    }
+                    _ => ::std::result::Result::Err(::recursa_core::ParseError::new(
+                        input.source().to_string(),
+                        input.cursor()..input.cursor(),
+                        <Self as ::recursa_core::Scan<#lt>>::PATTERN,
+                    )),
+                }
             }
         }
     }
@@ -251,10 +263,6 @@ fn derive_scan_enum(
         }
     });
 
-    let lt_tokens = quote! { #lt };
-    let parse_impl =
-        generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt_tokens);
-
     Ok(quote! {
         impl #impl_generics ::recursa_core::Scan<#lt> for #name #ty_generics #where_clause {
             const PATTERN: &'static str = ""; // Combined pattern is built at runtime
@@ -270,18 +278,32 @@ fn derive_scan_enum(
             }
 
             fn from_match(_matched: &#lt str) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
-                unimplemented!("use parse() for enum Scan types")
+                unimplemented!("use Parse::parse() for enum Scan types")
+            }
+        }
+
+        impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
+            const IS_TERMINAL: bool = true;
+
+            fn first_pattern() -> &'static str {
+                <Self as ::recursa_core::Scan<#lt>>::PATTERN
             }
 
-            fn peek(input: &::recursa_core::Input<#lt>) -> bool {
-                Self::regex().is_match(input.remaining())
+            fn peek<R: ::recursa_core::ParseRules>(
+                input: &::recursa_core::Input<#lt>,
+                _rules: &R,
+            ) -> bool {
+                <Self as ::recursa_core::Scan<#lt>>::regex().is_match(input.remaining())
             }
 
-            fn parse(input: &mut ::recursa_core::Input<#lt>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
-                let captures = match Self::regex().captures(input.remaining()) {
-                    Some(c) => c,
-                    None => {
-                        return Err(::recursa_core::ParseError::new(
+            fn parse<R: ::recursa_core::ParseRules>(
+                input: &mut ::recursa_core::Input<#lt>,
+                _rules: &R,
+            ) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+                let captures = match <Self as ::recursa_core::Scan<#lt>>::regex().captures(input.remaining()) {
+                    ::std::option::Option::Some(c) => c,
+                    ::std::option::Option::None => {
+                        return ::std::result::Result::Err(::recursa_core::ParseError::new(
                             input.source().to_string(),
                             input.cursor()..input.cursor(),
                             stringify!(#name),
@@ -291,12 +313,12 @@ fn derive_scan_enum(
 
                 // Find longest match (maximal munch), declaration order as tiebreaker
                 let mut best_len = 0usize;
-                let mut best_index: Option<usize> = None;
+                let mut best_index: ::std::option::Option<usize> = ::std::option::Option::None;
                 #(#match_arms_for_len)*
 
                 match best_index {
                     #(#dispatch_arms)*
-                    _ => Err(::recursa_core::ParseError::new(
+                    _ => ::std::result::Result::Err(::recursa_core::ParseError::new(
                         input.source().to_string(),
                         input.cursor()..input.cursor(),
                         stringify!(#name),
@@ -304,7 +326,5 @@ fn derive_scan_enum(
                 }
             }
         }
-
-        #parse_impl
     })
 }

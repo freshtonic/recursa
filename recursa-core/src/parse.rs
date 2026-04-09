@@ -56,14 +56,26 @@ macro_rules! impl_parse_for_scan {
             }
 
             fn peek<R: $crate::ParseRules>(input: &$crate::Input<'input>, _rules: &R) -> bool {
-                <$ty as $crate::Scan>::peek(input)
+                <$ty as $crate::Scan>::regex().is_match(input.remaining())
             }
 
             fn parse<R: $crate::ParseRules>(
                 input: &mut $crate::Input<'input>,
                 _rules: &R,
             ) -> ::std::result::Result<Self, $crate::ParseError> {
-                <$ty as $crate::Scan>::parse(input)
+                match <$ty as $crate::Scan>::regex().find(input.remaining()) {
+                    ::std::option::Option::Some(m) if m.start() == 0 => {
+                        let matched = &input.source()[input.cursor()..input.cursor() + m.len()];
+                        let result = <$ty as $crate::Scan>::from_match(matched)?;
+                        input.advance(m.len());
+                        ::std::result::Result::Ok(result)
+                    }
+                    _ => ::std::result::Result::Err($crate::ParseError::new(
+                        input.source().to_string(),
+                        input.cursor()..input.cursor(),
+                        <$ty as $crate::Scan>::PATTERN,
+                    )),
+                }
             }
         }
     };

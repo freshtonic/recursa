@@ -6,7 +6,6 @@ use crate::error::ParseError;
 use crate::input::Input;
 use crate::parse::Parse;
 use crate::rules::ParseRules;
-use crate::scan::Scan;
 
 // -- Marker types --
 
@@ -30,7 +29,7 @@ pub struct NonEmpty;
 /// A separated list of elements with type-level configuration.
 ///
 /// - `T`: element type (implements `Parse`)
-/// - `S`: separator type (implements `Scan`)
+/// - `S`: separator type (implements `Parse`)
 /// - `Trailing`: trailing separator policy (`NoTrailing`, `RequiredTrailing`, `OptionalTrailing`)
 /// - `Empty`: emptiness policy (`AllowEmpty`, `NonEmpty`)
 pub struct Seq<T, S, Trailing = NoTrailing, Empty = AllowEmpty> {
@@ -107,7 +106,7 @@ fn parse_no_trailing<'input, T, S, R>(
 ) -> Result<Vec<(T, Option<S>)>, ParseError>
 where
     T: Parse<'input> + Clone,
-    S: Scan<'input> + Clone,
+    S: Parse<'input> + Clone,
     R: ParseRules,
 {
     let mut pairs = Vec::new();
@@ -115,12 +114,12 @@ where
         let element = <T as Parse>::parse(input, rules)?;
 
         input.consume_ignored(R::ignore_regex());
-        if !<S as Scan>::peek(input) {
+        if !<S as Parse>::peek(input, rules) {
             pairs.push((element, None));
             break;
         }
 
-        let sep = <S as Scan>::parse(input)?;
+        let sep = <S as Parse>::parse(input, rules)?;
         pairs.push((element, Some(sep)));
         input.consume_ignored(R::ignore_regex());
     }
@@ -133,7 +132,7 @@ fn parse_optional_trailing<'input, T, S, R>(
 ) -> Result<Vec<(T, Option<S>)>, ParseError>
 where
     T: Parse<'input> + Clone,
-    S: Scan<'input> + Clone,
+    S: Parse<'input> + Clone,
     R: ParseRules,
 {
     let mut pairs = Vec::new();
@@ -141,12 +140,12 @@ where
         let element = <T as Parse>::parse(input, rules)?;
 
         input.consume_ignored(R::ignore_regex());
-        if !<S as Scan>::peek(input) {
+        if !<S as Parse>::peek(input, rules) {
             pairs.push((element, None));
             break;
         }
 
-        let sep = <S as Scan>::parse(input)?;
+        let sep = <S as Parse>::parse(input, rules)?;
 
         input.consume_ignored(R::ignore_regex());
         if !<T as Parse>::peek(input, rules) {
@@ -165,7 +164,7 @@ fn parse_required_trailing<'input, T, S, R>(
 ) -> Result<Vec<(T, Option<S>)>, ParseError>
 where
     T: Parse<'input> + Clone,
-    S: Scan<'input> + Clone,
+    S: Parse<'input> + Clone,
     R: ParseRules,
 {
     let mut pairs = Vec::new();
@@ -173,7 +172,7 @@ where
         let element = <T as Parse>::parse(input, rules)?;
 
         input.consume_ignored(R::ignore_regex());
-        let sep = <S as Scan>::parse(input)?;
+        let sep = <S as Parse>::parse(input, rules)?;
 
         pairs.push((element, Some(sep)));
 
@@ -190,7 +189,7 @@ where
 impl<'input, T, S> Parse<'input> for Seq<T, S, NoTrailing, AllowEmpty>
 where
     T: Parse<'input> + Clone,
-    S: Scan<'input> + Clone,
+    S: Parse<'input> + Clone,
 {
     const IS_TERMINAL: bool = false;
 
@@ -215,7 +214,7 @@ where
 impl<'input, T, S> Parse<'input> for Seq<T, S, OptionalTrailing, AllowEmpty>
 where
     T: Parse<'input> + Clone,
-    S: Scan<'input> + Clone,
+    S: Parse<'input> + Clone,
 {
     const IS_TERMINAL: bool = false;
 
@@ -240,7 +239,7 @@ where
 impl<'input, T, S> Parse<'input> for Seq<T, S, RequiredTrailing, AllowEmpty>
 where
     T: Parse<'input> + Clone,
-    S: Scan<'input> + Clone,
+    S: Parse<'input> + Clone,
 {
     const IS_TERMINAL: bool = false;
 
@@ -267,7 +266,7 @@ where
 impl<'input, T, S> Parse<'input> for Seq<T, S, NoTrailing, NonEmpty>
 where
     T: Parse<'input> + Clone,
-    S: Scan<'input> + Clone,
+    S: Parse<'input> + Clone,
 {
     const IS_TERMINAL: bool = false;
 
@@ -296,7 +295,7 @@ where
 impl<'input, T, S> Parse<'input> for Seq<T, S, OptionalTrailing, NonEmpty>
 where
     T: Parse<'input> + Clone,
-    S: Scan<'input> + Clone,
+    S: Parse<'input> + Clone,
 {
     const IS_TERMINAL: bool = false;
 
@@ -325,7 +324,7 @@ where
 impl<'input, T, S> Parse<'input> for Seq<T, S, RequiredTrailing, NonEmpty>
 where
     T: Parse<'input> + Clone,
-    S: Scan<'input> + Clone,
+    S: Parse<'input> + Clone,
 {
     const IS_TERMINAL: bool = false;
 

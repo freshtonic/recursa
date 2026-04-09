@@ -158,26 +158,26 @@ mod tests {
     #[test]
     fn scan_keyword_peek() {
         let input = Input::new("test foo");
-        assert!(<TestKeyword as Scan>::peek(&input));
+        assert!(<TestKeyword as Parse>::peek(&input, &NoRules));
     }
 
     #[test]
     fn scan_keyword_peek_fails() {
         let input = Input::new("foo bar");
-        assert!(!<TestKeyword as Scan>::peek(&input));
+        assert!(!<TestKeyword as Parse>::peek(&input, &NoRules));
     }
 
     #[test]
     fn scan_keyword_parse() {
         let mut input = Input::new("test foo");
-        let _kw = <TestKeyword as Scan>::parse(&mut input).unwrap();
+        let _kw = <TestKeyword as Parse>::parse(&mut input, &NoRules).unwrap();
         assert_eq!(input.cursor(), 4);
     }
 
     #[test]
     fn scan_ident_parse_captures() {
         let mut input = Input::new("hello world");
-        let ident = <TestIdent as Scan>::parse(&mut input).unwrap();
+        let ident = <TestIdent as Parse>::parse(&mut input, &NoRules).unwrap();
         assert_eq!(ident.0, "hello");
         assert_eq!(input.cursor(), 5);
     }

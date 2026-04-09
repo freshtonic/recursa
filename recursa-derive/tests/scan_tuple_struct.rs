@@ -1,4 +1,4 @@
-use recursa_core::{Input, NoRules, Parse, Scan};
+use recursa_core::{Input, NoRules, Parse};
 use recursa_derive::Scan;
 
 #[derive(Scan)]
@@ -12,7 +12,7 @@ struct IntLiteral<'input>(&'input str);
 #[test]
 fn scan_tuple_struct_parse_captures() {
     let mut input = Input::new("hello world");
-    let ident = <Ident as Scan>::parse(&mut input).unwrap();
+    let ident = <Ident as Parse>::parse(&mut input, &NoRules).unwrap();
     assert_eq!(ident.0, "hello");
     assert_eq!(input.cursor(), 5);
 }
@@ -20,7 +20,7 @@ fn scan_tuple_struct_parse_captures() {
 #[test]
 fn scan_tuple_struct_int_literal() {
     let mut input = Input::new("42 + 1");
-    let lit = <IntLiteral as Scan>::parse(&mut input).unwrap();
+    let lit = <IntLiteral as Parse>::parse(&mut input, &NoRules).unwrap();
     assert_eq!(lit.0, "42");
     assert_eq!(input.cursor(), 2);
 }
@@ -36,20 +36,6 @@ fn scan_tuple_struct_first_pattern() {
     assert_eq!(<Ident as Parse>::first_pattern(), r"[a-zA-Z_][a-zA-Z0-9_]*");
 }
 
-#[test]
-fn scan_tuple_struct_parse_through_parse_trait() {
-    let mut input = Input::new("hello world");
-    let ident = <Ident as Parse>::parse(&mut input, &NoRules).unwrap();
-    assert_eq!(ident.0, "hello");
-    assert_eq!(input.cursor(), 5);
-}
-
-#[test]
-fn scan_tuple_struct_peek_through_parse_trait() {
-    let input = Input::new("hello world");
-    assert!(<Ident as Parse>::peek(&input, &NoRules));
-}
-
 // -- Owned (String) tuple struct tests --
 
 #[derive(Scan)]
@@ -63,7 +49,7 @@ struct OwnedInt(String);
 #[test]
 fn scan_owned_tuple_struct_parse_captures() {
     let mut input = Input::new("hello world");
-    let ident = <OwnedIdent as Scan>::parse(&mut input).unwrap();
+    let ident = <OwnedIdent as Parse>::parse(&mut input, &NoRules).unwrap();
     assert_eq!(ident.0, "hello");
     assert_eq!(input.cursor(), 5);
 }
@@ -71,7 +57,7 @@ fn scan_owned_tuple_struct_parse_captures() {
 #[test]
 fn scan_owned_tuple_struct_int() {
     let mut input = Input::new("42 + 1");
-    let lit = <OwnedInt as Scan>::parse(&mut input).unwrap();
+    let lit = <OwnedInt as Parse>::parse(&mut input, &NoRules).unwrap();
     assert_eq!(lit.0, "42");
     assert_eq!(input.cursor(), 2);
 }
@@ -80,12 +66,4 @@ fn scan_owned_tuple_struct_int() {
 fn scan_owned_tuple_struct_is_terminal() {
     let is_terminal = <OwnedIdent as Parse>::IS_TERMINAL;
     assert!(is_terminal);
-}
-
-#[test]
-fn scan_owned_tuple_struct_parse_through_parse_trait() {
-    let mut input = Input::new("hello world");
-    let ident = <OwnedIdent as Parse>::parse(&mut input, &NoRules).unwrap();
-    assert_eq!(ident.0, "hello");
-    assert_eq!(input.cursor(), 5);
 }

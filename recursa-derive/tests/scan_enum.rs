@@ -1,4 +1,4 @@
-use recursa_core::{Input, Scan};
+use recursa_core::{Input, NoRules, Parse};
 use recursa_derive::Scan;
 
 #[derive(Scan, Debug)]
@@ -23,7 +23,7 @@ enum Keyword {
 #[test]
 fn scan_enum_let() {
     let mut input = Input::new("let x");
-    let kw = <Keyword as Scan>::parse(&mut input).unwrap();
+    let kw = <Keyword as Parse>::parse(&mut input, &NoRules).unwrap();
     assert!(matches!(kw, Keyword::Let(_)));
     assert_eq!(input.cursor(), 3);
 }
@@ -31,7 +31,7 @@ fn scan_enum_let() {
 #[test]
 fn scan_enum_if() {
     let mut input = Input::new("if true");
-    let kw = <Keyword as Scan>::parse(&mut input).unwrap();
+    let kw = <Keyword as Parse>::parse(&mut input, &NoRules).unwrap();
     assert!(matches!(kw, Keyword::If(_)));
     assert_eq!(input.cursor(), 2);
 }
@@ -39,7 +39,7 @@ fn scan_enum_if() {
 #[test]
 fn scan_enum_while() {
     let mut input = Input::new("while true");
-    let kw = <Keyword as Scan>::parse(&mut input).unwrap();
+    let kw = <Keyword as Parse>::parse(&mut input, &NoRules).unwrap();
     assert!(matches!(kw, Keyword::While(_)));
     assert_eq!(input.cursor(), 5);
 }
@@ -63,32 +63,31 @@ fn scan_enum_longest_match() {
     }
 
     let mut input = Input::new("hello123");
-    let tok = <Token as Scan>::parse(&mut input).unwrap();
+    let tok = <Token as Parse>::parse(&mut input, &NoRules).unwrap();
     assert!(matches!(tok, Token::Word(w) if w.0 == "hello"));
 }
 
 #[test]
 fn scan_enum_peek() {
     let input = Input::new("let x");
-    assert!(<Keyword as Scan>::peek(&input));
+    assert!(<Keyword as Parse>::peek(&input, &NoRules));
 }
 
 #[test]
 fn scan_enum_peek_fails() {
     let input = Input::new("123");
-    assert!(!<Keyword as Scan>::peek(&input));
+    assert!(!<Keyword as Parse>::peek(&input, &NoRules));
 }
 
 #[test]
 fn scan_enum_no_match_returns_error() {
     let mut input = Input::new("123");
-    let result = <Keyword as Scan>::parse(&mut input);
+    let result = <Keyword as Parse>::parse(&mut input, &NoRules);
     assert!(result.is_err());
 }
 
 #[test]
 fn scan_enum_declaration_order_tiebreaker() {
-    // When two variants match with the same length, declaration order wins
     #[derive(Scan, Debug)]
     #[scan(pattern = r"ab")]
     struct Ab;
@@ -104,6 +103,6 @@ fn scan_enum_declaration_order_tiebreaker() {
     }
 
     let mut input = Input::new("ab");
-    let tok = <AbToken as Scan>::parse(&mut input).unwrap();
+    let tok = <AbToken as Parse>::parse(&mut input, &NoRules).unwrap();
     assert!(matches!(tok, AbToken::First(_)));
 }
