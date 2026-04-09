@@ -329,7 +329,7 @@ mod tests {
         assert!(input.is_empty());
     }
 
-    use crate::seq::{AllowEmpty, NoTrailing, Seq};
+    use crate::seq::Seq;
 
     #[test]
     fn seq_empty() {
