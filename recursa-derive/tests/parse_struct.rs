@@ -97,10 +97,7 @@ fn parse_struct_first_pattern_stops_at_non_terminal() {
     // Walk: include LetKw's pattern, LetKw is terminal so continue,
     // include LetBinding's first_pattern (the full joined pattern), LetBinding is NOT terminal so stop.
     let pattern = <NestedStmt as Parse>::first_pattern();
-    let expected = format!(
-        "let(?:\\s+)?{}",
-        <LetBinding as Parse>::first_pattern()
-    );
+    let expected = format!("let(?:\\s+)?{}", <LetBinding as Parse>::first_pattern());
     assert_eq!(pattern, expected);
 }
 
