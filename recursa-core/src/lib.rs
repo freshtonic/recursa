@@ -182,22 +182,22 @@ mod tests {
 
     #[test]
     fn scan_type_implements_parse() {
-        // TestKeyword implements Scan, so it should also implement Parse
+        // TestKeyword implements Scan, so it should also implement Parse via blanket impl
         let mut input = Input::new("test foo");
-        let _kw = <TestKeyword as Parse>::parse(&mut input).unwrap();
+        let _kw = <TestKeyword as Parse>::parse(&mut input, &NoRules).unwrap();
         assert_eq!(input.cursor(), 4);
     }
 
     #[test]
     fn scan_type_peek_through_parse() {
         let input = Input::new("test foo");
-        assert!(<TestKeyword as Parse>::peek(&input));
+        assert!(<TestKeyword as Parse>::peek(&input, &NoRules));
     }
 
     #[test]
     fn scan_type_peek_through_parse_fails() {
         let input = Input::new("foo bar");
-        assert!(!<TestKeyword as Parse>::peek(&input));
+        assert!(!<TestKeyword as Parse>::peek(&input, &NoRules));
     }
 
     #[test]
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn box_parse_delegates_to_inner() {
         let mut input = Input::new("test foo");
-        let boxed = <Box<TestKeyword> as Parse>::parse(&mut input).unwrap();
+        let boxed = <Box<TestKeyword> as Parse>::parse(&mut input, &NoRules).unwrap();
         let _: Box<TestKeyword> = boxed;
         assert_eq!(input.cursor(), 4);
     }
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn box_peek_delegates_to_inner() {
         let input = Input::new("test foo");
-        assert!(<Box<TestKeyword> as Parse>::peek(&input));
+        assert!(<Box<TestKeyword> as Parse>::peek(&input, &NoRules));
     }
 
     #[test]
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn option_parse_some_when_peek_matches() {
         let mut input = Input::new("test foo");
-        let result = <Option<TestKeyword> as Parse>::parse(&mut input).unwrap();
+        let result = <Option<TestKeyword> as Parse>::parse(&mut input, &NoRules).unwrap();
         assert!(result.is_some());
         assert_eq!(input.cursor(), 4);
     }
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn option_parse_none_when_peek_fails() {
         let mut input = Input::new("foo bar");
-        let result = <Option<TestKeyword> as Parse>::parse(&mut input).unwrap();
+        let result = <Option<TestKeyword> as Parse>::parse(&mut input, &NoRules).unwrap();
         assert!(result.is_none());
         assert_eq!(input.cursor(), 0); // no input consumed
     }
@@ -292,10 +292,10 @@ mod tests {
     #[test]
     fn option_peek_delegates() {
         let input = Input::new("test foo");
-        assert!(<Option<TestKeyword> as Parse>::peek(&input));
+        assert!(<Option<TestKeyword> as Parse>::peek(&input, &NoRules));
 
         let input2 = Input::new("foo bar");
-        assert!(!<Option<TestKeyword> as Parse>::peek(&input2));
+        assert!(!<Option<TestKeyword> as Parse>::peek(&input2, &NoRules));
     }
 
     #[test]

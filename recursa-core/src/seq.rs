@@ -103,6 +103,7 @@ impl<T: fmt::Debug, S: fmt::Debug, Trailing, Empty> fmt::Debug for Seq<T, S, Tra
 
 fn parse_no_trailing<'input, T, S, R>(
     input: &mut Input<'input>,
+    rules: &R,
 ) -> Result<Vec<(T, Option<S>)>, ParseError>
 where
     T: Parse<'input> + Clone,
@@ -111,7 +112,7 @@ where
 {
     let mut pairs = Vec::new();
     loop {
-        let element = <T as Parse>::parse(input)?;
+        let element = <T as Parse>::parse(input, rules)?;
 
         input.consume_ignored(R::IGNORE);
         if !<S as Scan>::peek(input) {
@@ -128,6 +129,7 @@ where
 
 fn parse_optional_trailing<'input, T, S, R>(
     input: &mut Input<'input>,
+    rules: &R,
 ) -> Result<Vec<(T, Option<S>)>, ParseError>
 where
     T: Parse<'input> + Clone,
@@ -136,7 +138,7 @@ where
 {
     let mut pairs = Vec::new();
     loop {
-        let element = <T as Parse>::parse(input)?;
+        let element = <T as Parse>::parse(input, rules)?;
 
         input.consume_ignored(R::IGNORE);
         if !<S as Scan>::peek(input) {
@@ -147,7 +149,7 @@ where
         let sep = <S as Scan>::parse(input)?;
 
         input.consume_ignored(R::IGNORE);
-        if !<T as Parse>::peek(input) {
+        if !<T as Parse>::peek(input, rules) {
             pairs.push((element, Some(sep)));
             break;
         }
@@ -159,6 +161,7 @@ where
 
 fn parse_required_trailing<'input, T, S, R>(
     input: &mut Input<'input>,
+    rules: &R,
 ) -> Result<Vec<(T, Option<S>)>, ParseError>
 where
     T: Parse<'input> + Clone,
@@ -167,7 +170,7 @@ where
 {
     let mut pairs = Vec::new();
     loop {
-        let element = <T as Parse>::parse(input)?;
+        let element = <T as Parse>::parse(input, rules)?;
 
         input.consume_ignored(R::IGNORE);
         let sep = <S as Scan>::parse(input)?;
@@ -175,7 +178,7 @@ where
         pairs.push((element, Some(sep)));
 
         input.consume_ignored(R::IGNORE);
-        if !<T as Parse>::peek(input) {
+        if !<T as Parse>::peek(input, rules) {
             break;
         }
     }
@@ -189,23 +192,22 @@ where
     T: Parse<'input> + Clone,
     S: Scan<'input> + Clone,
 {
-    type Rules = <T as Parse<'input>>::Rules;
     const IS_TERMINAL: bool = false;
 
     fn first_pattern() -> &'static str {
         T::first_pattern()
     }
 
-    fn peek(_input: &Input<'input>) -> bool {
+    fn peek<R: ParseRules>(_input: &Input<'input>, _rules: &R) -> bool {
         true
     }
 
-    fn parse(input: &mut Input<'input>) -> Result<Self, ParseError> {
-        input.consume_ignored(Self::Rules::IGNORE);
-        if !<T as Parse>::peek(input) {
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        input.consume_ignored(R::IGNORE);
+        if !<T as Parse>::peek(input, rules) {
             return Ok(Self::from_pairs(Vec::new()));
         }
-        let pairs = parse_no_trailing::<T, S, Self::Rules>(input)?;
+        let pairs = parse_no_trailing::<T, S, R>(input, rules)?;
         Ok(Self::from_pairs(pairs))
     }
 }
@@ -215,23 +217,22 @@ where
     T: Parse<'input> + Clone,
     S: Scan<'input> + Clone,
 {
-    type Rules = <T as Parse<'input>>::Rules;
     const IS_TERMINAL: bool = false;
 
     fn first_pattern() -> &'static str {
         T::first_pattern()
     }
 
-    fn peek(_input: &Input<'input>) -> bool {
+    fn peek<R: ParseRules>(_input: &Input<'input>, _rules: &R) -> bool {
         true
     }
 
-    fn parse(input: &mut Input<'input>) -> Result<Self, ParseError> {
-        input.consume_ignored(Self::Rules::IGNORE);
-        if !<T as Parse>::peek(input) {
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        input.consume_ignored(R::IGNORE);
+        if !<T as Parse>::peek(input, rules) {
             return Ok(Self::from_pairs(Vec::new()));
         }
-        let pairs = parse_optional_trailing::<T, S, Self::Rules>(input)?;
+        let pairs = parse_optional_trailing::<T, S, R>(input, rules)?;
         Ok(Self::from_pairs(pairs))
     }
 }
@@ -241,23 +242,22 @@ where
     T: Parse<'input> + Clone,
     S: Scan<'input> + Clone,
 {
-    type Rules = <T as Parse<'input>>::Rules;
     const IS_TERMINAL: bool = false;
 
     fn first_pattern() -> &'static str {
         T::first_pattern()
     }
 
-    fn peek(_input: &Input<'input>) -> bool {
+    fn peek<R: ParseRules>(_input: &Input<'input>, _rules: &R) -> bool {
         true
     }
 
-    fn parse(input: &mut Input<'input>) -> Result<Self, ParseError> {
-        input.consume_ignored(Self::Rules::IGNORE);
-        if !<T as Parse>::peek(input) {
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        input.consume_ignored(R::IGNORE);
+        if !<T as Parse>::peek(input, rules) {
             return Ok(Self::from_pairs(Vec::new()));
         }
-        let pairs = parse_required_trailing::<T, S, Self::Rules>(input)?;
+        let pairs = parse_required_trailing::<T, S, R>(input, rules)?;
         Ok(Self::from_pairs(pairs))
     }
 }
@@ -269,27 +269,26 @@ where
     T: Parse<'input> + Clone,
     S: Scan<'input> + Clone,
 {
-    type Rules = <T as Parse<'input>>::Rules;
     const IS_TERMINAL: bool = false;
 
     fn first_pattern() -> &'static str {
         T::first_pattern()
     }
 
-    fn peek(input: &Input<'input>) -> bool {
-        <T as Parse>::peek(input)
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        <T as Parse>::peek(input, rules)
     }
 
-    fn parse(input: &mut Input<'input>) -> Result<Self, ParseError> {
-        input.consume_ignored(Self::Rules::IGNORE);
-        if !<T as Parse>::peek(input) {
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        input.consume_ignored(R::IGNORE);
+        if !<T as Parse>::peek(input, rules) {
             return Err(ParseError::new(
                 input.source(),
                 input.cursor()..input.cursor(),
                 T::first_pattern(),
             ));
         }
-        let pairs = parse_no_trailing::<T, S, Self::Rules>(input)?;
+        let pairs = parse_no_trailing::<T, S, R>(input, rules)?;
         Ok(Self::from_pairs(pairs))
     }
 }
@@ -299,27 +298,26 @@ where
     T: Parse<'input> + Clone,
     S: Scan<'input> + Clone,
 {
-    type Rules = <T as Parse<'input>>::Rules;
     const IS_TERMINAL: bool = false;
 
     fn first_pattern() -> &'static str {
         T::first_pattern()
     }
 
-    fn peek(input: &Input<'input>) -> bool {
-        <T as Parse>::peek(input)
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        <T as Parse>::peek(input, rules)
     }
 
-    fn parse(input: &mut Input<'input>) -> Result<Self, ParseError> {
-        input.consume_ignored(Self::Rules::IGNORE);
-        if !<T as Parse>::peek(input) {
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        input.consume_ignored(R::IGNORE);
+        if !<T as Parse>::peek(input, rules) {
             return Err(ParseError::new(
                 input.source(),
                 input.cursor()..input.cursor(),
                 T::first_pattern(),
             ));
         }
-        let pairs = parse_optional_trailing::<T, S, Self::Rules>(input)?;
+        let pairs = parse_optional_trailing::<T, S, R>(input, rules)?;
         Ok(Self::from_pairs(pairs))
     }
 }
@@ -329,27 +327,26 @@ where
     T: Parse<'input> + Clone,
     S: Scan<'input> + Clone,
 {
-    type Rules = <T as Parse<'input>>::Rules;
     const IS_TERMINAL: bool = false;
 
     fn first_pattern() -> &'static str {
         T::first_pattern()
     }
 
-    fn peek(input: &Input<'input>) -> bool {
-        <T as Parse>::peek(input)
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        <T as Parse>::peek(input, rules)
     }
 
-    fn parse(input: &mut Input<'input>) -> Result<Self, ParseError> {
-        input.consume_ignored(Self::Rules::IGNORE);
-        if !<T as Parse>::peek(input) {
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        input.consume_ignored(R::IGNORE);
+        if !<T as Parse>::peek(input, rules) {
             return Err(ParseError::new(
                 input.source(),
                 input.cursor()..input.cursor(),
                 T::first_pattern(),
             ));
         }
-        let pairs = parse_required_trailing::<T, S, Self::Rules>(input)?;
+        let pairs = parse_required_trailing::<T, S, R>(input, rules)?;
         Ok(Self::from_pairs(pairs))
     }
 }
