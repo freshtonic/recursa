@@ -6,7 +6,10 @@ use regex::Regex;
 pub struct SqlRules;
 
 impl ParseRules for SqlRules {
-    const IGNORE: &'static str = "";
+    // IGNORE is used by the derive macro for first_pattern() regex composition.
+    // The actual consume_ignored() handles more (line comments, nested block comments),
+    // but for lookahead purposes, whitespace is sufficient.
+    const IGNORE: &'static str = r"\s+";
 
     fn ignore_cache() -> &'static OnceLock<Regex> {
         static CACHE: OnceLock<Regex> = OnceLock::new();

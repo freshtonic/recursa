@@ -3,15 +3,15 @@
 /// Handles atoms, prefix (NOT), infix (AND, OR, comparisons), and
 /// postfix operators (::type cast, IS [NOT] TRUE/FALSE/UNKNOWN/NULL)
 /// which the derive macro does not support.
-use std::ops::ControlFlow;
-
-use recursa::{AsNodeKey, Break, Input, Parse, ParseError, ParseRules, Visit, Visitor};
+use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens;
 
 /// Binary operator kinds for infix expressions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// No derive(Parse): operator-to-variant mapping is handled by the Pratt parser.
+#[derive(Debug, Clone, PartialEq, Eq, Visit)]
 pub enum BinOpKind {
     And,
     Or,
@@ -24,7 +24,9 @@ pub enum BinOpKind {
 }
 
 /// Boolean test kinds for IS [NOT] TRUE/FALSE/UNKNOWN/NULL.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// No derive(Parse): keyword-sequence-to-variant mapping is handled manually.
+#[derive(Debug, Clone, PartialEq, Eq, Visit)]
 pub enum BoolTestKind {
     IsTrue,
     IsNotTrue,
@@ -37,7 +39,9 @@ pub enum BoolTestKind {
 }
 
 /// Type name for casts (the types that boolean.sql uses).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// No derive(Parse): keyword-to-variant mapping is handled manually.
+#[derive(Debug, Clone, PartialEq, Eq, Visit)]
 pub enum TypeName {
     Bool,
     Boolean,
@@ -48,7 +52,10 @@ pub enum TypeName {
 }
 
 /// SQL expression.
-#[derive(Debug, Clone)]
+///
+/// Manual Parse: Pratt parser with postfix operators (::cast, IS tests)
+/// that the derive macro does not support.
+#[derive(Debug, Clone, Visit)]
 pub enum Expr {
     /// Integer literal: `42`
     IntegerLit(tokens::IntegerLit),
@@ -113,29 +120,29 @@ fn infix_bp(input: &Input<'_>) -> Option<(BinOpKind, u32)> {
     let mut fork = input.fork();
     SqlRules::consume_ignored(&mut fork);
 
-    if <tokens::Or as Parse>::peek(&fork, &SqlRules) {
+    if tokens::Or::peek(&fork, &SqlRules) {
         return Some((BinOpKind::Or, 1));
     }
-    if <tokens::And as Parse>::peek(&fork, &SqlRules) {
+    if tokens::And::peek(&fork, &SqlRules) {
         return Some((BinOpKind::And, 2));
     }
     // Comparison operators -- check multi-char before single-char
-    if <tokens::Neq as Parse>::peek(&fork, &SqlRules) {
+    if tokens::Neq::peek(&fork, &SqlRules) {
         return Some((BinOpKind::Neq, 5));
     }
-    if <tokens::Lte as Parse>::peek(&fork, &SqlRules) {
+    if tokens::Lte::peek(&fork, &SqlRules) {
         return Some((BinOpKind::Lte, 5));
     }
-    if <tokens::Gte as Parse>::peek(&fork, &SqlRules) {
+    if tokens::Gte::peek(&fork, &SqlRules) {
         return Some((BinOpKind::Gte, 5));
     }
-    if <tokens::Eq as Parse>::peek(&fork, &SqlRules) {
+    if tokens::Eq::peek(&fork, &SqlRules) {
         return Some((BinOpKind::Eq, 5));
     }
-    if <tokens::Lt as Parse>::peek(&fork, &SqlRules) {
+    if tokens::Lt::peek(&fork, &SqlRules) {
         return Some((BinOpKind::Lt, 5));
     }
-    if <tokens::Gt as Parse>::peek(&fork, &SqlRules) {
+    if tokens::Gt::peek(&fork, &SqlRules) {
         return Some((BinOpKind::Gt, 5));
     }
     None
@@ -146,28 +153,28 @@ fn consume_infix_op(input: &mut Input<'_>, kind: &BinOpKind) -> Result<(), Parse
     SqlRules::consume_ignored(input);
     match kind {
         BinOpKind::Or => {
-            <tokens::Or as Parse>::parse(input, &SqlRules)?;
+            tokens::Or::parse(input, &SqlRules)?;
         }
         BinOpKind::And => {
-            <tokens::And as Parse>::parse(input, &SqlRules)?;
+            tokens::And::parse(input, &SqlRules)?;
         }
         BinOpKind::Eq => {
-            <tokens::Eq as Parse>::parse(input, &SqlRules)?;
+            tokens::Eq::parse(input, &SqlRules)?;
         }
         BinOpKind::Neq => {
-            <tokens::Neq as Parse>::parse(input, &SqlRules)?;
+            tokens::Neq::parse(input, &SqlRules)?;
         }
         BinOpKind::Lt => {
-            <tokens::Lt as Parse>::parse(input, &SqlRules)?;
+            tokens::Lt::parse(input, &SqlRules)?;
         }
         BinOpKind::Gt => {
-            <tokens::Gt as Parse>::parse(input, &SqlRules)?;
+            tokens::Gt::parse(input, &SqlRules)?;
         }
         BinOpKind::Lte => {
-            <tokens::Lte as Parse>::parse(input, &SqlRules)?;
+            tokens::Lte::parse(input, &SqlRules)?;
         }
         BinOpKind::Gte => {
-            <tokens::Gte as Parse>::parse(input, &SqlRules)?;
+            tokens::Gte::parse(input, &SqlRules)?;
         }
     }
     Ok(())
@@ -176,24 +183,24 @@ fn consume_infix_op(input: &mut Input<'_>, kind: &BinOpKind) -> Result<(), Parse
 /// Parse a type name (for casts).
 fn parse_type_name(input: &mut Input<'_>) -> Result<TypeName, ParseError> {
     SqlRules::consume_ignored(input);
-    if <tokens::Boolean as Parse>::peek(input, &SqlRules) {
-        <tokens::Boolean as Parse>::parse(input, &SqlRules)?;
+    if tokens::Boolean::peek(input, &SqlRules) {
+        tokens::Boolean::parse(input, &SqlRules)?;
         return Ok(TypeName::Boolean);
     }
-    if <tokens::Bool as Parse>::peek(input, &SqlRules) {
-        <tokens::Bool as Parse>::parse(input, &SqlRules)?;
+    if tokens::Bool::peek(input, &SqlRules) {
+        tokens::Bool::parse(input, &SqlRules)?;
         return Ok(TypeName::Bool);
     }
-    if <tokens::Text as Parse>::peek(input, &SqlRules) {
-        <tokens::Text as Parse>::parse(input, &SqlRules)?;
+    if tokens::Text::peek(input, &SqlRules) {
+        tokens::Text::parse(input, &SqlRules)?;
         return Ok(TypeName::Text);
     }
-    if <tokens::Int as Parse>::peek(input, &SqlRules) {
-        <tokens::Int as Parse>::parse(input, &SqlRules)?;
+    if tokens::Int::peek(input, &SqlRules) {
+        tokens::Int::parse(input, &SqlRules)?;
         return Ok(TypeName::Int);
     }
-    if <tokens::Ident as Parse>::peek(input, &SqlRules) {
-        let ident = <tokens::Ident as Parse>::parse(input, &SqlRules)?;
+    if tokens::Ident::peek(input, &SqlRules) {
+        let ident = tokens::Ident::parse(input, &SqlRules)?;
         return Ok(TypeName::Ident(ident.0));
     }
     Err(ParseError::new(
@@ -209,28 +216,28 @@ fn peek_type_cast_func(input: &Input<'_>) -> bool {
     SqlRules::consume_ignored(&mut fork);
 
     // Must be a known type keyword followed by a string literal
-    let type_kw = <tokens::Boolean as Parse>::peek(&fork, &SqlRules)
-        || <tokens::Bool as Parse>::peek(&fork, &SqlRules)
-        || <tokens::Text as Parse>::peek(&fork, &SqlRules)
-        || <tokens::Int as Parse>::peek(&fork, &SqlRules);
+    let type_kw = tokens::Boolean::peek(&fork, &SqlRules)
+        || tokens::Bool::peek(&fork, &SqlRules)
+        || tokens::Text::peek(&fork, &SqlRules)
+        || tokens::Int::peek(&fork, &SqlRules);
 
     if !type_kw {
         return false;
     }
 
     // Try to consume the type keyword and check for string lit
-    if <tokens::Boolean as Parse>::peek(&fork, &SqlRules) {
-        let _ = <tokens::Boolean as Parse>::parse(&mut fork, &SqlRules);
-    } else if <tokens::Bool as Parse>::peek(&fork, &SqlRules) {
-        let _ = <tokens::Bool as Parse>::parse(&mut fork, &SqlRules);
-    } else if <tokens::Text as Parse>::peek(&fork, &SqlRules) {
-        let _ = <tokens::Text as Parse>::parse(&mut fork, &SqlRules);
-    } else if <tokens::Int as Parse>::peek(&fork, &SqlRules) {
-        let _ = <tokens::Int as Parse>::parse(&mut fork, &SqlRules);
+    if tokens::Boolean::peek(&fork, &SqlRules) {
+        let _ = tokens::Boolean::parse(&mut fork, &SqlRules);
+    } else if tokens::Bool::peek(&fork, &SqlRules) {
+        let _ = tokens::Bool::parse(&mut fork, &SqlRules);
+    } else if tokens::Text::peek(&fork, &SqlRules) {
+        let _ = tokens::Text::parse(&mut fork, &SqlRules);
+    } else if tokens::Int::peek(&fork, &SqlRules) {
+        let _ = tokens::Int::parse(&mut fork, &SqlRules);
     }
 
     SqlRules::consume_ignored(&mut fork);
-    <tokens::StringLit as Parse>::peek(&fork, &SqlRules)
+    tokens::StringLit::peek(&fork, &SqlRules)
 }
 
 /// Try to parse a boolean test postfix (IS [NOT] TRUE/FALSE/UNKNOWN/NULL).
@@ -239,43 +246,43 @@ fn try_parse_bool_test(input: &mut Input<'_>) -> Result<Option<BoolTestKind>, Pa
     let mut fork = input.fork();
     SqlRules::consume_ignored(&mut fork);
 
-    if !<tokens::Is as Parse>::peek(&fork, &SqlRules) {
+    if !tokens::Is::peek(&fork, &SqlRules) {
         return Ok(None);
     }
-    <tokens::Is as Parse>::parse(&mut fork, &SqlRules)?;
+    tokens::Is::parse(&mut fork, &SqlRules)?;
     SqlRules::consume_ignored(&mut fork);
 
-    let negated = if <tokens::Not as Parse>::peek(&fork, &SqlRules) {
-        <tokens::Not as Parse>::parse(&mut fork, &SqlRules)?;
+    let negated = if tokens::Not::peek(&fork, &SqlRules) {
+        tokens::Not::parse(&mut fork, &SqlRules)?;
         SqlRules::consume_ignored(&mut fork);
         true
     } else {
         false
     };
 
-    let kind = if <tokens::True as Parse>::peek(&fork, &SqlRules) {
-        <tokens::True as Parse>::parse(&mut fork, &SqlRules)?;
+    let kind = if tokens::True::peek(&fork, &SqlRules) {
+        tokens::True::parse(&mut fork, &SqlRules)?;
         if negated {
             BoolTestKind::IsNotTrue
         } else {
             BoolTestKind::IsTrue
         }
-    } else if <tokens::False as Parse>::peek(&fork, &SqlRules) {
-        <tokens::False as Parse>::parse(&mut fork, &SqlRules)?;
+    } else if tokens::False::peek(&fork, &SqlRules) {
+        tokens::False::parse(&mut fork, &SqlRules)?;
         if negated {
             BoolTestKind::IsNotFalse
         } else {
             BoolTestKind::IsFalse
         }
-    } else if <tokens::Unknown as Parse>::peek(&fork, &SqlRules) {
-        <tokens::Unknown as Parse>::parse(&mut fork, &SqlRules)?;
+    } else if tokens::Unknown::peek(&fork, &SqlRules) {
+        tokens::Unknown::parse(&mut fork, &SqlRules)?;
         if negated {
             BoolTestKind::IsNotUnknown
         } else {
             BoolTestKind::IsUnknown
         }
-    } else if <tokens::Null as Parse>::peek(&fork, &SqlRules) {
-        <tokens::Null as Parse>::parse(&mut fork, &SqlRules)?;
+    } else if tokens::Null::peek(&fork, &SqlRules) {
+        tokens::Null::parse(&mut fork, &SqlRules)?;
         if negated {
             BoolTestKind::IsNotNull
         } else {
@@ -298,25 +305,25 @@ fn parse_atom(input: &mut Input<'_>) -> Result<Expr, ParseError> {
     if peek_type_cast_func(input) {
         let type_name = parse_type_name(input)?;
         SqlRules::consume_ignored(input);
-        let value = <tokens::StringLit as Parse>::parse(input, &SqlRules)?;
+        let value = tokens::StringLit::parse(input, &SqlRules)?;
         let mut expr = Expr::TypeCastFunc { type_name, value };
         expr = apply_postfix(input, expr)?;
         return Ok(expr);
     }
 
     // NOT prefix
-    if <tokens::Not as Parse>::peek(input, &SqlRules) {
-        let not = <tokens::Not as Parse>::parse(input, &SqlRules)?;
+    if tokens::Not::peek(input, &SqlRules) {
+        let not = tokens::Not::parse(input, &SqlRules)?;
         let operand = parse_expr(input, 15)?; // NOT binds tightly
         return Ok(Expr::Not(not, Box::new(operand)));
     }
 
     // Parenthesized expression
-    if <tokens::LParen as Parse>::peek(input, &SqlRules) {
-        <tokens::LParen as Parse>::parse(input, &SqlRules)?;
+    if tokens::LParen::peek(input, &SqlRules) {
+        tokens::LParen::parse(input, &SqlRules)?;
         let inner = parse_expr(input, 0)?;
         SqlRules::consume_ignored(input);
-        <tokens::RParen as Parse>::parse(input, &SqlRules)?;
+        tokens::RParen::parse(input, &SqlRules)?;
         let mut expr = Expr::Paren {
             inner: Box::new(inner),
         };
@@ -325,53 +332,53 @@ fn parse_atom(input: &mut Input<'_>) -> Result<Expr, ParseError> {
     }
 
     // Star (bare wildcard)
-    if <tokens::Star as Parse>::peek(input, &SqlRules) {
-        let star = <tokens::Star as Parse>::parse(input, &SqlRules)?;
+    if tokens::Star::peek(input, &SqlRules) {
+        let star = tokens::Star::parse(input, &SqlRules)?;
         return Ok(Expr::Star(star));
     }
 
     // Boolean literals
-    if <tokens::True as Parse>::peek(input, &SqlRules) {
-        let t = <tokens::True as Parse>::parse(input, &SqlRules)?;
+    if tokens::True::peek(input, &SqlRules) {
+        let t = tokens::True::parse(input, &SqlRules)?;
         let mut expr = Expr::BoolTrue(t);
         expr = apply_postfix(input, expr)?;
         return Ok(expr);
     }
-    if <tokens::False as Parse>::peek(input, &SqlRules) {
-        let f = <tokens::False as Parse>::parse(input, &SqlRules)?;
+    if tokens::False::peek(input, &SqlRules) {
+        let f = tokens::False::parse(input, &SqlRules)?;
         let mut expr = Expr::BoolFalse(f);
         expr = apply_postfix(input, expr)?;
         return Ok(expr);
     }
-    if <tokens::Null as Parse>::peek(input, &SqlRules) {
-        let n = <tokens::Null as Parse>::parse(input, &SqlRules)?;
+    if tokens::Null::peek(input, &SqlRules) {
+        let n = tokens::Null::parse(input, &SqlRules)?;
         let mut expr = Expr::Null(n);
         expr = apply_postfix(input, expr)?;
         return Ok(expr);
     }
 
     // Identifier -- could be column ref, qualified ref, qualified wildcard, or function call
-    if <tokens::Ident as Parse>::peek(input, &SqlRules) {
-        let ident = <tokens::Ident as Parse>::parse(input, &SqlRules)?;
+    if tokens::Ident::peek(input, &SqlRules) {
+        let ident = tokens::Ident::parse(input, &SqlRules)?;
         SqlRules::consume_ignored(input);
 
         // Function call: ident(...)
-        if <tokens::LParen as Parse>::peek(input, &SqlRules) {
-            <tokens::LParen as Parse>::parse(input, &SqlRules)?;
+        if tokens::LParen::peek(input, &SqlRules) {
+            tokens::LParen::parse(input, &SqlRules)?;
             let args = parse_func_args(input)?;
             SqlRules::consume_ignored(input);
-            <tokens::RParen as Parse>::parse(input, &SqlRules)?;
+            tokens::RParen::parse(input, &SqlRules)?;
             let mut expr = Expr::FuncCall { name: ident, args };
             expr = apply_postfix(input, expr)?;
             return Ok(expr);
         }
 
         // Qualified: ident.ident or ident.*
-        if <tokens::Dot as Parse>::peek(input, &SqlRules) {
-            let dot = <tokens::Dot as Parse>::parse(input, &SqlRules)?;
+        if tokens::Dot::peek(input, &SqlRules) {
+            let dot = tokens::Dot::parse(input, &SqlRules)?;
             SqlRules::consume_ignored(input);
-            if <tokens::Star as Parse>::peek(input, &SqlRules) {
-                let star = <tokens::Star as Parse>::parse(input, &SqlRules)?;
+            if tokens::Star::peek(input, &SqlRules) {
+                let star = tokens::Star::parse(input, &SqlRules)?;
                 let mut expr = Expr::QualifiedWildcard {
                     table: ident,
                     dot,
@@ -380,7 +387,7 @@ fn parse_atom(input: &mut Input<'_>) -> Result<Expr, ParseError> {
                 expr = apply_postfix(input, expr)?;
                 return Ok(expr);
             }
-            let column = <tokens::Ident as Parse>::parse(input, &SqlRules)?;
+            let column = tokens::Ident::parse(input, &SqlRules)?;
             let mut expr = Expr::QualifiedRef {
                 table: ident,
                 dot,
@@ -397,16 +404,16 @@ fn parse_atom(input: &mut Input<'_>) -> Result<Expr, ParseError> {
     }
 
     // Integer literal
-    if <tokens::IntegerLit as Parse>::peek(input, &SqlRules) {
-        let lit = <tokens::IntegerLit as Parse>::parse(input, &SqlRules)?;
+    if tokens::IntegerLit::peek(input, &SqlRules) {
+        let lit = tokens::IntegerLit::parse(input, &SqlRules)?;
         let mut expr = Expr::IntegerLit(lit);
         expr = apply_postfix(input, expr)?;
         return Ok(expr);
     }
 
     // String literal
-    if <tokens::StringLit as Parse>::peek(input, &SqlRules) {
-        let lit = <tokens::StringLit as Parse>::parse(input, &SqlRules)?;
+    if tokens::StringLit::peek(input, &SqlRules) {
+        let lit = tokens::StringLit::parse(input, &SqlRules)?;
         let mut expr = Expr::StringLit(lit);
         expr = apply_postfix(input, expr)?;
         return Ok(expr);
@@ -426,8 +433,8 @@ fn apply_postfix(input: &mut Input<'_>, mut expr: Expr) -> Result<Expr, ParseErr
         SqlRules::consume_ignored(&mut fork);
 
         // :: type cast
-        if <tokens::ColonColon as Parse>::peek(&fork, &SqlRules) {
-            <tokens::ColonColon as Parse>::parse(&mut fork, &SqlRules)?;
+        if tokens::ColonColon::peek(&fork, &SqlRules) {
+            tokens::ColonColon::parse(&mut fork, &SqlRules)?;
             let type_name = parse_type_name(&mut fork)?;
             input.commit(fork);
             expr = Expr::Cast {
@@ -457,7 +464,7 @@ fn parse_func_args(input: &mut Input<'_>) -> Result<Vec<Expr>, ParseError> {
     SqlRules::consume_ignored(input);
 
     // Empty args
-    if <tokens::RParen as Parse>::peek(input, &SqlRules) {
+    if tokens::RParen::peek(input, &SqlRules) {
         return Ok(args);
     }
 
@@ -467,10 +474,10 @@ fn parse_func_args(input: &mut Input<'_>) -> Result<Vec<Expr>, ParseError> {
     // Subsequent args
     loop {
         SqlRules::consume_ignored(input);
-        if !<tokens::Comma as Parse>::peek(input, &SqlRules) {
+        if !tokens::Comma::peek(input, &SqlRules) {
             break;
         }
-        <tokens::Comma as Parse>::parse(input, &SqlRules)?;
+        tokens::Comma::parse(input, &SqlRules)?;
         args.push(parse_expr(input, 0)?);
     }
 
@@ -521,112 +528,23 @@ impl<'input> Parse<'input> for Expr {
 
         // Can start with: type keyword, NOT, '(', '*', true, false, null,
         // identifier, integer, string
-        <tokens::Not as Parse>::peek(&fork, &SqlRules)
-            || <tokens::LParen as Parse>::peek(&fork, &SqlRules)
-            || <tokens::Star as Parse>::peek(&fork, &SqlRules)
-            || <tokens::True as Parse>::peek(&fork, &SqlRules)
-            || <tokens::False as Parse>::peek(&fork, &SqlRules)
-            || <tokens::Null as Parse>::peek(&fork, &SqlRules)
-            || <tokens::Bool as Parse>::peek(&fork, &SqlRules)
-            || <tokens::Boolean as Parse>::peek(&fork, &SqlRules)
-            || <tokens::Text as Parse>::peek(&fork, &SqlRules)
-            || <tokens::Int as Parse>::peek(&fork, &SqlRules)
-            || <tokens::Ident as Parse>::peek(&fork, &SqlRules)
-            || <tokens::IntegerLit as Parse>::peek(&fork, &SqlRules)
-            || <tokens::StringLit as Parse>::peek(&fork, &SqlRules)
+        tokens::Not::peek(&fork, &SqlRules)
+            || tokens::LParen::peek(&fork, &SqlRules)
+            || tokens::Star::peek(&fork, &SqlRules)
+            || tokens::True::peek(&fork, &SqlRules)
+            || tokens::False::peek(&fork, &SqlRules)
+            || tokens::Null::peek(&fork, &SqlRules)
+            || tokens::Bool::peek(&fork, &SqlRules)
+            || tokens::Boolean::peek(&fork, &SqlRules)
+            || tokens::Text::peek(&fork, &SqlRules)
+            || tokens::Int::peek(&fork, &SqlRules)
+            || tokens::Ident::peek(&fork, &SqlRules)
+            || tokens::IntegerLit::peek(&fork, &SqlRules)
+            || tokens::StringLit::peek(&fork, &SqlRules)
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
         parse_expr(input, 0)
-    }
-}
-
-// --- Visit trait implementation ---
-
-impl AsNodeKey for Expr {}
-
-impl Visit for Expr {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        match visitor.enter(self) {
-            ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
-            other => return other,
-        }
-        match self {
-            Expr::IntegerLit(lit) => lit.visit(visitor)?,
-            Expr::StringLit(lit) => lit.visit(visitor)?,
-            Expr::BoolTrue(t) => t.visit(visitor)?,
-            Expr::BoolFalse(f) => f.visit(visitor)?,
-            Expr::Null(n) => n.visit(visitor)?,
-            Expr::ColumnRef(ident) => ident.visit(visitor)?,
-            Expr::QualifiedRef { table, dot, column } => {
-                table.visit(visitor)?;
-                dot.visit(visitor)?;
-                column.visit(visitor)?;
-            }
-            Expr::QualifiedWildcard { table, dot, star } => {
-                table.visit(visitor)?;
-                dot.visit(visitor)?;
-                star.visit(visitor)?;
-            }
-            Expr::Star(s) => s.visit(visitor)?,
-            Expr::FuncCall { name, args } => {
-                name.visit(visitor)?;
-                for arg in args {
-                    arg.visit(visitor)?;
-                }
-            }
-            Expr::Paren { inner } => inner.visit(visitor)?,
-            Expr::TypeCastFunc { value, .. } => value.visit(visitor)?,
-            Expr::Not(not, operand) => {
-                not.visit(visitor)?;
-                operand.visit(visitor)?;
-            }
-            Expr::BinOp { left, right, .. } => {
-                left.visit(visitor)?;
-                right.visit(visitor)?;
-            }
-            Expr::Cast { expr, .. } => expr.visit(visitor)?,
-            Expr::BooleanTest { expr, .. } => expr.visit(visitor)?,
-        }
-        visitor.exit(self)
-    }
-}
-
-// --- Visit impls for helper types ---
-
-impl AsNodeKey for BinOpKind {}
-
-impl Visit for BinOpKind {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        match visitor.enter(self) {
-            ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
-            other => return other,
-        }
-        visitor.exit(self)
-    }
-}
-
-impl AsNodeKey for BoolTestKind {}
-
-impl Visit for BoolTestKind {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        match visitor.enter(self) {
-            ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
-            other => return other,
-        }
-        visitor.exit(self)
-    }
-}
-
-impl AsNodeKey for TypeName {}
-
-impl Visit for TypeName {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        match visitor.enter(self) {
-            ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
-            other => return other,
-        }
-        visitor.exit(self)
     }
 }
 

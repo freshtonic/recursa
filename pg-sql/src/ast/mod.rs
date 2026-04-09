@@ -4,9 +4,7 @@ pub mod expr;
 pub mod insert;
 pub mod select;
 
-use std::ops::ControlFlow;
-
-use recursa::{AsNodeKey, Break, Input, Parse, ParseError, ParseRules, Visit, Visitor};
+use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens;
@@ -17,7 +15,10 @@ use self::insert::InsertStmt;
 use self::select::SelectStmt;
 
 /// Top-level SQL statement.
-#[derive(Debug)]
+///
+/// Manual Parse: keyword-based dispatch to different statement types,
+/// not a standard enum where each variant wraps a single parseable type.
+#[derive(Debug, Visit)]
 pub enum Statement {
     Select(SelectStmt),
     CreateTable(CreateTableStmt),
@@ -26,7 +27,9 @@ pub enum Statement {
 }
 
 /// A command in a psql input file: either a SQL statement or a psql directive.
-#[derive(Debug)]
+///
+/// Manual Parse: custom `\` directive parsing that is not token-based.
+#[derive(Debug, Visit)]
 pub enum PsqlCommand {
     /// A SQL statement followed by a semicolon.
     Statement(Statement, tokens::Semi),
@@ -35,23 +38,6 @@ pub enum PsqlCommand {
 }
 
 // --- Parse implementations ---
-
-impl AsNodeKey for Statement {}
-impl Visit for Statement {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        match visitor.enter(self) {
-            ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
-            other => return other,
-        }
-        match self {
-            Statement::Select(s) => s.visit(visitor)?,
-            Statement::CreateTable(s) => s.visit(visitor)?,
-            Statement::Insert(s) => s.visit(visitor)?,
-            Statement::DropTable(s) => s.visit(visitor)?,
-        }
-        visitor.exit(self)
-    }
-}
 
 impl<'input> Parse<'input> for Statement {
     const IS_TERMINAL: bool = false;
@@ -98,24 +84,6 @@ impl<'input> Parse<'input> for Statement {
     }
 }
 
-impl AsNodeKey for PsqlCommand {}
-impl Visit for PsqlCommand {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        match visitor.enter(self) {
-            ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
-            other => return other,
-        }
-        match self {
-            PsqlCommand::Statement(stmt, semi) => {
-                stmt.visit(visitor)?;
-                semi.visit(visitor)?;
-            }
-            PsqlCommand::Directive(_) => {}
-        }
-        visitor.exit(self)
-    }
-}
-
 impl<'input> Parse<'input> for PsqlCommand {
     const IS_TERMINAL: bool = false;
     fn first_pattern() -> &'static str {
@@ -145,7 +113,7 @@ impl<'input> Parse<'input> for PsqlCommand {
 
         let stmt = Statement::parse(input, &SqlRules)?;
         SqlRules::consume_ignored(input);
-        let semi = <tokens::Semi as Parse>::parse(input, &SqlRules)?;
+        let semi = tokens::Semi::parse(input, &SqlRules)?;
         Ok(PsqlCommand::Statement(stmt, semi))
     }
 }

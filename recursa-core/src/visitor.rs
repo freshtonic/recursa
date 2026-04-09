@@ -104,6 +104,16 @@ impl<T: Visit> Visit for Option<T> {
     }
 }
 
+impl<T: Visit> AsNodeKey for Vec<T> {}
+impl<T: Visit> Visit for Vec<T> {
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        for item in self {
+            item.visit(visitor)?;
+        }
+        ControlFlow::Continue(())
+    }
+}
+
 // -- Leaf Visit impl for String (used by literals! macro types) --
 
 impl AsNodeKey for String {}

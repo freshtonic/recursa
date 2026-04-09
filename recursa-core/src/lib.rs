@@ -215,10 +215,7 @@ mod tests {
 
     #[test]
     fn scan_ident_first_pattern() {
-        assert_eq!(
-            TestIdent::first_pattern(),
-            r"[a-zA-Z_][a-zA-Z0-9_]*"
-        );
+        assert_eq!(TestIdent::first_pattern(), r"[a-zA-Z_][a-zA-Z0-9_]*");
     }
 
     struct WhitespaceRules;
