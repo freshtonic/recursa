@@ -122,8 +122,8 @@ impl recursa::AsNodeKey for IntegerLit {}
 
 /// SQL identifier: [a-zA-Z_][a-zA-Z0-9_]* but NOT a keyword.
 ///
-/// The regex uses a negative lookahead to reject any string that matches
-/// a SQL keyword followed by a word boundary.
+/// Uses a manual `Parse` impl that matches the identifier regex, then
+/// rejects matches that are SQL keywords via `is_keyword()`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ident(pub String);
 
@@ -135,8 +135,7 @@ const SQL_KEYWORDS: &[&str] = &[
 ];
 
 fn is_keyword(s: &str) -> bool {
-    let upper = s.to_uppercase();
-    SQL_KEYWORDS.contains(&upper.as_str())
+    SQL_KEYWORDS.iter().any(|kw| kw.eq_ignore_ascii_case(s))
 }
 
 impl Scan<'_> for Ident {
