@@ -6,6 +6,7 @@ mod macros;
 mod parse;
 mod rules;
 mod scan;
+pub mod seq;
 
 pub use error::ParseError;
 pub use input::Input;
@@ -326,5 +327,35 @@ mod tests {
         input.commit(back);
         assert_eq!(input.cursor(), 7);
         assert!(input.is_empty());
+    }
+
+    use crate::seq::{AllowEmpty, NoTrailing, Seq};
+
+    #[test]
+    fn seq_empty() {
+        let seq: Seq<i32, ()> = Seq::empty();
+        assert_eq!(seq.len(), 0);
+        assert!(seq.is_empty());
+        let elements: &Vec<i32> = &seq;
+        assert!(elements.is_empty());
+    }
+
+    #[test]
+    fn seq_from_pairs() {
+        let pairs = vec![(1, Some(())), (2, Some(())), (3, None)];
+        let seq: Seq<i32, ()> = Seq::from_pairs(pairs);
+        assert_eq!(seq.len(), 3);
+        let elements: &Vec<i32> = &seq;
+        assert_eq!(elements, &[1, 2, 3]);
+    }
+
+    #[test]
+    fn seq_pairs_accessible() {
+        let pairs = vec![(1, Some(',')), (2, None)];
+        let seq: Seq<i32, char> = Seq::from_pairs(pairs);
+        let raw_pairs = seq.pairs();
+        assert_eq!(raw_pairs.len(), 2);
+        assert_eq!(raw_pairs[0], (1, Some(',')));
+        assert_eq!(raw_pairs[1], (2, None));
     }
 }
