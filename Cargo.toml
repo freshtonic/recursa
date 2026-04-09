@@ -1,5 +1,5 @@
 [workspace]
-members = ["recursa-core", "recursa-derive", "."]
+members = ["recursa-core", "recursa-derive", "pg-sql", "."]
 resolver = "3"
 
 [package]

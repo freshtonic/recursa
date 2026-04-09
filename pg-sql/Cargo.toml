@@ -1,0 +1,11 @@
+[package]
+name = "pg-sql"
+version = "0.1.0"
+edition = "2024"
+description = "PostgreSQL SQL parser built with recursa"
+license = "MIT"
+publish = false
+
+[dependencies]
+recursa = { path = ".." }
+regex = "1"
