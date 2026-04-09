@@ -32,9 +32,14 @@ pg-sql/
       create_table.rs   # CREATE TABLE
       ...
     printer.rs          # AST → SQL text via Visit
+  fixtures/
+    sql/                # vendored from postgres/src/test/regress/sql/
+    expected/           # vendored from postgres/src/test/regress/expected/
   tests/
     regress.rs          # test harness
 ```
+
+The `fixtures/` directory contains vendored copies of the PostgreSQL regression test files (`.sql` inputs and `.out` expected outputs), making the test suite self-contained with no dependency on a local Postgres source checkout.
 
 ## Top-Level AST
 
