@@ -14,7 +14,7 @@ pub use input::Input;
 pub use parse::Parse;
 pub use rules::{NoRules, ParseRules};
 pub use scan::Scan;
-pub use visitor::{AsNodeKey, Break, NodeKey};
+pub use visitor::{AsNodeKey, Break, NodeKey, Visit, Visitor};
 
 #[cfg(test)]
 mod tests {
@@ -356,6 +356,92 @@ mod tests {
         let _skip: Break<String> = Break::SkipChildren;
         let _fin: Break<String> = Break::Finished;
         let _err: Break<String> = Break::Err("oops".to_string());
+    }
+
+    use std::ops::ControlFlow;
+    use crate::visitor::{Visit, Visitor};
+
+    // A simple manual Visit impl for testing
+    struct Leaf(i32);
+
+    impl AsNodeKey for Leaf {}
+
+    impl Visit for Leaf {
+        fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+            match visitor.enter(self) {
+                ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
+                other => return other,
+            }
+            visitor.exit(self)
+        }
+    }
+
+    struct Counter {
+        enter_count: usize,
+        exit_count: usize,
+    }
+
+    impl Visitor for Counter {
+        type Error = ();
+
+        fn enter<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+            self.enter_count += 1;
+            ControlFlow::Continue(())
+        }
+
+        fn exit<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+            self.exit_count += 1;
+            ControlFlow::Continue(())
+        }
+    }
+
+    #[test]
+    fn visitor_enter_exit_called() {
+        let leaf = Leaf(42);
+        let mut counter = Counter { enter_count: 0, exit_count: 0 };
+        leaf.visit(&mut counter);
+        assert_eq!(counter.enter_count, 1);
+        assert_eq!(counter.exit_count, 1);
+    }
+
+    #[test]
+    fn visitor_downcast_in_enter() {
+        struct TypeChecker { found_leaf: bool }
+        impl Visitor for TypeChecker {
+            type Error = ();
+            fn enter<N: Visit>(&mut self, node: &N) -> ControlFlow<Break<Self::Error>> {
+                if let Some(leaf) = node.downcast_ref::<Leaf>() {
+                    self.found_leaf = true;
+                    assert_eq!(leaf.0, 42);
+                }
+                ControlFlow::Continue(())
+            }
+        }
+
+        let leaf = Leaf(42);
+        let mut checker = TypeChecker { found_leaf: false };
+        leaf.visit(&mut checker);
+        assert!(checker.found_leaf);
+    }
+
+    #[test]
+    fn visitor_skip_children() {
+        // SkipChildren should not propagate up as an error
+        struct Skipper;
+        impl Visitor for Skipper {
+            type Error = ();
+            fn enter<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+                ControlFlow::Break(Break::SkipChildren)
+            }
+            fn exit<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+                ControlFlow::Continue(())
+            }
+        }
+
+        let leaf = Leaf(42);
+        let mut skipper = Skipper;
+        let result = leaf.visit(&mut skipper);
+        assert!(matches!(result, ControlFlow::Continue(())));
     }
 
     use crate::seq::Seq;
