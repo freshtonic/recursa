@@ -2,6 +2,7 @@
 
 mod parse_derive;
 mod scan_derive;
+mod visit_derive;
 
 use proc_macro::TokenStream;
 
@@ -18,6 +19,15 @@ pub fn derive_scan(input: TokenStream) -> TokenStream {
 pub fn derive_parse(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     match parse_derive::derive_parse(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+#[proc_macro_derive(Visit)]
+pub fn derive_visit(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    match visit_derive::derive_visit(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
