@@ -104,6 +104,19 @@ impl<T: Visit> Visit for Option<T> {
     }
 }
 
+// -- Leaf Visit impl for String (used by literals! macro types) --
+
+impl AsNodeKey for String {}
+impl Visit for String {
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        match visitor.enter(self) {
+            ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
+            other => return other,
+        }
+        visitor.exit(self)
+    }
+}
+
 use crate::seq::Seq;
 
 impl<T: Visit + Clone, S: Visit + Clone, Trailing: 'static, Empty: 'static> AsNodeKey

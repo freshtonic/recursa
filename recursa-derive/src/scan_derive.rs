@@ -128,34 +128,55 @@ fn derive_scan_tuple_struct(
 ) -> syn::Result<TokenStream> {
     let anchored_pattern = format!(r"\A(?:{})", pattern);
 
-    // Extract the lifetime parameter (tuple Scan structs must have one)
-    let lifetime = generics.lifetimes().next().ok_or_else(|| {
-        syn::Error::new_spanned(name, "tuple Scan structs must have a lifetime parameter")
-    })?;
-    let lt = &lifetime.lifetime;
+    if let Some(lifetime) = generics.lifetimes().next() {
+        // Borrowed variant: struct Foo<'input>(&'input str)
+        let lt = &lifetime.lifetime;
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+        let lt_tokens = quote! { #lt };
+        let parse_impl =
+            generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt_tokens);
 
-    let lt_tokens = quote! { #lt };
-    let parse_impl =
-        generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt_tokens);
+        Ok(quote! {
+            impl #impl_generics ::recursa_core::Scan<#lt> for #name #ty_generics #where_clause {
+                const PATTERN: &'static str = #pattern;
 
-    Ok(quote! {
-        impl #impl_generics ::recursa_core::Scan<#lt> for #name #ty_generics #where_clause {
-            const PATTERN: &'static str = #pattern;
+                fn regex() -> &'static ::regex::Regex {
+                    static REGEX: ::std::sync::OnceLock<::regex::Regex> = ::std::sync::OnceLock::new();
+                    REGEX.get_or_init(|| ::regex::Regex::new(#anchored_pattern).unwrap())
+                }
 
-            fn regex() -> &'static ::regex::Regex {
-                static REGEX: ::std::sync::OnceLock<::regex::Regex> = ::std::sync::OnceLock::new();
-                REGEX.get_or_init(|| ::regex::Regex::new(#anchored_pattern).unwrap())
+                fn from_match(matched: &#lt str) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+                    Ok(#name(matched))
+                }
             }
 
-            fn from_match(matched: &#lt str) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
-                Ok(#name(matched))
-            }
-        }
+            #parse_impl
+        })
+    } else {
+        // Owned variant: struct Foo(String)
+        let lt = quote! { '_ };
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+        let parse_impl =
+            generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt);
 
-        #parse_impl
-    })
+        Ok(quote! {
+            impl #impl_generics ::recursa_core::Scan<'_> for #name #ty_generics #where_clause {
+                const PATTERN: &'static str = #pattern;
+
+                fn regex() -> &'static ::regex::Regex {
+                    static REGEX: ::std::sync::OnceLock<::regex::Regex> = ::std::sync::OnceLock::new();
+                    REGEX.get_or_init(|| ::regex::Regex::new(#anchored_pattern).unwrap())
+                }
+
+                fn from_match(matched: &str) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+                    Ok(#name(matched.to_string()))
+                }
+            }
+
+            #parse_impl
+        })
+    }
 }
 
 fn derive_scan_enum(

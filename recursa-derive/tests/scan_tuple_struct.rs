@@ -49,3 +49,43 @@ fn scan_tuple_struct_peek_through_parse_trait() {
     let input = Input::new("hello world");
     assert!(<Ident as Parse>::peek(&input, &NoRules));
 }
+
+// -- Owned (String) tuple struct tests --
+
+#[derive(Scan)]
+#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+struct OwnedIdent(String);
+
+#[derive(Scan)]
+#[scan(pattern = r"[0-9]+")]
+struct OwnedInt(String);
+
+#[test]
+fn scan_owned_tuple_struct_parse_captures() {
+    let mut input = Input::new("hello world");
+    let ident = <OwnedIdent as Scan>::parse(&mut input).unwrap();
+    assert_eq!(ident.0, "hello");
+    assert_eq!(input.cursor(), 5);
+}
+
+#[test]
+fn scan_owned_tuple_struct_int() {
+    let mut input = Input::new("42 + 1");
+    let lit = <OwnedInt as Scan>::parse(&mut input).unwrap();
+    assert_eq!(lit.0, "42");
+    assert_eq!(input.cursor(), 2);
+}
+
+#[test]
+fn scan_owned_tuple_struct_is_terminal() {
+    let is_terminal = <OwnedIdent as Parse>::IS_TERMINAL;
+    assert!(is_terminal);
+}
+
+#[test]
+fn scan_owned_tuple_struct_parse_through_parse_trait() {
+    let mut input = Input::new("hello world");
+    let ident = <OwnedIdent as Parse>::parse(&mut input, &NoRules).unwrap();
+    assert_eq!(ident.0, "hello");
+    assert_eq!(input.cursor(), 5);
+}
