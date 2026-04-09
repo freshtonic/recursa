@@ -69,7 +69,7 @@ Marks AST types as traversable (named `Visitable` in sqltk):
 
 ```rust
 pub trait Visit: 'static + Sized + AsNodeKey {
-    fn accept<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>>;
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>>;
 
     fn downcast_ref<Target: Visit>(&self) -> Option<&Target> {
         (self as &dyn Any).downcast_ref::<Target>()
@@ -91,14 +91,14 @@ Visit each field in order. `SkipChildren` from `enter` skips field traversal.
 
 ```rust
 impl Visit for LetBinding {
-    fn accept<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         match visitor.enter(self) {
             ControlFlow::Continue(()) => {
-                self.let_kw.accept(visitor)?;
-                self.name.accept(visitor)?;
-                self.eq.accept(visitor)?;
-                self.value.accept(visitor)?;
-                self.semi.accept(visitor)?;
+                self.let_kw.visit(visitor)?;
+                self.name.visit(visitor)?;
+                self.eq.visit(visitor)?;
+                self.value.visit(visitor)?;
+                self.semi.visit(visitor)?;
             }
             ControlFlow::Break(Break::SkipChildren) => {}
             other => return other,
@@ -114,12 +114,12 @@ Delegate to whichever variant was parsed:
 
 ```rust
 impl Visit for Statement {
-    fn accept<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         match visitor.enter(self) {
             ControlFlow::Continue(()) => {
                 match self {
-                    Self::Let(inner) => inner.accept(visitor)?,
-                    Self::Return(inner) => inner.accept(visitor)?,
+                    Self::Let(inner) => inner.visit(visitor)?,
+                    Self::Return(inner) => inner.visit(visitor)?,
                 };
             }
             ControlFlow::Break(Break::SkipChildren) => {}
@@ -136,7 +136,7 @@ No children to visit:
 
 ```rust
 impl Visit for LetKw {
-    fn accept<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         match visitor.enter(self) {
             ControlFlow::Continue(()) => {}
             ControlFlow::Break(Break::SkipChildren) => {}
@@ -155,8 +155,8 @@ Container types are transparent — no `enter`/`exit` on the container itself, v
 
 ```rust
 impl<T: Visit> Visit for Box<T> {
-    fn accept<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        (**self).accept(visitor)
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        (**self).visit(visitor)
     }
 }
 ```
@@ -165,9 +165,9 @@ impl<T: Visit> Visit for Box<T> {
 
 ```rust
 impl<T: Visit> Visit for Option<T> {
-    fn accept<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         if let Some(inner) = self {
-            inner.accept(visitor)?;
+            inner.visit(visitor)?;
         }
         ControlFlow::Continue(())
     }
@@ -178,11 +178,11 @@ impl<T: Visit> Visit for Option<T> {
 
 ```rust
 impl<T: Visit, S: Visit, Trailing, Empty> Visit for Seq<T, S, Trailing, Empty> {
-    fn accept<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         for (element, sep) in self.pairs() {
-            element.accept(visitor)?;
+            element.visit(visitor)?;
             if let Some(sep) = sep {
-                sep.accept(visitor)?;
+                sep.visit(visitor)?;
             }
         }
         ControlFlow::Continue(())
