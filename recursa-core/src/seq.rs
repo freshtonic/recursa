@@ -158,3 +158,66 @@ where
         Ok(Self::from_pairs(pairs))
     }
 }
+
+impl<'input, T, S, R> Parse<'input> for Seq<T, S, R, OptionalTrailing, AllowEmpty>
+where
+    T: Parse<'input> + Clone,
+    S: Scan<'input> + Clone,
+    R: ParseRules,
+{
+    type Rules = R;
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        T::first_pattern()
+    }
+
+    fn peek(_input: &Input<'input, Self::Rules>) -> bool {
+        // AllowEmpty: always valid
+        true
+    }
+
+    fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError> {
+        let mut pairs = Vec::new();
+
+        // Peek for first element
+        input.consume_ignored();
+        let rebound = input.rebind::<<T as Parse>::Rules>();
+        if !<T as Parse>::peek(&rebound) {
+            return Ok(Self::from_pairs(pairs));
+        }
+
+        loop {
+            // Parse element
+            let mut rebound = input.rebind::<<T as Parse>::Rules>();
+            let element = <T as Parse>::parse(&mut rebound)?;
+            input.commit(rebound.rebind());
+
+            // Peek for separator
+            input.consume_ignored();
+            let rebound = input.rebind::<NoRules>();
+            if !<S as Scan>::peek(&rebound) {
+                // No separator -- last element without trailing
+                pairs.push((element, None));
+                break;
+            }
+
+            // Parse separator
+            let mut rebound = input.rebind::<NoRules>();
+            let sep = <S as Scan>::parse(&mut rebound)?;
+            input.commit(rebound.rebind());
+
+            // Peek for next element -- if absent, this was a trailing separator
+            input.consume_ignored();
+            let rebound = input.rebind::<<T as Parse>::Rules>();
+            if !<T as Parse>::peek(&rebound) {
+                pairs.push((element, Some(sep)));
+                break;
+            }
+
+            pairs.push((element, Some(sep)));
+        }
+
+        Ok(Self::from_pairs(pairs))
+    }
+}
