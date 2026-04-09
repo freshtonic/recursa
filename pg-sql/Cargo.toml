@@ -11,3 +11,7 @@ recursa = { path = ".." }
 recursa-core = { path = "../recursa-core" }
 recursa-derive = { path = "../recursa-derive" }
 regex = "1"
+
+[dev-dependencies]
+testcontainers = { version = "0.27", features = ["blocking"] }
+testcontainers-modules = { version = "0.15", features = ["postgres"] }

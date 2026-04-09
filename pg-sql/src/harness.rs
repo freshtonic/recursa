@@ -10,11 +10,11 @@ use recursa::Input;
 use crate::ast::parse_sql_file;
 use crate::printer::print_commands;
 
-/// Run a regression test for the given test name.
+/// Run a regression test for the given test name against a specific psql connection URI.
 ///
 /// Reads `fixtures/sql/{test_name}.sql`, parses it, prints it back to SQL,
 /// executes via `psql`, and compares against `fixtures/expected/{test_name}.out`.
-pub fn run_regression_test(test_name: &str) -> Result<(), String> {
+pub fn run_regression_test(test_name: &str, psql_uri: &str) -> Result<(), String> {
     let base = Path::new(env!("CARGO_MANIFEST_DIR"));
     let sql_path = base.join(format!("fixtures/sql/{test_name}.sql"));
     let out_path = base.join(format!("fixtures/expected/{test_name}.out"));
@@ -40,7 +40,7 @@ pub fn run_regression_test(test_name: &str) -> Result<(), String> {
     let printed = print_commands(&commands);
 
     // Execute via psql
-    let actual_output = execute_via_psql(&printed)?;
+    let actual_output = execute_via_psql(&printed, psql_uri)?;
 
     // Compare outputs (strip echoed SQL from both)
     let expected_results = strip_echoed_sql(&expected_output);
@@ -76,10 +76,10 @@ pub fn run_regression_test(test_name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Execute SQL via psql and return stdout.
-fn execute_via_psql(sql: &str) -> Result<String, String> {
+/// Execute SQL via psql and return combined stdout+stderr.
+fn execute_via_psql(sql: &str, psql_uri: &str) -> Result<String, String> {
     let output = std::process::Command::new("psql")
-        .args(["-d", "regression", "--no-psqlrc", "-f", "-"])
+        .args([psql_uri, "--no-psqlrc", "-f", "-"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -343,11 +343,35 @@ mod tests {
         assert!(!is_row_count("something else"));
     }
 
-    // --- Regression test (requires running postgres) ---
+    // --- Regression test using testcontainers ---
 
-    #[test]
-    #[ignore] // Requires running Postgres with `regression` database
-    fn regress_boolean() {
-        run_regression_test("boolean").unwrap();
+    #[cfg(test)]
+    mod regress {
+        use testcontainers::runners::SyncRunner;
+        use testcontainers_modules::postgres::Postgres;
+
+        use crate::harness::run_regression_test;
+
+        /// Start a Postgres container and return the psql connection URI.
+        /// Returns the container (must be kept alive) and the URI.
+        fn start_postgres() -> (testcontainers::Container<Postgres>, String) {
+            let container = Postgres::default()
+                .start()
+                .expect("Failed to start Postgres container");
+
+            let host = container.get_host().expect("Failed to get host");
+            let port = container
+                .get_host_port_ipv4(5432)
+                .expect("Failed to get port");
+
+            let uri = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+            (container, uri)
+        }
+
+        #[test]
+        fn regress_boolean() {
+            let (_container, uri) = start_postgres();
+            run_regression_test("boolean", &uri).unwrap();
+        }
     }
 }
