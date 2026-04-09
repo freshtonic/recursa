@@ -56,23 +56,23 @@ enum Expr<'input> {
 
 #[test]
 fn pratt_atom() {
-    let mut input = Input::<WsRules>::new("42");
-    let expr = Expr::parse(&mut input).unwrap();
+    let mut input = Input::new("42");
+    let expr = Expr::parse(&mut input, &WsRules).unwrap();
     assert!(matches!(expr, Expr::Lit(_)));
 }
 
 #[test]
 fn pratt_simple_add() {
-    let mut input = Input::<WsRules>::new("1 + 2");
-    let expr = Expr::parse(&mut input).unwrap();
+    let mut input = Input::new("1 + 2");
+    let expr = Expr::parse(&mut input, &WsRules).unwrap();
     assert!(matches!(expr, Expr::Add(_, _, _)));
 }
 
 #[test]
 fn pratt_precedence_mul_over_add() {
     // 1 + 2 * 3 should parse as 1 + (2 * 3)
-    let mut input = Input::<WsRules>::new("1 + 2 * 3");
-    let expr = Expr::parse(&mut input).unwrap();
+    let mut input = Input::new("1 + 2 * 3");
+    let expr = Expr::parse(&mut input, &WsRules).unwrap();
     match expr {
         Expr::Add(left, _, right) => {
             assert!(matches!(*left, Expr::Lit(_)));
@@ -85,8 +85,8 @@ fn pratt_precedence_mul_over_add() {
 #[test]
 fn pratt_left_associativity() {
     // 1 + 2 + 3 should parse as (1 + 2) + 3
-    let mut input = Input::<WsRules>::new("1 + 2 + 3");
-    let expr = Expr::parse(&mut input).unwrap();
+    let mut input = Input::new("1 + 2 + 3");
+    let expr = Expr::parse(&mut input, &WsRules).unwrap();
     match expr {
         Expr::Add(left, _, right) => {
             assert!(matches!(*left, Expr::Add(_, _, _)));
@@ -98,8 +98,8 @@ fn pratt_left_associativity() {
 
 #[test]
 fn pratt_prefix_neg() {
-    let mut input = Input::<WsRules>::new("-42");
-    let expr = Expr::parse(&mut input).unwrap();
+    let mut input = Input::new("-42");
+    let expr = Expr::parse(&mut input, &WsRules).unwrap();
     match expr {
         Expr::Neg(_, inner) => assert!(matches!(*inner, Expr::Lit(_))),
         _ => panic!("expected Neg"),
@@ -109,8 +109,8 @@ fn pratt_prefix_neg() {
 #[test]
 fn pratt_prefix_in_expression() {
     // -1 + 2 should parse as (-1) + 2 because prefix bp=9 > infix bp=5
-    let mut input = Input::<WsRules>::new("-1 + 2");
-    let expr = Expr::parse(&mut input).unwrap();
+    let mut input = Input::new("-1 + 2");
+    let expr = Expr::parse(&mut input, &WsRules).unwrap();
     match expr {
         Expr::Add(left, _, right) => {
             assert!(matches!(*left, Expr::Neg(_, _)));
@@ -123,8 +123,8 @@ fn pratt_prefix_in_expression() {
 #[test]
 fn pratt_right_associativity() {
     // 2 ^ 3 ^ 4 should parse as 2 ^ (3 ^ 4) because ^ is right-associative
-    let mut input = Input::<WsRules>::new("2 ^ 3 ^ 4");
-    let expr = Expr::parse(&mut input).unwrap();
+    let mut input = Input::new("2 ^ 3 ^ 4");
+    let expr = Expr::parse(&mut input, &WsRules).unwrap();
     match expr {
         Expr::Pow(left, _, right) => {
             assert!(matches!(*left, Expr::Lit(_)));
@@ -136,36 +136,36 @@ fn pratt_right_associativity() {
 
 #[test]
 fn pratt_peek_valid() {
-    let input = Input::<WsRules>::new("42");
-    assert!(Expr::peek(&input));
+    let input = Input::new("42");
+    assert!(Expr::peek(&input, &WsRules));
 
-    let input = Input::<WsRules>::new("foo");
-    assert!(Expr::peek(&input));
+    let input = Input::new("foo");
+    assert!(Expr::peek(&input, &WsRules));
 
     // Prefix operator is a valid start
-    let input = Input::<WsRules>::new("-1");
-    assert!(Expr::peek(&input));
+    let input = Input::new("-1");
+    assert!(Expr::peek(&input, &WsRules));
 }
 
 #[test]
 fn pratt_peek_invalid() {
-    let input = Input::<WsRules>::new("+ 1");
-    assert!(!Expr::peek(&input));
+    let input = Input::new("+ 1");
+    assert!(!Expr::peek(&input, &WsRules));
 
-    let input = Input::<WsRules>::new("");
-    assert!(!Expr::peek(&input));
+    let input = Input::new("");
+    assert!(!Expr::peek(&input, &WsRules));
 }
 
 #[test]
 fn pratt_error_on_empty() {
-    let mut input = Input::<WsRules>::new("");
-    let result = Expr::parse(&mut input);
+    let mut input = Input::new("");
+    let result = Expr::parse(&mut input, &WsRules);
     assert!(result.is_err());
 }
 
 #[test]
 fn pratt_is_not_terminal() {
-    assert!(!<Expr as Parse>::IS_TERMINAL);
+    const { assert!(!<Expr as Parse>::IS_TERMINAL) };
 }
 
 #[test]

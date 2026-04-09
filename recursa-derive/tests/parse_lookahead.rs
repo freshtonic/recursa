@@ -71,40 +71,40 @@ enum Declaration<'input> {
 
 #[test]
 fn lookahead_parses_fn_decl() {
-    let mut input = Input::<WsRules>::new("pub fn foo {}");
-    let decl = Declaration::parse(&mut input).unwrap();
+    let mut input = Input::new("pub fn foo {}");
+    let decl = Declaration::parse(&mut input, &WsRules).unwrap();
     assert!(matches!(decl, Declaration::Fn(_)));
 }
 
 #[test]
 fn lookahead_parses_struct_decl() {
-    let mut input = Input::<WsRules>::new("pub struct Bar {}");
-    let decl = Declaration::parse(&mut input).unwrap();
+    let mut input = Input::new("pub struct Bar {}");
+    let decl = Declaration::parse(&mut input, &WsRules).unwrap();
     assert!(matches!(decl, Declaration::Struct(_)));
 }
 
 #[test]
 fn lookahead_peek_fn() {
-    let input = Input::<WsRules>::new("pub fn foo {}");
-    assert!(Declaration::peek(&input));
+    let input = Input::new("pub fn foo {}");
+    assert!(Declaration::peek(&input, &WsRules));
 }
 
 #[test]
 fn lookahead_peek_struct() {
-    let input = Input::<WsRules>::new("pub struct Bar {}");
-    assert!(Declaration::peek(&input));
+    let input = Input::new("pub struct Bar {}");
+    assert!(Declaration::peek(&input, &WsRules));
 }
 
 #[test]
 fn lookahead_peek_fails() {
-    let input = Input::<WsRules>::new("let x = 1;");
-    assert!(!Declaration::peek(&input));
+    let input = Input::new("let x = 1;");
+    assert!(!Declaration::peek(&input, &WsRules));
 }
 
 #[test]
 fn lookahead_error_on_mismatch() {
-    let mut input = Input::<WsRules>::new("pub let x;");
-    let err = Declaration::parse(&mut input);
+    let mut input = Input::new("pub let x;");
+    let err = Declaration::parse(&mut input, &WsRules);
     assert!(err.is_err());
 }
 
@@ -139,5 +139,5 @@ fn lookahead_enum_first_pattern_is_alternation() {
 
 #[test]
 fn lookahead_enum_is_not_terminal() {
-    assert!(!<Declaration as Parse>::IS_TERMINAL);
+    const { assert!(!<Declaration as Parse>::IS_TERMINAL) };
 }

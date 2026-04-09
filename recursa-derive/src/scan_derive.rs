@@ -68,18 +68,23 @@ fn generate_parse_for_scan(
 ) -> TokenStream {
     quote! {
         impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
-            type Rules = ::recursa_core::NoRules;
             const IS_TERMINAL: bool = true;
 
             fn first_pattern() -> &'static str {
                 <Self as ::recursa_core::Scan<#lt>>::PATTERN
             }
 
-            fn peek(input: &::recursa_core::Input<#lt, ::recursa_core::NoRules>) -> bool {
+            fn peek<R: ::recursa_core::ParseRules>(
+                input: &::recursa_core::Input<#lt>,
+                _rules: &R,
+            ) -> bool {
                 <Self as ::recursa_core::Scan<#lt>>::peek(input)
             }
 
-            fn parse(input: &mut ::recursa_core::Input<#lt, ::recursa_core::NoRules>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+            fn parse<R: ::recursa_core::ParseRules>(
+                input: &mut ::recursa_core::Input<#lt>,
+                _rules: &R,
+            ) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
                 <Self as ::recursa_core::Scan<#lt>>::parse(input)
             }
         }
@@ -247,11 +252,11 @@ fn derive_scan_enum(
                 unimplemented!("use parse() for enum Scan types")
             }
 
-            fn peek(input: &::recursa_core::Input<#lt, ::recursa_core::NoRules>) -> bool {
+            fn peek(input: &::recursa_core::Input<#lt>) -> bool {
                 Self::regex().is_match(input.remaining())
             }
 
-            fn parse(input: &mut ::recursa_core::Input<#lt, ::recursa_core::NoRules>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+            fn parse(input: &mut ::recursa_core::Input<#lt>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
                 let captures = match Self::regex().captures(input.remaining()) {
                     Some(c) => c,
                     None => {

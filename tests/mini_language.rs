@@ -73,8 +73,8 @@ struct LetStmt<'input> {
 
 #[test]
 fn parse_let_with_expression() {
-    let mut input = Input::<Lang>::new("let x = 1 + 2 * 3;");
-    let stmt = LetStmt::parse(&mut input).unwrap();
+    let mut input = Input::new("let x = 1 + 2 * 3;");
+    let stmt = LetStmt::parse(&mut input, &Lang).unwrap();
     assert_eq!(stmt.name.0, "x");
     // value should be Add(Lit(1), Mul(Lit(2), Lit(3)))
     match stmt.value {
@@ -90,8 +90,8 @@ fn parse_let_with_expression() {
 #[test]
 fn parse_error_has_span() {
     use recursa::miette::Diagnostic;
-    let mut input = Input::<Lang>::new("let 123 = 1;");
-    let err = LetStmt::parse(&mut input).unwrap_err();
+    let mut input = Input::new("let 123 = 1;");
+    let err = LetStmt::parse(&mut input, &Lang).unwrap_err();
     // Error should have labels (spans)
     assert!(err.labels().is_some());
 }

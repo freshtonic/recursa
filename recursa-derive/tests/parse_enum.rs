@@ -59,50 +59,50 @@ enum Statement<'input> {
 
 #[test]
 fn parse_enum_let_variant() {
-    let mut input = Input::<WsRules>::new("let x = 42;");
-    let stmt = Statement::parse(&mut input).unwrap();
+    let mut input = Input::new("let x = 42;");
+    let stmt = Statement::parse(&mut input, &WsRules).unwrap();
     assert!(matches!(stmt, Statement::Let(_)));
 }
 
 #[test]
 fn parse_enum_return_variant() {
-    let mut input = Input::<WsRules>::new("return 42;");
-    let stmt = Statement::parse(&mut input).unwrap();
+    let mut input = Input::new("return 42;");
+    let stmt = Statement::parse(&mut input, &WsRules).unwrap();
     assert!(matches!(stmt, Statement::Return(_)));
 }
 
 #[test]
 fn parse_enum_peek() {
-    let input = Input::<WsRules>::new("let x = 42;");
-    assert!(Statement::peek(&input));
+    let input = Input::new("let x = 42;");
+    assert!(Statement::peek(&input, &WsRules));
 
-    let input2 = Input::<WsRules>::new("return 42;");
-    assert!(Statement::peek(&input2));
+    let input2 = Input::new("return 42;");
+    assert!(Statement::peek(&input2, &WsRules));
 }
 
 #[test]
 fn parse_enum_peek_fails() {
-    let input = Input::<WsRules>::new("if true {}");
-    assert!(!Statement::peek(&input));
+    let input = Input::new("if true {}");
+    assert!(!Statement::peek(&input, &WsRules));
 }
 
 #[test]
 fn parse_enum_with_leading_whitespace() {
-    let mut input = Input::<WsRules>::new("  let x = 42;");
-    let stmt = Statement::parse(&mut input).unwrap();
+    let mut input = Input::new("  let x = 42;");
+    let stmt = Statement::parse(&mut input, &WsRules).unwrap();
     assert!(matches!(stmt, Statement::Let(_)));
 }
 
 #[test]
 fn parse_enum_peek_with_leading_whitespace() {
-    let input = Input::<WsRules>::new("  return 42;");
-    assert!(Statement::peek(&input));
+    let input = Input::new("  return 42;");
+    assert!(Statement::peek(&input, &WsRules));
 }
 
 #[test]
 fn parse_enum_error_reports_all_variants() {
-    let mut input = Input::<WsRules>::new("if true {}");
-    let result = Statement::parse(&mut input);
+    let mut input = Input::new("if true {}");
+    let result = Statement::parse(&mut input, &WsRules);
     match result {
         Err(err) => {
             let msg = format!("{}", err);

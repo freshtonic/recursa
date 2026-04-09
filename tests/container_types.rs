@@ -45,7 +45,7 @@ impl ParseRules for Lang {
 #[parse(rules = Lang)]
 struct ArrayLit<'input> {
     lbracket: LBracket,
-    elements: Seq<IntLit<'input>, Comma, Lang, OptionalTrailing>,
+    elements: Seq<IntLit<'input>, Comma, OptionalTrailing>,
     rbracket: RBracket,
 }
 
@@ -62,8 +62,8 @@ struct LetStmt<'input> {
 
 #[test]
 fn integration_array_with_trailing_comma() {
-    let mut input = Input::<Lang>::new("let x = [1, 2, 3,];");
-    let stmt = LetStmt::parse(&mut input).unwrap();
+    let mut input = Input::new("let x = [1, 2, 3,];");
+    let stmt = LetStmt::parse(&mut input, &Lang).unwrap();
     assert_eq!(stmt.name.0, "x");
     assert_eq!(stmt.value.elements.len(), 3);
     assert!(input.is_empty());
@@ -71,15 +71,15 @@ fn integration_array_with_trailing_comma() {
 
 #[test]
 fn integration_array_without_trailing_comma() {
-    let mut input = Input::<Lang>::new("let x = [1, 2, 3];");
-    let stmt = LetStmt::parse(&mut input).unwrap();
+    let mut input = Input::new("let x = [1, 2, 3];");
+    let stmt = LetStmt::parse(&mut input, &Lang).unwrap();
     assert_eq!(stmt.value.elements.len(), 3);
 }
 
 #[test]
 fn integration_empty_array() {
-    let mut input = Input::<Lang>::new("let x = [];");
-    let stmt = LetStmt::parse(&mut input).unwrap();
+    let mut input = Input::new("let x = [];");
+    let stmt = LetStmt::parse(&mut input, &Lang).unwrap();
     assert!(stmt.value.elements.is_empty());
 }
 
@@ -88,14 +88,14 @@ fn integration_empty_array() {
 #[parse(rules = Lang)]
 struct NonEmptyArrayLit<'input> {
     lbracket: LBracket,
-    elements: Seq<IntLit<'input>, Comma, Lang, OptionalTrailing, NonEmpty>,
+    elements: Seq<IntLit<'input>, Comma, OptionalTrailing, NonEmpty>,
     rbracket: RBracket,
 }
 
 #[test]
 fn integration_non_empty_array_parses() {
-    let mut input = Input::<Lang>::new("[1, 2, 3]");
-    let arr = NonEmptyArrayLit::parse(&mut input).unwrap();
+    let mut input = Input::new("[1, 2, 3]");
+    let arr = NonEmptyArrayLit::parse(&mut input, &Lang).unwrap();
     assert_eq!(arr.elements.len(), 3);
     // Deref to slice works
     let slice: &[IntLit] = &arr.elements;
@@ -104,8 +104,8 @@ fn integration_non_empty_array_parses() {
 
 #[test]
 fn integration_non_empty_array_rejects_empty() {
-    let mut input = Input::<Lang>::new("[]");
-    let result = NonEmptyArrayLit::parse(&mut input);
+    let mut input = Input::new("[]");
+    let result = NonEmptyArrayLit::parse(&mut input, &Lang);
     assert!(result.is_err());
 }
 
@@ -119,8 +119,8 @@ struct MaybeTerminated<'input> {
 
 #[test]
 fn integration_option_some() {
-    let mut input = Input::<Lang>::new("foo;");
-    let mt = MaybeTerminated::parse(&mut input).unwrap();
+    let mut input = Input::new("foo;");
+    let mt = MaybeTerminated::parse(&mut input, &Lang).unwrap();
     assert_eq!(mt.name.0, "foo");
     assert!(mt.semi.is_some());
     assert!(input.is_empty());
@@ -128,8 +128,8 @@ fn integration_option_some() {
 
 #[test]
 fn integration_option_none() {
-    let mut input = Input::<Lang>::new("foo");
-    let mt = MaybeTerminated::parse(&mut input).unwrap();
+    let mut input = Input::new("foo");
+    let mt = MaybeTerminated::parse(&mut input, &Lang).unwrap();
     assert_eq!(mt.name.0, "foo");
     assert!(mt.semi.is_none());
     assert!(input.is_empty());

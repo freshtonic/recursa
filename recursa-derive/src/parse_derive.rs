@@ -114,26 +114,19 @@ fn derive_parse_struct(
         body
     };
 
-    // Generate the parse body: consume_ignored + rebind + parse each field
+    // Generate the parse body: consume_ignored + parse each field
     let parse_fields = field_names
         .iter()
         .zip(field_types.iter())
         .map(|(name, ty)| {
             quote! {
-                fork.consume_ignored();
-                let #name = {
-                    let mut rebound = fork.rebind::<<#ty as ::recursa_core::Parse>::Rules>();
-                    let result = <#ty as ::recursa_core::Parse>::parse(&mut rebound)?;
-                    fork.commit(rebound.rebind());
-                    result
-                };
+                fork.consume_ignored(<#rules_type as ::recursa_core::ParseRules>::IGNORE);
+                let #name = <#ty as ::recursa_core::Parse>::parse(&mut fork, &#rules_type)?;
             }
         });
 
     Ok(quote! {
         impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
-            type Rules = #rules_type;
-
             const IS_TERMINAL: bool = false;
 
             fn first_pattern() -> &'static str {
@@ -151,14 +144,13 @@ fn derive_parse_struct(
                 })
             }
 
-            fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
+            fn peek<R: ::recursa_core::ParseRules>(input: &::recursa_core::Input<#lt>, _rules: &R) -> bool {
                 let mut peek_input = input.fork();
-                peek_input.consume_ignored();
-                let rebound = peek_input.rebind::<<#first_field_type as ::recursa_core::Parse>::Rules>();
-                <#first_field_type as ::recursa_core::Parse>::peek(&rebound)
+                peek_input.consume_ignored(<#rules_type as ::recursa_core::ParseRules>::IGNORE);
+                <#first_field_type as ::recursa_core::Parse>::peek(&peek_input, &#rules_type)
             }
 
-            fn parse(input: &mut ::recursa_core::Input<#lt, Self::Rules>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+            fn parse<R: ::recursa_core::ParseRules>(input: &mut ::recursa_core::Input<#lt>, _rules: &R) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
                 let mut fork = input.fork();
                 #(#parse_fields)*
                 input.commit(fork);
@@ -239,9 +231,8 @@ fn derive_parse_enum(
             let i_lit = syn::Index::from(i);
             quote! {
                 ::std::option::Option::Some(#i_lit) => {
-                    let mut rebound = fork.rebind::<<#ty as ::recursa_core::Parse>::Rules>();
-                    let inner = <#ty as ::recursa_core::Parse>::parse(&mut rebound)?;
-                    input.commit(rebound.rebind());
+                    let inner = <#ty as ::recursa_core::Parse>::parse(&mut fork, &#rules_type)?;
+                    input.commit(fork);
                     ::std::result::Result::Ok(#name::#vname(inner))
                 }
             }
@@ -269,8 +260,6 @@ fn derive_parse_enum(
             }
 
             impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
-                type Rules = #rules_type;
-
                 const IS_TERMINAL: bool = false;
 
                 fn first_pattern() -> &'static str {
@@ -285,16 +274,16 @@ fn derive_parse_enum(
                     })
                 }
 
-                fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
+                fn peek<R: ::recursa_core::ParseRules>(input: &::recursa_core::Input<#lt>, _rules: &R) -> bool {
                     let mut peek_input = input.fork();
-                    peek_input.consume_ignored();
+                    peek_input.consume_ignored(<#rules_type as ::recursa_core::ParseRules>::IGNORE);
                     peek_regex().is_match(peek_input.remaining())
                 }
 
-                fn parse(input: &mut ::recursa_core::Input<#lt, Self::Rules>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+                fn parse<R: ::recursa_core::ParseRules>(input: &mut ::recursa_core::Input<#lt>, _rules: &R) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
                     let regex = peek_regex();
                     let mut fork = input.fork();
-                    fork.consume_ignored();
+                    fork.consume_ignored(<#rules_type as ::recursa_core::ParseRules>::IGNORE);
 
                     let captures = match regex.captures(fork.remaining()) {
                         ::std::option::Option::Some(c) => c,
@@ -408,11 +397,8 @@ fn derive_parse_pratt_enum(
     // Generate atom peek arms (for the top-level peek)
     let atom_peek_arms = atom_variants.iter().map(|(_vname, ty)| {
         quote! {
-            {
-                let rebound = input.rebind::<<#ty as ::recursa_core::Parse>::Rules>();
-                if <#ty as ::recursa_core::Parse>::peek(&rebound) {
-                    return true;
-                }
+            if <#ty as ::recursa_core::Parse>::peek(input, &#rules_type) {
+                return true;
             }
         }
     });
@@ -420,14 +406,9 @@ fn derive_parse_pratt_enum(
     // Generate atom parse arms (for the nud position) -- break out of 'nud block
     let atom_parse_arms = atom_variants.iter().map(|(vname, ty)| {
         quote! {
-            {
-                let rebound = input.rebind::<<#ty as ::recursa_core::Parse>::Rules>();
-                if <#ty as ::recursa_core::Parse>::peek(&rebound) {
-                    let mut rebound = input.rebind::<<#ty as ::recursa_core::Parse>::Rules>();
-                    let inner = <#ty as ::recursa_core::Parse>::parse(&mut rebound)?;
-                    input.commit(rebound.rebind());
-                    break 'nud #name::#vname(inner);
-                }
+            if <#ty as ::recursa_core::Parse>::peek(input, &#rules_type) {
+                let inner = <#ty as ::recursa_core::Parse>::parse(input, &#rules_type)?;
+                break 'nud #name::#vname(inner);
             }
         }
     });
@@ -435,15 +416,10 @@ fn derive_parse_pratt_enum(
     // Generate prefix parse arms (for the nud position) -- break out of 'nud block
     let prefix_parse_arms = prefix_variants.iter().map(|(vname, op_ty, bp)| {
         quote! {
-            {
-                let rebound = input.rebind::<<#op_ty as ::recursa_core::Parse>::Rules>();
-                if <#op_ty as ::recursa_core::Parse>::peek(&rebound) {
-                    let mut rebound = input.rebind::<<#op_ty as ::recursa_core::Parse>::Rules>();
-                    let op = <#op_ty as ::recursa_core::Parse>::parse(&mut rebound)?;
-                    input.commit(rebound.rebind());
-                    let rhs = parse_expr(input, #bp)?;
-                    break 'nud #name::#vname(op, Box::new(rhs));
-                }
+            if <#op_ty as ::recursa_core::Parse>::peek(input, &#rules_type) {
+                let op = <#op_ty as ::recursa_core::Parse>::parse(input, &#rules_type)?;
+                let rhs = parse_expr(input, #bp)?;
+                break 'nud #name::#vname(op, Box::new(rhs));
             }
         }
     });
@@ -451,11 +427,8 @@ fn derive_parse_pratt_enum(
     // Generate prefix peek arms (for the top-level peek)
     let prefix_peek_arms = prefix_variants.iter().map(|(_vname, op_ty, _bp)| {
         quote! {
-            {
-                let rebound = input.rebind::<<#op_ty as ::recursa_core::Parse>::Rules>();
-                if <#op_ty as ::recursa_core::Parse>::peek(&rebound) {
-                    return true;
-                }
+            if <#op_ty as ::recursa_core::Parse>::peek(input, &#rules_type) {
+                return true;
             }
         }
     });
@@ -465,12 +438,9 @@ fn derive_parse_pratt_enum(
         let right_bp: u32 = if *right_assoc { *bp } else { bp + 1 };
         quote! {
             {
-                input.consume_ignored();
-                let rebound = input.rebind::<<#op_ty as ::recursa_core::Parse>::Rules>();
-                if <#op_ty as ::recursa_core::Parse>::peek(&rebound) && #bp >= min_bp {
-                    let mut rebound = input.rebind::<<#op_ty as ::recursa_core::Parse>::Rules>();
-                    let op = <#op_ty as ::recursa_core::Parse>::parse(&mut rebound)?;
-                    input.commit(rebound.rebind());
+                input.consume_ignored(<#rules_type as ::recursa_core::ParseRules>::IGNORE);
+                if <#op_ty as ::recursa_core::Parse>::peek(input, &#rules_type) && #bp >= min_bp {
+                    let op = <#op_ty as ::recursa_core::Parse>::parse(input, &#rules_type)?;
                     let rhs = parse_expr(input, #right_bp)?;
                     lhs = #name::#vname(Box::new(lhs), op, Box::new(rhs));
                     continue;
@@ -482,10 +452,10 @@ fn derive_parse_pratt_enum(
     Ok(quote! {
         const _: () = {
             fn parse_expr<#lt>(
-                input: &mut ::recursa_core::Input<#lt, #rules_type>,
+                input: &mut ::recursa_core::Input<#lt>,
                 min_bp: u32,
             ) -> ::std::result::Result<#name #ty_generics, ::recursa_core::ParseError> {
-                input.consume_ignored();
+                input.consume_ignored(<#rules_type as ::recursa_core::ParseRules>::IGNORE);
 
                 // Parse prefix or atom (nud position)
                 let mut lhs = 'nud: {
@@ -512,8 +482,6 @@ fn derive_parse_pratt_enum(
             }
 
             impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
-                type Rules = #rules_type;
-
                 const IS_TERMINAL: bool = false;
 
                 fn first_pattern() -> &'static str {
@@ -529,13 +497,13 @@ fn derive_parse_pratt_enum(
                     })
                 }
 
-                fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
+                fn peek<R: ::recursa_core::ParseRules>(input: &::recursa_core::Input<#lt>, _rules: &R) -> bool {
                     #(#atom_peek_arms)*
                     #(#prefix_peek_arms)*
                     false
                 }
 
-                fn parse(input: &mut ::recursa_core::Input<#lt, Self::Rules>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+                fn parse<R: ::recursa_core::ParseRules>(input: &mut ::recursa_core::Input<#lt>, _rules: &R) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
                     parse_expr(input, 0)
                 }
             }

@@ -29,14 +29,14 @@ impl ParseRules for WsRules {
 #[parse(rules = WsRules)]
 struct ArgList<'input> {
     lparen: LParen,
-    args: Seq<Ident<'input>, Comma, WsRules>,
+    args: Seq<Ident<'input>, Comma>,
     rparen: RParen,
 }
 
 #[test]
 fn seq_parse_no_trailing_allow_empty_with_elements() {
-    let mut input = Input::<WsRules>::new("(a, b, c)");
-    let arglist = ArgList::parse(&mut input).unwrap();
+    let mut input = Input::new("(a, b, c)");
+    let arglist = ArgList::parse(&mut input, &WsRules).unwrap();
     let args: &[Ident] = &arglist.args;
     assert_eq!(args.len(), 3);
     assert_eq!(args[0].0, "a");
@@ -46,15 +46,15 @@ fn seq_parse_no_trailing_allow_empty_with_elements() {
 
 #[test]
 fn seq_parse_no_trailing_allow_empty_empty() {
-    let mut input = Input::<WsRules>::new("()");
-    let arglist = ArgList::parse(&mut input).unwrap();
+    let mut input = Input::new("()");
+    let arglist = ArgList::parse(&mut input, &WsRules).unwrap();
     assert!(arglist.args.is_empty());
 }
 
 #[test]
 fn seq_parse_no_trailing_single_element() {
-    let mut input = Input::<WsRules>::new("(x)");
-    let arglist = ArgList::parse(&mut input).unwrap();
+    let mut input = Input::new("(x)");
+    let arglist = ArgList::parse(&mut input, &WsRules).unwrap();
     let args: &[Ident] = &arglist.args;
     assert_eq!(args.len(), 1);
     assert_eq!(args[0].0, "x");
@@ -66,21 +66,21 @@ fn seq_parse_no_trailing_single_element() {
 #[parse(rules = WsRules)]
 struct ArrayLit<'input> {
     lparen: LParen,
-    elements: Seq<Ident<'input>, Comma, WsRules, OptionalTrailing>,
+    elements: Seq<Ident<'input>, Comma, OptionalTrailing>,
     rparen: RParen,
 }
 
 #[test]
 fn seq_optional_trailing_no_trailing() {
-    let mut input = Input::<WsRules>::new("(a, b, c)");
-    let arr = ArrayLit::parse(&mut input).unwrap();
+    let mut input = Input::new("(a, b, c)");
+    let arr = ArrayLit::parse(&mut input, &WsRules).unwrap();
     assert_eq!(arr.elements.len(), 3);
 }
 
 #[test]
 fn seq_optional_trailing_with_trailing() {
-    let mut input = Input::<WsRules>::new("(a, b, c,)");
-    let arr = ArrayLit::parse(&mut input).unwrap();
+    let mut input = Input::new("(a, b, c,)");
+    let arr = ArrayLit::parse(&mut input, &WsRules).unwrap();
     assert_eq!(arr.elements.len(), 3);
     // Last element should have Some separator (trailing comma)
     let pairs = arr.elements.pairs();
@@ -89,8 +89,8 @@ fn seq_optional_trailing_with_trailing() {
 
 #[test]
 fn seq_optional_trailing_empty() {
-    let mut input = Input::<WsRules>::new("()");
-    let arr = ArrayLit::parse(&mut input).unwrap();
+    let mut input = Input::new("()");
+    let arr = ArrayLit::parse(&mut input, &WsRules).unwrap();
     assert!(arr.elements.is_empty());
 }
 
@@ -104,14 +104,14 @@ struct Semi;
 #[parse(rules = WsRules)]
 struct StmtBlock<'input> {
     lparen: LParen,
-    stmts: Seq<Ident<'input>, Semi, WsRules, RequiredTrailing>,
+    stmts: Seq<Ident<'input>, Semi, RequiredTrailing>,
     rparen: RParen,
 }
 
 #[test]
 fn seq_required_trailing_with_elements() {
-    let mut input = Input::<WsRules>::new("(a; b; c;)");
-    let block = StmtBlock::parse(&mut input).unwrap();
+    let mut input = Input::new("(a; b; c;)");
+    let block = StmtBlock::parse(&mut input, &WsRules).unwrap();
     assert_eq!(block.stmts.len(), 3);
     // All elements should have Some separator
     for (_, sep) in block.stmts.pairs() {
@@ -121,15 +121,15 @@ fn seq_required_trailing_with_elements() {
 
 #[test]
 fn seq_required_trailing_empty() {
-    let mut input = Input::<WsRules>::new("()");
-    let block = StmtBlock::parse(&mut input).unwrap();
+    let mut input = Input::new("()");
+    let block = StmtBlock::parse(&mut input, &WsRules).unwrap();
     assert!(block.stmts.is_empty());
 }
 
 #[test]
 fn seq_required_trailing_error_on_missing_sep() {
-    let mut input = Input::<WsRules>::new("(a; b)");
-    let result = StmtBlock::parse(&mut input);
+    let mut input = Input::new("(a; b)");
+    let result = StmtBlock::parse(&mut input, &WsRules);
     // "b" has no trailing semicolon -- should error
     assert!(result.is_err());
 }
@@ -140,35 +140,35 @@ fn seq_required_trailing_error_on_missing_sep() {
 #[parse(rules = WsRules)]
 struct NonEmptyArgList<'input> {
     lparen: LParen,
-    args: Seq<Ident<'input>, Comma, WsRules, recursa_core::seq::NoTrailing, NonEmpty>,
+    args: Seq<Ident<'input>, Comma, recursa_core::seq::NoTrailing, NonEmpty>,
     rparen: RParen,
 }
 
 #[test]
 fn seq_non_empty_no_trailing_parses_elements() {
-    let mut input = Input::<WsRules>::new("(a, b)");
-    let arglist = NonEmptyArgList::parse(&mut input).unwrap();
+    let mut input = Input::new("(a, b)");
+    let arglist = NonEmptyArgList::parse(&mut input, &WsRules).unwrap();
     assert_eq!(arglist.args.len(), 2);
 }
 
 #[test]
 fn seq_non_empty_no_trailing_single_element() {
-    let mut input = Input::<WsRules>::new("(a)");
-    let arglist = NonEmptyArgList::parse(&mut input).unwrap();
+    let mut input = Input::new("(a)");
+    let arglist = NonEmptyArgList::parse(&mut input, &WsRules).unwrap();
     assert_eq!(arglist.args.len(), 1);
 }
 
 #[test]
 fn seq_non_empty_no_trailing_errors_when_empty() {
-    let mut input = Input::<WsRules>::new("()");
-    let result = NonEmptyArgList::parse(&mut input);
+    let mut input = Input::new("()");
+    let result = NonEmptyArgList::parse(&mut input, &WsRules);
     assert!(result.is_err());
 }
 
 #[test]
 fn seq_non_empty_no_trailing_deref_to_slice() {
-    let mut input = Input::<WsRules>::new("(a, b, c)");
-    let arglist = NonEmptyArgList::parse(&mut input).unwrap();
+    let mut input = Input::new("(a, b, c)");
+    let arglist = NonEmptyArgList::parse(&mut input, &WsRules).unwrap();
     let slice: &[Ident] = &arglist.args;
     assert_eq!(slice.len(), 3);
     assert_eq!(slice[0].0, "a");
@@ -180,21 +180,21 @@ fn seq_non_empty_no_trailing_deref_to_slice() {
 #[parse(rules = WsRules)]
 struct NonEmptyArray<'input> {
     lparen: LParen,
-    elements: Seq<Ident<'input>, Comma, WsRules, OptionalTrailing, NonEmpty>,
+    elements: Seq<Ident<'input>, Comma, OptionalTrailing, NonEmpty>,
     rparen: RParen,
 }
 
 #[test]
 fn seq_non_empty_optional_trailing_no_trailing() {
-    let mut input = Input::<WsRules>::new("(a, b, c)");
-    let arr = NonEmptyArray::parse(&mut input).unwrap();
+    let mut input = Input::new("(a, b, c)");
+    let arr = NonEmptyArray::parse(&mut input, &WsRules).unwrap();
     assert_eq!(arr.elements.len(), 3);
 }
 
 #[test]
 fn seq_non_empty_optional_trailing_with_trailing() {
-    let mut input = Input::<WsRules>::new("(a, b, c,)");
-    let arr = NonEmptyArray::parse(&mut input).unwrap();
+    let mut input = Input::new("(a, b, c,)");
+    let arr = NonEmptyArray::parse(&mut input, &WsRules).unwrap();
     assert_eq!(arr.elements.len(), 3);
     let pairs = arr.elements.pairs();
     assert!(pairs[2].1.is_some());
@@ -202,8 +202,8 @@ fn seq_non_empty_optional_trailing_with_trailing() {
 
 #[test]
 fn seq_non_empty_optional_trailing_errors_when_empty() {
-    let mut input = Input::<WsRules>::new("()");
-    let result = NonEmptyArray::parse(&mut input);
+    let mut input = Input::new("()");
+    let result = NonEmptyArray::parse(&mut input, &WsRules);
     assert!(result.is_err());
 }
 
@@ -213,14 +213,14 @@ fn seq_non_empty_optional_trailing_errors_when_empty() {
 #[parse(rules = WsRules)]
 struct NonEmptyStmtBlock<'input> {
     lparen: LParen,
-    stmts: Seq<Ident<'input>, Semi, WsRules, RequiredTrailing, NonEmpty>,
+    stmts: Seq<Ident<'input>, Semi, RequiredTrailing, NonEmpty>,
     rparen: RParen,
 }
 
 #[test]
 fn seq_non_empty_required_trailing_with_elements() {
-    let mut input = Input::<WsRules>::new("(a; b; c;)");
-    let block = NonEmptyStmtBlock::parse(&mut input).unwrap();
+    let mut input = Input::new("(a; b; c;)");
+    let block = NonEmptyStmtBlock::parse(&mut input, &WsRules).unwrap();
     assert_eq!(block.stmts.len(), 3);
     for (_, sep) in block.stmts.pairs() {
         assert!(sep.is_some());
@@ -229,14 +229,14 @@ fn seq_non_empty_required_trailing_with_elements() {
 
 #[test]
 fn seq_non_empty_required_trailing_errors_when_empty() {
-    let mut input = Input::<WsRules>::new("()");
-    let result = NonEmptyStmtBlock::parse(&mut input);
+    let mut input = Input::new("()");
+    let result = NonEmptyStmtBlock::parse(&mut input, &WsRules);
     assert!(result.is_err());
 }
 
 #[test]
 fn seq_non_empty_required_trailing_error_on_missing_sep() {
-    let mut input = Input::<WsRules>::new("(a; b)");
-    let result = NonEmptyStmtBlock::parse(&mut input);
+    let mut input = Input::new("(a; b)");
+    let result = NonEmptyStmtBlock::parse(&mut input, &WsRules);
     assert!(result.is_err());
 }

@@ -1,4 +1,4 @@
-use recursa_core::{Input, NoRules, Scan};
+use recursa_core::{Input, Scan};
 use recursa_derive::Scan;
 
 #[derive(Scan, Debug)]
@@ -22,24 +22,24 @@ enum Keyword {
 
 #[test]
 fn scan_enum_let() {
-    let mut input = Input::<NoRules>::new("let x");
-    let kw = Keyword::parse(&mut input).unwrap();
+    let mut input = Input::new("let x");
+    let kw = <Keyword as Scan>::parse(&mut input).unwrap();
     assert!(matches!(kw, Keyword::Let(_)));
     assert_eq!(input.cursor(), 3);
 }
 
 #[test]
 fn scan_enum_if() {
-    let mut input = Input::<NoRules>::new("if true");
-    let kw = Keyword::parse(&mut input).unwrap();
+    let mut input = Input::new("if true");
+    let kw = <Keyword as Scan>::parse(&mut input).unwrap();
     assert!(matches!(kw, Keyword::If(_)));
     assert_eq!(input.cursor(), 2);
 }
 
 #[test]
 fn scan_enum_while() {
-    let mut input = Input::<NoRules>::new("while true");
-    let kw = Keyword::parse(&mut input).unwrap();
+    let mut input = Input::new("while true");
+    let kw = <Keyword as Scan>::parse(&mut input).unwrap();
     assert!(matches!(kw, Keyword::While(_)));
     assert_eq!(input.cursor(), 5);
 }
@@ -62,27 +62,27 @@ fn scan_enum_longest_match() {
         Num(Num<'input>),
     }
 
-    let mut input = Input::<NoRules>::new("hello123");
-    let tok = Token::parse(&mut input).unwrap();
+    let mut input = Input::new("hello123");
+    let tok = <Token as Scan>::parse(&mut input).unwrap();
     assert!(matches!(tok, Token::Word(w) if w.0 == "hello"));
 }
 
 #[test]
 fn scan_enum_peek() {
-    let input = Input::<NoRules>::new("let x");
-    assert!(Keyword::peek(&input));
+    let input = Input::new("let x");
+    assert!(<Keyword as Scan>::peek(&input));
 }
 
 #[test]
 fn scan_enum_peek_fails() {
-    let input = Input::<NoRules>::new("123");
-    assert!(!Keyword::peek(&input));
+    let input = Input::new("123");
+    assert!(!<Keyword as Scan>::peek(&input));
 }
 
 #[test]
 fn scan_enum_no_match_returns_error() {
-    let mut input = Input::<NoRules>::new("123");
-    let result = Keyword::parse(&mut input);
+    let mut input = Input::new("123");
+    let result = <Keyword as Scan>::parse(&mut input);
     assert!(result.is_err());
 }
 
@@ -103,7 +103,7 @@ fn scan_enum_declaration_order_tiebreaker() {
         Second(AbAlt),
     }
 
-    let mut input = Input::<NoRules>::new("ab");
-    let tok = AbToken::parse(&mut input).unwrap();
+    let mut input = Input::new("ab");
+    let tok = <AbToken as Scan>::parse(&mut input).unwrap();
     assert!(matches!(tok, AbToken::First(_)));
 }

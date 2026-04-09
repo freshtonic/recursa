@@ -7,7 +7,7 @@ use crate::input::Input;
 ///
 /// Each token type implements `Scan` with a regex pattern and a constructor.
 /// Types that implement `Scan` should also implement `Parse` (via `#[derive(Scan)]`
-/// which generates both impls, or manually using the [`impl_parse_for_scan!`] macro).
+/// which generates both impls, or manually using the `impl_parse_for_scan!` macro).
 pub trait Scan<'input>: Sized {
     /// The regex pattern that matches this token (without `\A` anchor -- added automatically).
     const PATTERN: &'static str;

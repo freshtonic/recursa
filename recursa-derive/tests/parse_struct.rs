@@ -40,8 +40,8 @@ struct LetBinding<'input> {
 
 #[test]
 fn parse_struct_sequence() {
-    let mut input = Input::<WsRules>::new("let x = 42;");
-    let binding = LetBinding::parse(&mut input).unwrap();
+    let mut input = Input::new("let x = 42;");
+    let binding = LetBinding::parse(&mut input, &WsRules).unwrap();
     assert_eq!(binding.name.0, "x");
     assert_eq!(binding.value.0, "42");
     assert_eq!(input.cursor(), 11);
@@ -49,20 +49,20 @@ fn parse_struct_sequence() {
 
 #[test]
 fn parse_struct_peek() {
-    let input = Input::<WsRules>::new("let x = 42;");
-    assert!(LetBinding::peek(&input));
+    let input = Input::new("let x = 42;");
+    assert!(LetBinding::peek(&input, &WsRules));
 }
 
 #[test]
 fn parse_struct_peek_fails() {
-    let input = Input::<WsRules>::new("var x = 42;");
-    assert!(!LetBinding::peek(&input));
+    let input = Input::new("var x = 42;");
+    assert!(!LetBinding::peek(&input, &WsRules));
 }
 
 #[test]
 fn parse_struct_error_on_bad_field() {
-    let mut input = Input::<WsRules>::new("let 123 = 42;");
-    let err = LetBinding::parse(&mut input);
+    let mut input = Input::new("let 123 = 42;");
+    let err = LetBinding::parse(&mut input, &WsRules);
     assert!(err.is_err());
     // Cursor should NOT have advanced (fork was not committed)
     assert_eq!(input.cursor(), 0);
@@ -70,7 +70,7 @@ fn parse_struct_error_on_bad_field() {
 
 #[test]
 fn parse_struct_is_not_terminal() {
-    assert!(!<LetBinding as Parse>::IS_TERMINAL);
+    const { assert!(!<LetBinding as Parse>::IS_TERMINAL) };
 }
 
 #[test]
