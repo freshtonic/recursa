@@ -313,7 +313,6 @@ mod tests {
         );
     }
 
-    use std::any::TypeId;
     use crate::visitor::{Break, NodeKey};
 
     #[test]
@@ -399,7 +398,7 @@ mod tests {
     fn visitor_enter_exit_called() {
         let leaf = Leaf(42);
         let mut counter = Counter { enter_count: 0, exit_count: 0 };
-        leaf.visit(&mut counter);
+        let _ = leaf.visit(&mut counter);
         assert_eq!(counter.enter_count, 1);
         assert_eq!(counter.exit_count, 1);
     }
@@ -420,7 +419,7 @@ mod tests {
 
         let leaf = Leaf(42);
         let mut checker = TypeChecker { found_leaf: false };
-        leaf.visit(&mut checker);
+        let _ = leaf.visit(&mut checker);
         assert!(checker.found_leaf);
     }
 
@@ -442,6 +441,31 @@ mod tests {
         let mut skipper = Skipper;
         let result = leaf.visit(&mut skipper);
         assert!(matches!(result, ControlFlow::Continue(())));
+    }
+
+    #[test]
+    fn visit_box_delegates() {
+        let boxed = Box::new(Leaf(99));
+        let mut counter = Counter { enter_count: 0, exit_count: 0 };
+        let _ = boxed.visit(&mut counter);
+        assert_eq!(counter.enter_count, 1); // Leaf's enter, not Box's
+        assert_eq!(counter.exit_count, 1);
+    }
+
+    #[test]
+    fn visit_option_some() {
+        let opt = Some(Leaf(1));
+        let mut counter = Counter { enter_count: 0, exit_count: 0 };
+        let _ = opt.visit(&mut counter);
+        assert_eq!(counter.enter_count, 1);
+    }
+
+    #[test]
+    fn visit_option_none() {
+        let opt: Option<Leaf> = None;
+        let mut counter = Counter { enter_count: 0, exit_count: 0 };
+        let _ = opt.visit(&mut counter);
+        assert_eq!(counter.enter_count, 0);
     }
 
     use crate::seq::Seq;

@@ -84,3 +84,43 @@ pub trait Visitor: Sized {
         ControlFlow::Continue(())
     }
 }
+
+// -- Blanket Visit impls for container types --
+
+impl<T: Visit> AsNodeKey for Box<T> {}
+impl<T: Visit> Visit for Box<T> {
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        (**self).visit(visitor)
+    }
+}
+
+impl<T: Visit> AsNodeKey for Option<T> {}
+impl<T: Visit> Visit for Option<T> {
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        if let Some(inner) = self {
+            inner.visit(visitor)?;
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+use crate::seq::Seq;
+
+impl<T: Visit + Clone, S: Visit + Clone, Trailing: 'static, Empty: 'static> AsNodeKey
+    for Seq<T, S, Trailing, Empty>
+{
+}
+
+impl<T: Visit + Clone, S: Visit + Clone, Trailing: 'static, Empty: 'static> Visit
+    for Seq<T, S, Trailing, Empty>
+{
+    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        for (element, sep) in self.pairs() {
+            element.visit(visitor)?;
+            if let Some(sep) = sep {
+                sep.visit(visitor)?;
+            }
+        }
+        ControlFlow::Continue(())
+    }
+}
