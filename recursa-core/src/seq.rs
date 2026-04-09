@@ -113,7 +113,7 @@ where
     loop {
         let element = <T as Parse>::parse(input, rules)?;
 
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
         if !<S as Parse>::peek(input, rules) {
             pairs.push((element, None));
             break;
@@ -121,7 +121,7 @@ where
 
         let sep = <S as Parse>::parse(input, rules)?;
         pairs.push((element, Some(sep)));
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
     }
     Ok(pairs)
 }
@@ -139,7 +139,7 @@ where
     loop {
         let element = <T as Parse>::parse(input, rules)?;
 
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
         if !<S as Parse>::peek(input, rules) {
             pairs.push((element, None));
             break;
@@ -147,7 +147,7 @@ where
 
         let sep = <S as Parse>::parse(input, rules)?;
 
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
         if !<T as Parse>::peek(input, rules) {
             pairs.push((element, Some(sep)));
             break;
@@ -171,12 +171,12 @@ where
     loop {
         let element = <T as Parse>::parse(input, rules)?;
 
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
         let sep = <S as Parse>::parse(input, rules)?;
 
         pairs.push((element, Some(sep)));
 
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
         if !<T as Parse>::peek(input, rules) {
             break;
         }
@@ -202,7 +202,7 @@ where
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
         if !<T as Parse>::peek(input, rules) {
             return Ok(Self::from_pairs(Vec::new()));
         }
@@ -227,7 +227,7 @@ where
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
         if !<T as Parse>::peek(input, rules) {
             return Ok(Self::from_pairs(Vec::new()));
         }
@@ -252,7 +252,7 @@ where
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
         if !<T as Parse>::peek(input, rules) {
             return Ok(Self::from_pairs(Vec::new()));
         }
@@ -279,7 +279,7 @@ where
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
         if !<T as Parse>::peek(input, rules) {
             return Err(ParseError::new(
                 input.source(),
@@ -308,7 +308,7 @@ where
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
         if !<T as Parse>::peek(input, rules) {
             return Err(ParseError::new(
                 input.source(),
@@ -337,7 +337,7 @@ where
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        input.consume_ignored(R::ignore_regex());
+        R::consume_ignored(input);
         if !<T as Parse>::peek(input, rules) {
             return Err(ParseError::new(
                 input.source(),

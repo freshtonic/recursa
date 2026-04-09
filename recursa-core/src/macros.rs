@@ -21,7 +21,7 @@ macro_rules! keywords {
     ($($name:ident => $pattern:literal),* $(,)?) => {
         $(
             #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-            #[scan(pattern = $pattern)]
+            #[scan(pattern = $pattern, case_insensitive)]
             pub struct $name;
         )*
 

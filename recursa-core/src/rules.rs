@@ -2,6 +2,8 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
+use crate::input::Input;
+
 /// Configuration for a grammar's ignored content (whitespace, comments, etc.).
 ///
 /// `IGNORE` is a regex pattern matched and skipped between tokens during parsing.
@@ -10,6 +12,9 @@ use regex::Regex;
 /// Each implementation must provide `ignore_cache()` returning a reference to a
 /// per-type `OnceLock<Regex>`. This ensures each rules type gets its own cached
 /// compiled regex. The `ignore_regex()` default method handles lazy compilation.
+///
+/// Override `consume_ignored()` for custom ignore logic that regex can't handle
+/// (e.g., nested block comments).
 pub trait ParseRules {
     const IGNORE: &'static str;
 
@@ -27,6 +32,14 @@ pub trait ParseRules {
             Self::ignore_cache()
                 .get_or_init(|| Regex::new(&format!(r"\A(?:{})", Self::IGNORE)).unwrap()),
         )
+    }
+
+    /// Skip ignored content at the current input position.
+    ///
+    /// The default implementation uses `ignore_regex()`. Override this for
+    /// custom logic such as nested block comments.
+    fn consume_ignored(input: &mut Input) {
+        input.consume_ignored(Self::ignore_regex());
     }
 }
 

@@ -7,7 +7,8 @@ pub fn derive_scan(input: DeriveInput) -> syn::Result<TokenStream> {
 
     match &input.data {
         Data::Struct(data) => {
-            let pattern = get_scan_pattern(&input)?;
+            let attrs = get_scan_attrs(&input)?;
+            let pattern = attrs.pattern;
             let generics = &input.generics;
             let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
             match &data.fields {
@@ -35,21 +36,37 @@ pub fn derive_scan(input: DeriveInput) -> syn::Result<TokenStream> {
     }
 }
 
-fn get_scan_pattern(input: &DeriveInput) -> syn::Result<String> {
+struct ScanAttrs {
+    pattern: String,
+    #[allow(dead_code)]
+    case_insensitive: bool,
+}
+
+fn get_scan_attrs(input: &DeriveInput) -> syn::Result<ScanAttrs> {
     for attr in &input.attrs {
         if attr.path().is_ident("scan") {
             let mut pattern = None;
+            let mut case_insensitive = false;
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("pattern") {
                     let value: LitStr = meta.value()?.parse()?;
                     pattern = Some(value.value());
                     Ok(())
+                } else if meta.path.is_ident("case_insensitive") {
+                    case_insensitive = true;
+                    Ok(())
                 } else {
-                    Err(meta.error("expected `pattern`"))
+                    Err(meta.error("expected `pattern` or `case_insensitive`"))
                 }
             })?;
-            return pattern
-                .ok_or_else(|| syn::Error::new_spanned(attr, "missing `pattern` in #[scan(...)]"));
+            let pattern = pattern
+                .ok_or_else(|| syn::Error::new_spanned(attr, "missing `pattern` in #[scan(...)]"))?;
+            let pattern = if case_insensitive {
+                format!("(?i:{})", pattern)
+            } else {
+                pattern
+            };
+            return Ok(ScanAttrs { pattern, case_insensitive });
         }
     }
     Err(syn::Error::new_spanned(

@@ -235,21 +235,21 @@ mod tests {
     #[test]
     fn input_consume_ignored_skips_whitespace() {
         let mut input = Input::new("   hello");
-        input.consume_ignored(WhitespaceRules::ignore_regex());
+        WhitespaceRules::consume_ignored(&mut input);
         assert_eq!(input.remaining(), "hello");
     }
 
     #[test]
     fn input_consume_ignored_noop_when_no_whitespace() {
         let mut input = Input::new("hello");
-        input.consume_ignored(WhitespaceRules::ignore_regex());
+        WhitespaceRules::consume_ignored(&mut input);
         assert_eq!(input.remaining(), "hello");
     }
 
     #[test]
     fn input_consume_ignored_noop_for_no_rules() {
         let mut input = Input::new("   hello");
-        input.consume_ignored(NoRules::ignore_regex());
+        NoRules::consume_ignored(&mut input);
         assert_eq!(input.remaining(), "   hello");
     }
 
@@ -311,6 +311,31 @@ mod tests {
             <Option<TestKeyword> as Parse>::first_pattern(),
             <TestKeyword as Parse>::first_pattern()
         );
+    }
+
+    #[test]
+    fn vec_parse_zero_or_more() {
+        let mut input = Input::new("testtesttest foo");
+        let items = <Vec<TestKeyword> as Parse>::parse(&mut input, &NoRules).unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(input.remaining(), " foo");
+    }
+
+    #[test]
+    fn vec_parse_zero_or_more_with_whitespace_rules() {
+        let mut input = Input::new("test test test foo");
+        let items = <Vec<TestKeyword> as Parse>::parse(&mut input, &WhitespaceRules).unwrap();
+        assert_eq!(items.len(), 3);
+        // Whitespace before "foo" is NOT consumed (fork wasn't committed)
+        assert_eq!(input.remaining(), " foo");
+    }
+
+    #[test]
+    fn vec_parse_empty() {
+        let mut input = Input::new("foo bar");
+        let items = <Vec<TestKeyword> as Parse>::parse(&mut input, &NoRules).unwrap();
+        assert_eq!(items.len(), 0);
+        assert_eq!(input.cursor(), 0);
     }
 
     use crate::visitor::{Break, NodeKey};

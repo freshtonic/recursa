@@ -121,3 +121,31 @@ impl<'input, T: Parse<'input>> Parse<'input> for Option<T> {
         }
     }
 }
+
+/// Blanket implementation: `Vec<T>` parses zero-or-more `T` with no separator.
+/// Repeatedly parses `T` while `T::peek` succeeds.
+impl<'input, T: Parse<'input>> Parse<'input> for Vec<T> {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        T::first_pattern()
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        T::peek(input, rules)
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        let mut items = Vec::new();
+        loop {
+            let mut fork = input.fork();
+            R::consume_ignored(&mut fork);
+            if !T::peek(&fork, rules) {
+                break;
+            }
+            input.commit(fork);
+            items.push(T::parse(input, rules)?);
+        }
+        Ok(items)
+    }
+}

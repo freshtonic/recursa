@@ -24,7 +24,7 @@ fn recursa_reexports_scan_trait() {
 #[test]
 fn recursa_reexports_parse_rules() {
     let mut input = Input::new("   hello");
-    input.consume_ignored(MyRules::ignore_regex());
+    MyRules::consume_ignored(&mut input);
     assert_eq!(input.remaining(), "hello");
 }
 
