@@ -1,6 +1,21 @@
-// Doc comments for these macros live on the re-exports in the `recursa` crate,
-// where doc tests can compile because both recursa-core and recursa-derive are available.
-
+/// Declare keyword token types and a combined `Keyword` enum.
+///
+/// Each entry generates a unit struct with `#[derive(Scan)]` and the
+/// specified pattern. A combined `Keyword` enum is also generated
+/// with all variants.
+///
+/// # Example
+///
+/// ```text
+/// recursa::keywords! {
+///     Let   => "let",
+///     While => "while",
+///     If    => "if",
+/// }
+/// ```
+///
+/// Expands to unit structs `Let`, `While`, `If` (each implementing `Scan`)
+/// plus an enum `Keyword` with variants `Keyword::Let(Let)`, etc.
 #[macro_export]
 macro_rules! keywords {
     ($($name:ident => $pattern:literal),* $(,)?) => {
@@ -17,6 +32,24 @@ macro_rules! keywords {
     };
 }
 
+/// Declare punctuation token types and a combined `Punctuation` enum.
+///
+/// Each entry generates a unit struct with `#[derive(Scan)]` and the
+/// specified pattern. A combined `Punctuation` enum is also generated
+/// with all variants.
+///
+/// Patterns must be valid regex. For literal punctuation characters that
+/// are regex metacharacters, provide already-escaped patterns
+/// (e.g., `r"\+"` not `"+"`).
+///
+/// # Example
+///
+/// ```text
+/// recursa::punctuation! {
+///     Plus   => r"\+",
+///     LParen => r"\(",
+/// }
+/// ```
 #[macro_export]
 macro_rules! punctuation {
     ($($name:ident => $pattern:literal),* $(,)?) => {
@@ -33,6 +66,20 @@ macro_rules! punctuation {
     };
 }
 
+/// Declare literal/capturing token types and a combined `Literal` enum.
+///
+/// Each entry generates a tuple struct wrapping `&'input str` with
+/// `#[derive(Scan)]` and the specified pattern. A combined `Literal`
+/// enum is also generated with all variants.
+///
+/// # Example
+///
+/// ```text
+/// recursa::literals! {
+///     IntLiteral => r"[0-9]+",
+///     Ident      => r"[a-zA-Z_][a-zA-Z0-9_]*",
+/// }
+/// ```
 #[macro_export]
 macro_rules! literals {
     ($($name:ident => $pattern:literal),* $(,)?) => {
