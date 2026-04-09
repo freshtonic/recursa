@@ -7,12 +7,14 @@ mod parse;
 mod rules;
 mod scan;
 pub mod seq;
+pub mod visitor;
 
 pub use error::ParseError;
 pub use input::Input;
 pub use parse::Parse;
 pub use rules::{NoRules, ParseRules};
 pub use scan::Scan;
+pub use visitor::{AsNodeKey, Break, NodeKey};
 
 #[cfg(test)]
 mod tests {
@@ -309,6 +311,51 @@ mod tests {
             <Option<TestKeyword> as Parse>::first_pattern(),
             <TestKeyword as Parse>::first_pattern()
         );
+    }
+
+    use std::any::TypeId;
+    use crate::visitor::{Break, NodeKey};
+
+    #[test]
+    fn node_key_equality() {
+        let x = 42u32;
+        let k1 = NodeKey::new(&x);
+        let k2 = NodeKey::new(&x);
+        assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn node_key_different_nodes() {
+        let x = 42u32;
+        let y = 42u32;
+        let k1 = NodeKey::new(&x);
+        let k2 = NodeKey::new(&y);
+        assert_ne!(k1, k2); // different addresses
+    }
+
+    #[test]
+    fn node_key_get_as() {
+        let x = 42u32;
+        let k = NodeKey::new(&x);
+        assert_eq!(k.get_as::<u32>(), Some(&42));
+        assert_eq!(k.get_as::<i32>(), None); // wrong type
+    }
+
+    #[test]
+    fn node_key_hashable() {
+        use std::collections::HashMap;
+        let x = 42u32;
+        let k = NodeKey::new(&x);
+        let mut map = HashMap::new();
+        map.insert(k, "found");
+        assert_eq!(map.get(&k), Some(&"found"));
+    }
+
+    #[test]
+    fn break_variants() {
+        let _skip: Break<String> = Break::SkipChildren;
+        let _fin: Break<String> = Break::Finished;
+        let _err: Break<String> = Break::Err("oops".to_string());
     }
 
     use crate::seq::Seq;
