@@ -63,7 +63,7 @@ impl ParseError {
         self
     }
 
-    /// Wrap this error with "while parsing <label>" context.
+    /// Wrap this error with "while parsing `label`" context.
     pub fn with_context(mut self, label: impl Into<String>, span: Range<usize>) -> Self {
         self.inner.context.push(ContextError {
             label: label.into(),
