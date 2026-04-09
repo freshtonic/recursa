@@ -20,12 +20,12 @@
 macro_rules! keywords {
     ($($name:ident => $pattern:literal),* $(,)?) => {
         $(
-            #[derive(::recursa_derive::Scan, Debug, Clone)]
+            #[derive(::recursa_derive::Scan, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             #[scan(pattern = $pattern)]
             pub struct $name;
         )*
 
-        #[derive(::recursa_derive::Scan, Debug, Clone)]
+        #[derive(::recursa_derive::Scan, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub enum Keyword {
             $($name($name)),*
         }
@@ -54,12 +54,12 @@ macro_rules! keywords {
 macro_rules! punctuation {
     ($($name:ident => $pattern:literal),* $(,)?) => {
         $(
-            #[derive(::recursa_derive::Scan, Debug, Clone)]
+            #[derive(::recursa_derive::Scan, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             #[scan(pattern = $pattern)]
             pub struct $name;
         )*
 
-        #[derive(::recursa_derive::Scan, Debug, Clone)]
+        #[derive(::recursa_derive::Scan, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub enum Punctuation {
             $($name($name)),*
         }
@@ -84,12 +84,12 @@ macro_rules! punctuation {
 macro_rules! literals {
     ($($name:ident => $pattern:literal),* $(,)?) => {
         $(
-            #[derive(::recursa_derive::Scan, Debug, Clone)]
+            #[derive(::recursa_derive::Scan, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             #[scan(pattern = $pattern)]
             pub struct $name<'input>(pub &'input str);
         )*
 
-        #[derive(::recursa_derive::Scan, Debug, Clone)]
+        #[derive(::recursa_derive::Scan, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub enum Literal<'input> {
             $($name($name<'input>)),*
         }
