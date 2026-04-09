@@ -202,33 +202,22 @@ fn derive_parse_enum(
         inner_types.push(inner_type.clone());
     }
 
-    // Generate first_pattern: alternation of variant patterns wrapped in groups
-    let first_pattern_parts = inner_types.iter().map(|ty| {
-        quote! {
-            parts.push(::std::format!("({})", <#ty as ::recursa_core::Parse>::first_pattern()));
-        }
-    });
-
-    // Generate regex builder arms: one named capture group per variant
-    let regex_build_arms: Vec<_> = inner_types
+    // Generate variant pattern expressions (used by both first_pattern and peek_regex)
+    let variant_pattern_exprs: Vec<_> = inner_types
         .iter()
-        .enumerate()
-        .map(|(i, ty)| {
-            let group_name = format!("_{i}");
-            quote! {
-                variant_patterns.push(::std::format!(
-                    "(?P<{}>{})",
-                    #group_name,
-                    <#ty as ::recursa_core::Parse>::first_pattern(),
-                ));
-            }
+        .map(|ty| {
+            quote! { <#ty as ::recursa_core::Parse>::first_pattern() }
         })
         .collect();
 
+    // Generate named capture group names
+    let group_names: Vec<String> = (0..inner_types.len()).map(|i| format!("_{i}")).collect();
+
     // Generate capture check arms for parse: find longest match
-    let capture_check_arms: Vec<_> = (0..inner_types.len())
-        .map(|i| {
-            let group_name = format!("_{i}");
+    let capture_check_arms: Vec<_> = group_names
+        .iter()
+        .enumerate()
+        .map(|(i, group_name)| {
             let i_lit = syn::Index::from(i);
             quote! {
                 if let ::std::option::Option::Some(m) = captures.name(#group_name) {
@@ -265,6 +254,20 @@ fn derive_parse_enum(
         const _: () = {
             static PEEK_REGEX: ::std::sync::OnceLock<::regex::Regex> = ::std::sync::OnceLock::new();
 
+            fn peek_regex<#lt>() -> &'static ::regex::Regex {
+                PEEK_REGEX.get_or_init(|| {
+                    let group_names: &[&str] = &[#(#group_names),*];
+                    let variant_patterns: &[&str] = &[#(#variant_pattern_exprs),*];
+                    let named_groups: ::std::vec::Vec<::std::string::String> = group_names
+                        .iter()
+                        .zip(variant_patterns.iter())
+                        .map(|(name, pat)| ::std::format!("(?P<{}>{})", name, pat))
+                        .collect();
+                    let combined = ::std::format!(r"\A(?:{})", named_groups.join("|"));
+                    ::regex::Regex::new(&combined).unwrap()
+                })
+            }
+
             impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
                 type Rules = #rules_type;
 
@@ -273,31 +276,23 @@ fn derive_parse_enum(
                 fn first_pattern() -> &'static str {
                     static PATTERN: ::std::sync::OnceLock<::std::string::String> = ::std::sync::OnceLock::new();
                     PATTERN.get_or_init(|| {
-                        let mut parts: ::std::vec::Vec<::std::string::String> = ::std::vec::Vec::new();
-                        #(#first_pattern_parts)*
-                        parts.join("|")
+                        let variant_patterns: &[&str] = &[#(#variant_pattern_exprs),*];
+                        let groups: ::std::vec::Vec<::std::string::String> = variant_patterns
+                            .iter()
+                            .map(|p| ::std::format!("({})", p))
+                            .collect();
+                        groups.join("|")
                     })
                 }
 
                 fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
-                    let regex = PEEK_REGEX.get_or_init(|| {
-                        let mut variant_patterns = ::std::vec::Vec::new();
-                        #(#regex_build_arms)*
-                        let combined = ::std::format!(r"\A(?:{})", variant_patterns.join("|"));
-                        ::regex::Regex::new(&combined).unwrap()
-                    });
                     let mut peek_input = input.fork();
                     peek_input.consume_ignored();
-                    regex.is_match(peek_input.remaining())
+                    peek_regex().is_match(peek_input.remaining())
                 }
 
                 fn parse(input: &mut ::recursa_core::Input<#lt, Self::Rules>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
-                    let regex = PEEK_REGEX.get_or_init(|| {
-                        let mut variant_patterns = ::std::vec::Vec::new();
-                        #(#regex_build_arms)*
-                        let combined = ::std::format!(r"\A(?:{})", variant_patterns.join("|"));
-                        ::regex::Regex::new(&combined).unwrap()
-                    });
+                    let regex = peek_regex();
                     let mut fork = input.fork();
                     fork.consume_ignored();
 
