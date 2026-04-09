@@ -28,13 +28,13 @@ pub trait Scan<'input>: Sized {
     /// Attempt to parse this token, advancing the input on success.
     fn parse(input: &mut Input<'input, NoRules>) -> Result<Self, ParseError> {
         match Self::regex().find(input.remaining()) {
-            Some(m) => {
+            Some(m) if m.start() == 0 => {
                 let matched = &input.source()[input.cursor()..input.cursor() + m.len()];
                 let result = Self::from_match(matched)?;
                 input.advance(m.len());
                 Ok(result)
             }
-            None => Err(ParseError::new(
+            Some(_) | None => Err(ParseError::new(
                 input.source().to_string(),
                 input.cursor()..input.cursor(),
                 Self::PATTERN,
