@@ -53,8 +53,14 @@ pub fn run_regression_test(test_name: &str, psql_uri: &str) -> Result<(), String
         let max_lines = expected_results.len().max(actual_results.len());
         let mut diff_count = 0;
         for i in 0..max_lines {
-            let exp = expected_results.get(i).map(String::as_str).unwrap_or("<missing>");
-            let act = actual_results.get(i).map(String::as_str).unwrap_or("<missing>");
+            let exp = expected_results
+                .get(i)
+                .map(String::as_str)
+                .unwrap_or("<missing>");
+            let act = actual_results
+                .get(i)
+                .map(String::as_str)
+                .unwrap_or("<missing>");
             if exp != act {
                 msg.push_str(&format!("  line {i}: expected: {exp:?}\n"));
                 msg.push_str(&format!("  line {i}:   actual: {act:?}\n"));
@@ -129,7 +135,8 @@ pub fn strip_echoed_sql(output: &str) -> Vec<String> {
 
         // Keep error/notice messages (but skip LINE N: and ^ caret lines,
         // since our reformatted SQL may have different line numbers/positions)
-        if line.starts_with("ERROR:") || line.starts_with("NOTICE:") || line.starts_with("WARNING:") {
+        if line.starts_with("ERROR:") || line.starts_with("NOTICE:") || line.starts_with("WARNING:")
+        {
             result.push(line.to_string());
             i += 1;
             // Skip continuation lines: LINE N:, caret (^), indented SQL context
@@ -139,7 +146,10 @@ pub fn strip_echoed_sql(output: &str) -> Vec<String> {
                     // Skip LINE and caret lines — they reference positions in the
                     // SQL text which may differ due to reformatting
                     i += 1;
-                } else if cont.starts_with("DETAIL:") || cont.starts_with("HINT:") || cont.starts_with("CONTEXT:") {
+                } else if cont.starts_with("DETAIL:")
+                    || cont.starts_with("HINT:")
+                    || cont.starts_with("CONTEXT:")
+                {
                     // Keep DETAIL/HINT/CONTEXT
                     result.push(cont.to_string());
                     i += 1;
@@ -151,7 +161,8 @@ pub fn strip_echoed_sql(output: &str) -> Vec<String> {
         }
 
         // Keep standalone DETAIL/HINT/CONTEXT lines
-        if line.starts_with("DETAIL:") || line.starts_with("HINT:") || line.starts_with("CONTEXT:") {
+        if line.starts_with("DETAIL:") || line.starts_with("HINT:") || line.starts_with("CONTEXT:")
+        {
             result.push(line.to_string());
             i += 1;
             continue;
@@ -313,8 +324,7 @@ mod tests {
 
     #[test]
     fn strip_handles_mixed_output() {
-        let output =
-            "CREATE TABLE t (f1 bool);\nCREATE TABLE\nSELECT 1;\n ?column? \n----------\n        1\n(1 row)\n";
+        let output = "CREATE TABLE t (f1 bool);\nCREATE TABLE\nSELECT 1;\n ?column? \n----------\n        1\n(1 row)\n";
         let result = strip_echoed_sql(output);
         // CREATE TABLE status is stripped, only the SELECT result remains
         assert_eq!(result.len(), 4);
@@ -364,8 +374,8 @@ mod tests {
 
     #[cfg(test)]
     mod regress {
-        use testcontainers::runners::SyncRunner;
         use testcontainers::ImageExt;
+        use testcontainers::runners::SyncRunner;
         use testcontainers_modules::postgres::Postgres;
 
         use crate::harness::run_regression_test;

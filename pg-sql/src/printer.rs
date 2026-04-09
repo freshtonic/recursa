@@ -276,7 +276,7 @@ fn print_type_name(output: &mut String, type_name: &TypeName) {
 mod tests {
     use recursa::{Input, Parse};
 
-    use crate::ast::{parse_sql_file, Statement};
+    use crate::ast::{Statement, parse_sql_file};
     use crate::printer::{print_commands, print_statement};
     use crate::rules::SqlRules;
 
@@ -448,10 +448,7 @@ mod tests {
     #[test]
     fn print_insert_without_columns() {
         let result = round_trip_stmt("INSERT INTO booltbl4 VALUES (false, true, null)");
-        assert_eq!(
-            result,
-            "INSERT INTO booltbl4 VALUES (FALSE, TRUE, NULL)"
-        );
+        assert_eq!(result, "INSERT INTO booltbl4 VALUES (FALSE, TRUE, NULL)");
     }
 
     // --- DROP TABLE ---
@@ -513,10 +510,7 @@ mod tests {
     #[test]
     fn print_select_star_from_function() {
         let result = round_trip_stmt("SELECT * FROM pg_input_error_info('junk', 'bool')");
-        assert_eq!(
-            result,
-            "SELECT * FROM pg_input_error_info('junk', 'bool')"
-        );
+        assert_eq!(result, "SELECT * FROM pg_input_error_info('junk', 'bool')");
     }
 
     #[test]
