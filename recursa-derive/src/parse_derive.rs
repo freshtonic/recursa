@@ -99,6 +99,20 @@ fn derive_parse_struct(
         syn::Error::new_spanned(name, "Parse struct must have at least one field")
     })?;
 
+    // Build nested if-chain for first_patterns: walk consecutive terminal fields
+    let first_patterns_body = {
+        let mut body = quote! {};
+        for ty in field_types.iter().rev() {
+            body = quote! {
+                patterns.extend(<#ty as ::recursa_core::Parse>::first_patterns());
+                if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
+                    #body
+                }
+            };
+        }
+        body
+    };
+
     // Generate the parse body: consume_ignored + rebind + parse each field
     let parse_fields = field_names
         .iter()
@@ -122,8 +136,12 @@ fn derive_parse_struct(
             const IS_TERMINAL: bool = false;
 
             fn first_patterns() -> &'static [&'static str] {
-                // Stub: will be fully implemented in a later task.
-                &[]
+                static PATTERNS: ::std::sync::OnceLock<::std::vec::Vec<&'static str>> = ::std::sync::OnceLock::new();
+                PATTERNS.get_or_init(|| {
+                    let mut patterns = ::std::vec::Vec::new();
+                    #first_patterns_body
+                    patterns
+                })
             }
 
             fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {

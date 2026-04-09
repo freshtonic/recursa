@@ -67,3 +67,65 @@ fn parse_struct_error_on_bad_field() {
     // Cursor should NOT have advanced (fork was not committed)
     assert_eq!(input.cursor(), 0);
 }
+
+#[test]
+fn parse_struct_is_not_terminal() {
+    assert!(!<LetBinding as Parse>::IS_TERMINAL);
+}
+
+#[test]
+fn parse_struct_first_patterns_consecutive_terminals() {
+    // LetBinding fields: LetKw, Ident, Eq, IntLit, Semi
+    // All are Scan (terminal) types, so first_patterns should include
+    // all of them until a non-terminal is hit.
+    // Since ALL fields here are terminal, we get all patterns.
+    let patterns = <LetBinding as Parse>::first_patterns();
+    assert_eq!(
+        patterns,
+        &["let", r"[a-zA-Z_][a-zA-Z0-9_]*", "=", r"[0-9]+", ";"]
+    );
+}
+
+#[derive(Parse)]
+#[parse(rules = WsRules)]
+struct NestedStmt<'input> {
+    let_kw: LetKw,
+    binding: LetBinding<'input>,
+}
+
+#[test]
+fn parse_struct_first_patterns_stops_at_non_terminal() {
+    // NestedStmt fields: LetKw (terminal), LetBinding (non-terminal)
+    // Walk: extend with LetKw patterns ["let"], LetKw is terminal so continue,
+    // extend with LetBinding's first_patterns (all 5), LetBinding is NOT terminal so stop.
+    // No further fields are visited after the non-terminal.
+    let patterns = <NestedStmt as Parse>::first_patterns();
+    assert_eq!(
+        patterns,
+        &["let", "let", r"[a-zA-Z_][a-zA-Z0-9_]*", "=", r"[0-9]+", ";"]
+    );
+}
+
+#[derive(Parse)]
+#[parse(rules = WsRules)]
+struct NestedWithTrailing<'input> {
+    let_kw: LetKw,
+    binding: LetBinding<'input>,
+    semi: Semi, // should NOT appear in first_patterns
+}
+
+#[test]
+fn parse_struct_first_patterns_does_not_include_fields_after_non_terminal() {
+    // NestedWithTrailing: LetKw (terminal), LetBinding (non-terminal), Semi (terminal)
+    // Walk stops after LetBinding (non-terminal), so Semi's pattern ";" is NOT included.
+    let patterns = <NestedWithTrailing as Parse>::first_patterns();
+    // Same as NestedStmt: the trailing Semi is not visited
+    assert_eq!(
+        patterns,
+        &["let", "let", r"[a-zA-Z_][a-zA-Z0-9_]*", "=", r"[0-9]+", ";"]
+    );
+    // Specifically, the ";" here comes from LetBinding's Semi field,
+    // NOT from NestedWithTrailing's semi field. Both happen to be ";",
+    // but the count proves no extra pattern was added.
+    assert_eq!(patterns.len(), 6); // not 7
+}
