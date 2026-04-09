@@ -8,4 +8,6 @@ publish = false
 
 [dependencies]
 recursa = { path = ".." }
+recursa-core = { path = "../recursa-core" }
+recursa-derive = { path = "../recursa-derive" }
 regex = "1"
