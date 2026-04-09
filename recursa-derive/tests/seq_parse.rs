@@ -23,6 +23,10 @@ struct RParen;
 struct WsRules;
 impl ParseRules for WsRules {
     const IGNORE: &'static str = r"\s+";
+    fn ignore_cache() -> &'static std::sync::OnceLock<regex::Regex> {
+        static CACHE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        &CACHE
+    }
 }
 
 #[derive(Parse, Debug)]

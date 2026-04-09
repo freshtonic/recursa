@@ -8,6 +8,10 @@ struct Hello;
 struct MyRules;
 impl ParseRules for MyRules {
     const IGNORE: &'static str = r"\s+";
+    fn ignore_cache() -> &'static std::sync::OnceLock<regex::Regex> {
+        static CACHE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        &CACHE
+    }
 }
 
 #[test]
@@ -20,7 +24,7 @@ fn recursa_reexports_scan_trait() {
 #[test]
 fn recursa_reexports_parse_rules() {
     let mut input = Input::new("   hello");
-    input.consume_ignored(MyRules::IGNORE);
+    input.consume_ignored(MyRules::ignore_regex());
     assert_eq!(input.remaining(), "hello");
 }
 

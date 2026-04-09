@@ -1,5 +1,3 @@
-use std::sync::Mutex;
-
 use regex::Regex;
 
 /// A cursor over source text for parsing.
@@ -58,40 +56,12 @@ impl<'input> Input<'input> {
 
     /// Skip ignored content (whitespace, comments) at the current position.
     ///
-    /// Pass the `IGNORE` pattern string from a `ParseRules` implementation.
-    /// An empty string is a no-op.
-    pub fn consume_ignored(&mut self, ignore: &str) {
-        if ignore.is_empty() {
-            return;
-        }
-
-        // Cache compiled ignore regexes keyed by pattern string.
-        // The number of distinct patterns is bounded by the number of
-        // ParseRules implementations in the program.
-        static PATTERNS: Mutex<Vec<(String, Regex)>> = Mutex::new(Vec::new());
-
-        let ignore_regex = {
-            let patterns = PATTERNS.lock().unwrap();
-            patterns
-                .iter()
-                .find(|(p, _)| p == ignore)
-                .map(|(_, r)| r.clone())
-        };
-
-        let regex = match ignore_regex {
-            Some(r) => r,
-            None => {
-                let anchored = format!(r"\A(?:{})", ignore);
-                let r = Regex::new(&anchored).expect("invalid IGNORE pattern");
-                PATTERNS
-                    .lock()
-                    .unwrap()
-                    .push((ignore.to_string(), r.clone()));
-                r
-            }
-        };
-
-        if let Some(m) = regex.find(self.remaining()) {
+    /// Pass the pre-compiled ignore regex from `ParseRules::ignore_regex()`.
+    /// `None` is a no-op (used by `NoRules`).
+    pub fn consume_ignored(&mut self, ignore: Option<&Regex>) {
+        if let Some(regex) = ignore
+            && let Some(m) = regex.find(self.remaining())
+        {
             self.cursor += m.len();
         }
     }

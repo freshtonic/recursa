@@ -223,26 +223,31 @@ mod tests {
 
     impl ParseRules for WhitespaceRules {
         const IGNORE: &'static str = r"\s+";
+
+        fn ignore_cache() -> &'static std::sync::OnceLock<regex::Regex> {
+            static CACHE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+            &CACHE
+        }
     }
 
     #[test]
     fn input_consume_ignored_skips_whitespace() {
         let mut input = Input::new("   hello");
-        input.consume_ignored(WhitespaceRules::IGNORE);
+        input.consume_ignored(WhitespaceRules::ignore_regex());
         assert_eq!(input.remaining(), "hello");
     }
 
     #[test]
     fn input_consume_ignored_noop_when_no_whitespace() {
         let mut input = Input::new("hello");
-        input.consume_ignored(WhitespaceRules::IGNORE);
+        input.consume_ignored(WhitespaceRules::ignore_regex());
         assert_eq!(input.remaining(), "hello");
     }
 
     #[test]
     fn input_consume_ignored_noop_for_no_rules() {
         let mut input = Input::new("   hello");
-        input.consume_ignored(NoRules::IGNORE);
+        input.consume_ignored(NoRules::ignore_regex());
         assert_eq!(input.remaining(), "   hello");
     }
 
