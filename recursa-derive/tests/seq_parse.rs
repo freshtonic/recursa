@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use recursa_core::seq::{OptionalTrailing, Seq};
+use recursa_core::seq::{OptionalTrailing, RequiredTrailing, Seq};
 use recursa_core::{Input, Parse, ParseRules};
 use recursa_derive::{Parse, Scan};
 
@@ -92,4 +92,44 @@ fn seq_optional_trailing_empty() {
     let mut input = Input::<WsRules>::new("()");
     let arr = ArrayLit::parse(&mut input).unwrap();
     assert!(arr.elements.is_empty());
+}
+
+// -- RequiredTrailing tests --
+
+#[derive(Scan, Debug, Clone)]
+#[scan(pattern = ";")]
+struct Semi;
+
+#[derive(Parse, Debug)]
+#[parse(rules = WsRules)]
+struct StmtBlock<'input> {
+    lparen: LParen,
+    stmts: Seq<Ident<'input>, Semi, WsRules, RequiredTrailing>,
+    rparen: RParen,
+}
+
+#[test]
+fn seq_required_trailing_with_elements() {
+    let mut input = Input::<WsRules>::new("(a; b; c;)");
+    let block = StmtBlock::parse(&mut input).unwrap();
+    assert_eq!(block.stmts.len(), 3);
+    // All elements should have Some separator
+    for (_, sep) in block.stmts.pairs() {
+        assert!(sep.is_some());
+    }
+}
+
+#[test]
+fn seq_required_trailing_empty() {
+    let mut input = Input::<WsRules>::new("()");
+    let block = StmtBlock::parse(&mut input).unwrap();
+    assert!(block.stmts.is_empty());
+}
+
+#[test]
+fn seq_required_trailing_error_on_missing_sep() {
+    let mut input = Input::<WsRules>::new("(a; b)");
+    let result = StmtBlock::parse(&mut input);
+    // "b" has no trailing semicolon -- should error
+    assert!(result.is_err());
 }
