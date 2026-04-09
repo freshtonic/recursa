@@ -30,3 +30,15 @@ fn scan_unit_struct_parse_fails() {
     let err = LetKeyword::parse(&mut input);
     assert!(err.is_err());
 }
+
+#[test]
+fn scan_unit_struct_is_terminal() {
+    let is_terminal = <LetKeyword as recursa_core::Parse>::IS_TERMINAL;
+    assert!(is_terminal);
+}
+
+#[test]
+fn scan_unit_struct_first_patterns() {
+    let patterns = <LetKeyword as recursa_core::Parse>::first_patterns();
+    assert_eq!(patterns, &["let"]);
+}

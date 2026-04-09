@@ -197,7 +197,8 @@ mod tests {
 
     #[test]
     fn scan_type_is_terminal() {
-        assert!(<TestKeyword as Parse>::IS_TERMINAL);
+        let is_terminal = <TestKeyword as Parse>::IS_TERMINAL;
+        assert!(is_terminal);
     }
 
     #[test]
