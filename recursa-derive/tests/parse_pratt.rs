@@ -162,3 +162,20 @@ fn pratt_error_on_empty() {
     let result = Expr::parse(&mut input);
     assert!(result.is_err());
 }
+
+#[test]
+fn pratt_is_not_terminal() {
+    assert!(!<Expr as Parse>::IS_TERMINAL);
+}
+
+#[test]
+fn pratt_first_patterns_includes_atoms_and_prefix() {
+    let patterns = <Expr as Parse>::first_patterns();
+    // Should include atom patterns (IntLit, Ident) and prefix operator (Minus)
+    // but NOT infix operators (Plus, Star)
+    assert!(patterns.contains(&r"[0-9]+"));
+    assert!(patterns.contains(&r"[a-zA-Z_][a-zA-Z0-9_]*"));
+    assert!(patterns.contains(&r"-"));
+    assert!(!patterns.contains(&r"\+"));
+    assert!(!patterns.contains(&r"\*"));
+}

@@ -412,6 +412,10 @@ fn derive_parse_pratt_enum(
         }
     }
 
+    // Collect types for first_patterns generation
+    let atom_types: Vec<_> = atom_variants.iter().map(|(_, ty)| ty.clone()).collect();
+    let prefix_op_types: Vec<_> = prefix_variants.iter().map(|(_, op_ty, _)| op_ty.clone()).collect();
+
     // Generate atom peek arms (for the top-level peek)
     let atom_peek_arms = atom_variants.iter().map(|(_vname, ty)| {
         quote! {
@@ -524,8 +528,13 @@ fn derive_parse_pratt_enum(
                 const IS_TERMINAL: bool = false;
 
                 fn first_patterns() -> &'static [&'static str] {
-                    // Stub: will be fully implemented in a later task.
-                    &[]
+                    static PATTERNS: ::std::sync::OnceLock<::std::vec::Vec<&'static str>> = ::std::sync::OnceLock::new();
+                    PATTERNS.get_or_init(|| {
+                        let mut patterns = ::std::vec::Vec::new();
+                        #(patterns.extend(<#atom_types as ::recursa_core::Parse>::first_patterns());)*
+                        #(patterns.extend(<#prefix_op_types as ::recursa_core::Parse>::first_patterns());)*
+                        patterns
+                    })
                 }
 
                 fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
