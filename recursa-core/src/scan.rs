@@ -7,8 +7,8 @@ use crate::rules::NoRules;
 /// Leaf-level token matching via regex.
 ///
 /// Each token type implements `Scan` with a regex pattern and a constructor.
-/// The blanket implementation of `Parse` for `Scan` types handles `peek` and `parse`
-/// by matching the regex against the remaining input.
+/// Types that implement `Scan` should also implement `Parse` (via `#[derive(Scan)]`
+/// which generates both impls, or manually using the provided helper methods).
 pub trait Scan<'input>: Sized {
     /// The regex pattern that matches this token (without `\A` anchor -- added automatically).
     const PATTERN: &'static str;

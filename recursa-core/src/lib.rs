@@ -133,6 +133,8 @@ mod tests {
         }
     }
 
+    impl_parse_for_scan!(TestKeyword);
+
     struct TestIdent<'input>(&'input str);
 
     impl<'input> Scan<'input> for TestIdent<'input> {
@@ -147,6 +149,8 @@ mod tests {
             Ok(TestIdent(matched))
         }
     }
+
+    impl_parse_for_scan!(TestIdent<'input>);
 
     #[test]
     fn scan_keyword_peek() {
@@ -249,6 +253,33 @@ mod tests {
         assert_eq!(rebound.cursor(), 6);
         assert_eq!(rebound.remaining(), "world");
         assert_eq!(rebound.source(), "hello world");
+    }
+
+    #[test]
+    fn box_parse_delegates_to_inner() {
+        let mut input = Input::<NoRules>::new("test foo");
+        let boxed = <Box<TestKeyword> as Parse>::parse(&mut input).unwrap();
+        let _: Box<TestKeyword> = boxed;
+        assert_eq!(input.cursor(), 4);
+    }
+
+    #[test]
+    fn box_peek_delegates_to_inner() {
+        let input = Input::<NoRules>::new("test foo");
+        assert!(<Box<TestKeyword> as Parse>::peek(&input));
+    }
+
+    #[test]
+    fn box_is_terminal_delegates() {
+        const { assert!(<Box<TestKeyword> as Parse>::IS_TERMINAL) };
+    }
+
+    #[test]
+    fn box_first_pattern_delegates() {
+        assert_eq!(
+            <Box<TestKeyword> as Parse>::first_pattern(),
+            <TestKeyword as Parse>::first_pattern()
+        );
     }
 
     #[test]

@@ -58,6 +58,34 @@ fn get_scan_pattern(input: &DeriveInput) -> syn::Result<String> {
     ))
 }
 
+/// Generates a `Parse` impl that delegates to `Scan` for a given type.
+fn generate_parse_for_scan(
+    name: &syn::Ident,
+    impl_generics: &syn::ImplGenerics,
+    ty_generics: &syn::TypeGenerics,
+    where_clause: Option<&syn::WhereClause>,
+    lt: &proc_macro2::TokenStream,
+) -> TokenStream {
+    quote! {
+        impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
+            type Rules = ::recursa_core::NoRules;
+            const IS_TERMINAL: bool = true;
+
+            fn first_pattern() -> &'static str {
+                <Self as ::recursa_core::Scan<#lt>>::PATTERN
+            }
+
+            fn peek(input: &::recursa_core::Input<#lt, ::recursa_core::NoRules>) -> bool {
+                <Self as ::recursa_core::Scan<#lt>>::peek(input)
+            }
+
+            fn parse(input: &mut ::recursa_core::Input<#lt, ::recursa_core::NoRules>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+                <Self as ::recursa_core::Scan<#lt>>::parse(input)
+            }
+        }
+    }
+}
+
 fn derive_scan_unit_struct(
     name: &syn::Ident,
     pattern: &str,
@@ -66,6 +94,9 @@ fn derive_scan_unit_struct(
     where_clause: Option<&syn::WhereClause>,
 ) -> syn::Result<TokenStream> {
     let anchored_pattern = format!(r"\A(?:{})", pattern);
+
+    let lt = quote! { '_ };
+    let parse_impl = generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt);
 
     Ok(quote! {
         impl #impl_generics ::recursa_core::Scan<'_> for #name #ty_generics #where_clause {
@@ -80,6 +111,8 @@ fn derive_scan_unit_struct(
                 Ok(#name)
             }
         }
+
+        #parse_impl
     })
 }
 
@@ -98,6 +131,10 @@ fn derive_scan_tuple_struct(
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
+    let lt_tokens = quote! { #lt };
+    let parse_impl =
+        generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt_tokens);
+
     Ok(quote! {
         impl #impl_generics ::recursa_core::Scan<#lt> for #name #ty_generics #where_clause {
             const PATTERN: &'static str = #pattern;
@@ -111,6 +148,8 @@ fn derive_scan_tuple_struct(
                 Ok(#name(matched))
             }
         }
+
+        #parse_impl
     })
 }
 
@@ -186,6 +225,10 @@ fn derive_scan_enum(
         }
     });
 
+    let lt_tokens = quote! { #lt };
+    let parse_impl =
+        generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt_tokens);
+
     Ok(quote! {
         impl #impl_generics ::recursa_core::Scan<#lt> for #name #ty_generics #where_clause {
             const PATTERN: &'static str = ""; // Combined pattern is built at runtime
@@ -235,5 +278,7 @@ fn derive_scan_enum(
                 }
             }
         }
+
+        #parse_impl
     })
 }

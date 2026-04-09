@@ -1,13 +1,13 @@
 use crate::error::ParseError;
 use crate::input::Input;
-use crate::rules::{NoRules, ParseRules};
-use crate::scan::Scan;
+use crate::rules::ParseRules;
 
 /// Recursive descent parser trait.
 ///
 /// Structs derive `Parse` as a sequence (parse fields in order).
 /// Enums derive `Parse` as a choice (peek to select variant).
-/// `Scan` types get a blanket implementation automatically.
+/// `Scan` types get a `Parse` impl via `#[derive(Scan)]` or manually
+/// using the [`impl_parse_for_scan!`] macro.
 pub trait Parse<'input>: Sized {
     type Rules: ParseRules;
 
@@ -33,20 +33,60 @@ pub trait Parse<'input>: Sized {
     fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError>;
 }
 
-/// Blanket implementation: every `Scan` type is also a `Parse` type with `NoRules`.
-impl<'input, T: Scan<'input>> Parse<'input> for T {
-    type Rules = NoRules;
-    const IS_TERMINAL: bool = true;
+/// Blanket implementation: `Box<T>` delegates to `T`.
+/// Needed for recursive types like `Box<Expr>` in Pratt parsing.
+impl<'input, T: Parse<'input>> Parse<'input> for Box<T> {
+    type Rules = T::Rules;
+    const IS_TERMINAL: bool = T::IS_TERMINAL;
 
     fn first_pattern() -> &'static str {
-        T::PATTERN
+        T::first_pattern()
     }
 
-    fn peek(input: &Input<'input, NoRules>) -> bool {
-        <T as Scan>::peek(input)
+    fn peek(input: &Input<'input, Self::Rules>) -> bool {
+        T::peek(input)
     }
 
-    fn parse(input: &mut Input<'input, NoRules>) -> Result<Self, ParseError> {
-        <T as Scan>::parse(input)
+    fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError> {
+        Ok(Box::new(T::parse(input)?))
     }
+}
+
+/// Implements `Parse` for a type that already implements `Scan`.
+///
+/// This bridges `Scan` types into the `Parse` trait with `NoRules` and
+/// `IS_TERMINAL = true`. Use this for manual `Scan` implementations;
+/// `#[derive(Scan)]` generates this automatically.
+///
+/// # Example
+///
+/// ```ignore
+/// impl Scan<'_> for MyKeyword { /* ... */ }
+/// impl_parse_for_scan!(MyKeyword);
+/// ```
+#[macro_export]
+macro_rules! impl_parse_for_scan {
+    ($ty:ty) => {
+        impl<'input> $crate::Parse<'input> for $ty
+        where
+            $ty: $crate::Scan<'input>,
+        {
+            type Rules = $crate::NoRules;
+            const IS_TERMINAL: bool = true;
+
+            fn first_pattern() -> &'static str {
+                <$ty as $crate::Scan>::PATTERN
+            }
+
+            fn peek(input: &$crate::Input<'input, $crate::NoRules>) -> bool {
+                <$ty as $crate::Scan>::peek(input)
+            }
+
+            fn parse(
+                input: &mut $crate::Input<'input, $crate::NoRules>,
+            ) -> ::std::result::Result<Self, $crate::ParseError> {
+                <$ty as $crate::Scan>::parse(input)
+            }
+        }
+    };
 }
