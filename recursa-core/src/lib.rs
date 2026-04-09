@@ -357,8 +357,8 @@ mod tests {
         let _err: Break<String> = Break::Err("oops".to_string());
     }
 
-    use std::ops::ControlFlow;
     use crate::visitor::{Visit, Visitor};
+    use std::ops::ControlFlow;
 
     // A simple manual Visit impl for testing
     struct Leaf(i32);
@@ -397,7 +397,10 @@ mod tests {
     #[test]
     fn visitor_enter_exit_called() {
         let leaf = Leaf(42);
-        let mut counter = Counter { enter_count: 0, exit_count: 0 };
+        let mut counter = Counter {
+            enter_count: 0,
+            exit_count: 0,
+        };
         let _ = leaf.visit(&mut counter);
         assert_eq!(counter.enter_count, 1);
         assert_eq!(counter.exit_count, 1);
@@ -405,7 +408,9 @@ mod tests {
 
     #[test]
     fn visitor_downcast_in_enter() {
-        struct TypeChecker { found_leaf: bool }
+        struct TypeChecker {
+            found_leaf: bool,
+        }
         impl Visitor for TypeChecker {
             type Error = ();
             fn enter<N: Visit>(&mut self, node: &N) -> ControlFlow<Break<Self::Error>> {
@@ -446,7 +451,10 @@ mod tests {
     #[test]
     fn visit_box_delegates() {
         let boxed = Box::new(Leaf(99));
-        let mut counter = Counter { enter_count: 0, exit_count: 0 };
+        let mut counter = Counter {
+            enter_count: 0,
+            exit_count: 0,
+        };
         let _ = boxed.visit(&mut counter);
         assert_eq!(counter.enter_count, 1); // Leaf's enter, not Box's
         assert_eq!(counter.exit_count, 1);
@@ -455,7 +463,10 @@ mod tests {
     #[test]
     fn visit_option_some() {
         let opt = Some(Leaf(1));
-        let mut counter = Counter { enter_count: 0, exit_count: 0 };
+        let mut counter = Counter {
+            enter_count: 0,
+            exit_count: 0,
+        };
         let _ = opt.visit(&mut counter);
         assert_eq!(counter.enter_count, 1);
     }
@@ -463,7 +474,10 @@ mod tests {
     #[test]
     fn visit_option_none() {
         let opt: Option<Leaf> = None;
-        let mut counter = Counter { enter_count: 0, exit_count: 0 };
+        let mut counter = Counter {
+            enter_count: 0,
+            exit_count: 0,
+        };
         let _ = opt.visit(&mut counter);
         assert_eq!(counter.enter_count, 0);
     }
