@@ -84,7 +84,7 @@ impl<'input, T: Parse<'input>> Parse<'input> for Option<T> {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// impl Scan<'_> for MyKeyword { /* ... */ }
 /// impl_parse_for_scan!(MyKeyword);
 /// ```
