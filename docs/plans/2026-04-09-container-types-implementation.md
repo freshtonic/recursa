@@ -474,7 +474,7 @@ use crate::rules::ParseRules;
 impl<'input, T, S> Parse<'input> for Seq<T, S, NoTrailing, AllowEmpty>
 where
     T: Parse<'input> + Clone,
-    S: Parse<'input> + Clone,
+    S: Scan<'input> + Clone,
 {
     type Rules = T::Rules;
     const IS_TERMINAL: bool = false;
@@ -504,16 +504,16 @@ where
 
             // Peek for separator
             input.consume_ignored();
-            let rebound = input.rebind::<<S as Parse>::Rules>();
-            if !<S as Parse>::peek(&rebound) {
+            let rebound = input.rebind::<::recursa_core::NoRules>();
+            if !<S as Scan>::peek(&rebound) {
                 // No separator — this is the last element
                 pairs.push((element, None));
                 break;
             }
 
             // Parse separator
-            let mut rebound = input.rebind::<<S as Parse>::Rules>();
-            let sep = <S as Parse>::parse(&mut rebound)?;
+            let mut rebound = input.rebind::<::recursa_core::NoRules>();
+            let sep = <S as Scan>::parse(&mut rebound)?;
             input.commit(rebound.rebind());
 
             pairs.push((element, Some(sep)));
@@ -599,7 +599,7 @@ Add to `recursa-core/src/seq.rs`:
 impl<'input, T, S> Parse<'input> for Seq<T, S, OptionalTrailing, AllowEmpty>
 where
     T: Parse<'input> + Clone,
-    S: Parse<'input> + Clone,
+    S: Scan<'input> + Clone,
 {
     type Rules = T::Rules;
     const IS_TERMINAL: bool = false;
@@ -628,15 +628,15 @@ where
 
             // Peek for separator
             input.consume_ignored();
-            let rebound = input.rebind::<<S as Parse>::Rules>();
-            if !<S as Parse>::peek(&rebound) {
+            let rebound = input.rebind::<::recursa_core::NoRules>();
+            if !<S as Scan>::peek(&rebound) {
                 pairs.push((element, None));
                 break;
             }
 
             // Parse separator
-            let mut rebound = input.rebind::<<S as Parse>::Rules>();
-            let sep = <S as Parse>::parse(&mut rebound)?;
+            let mut rebound = input.rebind::<::recursa_core::NoRules>();
+            let sep = <S as Scan>::parse(&mut rebound)?;
             input.commit(rebound.rebind());
 
             // Peek for next element — if absent, this was a trailing separator
@@ -734,7 +734,7 @@ Add to `recursa-core/src/seq.rs`:
 impl<'input, T, S> Parse<'input> for Seq<T, S, RequiredTrailing, AllowEmpty>
 where
     T: Parse<'input> + Clone,
-    S: Parse<'input> + Clone,
+    S: Scan<'input> + Clone,
 {
     type Rules = T::Rules;
     const IS_TERMINAL: bool = false;
@@ -763,8 +763,8 @@ where
 
             // Parse separator (required — error if missing)
             input.consume_ignored();
-            let mut rebound = input.rebind::<<S as Parse>::Rules>();
-            let sep = <S as Parse>::parse(&mut rebound)?;
+            let mut rebound = input.rebind::<::recursa_core::NoRules>();
+            let sep = <S as Scan>::parse(&mut rebound)?;
             input.commit(rebound.rebind());
 
             pairs.push((element, Some(sep)));

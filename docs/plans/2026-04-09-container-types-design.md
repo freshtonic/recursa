@@ -61,7 +61,7 @@ A type-level configurable separated list. Parameterised by element type, separat
 | Parameter | Options | Default |
 |-----------|---------|---------|
 | `T` | Element type (`Parse`) | required |
-| `S` | Separator type (`Parse`) | required |
+| `S` | Separator type (`Scan`) | required |
 | `Trailing` | `NoTrailing`, `RequiredTrailing`, `OptionalTrailing` | `NoTrailing` |
 | `Empty` | `AllowEmpty`, `NonEmpty` | `AllowEmpty` |
 
