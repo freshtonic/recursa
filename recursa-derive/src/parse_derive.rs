@@ -176,88 +176,177 @@ fn derive_parse_enum(
         .unwrap_or_else(|| syn::Lifetime::new("'_", proc_macro2::Span::call_site()));
 
     // Each variant must be a single-field newtype: Variant(InnerType)
-    let mut peek_arms = Vec::new();
-    let mut parse_arms = Vec::new();
+    let mut variant_names = Vec::new();
+    let mut inner_types = Vec::new();
 
     for variant in &data.variants {
-        let variant_name = &variant.ident;
+        let vname = &variant.ident;
         let inner_type = match &variant.fields {
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => &fields.unnamed[0].ty,
             _ => {
                 return Err(syn::Error::new_spanned(
-                    variant_name,
+                    vname,
                     "Parse enum variants must be single-field newtypes, e.g. Variant(InnerType)",
                 ));
             }
         };
 
-        peek_arms.push(quote! {
-            {
-                let rebound = input.rebind::<<#inner_type as ::recursa_core::Parse>::Rules>();
-                if <#inner_type as ::recursa_core::Parse>::peek(&rebound) {
-                    return true;
+        variant_names.push(vname.clone());
+        inner_types.push(inner_type.clone());
+    }
+
+    // Generate first_patterns: collect all variant inner types' patterns
+    let first_patterns_extends = inner_types.iter().map(|ty| {
+        quote! {
+            patterns.extend(<#ty as ::recursa_core::Parse>::first_patterns());
+        }
+    });
+
+    // Generate regex builder arms: one named capture group per variant
+    let regex_build_arms: Vec<_> = inner_types
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| {
+            let group_name = format!("_{i}");
+            quote! {
+                {
+                    let prefixes = <#ty as ::recursa_core::Parse>::first_patterns();
+                    let joined = prefixes.join(&sep);
+                    variant_patterns.push(::std::format!("(?P<{}>{})", #group_name, joined));
                 }
             }
-        });
+        })
+        .collect();
 
-        parse_arms.push(quote! {
-            {
-                let rebound = fork.rebind::<<#inner_type as ::recursa_core::Parse>::Rules>();
-                if <#inner_type as ::recursa_core::Parse>::peek(&rebound) {
-                    let mut rebound = fork.rebind::<<#inner_type as ::recursa_core::Parse>::Rules>();
-                    match <#inner_type as ::recursa_core::Parse>::parse(&mut rebound) {
-                        Ok(inner) => {
-                            input.commit(rebound.rebind());
-                            return Ok(#name::#variant_name(inner));
-                        }
-                        Err(e) => errors.push(e),
+    // Generate capture check arms for parse: find longest match
+    let capture_check_arms: Vec<_> = (0..inner_types.len())
+        .map(|i| {
+            let group_name = format!("_{i}");
+            let i_lit = syn::Index::from(i);
+            quote! {
+                if let ::std::option::Option::Some(m) = captures.name(#group_name) {
+                    if m.len() > best_len {
+                        best_len = m.len();
+                        best_index = ::std::option::Option::Some(#i_lit);
                     }
                 }
             }
-        });
-    }
+        })
+        .collect();
 
-    // Build error arms for when no variant matches via peek
-    let variant_names: Vec<_> = data.variants.iter().map(|v| &v.ident).collect();
+    // Generate match arms for dispatching to the correct variant
+    let dispatch_arms: Vec<_> = inner_types
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| {
+            let vname = &variant_names[i];
+            let i_lit = syn::Index::from(i);
+            quote! {
+                ::std::option::Option::Some(#i_lit) => {
+                    let mut rebound = fork.rebind::<<#ty as ::recursa_core::Parse>::Rules>();
+                    let inner = <#ty as ::recursa_core::Parse>::parse(&mut rebound)?;
+                    input.commit(rebound.rebind());
+                    ::std::result::Result::Ok(#name::#vname(inner))
+                }
+            }
+        })
+        .collect();
+
     let error_labels: Vec<String> = variant_names.iter().map(|v| v.to_string()).collect();
 
     Ok(quote! {
-        impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
-            type Rules = #rules_type;
+        const _: () = {
+            static PEEK_REGEX: ::std::sync::OnceLock<::regex::Regex> = ::std::sync::OnceLock::new();
 
-            const IS_TERMINAL: bool = false;
+            impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
+                type Rules = #rules_type;
 
-            fn first_patterns() -> &'static [&'static str] {
-                // Stub: will be fully implemented in a later task.
-                &[]
-            }
+                const IS_TERMINAL: bool = false;
 
-            fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
-                let mut peek_input = input.fork();
-                peek_input.consume_ignored();
-                let input = &peek_input;
-                #(#peek_arms)*
-                false
-            }
-
-            fn parse(input: &mut ::recursa_core::Input<#lt, Self::Rules>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
-                let mut fork = input.fork();
-                fork.consume_ignored();
-                let mut errors = ::std::vec::Vec::new();
-                #(#parse_arms)*
-                // None matched -- collect errors for all variants
-                if errors.is_empty() {
-                    #(
-                        errors.push(::recursa_core::ParseError::new(
-                            fork.source().to_string(),
-                            fork.cursor()..fork.cursor(),
-                            #error_labels,
-                        ));
-                    )*
+                fn first_patterns() -> &'static [&'static str] {
+                    static PATTERNS: ::std::sync::OnceLock<::std::vec::Vec<&'static str>> = ::std::sync::OnceLock::new();
+                    PATTERNS.get_or_init(|| {
+                        let mut patterns = ::std::vec::Vec::new();
+                        #(#first_patterns_extends)*
+                        patterns
+                    })
                 }
-                Err(::recursa_core::ParseError::merge(errors))
+
+                fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
+                    let regex = PEEK_REGEX.get_or_init(|| {
+                        let ignore = <#rules_type as ::recursa_core::ParseRules>::IGNORE;
+                        let sep = if ignore.is_empty() {
+                            ::std::string::String::new()
+                        } else {
+                            ::std::format!("(?:{})?", ignore)
+                        };
+
+                        let mut variant_patterns = ::std::vec::Vec::new();
+                        #(#regex_build_arms)*
+
+                        let combined = ::std::format!(r"\A(?:{})", variant_patterns.join("|"));
+                        ::regex::Regex::new(&combined).unwrap()
+                    });
+                    let mut peek_input = input.fork();
+                    peek_input.consume_ignored();
+                    regex.is_match(peek_input.remaining())
+                }
+
+                fn parse(input: &mut ::recursa_core::Input<#lt, Self::Rules>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+                    let regex = PEEK_REGEX.get_or_init(|| {
+                        let ignore = <#rules_type as ::recursa_core::ParseRules>::IGNORE;
+                        let sep = if ignore.is_empty() {
+                            ::std::string::String::new()
+                        } else {
+                            ::std::format!("(?:{})?", ignore)
+                        };
+
+                        let mut variant_patterns = ::std::vec::Vec::new();
+                        #(#regex_build_arms)*
+
+                        let combined = ::std::format!(r"\A(?:{})", variant_patterns.join("|"));
+                        ::regex::Regex::new(&combined).unwrap()
+                    });
+                    let mut fork = input.fork();
+                    fork.consume_ignored();
+
+                    let captures = match regex.captures(fork.remaining()) {
+                        ::std::option::Option::Some(c) => c,
+                        ::std::option::Option::None => {
+                            let mut errors = ::std::vec::Vec::new();
+                            #(
+                                errors.push(::recursa_core::ParseError::new(
+                                    fork.source().to_string(),
+                                    fork.cursor()..fork.cursor(),
+                                    #error_labels,
+                                ));
+                            )*
+                            return ::std::result::Result::Err(::recursa_core::ParseError::merge(errors));
+                        }
+                    };
+
+                    // Find longest match, declaration order tiebreaker
+                    let mut best_len = 0usize;
+                    let mut best_index: ::std::option::Option<usize> = ::std::option::Option::None;
+                    #(#capture_check_arms)*
+
+                    match best_index {
+                        #(#dispatch_arms)*
+                        _ => {
+                            let mut errors = ::std::vec::Vec::new();
+                            #(
+                                errors.push(::recursa_core::ParseError::new(
+                                    fork.source().to_string(),
+                                    fork.cursor()..fork.cursor(),
+                                    #error_labels,
+                                ));
+                            )*
+                            ::std::result::Result::Err(::recursa_core::ParseError::merge(errors))
+                        }
+                    }
+                }
             }
-        }
+        };
     })
 }
 
