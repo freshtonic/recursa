@@ -71,14 +71,14 @@ mod tests {
 
     #[test]
     fn input_starts_at_zero() {
-        let input = Input::<NoRules>::new("hello world");
+        let input = Input::new("hello world");
         assert_eq!(input.cursor(), 0);
         assert_eq!(input.remaining(), "hello world");
     }
 
     #[test]
     fn input_advance() {
-        let mut input = Input::<NoRules>::new("hello world");
+        let mut input = Input::new("hello world");
         input.advance(5);
         assert_eq!(input.cursor(), 5);
         assert_eq!(input.remaining(), " world");
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn input_fork_does_not_affect_original() {
-        let input = Input::<NoRules>::new("hello world");
+        let input = Input::new("hello world");
         let mut fork = input.fork();
         fork.advance(5);
         assert_eq!(input.cursor(), 0);
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn input_fork_commit() {
-        let mut input = Input::<NoRules>::new("hello world");
+        let mut input = Input::new("hello world");
         let mut fork = input.fork();
         fork.advance(5);
         input.commit(fork);
@@ -104,13 +104,13 @@ mod tests {
 
     #[test]
     fn input_source() {
-        let input = Input::<NoRules>::new("hello world");
+        let input = Input::new("hello world");
         assert_eq!(input.source(), "hello world");
     }
 
     #[test]
     fn input_is_empty_at_end() {
-        let mut input = Input::<NoRules>::new("hi");
+        let mut input = Input::new("hi");
         assert!(!input.is_empty());
         input.advance(2);
         assert!(input.is_empty());
@@ -155,26 +155,26 @@ mod tests {
 
     #[test]
     fn scan_keyword_peek() {
-        let input = Input::<NoRules>::new("test foo");
+        let input = Input::new("test foo");
         assert!(<TestKeyword as Scan>::peek(&input));
     }
 
     #[test]
     fn scan_keyword_peek_fails() {
-        let input = Input::<NoRules>::new("foo bar");
+        let input = Input::new("foo bar");
         assert!(!<TestKeyword as Scan>::peek(&input));
     }
 
     #[test]
     fn scan_keyword_parse() {
-        let mut input = Input::<NoRules>::new("test foo");
+        let mut input = Input::new("test foo");
         let _kw = <TestKeyword as Scan>::parse(&mut input).unwrap();
         assert_eq!(input.cursor(), 4);
     }
 
     #[test]
     fn scan_ident_parse_captures() {
-        let mut input = Input::<NoRules>::new("hello world");
+        let mut input = Input::new("hello world");
         let ident = <TestIdent as Scan>::parse(&mut input).unwrap();
         assert_eq!(ident.0, "hello");
         assert_eq!(input.cursor(), 5);
@@ -183,20 +183,20 @@ mod tests {
     #[test]
     fn scan_type_implements_parse() {
         // TestKeyword implements Scan, so it should also implement Parse
-        let mut input = Input::<NoRules>::new("test foo");
+        let mut input = Input::new("test foo");
         let _kw = <TestKeyword as Parse>::parse(&mut input).unwrap();
         assert_eq!(input.cursor(), 4);
     }
 
     #[test]
     fn scan_type_peek_through_parse() {
-        let input = Input::<NoRules>::new("test foo");
+        let input = Input::new("test foo");
         assert!(<TestKeyword as Parse>::peek(&input));
     }
 
     #[test]
     fn scan_type_peek_through_parse_fails() {
-        let input = Input::<NoRules>::new("foo bar");
+        let input = Input::new("foo bar");
         assert!(!<TestKeyword as Parse>::peek(&input));
     }
 
@@ -227,38 +227,28 @@ mod tests {
 
     #[test]
     fn input_consume_ignored_skips_whitespace() {
-        let mut input = Input::<WhitespaceRules>::new("   hello");
-        input.consume_ignored();
+        let mut input = Input::new("   hello");
+        input.consume_ignored(WhitespaceRules::IGNORE);
         assert_eq!(input.remaining(), "hello");
     }
 
     #[test]
     fn input_consume_ignored_noop_when_no_whitespace() {
-        let mut input = Input::<WhitespaceRules>::new("hello");
-        input.consume_ignored();
+        let mut input = Input::new("hello");
+        input.consume_ignored(WhitespaceRules::IGNORE);
         assert_eq!(input.remaining(), "hello");
     }
 
     #[test]
     fn input_consume_ignored_noop_for_no_rules() {
-        let mut input = Input::<NoRules>::new("   hello");
-        input.consume_ignored();
+        let mut input = Input::new("   hello");
+        input.consume_ignored(NoRules::IGNORE);
         assert_eq!(input.remaining(), "   hello");
     }
 
     #[test]
-    fn input_rebind_preserves_cursor() {
-        let mut input = Input::<WhitespaceRules>::new("hello world");
-        input.advance(6);
-        let rebound: Input<'_, NoRules> = input.rebind();
-        assert_eq!(rebound.cursor(), 6);
-        assert_eq!(rebound.remaining(), "world");
-        assert_eq!(rebound.source(), "hello world");
-    }
-
-    #[test]
     fn box_parse_delegates_to_inner() {
-        let mut input = Input::<NoRules>::new("test foo");
+        let mut input = Input::new("test foo");
         let boxed = <Box<TestKeyword> as Parse>::parse(&mut input).unwrap();
         let _: Box<TestKeyword> = boxed;
         assert_eq!(input.cursor(), 4);
@@ -266,7 +256,7 @@ mod tests {
 
     #[test]
     fn box_peek_delegates_to_inner() {
-        let input = Input::<NoRules>::new("test foo");
+        let input = Input::new("test foo");
         assert!(<Box<TestKeyword> as Parse>::peek(&input));
     }
 
@@ -285,7 +275,7 @@ mod tests {
 
     #[test]
     fn option_parse_some_when_peek_matches() {
-        let mut input = Input::<NoRules>::new("test foo");
+        let mut input = Input::new("test foo");
         let result = <Option<TestKeyword> as Parse>::parse(&mut input).unwrap();
         assert!(result.is_some());
         assert_eq!(input.cursor(), 4);
@@ -293,7 +283,7 @@ mod tests {
 
     #[test]
     fn option_parse_none_when_peek_fails() {
-        let mut input = Input::<NoRules>::new("foo bar");
+        let mut input = Input::new("foo bar");
         let result = <Option<TestKeyword> as Parse>::parse(&mut input).unwrap();
         assert!(result.is_none());
         assert_eq!(input.cursor(), 0); // no input consumed
@@ -301,10 +291,10 @@ mod tests {
 
     #[test]
     fn option_peek_delegates() {
-        let input = Input::<NoRules>::new("test foo");
+        let input = Input::new("test foo");
         assert!(<Option<TestKeyword> as Parse>::peek(&input));
 
-        let input2 = Input::<NoRules>::new("foo bar");
+        let input2 = Input::new("foo bar");
         assert!(!<Option<TestKeyword> as Parse>::peek(&input2));
     }
 
@@ -314,19 +304,6 @@ mod tests {
             <Option<TestKeyword> as Parse>::first_pattern(),
             <TestKeyword as Parse>::first_pattern()
         );
-    }
-
-    #[test]
-    fn input_rebind_roundtrip() {
-        let mut input = Input::<WhitespaceRules>::new("  hello");
-        input.consume_ignored();
-        let mut rebound: Input<'_, NoRules> = input.rebind();
-        let _kw = <TestIdent as Scan>::parse(&mut rebound).unwrap();
-        // Commit the rebound back via rebind
-        let back: Input<'_, WhitespaceRules> = rebound.rebind();
-        input.commit(back);
-        assert_eq!(input.cursor(), 7);
-        assert!(input.is_empty());
     }
 
     use crate::seq::Seq;

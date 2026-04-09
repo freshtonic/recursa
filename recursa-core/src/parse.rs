@@ -22,15 +22,15 @@ pub trait Parse<'input>: Sized {
     /// For enums: an alternation of variant patterns wrapped in groups
     ///   (e.g., `"(pub(?:\\s+)?fn)|(pub(?:\\s+)?struct)"`).
     ///
-    /// The returned string is a regex fragment, not a complete regex —
+    /// The returned string is a regex fragment, not a complete regex --
     /// it has no `\A` anchor. Callers are responsible for anchoring.
     fn first_pattern() -> &'static str;
 
     /// Check whether this production can start at the current input position.
-    fn peek(input: &Input<'input, Self::Rules>) -> bool;
+    fn peek(input: &Input<'input>) -> bool;
 
     /// Parse this production, advancing the input on success.
-    fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError>;
+    fn parse(input: &mut Input<'input>) -> Result<Self, ParseError>;
 }
 
 /// Blanket implementation: `Box<T>` delegates to `T`.
@@ -43,11 +43,11 @@ impl<'input, T: Parse<'input>> Parse<'input> for Box<T> {
         T::first_pattern()
     }
 
-    fn peek(input: &Input<'input, Self::Rules>) -> bool {
+    fn peek(input: &Input<'input>) -> bool {
         T::peek(input)
     }
 
-    fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError> {
+    fn parse(input: &mut Input<'input>) -> Result<Self, ParseError> {
         Ok(Box::new(T::parse(input)?))
     }
 }
@@ -63,11 +63,11 @@ impl<'input, T: Parse<'input>> Parse<'input> for Option<T> {
         T::first_pattern()
     }
 
-    fn peek(input: &Input<'input, Self::Rules>) -> bool {
+    fn peek(input: &Input<'input>) -> bool {
         T::peek(input)
     }
 
-    fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError> {
+    fn parse(input: &mut Input<'input>) -> Result<Self, ParseError> {
         if T::peek(input) {
             Ok(Some(T::parse(input)?))
         } else {
@@ -102,12 +102,12 @@ macro_rules! impl_parse_for_scan {
                 <$ty as $crate::Scan>::PATTERN
             }
 
-            fn peek(input: &$crate::Input<'input, $crate::NoRules>) -> bool {
+            fn peek(input: &$crate::Input<'input>) -> bool {
                 <$ty as $crate::Scan>::peek(input)
             }
 
             fn parse(
-                input: &mut $crate::Input<'input, $crate::NoRules>,
+                input: &mut $crate::Input<'input>,
             ) -> ::std::result::Result<Self, $crate::ParseError> {
                 <$ty as $crate::Scan>::parse(input)
             }

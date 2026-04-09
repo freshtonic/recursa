@@ -2,7 +2,6 @@ use regex::Regex;
 
 use crate::error::ParseError;
 use crate::input::Input;
-use crate::rules::NoRules;
 
 /// Leaf-level token matching via regex.
 ///
@@ -21,12 +20,12 @@ pub trait Scan<'input>: Sized {
     fn from_match(matched: &'input str) -> Result<Self, ParseError>;
 
     /// Check whether this token can be parsed at the current position without advancing.
-    fn peek(input: &Input<'input, NoRules>) -> bool {
+    fn peek(input: &Input<'input>) -> bool {
         Self::regex().is_match(input.remaining())
     }
 
     /// Attempt to parse this token, advancing the input on success.
-    fn parse(input: &mut Input<'input, NoRules>) -> Result<Self, ParseError> {
+    fn parse(input: &mut Input<'input>) -> Result<Self, ParseError> {
         match Self::regex().find(input.remaining()) {
             Some(m) if m.start() == 0 => {
                 let matched = &input.source()[input.cursor()..input.cursor() + m.len()];
