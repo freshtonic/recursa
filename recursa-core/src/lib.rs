@@ -336,7 +336,7 @@ mod tests {
         let seq: Seq<i32, ()> = Seq::empty();
         assert_eq!(seq.len(), 0);
         assert!(seq.is_empty());
-        let elements: &Vec<i32> = &seq;
+        let elements: &[i32] = &seq;
         assert!(elements.is_empty());
     }
 
@@ -345,7 +345,7 @@ mod tests {
         let pairs = vec![(1, Some(())), (2, Some(())), (3, None)];
         let seq: Seq<i32, ()> = Seq::from_pairs(pairs);
         assert_eq!(seq.len(), 3);
-        let elements: &Vec<i32> = &seq;
+        let elements: &[i32] = &seq;
         assert_eq!(elements, &[1, 2, 3]);
     }
 

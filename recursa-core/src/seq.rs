@@ -83,9 +83,18 @@ impl<T: Clone, S, R: ParseRules> Seq<T, S, R, NoTrailing, AllowEmpty> {
     }
 }
 
-/// Deref to `Vec<T>` for `AllowEmpty` variants.
+/// Deref to `[T]` for `AllowEmpty` variants.
 impl<T: Clone, S, R: ParseRules, Trailing> Deref for Seq<T, S, R, Trailing, AllowEmpty> {
-    type Target = Vec<T>;
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        &self.elements
+    }
+}
+
+/// Deref to `[T]` for `NonEmpty` variants.
+impl<T: Clone, S, R: ParseRules, Trailing> Deref for Seq<T, S, R, Trailing, NonEmpty> {
+    type Target = [T];
 
     fn deref(&self) -> &Self::Target {
         &self.elements
@@ -100,7 +109,119 @@ impl<T: fmt::Debug, S: fmt::Debug, R: ParseRules, Trailing, Empty> fmt::Debug
     }
 }
 
-// -- Parse implementations --
+// -- Parse loop helpers --
+//
+// Each trailing policy has its own loop body logic, but the overall structure
+// (peek-for-first, loop, collect pairs) is shared. These helpers parse elements
+// after the initial element peek has already succeeded, reducing duplication
+// across the six Parse impls (3 trailing policies x 2 emptiness policies).
+
+/// Parse a no-trailing separated list. Caller must ensure the first element
+/// is peekable before calling.
+fn parse_no_trailing<'input, T, S, R>(
+    input: &mut Input<'input, R>,
+) -> Result<Vec<(T, Option<S>)>, ParseError>
+where
+    T: Parse<'input> + Clone,
+    S: Scan<'input> + Clone,
+    R: ParseRules,
+{
+    let mut pairs = Vec::new();
+    loop {
+        let mut rebound = input.rebind::<<T as Parse>::Rules>();
+        let element = <T as Parse>::parse(&mut rebound)?;
+        input.commit(rebound.rebind());
+
+        input.consume_ignored();
+        let rebound = input.rebind::<NoRules>();
+        if !<S as Scan>::peek(&rebound) {
+            pairs.push((element, None));
+            break;
+        }
+
+        let mut rebound = input.rebind::<NoRules>();
+        let sep = <S as Scan>::parse(&mut rebound)?;
+        input.commit(rebound.rebind());
+
+        pairs.push((element, Some(sep)));
+        input.consume_ignored();
+    }
+    Ok(pairs)
+}
+
+/// Parse an optional-trailing separated list. Caller must ensure the first
+/// element is peekable before calling.
+fn parse_optional_trailing<'input, T, S, R>(
+    input: &mut Input<'input, R>,
+) -> Result<Vec<(T, Option<S>)>, ParseError>
+where
+    T: Parse<'input> + Clone,
+    S: Scan<'input> + Clone,
+    R: ParseRules,
+{
+    let mut pairs = Vec::new();
+    loop {
+        let mut rebound = input.rebind::<<T as Parse>::Rules>();
+        let element = <T as Parse>::parse(&mut rebound)?;
+        input.commit(rebound.rebind());
+
+        input.consume_ignored();
+        let rebound = input.rebind::<NoRules>();
+        if !<S as Scan>::peek(&rebound) {
+            pairs.push((element, None));
+            break;
+        }
+
+        let mut rebound = input.rebind::<NoRules>();
+        let sep = <S as Scan>::parse(&mut rebound)?;
+        input.commit(rebound.rebind());
+
+        // Peek for next element -- if absent, this was a trailing separator
+        input.consume_ignored();
+        let rebound = input.rebind::<<T as Parse>::Rules>();
+        if !<T as Parse>::peek(&rebound) {
+            pairs.push((element, Some(sep)));
+            break;
+        }
+
+        pairs.push((element, Some(sep)));
+    }
+    Ok(pairs)
+}
+
+/// Parse a required-trailing separated list. Caller must ensure the first
+/// element is peekable before calling.
+fn parse_required_trailing<'input, T, S, R>(
+    input: &mut Input<'input, R>,
+) -> Result<Vec<(T, Option<S>)>, ParseError>
+where
+    T: Parse<'input> + Clone,
+    S: Scan<'input> + Clone,
+    R: ParseRules,
+{
+    let mut pairs = Vec::new();
+    loop {
+        let mut rebound = input.rebind::<<T as Parse>::Rules>();
+        let element = <T as Parse>::parse(&mut rebound)?;
+        input.commit(rebound.rebind());
+
+        input.consume_ignored();
+        let mut rebound = input.rebind::<NoRules>();
+        let sep = <S as Scan>::parse(&mut rebound)?;
+        input.commit(rebound.rebind());
+
+        pairs.push((element, Some(sep)));
+
+        input.consume_ignored();
+        let rebound = input.rebind::<<T as Parse>::Rules>();
+        if !<T as Parse>::peek(&rebound) {
+            break;
+        }
+    }
+    Ok(pairs)
+}
+
+// -- Parse implementations: AllowEmpty --
 
 impl<'input, T, S, R> Parse<'input> for Seq<T, S, R, NoTrailing, AllowEmpty>
 where
@@ -116,45 +237,16 @@ where
     }
 
     fn peek(_input: &Input<'input, Self::Rules>) -> bool {
-        // AllowEmpty: always valid (might parse zero elements)
         true
     }
 
     fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError> {
-        let mut pairs = Vec::new();
-
-        // Peek for first element
         input.consume_ignored();
         let rebound = input.rebind::<<T as Parse>::Rules>();
         if !<T as Parse>::peek(&rebound) {
-            return Ok(Self::from_pairs(pairs));
+            return Ok(Self::from_pairs(Vec::new()));
         }
-
-        loop {
-            // Parse element
-            let mut rebound = input.rebind::<<T as Parse>::Rules>();
-            let element = <T as Parse>::parse(&mut rebound)?;
-            input.commit(rebound.rebind());
-
-            // Peek for separator
-            input.consume_ignored();
-            let rebound = input.rebind::<NoRules>();
-            if !<S as Scan>::peek(&rebound) {
-                // No separator -- this is the last element
-                pairs.push((element, None));
-                break;
-            }
-
-            // Parse separator
-            let mut rebound = input.rebind::<NoRules>();
-            let sep = <S as Scan>::parse(&mut rebound)?;
-            input.commit(rebound.rebind());
-
-            pairs.push((element, Some(sep)));
-
-            input.consume_ignored();
-        }
-
+        let pairs = parse_no_trailing::<T, S, R>(input)?;
         Ok(Self::from_pairs(pairs))
     }
 }
@@ -173,51 +265,16 @@ where
     }
 
     fn peek(_input: &Input<'input, Self::Rules>) -> bool {
-        // AllowEmpty: always valid
         true
     }
 
     fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError> {
-        let mut pairs = Vec::new();
-
-        // Peek for first element
         input.consume_ignored();
         let rebound = input.rebind::<<T as Parse>::Rules>();
         if !<T as Parse>::peek(&rebound) {
-            return Ok(Self::from_pairs(pairs));
+            return Ok(Self::from_pairs(Vec::new()));
         }
-
-        loop {
-            // Parse element
-            let mut rebound = input.rebind::<<T as Parse>::Rules>();
-            let element = <T as Parse>::parse(&mut rebound)?;
-            input.commit(rebound.rebind());
-
-            // Peek for separator
-            input.consume_ignored();
-            let rebound = input.rebind::<NoRules>();
-            if !<S as Scan>::peek(&rebound) {
-                // No separator -- last element without trailing
-                pairs.push((element, None));
-                break;
-            }
-
-            // Parse separator
-            let mut rebound = input.rebind::<NoRules>();
-            let sep = <S as Scan>::parse(&mut rebound)?;
-            input.commit(rebound.rebind());
-
-            // Peek for next element -- if absent, this was a trailing separator
-            input.consume_ignored();
-            let rebound = input.rebind::<<T as Parse>::Rules>();
-            if !<T as Parse>::peek(&rebound) {
-                pairs.push((element, Some(sep)));
-                break;
-            }
-
-            pairs.push((element, Some(sep)));
-        }
-
+        let pairs = parse_optional_trailing::<T, S, R>(input)?;
         Ok(Self::from_pairs(pairs))
     }
 }
@@ -236,42 +293,117 @@ where
     }
 
     fn peek(_input: &Input<'input, Self::Rules>) -> bool {
-        // AllowEmpty: always valid
         true
     }
 
     fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError> {
-        let mut pairs = Vec::new();
-
-        // Peek for first element
         input.consume_ignored();
         let rebound = input.rebind::<<T as Parse>::Rules>();
         if !<T as Parse>::peek(&rebound) {
-            return Ok(Self::from_pairs(pairs));
+            return Ok(Self::from_pairs(Vec::new()));
         }
+        let pairs = parse_required_trailing::<T, S, R>(input)?;
+        Ok(Self::from_pairs(pairs))
+    }
+}
 
-        loop {
-            // Parse element
-            let mut rebound = input.rebind::<<T as Parse>::Rules>();
-            let element = <T as Parse>::parse(&mut rebound)?;
-            input.commit(rebound.rebind());
+// -- Parse implementations: NonEmpty --
 
-            // Parse separator (required -- error if missing)
-            input.consume_ignored();
-            let mut rebound = input.rebind::<NoRules>();
-            let sep = <S as Scan>::parse(&mut rebound)?;
-            input.commit(rebound.rebind());
+impl<'input, T, S, R> Parse<'input> for Seq<T, S, R, NoTrailing, NonEmpty>
+where
+    T: Parse<'input> + Clone,
+    S: Scan<'input> + Clone,
+    R: ParseRules,
+{
+    type Rules = R;
+    const IS_TERMINAL: bool = false;
 
-            pairs.push((element, Some(sep)));
+    fn first_pattern() -> &'static str {
+        T::first_pattern()
+    }
 
-            // Peek for next element -- if absent, we're done
-            input.consume_ignored();
-            let rebound = input.rebind::<<T as Parse>::Rules>();
-            if !<T as Parse>::peek(&rebound) {
-                break;
-            }
+    fn peek(input: &Input<'input, Self::Rules>) -> bool {
+        let rebound = input.rebind::<<T as Parse>::Rules>();
+        <T as Parse>::peek(&rebound)
+    }
+
+    fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError> {
+        input.consume_ignored();
+        let rebound = input.rebind::<<T as Parse>::Rules>();
+        if !<T as Parse>::peek(&rebound) {
+            return Err(ParseError::new(
+                input.source(),
+                input.cursor()..input.cursor(),
+                T::first_pattern(),
+            ));
         }
+        let pairs = parse_no_trailing::<T, S, R>(input)?;
+        Ok(Self::from_pairs(pairs))
+    }
+}
 
+impl<'input, T, S, R> Parse<'input> for Seq<T, S, R, OptionalTrailing, NonEmpty>
+where
+    T: Parse<'input> + Clone,
+    S: Scan<'input> + Clone,
+    R: ParseRules,
+{
+    type Rules = R;
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        T::first_pattern()
+    }
+
+    fn peek(input: &Input<'input, Self::Rules>) -> bool {
+        let rebound = input.rebind::<<T as Parse>::Rules>();
+        <T as Parse>::peek(&rebound)
+    }
+
+    fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError> {
+        input.consume_ignored();
+        let rebound = input.rebind::<<T as Parse>::Rules>();
+        if !<T as Parse>::peek(&rebound) {
+            return Err(ParseError::new(
+                input.source(),
+                input.cursor()..input.cursor(),
+                T::first_pattern(),
+            ));
+        }
+        let pairs = parse_optional_trailing::<T, S, R>(input)?;
+        Ok(Self::from_pairs(pairs))
+    }
+}
+
+impl<'input, T, S, R> Parse<'input> for Seq<T, S, R, RequiredTrailing, NonEmpty>
+where
+    T: Parse<'input> + Clone,
+    S: Scan<'input> + Clone,
+    R: ParseRules,
+{
+    type Rules = R;
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        T::first_pattern()
+    }
+
+    fn peek(input: &Input<'input, Self::Rules>) -> bool {
+        let rebound = input.rebind::<<T as Parse>::Rules>();
+        <T as Parse>::peek(&rebound)
+    }
+
+    fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError> {
+        input.consume_ignored();
+        let rebound = input.rebind::<<T as Parse>::Rules>();
+        if !<T as Parse>::peek(&rebound) {
+            return Err(ParseError::new(
+                input.source(),
+                input.cursor()..input.cursor(),
+                T::first_pattern(),
+            ));
+        }
+        let pairs = parse_required_trailing::<T, S, R>(input)?;
         Ok(Self::from_pairs(pairs))
     }
 }
