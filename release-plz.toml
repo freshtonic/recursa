@@ -1,0 +1,34 @@
+[workspace]
+changelog_update = true
+git_release_enable = true
+git_tag_enable = true
+
+[changelog]
+body = """
+{% if version %}\
+## [{{ version }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | upper_first }}\
+{% if commit.breaking %} (**BREAKING**){% endif %}\
+
+{% endfor %}
+{% endfor %}
+"""
+commit_parsers = [
+    { message = "^feat", group = "Features" },
+    { message = "^fix", group = "Bug Fixes" },
+    { message = "^perf", group = "Performance" },
+    { body = ".*BREAKING.*", group = "Breaking Changes" },
+    { message = "^refactor", skip = true },
+    { message = "^docs", skip = true },
+    { message = "^test", skip = true },
+    { message = "^ci", skip = true },
+    { message = "^chore", skip = true },
+    { message = "^style", skip = true },
+    { message = "^build", skip = true },
+]

@@ -6,6 +6,10 @@ resolver = "3"
 name = "recursa"
 version = "0.1.0"
 edition = "2024"
+description = "Derive recursive descent parsers from Rust types"
+license = "MIT"
+repository = "https://github.com/freshtonic/recursa"
+readme = "README.md"
 
 [dependencies]
 recursa-core = { path = "recursa-core" }

@@ -2,6 +2,10 @@
 name = "recursa-core"
 version = "0.1.0"
 edition = "2024"
+description = "Core traits and types for the recursa parser framework"
+license = "MIT"
+repository = "https://github.com/freshtonic/recursa"
+readme = "README.md"
 
 [dependencies]
 regex = "1"

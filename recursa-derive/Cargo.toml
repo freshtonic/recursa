@@ -2,6 +2,10 @@
 name = "recursa-derive"
 version = "0.1.0"
 edition = "2024"
+description = "Derive macros for the recursa parser framework"
+license = "MIT"
+repository = "https://github.com/freshtonic/recursa"
+readme = "README.md"
 
 [lib]
 proc-macro = true

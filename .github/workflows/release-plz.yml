@@ -1,0 +1,113 @@
+name: Release-plz
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+
+  # Check if the commit came from a merged release-plz PR.
+  check-release-pr:
+    name: Check for merged release PR
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'freshtonic' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+    outputs:
+      is_release: ${{ steps.check.outputs.is_release }}
+    steps:
+      - name: Check if commit is from a release-plz PR
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=${{ github.event.workflow_run.head_sha }}
+          BRANCH=$(gh api repos/${{ github.repository }}/commits/$SHA/pulls --jq '.[0].head.ref // ""')
+          if [[ "$BRANCH" == release-plz-* ]]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Release unpublished packages (only after a release PR is merged).
+  release-plz-release:
+    name: Release-plz release
+    runs-on: ubuntu-latest
+    needs: check-release-pr
+    if: ${{ needs.check-release-pr.outputs.is_release == 'true' }}
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Check if the push contains changes that affect the compiled artifact.
+  check-release-relevant:
+    name: Check for release-relevant changes
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'freshtonic' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+    outputs:
+      has_changes: ${{ steps.filter.outputs.has_changes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Check for artifact-relevant changes since last release
+        id: filter
+        run: |
+          # Find the latest semver release tag
+          LAST_TAG=$(git tag --list --sort=-v:refname \
+            | grep -E '^(v|recursa-v)[0-9]+\.[0-9]+\.[0-9]+' \
+            | head -1)
+          if [ -z "$LAST_TAG" ]; then
+            CHANGED=$(git diff --name-only "$(git rev-list --max-parents=0 HEAD)" HEAD)
+          else
+            CHANGED=$(git diff --name-only "$LAST_TAG" HEAD)
+          fi
+          if echo "$CHANGED" | grep -qE '^(src/|recursa-core/src/|recursa-derive/src/|Cargo\.(toml|lock))'; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Create a PR with the new versions and changelog, preparing the next release.
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    needs: check-release-relevant
+    if: ${{ needs.check-release-relevant.outputs.has_changes == 'true' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
