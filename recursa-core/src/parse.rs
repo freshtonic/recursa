@@ -52,6 +52,30 @@ impl<'input, T: Parse<'input>> Parse<'input> for Box<T> {
     }
 }
 
+/// Blanket implementation: `Option<T>` is peek-based.
+/// Returns `Some(T)` if `T::peek` succeeds, `None` otherwise.
+/// If peek succeeds but parse fails, the error propagates.
+impl<'input, T: Parse<'input>> Parse<'input> for Option<T> {
+    type Rules = T::Rules;
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        T::first_pattern()
+    }
+
+    fn peek(input: &Input<'input, Self::Rules>) -> bool {
+        T::peek(input)
+    }
+
+    fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError> {
+        if T::peek(input) {
+            Ok(Some(T::parse(input)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 /// Implements `Parse` for a type that already implements `Scan`.
 ///
 /// This bridges `Scan` types into the `Parse` trait with `NoRules` and

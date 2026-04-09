@@ -283,6 +283,39 @@ mod tests {
     }
 
     #[test]
+    fn option_parse_some_when_peek_matches() {
+        let mut input = Input::<NoRules>::new("test foo");
+        let result = <Option<TestKeyword> as Parse>::parse(&mut input).unwrap();
+        assert!(result.is_some());
+        assert_eq!(input.cursor(), 4);
+    }
+
+    #[test]
+    fn option_parse_none_when_peek_fails() {
+        let mut input = Input::<NoRules>::new("foo bar");
+        let result = <Option<TestKeyword> as Parse>::parse(&mut input).unwrap();
+        assert!(result.is_none());
+        assert_eq!(input.cursor(), 0); // no input consumed
+    }
+
+    #[test]
+    fn option_peek_delegates() {
+        let input = Input::<NoRules>::new("test foo");
+        assert!(<Option<TestKeyword> as Parse>::peek(&input));
+
+        let input2 = Input::<NoRules>::new("foo bar");
+        assert!(!<Option<TestKeyword> as Parse>::peek(&input2));
+    }
+
+    #[test]
+    fn option_first_pattern_delegates() {
+        assert_eq!(
+            <Option<TestKeyword> as Parse>::first_pattern(),
+            <TestKeyword as Parse>::first_pattern()
+        );
+    }
+
+    #[test]
     fn input_rebind_roundtrip() {
         let mut input = Input::<WhitespaceRules>::new("  hello");
         input.consume_ignored();
