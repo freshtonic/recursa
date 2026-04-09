@@ -202,15 +202,16 @@ mod tests {
     }
 
     #[test]
-    fn scan_type_first_patterns() {
-        let patterns = <TestKeyword as Parse>::first_patterns();
-        assert_eq!(patterns, &["test"]);
+    fn scan_type_first_pattern() {
+        assert_eq!(<TestKeyword as Parse>::first_pattern(), "test");
     }
 
     #[test]
-    fn scan_ident_first_patterns() {
-        let patterns = <TestIdent as Parse>::first_patterns();
-        assert_eq!(patterns, &[r"[a-zA-Z_][a-zA-Z0-9_]*"]);
+    fn scan_ident_first_pattern() {
+        assert_eq!(
+            <TestIdent as Parse>::first_pattern(),
+            r"[a-zA-Z_][a-zA-Z0-9_]*"
+        );
     }
 
     struct WhitespaceRules;

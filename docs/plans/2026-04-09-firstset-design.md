@@ -10,6 +10,8 @@ Currently, enum `Parse` dispatch tries each variant's `peek` sequentially. If tw
 
 Runtime construction via trait methods. No complex type-level encoding. Combined peek regexes are cached in `OnceLock` for zero-cost after first use.
 
+Each `Parse` type exposes a `first_pattern()` method returning a single `&'static str` — a self-contained regex fragment representing the terminal prefix of that production. The fragment composes correctly when embedded in larger patterns because enums wrap their variant patterns in groups to preserve alternation boundaries.
+
 ## Trait Changes
 
 Add two items to `Parse`:
@@ -21,10 +23,17 @@ pub trait Parse<'input>: Sized {
     /// Whether this type is a leaf token (Scan type) or a composite production.
     const IS_TERMINAL: bool;
 
-    /// The terminal prefix patterns for this production.
-    /// Scan types return their single pattern. Structs return
-    /// consecutive terminal field patterns from the start.
-    fn first_patterns() -> &'static [&'static str];
+    /// A regex fragment representing the terminal prefix of this production.
+    ///
+    /// For Scan types: the token's pattern (e.g., `"let"`).
+    /// For structs: consecutive terminal field patterns joined with IGNORE
+    ///   (e.g., `"pub(?:\\s+)fn"`).
+    /// For enums: an alternation of variant patterns wrapped in groups
+    ///   (e.g., `"(pub(?:\\s+)fn)|(pub(?:\\s+)struct)"`).
+    ///
+    /// The returned string is a regex fragment, not a complete regex —
+    /// it has no `\A` anchor. Callers are responsible for anchoring.
+    fn first_pattern() -> &'static str;
 
     fn peek(input: &Input<'input, Self::Rules>) -> bool;
     fn parse(input: &mut Input<'input, Self::Rules>) -> Result<Self, ParseError>;
@@ -38,61 +47,83 @@ pub trait Parse<'input>: Sized {
 ```rust
 const IS_TERMINAL: bool = true;
 
-fn first_patterns() -> &'static [&'static str] {
-    &[Self::PATTERN]
+fn first_pattern() -> &'static str {
+    Self::PATTERN  // e.g., "let", "[0-9]+"
 }
 ```
 
-No `OnceLock` needed — returns a const slice.
+No `OnceLock` needed — `PATTERN` is already `&'static str`.
 
 ### Struct
 
 ```rust
 const IS_TERMINAL: bool = false;
 
-fn first_patterns() -> &'static [&'static str] {
-    static PATTERNS: OnceLock<Vec<&'static str>> = OnceLock::new();
-    PATTERNS.get_or_init(|| {
-        let mut patterns = Vec::new();
-        // For each field from the start, while IS_TERMINAL is true:
-        patterns.extend(<Field1Type as Parse>::first_patterns());
-        // if <Field1Type as Parse>::IS_TERMINAL:
-        patterns.extend(<Field2Type as Parse>::first_patterns());
-        // if <Field2Type as Parse>::IS_TERMINAL:
-        patterns.extend(<Field3Type as Parse>::first_patterns());
-        // ... stop at first non-terminal field
-        patterns
+fn first_pattern() -> &'static str {
+    static PATTERN: OnceLock<String> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        let ignore = <Rules>::IGNORE;
+        let sep = if ignore.is_empty() {
+            String::new()
+        } else {
+            format!("(?:{})?", ignore)
+        };
+
+        let mut parts = Vec::new();
+
+        // Walk consecutive terminal fields:
+        parts.push(<Field1Type as Parse>::first_pattern().to_string());
+        if <Field1Type as Parse>::IS_TERMINAL {
+            parts.push(<Field2Type as Parse>::first_pattern().to_string());
+            if <Field2Type as Parse>::IS_TERMINAL {
+                // ... continue
+            }
+        }
+
+        parts.join(&sep)
     })
 }
 ```
 
-Walks consecutive terminal fields, collecting their patterns into a flat list representing the longest terminal prefix of the struct.
+Walks consecutive terminal fields from the start, joining their patterns with `IGNORE` between them. The result is a regex fragment like `"pub(?:\s+)?fn(?:\s+)?[a-zA-Z_][a-zA-Z0-9_]*"`.
+
+Stops at the first non-terminal field, but includes that field's `first_pattern()` (which may itself be an alternation) because the non-terminal's prefix is still part of this struct's lookahead.
 
 ### Enum (non-Pratt)
 
 ```rust
 const IS_TERMINAL: bool = false;
+
+fn first_pattern() -> &'static str {
+    static PATTERN: OnceLock<String> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        let mut parts = Vec::new();
+        parts.push(format!("({})", <Variant1Type as Parse>::first_pattern()));
+        parts.push(format!("({})", <Variant2Type as Parse>::first_pattern()));
+        parts.join("|")
+    })
+}
 ```
 
-`first_patterns()` collects each variant's inner type's `first_patterns()`. The more important change is to `peek` and `parse`.
+Each variant's pattern is wrapped in a group `(...)` to preserve alternation boundaries when nested. The result is a regex fragment like `"(pub(?:\s+)?fn)|(pub(?:\s+)?struct)"`.
 
-**Combined peek regex construction:**
+**Why groups are necessary:**
 
-For each variant:
-1. Call `<InnerType as Parse>::first_patterns()` to get the terminal prefix (e.g., `["pub", "fn"]`)
-2. Join patterns with the `IGNORE` regex between them: `pub(?:\s+)fn`
-3. Wrap in a named capture group: `(?P<_0>pub(?:\s+)fn)`
+Without groups, nesting produces incorrect regexes. If variant 1's pattern is `"a|b"` and variant 2's is `"c"`, a naive join produces `"a|b|c"` — which loses the variant boundaries. With groups: `"(a|b)|(c)"` — correct.
 
-Join all variant prefixes with `|`, anchor with `\A`, cache in `OnceLock<Regex>`.
+**Combined peek regex for dispatch:**
 
-Example for an enum with `FnDecl` (starts `pub fn`) and `StructDecl` (starts `pub struct`):
+The enum's own `peek` and `parse` use a separate combined regex with *named* capture groups for variant identification:
+
 ```
-\A(?:(?P<_0>pub(?:\s+)fn)|(?P<_1>pub(?:\s+)struct))
+\A(?:(?P<_0>pub(?:\s+)?fn)|(?P<_1>pub(?:\s+)?struct))
 ```
+
+Built from each variant's `first_pattern()` wrapped in `(?P<_N>...)`.
 
 **Peek:** run combined regex against `input.remaining()`. Return true if any group matches.
 
-**Parse:** run combined regex, identify which named group matched (longest match, declaration order tiebreaker), parse only that variant. No need to try others.
+**Parse:** run combined regex, identify which named group matched (longest match, declaration order tiebreaker), parse only that variant.
 
 ### Enum (Pratt)
 
@@ -100,7 +131,29 @@ Example for an enum with `FnDecl` (starts `pub fn`) and `StructDecl` (starts `pu
 const IS_TERMINAL: bool = false;
 ```
 
-`first_patterns()` returns patterns from atom and prefix variants only (not infix, which are checked in the Pratt infix loop). Keeps existing sequential peek — atoms and prefix operators are single tokens, so the combined regex provides less benefit.
+`first_pattern()` returns an alternation of atom and prefix operator patterns only (not infix, which are checked in the Pratt infix loop). Keeps existing sequential peek.
+
+## Composability Example
+
+Given:
+
+```rust
+struct FnDecl { pub_kw: PubKw, fn_kw: FnKw, name: Ident, ... }
+struct StructDecl { pub_kw: PubKw, struct_kw: StructKw, name: Ident, ... }
+enum Declaration { Fn(FnDecl), Struct(StructDecl) }
+struct Module { decl: Declaration, semi: Semi }
+```
+
+The `first_pattern()` chain:
+
+- `PubKw`: `"pub"`
+- `FnKw`: `"fn"`
+- `FnDecl`: `"pub(?:\s+)?fn(?:\s+)?[a-zA-Z_][a-zA-Z0-9_]*(?:\s+)?\\{(?:\s+)?\\}"`
+- `StructDecl`: `"pub(?:\s+)?struct(?:\s+)?[a-zA-Z_][a-zA-Z0-9_]*(?:\s+)?\\{(?:\s+)?\\}"`
+- `Declaration`: `"(pub(?:\s+)?fn(?:\s+)?...)|(pub(?:\s+)?struct(?:\s+)?...)"`
+- `Module`: `Declaration`'s pattern (since `Declaration` is non-terminal, the walk stops after it)
+
+At every level, the regex fragment composes correctly.
 
 ## Matching Semantics
 

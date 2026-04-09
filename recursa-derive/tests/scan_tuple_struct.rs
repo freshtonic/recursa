@@ -32,7 +32,9 @@ fn scan_tuple_struct_is_terminal() {
 }
 
 #[test]
-fn scan_tuple_struct_first_patterns() {
-    let patterns = <Ident as recursa_core::Parse>::first_patterns();
-    assert_eq!(patterns, &[r"[a-zA-Z_][a-zA-Z0-9_]*"]);
+fn scan_tuple_struct_first_pattern() {
+    assert_eq!(
+        <Ident as recursa_core::Parse>::first_pattern(),
+        r"[a-zA-Z_][a-zA-Z0-9_]*"
+    );
 }

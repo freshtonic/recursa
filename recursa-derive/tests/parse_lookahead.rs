@@ -109,45 +109,32 @@ fn lookahead_error_on_mismatch() {
 }
 
 #[test]
-fn lookahead_first_patterns_fn_decl() {
+fn lookahead_first_pattern_fn_decl() {
     // FnDecl: PubKw, FnKw, Ident, LBrace, RBrace -- all terminal
-    let patterns = <FnDecl as Parse>::first_patterns();
+    let pattern = <FnDecl as Parse>::first_pattern();
     assert_eq!(
-        patterns,
-        &["pub", "fn", r"[a-zA-Z_][a-zA-Z0-9_]*", r"\{", r"\}"]
+        pattern,
+        r"pub(?:\s+)?fn(?:\s+)?[a-zA-Z_][a-zA-Z0-9_]*(?:\s+)?\{(?:\s+)?\}"
     );
 }
 
 #[test]
-fn lookahead_first_patterns_struct_decl() {
-    let patterns = <StructDecl as Parse>::first_patterns();
+fn lookahead_first_pattern_struct_decl() {
+    let pattern = <StructDecl as Parse>::first_pattern();
     assert_eq!(
-        patterns,
-        &["pub", "struct", r"[a-zA-Z_][a-zA-Z0-9_]*", r"\{", r"\}"]
+        pattern,
+        r"pub(?:\s+)?struct(?:\s+)?[a-zA-Z_][a-zA-Z0-9_]*(?:\s+)?\{(?:\s+)?\}"
     );
 }
 
 #[test]
-fn lookahead_enum_first_patterns_collects_all_variants() {
-    // Declaration enum should collect patterns from both FnDecl and StructDecl
-    let patterns = <Declaration as Parse>::first_patterns();
-    // FnDecl patterns: ["pub", "fn", ident, "{", "}"]
-    // StructDecl patterns: ["pub", "struct", ident, "{", "}"]
-    assert_eq!(
-        patterns,
-        &[
-            "pub",
-            "fn",
-            r"[a-zA-Z_][a-zA-Z0-9_]*",
-            r"\{",
-            r"\}",
-            "pub",
-            "struct",
-            r"[a-zA-Z_][a-zA-Z0-9_]*",
-            r"\{",
-            r"\}",
-        ]
-    );
+fn lookahead_enum_first_pattern_is_alternation() {
+    // Declaration enum should wrap each variant's pattern in groups and join with |
+    let pattern = <Declaration as Parse>::first_pattern();
+    let fn_pattern = <FnDecl as Parse>::first_pattern();
+    let struct_pattern = <StructDecl as Parse>::first_pattern();
+    let expected = format!("({fn_pattern})|({struct_pattern})");
+    assert_eq!(pattern, expected);
 }
 
 #[test]

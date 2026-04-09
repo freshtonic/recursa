@@ -99,12 +99,13 @@ fn derive_parse_struct(
         syn::Error::new_spanned(name, "Parse struct must have at least one field")
     })?;
 
-    // Build nested if-chain for first_patterns: walk consecutive terminal fields
-    let first_patterns_body = {
+    // Build nested if-chain for first_pattern: walk consecutive terminal fields,
+    // collecting their patterns joined with IGNORE separator.
+    let first_pattern_body = {
         let mut body = quote! {};
         for ty in field_types.iter().rev() {
             body = quote! {
-                patterns.extend(<#ty as ::recursa_core::Parse>::first_patterns());
+                parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
                 if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
                     #body
                 }
@@ -135,12 +136,18 @@ fn derive_parse_struct(
 
             const IS_TERMINAL: bool = false;
 
-            fn first_patterns() -> &'static [&'static str] {
-                static PATTERNS: ::std::sync::OnceLock<::std::vec::Vec<&'static str>> = ::std::sync::OnceLock::new();
-                PATTERNS.get_or_init(|| {
-                    let mut patterns = ::std::vec::Vec::new();
-                    #first_patterns_body
-                    patterns
+            fn first_pattern() -> &'static str {
+                static PATTERN: ::std::sync::OnceLock<::std::string::String> = ::std::sync::OnceLock::new();
+                PATTERN.get_or_init(|| {
+                    let ignore = <#rules_type as ::recursa_core::ParseRules>::IGNORE;
+                    let sep = if ignore.is_empty() {
+                        ::std::string::String::new()
+                    } else {
+                        ::std::format!("(?:{})?", ignore)
+                    };
+                    let mut parts: ::std::vec::Vec<::std::string::String> = ::std::vec::Vec::new();
+                    #first_pattern_body
+                    parts.join(&sep)
                 })
             }
 
@@ -195,10 +202,10 @@ fn derive_parse_enum(
         inner_types.push(inner_type.clone());
     }
 
-    // Generate first_patterns: collect all variant inner types' patterns
-    let first_patterns_extends = inner_types.iter().map(|ty| {
+    // Generate first_pattern: alternation of variant patterns wrapped in groups
+    let first_pattern_parts = inner_types.iter().map(|ty| {
         quote! {
-            patterns.extend(<#ty as ::recursa_core::Parse>::first_patterns());
+            parts.push(::std::format!("({})", <#ty as ::recursa_core::Parse>::first_pattern()));
         }
     });
 
@@ -209,11 +216,11 @@ fn derive_parse_enum(
         .map(|(i, ty)| {
             let group_name = format!("_{i}");
             quote! {
-                {
-                    let prefixes = <#ty as ::recursa_core::Parse>::first_patterns();
-                    let joined = prefixes.join(&sep);
-                    variant_patterns.push(::std::format!("(?P<{}>{})", #group_name, joined));
-                }
+                variant_patterns.push(::std::format!(
+                    "(?P<{}>{})",
+                    #group_name,
+                    <#ty as ::recursa_core::Parse>::first_pattern(),
+                ));
             }
         })
         .collect();
@@ -263,27 +270,19 @@ fn derive_parse_enum(
 
                 const IS_TERMINAL: bool = false;
 
-                fn first_patterns() -> &'static [&'static str] {
-                    static PATTERNS: ::std::sync::OnceLock<::std::vec::Vec<&'static str>> = ::std::sync::OnceLock::new();
-                    PATTERNS.get_or_init(|| {
-                        let mut patterns = ::std::vec::Vec::new();
-                        #(#first_patterns_extends)*
-                        patterns
+                fn first_pattern() -> &'static str {
+                    static PATTERN: ::std::sync::OnceLock<::std::string::String> = ::std::sync::OnceLock::new();
+                    PATTERN.get_or_init(|| {
+                        let mut parts: ::std::vec::Vec<::std::string::String> = ::std::vec::Vec::new();
+                        #(#first_pattern_parts)*
+                        parts.join("|")
                     })
                 }
 
                 fn peek(input: &::recursa_core::Input<#lt, Self::Rules>) -> bool {
                     let regex = PEEK_REGEX.get_or_init(|| {
-                        let ignore = <#rules_type as ::recursa_core::ParseRules>::IGNORE;
-                        let sep = if ignore.is_empty() {
-                            ::std::string::String::new()
-                        } else {
-                            ::std::format!("(?:{})?", ignore)
-                        };
-
                         let mut variant_patterns = ::std::vec::Vec::new();
                         #(#regex_build_arms)*
-
                         let combined = ::std::format!(r"\A(?:{})", variant_patterns.join("|"));
                         ::regex::Regex::new(&combined).unwrap()
                     });
@@ -294,16 +293,8 @@ fn derive_parse_enum(
 
                 fn parse(input: &mut ::recursa_core::Input<#lt, Self::Rules>) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
                     let regex = PEEK_REGEX.get_or_init(|| {
-                        let ignore = <#rules_type as ::recursa_core::ParseRules>::IGNORE;
-                        let sep = if ignore.is_empty() {
-                            ::std::string::String::new()
-                        } else {
-                            ::std::format!("(?:{})?", ignore)
-                        };
-
                         let mut variant_patterns = ::std::vec::Vec::new();
                         #(#regex_build_arms)*
-
                         let combined = ::std::format!(r"\A(?:{})", variant_patterns.join("|"));
                         ::regex::Regex::new(&combined).unwrap()
                     });
@@ -412,9 +403,12 @@ fn derive_parse_pratt_enum(
         }
     }
 
-    // Collect types for first_patterns generation
+    // Collect types for first_pattern generation
     let atom_types: Vec<_> = atom_variants.iter().map(|(_, ty)| ty.clone()).collect();
-    let prefix_op_types: Vec<_> = prefix_variants.iter().map(|(_, op_ty, _)| op_ty.clone()).collect();
+    let prefix_op_types: Vec<_> = prefix_variants
+        .iter()
+        .map(|(_, op_ty, _)| op_ty.clone())
+        .collect();
 
     // Generate atom peek arms (for the top-level peek)
     let atom_peek_arms = atom_variants.iter().map(|(_vname, ty)| {
@@ -527,13 +521,16 @@ fn derive_parse_pratt_enum(
 
                 const IS_TERMINAL: bool = false;
 
-                fn first_patterns() -> &'static [&'static str] {
-                    static PATTERNS: ::std::sync::OnceLock<::std::vec::Vec<&'static str>> = ::std::sync::OnceLock::new();
-                    PATTERNS.get_or_init(|| {
-                        let mut patterns = ::std::vec::Vec::new();
-                        #(patterns.extend(<#atom_types as ::recursa_core::Parse>::first_patterns());)*
-                        #(patterns.extend(<#prefix_op_types as ::recursa_core::Parse>::first_patterns());)*
-                        patterns
+                fn first_pattern() -> &'static str {
+                    static PATTERN: ::std::sync::OnceLock<::std::string::String> = ::std::sync::OnceLock::new();
+                    PATTERN.get_or_init(|| {
+                        let mut parts: ::std::vec::Vec<::std::string::String> = ::std::vec::Vec::new();
+                        // Atom variants
+                        #(parts.push(::std::format!("({})", <#atom_types as ::recursa_core::Parse>::first_pattern()));)*
+                        // Prefix operator variants
+                        #(parts.push(::std::format!("({})", <#prefix_op_types as ::recursa_core::Parse>::first_pattern()));)*
+                        // Infix operators NOT included
+                        parts.join("|")
                     })
                 }
 

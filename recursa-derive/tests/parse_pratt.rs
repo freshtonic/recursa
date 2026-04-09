@@ -169,13 +169,13 @@ fn pratt_is_not_terminal() {
 }
 
 #[test]
-fn pratt_first_patterns_includes_atoms_and_prefix() {
-    let patterns = <Expr as Parse>::first_patterns();
+fn pratt_first_pattern_includes_atoms_and_prefix() {
+    let pattern = <Expr as Parse>::first_pattern();
     // Should include atom patterns (IntLit, Ident) and prefix operator (Minus)
     // but NOT infix operators (Plus, Star)
-    assert!(patterns.contains(&r"[0-9]+"));
-    assert!(patterns.contains(&r"[a-zA-Z_][a-zA-Z0-9_]*"));
-    assert!(patterns.contains(&r"-"));
-    assert!(!patterns.contains(&r"\+"));
-    assert!(!patterns.contains(&r"\*"));
+    assert!(pattern.contains(r"[0-9]+"));
+    assert!(pattern.contains(r"[a-zA-Z_][a-zA-Z0-9_]*"));
+    assert!(pattern.contains("-"));
+    assert!(!pattern.contains(r"\+"));
+    assert!(!pattern.contains(r"\*"));
 }

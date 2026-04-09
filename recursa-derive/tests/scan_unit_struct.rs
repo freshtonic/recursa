@@ -38,7 +38,6 @@ fn scan_unit_struct_is_terminal() {
 }
 
 #[test]
-fn scan_unit_struct_first_patterns() {
-    let patterns = <LetKeyword as recursa_core::Parse>::first_patterns();
-    assert_eq!(patterns, &["let"]);
+fn scan_unit_struct_first_pattern() {
+    assert_eq!(<LetKeyword as recursa_core::Parse>::first_pattern(), "let");
 }
