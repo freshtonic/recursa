@@ -158,26 +158,26 @@ mod tests {
     #[test]
     fn scan_keyword_peek() {
         let input = Input::new("test foo");
-        assert!(<TestKeyword as Parse>::peek(&input, &NoRules));
+        assert!(TestKeyword::peek(&input, &NoRules));
     }
 
     #[test]
     fn scan_keyword_peek_fails() {
         let input = Input::new("foo bar");
-        assert!(!<TestKeyword as Parse>::peek(&input, &NoRules));
+        assert!(!TestKeyword::peek(&input, &NoRules));
     }
 
     #[test]
     fn scan_keyword_parse() {
         let mut input = Input::new("test foo");
-        let _kw = <TestKeyword as Parse>::parse(&mut input, &NoRules).unwrap();
+        let _kw = TestKeyword::parse(&mut input, &NoRules).unwrap();
         assert_eq!(input.cursor(), 4);
     }
 
     #[test]
     fn scan_ident_parse_captures() {
         let mut input = Input::new("hello world");
-        let ident = <TestIdent as Parse>::parse(&mut input, &NoRules).unwrap();
+        let ident = TestIdent::parse(&mut input, &NoRules).unwrap();
         assert_eq!(ident.0, "hello");
         assert_eq!(input.cursor(), 5);
     }
@@ -186,37 +186,37 @@ mod tests {
     fn scan_type_implements_parse() {
         // TestKeyword implements Scan, so it should also implement Parse via blanket impl
         let mut input = Input::new("test foo");
-        let _kw = <TestKeyword as Parse>::parse(&mut input, &NoRules).unwrap();
+        let _kw = TestKeyword::parse(&mut input, &NoRules).unwrap();
         assert_eq!(input.cursor(), 4);
     }
 
     #[test]
     fn scan_type_peek_through_parse() {
         let input = Input::new("test foo");
-        assert!(<TestKeyword as Parse>::peek(&input, &NoRules));
+        assert!(TestKeyword::peek(&input, &NoRules));
     }
 
     #[test]
     fn scan_type_peek_through_parse_fails() {
         let input = Input::new("foo bar");
-        assert!(!<TestKeyword as Parse>::peek(&input, &NoRules));
+        assert!(!TestKeyword::peek(&input, &NoRules));
     }
 
     #[test]
     fn scan_type_is_terminal() {
-        let is_terminal = <TestKeyword as Parse>::IS_TERMINAL;
+        let is_terminal = TestKeyword::IS_TERMINAL;
         assert!(is_terminal);
     }
 
     #[test]
     fn scan_type_first_pattern() {
-        assert_eq!(<TestKeyword as Parse>::first_pattern(), "test");
+        assert_eq!(TestKeyword::first_pattern(), "test");
     }
 
     #[test]
     fn scan_ident_first_pattern() {
         assert_eq!(
-            <TestIdent as Parse>::first_pattern(),
+            TestIdent::first_pattern(),
             r"[a-zA-Z_][a-zA-Z0-9_]*"
         );
     }
@@ -276,7 +276,7 @@ mod tests {
     fn box_first_pattern_delegates() {
         assert_eq!(
             <Box<TestKeyword> as Parse>::first_pattern(),
-            <TestKeyword as Parse>::first_pattern()
+            TestKeyword::first_pattern()
         );
     }
 
@@ -309,7 +309,7 @@ mod tests {
     fn option_first_pattern_delegates() {
         assert_eq!(
             <Option<TestKeyword> as Parse>::first_pattern(),
-            <TestKeyword as Parse>::first_pattern()
+            TestKeyword::first_pattern()
         );
     }
 

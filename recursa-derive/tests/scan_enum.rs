@@ -23,7 +23,7 @@ enum Keyword {
 #[test]
 fn scan_enum_let() {
     let mut input = Input::new("let x");
-    let kw = <Keyword as Parse>::parse(&mut input, &NoRules).unwrap();
+    let kw = Keyword::parse(&mut input, &NoRules).unwrap();
     assert!(matches!(kw, Keyword::Let(_)));
     assert_eq!(input.cursor(), 3);
 }
@@ -31,7 +31,7 @@ fn scan_enum_let() {
 #[test]
 fn scan_enum_if() {
     let mut input = Input::new("if true");
-    let kw = <Keyword as Parse>::parse(&mut input, &NoRules).unwrap();
+    let kw = Keyword::parse(&mut input, &NoRules).unwrap();
     assert!(matches!(kw, Keyword::If(_)));
     assert_eq!(input.cursor(), 2);
 }
@@ -39,7 +39,7 @@ fn scan_enum_if() {
 #[test]
 fn scan_enum_while() {
     let mut input = Input::new("while true");
-    let kw = <Keyword as Parse>::parse(&mut input, &NoRules).unwrap();
+    let kw = Keyword::parse(&mut input, &NoRules).unwrap();
     assert!(matches!(kw, Keyword::While(_)));
     assert_eq!(input.cursor(), 5);
 }
@@ -63,26 +63,26 @@ fn scan_enum_longest_match() {
     }
 
     let mut input = Input::new("hello123");
-    let tok = <Token as Parse>::parse(&mut input, &NoRules).unwrap();
+    let tok = Token::parse(&mut input, &NoRules).unwrap();
     assert!(matches!(tok, Token::Word(w) if w.0 == "hello"));
 }
 
 #[test]
 fn scan_enum_peek() {
     let input = Input::new("let x");
-    assert!(<Keyword as Parse>::peek(&input, &NoRules));
+    assert!(Keyword::peek(&input, &NoRules));
 }
 
 #[test]
 fn scan_enum_peek_fails() {
     let input = Input::new("123");
-    assert!(!<Keyword as Parse>::peek(&input, &NoRules));
+    assert!(!Keyword::peek(&input, &NoRules));
 }
 
 #[test]
 fn scan_enum_no_match_returns_error() {
     let mut input = Input::new("123");
-    let result = <Keyword as Parse>::parse(&mut input, &NoRules);
+    let result = Keyword::parse(&mut input, &NoRules);
     assert!(result.is_err());
 }
 
@@ -103,6 +103,6 @@ fn scan_enum_declaration_order_tiebreaker() {
     }
 
     let mut input = Input::new("ab");
-    let tok = <AbToken as Parse>::parse(&mut input, &NoRules).unwrap();
+    let tok = AbToken::parse(&mut input, &NoRules).unwrap();
     assert!(matches!(tok, AbToken::First(_)));
 }

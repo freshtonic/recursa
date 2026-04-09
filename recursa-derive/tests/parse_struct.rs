@@ -74,14 +74,14 @@ fn parse_struct_error_on_bad_field() {
 
 #[test]
 fn parse_struct_is_not_terminal() {
-    const { assert!(!<LetBinding as Parse>::IS_TERMINAL) };
+    const { assert!(!LetBinding::IS_TERMINAL) };
 }
 
 #[test]
 fn parse_struct_first_pattern_consecutive_terminals() {
     // LetBinding fields: LetKw, Ident, Eq, IntLit, Semi
     // All are Scan (terminal) types, so first_pattern joins all with IGNORE separator.
-    let pattern = <LetBinding as Parse>::first_pattern();
+    let pattern = LetBinding::first_pattern();
     assert_eq!(
         pattern,
         r"let(?:\s+)?[a-zA-Z_][a-zA-Z0-9_]*(?:\s+)?=(?:\s+)?[0-9]+(?:\s+)?;"
@@ -100,8 +100,8 @@ fn parse_struct_first_pattern_stops_at_non_terminal() {
     // NestedStmt fields: LetKw (terminal), LetBinding (non-terminal)
     // Walk: include LetKw's pattern, LetKw is terminal so continue,
     // include LetBinding's first_pattern (the full joined pattern), LetBinding is NOT terminal so stop.
-    let pattern = <NestedStmt as Parse>::first_pattern();
-    let expected = format!("let(?:\\s+)?{}", <LetBinding as Parse>::first_pattern());
+    let pattern = NestedStmt::first_pattern();
+    let expected = format!("let(?:\\s+)?{}", LetBinding::first_pattern());
     assert_eq!(pattern, expected);
 }
 
@@ -117,7 +117,7 @@ struct NestedWithTrailing<'input> {
 fn parse_struct_first_pattern_does_not_include_fields_after_non_terminal() {
     // NestedWithTrailing: LetKw (terminal), LetBinding (non-terminal), Semi (terminal)
     // Walk stops after LetBinding (non-terminal), so Semi's pattern ";" is NOT included.
-    let pattern = <NestedWithTrailing as Parse>::first_pattern();
+    let pattern = NestedWithTrailing::first_pattern();
     // Same as NestedStmt — the trailing Semi is not visited
-    assert_eq!(pattern, <NestedStmt as Parse>::first_pattern());
+    assert_eq!(pattern, NestedStmt::first_pattern());
 }

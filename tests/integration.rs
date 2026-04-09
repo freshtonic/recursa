@@ -17,7 +17,7 @@ impl ParseRules for MyRules {
 #[test]
 fn recursa_reexports_scan_trait() {
     let mut input = Input::new("hello");
-    let _h = <Hello as Parse>::parse(&mut input, &NoRules).unwrap();
+    let _h = Hello::parse(&mut input, &NoRules).unwrap();
     assert_eq!(input.cursor(), 5);
 }
 
@@ -44,6 +44,6 @@ recursa::keywords! {
 #[test]
 fn recursa_reexports_macros() {
     let mut input = Input::new("let");
-    let _kw = <TestLet as Parse>::parse(&mut input, &NoRules).unwrap();
+    let _kw = TestLet::parse(&mut input, &NoRules).unwrap();
     assert_eq!(input.cursor(), 3);
 }

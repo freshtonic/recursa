@@ -157,7 +157,7 @@ impl<'input> Parse<'input> for Ident {
     const IS_TERMINAL: bool = true;
 
     fn first_pattern() -> &'static str {
-        <Self as Scan>::PATTERN
+        Self::PATTERN
     }
 
     fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
@@ -185,7 +185,7 @@ impl<'input> Parse<'input> for Ident {
             _ => Err(ParseError::new(
                 input.source().to_string(),
                 input.cursor()..input.cursor(),
-                <Self as Scan>::PATTERN,
+                Self::PATTERN,
             )),
         }
     }
@@ -218,49 +218,49 @@ mod tests {
     #[test]
     fn keyword_select_uppercase() {
         let input = Input::new("SELECT");
-        assert!(<Select as Parse>::peek(&input, &NoRules));
+        assert!(Select::peek(&input, &NoRules));
     }
 
     #[test]
     fn keyword_select_lowercase() {
         let input = Input::new("select");
-        assert!(<Select as Parse>::peek(&input, &NoRules));
+        assert!(Select::peek(&input, &NoRules));
     }
 
     #[test]
     fn keyword_select_mixed_case() {
         let input = Input::new("SeLeCt");
-        assert!(<Select as Parse>::peek(&input, &NoRules));
+        assert!(Select::peek(&input, &NoRules));
     }
 
     #[test]
     fn keyword_select_not_prefix_of_identifier() {
         let input = Input::new("SELECTED");
-        assert!(!<Select as Parse>::peek(&input, &NoRules));
+        assert!(!Select::peek(&input, &NoRules));
     }
 
     #[test]
     fn keyword_bool_not_prefix_of_booleq() {
         let input = Input::new("booleq");
-        assert!(!<Bool as Parse>::peek(&input, &NoRules));
+        assert!(!Bool::peek(&input, &NoRules));
     }
 
     #[test]
     fn keyword_bool_matches_standalone() {
         let input = Input::new("bool");
-        assert!(<Bool as Parse>::peek(&input, &NoRules));
+        assert!(Bool::peek(&input, &NoRules));
     }
 
     #[test]
     fn keyword_boolean_matches() {
         let input = Input::new("BOOLEAN");
-        assert!(<Boolean as Parse>::peek(&input, &NoRules));
+        assert!(Boolean::peek(&input, &NoRules));
     }
 
     #[test]
     fn keyword_not_matches() {
         let input = Input::new("NOT");
-        assert!(<Not as Parse>::peek(&input, &NoRules));
+        assert!(Not::peek(&input, &NoRules));
     }
 
     // --- Punctuation tests ---
@@ -268,32 +268,32 @@ mod tests {
     #[test]
     fn punctuation_semicolon() {
         let mut input = Input::new(";");
-        let _ = <Semi as Parse>::parse(&mut input, &NoRules).unwrap();
+        let _ = Semi::parse(&mut input, &NoRules).unwrap();
         assert!(input.is_empty());
     }
 
     #[test]
     fn punctuation_neq() {
         let input = Input::new("<>");
-        assert!(<Neq as Parse>::peek(&input, &NoRules));
+        assert!(Neq::peek(&input, &NoRules));
     }
 
     #[test]
     fn punctuation_colon_colon() {
         let input = Input::new("::");
-        assert!(<ColonColon as Parse>::peek(&input, &NoRules));
+        assert!(ColonColon::peek(&input, &NoRules));
     }
 
     #[test]
     fn punctuation_lte() {
         let input = Input::new("<=");
-        assert!(<Lte as Parse>::peek(&input, &NoRules));
+        assert!(Lte::peek(&input, &NoRules));
     }
 
     #[test]
     fn punctuation_gte() {
         let input = Input::new(">=");
-        assert!(<Gte as Parse>::peek(&input, &NoRules));
+        assert!(Gte::peek(&input, &NoRules));
     }
 
     // --- String literal tests ---
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn string_literal_simple() {
         let mut input = Input::new("'hello world'");
-        let lit = <StringLit as Parse>::parse(&mut input, &NoRules).unwrap();
+        let lit = StringLit::parse(&mut input, &NoRules).unwrap();
         assert_eq!(lit.0, "'hello world'");
         assert!(input.is_empty());
     }
@@ -309,21 +309,21 @@ mod tests {
     #[test]
     fn string_literal_with_escaped_quote() {
         let mut input = Input::new("'it''s'");
-        let lit = <StringLit as Parse>::parse(&mut input, &NoRules).unwrap();
+        let lit = StringLit::parse(&mut input, &NoRules).unwrap();
         assert_eq!(lit.0, "'it''s'");
     }
 
     #[test]
     fn string_literal_empty() {
         let mut input = Input::new("''");
-        let lit = <StringLit as Parse>::parse(&mut input, &NoRules).unwrap();
+        let lit = StringLit::parse(&mut input, &NoRules).unwrap();
         assert_eq!(lit.0, "''");
     }
 
     #[test]
     fn string_literal_with_spaces() {
         let mut input = Input::new("'   f           '");
-        let lit = <StringLit as Parse>::parse(&mut input, &NoRules).unwrap();
+        let lit = StringLit::parse(&mut input, &NoRules).unwrap();
         assert_eq!(lit.0, "'   f           '");
     }
 
@@ -332,14 +332,14 @@ mod tests {
     #[test]
     fn integer_literal() {
         let mut input = Input::new("42");
-        let lit = <IntegerLit as Parse>::parse(&mut input, &NoRules).unwrap();
+        let lit = IntegerLit::parse(&mut input, &NoRules).unwrap();
         assert_eq!(lit.0, "42");
     }
 
     #[test]
     fn integer_literal_zero() {
         let mut input = Input::new("0");
-        let lit = <IntegerLit as Parse>::parse(&mut input, &NoRules).unwrap();
+        let lit = IntegerLit::parse(&mut input, &NoRules).unwrap();
         assert_eq!(lit.0, "0");
     }
 
@@ -348,82 +348,82 @@ mod tests {
     #[test]
     fn identifier_simple() {
         let mut input = Input::new("my_table");
-        let id = <Ident as Parse>::parse(&mut input, &NoRules).unwrap();
+        let id = Ident::parse(&mut input, &NoRules).unwrap();
         assert_eq!(id.0, "my_table");
     }
 
     #[test]
     fn identifier_with_digits() {
         let mut input = Input::new("f1");
-        let id = <Ident as Parse>::parse(&mut input, &NoRules).unwrap();
+        let id = Ident::parse(&mut input, &NoRules).unwrap();
         assert_eq!(id.0, "f1");
     }
 
     #[test]
     fn identifier_uppercase() {
         let mut input = Input::new("BOOLTBL1");
-        let id = <Ident as Parse>::parse(&mut input, &NoRules).unwrap();
+        let id = Ident::parse(&mut input, &NoRules).unwrap();
         assert_eq!(id.0, "BOOLTBL1");
     }
 
     #[test]
     fn identifier_rejects_keyword_select() {
         let input = Input::new("SELECT");
-        assert!(!<Ident as Parse>::peek(&input, &NoRules));
+        assert!(!Ident::peek(&input, &NoRules));
     }
 
     #[test]
     fn identifier_rejects_keyword_true() {
         let input = Input::new("true");
-        assert!(!<Ident as Parse>::peek(&input, &NoRules));
+        assert!(!Ident::peek(&input, &NoRules));
     }
 
     #[test]
     fn identifier_rejects_keyword_null() {
         let input = Input::new("NULL");
-        assert!(!<Ident as Parse>::peek(&input, &NoRules));
+        assert!(!Ident::peek(&input, &NoRules));
     }
 
     #[test]
     fn identifier_accepts_keyword_prefix() {
         // "isfalse" starts with "is" but is not a keyword
         let mut input = Input::new("isfalse");
-        let id = <Ident as Parse>::parse(&mut input, &NoRules).unwrap();
+        let id = Ident::parse(&mut input, &NoRules).unwrap();
         assert_eq!(id.0, "isfalse");
     }
 
     #[test]
     fn identifier_accepts_booleq() {
         let mut input = Input::new("booleq");
-        let id = <Ident as Parse>::parse(&mut input, &NoRules).unwrap();
+        let id = Ident::parse(&mut input, &NoRules).unwrap();
         assert_eq!(id.0, "booleq");
     }
 
     #[test]
     fn identifier_accepts_boolne() {
         let mut input = Input::new("boolne");
-        let id = <Ident as Parse>::parse(&mut input, &NoRules).unwrap();
+        let id = Ident::parse(&mut input, &NoRules).unwrap();
         assert_eq!(id.0, "boolne");
     }
 
     #[test]
     fn identifier_accepts_isnul() {
         let mut input = Input::new("isnul");
-        let id = <Ident as Parse>::parse(&mut input, &NoRules).unwrap();
+        let id = Ident::parse(&mut input, &NoRules).unwrap();
         assert_eq!(id.0, "isnul");
     }
 
     #[test]
     fn identifier_accepts_istrue() {
         let mut input = Input::new("istrue");
-        let id = <Ident as Parse>::parse(&mut input, &NoRules).unwrap();
+        let id = Ident::parse(&mut input, &NoRules).unwrap();
         assert_eq!(id.0, "istrue");
     }
 
     #[test]
     fn identifier_accepts_pg_input_is_valid() {
         let mut input = Input::new("pg_input_is_valid");
-        let id = <Ident as Parse>::parse(&mut input, &NoRules).unwrap();
+        let id = Ident::parse(&mut input, &NoRules).unwrap();
         assert_eq!(id.0, "pg_input_is_valid");
     }
 }

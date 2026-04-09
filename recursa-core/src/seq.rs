@@ -111,15 +111,15 @@ where
 {
     let mut pairs = Vec::new();
     loop {
-        let element = <T as Parse>::parse(input, rules)?;
+        let element = T::parse(input, rules)?;
 
         R::consume_ignored(input);
-        if !<S as Parse>::peek(input, rules) {
+        if !S::peek(input, rules) {
             pairs.push((element, None));
             break;
         }
 
-        let sep = <S as Parse>::parse(input, rules)?;
+        let sep = S::parse(input, rules)?;
         pairs.push((element, Some(sep)));
         R::consume_ignored(input);
     }
@@ -137,18 +137,18 @@ where
 {
     let mut pairs = Vec::new();
     loop {
-        let element = <T as Parse>::parse(input, rules)?;
+        let element = T::parse(input, rules)?;
 
         R::consume_ignored(input);
-        if !<S as Parse>::peek(input, rules) {
+        if !S::peek(input, rules) {
             pairs.push((element, None));
             break;
         }
 
-        let sep = <S as Parse>::parse(input, rules)?;
+        let sep = S::parse(input, rules)?;
 
         R::consume_ignored(input);
-        if !<T as Parse>::peek(input, rules) {
+        if !T::peek(input, rules) {
             pairs.push((element, Some(sep)));
             break;
         }
@@ -169,15 +169,15 @@ where
 {
     let mut pairs = Vec::new();
     loop {
-        let element = <T as Parse>::parse(input, rules)?;
+        let element = T::parse(input, rules)?;
 
         R::consume_ignored(input);
-        let sep = <S as Parse>::parse(input, rules)?;
+        let sep = S::parse(input, rules)?;
 
         pairs.push((element, Some(sep)));
 
         R::consume_ignored(input);
-        if !<T as Parse>::peek(input, rules) {
+        if !T::peek(input, rules) {
             break;
         }
     }
@@ -203,7 +203,7 @@ where
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
         R::consume_ignored(input);
-        if !<T as Parse>::peek(input, rules) {
+        if !T::peek(input, rules) {
             return Ok(Self::from_pairs(Vec::new()));
         }
         let pairs = parse_no_trailing::<T, S, R>(input, rules)?;
@@ -228,7 +228,7 @@ where
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
         R::consume_ignored(input);
-        if !<T as Parse>::peek(input, rules) {
+        if !T::peek(input, rules) {
             return Ok(Self::from_pairs(Vec::new()));
         }
         let pairs = parse_optional_trailing::<T, S, R>(input, rules)?;
@@ -253,7 +253,7 @@ where
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
         R::consume_ignored(input);
-        if !<T as Parse>::peek(input, rules) {
+        if !T::peek(input, rules) {
             return Ok(Self::from_pairs(Vec::new()));
         }
         let pairs = parse_required_trailing::<T, S, R>(input, rules)?;
@@ -275,12 +275,12 @@ where
     }
 
     fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        <T as Parse>::peek(input, rules)
+        T::peek(input, rules)
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
         R::consume_ignored(input);
-        if !<T as Parse>::peek(input, rules) {
+        if !T::peek(input, rules) {
             return Err(ParseError::new(
                 input.source(),
                 input.cursor()..input.cursor(),
@@ -304,12 +304,12 @@ where
     }
 
     fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        <T as Parse>::peek(input, rules)
+        T::peek(input, rules)
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
         R::consume_ignored(input);
-        if !<T as Parse>::peek(input, rules) {
+        if !T::peek(input, rules) {
             return Err(ParseError::new(
                 input.source(),
                 input.cursor()..input.cursor(),
@@ -333,12 +333,12 @@ where
     }
 
     fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        <T as Parse>::peek(input, rules)
+        T::peek(input, rules)
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
         R::consume_ignored(input);
-        if !<T as Parse>::peek(input, rules) {
+        if !T::peek(input, rules) {
             return Err(ParseError::new(
                 input.source(),
                 input.cursor()..input.cursor(),

@@ -169,12 +169,12 @@ fn pratt_error_on_empty() {
 
 #[test]
 fn pratt_is_not_terminal() {
-    const { assert!(!<Expr as Parse>::IS_TERMINAL) };
+    const { assert!(!Expr::IS_TERMINAL) };
 }
 
 #[test]
 fn pratt_first_pattern_includes_atoms_and_prefix() {
-    let pattern = <Expr as Parse>::first_pattern();
+    let pattern = Expr::first_pattern();
     // Should include atom patterns (IntLit, Ident) and prefix operator (Minus)
     // but NOT infix operators (Plus, Star)
     assert!(pattern.contains(r"[0-9]+"));

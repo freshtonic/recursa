@@ -115,7 +115,7 @@ fn lookahead_error_on_mismatch() {
 #[test]
 fn lookahead_first_pattern_fn_decl() {
     // FnDecl: PubKw, FnKw, Ident, LBrace, RBrace -- all terminal
-    let pattern = <FnDecl as Parse>::first_pattern();
+    let pattern = FnDecl::first_pattern();
     assert_eq!(
         pattern,
         r"pub(?:\s+)?fn(?:\s+)?[a-zA-Z_][a-zA-Z0-9_]*(?:\s+)?\{(?:\s+)?\}"
@@ -124,7 +124,7 @@ fn lookahead_first_pattern_fn_decl() {
 
 #[test]
 fn lookahead_first_pattern_struct_decl() {
-    let pattern = <StructDecl as Parse>::first_pattern();
+    let pattern = StructDecl::first_pattern();
     assert_eq!(
         pattern,
         r"pub(?:\s+)?struct(?:\s+)?[a-zA-Z_][a-zA-Z0-9_]*(?:\s+)?\{(?:\s+)?\}"
@@ -134,14 +134,14 @@ fn lookahead_first_pattern_struct_decl() {
 #[test]
 fn lookahead_enum_first_pattern_is_alternation() {
     // Declaration enum should wrap each variant's pattern in groups and join with |
-    let pattern = <Declaration as Parse>::first_pattern();
-    let fn_pattern = <FnDecl as Parse>::first_pattern();
-    let struct_pattern = <StructDecl as Parse>::first_pattern();
+    let pattern = Declaration::first_pattern();
+    let fn_pattern = FnDecl::first_pattern();
+    let struct_pattern = StructDecl::first_pattern();
     let expected = format!("({fn_pattern})|({struct_pattern})");
     assert_eq!(pattern, expected);
 }
 
 #[test]
 fn lookahead_enum_is_not_terminal() {
-    const { assert!(!<Declaration as Parse>::IS_TERMINAL) };
+    const { assert!(!Declaration::IS_TERMINAL) };
 }
