@@ -30,12 +30,6 @@ CREATE TEMP TABLE pg_temp.doubly_temp (a int primary key);		-- also OK
 CREATE TEMP TABLE public.temp_to_perm (a int primary key);		-- not OK
 DROP TABLE unlogged1, public.unlogged2;
 
-CREATE UNLOGGED TABLE unlogged1 (a int) PARTITION BY RANGE (a); -- fail
-CREATE TABLE unlogged1 (a int) PARTITION BY RANGE (a); -- ok
-ALTER TABLE unlogged1 SET LOGGED; -- fails
-ALTER TABLE unlogged1 SET UNLOGGED; -- fails
-DROP TABLE unlogged1;
-
 CREATE TABLE as_select1 AS SELECT * FROM pg_class WHERE relkind = 'r';
 CREATE TABLE as_select1 AS SELECT * FROM pg_class WHERE relkind = 'r';
 CREATE TABLE IF NOT EXISTS as_select1 AS SELECT * FROM pg_class WHERE relkind = 'r';
@@ -104,13 +98,6 @@ ALTER TABLE remember_node_subid ALTER c TYPE bigint;
 SAVEPOINT q; DROP TABLE remember_node_subid; ROLLBACK TO q;
 COMMIT;
 DROP TABLE remember_node_subid;
-
--- generated NOT NULL constraint names must not collide with explicitly named constraints
-CREATE TABLE two_not_null_constraints (
-   col integer NOT NULL,
-   CONSTRAINT two_not_null_constraints_col_not_null CHECK (col IS NOT NULL)
-);
-DROP TABLE two_not_null_constraints;
 
 --
 -- Partitioned tables

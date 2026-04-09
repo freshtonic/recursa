@@ -219,16 +219,10 @@ GRANT SELECT ON atest1 TO regress_priv_user3, regress_priv_user4;
 SELECT * FROM atest1;
 
 CREATE TABLE atest2 (col1 varchar(10), col2 boolean);
-SELECT pg_get_acl('pg_class'::regclass, 'atest2'::regclass::oid, 0);
 GRANT SELECT ON atest2 TO regress_priv_user2;
 GRANT UPDATE ON atest2 TO regress_priv_user3;
 GRANT INSERT ON atest2 TO regress_priv_user4 GRANTED BY CURRENT_USER;
 GRANT TRUNCATE ON atest2 TO regress_priv_user5 GRANTED BY CURRENT_ROLE;
-SELECT unnest(pg_get_acl('pg_class'::regclass, 'atest2'::regclass::oid, 0));
-
--- Invalid inputs
-SELECT pg_get_acl('pg_class'::regclass, 0, 0); -- null
-SELECT pg_get_acl(0, 0, 0); -- null
 
 GRANT TRUNCATE ON atest2 TO regress_priv_user4 GRANTED BY regress_priv_user5;  -- error
 
@@ -481,10 +475,6 @@ CREATE TABLE atest5 (one int, two int unique, three int, four int unique);
 CREATE TABLE atest6 (one int, two int, blue int);
 GRANT SELECT (one), INSERT (two), UPDATE (three) ON atest5 TO regress_priv_user4;
 GRANT ALL (one) ON atest5 TO regress_priv_user3;
-SELECT unnest(pg_get_acl('pg_class'::regclass, 'atest5'::regclass::oid, 1));
-SELECT unnest(pg_get_acl('pg_class'::regclass, 'atest5'::regclass::oid, 2));
-SELECT unnest(pg_get_acl('pg_class'::regclass, 'atest5'::regclass::oid, 3));
-SELECT unnest(pg_get_acl('pg_class'::regclass, 'atest5'::regclass::oid, 4));
 
 INSERT INTO atest5 VALUES (1,2,3);
 
@@ -565,24 +555,6 @@ INSERT INTO atest5(two) VALUES (6) ON CONFLICT (two) DO UPDATE set three = EXCLU
 INSERT INTO atest5(two) VALUES (6) ON CONFLICT (two) DO UPDATE set three = EXCLUDED.three;
 INSERT INTO atest5(two) VALUES (6) ON CONFLICT (two) DO UPDATE set one = 8; -- fails (due to UPDATE)
 INSERT INTO atest5(three) VALUES (4) ON CONFLICT (two) DO UPDATE set three = 10; -- fails (due to INSERT)
--- Check that column level privileges are enforced for ON CONFLICT ... WHERE
--- Ok. we may select one
-INSERT INTO atest5(two) VALUES (2) ON CONFLICT (two) DO SELECT WHERE atest5.one = 1 RETURNING atest5.two;
--- Error. No select rights on three
-INSERT INTO atest5(two) VALUES (2) ON CONFLICT (two) DO SELECT WHERE atest5.three = 1 RETURNING atest5.two;
-
--- Check that ON CONFLICT ... SELECT FOR UPDATE/SHARE requires an updatable column
-SET SESSION AUTHORIZATION regress_priv_user1;
-REVOKE UPDATE (three) ON atest5 FROM regress_priv_user4;
-SET SESSION AUTHORIZATION regress_priv_user4;
-
-INSERT INTO atest5(two) VALUES (2) ON CONFLICT (two) DO SELECT FOR UPDATE RETURNING atest5.two; -- fails
-
-SET SESSION AUTHORIZATION regress_priv_user1;
-GRANT UPDATE (three) ON atest5 TO regress_priv_user4;
-SET SESSION AUTHORIZATION regress_priv_user4;
-
-INSERT INTO atest5(two) VALUES (2) ON CONFLICT (two) DO SELECT FOR UPDATE RETURNING atest5.two; -- ok
 
 -- Check that the columns in the inference require select privileges
 INSERT INTO atest5(four) VALUES (4); -- fail
@@ -782,33 +754,6 @@ UPDATE errtst SET a = 'aaaa', b = NULL WHERE a = 'aaa';
 
 SET SESSION AUTHORIZATION regress_priv_user1;
 DROP TABLE errtst;
-
--- test column-level privileges on the range used in FOR PORTION OF
-SET SESSION AUTHORIZATION regress_priv_user1;
-CREATE TABLE t1 (
-  c1 int4range,
-  valid_at tsrange,
-	CONSTRAINT t1pk PRIMARY KEY (c1, valid_at WITHOUT OVERLAPS)
-);
--- UPDATE requires select permission on the valid_at column (but not update):
-GRANT SELECT (c1) ON t1 TO regress_priv_user2;
-GRANT UPDATE (c1) ON t1 TO regress_priv_user2;
-GRANT SELECT (c1, valid_at) ON t1 TO regress_priv_user3;
-GRANT UPDATE (c1) ON t1 TO regress_priv_user3;
-SET SESSION AUTHORIZATION regress_priv_user2;
-UPDATE t1 FOR PORTION OF valid_at FROM '2000-01-01' TO '2001-01-01' SET c1 = '[2,3)';
-SET SESSION AUTHORIZATION regress_priv_user3;
-UPDATE t1 FOR PORTION OF valid_at FROM '2000-01-01' TO '2001-01-01' SET c1 = '[2,3)';
-SET SESSION AUTHORIZATION regress_priv_user1;
--- DELETE requires select permission on the valid_at column:
-GRANT DELETE ON t1 TO regress_priv_user2;
-GRANT DELETE ON t1 TO regress_priv_user3;
-SET SESSION AUTHORIZATION regress_priv_user2;
-DELETE FROM t1 FOR PORTION OF valid_at FROM '2000-01-01' TO '2001-01-01';
-SET SESSION AUTHORIZATION regress_priv_user3;
-DELETE FROM t1 FOR PORTION OF valid_at FROM '2000-01-01' TO '2001-01-01';
-SET SESSION AUTHORIZATION regress_priv_user1;
-DROP TABLE t1;
 
 -- test column-level privileges when involved with DELETE
 SET SESSION AUTHORIZATION regress_priv_user1;
@@ -1091,6 +1036,10 @@ from (select oid from pg_roles where rolname = current_user) as t2;
 select has_table_privilege(t2.oid,'pg_authid','delete')
 from (select oid from pg_roles where rolname = current_user) as t2;
 
+-- 'rule' privilege no longer exists, but for backwards compatibility
+-- has_table_privilege still recognizes the keyword and says FALSE
+select has_table_privilege(current_user,t1.oid,'rule')
+from (select oid from pg_class where relname = 'pg_authid') as t1;
 select has_table_privilege(current_user,t1.oid,'references')
 from (select oid from pg_class where relname = 'pg_authid') as t1;
 
@@ -1411,70 +1360,10 @@ SELECT loread(lo_open(1005, x'40000'::int), 32);
 SELECT lo_truncate(lo_open(1005, x'20000'::int), 10);	-- to be denied
 SELECT lo_truncate(lo_open(2001, x'20000'::int), 10);
 
-\c -
--- confirm role with privileges of pg_read_all_data can read large objects
-SET SESSION AUTHORIZATION regress_priv_user6;
-
-SELECT loread(lo_open(1002, x'40000'::int), 32);
-SELECT lo_get(1002);
-SELECT lowrite(lo_open(1002, x'20000'::int), 'abcd');	-- to be denied
-SELECT lo_put(1002, 1, 'abcd');							-- to be denied
-SELECT lo_truncate(lo_open(1002, x'20000'::int), 0);	-- to be denied
-SELECT lo_unlink(1002);									-- to be denied
-
-\c -
--- confirm role with privileges of pg_write_all_data can write large objects
-GRANT SELECT ON LARGE OBJECT 1002 TO regress_priv_user7;
-SET SESSION AUTHORIZATION regress_priv_user7;
-
-SELECT lowrite(lo_open(1002, x'20000'::int), 'abcd');
-SELECT lo_put(1002, 1, 'abcd');
-SELECT lo_truncate(lo_open(1002, x'20000'::int), 0);
-SELECT lo_unlink(1002);									-- to be denied
-
--- has_largeobject_privilege function
-
--- superuser
-\c -
-SELECT has_largeobject_privilege(1001, 'SELECT');
-SELECT has_largeobject_privilege(1002, 'SELECT');
-SELECT has_largeobject_privilege(1003, 'SELECT');
-SELECT has_largeobject_privilege(1004, 'SELECT');
-
-SELECT has_largeobject_privilege(1001, 'UPDATE');
-SELECT has_largeobject_privilege(1002, 'UPDATE');
-SELECT has_largeobject_privilege(1003, 'UPDATE');
-SELECT has_largeobject_privilege(1004, 'UPDATE');
-
--- not-existing large object
-SELECT has_largeobject_privilege(9999, 'SELECT');	-- NULL
-
--- non-superuser
-SET SESSION AUTHORIZATION regress_priv_user2;
-SELECT has_largeobject_privilege(1001, 'SELECT');
-SELECT has_largeobject_privilege(1002, 'SELECT');	-- false
-SELECT has_largeobject_privilege(1003, 'SELECT');
-SELECT has_largeobject_privilege(1004, 'SELECT');
-
-SELECT has_largeobject_privilege(1001, 'UPDATE');
-SELECT has_largeobject_privilege(1002, 'UPDATE');	-- false
-SELECT has_largeobject_privilege(1003, 'UPDATE');	-- false
-SELECT has_largeobject_privilege(1004, 'UPDATE');
-
-SELECT has_largeobject_privilege('regress_priv_user3', 1001, 'SELECT');
-SELECT has_largeobject_privilege('regress_priv_user3', 1003, 'SELECT');	-- false
-SELECT has_largeobject_privilege('regress_priv_user3', 1005, 'SELECT');
-
-SELECT has_largeobject_privilege('regress_priv_user3', 1005, 'UPDATE');	-- false
-SELECT has_largeobject_privilege('regress_priv_user3', 2001, 'UPDATE');
-
 -- compatibility mode in largeobject permission
 \c -
 SET lo_compat_privileges = false;	-- default setting
 SET SESSION AUTHORIZATION regress_priv_user4;
-
-SELECT has_largeobject_privilege(1002, 'SELECT'); -- false
-SELECT has_largeobject_privilege(1002, 'UPDATE'); -- false
 
 SELECT loread(lo_open(1002, x'40000'::int), 32);	-- to be denied
 SELECT lowrite(lo_open(1002, x'20000'::int), 'abcd');	-- to be denied
@@ -1488,9 +1377,6 @@ SELECT lo_import('/dev/null', 2003);			-- to be denied
 \c -
 SET lo_compat_privileges = true;	-- compatibility mode
 SET SESSION AUTHORIZATION regress_priv_user4;
-
-SELECT has_largeobject_privilege(1002, 'SELECT'); -- true
-SELECT has_largeobject_privilege(1002, 'UPDATE'); -- true
 
 SELECT loread(lo_open(1002, x'40000'::int), 32);
 SELECT lowrite(lo_open(1002, x'20000'::int), 'abcd');
@@ -1651,47 +1537,11 @@ ALTER DEFAULT PRIVILEGES REVOKE ALL ON SCHEMAS FROM regress_priv_user2;
 
 COMMIT;
 
---
--- Test for default privileges on large objects. This is done in a
--- separate, rollbacked, transaction to avoid any trouble with other
--- regression sessions.
---
-
-BEGIN;
-
-SELECT lo_create(1007);
-SELECT has_largeobject_privilege('regress_priv_user2', 1007, 'SELECT'); -- no
-SELECT has_largeobject_privilege('regress_priv_user2', 1007, 'UPDATE'); -- no
-
-ALTER DEFAULT PRIVILEGES GRANT SELECT ON LARGE OBJECTS TO regress_priv_user2;
-
-SELECT lo_create(1008);
-SELECT has_largeobject_privilege('regress_priv_user2', 1008, 'SELECT'); -- yes
-SELECT has_largeobject_privilege('regress_priv_user3', 1008, 'SELECT'); -- no
-SELECT has_largeobject_privilege('regress_priv_user2', 1008, 'UPDATE'); -- no
-
-ALTER DEFAULT PRIVILEGES GRANT ALL ON LARGE OBJECTS TO regress_priv_user2;
-SELECT lo_create(1009);
-SELECT has_largeobject_privilege('regress_priv_user2', 1009, 'SELECT'); -- true
-SELECT has_largeobject_privilege('regress_priv_user2', 1009, 'UPDATE'); -- true
-
-ALTER DEFAULT PRIVILEGES REVOKE UPDATE ON LARGE OBJECTS FROM regress_priv_user2;
-SELECT lo_create(1010);
-SELECT has_largeobject_privilege('regress_priv_user2', 1010, 'SELECT'); -- true
-SELECT has_largeobject_privilege('regress_priv_user2', 1010, 'UPDATE'); -- false
-
-ROLLBACK;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON LARGE OBJECTS TO public; -- error
-
-\c -
-
 -- Test for DROP OWNED BY with shared dependencies.  This is done in a
 -- separate, rollbacked, transaction to avoid any trouble with other
 -- regression sessions.
 BEGIN;
 ALTER DEFAULT PRIVILEGES GRANT ALL ON FUNCTIONS TO regress_priv_user2;
-ALTER DEFAULT PRIVILEGES GRANT ALL ON LARGE OBJECTS TO regress_priv_user2;
 ALTER DEFAULT PRIVILEGES GRANT ALL ON SCHEMAS TO regress_priv_user2;
 ALTER DEFAULT PRIVILEGES GRANT ALL ON SEQUENCES TO regress_priv_user2;
 ALTER DEFAULT PRIVILEGES GRANT ALL ON TABLES TO regress_priv_user2;
@@ -1865,70 +1715,12 @@ revoke select on dep_priv_test from regress_priv_user4 cascade;
 set session role regress_priv_user1;
 drop table dep_priv_test;
 
---
--- Property graphs
---
-set session role regress_priv_user1;
-create property graph ptg1
-	vertex tables (
-		atest5 key (four)
-			default label properties (four)
-			label lttc properties (three as lttck),
-		atest1 key (a)
-			default label
-			label lttc properties (a as lttck),
-		atest2 key (col1)
-			default label
-			label ltv properties (col1 as ltvk));
--- select privileges on property graph as well as table
-select * from graph_table (ptg1 match (is atest5) COLUMNS (1 as value)) limit 0; -- ok
-grant select on ptg1 to regress_priv_user2;
-set session role regress_priv_user2;
-select * from graph_table (ptg1 match (is atest1) COLUMNS (1 as value)) limit 0; -- ok
--- select privileges on property graph but not table
-select * from graph_table (ptg1 match (is atest5) COLUMNS (1 as value)) limit 0; -- fails
-select * from graph_table (ptg1 match (is lttc) COLUMNS (1 as value)) limit 0; -- fails
-set session role regress_priv_user3;
--- select privileges on table but not property graph
-select * from graph_table (ptg1 match (is atest1) COLUMNS (1 as value)) limit 0; -- fails
--- select privileges on neither
-select * from graph_table (ptg1 match (is atest5) COLUMNS (1 as value)) limit 0; -- fails
--- column privileges
-set session role regress_priv_user1;
-select * from graph_table (ptg1 match (v is lttc) COLUMNS (v.lttck)) limit 0; -- ok
-grant select on ptg1 to regress_priv_user4;
-set session role regress_priv_user4;
-select * from graph_table (ptg1 match (a is atest5) COLUMNS (a.four)) limit 0; -- ok
-select * from graph_table (ptg1 match (v is lttc) COLUMNS (v.lttck)) limit 0; -- fail
--- access property graph through security definer view
-set session role regress_priv_user4;
-create view atpgv1 as select * from graph_table (ptg1 match (is atest1) COLUMNS (1 as value)) limit 0;
-grant select on atpgv1 to regress_priv_user3;
-select * from atpgv1; -- ok
-set session role regress_priv_user3;
-select * from atpgv1; -- ok
-set session role regress_priv_user4;
-create view atpgv2 as select * from graph_table (ptg1 match (v is ltv) COLUMNS (v.ltvk)) limit 0;
--- though the session user is the owner of the view and also has access to the
--- property graph, it does not have access to a table referenced in the graph
--- pattern
-select * from atpgv2; -- fail
-grant select on atpgv2 to regress_priv_user2;
--- The user who otherwise does not have access to the property graph, gets
--- access to it through a security definer view and uses it successfully since
--- it has access to the tables referenced in the graph pattern.
-set session role regress_priv_user2;
-select * from atpgv2; -- ok
 
 -- clean up
 
 \c
 
 drop sequence x_seq;
-
-drop view atpgv1;
-drop view atpgv2;
-drop property graph ptg1;
 
 DROP AGGREGATE priv_testagg1(int);
 DROP FUNCTION priv_testfunc2(int);
@@ -2077,8 +1869,7 @@ REVOKE MAINTAIN ON lock_table FROM regress_locktable_user;
 DROP TABLE lock_table;
 DROP USER regress_locktable_user;
 
--- test to check privileges of system views pg_shmem_allocations,
--- pg_shmem_allocations_numa, pg_dsm_registry_allocations, and
+-- test to check privileges of system views pg_shmem_allocations and
 -- pg_backend_memory_contexts.
 
 -- switch to superuser
@@ -2086,23 +1877,16 @@ DROP USER regress_locktable_user;
 
 CREATE ROLE regress_readallstats;
 
-SELECT has_table_privilege('regress_readallstats','pg_aios','SELECT'); -- no
 SELECT has_table_privilege('regress_readallstats','pg_backend_memory_contexts','SELECT'); -- no
 SELECT has_table_privilege('regress_readallstats','pg_shmem_allocations','SELECT'); -- no
-SELECT has_table_privilege('regress_readallstats','pg_shmem_allocations_numa','SELECT'); -- no
-SELECT has_table_privilege('regress_readallstats','pg_dsm_registry_allocations','SELECT'); -- no
 
 GRANT pg_read_all_stats TO regress_readallstats;
 
-SELECT has_table_privilege('regress_readallstats','pg_aios','SELECT'); -- yes
 SELECT has_table_privilege('regress_readallstats','pg_backend_memory_contexts','SELECT'); -- yes
 SELECT has_table_privilege('regress_readallstats','pg_shmem_allocations','SELECT'); -- yes
-SELECT has_table_privilege('regress_readallstats','pg_shmem_allocations_numa','SELECT'); -- yes
-SELECT has_table_privilege('regress_readallstats','pg_dsm_registry_allocations','SELECT'); -- yes
 
 -- run query to ensure that functions within views can be executed
 SET ROLE regress_readallstats;
-SELECT COUNT(*) >= 0 AS ok FROM pg_aios;
 SELECT COUNT(*) >= 0 AS ok FROM pg_backend_memory_contexts;
 SELECT COUNT(*) >= 0 AS ok FROM pg_shmem_allocations;
 RESET ROLE;
@@ -2216,59 +2000,3 @@ DROP SCHEMA reindex_test;
 DROP ROLE regress_no_maintain;
 DROP ROLE regress_maintain;
 DROP ROLE regress_maintain_all;
-
--- grantor selection
-CREATE ROLE regress_grantor1;
-CREATE ROLE regress_grantor2 ROLE regress_grantor1;
-CREATE ROLE regress_grantor3;
-CREATE TABLE grantor_test1 ();
-CREATE TABLE grantor_test2 ();
-CREATE TABLE grantor_test3 ();
-GRANT SELECT ON grantor_test2 TO regress_grantor1 WITH GRANT OPTION;
-GRANT SELECT, UPDATE ON grantor_test3 TO regress_grantor2 WITH GRANT OPTION;
-
-SET ROLE regress_grantor1;
-GRANT SELECT, UPDATE ON grantor_test1 TO regress_grantor3;
-GRANT SELECT, UPDATE ON grantor_test2 TO regress_grantor3;
-GRANT SELECT, UPDATE ON grantor_test3 TO regress_grantor3;
-RESET ROLE;
-
-SELECT * FROM information_schema.table_privileges t
-	WHERE grantor LIKE 'regress_grantor%' ORDER BY ROW(t.*);
-
-DROP TABLE grantor_test1, grantor_test2, grantor_test3;
-DROP ROLE regress_grantor1, regress_grantor2, regress_grantor3;
-
--- GRANTED BY
-CREATE ROLE regress_grantor1;
-CREATE ROLE regress_grantor2 ROLE regress_grantor1;
-CREATE ROLE regress_grantor3 ROLE regress_grantor1;
-CREATE ROLE regress_grantor4 ROLE regress_grantor1;
-CREATE ROLE regress_grantor5;
-CREATE TABLE grantor_test ();
-GRANT SELECT ON grantor_test TO regress_grantor2 WITH GRANT OPTION;
-GRANT UPDATE ON grantor_test TO regress_grantor3 WITH GRANT OPTION;
-GRANT SELECT, UPDATE ON grantor_test TO regress_grantor4 WITH GRANT OPTION;
-SET ROLE regress_grantor1;
-
-GRANT SELECT, UPDATE ON grantor_test TO regress_grantor5;
-
-SELECT * FROM information_schema.table_privileges t
-    WHERE grantor LIKE 'regress_grantor%' ORDER BY ROW(t.*);
-
-REVOKE SELECT, UPDATE ON grantor_test FROM regress_grantor5;
-GRANT SELECT, UPDATE ON grantor_test TO regress_grantor5 GRANTED BY regress_grantor2;
-GRANT SELECT, UPDATE ON grantor_test TO regress_grantor5 GRANTED BY regress_grantor3;
-
-SELECT * FROM information_schema.table_privileges t
-    WHERE grantor LIKE 'regress_grantor%' ORDER BY ROW(t.*);
-
-REVOKE SELECT, UPDATE ON grantor_test FROM regress_grantor5 GRANTED BY regress_grantor2;
-REVOKE SELECT, UPDATE ON grantor_test FROM regress_grantor5 GRANTED BY regress_grantor3;
-
-SELECT * FROM information_schema.table_privileges t
-    WHERE grantor LIKE 'regress_grantor%' ORDER BY ROW(t.*);
-
-RESET ROLE;
-DROP TABLE grantor_test;
-DROP ROLE regress_grantor1, regress_grantor2, regress_grantor3, regress_grantor4, regress_grantor5;

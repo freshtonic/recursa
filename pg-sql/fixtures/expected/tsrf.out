@@ -91,9 +91,8 @@ SELECT unnest(ARRAY[1, 2]) FROM few WHERE false;
  ProjectSet
    Output: unnest('{1,2}'::integer[])
    ->  Result
-         Replaces: Scan on few
          One-Time Filter: false
-(5 rows)
+(4 rows)
 
 SELECT unnest(ARRAY[1, 2]) FROM few WHERE false;
  unnest 
@@ -108,9 +107,8 @@ SELECT * FROM few f1,
 ------------------------------------------------
  Result
    Output: f1.id, f1.dataa, f1.datab, ss.unnest
-   Replaces: Join on f1, ss
    One-Time Filter: false
-(4 rows)
+(3 rows)
 
 SELECT * FROM few f1,
   (SELECT unnest(ARRAY[1,2]) FROM few f2 WHERE false OFFSET 0) ss;

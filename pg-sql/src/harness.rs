@@ -76,10 +76,16 @@ pub fn run_regression_test(test_name: &str, psql_uri: &str) -> Result<(), String
     Ok(())
 }
 
-/// Execute SQL via psql and return combined stdout+stderr.
+/// Execute SQL via psql and return combined stdout+stderr with correct interleaving.
+///
+/// Uses `sh -c` with `2>&1` to merge stderr into stdout at the point errors occur,
+/// matching how psql output appears in the expected `.out` files.
 fn execute_via_psql(sql: &str, psql_uri: &str) -> Result<String, String> {
-    let output = std::process::Command::new("psql")
-        .args([psql_uri, "--no-psqlrc", "-f", "-"])
+    let output = std::process::Command::new("sh")
+        .args([
+            "-c",
+            &format!("psql '{}' --no-psqlrc --echo-all -f - 2>&1", psql_uri),
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -91,19 +97,7 @@ fn execute_via_psql(sql: &str, psql_uri: &str) -> Result<String, String> {
         })
         .map_err(|e| format!("psql failed: {e}"))?;
 
-    // Combine stdout and stderr. psql sends errors to stderr, but they're
-    // interleaved in the expected .out file. Using `2>&1` via shell would
-    // preserve ordering, but for now we merge stdout+stderr and rely on
-    // strip_echoed_sql to normalize both sides identically.
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    let mut combined = stdout;
-    if !stderr.is_empty() {
-        combined.push_str(&stderr);
-    }
-
-    Ok(combined)
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// Strip echoed SQL from psql output, keeping only result lines.
@@ -118,28 +112,53 @@ fn execute_via_psql(sql: &str, psql_uri: &str) -> Result<String, String> {
 ///
 /// Everything else (echoed SQL, blank lines between statements) is stripped.
 pub fn strip_echoed_sql(output: &str) -> Vec<String> {
-    let lines: Vec<&str> = output.lines().collect();
+    // Pre-process: strip psql file/line prefixes from error messages.
+    // psql outputs errors like `psql:/path/file.sql:7: ERROR: ...`
+    // but the expected .out files just have `ERROR: ...`
+    let re_psql_prefix = regex::Regex::new(r"^psql:[^:]*:\d+: ").unwrap();
+    let lines: Vec<String> = output
+        .lines()
+        .map(|line| re_psql_prefix.replace(line, "").to_string())
+        .collect();
+    let lines: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
     let mut result = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
         let line = lines[i];
 
-        // Keep error/notice messages
+        // Keep error/notice messages (but skip LINE N: and ^ caret lines,
+        // since our reformatted SQL may have different line numbers/positions)
         if line.starts_with("ERROR:") || line.starts_with("NOTICE:") || line.starts_with("WARNING:") {
             result.push(line.to_string());
             i += 1;
-            // Also keep continuation lines (indented)
-            while i < lines.len() && (lines[i].starts_with(' ') || lines[i].starts_with("LINE") || lines[i].starts_with('^')) {
-                result.push(lines[i].to_string());
-                i += 1;
+            // Skip continuation lines: LINE N:, caret (^), indented SQL context
+            while i < lines.len() {
+                let cont = lines[i];
+                if cont.starts_with("LINE ") || cont.trim() == "^" || cont.trim().starts_with('^') {
+                    // Skip LINE and caret lines — they reference positions in the
+                    // SQL text which may differ due to reformatting
+                    i += 1;
+                } else if cont.starts_with("DETAIL:") || cont.starts_with("HINT:") || cont.starts_with("CONTEXT:") {
+                    // Keep DETAIL/HINT/CONTEXT
+                    result.push(cont.to_string());
+                    i += 1;
+                } else {
+                    break;
+                }
             }
             continue;
         }
 
-        // Keep DETAIL/HINT lines that follow errors
-        if line.starts_with("DETAIL:") || line.starts_with("HINT:") || line.starts_with("LINE ") || line.starts_with("CONTEXT:") {
+        // Keep standalone DETAIL/HINT/CONTEXT lines
+        if line.starts_with("DETAIL:") || line.starts_with("HINT:") || line.starts_with("CONTEXT:") {
             result.push(line.to_string());
+            i += 1;
+            continue;
+        }
+
+        // Skip standalone LINE/caret lines
+        if line.starts_with("LINE ") || line.trim() == "^" || line.trim().starts_with('^') {
             i += 1;
             continue;
         }
@@ -176,9 +195,9 @@ pub fn strip_echoed_sql(output: &str) -> Vec<String> {
             continue;
         }
 
-        // Keep psql informational output (e.g., SET, CREATE TABLE, INSERT, DROP)
+        // Skip psql status lines (CREATE TABLE, INSERT 0 1, DROP TABLE, SET, etc.)
+        // The expected .out files do not include these.
         if is_psql_status_line(line) {
-            result.push(line.to_string());
             i += 1;
             continue;
         }
@@ -193,7 +212,8 @@ pub fn strip_echoed_sql(output: &str) -> Vec<String> {
 /// Check if a line is a divider (e.g., `-----+------` or `----------`).
 fn is_divider_line(line: &str) -> bool {
     let trimmed = line.trim();
-    if trimmed.is_empty() {
+    // Must be at least 3 chars to distinguish from `--` (SQL comment marker)
+    if trimmed.len() < 3 {
         return false;
     }
     trimmed.chars().all(|c| c == '-' || c == '+')
@@ -259,27 +279,24 @@ mod tests {
     }
 
     #[test]
-    fn strip_keeps_create_table_status() {
+    fn strip_removes_create_table_status() {
         let output = "CREATE TABLE BOOLTBL1 (f1 bool);\nCREATE TABLE\n";
         let result = strip_echoed_sql(output);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], "CREATE TABLE");
+        assert!(result.is_empty());
     }
 
     #[test]
-    fn strip_keeps_insert_status() {
+    fn strip_removes_insert_status() {
         let output = "INSERT INTO t (f1) VALUES (true);\nINSERT 0 1\n";
         let result = strip_echoed_sql(output);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], "INSERT 0 1");
+        assert!(result.is_empty());
     }
 
     #[test]
-    fn strip_keeps_drop_table_status() {
+    fn strip_removes_drop_table_status() {
         let output = "DROP TABLE t;\nDROP TABLE\n";
         let result = strip_echoed_sql(output);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], "DROP TABLE");
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -299,9 +316,9 @@ mod tests {
         let output =
             "CREATE TABLE t (f1 bool);\nCREATE TABLE\nSELECT 1;\n ?column? \n----------\n        1\n(1 row)\n";
         let result = strip_echoed_sql(output);
-        assert_eq!(result.len(), 5); // CREATE TABLE + 4 result lines
-        assert_eq!(result[0], "CREATE TABLE");
-        assert_eq!(result[1], " ?column? ");
+        // CREATE TABLE status is stripped, only the SELECT result remains
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0], " ?column? ");
     }
 
     // --- is_divider_line tests ---
@@ -348,6 +365,7 @@ mod tests {
     #[cfg(test)]
     mod regress {
         use testcontainers::runners::SyncRunner;
+        use testcontainers::ImageExt;
         use testcontainers_modules::postgres::Postgres;
 
         use crate::harness::run_regression_test;
@@ -355,7 +373,9 @@ mod tests {
         /// Start a Postgres container and return the psql connection URI.
         /// Returns the container (must be kept alive) and the URI.
         fn start_postgres() -> (testcontainers::Container<Postgres>, String) {
+            // Use Postgres 17 to match the vendored test fixtures (from REL_17_9).
             let container = Postgres::default()
+                .with_tag("17")
                 .start()
                 .expect("Failed to start Postgres container");
 

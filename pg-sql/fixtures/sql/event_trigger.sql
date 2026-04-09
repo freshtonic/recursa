@@ -324,12 +324,7 @@ CREATE SCHEMA evttrig
 	CREATE TABLE one (col_a SERIAL PRIMARY KEY, col_b text DEFAULT 'forty two', col_c SERIAL)
 	CREATE INDEX one_idx ON one (col_b)
 	CREATE TABLE two (col_c INTEGER CHECK (col_c > 0) REFERENCES one DEFAULT 42)
-	CREATE TABLE id (col_d int NOT NULL GENERATED ALWAYS AS IDENTITY)
-	CREATE VIEW one_view AS SELECT * FROM two;
-
--- View with column additions
-CREATE OR REPLACE VIEW evttrig.one_view AS SELECT * FROM evttrig.two, evttrig.id;
-DROP VIEW evttrig.one_view;
+	CREATE TABLE id (col_d int NOT NULL GENERATED ALWAYS AS IDENTITY);
 
 -- Partitioned tables with a partitioned index
 CREATE TABLE evttrig.parted (

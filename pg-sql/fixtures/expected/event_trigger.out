@@ -416,8 +416,7 @@ CREATE SCHEMA evttrig
 	CREATE TABLE one (col_a SERIAL PRIMARY KEY, col_b text DEFAULT 'forty two', col_c SERIAL)
 	CREATE INDEX one_idx ON one (col_b)
 	CREATE TABLE two (col_c INTEGER CHECK (col_c > 0) REFERENCES one DEFAULT 42)
-	CREATE TABLE id (col_d int NOT NULL GENERATED ALWAYS AS IDENTITY)
-	CREATE VIEW one_view AS SELECT * FROM two;
+	CREATE TABLE id (col_d int NOT NULL GENERATED ALWAYS AS IDENTITY);
 NOTICE:  END: command_tag=CREATE SCHEMA type=schema identity=evttrig
 NOTICE:  END: command_tag=CREATE SEQUENCE type=sequence identity=evttrig.one_col_a_seq
 NOTICE:  END: command_tag=CREATE SEQUENCE type=sequence identity=evttrig.one_col_c_seq
@@ -425,19 +424,12 @@ NOTICE:  END: command_tag=CREATE TABLE type=table identity=evttrig.one
 NOTICE:  END: command_tag=CREATE INDEX type=index identity=evttrig.one_pkey
 NOTICE:  END: command_tag=ALTER SEQUENCE type=sequence identity=evttrig.one_col_a_seq
 NOTICE:  END: command_tag=ALTER SEQUENCE type=sequence identity=evttrig.one_col_c_seq
-NOTICE:  END: command_tag=CREATE INDEX type=index identity=evttrig.one_idx
 NOTICE:  END: command_tag=CREATE TABLE type=table identity=evttrig.two
+NOTICE:  END: command_tag=ALTER TABLE type=table identity=evttrig.two
 NOTICE:  END: command_tag=CREATE SEQUENCE type=sequence identity=evttrig.id_col_d_seq
 NOTICE:  END: command_tag=CREATE TABLE type=table identity=evttrig.id
 NOTICE:  END: command_tag=ALTER SEQUENCE type=sequence identity=evttrig.id_col_d_seq
-NOTICE:  END: command_tag=CREATE VIEW type=view identity=evttrig.one_view
-NOTICE:  END: command_tag=ALTER TABLE type=table identity=evttrig.two
--- View with column additions
-CREATE OR REPLACE VIEW evttrig.one_view AS SELECT * FROM evttrig.two, evttrig.id;
-NOTICE:  END: command_tag=CREATE VIEW type=view identity=evttrig.one_view
-NOTICE:  END: command_tag=CREATE VIEW type=view identity=evttrig.one_view
-DROP VIEW evttrig.one_view;
-NOTICE:  NORMAL: orig=t normal=f istemp=f type=view identity=evttrig.one_view schema=evttrig name=one_view addr={evttrig,one_view} args={}
+NOTICE:  END: command_tag=CREATE INDEX type=index identity=evttrig.one_idx
 -- Partitioned tables with a partitioned index
 CREATE TABLE evttrig.parted (
     id int PRIMARY KEY)
@@ -535,7 +527,6 @@ NOTICE:  DROP: orig=t normal=f istemp=f type=table identity=public.evtrg_nontemp
 NOTICE:  DROP: orig=f normal=f istemp=f type=type identity=public.evtrg_nontemp_table schema=public name=evtrg_nontemp_table addr={public.evtrg_nontemp_table} args={}
 NOTICE:  DROP: orig=f normal=f istemp=f type=type identity=public.evtrg_nontemp_table[] schema=public name=_evtrg_nontemp_table addr={public.evtrg_nontemp_table[]} args={}
 NOTICE:  DROP: orig=f normal=f istemp=f type=default value identity=for public.evtrg_nontemp_table.f2 schema=public name=<NULL> addr={public,evtrg_nontemp_table,f2} args={}
-NOTICE:  DROP: orig=f normal=f istemp=f type=table constraint identity=evtrg_nontemp_table_f1_not_null on public.evtrg_nontemp_table schema=public name=<NULL> addr={public,evtrg_nontemp_table,evtrg_nontemp_table_f1_not_null} args={}
 NOTICE:  DROP: orig=f normal=f istemp=f type=table constraint identity=evtrg_nontemp_table_pkey on public.evtrg_nontemp_table schema=public name=<NULL> addr={public,evtrg_nontemp_table,evtrg_nontemp_table_pkey} args={}
 NOTICE:  DROP: orig=f normal=f istemp=f type=index identity=public.evtrg_nontemp_table_pkey schema=public name=evtrg_nontemp_table_pkey addr={public,evtrg_nontemp_table_pkey} args={}
 NOTICE:  DROP: orig=f normal=f istemp=f type=trigger identity=evtrg_nontemp_trig on public.evtrg_nontemp_table schema=public name=<NULL> addr={public,evtrg_nontemp_table,evtrg_nontemp_trig} args={}
@@ -554,7 +545,6 @@ NOTICE:  DROP: orig=t normal=f istemp=t type=table identity=pg_temp.a_temp_tbl s
 NOTICE:  DROP: orig=f normal=f istemp=t type=type identity=pg_temp.a_temp_tbl schema=pg_temp name=a_temp_tbl addr={pg_temp.a_temp_tbl} args={}
 NOTICE:  DROP: orig=f normal=f istemp=t type=type identity=pg_temp.a_temp_tbl[] schema=pg_temp name=_a_temp_tbl addr={pg_temp.a_temp_tbl[]} args={}
 NOTICE:  DROP: orig=f normal=f istemp=t type=default value identity=for pg_temp.a_temp_tbl.f2 schema=pg_temp name=<NULL> addr={pg_temp,a_temp_tbl,f2} args={}
-NOTICE:  DROP: orig=f normal=f istemp=t type=table constraint identity=a_temp_tbl_f1_not_null on pg_temp.a_temp_tbl schema=pg_temp name=<NULL> addr={pg_temp,a_temp_tbl,a_temp_tbl_f1_not_null} args={}
 NOTICE:  DROP: orig=f normal=f istemp=t type=table constraint identity=a_temp_tbl_pkey on pg_temp.a_temp_tbl schema=pg_temp name=<NULL> addr={pg_temp,a_temp_tbl,a_temp_tbl_pkey} args={}
 NOTICE:  DROP: orig=f normal=f istemp=t type=index identity=pg_temp.a_temp_tbl_pkey schema=pg_temp name=a_temp_tbl_pkey addr={pg_temp,a_temp_tbl_pkey} args={}
 NOTICE:  DROP: orig=f normal=f istemp=t type=trigger identity=a_temp_trig on pg_temp.a_temp_tbl schema=pg_temp name=<NULL> addr={pg_temp,a_temp_tbl,a_temp_trig} args={}

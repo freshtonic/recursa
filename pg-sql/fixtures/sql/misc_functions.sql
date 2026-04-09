@@ -37,17 +37,6 @@ SELECT num_nonnulls();
 SELECT num_nulls();
 
 --
--- error_on_null()
---
-
-SELECT error_on_null(1);
-SELECT error_on_null(NULL::int);
-SELECT error_on_null(NULL::int[]);
-SELECT error_on_null('{1,2,NULL,3}'::int[]);
-SELECT error_on_null(ROW(1,NULL::int));
-SELECT error_on_null(ROW(NULL,NULL));
-
---
 -- canonicalize_path()
 --
 
@@ -133,7 +122,6 @@ select (w).size = :segsize as ok
 from (select pg_ls_waldir() w) ss where length((w).name) = 24 limit 1;
 
 select count(*) >= 0 as ok from pg_ls_archive_statusdir();
-select count(*) >= 0 as ok from pg_ls_summariesdir();
 
 -- pg_read_file()
 select length(pg_read_file('postmaster.pid')) > 20;
@@ -236,40 +224,6 @@ SELECT * FROM tenk1 a JOIN my_gen_series(1,1000) g ON a.unique1 = g;
 EXPLAIN (COSTS OFF)
 SELECT * FROM tenk1 a JOIN my_gen_series(1,10) g ON a.unique1 = g;
 
---
--- Test SupportRequestInlineInFrom request
---
-
-CREATE FUNCTION test_inline_in_from_support_func(internal)
-    RETURNS internal
-    AS :'regresslib', 'test_inline_in_from_support_func'
-    LANGUAGE C STRICT;
-
-CREATE FUNCTION foo_from_bar(colname TEXT, tablename TEXT, filter TEXT)
-RETURNS SETOF TEXT
-LANGUAGE plpgsql
-AS $function$
-DECLARE
-  sql TEXT;
-BEGIN
-  sql := format('SELECT %I::text FROM %I', colname, tablename);
-  IF filter IS NOT NULL THEN
-    sql := CONCAT(sql, format(' WHERE %I::text = $1', colname));
-  END IF;
-  RETURN QUERY EXECUTE sql USING filter;
-END;
-$function$ STABLE;
-
-ALTER FUNCTION foo_from_bar(TEXT, TEXT, TEXT)
-  SUPPORT test_inline_in_from_support_func;
-
-SELECT * FROM foo_from_bar('f1', 'text_tbl', NULL);
-SELECT * FROM foo_from_bar('f1', 'text_tbl', 'doh!');
-EXPLAIN (COSTS OFF) SELECT * FROM foo_from_bar('f1', 'text_tbl', NULL);
-EXPLAIN (COSTS OFF) SELECT * FROM foo_from_bar('f1', 'text_tbl', 'doh!');
-
-DROP FUNCTION foo_from_bar;
-
 -- Test functions for control data
 SELECT count(*) > 0 AS ok FROM pg_control_checkpoint();
 SELECT count(*) > 0 AS ok FROM pg_control_init();
@@ -319,40 +273,3 @@ SELECT pg_column_toast_chunk_id(a) IS NULL,
   pg_column_toast_chunk_id(b) IN (SELECT chunk_id FROM pg_toast.:toastrel)
   FROM test_chunk_id;
 DROP TABLE test_chunk_id;
-
--- test stratnum translation support functions
-SELECT gist_translate_cmptype_common(7);
-SELECT gist_translate_cmptype_common(3);
-
-
--- relpath tests
-CREATE FUNCTION test_relpath()
-    RETURNS void
-    AS :'regresslib'
-    LANGUAGE C;
-SELECT test_relpath();
-
--- pg_replication_origin.roname limit
-SELECT pg_replication_origin_create('regress_' || repeat('a', 505));
-
--- pg_get_multixact_stats tests
-CREATE ROLE regress_multixact_funcs;
--- Access granted for superusers.
-SELECT oldest_multixact IS NULL AS null_result FROM pg_get_multixact_stats();
--- Access revoked.
-SET ROLE regress_multixact_funcs;
-SELECT oldest_multixact IS NULL AS null_result FROM pg_get_multixact_stats();
-RESET ROLE;
--- Access granted for users with pg_monitor rights.
-GRANT pg_monitor TO regress_multixact_funcs;
-SET ROLE regress_multixact_funcs;
-SELECT oldest_multixact IS NULL AS null_result FROM pg_get_multixact_stats();
-RESET ROLE;
-DROP ROLE regress_multixact_funcs;
-
--- test instr_time nanosecond<->ticks conversion
-CREATE FUNCTION test_instr_time()
-    RETURNS bool
-    AS :'regresslib'
-    LANGUAGE C;
-SELECT test_instr_time();

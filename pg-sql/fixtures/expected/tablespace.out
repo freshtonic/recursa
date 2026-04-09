@@ -51,13 +51,13 @@ ERROR:  cannot move system relation "pg_authid_rolname_index"
 REINDEX (TABLESPACE regress_tblspace) TABLE CONCURRENTLY pg_authid;
 ERROR:  cannot reindex system catalogs concurrently
 -- toast relations, fail
-REINDEX (TABLESPACE regress_tblspace) INDEX pg_toast.pg_toast_1262_index;
-ERROR:  cannot move system relation "pg_toast_1262_index"
-REINDEX (TABLESPACE regress_tblspace) INDEX CONCURRENTLY pg_toast.pg_toast_1262_index;
+REINDEX (TABLESPACE regress_tblspace) INDEX pg_toast.pg_toast_1260_index;
+ERROR:  cannot move system relation "pg_toast_1260_index"
+REINDEX (TABLESPACE regress_tblspace) INDEX CONCURRENTLY pg_toast.pg_toast_1260_index;
 ERROR:  cannot reindex system catalogs concurrently
-REINDEX (TABLESPACE regress_tblspace) TABLE pg_toast.pg_toast_1262;
-ERROR:  cannot move system relation "pg_toast_1262_index"
-REINDEX (TABLESPACE regress_tblspace) TABLE CONCURRENTLY pg_toast.pg_toast_1262;
+REINDEX (TABLESPACE regress_tblspace) TABLE pg_toast.pg_toast_1260;
+ERROR:  cannot move system relation "pg_toast_1260_index"
+REINDEX (TABLESPACE regress_tblspace) TABLE CONCURRENTLY pg_toast.pg_toast_1260;
 ERROR:  cannot reindex system catalogs concurrently
 -- system catalog, fail
 REINDEX (TABLESPACE pg_global) TABLE pg_authid;
@@ -355,9 +355,8 @@ Number of partitions: 2 (Use \d+ to list them.)
 Partition key: LIST (a)
 Indexes:
     "part_a_idx" btree (a), tablespace "regress_tblspace"
-Partitions:
-    testschema.part1 FOR VALUES IN (1)
-    testschema.part2 FOR VALUES IN (2)
+Partitions: testschema.part1 FOR VALUES IN (1),
+            testschema.part2 FOR VALUES IN (2)
 
 \d testschema.part1
              Table "testschema.part1"
@@ -393,9 +392,8 @@ Tablespace: "regress_tblspace"
 --------+---------+------+------------+---------+--------------
  a      | integer | yes  | a          | plain   | 
 btree, for table "testschema.part"
-Partitions:
-    testschema.part1_a_idx
-    testschema.part2_a_idx
+Partitions: testschema.part1_a_idx,
+            testschema.part2_a_idx
 Tablespace: "regress_tblspace"
 
 -- partitioned rels cannot specify the default tablespace.  These fail:
@@ -960,11 +958,6 @@ ALTER TABLE ALL IN TABLESPACE regress_tblspace_renamed SET TABLESPACE pg_default
 NOTICE:  no matching relations in tablespace "regress_tblspace_renamed" found
 ALTER MATERIALIZED VIEW ALL IN TABLESPACE regress_tblspace_renamed SET TABLESPACE pg_default;
 NOTICE:  no matching relations in tablespace "regress_tblspace_renamed" found
--- Should fail, contains \n in name
-ALTER TABLESPACE regress_tblspace_renamed RENAME TO "invalid
-name";
-ERROR:  tablespace name "invalid
-name" contains a newline or carriage return character
 -- Should succeed
 DROP TABLESPACE regress_tblspace_renamed;
 DROP SCHEMA testschema CASCADE;

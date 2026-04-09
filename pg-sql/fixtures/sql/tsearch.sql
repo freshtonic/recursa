@@ -222,7 +222,6 @@ RESET enable_bitmapscan;
 
 DROP INDEX wowidx;
 
-ALTER TABLE test_tsvector SET (parallel_workers = 2);
 CREATE INDEX wowidx ON test_tsvector USING gin (a);
 
 SET enable_seqscan=OFF;

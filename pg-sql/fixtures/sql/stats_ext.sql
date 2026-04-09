@@ -28,7 +28,7 @@ end;
 $$;
 
 -- Verify failures
-CREATE TABLE ext_stats_test (x text, y int, z int, w xid);
+CREATE TABLE ext_stats_test (x text, y int, z int);
 CREATE STATISTICS tst;
 CREATE STATISTICS tst ON a, b;
 CREATE STATISTICS tst FROM sometab;
@@ -56,15 +56,6 @@ DROP FUNCTION tftest;
 CREATE STATISTICS tst ON (y) FROM ext_stats_test; -- single column reference
 CREATE STATISTICS tst ON y + z FROM ext_stats_test; -- missing parentheses
 CREATE STATISTICS tst ON (x, y) FROM ext_stats_test; -- tuple expression
--- statistics on system column not allowed
-CREATE STATISTICS tst on tableoid from ext_stats_test;
-CREATE STATISTICS tst on (tableoid) from ext_stats_test;
-CREATE STATISTICS tst on (tableoid::int+1) from ext_stats_test;
-CREATE STATISTICS tst (ndistinct) ON xmin from ext_stats_test;
--- statistics kinds are not allowed with univariate statistics
-CREATE STATISTICS tst (ndistinct) ON (y + z) FROM ext_stats_test;
--- multivariate statistics without a less-than operator not supported
-CREATE STATISTICS tst (ndistinct) ON x, w from ext_stats_test;
 DROP TABLE ext_stats_test;
 
 -- Ensure stats are dropped sanely, and test IF NOT EXISTS while at it
@@ -120,10 +111,7 @@ ALTER TABLE ab1 ALTER a SET STATISTICS -1;
 ALTER STATISTICS ab1_a_b_stats SET STATISTICS 0;
 \d ab1
 ANALYZE ab1;
-SELECT stxname,
-       replace(d.stxdndistinct, '}, ', E'},\n') AS stxdndistinct,
-       replace(d.stxddependencies, '}, ', E'},\n') AS stxddependencies,
-       stxdmcv, stxdinherit
+SELECT stxname, stxdndistinct, stxddependencies, stxdmcv, stxdinherit
   FROM pg_statistic_ext s LEFT JOIN pg_statistic_ext_data d ON (d.stxoid = s.oid)
  WHERE s.stxname = 'ab1_a_b_stats';
 ALTER STATISTICS ab1_a_b_stats SET STATISTICS -1;
@@ -295,7 +283,7 @@ CREATE STATISTICS s10 ON a, b, c FROM ndistinct;
 
 ANALYZE ndistinct;
 
-SELECT s.stxkind, replace(d.stxdndistinct, '}, ', E'},\n') AS stxdndistinct
+SELECT s.stxkind, d.stxdndistinct
   FROM pg_statistic_ext s, pg_statistic_ext_data d
  WHERE s.stxrelid = 'ndistinct'::regclass
    AND d.stxoid = s.oid;
@@ -336,7 +324,7 @@ INSERT INTO ndistinct (a, b, c, filler1)
 
 ANALYZE ndistinct;
 
-SELECT s.stxkind, replace(d.stxdndistinct, '}, ', E'},\n') AS stxdndistinct
+SELECT s.stxkind, d.stxdndistinct
   FROM pg_statistic_ext s, pg_statistic_ext_data d
  WHERE s.stxrelid = 'ndistinct'::regclass
    AND d.stxoid = s.oid;
@@ -362,7 +350,7 @@ SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, (
 
 DROP STATISTICS s10;
 
-SELECT s.stxkind, replace(d.stxdndistinct, '}, ', E'},\n') AS stxdndistinct
+SELECT s.stxkind, d.stxdndistinct
   FROM pg_statistic_ext s, pg_statistic_ext_data d
  WHERE s.stxrelid = 'ndistinct'::regclass
    AND d.stxoid = s.oid;
@@ -397,7 +385,7 @@ CREATE STATISTICS s10 (ndistinct) ON (a+1), (b+100), (2*c) FROM ndistinct;
 
 ANALYZE ndistinct;
 
-SELECT s.stxkind, replace(d.stxdndistinct, '}, ', E'},\n') AS stxdndistinct
+SELECT s.stxkind, d.stxdndistinct
   FROM pg_statistic_ext s, pg_statistic_ext_data d
  WHERE s.stxrelid = 'ndistinct'::regclass
    AND d.stxoid = s.oid;
@@ -421,7 +409,7 @@ CREATE STATISTICS s10 (ndistinct) ON a, b, (2*c) FROM ndistinct;
 
 ANALYZE ndistinct;
 
-SELECT s.stxkind, replace(d.stxdndistinct, '}, ', E'},\n') AS stxdndistinct
+SELECT s.stxkind, d.stxdndistinct
   FROM pg_statistic_ext s, pg_statistic_ext_data d
  WHERE s.stxrelid = 'ndistinct'::regclass
    AND d.stxoid = s.oid;
@@ -706,7 +694,7 @@ CREATE STATISTICS func_deps_stat (dependencies) ON a, b, c FROM functional_depen
 ANALYZE functional_dependencies;
 
 -- print the detected dependencies
-SELECT replace(dependencies, '}, ', E'},\n') AS dependencies FROM pg_stats_ext WHERE statistics_name = 'func_deps_stat';
+SELECT dependencies FROM pg_stats_ext WHERE statistics_name = 'func_deps_stat';
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a = 1 AND b = ''1''');
 
@@ -842,7 +830,7 @@ CREATE STATISTICS func_deps_stat (dependencies) ON (a * 2), upper(b), (c + 1) FR
 ANALYZE functional_dependencies;
 
 -- print the detected dependencies
-SELECT replace(dependencies, '}, ', E'},\n') AS dependencies FROM pg_stats_ext WHERE statistics_name = 'func_deps_stat';
+SELECT dependencies FROM pg_stats_ext WHERE statistics_name = 'func_deps_stat';
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE (a * 2) = 2 AND upper(b) = ''1''');
 
@@ -1579,35 +1567,6 @@ SELECT c0 FROM ONLY expr_stats_incompatible_test WHERE
 
 DROP TABLE expr_stats_incompatible_test;
 
--- multivariate statistics on virtual generated columns
-CREATE TABLE virtual_gen_stats (a int, b int, c int GENERATED ALWAYS AS (2*a), d int GENERATED ALWAYS AS (a+b), w xid GENERATED ALWAYS AS (a::text::xid));
-INSERT INTO virtual_gen_stats SELECT mod(i,10), mod(i,10) FROM generate_series(1,100) s(i);
-ANALYZE virtual_gen_stats;
-
-SELECT * FROM check_estimated_rows('SELECT * FROM virtual_gen_stats WHERE c = 0 AND (3*b) = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM virtual_gen_stats WHERE d = 0 AND (d-2*a) = 0');
-
-CREATE STATISTICS virtual_gen_stats_1 (mcv) ON c, (3*b), d, (d-2*a) FROM virtual_gen_stats;
-ANALYZE virtual_gen_stats;
-
-SELECT * FROM check_estimated_rows('SELECT * FROM virtual_gen_stats WHERE c = 0 AND (3*b) = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM virtual_gen_stats WHERE d = 0 AND (d-2*a) = 0');
-
--- univariate statistics on individual virtual generated columns
-DROP STATISTICS virtual_gen_stats_1;
-
-SELECT * FROM check_estimated_rows('SELECT * FROM virtual_gen_stats WHERE c = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM virtual_gen_stats WHERE w = 0');
-
-CREATE STATISTICS virtual_gen_stats_single ON c FROM virtual_gen_stats;
-CREATE STATISTICS virtual_gen_stats_single_without_less_than ON w FROM virtual_gen_stats;
-ANALYZE virtual_gen_stats;
-
-SELECT * FROM check_estimated_rows('SELECT * FROM virtual_gen_stats WHERE c = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM virtual_gen_stats WHERE w = 0');
-
-DROP TABLE virtual_gen_stats;
-
 -- Permission tests. Users should not be able to see specific data values in
 -- the extended statistics, if they lack permission to see those values in
 -- the underlying table.
@@ -1700,7 +1659,6 @@ CREATE FUNCTION op_leak(record, record) RETURNS bool
 CREATE OPERATOR <<< (procedure = op_leak, leftarg = record, rightarg = record,
                      restrict = scalarltsel);
 SELECT * FROM tststats.priv_test_tbl WHERE a <<< 0 AND b <<< 0; -- Permission denied
-SELECT * FROM tststats.priv_test_tbl WHERE a <<< 0 OR b <<< 0; -- Permission denied
 SELECT * FROM tststats.priv_test_tbl t
  WHERE a <<< 0 AND (b <<< 0 OR t.* <<< (1, 1) IS NOT NULL); -- Permission denied
 DELETE FROM tststats.priv_test_tbl WHERE a <<< 0 AND b <<< 0; -- Permission denied
@@ -1714,7 +1672,6 @@ GRANT SELECT, DELETE ON tststats.priv_test_view TO regress_stats_user1;
 -- Should now have access via the view, but see nothing and leak nothing
 SET SESSION AUTHORIZATION regress_stats_user1;
 SELECT * FROM tststats.priv_test_view WHERE a <<< 0 AND b <<< 0; -- Should not leak
-SELECT * FROM tststats.priv_test_view WHERE a <<< 0 OR b <<< 0; -- Should not leak
 SELECT * FROM tststats.priv_test_view t
  WHERE a <<< 0 AND (b <<< 0 OR t.* <<< (1, 1) IS NOT NULL); -- Should not leak
 DELETE FROM tststats.priv_test_view WHERE a <<< 0 AND b <<< 0; -- Should not leak
@@ -1728,7 +1685,6 @@ GRANT SELECT, DELETE ON tststats.priv_test_tbl TO regress_stats_user1;
 -- Should now have direct table access, but see nothing and leak nothing
 SET SESSION AUTHORIZATION regress_stats_user1;
 SELECT * FROM tststats.priv_test_tbl WHERE a <<< 0 AND b <<< 0; -- Should not leak
-SELECT * FROM tststats.priv_test_tbl WHERE a <<< 0 OR b <<< 0; -- Should not leak
 SELECT * FROM tststats.priv_test_tbl t
  WHERE a <<< 0 AND (b <<< 0 OR t.* <<< (1, 1) IS NOT NULL); -- Should not leak
 DELETE FROM tststats.priv_test_tbl WHERE a <<< 0 AND b <<< 0; -- Should not leak
@@ -1741,7 +1697,6 @@ ALTER TABLE tststats.priv_test_tbl INHERIT tststats.priv_test_parent_tbl;
 -- Should not have access to parent, and should leak nothing
 SET SESSION AUTHORIZATION regress_stats_user1;
 SELECT * FROM tststats.priv_test_parent_tbl WHERE a <<< 0 AND b <<< 0; -- Permission denied
-SELECT * FROM tststats.priv_test_parent_tbl WHERE a <<< 0 OR b <<< 0; -- Permission denied
 SELECT * FROM tststats.priv_test_parent_tbl t
  WHERE a <<< 0 AND (b <<< 0 OR t.* <<< (1, 1) IS NOT NULL); -- Permission denied
 DELETE FROM tststats.priv_test_parent_tbl WHERE a <<< 0 AND b <<< 0; -- Permission denied
@@ -1755,7 +1710,6 @@ GRANT SELECT, DELETE ON tststats.priv_test_parent_tbl TO regress_stats_user1;
 -- Should now have direct table access to parent, but see nothing and leak nothing
 SET SESSION AUTHORIZATION regress_stats_user1;
 SELECT * FROM tststats.priv_test_parent_tbl WHERE a <<< 0 AND b <<< 0; -- Should not leak
-SELECT * FROM tststats.priv_test_parent_tbl WHERE a <<< 0 OR b <<< 0; -- Should not leak
 SELECT * FROM tststats.priv_test_parent_tbl t
  WHERE a <<< 0 AND (b <<< 0 OR t.* <<< (1, 1) IS NOT NULL); -- Should not leak
 DELETE FROM tststats.priv_test_parent_tbl WHERE a <<< 0 AND b <<< 0; -- Should not leak
@@ -1829,82 +1783,3 @@ DROP TABLE stats_ext_tbl;
 DROP SCHEMA tststats CASCADE;
 DROP SCHEMA sts_sch1, sts_sch2 CASCADE;
 DROP USER regress_stats_user1;
-
-CREATE TABLE grouping_unique (x integer);
-INSERT INTO grouping_unique (x) SELECT gs FROM generate_series(1,1000) AS gs;
-ANALYZE grouping_unique;
-
--- Optimiser treat GROUP-BY operator as an 'uniqueser' of the input
-SELECT * FROM check_estimated_rows('
-  SELECT * FROM generate_series(1, 1) t1 LEFT JOIN (
-    SELECT x FROM grouping_unique t2 GROUP BY x) AS q1
-  ON t1.t1 = q1.x;
-');
-DROP TABLE grouping_unique;
-
---
--- Extended statistics on sb_2 (x, y, z) improve a bucket size estimation,
--- and the optimizer may choose hash join.
---
-CREATE TABLE sb_1 AS
-  SELECT gs % 10 AS x, gs % 10 AS y, gs % 10 AS z
-  FROM generate_series(1, 1e4) AS gs;
-CREATE TABLE sb_2 AS
-  SELECT gs % 49 AS x, gs % 51 AS y, gs % 73 AS z, 'abc' || gs AS payload
-  FROM generate_series(1, 1e4) AS gs;
-ANALYZE sb_1, sb_2;
-
--- During hash join estimation, the number of distinct values on each column
--- is calculated. The optimizer selects the smallest number of distinct values
--- and the largest hash bucket size. The optimizer decides that the hash
--- bucket size is quite big because there are possibly many correlations.
-EXPLAIN (COSTS OFF) -- Choose merge join
-SELECT * FROM sb_1 a, sb_2 b WHERE a.x = b.x AND a.y = b.y AND a.z = b.z;
-
--- The ndistinct extended statistics on (x, y, z) provides more reliable value
--- of bucket size.
-CREATE STATISTICS extstat_sb_2 (ndistinct) ON x, y, z FROM sb_2;
-ANALYZE sb_2;
-
-EXPLAIN (COSTS OFF) -- Choose hash join
-SELECT * FROM sb_1 a, sb_2 b WHERE a.x = b.x AND a.y = b.y AND a.z = b.z;
-
--- Check that the Hash Join bucket size estimator detects equal clauses correctly.
-SET enable_nestloop = 'off';
-SET enable_mergejoin = 'off';
-EXPLAIN (COSTS OFF)
-SELECT FROM sb_1 LEFT JOIN sb_2 ON (sb_2.x=sb_1.x) AND (sb_1.x=sb_2.x);
-EXPLAIN (COSTS OFF)
-SELECT FROM sb_1 LEFT JOIN sb_2
-   ON (sb_2.x=sb_1.x) AND (sb_1.x=sb_2.x) AND (sb_1.y=sb_2.y);
-RESET enable_nestloop;
-RESET enable_mergejoin;
-
--- Check that we can use statistics on a bool-valued function.
-SELECT * FROM check_estimated_rows('SELECT * FROM sb_2 WHERE numeric_lt(y, 1.0)');
-
-CREATE STATISTICS extstat_sb_2_small ON numeric_lt(y, 1.0) FROM sb_2;
-ANALYZE sb_2;
-
-SELECT * FROM check_estimated_rows('SELECT * FROM sb_2 WHERE numeric_lt(y, 1.0)');
-
--- Tidy up
-DROP TABLE sb_1, sb_2 CASCADE;
-
--- Check statistics generated for range type and expressions.
-CREATE TABLE stats_ext_tbl_range(name text, irange int4range);
-INSERT INTO stats_ext_tbl_range VALUES
-   ('red', '[1,7)'::int4range),
-   ('blue', '[2,8]'::int4range),
-   ('green', '[3,9)'::int4range);
-CREATE STATISTICS stats_ext_range (mcv)
-   ON irange, (irange + '[4,10)'::int4range)
-   FROM stats_ext_tbl_range;
-ANALYZE stats_ext_tbl_range;
-SELECT attnames, most_common_vals
-   FROM pg_stats_ext
-   WHERE statistics_name = 'stats_ext_range';
-SELECT range_length_histogram, range_empty_frac, range_bounds_histogram
-   FROM pg_stats_ext_exprs
-   WHERE statistics_name = 'stats_ext_range';
-DROP TABLE stats_ext_tbl_range;

@@ -14,8 +14,6 @@ SET enable_partitionwise_join TO true;
 SET max_parallel_workers_per_gather TO 0;
 -- Disable incremental sort, which can influence selected plans due to fuzz factor.
 SET enable_incremental_sort TO off;
--- Disable eager aggregation, which can interfere with the generation of partitionwise aggregation.
-SET enable_eager_aggregate TO off;
 
 --
 -- Tests for list partitioned tables.
@@ -75,11 +73,6 @@ SELECT c FROM pagg_tab GROUP BY c ORDER BY 1;
 EXPLAIN (COSTS OFF)
 SELECT a FROM pagg_tab WHERE a < 3 GROUP BY a ORDER BY 1;
 SELECT a FROM pagg_tab WHERE a < 3 GROUP BY a ORDER BY 1;
-
--- Test partitionwise aggregation with ordered append path built from fractional paths
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM pagg_tab GROUP BY c ORDER BY c LIMIT 1;
-SELECT count(*) FROM pagg_tab GROUP BY c ORDER BY c LIMIT 1;
 
 RESET enable_hashagg;
 

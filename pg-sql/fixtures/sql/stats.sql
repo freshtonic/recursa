@@ -8,12 +8,6 @@
 -- conditio sine qua non
 SHOW track_counts;  -- must be on
 
--- List of backend types, contexts and objects tracked in pg_stat_io.
-\a
-SELECT backend_type, object, context FROM pg_stat_io
-  ORDER BY backend_type COLLATE "C", object COLLATE "C", context COLLATE "C";
-\a
-
 -- ensure that both seqscan and indexscan plans are allowed
 SET enable_seqscan TO on;
 SET enable_indexscan TO on;
@@ -312,11 +306,8 @@ SELECT pg_stat_force_next_flush();
 SELECT last_seq_scan, last_idx_scan FROM pg_stat_all_tables WHERE relid = 'test_last_scan'::regclass;
 COMMIT;
 
-SELECT stats_reset IS NOT NULL AS has_stats_reset
-  FROM pg_stat_all_tables WHERE relid = 'test_last_scan'::regclass;
 SELECT pg_stat_reset_single_table_counters('test_last_scan'::regclass);
-SELECT seq_scan, idx_scan, stats_reset IS NOT NULL AS has_stats_reset
-  FROM pg_stat_all_tables WHERE relid = 'test_last_scan'::regclass;
+SELECT seq_scan, idx_scan FROM pg_stat_all_tables WHERE relid = 'test_last_scan'::regclass;
 
 -- ensure we start out with exactly one index and sequential scan
 BEGIN;
@@ -385,17 +376,6 @@ COMMIT;
 SELECT seq_scan, :'test_last_seq' = last_seq_scan AS seq_ok, idx_scan, :'test_last_idx' < last_idx_scan AS idx_ok
 FROM pg_stat_all_tables WHERE relid = 'test_last_scan'::regclass;
 
--- check the stats in pg_stat_all_indexes
-SELECT idx_scan, :'test_last_idx' < last_idx_scan AS idx_ok,
-  stats_reset IS NOT NULL AS has_stats_reset
-  FROM pg_stat_all_indexes WHERE indexrelid = 'test_last_scan_pkey'::regclass;
-
--- check that the stats in pg_stat_all_indexes are reset
-SELECT pg_stat_reset_single_table_counters('test_last_scan_pkey'::regclass);
-
-SELECT idx_scan, stats_reset IS NOT NULL AS has_stats_reset
-  FROM pg_stat_all_indexes WHERE indexrelid = 'test_last_scan_pkey'::regclass;
-
 -----
 -- Test reset of some stats for shared table
 -----
@@ -432,40 +412,28 @@ SELECT (n_tup_ins + n_tup_upd) > 0 AS has_data FROM pg_stat_all_tables
 -----
 
 -- Test that sessions is incremented when a new session is started in pg_stat_database
-SELECT sessions AS db_stat_sessions FROM pg_stat_database WHERE datname = current_database() \gset
+SELECT sessions AS db_stat_sessions FROM pg_stat_database WHERE datname = (SELECT current_database()) \gset
 \c
 SELECT pg_stat_force_next_flush();
-SELECT sessions > :db_stat_sessions FROM pg_stat_database WHERE datname = current_database();
+SELECT sessions > :db_stat_sessions FROM pg_stat_database WHERE datname = (SELECT current_database());
 
 -- Test pg_stat_checkpointer checkpointer-related stats, together with pg_stat_wal
 SELECT num_requested AS rqst_ckpts_before FROM pg_stat_checkpointer \gset
 
--- Test pg_stat_wal
+-- Test pg_stat_wal (and make a temp table so our temp schema exists)
 SELECT wal_bytes AS wal_bytes_before FROM pg_stat_wal \gset
 
--- Test pg_stat_get_backend_wal()
-SELECT wal_bytes AS backend_wal_bytes_before from pg_stat_get_backend_wal(pg_backend_pid()) \gset
-
--- Make a temp table so our temp schema exists
 CREATE TEMP TABLE test_stats_temp AS SELECT 17;
 DROP TABLE test_stats_temp;
 
 -- Checkpoint twice: The checkpointer reports stats after reporting completion
 -- of the checkpoint. But after a second checkpoint we'll see at least the
 -- results of the first.
---
--- While at it, test checkpoint options.  Note that we don't test MODE SPREAD
--- because it would prolong the test.
-CHECKPOINT (WRONG);
-CHECKPOINT (MODE WRONG);
-CHECKPOINT (MODE FAST, FLUSH_UNLOGGED FALSE);
-CHECKPOINT (FLUSH_UNLOGGED);
+CHECKPOINT;
+CHECKPOINT;
 
 SELECT num_requested > :rqst_ckpts_before FROM pg_stat_checkpointer;
 SELECT wal_bytes > :wal_bytes_before FROM pg_stat_wal;
-
-SELECT pg_stat_force_next_flush();
-SELECT wal_bytes > :backend_wal_bytes_before FROM pg_stat_get_backend_wal(pg_backend_pid());
 
 -- Test pg_stat_get_backend_idset() and some allied functions.
 -- In particular, verify that their notion of backend ID matches
@@ -523,33 +491,13 @@ SELECT stats_reset > :'wal_reset_ts'::timestamptz FROM pg_stat_wal;
 -- Test error case for reset_shared with unknown stats type
 SELECT pg_stat_reset_shared('unknown');
 
--- Test that reset works for pg_stat_database and pg_stat_database_conflicts
+-- Test that reset works for pg_stat_database
 
--- Since pg_stat_database stats_reset starts out as NULL, reset it once first so that we
--- have a baseline for comparison. The same for pg_stat_database_conflicts as it shares
--- the same stats_reset as pg_stat_database.
+-- Since pg_stat_database stats_reset starts out as NULL, reset it once first so we have something to compare it to
 SELECT pg_stat_reset();
-SELECT stats_reset AS db_reset_ts FROM pg_stat_database WHERE datname = current_database() \gset
-SELECT stats_reset AS dbc_reset_ts FROM pg_stat_database_conflicts WHERE datname = current_database() \gset
-SELECT :'db_reset_ts'::timestamptz = :'dbc_reset_ts'::timestamptz;
+SELECT stats_reset AS db_reset_ts FROM pg_stat_database WHERE datname = (SELECT current_database()) \gset
 SELECT pg_stat_reset();
-SELECT stats_reset > :'db_reset_ts'::timestamptz FROM pg_stat_database WHERE datname = current_database();
-SELECT stats_reset > :'dbc_reset_ts'::timestamptz FROM pg_stat_database_conflicts WHERE datname = current_database();
-
--- Test that reset works for pg_statio_all_sequences
-
--- Use the sequence to accumulate its stats, and reset them once first
--- so that we have a baseline for comparison, similar to the previous test.
--- stats_reset to compare to.
-CREATE SEQUENCE test_seq1;
-SELECT nextval('test_seq1');
-SELECT pg_stat_reset_single_table_counters('test_seq1'::regclass);
-SELECT stats_reset AS seq_reset_ts
-  FROM pg_statio_all_sequences WHERE relname ='test_seq1' \gset
-SELECT pg_stat_reset_single_table_counters('test_seq1'::regclass);
-SELECT stats_reset > :'seq_reset_ts'::timestamptz
-  FROM pg_statio_all_sequences WHERE relname ='test_seq1';
-DROP SEQUENCE test_seq1;
+SELECT stats_reset > :'db_reset_ts'::timestamptz FROM pg_stat_database WHERE datname = (SELECT current_database());
 
 
 ----
@@ -594,7 +542,7 @@ ROLLBACK;
 SELECT pg_stat_have_stats('bgwriter', 0, 0);
 -- unknown stats kinds error out
 SELECT pg_stat_have_stats('zaphod', 0, 0);
--- db stats have objid 0
+-- db stats have objoid 0
 SELECT pg_stat_have_stats('database', :dboid, 1);
 SELECT pg_stat_have_stats('database', :dboid, 0);
 
@@ -647,49 +595,32 @@ SELECT pg_stat_get_replication_slot(NULL);
 SELECT pg_stat_get_subscription_stats(NULL);
 
 
--- Test that the following operations are tracked in pg_stat_io and in
--- backend stats:
+-- Test that the following operations are tracked in pg_stat_io:
 -- - reads of target blocks into shared buffers
 -- - writes of shared buffers to permanent storage
 -- - extends of relations using shared buffers
 -- - fsyncs done to ensure the durability of data dirtying shared buffers
 -- - shared buffer hits
--- - WAL writes and fsyncs in IOContext IOCONTEXT_NORMAL
 
 -- There is no test for blocks evicted from shared buffers, because we cannot
 -- be sure of the state of shared buffers at the point the test is run.
 
 -- Create a regular table and insert some data to generate IOCONTEXT_NORMAL
 -- extends.
-SELECT pid AS checkpointer_pid FROM pg_stat_activity
-  WHERE backend_type = 'checkpointer' \gset
 SELECT sum(extends) AS io_sum_shared_before_extends
   FROM pg_stat_io WHERE context = 'normal' AND object = 'relation' \gset
-SELECT sum(extends) AS my_io_sum_shared_before_extends
-  FROM pg_stat_get_backend_io(pg_backend_pid())
-  WHERE context = 'normal' AND object = 'relation' \gset
 SELECT sum(writes) AS writes, sum(fsyncs) AS fsyncs
   FROM pg_stat_io
   WHERE object = 'relation' \gset io_sum_shared_before_
-SELECT sum(writes) AS writes, sum(fsyncs) AS fsyncs
-  FROM pg_stat_get_backend_io(pg_backend_pid())
-  WHERE object = 'relation' \gset my_io_sum_shared_before_
-SELECT sum(writes) AS writes, sum(fsyncs) AS fsyncs
-  FROM pg_stat_io
-  WHERE context = 'normal' AND object = 'wal' \gset io_sum_wal_normal_before_
 CREATE TABLE test_io_shared(a int);
 INSERT INTO test_io_shared SELECT i FROM generate_series(1,100)i;
 SELECT pg_stat_force_next_flush();
 SELECT sum(extends) AS io_sum_shared_after_extends
   FROM pg_stat_io WHERE context = 'normal' AND object = 'relation' \gset
 SELECT :io_sum_shared_after_extends > :io_sum_shared_before_extends;
-SELECT sum(extends) AS my_io_sum_shared_after_extends
-  FROM pg_stat_get_backend_io(pg_backend_pid())
-  WHERE context = 'normal' AND object = 'relation' \gset
-SELECT :my_io_sum_shared_after_extends > :my_io_sum_shared_before_extends;
 
 -- After a checkpoint, there should be some additional IOCONTEXT_NORMAL writes
--- and fsyncs in the global stats (usually not for the backend).
+-- and fsyncs.
 -- See comment above for rationale for two explicit CHECKPOINTs.
 CHECKPOINT;
 CHECKPOINT;
@@ -699,20 +630,6 @@ SELECT sum(writes) AS writes, sum(fsyncs) AS fsyncs
 SELECT :io_sum_shared_after_writes > :io_sum_shared_before_writes;
 SELECT current_setting('fsync') = 'off'
   OR :io_sum_shared_after_fsyncs > :io_sum_shared_before_fsyncs;
-SELECT sum(writes) AS writes, sum(fsyncs) AS fsyncs
-  FROM pg_stat_get_backend_io(pg_backend_pid())
-  WHERE object = 'relation' \gset my_io_sum_shared_after_
-SELECT :my_io_sum_shared_after_writes >= :my_io_sum_shared_before_writes;
-SELECT current_setting('fsync') = 'off'
-  OR :my_io_sum_shared_after_fsyncs >= :my_io_sum_shared_before_fsyncs;
-SELECT sum(writes) AS writes, sum(fsyncs) AS fsyncs
-  FROM pg_stat_io
-  WHERE context = 'normal' AND object = 'wal' \gset io_sum_wal_normal_after_
-SELECT current_setting('synchronous_commit') = 'on';
-SELECT :io_sum_wal_normal_after_writes > :io_sum_wal_normal_before_writes;
-SELECT current_setting('fsync') = 'off'
-  OR current_setting('wal_sync_method') IN ('open_sync', 'open_datasync')
-  OR :io_sum_wal_normal_after_fsyncs > :io_sum_wal_normal_before_fsyncs;
 
 -- Change the tablespace so that the table is rewritten directly, then SELECT
 -- from it to cause it to be read back into shared buffers.
@@ -845,27 +762,11 @@ SELECT :io_sum_bulkwrite_strategy_extends_after > :io_sum_bulkwrite_strategy_ext
 SELECT pg_stat_have_stats('io', 0, 0);
 SELECT sum(evictions) + sum(reuses) + sum(extends) + sum(fsyncs) + sum(reads) + sum(writes) + sum(writebacks) + sum(hits) AS io_stats_pre_reset
   FROM pg_stat_io \gset
-SELECT sum(evictions) + sum(reuses) + sum(extends) + sum(fsyncs) + sum(reads) + sum(writes) + sum(writebacks) + sum(hits) AS my_io_stats_pre_reset
-  FROM pg_stat_get_backend_io(pg_backend_pid()) \gset
 SELECT pg_stat_reset_shared('io');
 SELECT sum(evictions) + sum(reuses) + sum(extends) + sum(fsyncs) + sum(reads) + sum(writes) + sum(writebacks) + sum(hits) AS io_stats_post_reset
   FROM pg_stat_io \gset
 SELECT :io_stats_post_reset < :io_stats_pre_reset;
-SELECT sum(evictions) + sum(reuses) + sum(extends) + sum(fsyncs) + sum(reads) + sum(writes) + sum(writebacks) + sum(hits) AS my_io_stats_post_reset
-  FROM pg_stat_get_backend_io(pg_backend_pid()) \gset
--- pg_stat_reset_shared() did not reset backend IO stats
-SELECT :my_io_stats_pre_reset <= :my_io_stats_post_reset;
--- but pg_stat_reset_backend_stats() does
-SELECT pg_stat_reset_backend_stats(pg_backend_pid());
-SELECT sum(evictions) + sum(reuses) + sum(extends) + sum(fsyncs) + sum(reads) + sum(writes) + sum(writebacks) + sum(hits) AS my_io_stats_post_backend_reset
-  FROM pg_stat_get_backend_io(pg_backend_pid()) \gset
-SELECT :my_io_stats_pre_reset > :my_io_stats_post_backend_reset;
 
--- Check invalid input for pg_stat_get_backend_io()
-SELECT pg_stat_get_backend_io(NULL);
-SELECT pg_stat_get_backend_io(0);
--- Auxiliary processes return no data.
-SELECT pg_stat_get_backend_io(:checkpointer_pid);
 
 -- test BRIN index doesn't block HOT update
 CREATE TABLE brin_hot (
@@ -963,41 +864,5 @@ SELECT 'x' FROM generate_series(1,1000);
 SELECT * FROM check_estimated_rows('SELECT * FROM table_fillfactor');
 
 DROP TABLE table_fillfactor;
-
--- Test fastpath_exceeded stat
-CREATE TABLE part_test (id int) PARTITION BY RANGE (id);
-
-SELECT pg_stat_reset_shared('lock');
-
--- Create partitions (exceeds number of slots)
-DO $$
-DECLARE
-  max_locks int;
-BEGIN
-  SELECT setting::int INTO max_locks
-  FROM pg_settings
-  WHERE name = 'max_locks_per_transaction';
-
-  FOR i IN 1..(max_locks + 10) LOOP
-    EXECUTE format(
-      'CREATE TABLE part_test_%s PARTITION OF part_test
-       FOR VALUES FROM (%s) TO (%s)',
-      i, (i-1)*1000, i*1000
-    );
-  END LOOP;
-END;
-$$;
-
-SELECT fastpath_exceeded AS fastpath_exceeded_before FROM pg_stat_lock WHERE locktype = 'relation' \gset
-
--- Needs a lock on each partition
-SELECT count(*) FROM part_test;
-
--- Ensure pending stats are flushed
-SELECT pg_stat_force_next_flush();
-
-SELECT fastpath_exceeded > :fastpath_exceeded_before FROM pg_stat_lock WHERE locktype = 'relation';
-
-DROP TABLE part_test;
 
 -- End of Stats Test

@@ -714,7 +714,9 @@ BEGIN
   END IF;
 EXCEPTION
   -- character with byte sequence 0xc2 0xb0 in encoding "UTF8" has no equivalent in encoding "LATIN8"
-  WHEN undefined_function
+  WHEN untranslatable_character
+  -- default conversion function for encoding "UTF8" to "MULE_INTERNAL" does not exist
+  OR undefined_function
   -- unsupported XML feature
   OR feature_not_supported THEN
     RAISE LOG 'skip: %', SQLERRM;
@@ -1223,7 +1225,6 @@ SELECT f.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan" or COU
        "Parallel Aware": false,                                                                                                                                                                 +
        "Async Capable": false,                                                                                                                                                                  +
        "Join Type": "Inner",                                                                                                                                                                    +
-       "Disabled": false,                                                                                                                                                                       +
        "Output": ["f.\"COUNTRY_NAME\"", "f.\"REGION_ID\""],                                                                                                                                     +
        "Inner Unique": false,                                                                                                                                                                   +
        "Plans": [                                                                                                                                                                               +
@@ -1235,7 +1236,6 @@ SELECT f.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan" or COU
            "Relation Name": "xmldata",                                                                                                                                                          +
            "Schema": "public",                                                                                                                                                                  +
            "Alias": "xmldata",                                                                                                                                                                  +
-           "Disabled": false,                                                                                                                                                                   +
            "Output": ["xmldata.data"]                                                                                                                                                           +
          },                                                                                                                                                                                     +
          {                                                                                                                                                                                      +
@@ -1245,7 +1245,6 @@ SELECT f.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan" or COU
            "Async Capable": false,                                                                                                                                                              +
            "Table Function Name": "xmltable",                                                                                                                                                   +
            "Alias": "f",                                                                                                                                                                        +
-           "Disabled": false,                                                                                                                                                                   +
            "Output": ["f.\"COUNTRY_NAME\"", "f.\"REGION_ID\""],                                                                                                                                 +
            "Table Function Call": "XMLTABLE(('/ROWS/ROW[COUNTRY_NAME=\"Japan\" or COUNTRY_NAME=\"India\"]'::text) PASSING (xmldata.data) COLUMNS \"COUNTRY_NAME\" text, \"REGION_ID\" integer)",+
            "Filter": "(f.\"COUNTRY_NAME\" = 'Japan'::text)"                                                                                                                                     +

@@ -1,16 +1,13 @@
--- keep these tests aligned with generated_virtual.sql
+-- sanity check of system catalog
+SELECT attrelid, attname, attgenerated FROM pg_attribute WHERE attgenerated NOT IN ('', 's');
 
-
-CREATE SCHEMA generated_stored_tests;
-GRANT USAGE ON SCHEMA generated_stored_tests TO PUBLIC;
-SET search_path = generated_stored_tests;
 
 CREATE TABLE gtest0 (a int PRIMARY KEY, b int GENERATED ALWAYS AS (55) STORED);
 CREATE TABLE gtest1 (a int PRIMARY KEY, b int GENERATED ALWAYS AS (a * 2) STORED);
 
-SELECT table_name, column_name, column_default, is_nullable, is_generated, generation_expression FROM information_schema.columns WHERE table_schema = 'generated_stored_tests' ORDER BY 1, 2;
+SELECT table_name, column_name, column_default, is_nullable, is_generated, generation_expression FROM information_schema.columns WHERE table_name LIKE 'gtest_' ORDER BY 1, 2;
 
-SELECT table_name, column_name, dependent_column FROM information_schema.column_column_usage WHERE table_schema = 'generated_stored_tests' ORDER BY 1, 2, 3;
+SELECT table_name, column_name, dependent_column FROM information_schema.column_column_usage ORDER BY 1, 2, 3;
 
 \d gtest1
 
@@ -59,8 +56,6 @@ INSERT INTO gtest1 VALUES (3, 33), (4, DEFAULT);  -- error
 INSERT INTO gtest1 VALUES (3, DEFAULT), (4, DEFAULT);  -- ok
 
 SELECT * FROM gtest1 ORDER BY a;
-SELECT gtest1 FROM gtest1 ORDER BY a;  -- whole-row reference
-SELECT a, (SELECT gtest1.b) FROM gtest1 ORDER BY a;  -- sublink
 DELETE FROM gtest1 WHERE a >= 3;
 
 UPDATE gtest1 SET b = DEFAULT WHERE a = 1;
@@ -84,7 +79,7 @@ DROP TABLE gtestx;
 
 -- test UPDATE/DELETE quals
 SELECT * FROM gtest1 ORDER BY a;
-UPDATE gtest1 SET a = 3 WHERE b = 4 RETURNING old.*, new.*;
+UPDATE gtest1 SET a = 3 WHERE b = 4;
 SELECT * FROM gtest1 ORDER BY a;
 DELETE FROM gtest1 WHERE b = 2;
 SELECT * FROM gtest1 ORDER BY a;
@@ -100,17 +95,8 @@ CREATE TABLE gtestm (
 INSERT INTO gtestm VALUES (1, 5, 100);
 MERGE INTO gtestm t USING (VALUES (1, 10), (2, 20)) v(id, f1) ON t.id = v.id
   WHEN MATCHED THEN UPDATE SET f1 = v.f1
-  WHEN NOT MATCHED THEN INSERT VALUES (v.id, v.f1, 200)
-  RETURNING merge_action(), old.*, new.*;
+  WHEN NOT MATCHED THEN INSERT VALUES (v.id, v.f1, 200);
 SELECT * FROM gtestm ORDER BY id;
-DROP TABLE gtestm;
-
-CREATE TABLE gtestm (
-  a int PRIMARY KEY,
-  b int GENERATED ALWAYS AS (a * 2) STORED
-);
-INSERT INTO gtestm (a) SELECT g FROM generate_series(1, 10) g;
-MERGE INTO gtestm t USING gtestm AS s ON 2 * t.a = s.b WHEN MATCHED THEN DELETE RETURNING *;
 DROP TABLE gtestm;
 
 -- views
@@ -152,12 +138,8 @@ DROP TABLE gtest_normal, gtest_normal_child;
 -- test inheritance mismatches between parent and child
 CREATE TABLE gtestx (x int, b int DEFAULT 10) INHERITS (gtest1);  -- error
 CREATE TABLE gtestx (x int, b int GENERATED ALWAYS AS IDENTITY) INHERITS (gtest1);  -- error
-CREATE TABLE gtestx (x int, b int GENERATED ALWAYS AS (a * 22) VIRTUAL) INHERITS (gtest1);  -- error
 CREATE TABLE gtestx (x int, b int GENERATED ALWAYS AS (a * 22) STORED) INHERITS (gtest1);  -- ok, overrides parent
 \d+ gtestx
-INSERT INTO gtestx (a, x) VALUES (11, 22);
-SELECT * FROM gtest1;
-SELECT * FROM gtestx;
 
 CREATE TABLE gtestxx_1 (a int NOT NULL, b int);
 ALTER TABLE gtestxx_1 INHERIT gtest1;  -- error
@@ -287,27 +269,26 @@ INSERT INTO gtest10a (a) VALUES (1);
 -- privileges
 CREATE USER regress_user11;
 
-CREATE TABLE gtest11 (a int PRIMARY KEY, b int, c int GENERATED ALWAYS AS (b * 2) STORED);
-INSERT INTO gtest11 VALUES (1, 10), (2, 20);
-GRANT SELECT (a, c) ON gtest11 TO regress_user11;
+CREATE TABLE gtest11s (a int PRIMARY KEY, b int, c int GENERATED ALWAYS AS (b * 2) STORED);
+INSERT INTO gtest11s VALUES (1, 10), (2, 20);
+GRANT SELECT (a, c) ON gtest11s TO regress_user11;
 
 CREATE FUNCTION gf1(a int) RETURNS int AS $$ SELECT a * 3 $$ IMMUTABLE LANGUAGE SQL;
 REVOKE ALL ON FUNCTION gf1(int) FROM PUBLIC;
 
-CREATE TABLE gtest12 (a int PRIMARY KEY, b int, c int GENERATED ALWAYS AS (gf1(b)) STORED);
-INSERT INTO gtest12 VALUES (1, 10), (2, 20);
-GRANT SELECT (a, c), INSERT ON gtest12 TO regress_user11;
+CREATE TABLE gtest12s (a int PRIMARY KEY, b int, c int GENERATED ALWAYS AS (gf1(b)) STORED);
+INSERT INTO gtest12s VALUES (1, 10), (2, 20);
+GRANT SELECT (a, c) ON gtest12s TO regress_user11;
 
 SET ROLE regress_user11;
-SELECT a, b FROM gtest11;  -- not allowed
-SELECT a, c FROM gtest11;  -- allowed
+SELECT a, b FROM gtest11s;  -- not allowed
+SELECT a, c FROM gtest11s;  -- allowed
 SELECT gf1(10);  -- not allowed
-INSERT INTO gtest12 VALUES (3, 30), (4, 40);  -- currently not allowed because of function permissions, should arguably be allowed
-SELECT a, c FROM gtest12;  -- allowed (does not actually invoke the function)
+SELECT a, c FROM gtest12s;  -- allowed
 RESET ROLE;
 
 DROP FUNCTION gf1(int);  -- fail
-DROP TABLE gtest11, gtest12;
+DROP TABLE gtest11s, gtest12s;
 DROP FUNCTION gf1(int);
 DROP USER regress_user11;
 
@@ -323,9 +304,6 @@ CREATE TABLE gtest20a (a int PRIMARY KEY, b int GENERATED ALWAYS AS (a * 2) STOR
 INSERT INTO gtest20a (a) VALUES (10);
 INSERT INTO gtest20a (a) VALUES (30);
 ALTER TABLE gtest20a ADD CHECK (b < 50);  -- fails on existing row
--- table rewrite cases
-ALTER TABLE gtest20a ADD COLUMN c float8 DEFAULT random() CHECK (b < 50); -- fails on existing row
-ALTER TABLE gtest20a ADD COLUMN c float8 DEFAULT random() CHECK (b < 61); -- ok
 
 CREATE TABLE gtest20b (a int PRIMARY KEY, b int GENERATED ALWAYS AS (a * 2) STORED);
 INSERT INTO gtest20b (a) VALUES (10);
@@ -333,57 +311,17 @@ INSERT INTO gtest20b (a) VALUES (30);
 ALTER TABLE gtest20b ADD CONSTRAINT chk CHECK (b < 50) NOT VALID;
 ALTER TABLE gtest20b VALIDATE CONSTRAINT chk;  -- fails on existing row
 
--- check with whole-row reference
-CREATE TABLE gtest20c (a int, b int GENERATED ALWAYS AS (a * 2) STORED);
-ALTER TABLE gtest20c ADD CONSTRAINT whole_row_check CHECK (gtest20c IS NOT NULL);
-INSERT INTO gtest20c VALUES (1);  -- ok
-INSERT INTO gtest20c VALUES (NULL);  -- fails
-
 -- not-null constraints
 CREATE TABLE gtest21a (a int PRIMARY KEY, b int GENERATED ALWAYS AS (nullif(a, 0)) STORED NOT NULL);
 INSERT INTO gtest21a (a) VALUES (1);  -- ok
 INSERT INTO gtest21a (a) VALUES (0);  -- violates constraint
 
--- also check with table constraint syntax
-CREATE TABLE gtest21ax (a int PRIMARY KEY, b int GENERATED ALWAYS AS (nullif(a, 0)) STORED, CONSTRAINT cc NOT NULL b);
-INSERT INTO gtest21ax (a) VALUES (0);  -- violates constraint
-INSERT INTO gtest21ax (a) VALUES (1);  --ok
--- SET EXPRESSION supports not null constraint
-ALTER TABLE gtest21ax ALTER COLUMN b SET EXPRESSION AS (nullif(a, 1)); --error
-DROP TABLE gtest21ax;
-
-CREATE TABLE gtest21ax (a int PRIMARY KEY, b int GENERATED ALWAYS AS (nullif(a, 0)) STORED);
-ALTER TABLE gtest21ax ADD CONSTRAINT cc NOT NULL b;
-INSERT INTO gtest21ax (a) VALUES (0);  -- violates constraint
-DROP TABLE gtest21ax;
-
-CREATE TABLE gtest21b (a int, b int GENERATED ALWAYS AS (nullif(a, 0)) STORED);
+CREATE TABLE gtest21b (a int PRIMARY KEY, b int GENERATED ALWAYS AS (nullif(a, 0)) STORED);
 ALTER TABLE gtest21b ALTER COLUMN b SET NOT NULL;
 INSERT INTO gtest21b (a) VALUES (1);  -- ok
-INSERT INTO gtest21b (a) VALUES (2), (0);  -- violates constraint
-INSERT INTO gtest21b (a) VALUES (NULL);  -- error
+INSERT INTO gtest21b (a) VALUES (0);  -- violates constraint
 ALTER TABLE gtest21b ALTER COLUMN b DROP NOT NULL;
 INSERT INTO gtest21b (a) VALUES (0);  -- ok now
-
--- not-null constraint with partitioned table
-CREATE TABLE gtestnn_parent (
-    f1 int,
-    f2 bigint,
-    f3 bigint GENERATED ALWAYS AS (nullif(f1, 1) + nullif(f2, 10)) STORED NOT NULL
-) PARTITION BY RANGE (f1);
-CREATE TABLE gtestnn_child PARTITION OF gtestnn_parent FOR VALUES FROM (1) TO (5);
-CREATE TABLE gtestnn_childdef PARTITION OF gtestnn_parent default;
--- check the error messages
-INSERT INTO gtestnn_parent VALUES (2, 2, default), (3, 5, default), (14, 12, default);  -- ok
-INSERT INTO gtestnn_parent VALUES (1, 2, default);  -- error
-INSERT INTO gtestnn_parent VALUES (2, 10, default);  -- error
-ALTER TABLE gtestnn_parent ALTER COLUMN f3 SET EXPRESSION AS (nullif(f1, 2) + nullif(f2, 11));  -- error
-INSERT INTO gtestnn_parent VALUES (10, 11, default);  -- ok
-SELECT * FROM gtestnn_parent ORDER BY f1, f2, f3;
--- test ALTER TABLE ADD COLUMN
-ALTER TABLE gtestnn_parent ADD COLUMN c int NOT NULL GENERATED ALWAYS AS (nullif(f1, 14) + nullif(f2, 10)) STORED;  -- error
-ALTER TABLE gtestnn_parent ADD COLUMN c int NOT NULL GENERATED ALWAYS AS (nullif(f1, 13) + nullif(f2, 5)) STORED;  -- error
-ALTER TABLE gtestnn_parent ADD COLUMN c int NOT NULL GENERATED ALWAYS AS (nullif(f1, 4) + nullif(f2, 6)) STORED;  -- ok
 
 -- index constraints
 CREATE TABLE gtest22a (a int PRIMARY KEY, b int GENERATED ALWAYS AS (a / 2) STORED UNIQUE);
@@ -452,15 +390,6 @@ CREATE DOMAIN gtestdomain1 AS int CHECK (VALUE < 10);
 CREATE TABLE gtest24 (a int PRIMARY KEY, b gtestdomain1 GENERATED ALWAYS AS (a * 2) STORED);
 INSERT INTO gtest24 (a) VALUES (4);  -- ok
 INSERT INTO gtest24 (a) VALUES (6);  -- error
-CREATE TYPE gtestdomain1range AS range (subtype = gtestdomain1);
-CREATE TABLE gtest24r (a int PRIMARY KEY, b gtestdomain1range GENERATED ALWAYS AS (gtestdomain1range(a, a + 5)) STORED);
-INSERT INTO gtest24r (a) VALUES (4);  -- ok
-INSERT INTO gtest24r (a) VALUES (6);  -- error
-
-CREATE TABLE gtest24at (a int PRIMARY KEY);
-ALTER TABLE gtest24at ADD COLUMN b gtestdomain1 GENERATED ALWAYS AS (a * 2) STORED;  -- ok
-CREATE TABLE gtest24ata (a int PRIMARY KEY, b int GENERATED ALWAYS AS (a * 2) STORED);
-ALTER TABLE gtest24ata ALTER COLUMN b TYPE gtestdomain1;  -- ok
 
 CREATE DOMAIN gtestdomainnn AS int CHECK (VALUE IS NOT NULL);
 CREATE TABLE gtest24nn (a int, b gtestdomainnn GENERATED ALWAYS AS (a * 2) STORED);
@@ -493,9 +422,6 @@ CREATE TABLE gtest_child3 PARTITION OF gtest_parent (
 CREATE TABLE gtest_child3 PARTITION OF gtest_parent (
     f3 WITH OPTIONS GENERATED ALWAYS AS IDENTITY  -- error
 ) FOR VALUES FROM ('2016-09-01') TO ('2016-10-01');
-CREATE TABLE gtest_child3 PARTITION OF gtest_parent (
-    f3 GENERATED ALWAYS AS (f2 * 2) VIRTUAL  -- error
-) FOR VALUES FROM ('2016-09-01') TO ('2016-10-01');
 CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint);
 ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01'); -- error
 DROP TABLE gtest_child3;
@@ -503,9 +429,6 @@ CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint DEFAULT 42);
 ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01'); -- error
 DROP TABLE gtest_child3;
 CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint GENERATED ALWAYS AS IDENTITY);
-ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01'); -- error
-DROP TABLE gtest_child3;
-CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint GENERATED ALWAYS AS (f2 * 33) VIRTUAL);
 ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01'); -- error
 DROP TABLE gtest_child3;
 CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint GENERATED ALWAYS AS (f2 * 33) STORED);
@@ -517,9 +440,6 @@ INSERT INTO gtest_parent (f1, f2) VALUES ('2016-07-15', 1);
 INSERT INTO gtest_parent (f1, f2) VALUES ('2016-07-15', 2);
 INSERT INTO gtest_parent (f1, f2) VALUES ('2016-08-15', 3);
 SELECT tableoid::regclass, * FROM gtest_parent ORDER BY 1, 2, 3;
-SELECT tableoid::regclass, * FROM gtest_child ORDER BY 1, 2, 3;
-SELECT tableoid::regclass, * FROM gtest_child2 ORDER BY 1, 2, 3;
-SELECT tableoid::regclass, * FROM gtest_child3 ORDER BY 1, 2, 3;
 UPDATE gtest_parent SET f1 = f1 + 60 WHERE f2 = 1;
 SELECT tableoid::regclass, * FROM gtest_parent ORDER BY 1, 2, 3;
 
@@ -576,14 +496,6 @@ ALTER TABLE gtest27 ALTER COLUMN x TYPE numeric;
 SELECT * FROM gtest27;
 ALTER TABLE gtest27 ALTER COLUMN x TYPE boolean USING x <> 0;  -- error
 ALTER TABLE gtest27 ALTER COLUMN x DROP DEFAULT;  -- error
--- test not-null checking during table rewrite
-INSERT INTO gtest27 (a, b) VALUES (NULL, NULL);
-ALTER TABLE gtest27
-  DROP COLUMN x,
-  ALTER COLUMN a TYPE bigint,
-  ALTER COLUMN b TYPE bigint,
-  ADD COLUMN x bigint GENERATED ALWAYS AS ((a + b) * 2) STORED NOT NULL;  -- error
-DELETE FROM gtest27 WHERE a IS NULL AND b IS NULL;
 -- It's possible to alter the column types this way:
 ALTER TABLE gtest27
   DROP COLUMN x,
@@ -755,7 +667,7 @@ UPDATE gtest26 SET a = 1 WHERE a = 0;
 DROP TRIGGER gtest11 ON gtest26;
 TRUNCATE gtest26;
 
--- check that modifications of generated columns in triggers do
+-- check that modifications of stored generated columns in triggers do
 -- not get propagated
 CREATE FUNCTION gtest_trigger_func4() RETURNS trigger
   LANGUAGE plpgsql
@@ -767,21 +679,20 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER gtest12_01 BEFORE INSERT OR UPDATE ON gtest26
+CREATE TRIGGER gtest12_01 BEFORE UPDATE ON gtest26
   FOR EACH ROW
   EXECUTE PROCEDURE gtest_trigger_func();
 
-CREATE TRIGGER gtest12_02 BEFORE INSERT OR UPDATE ON gtest26
+CREATE TRIGGER gtest12_02 BEFORE UPDATE ON gtest26
   FOR EACH ROW
   EXECUTE PROCEDURE gtest_trigger_func4();
 
-CREATE TRIGGER gtest12_03 BEFORE INSERT OR UPDATE ON gtest26
+CREATE TRIGGER gtest12_03 BEFORE UPDATE ON gtest26
   FOR EACH ROW
   EXECUTE PROCEDURE gtest_trigger_func();
 
 INSERT INTO gtest26 (a) VALUES (1);
-SELECT * FROM gtest26 ORDER BY a;
-UPDATE gtest26 SET a = 11 WHERE a = 10;
+UPDATE gtest26 SET a = 11 WHERE a = 1;
 SELECT * FROM gtest26 ORDER BY a;
 
 -- LIKE INCLUDING GENERATED and dropped column handling
@@ -797,7 +708,3 @@ ALTER TABLE gtest28a DROP COLUMN a;
 CREATE TABLE gtest28b (LIKE gtest28a INCLUDING GENERATED);
 
 \d gtest28*
-
-
--- sanity check of system catalog
-SELECT attrelid, attname, attgenerated FROM pg_attribute WHERE attgenerated NOT IN ('', 's', 'v');
