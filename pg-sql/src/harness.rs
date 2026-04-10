@@ -459,5 +459,12 @@ mod tests {
             run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
             run_regression_test("select", &uri).unwrap();
         }
+
+        #[test]
+        fn regress_with() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_regression_test("with", &uri).unwrap();
+        }
     }
 }

@@ -1867,4 +1867,21 @@ mod tests {
             "re-parsed command count should match"
         );
     }
+
+    #[test]
+    fn round_trip_with_sql_parses_and_prints() {
+        let sql = std::fs::read_to_string("fixtures/sql/with.sql")
+            .expect("with.sql fixture not found");
+        let mut input = Input::new(&sql);
+        let commands = parse_sql_file(&mut input).unwrap();
+        let printed = print_commands(&commands);
+
+        let mut input2 = Input::new(&printed);
+        let commands2 = parse_sql_file(&mut input2).unwrap();
+        assert_eq!(
+            commands.len(),
+            commands2.len(),
+            "re-parsed command count should match"
+        );
+    }
 }
