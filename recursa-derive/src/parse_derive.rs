@@ -10,11 +10,14 @@ pub fn derive_parse(input: DeriveInput) -> syn::Result<TokenStream> {
     match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(fields) => {
-                derive_parse_struct(name, &input.generics, &rules_type, fields)
+                derive_parse_named_struct(name, &input.generics, &rules_type, fields)
             }
-            _ => Err(syn::Error::new_spanned(
+            Fields::Unnamed(fields) => {
+                derive_parse_tuple_struct(name, &input.generics, &rules_type, fields)
+            }
+            Fields::Unit => Err(syn::Error::new_spanned(
                 name,
-                "Parse can only be derived for structs with named fields",
+                "Parse cannot be derived for unit structs (use Scan instead)",
             )),
         },
         Data::Enum(data) => {
@@ -78,7 +81,7 @@ fn is_pratt(input: &DeriveInput) -> bool {
     })
 }
 
-fn derive_parse_struct(
+fn derive_parse_named_struct(
     name: &syn::Ident,
     generics: &syn::Generics,
     rules_type: &Type,
@@ -155,6 +158,90 @@ fn derive_parse_struct(
                 #(#parse_fields)*
                 input.commit(fork);
                 Ok(Self { #(#field_names),* })
+            }
+        }
+    })
+}
+
+fn derive_parse_tuple_struct(
+    name: &syn::Ident,
+    generics: &syn::Generics,
+    rules_type: &Type,
+    fields: &syn::FieldsUnnamed,
+) -> syn::Result<TokenStream> {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let lt = generics
+        .lifetimes()
+        .next()
+        .map(|l| l.lifetime.clone())
+        .unwrap_or_else(|| syn::Lifetime::new("'_", proc_macro2::Span::call_site()));
+
+    let field_types: Vec<_> = fields.unnamed.iter().map(|f| &f.ty).collect();
+    let first_field_type = field_types.first().ok_or_else(|| {
+        syn::Error::new_spanned(name, "Parse tuple struct must have at least one field")
+    })?;
+
+    // Generate field binding names: __f0, __f1, ...
+    let field_bindings: Vec<_> = (0..field_types.len())
+        .map(|i| syn::Ident::new(&format!("__f{i}"), proc_macro2::Span::call_site()))
+        .collect();
+
+    // Build nested if-chain for first_pattern (same logic as named struct)
+    let first_pattern_body = {
+        let mut body = quote! {};
+        for ty in field_types.iter().rev() {
+            body = quote! {
+                parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
+                if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
+                    #body
+                }
+            };
+        }
+        body
+    };
+
+    // Generate the parse body: consume_ignored + parse each field
+    let parse_fields = field_bindings
+        .iter()
+        .zip(field_types.iter())
+        .map(|(binding, ty)| {
+            quote! {
+                <#rules_type as ::recursa_core::ParseRules>::consume_ignored(&mut fork);
+                let #binding = <#ty as ::recursa_core::Parse>::parse(&mut fork, &#rules_type)?;
+            }
+        });
+
+    Ok(quote! {
+        impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
+            const IS_TERMINAL: bool = false;
+
+            fn first_pattern() -> &'static str {
+                static PATTERN: ::std::sync::OnceLock<::std::string::String> = ::std::sync::OnceLock::new();
+                PATTERN.get_or_init(|| {
+                    let ignore = <#rules_type as ::recursa_core::ParseRules>::IGNORE;
+                    let sep = if ignore.is_empty() {
+                        ::std::string::String::new()
+                    } else {
+                        ::std::format!("(?:{})?", ignore)
+                    };
+                    let mut parts: ::std::vec::Vec<::std::string::String> = ::std::vec::Vec::new();
+                    #first_pattern_body
+                    parts.join(&sep)
+                })
+            }
+
+            fn peek<R: ::recursa_core::ParseRules>(input: &::recursa_core::Input<#lt>, _rules: &R) -> bool {
+                let mut peek_input = input.fork();
+                <#rules_type as ::recursa_core::ParseRules>::consume_ignored(&mut peek_input);
+                <#first_field_type as ::recursa_core::Parse>::peek(&peek_input, &#rules_type)
+            }
+
+            fn parse<R: ::recursa_core::ParseRules>(input: &mut ::recursa_core::Input<#lt>, _rules: &R) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+                let mut fork = input.fork();
+                #(#parse_fields)*
+                input.commit(fork);
+                Ok(Self(#(#field_bindings),*))
             }
         }
     })

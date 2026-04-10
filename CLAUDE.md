@@ -44,6 +44,32 @@ enum Statement {
 
 This principle also applies to Pratt enum atoms. Prefix, infix, and postfix variants have specific field layouts (see derive macro docs).
 
+## Enum Variant Ordering Matters
+
+For `Parse`-derived enums, **variant declaration order affects disambiguation**. The combined peek regex uses longest-match-wins with declaration order as tiebreaker. When two variants could match the same input, the one declared first wins if both match the same length.
+
+**Put more specific (longer) variants before less specific (shorter) ones:**
+
+```rust
+// Correct: NOT TRUE (2 tokens) listed before TRUE (1 token)
+#[derive(Parse)]
+#[parse(rules = MyRules)]
+enum BoolTest {
+    IsNotTrue(IsNotTrue),    // matches "NOT TRUE" (longer)
+    IsNotFalse(IsNotFalse),  // matches "NOT FALSE"
+    IsTrue(IsTrue),          // matches "TRUE" (shorter)
+    IsFalse(IsFalse),        // matches "FALSE"
+}
+
+// Wrong: TRUE listed first would match before NOT TRUE
+enum BoolTest {
+    IsTrue(IsTrue),          // would incorrectly match the TRUE in "NOT TRUE"
+    IsNotTrue(IsNotTrue),    // never reached for "NOT TRUE"
+}
+```
+
+The same applies to any enum where variants share a common prefix — list the longer/more-specific variant first.
+
 ## Manual Parse Impls Are a Red Flag
 
 A manual `Parse` impl means either:

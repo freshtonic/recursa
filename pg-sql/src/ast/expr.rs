@@ -24,35 +24,35 @@ pub enum TypeName {
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotTrue { pub not_kw: tokens::Not, pub true_kw: tokens::True }
+pub struct IsNotTrue(pub tokens::Not, pub tokens::True);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotFalse { pub not_kw: tokens::Not, pub false_kw: tokens::False }
+pub struct IsNotFalse(pub tokens::Not, pub tokens::False);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotUnknown { pub not_kw: tokens::Not, pub unknown_kw: tokens::Unknown }
+pub struct IsNotUnknown(pub tokens::Not, pub tokens::Unknown);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotNull { pub not_kw: tokens::Not, pub null_kw: tokens::Null }
+pub struct IsNotNull(pub tokens::Not, pub tokens::Null);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsTrue { pub true_kw: tokens::True }
+pub struct IsTrue(pub tokens::True);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsFalse { pub false_kw: tokens::False }
+pub struct IsFalse(pub tokens::False);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsUnknown { pub unknown_kw: tokens::Unknown }
+pub struct IsUnknown(pub tokens::Unknown);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNull { pub null_kw: tokens::Null }
+pub struct IsNull(pub tokens::Null);
 
 /// Boolean test suffix: the part after `IS` in `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`.
 ///
