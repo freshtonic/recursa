@@ -98,11 +98,10 @@ struct NestedStmt<'input> {
 #[test]
 fn parse_struct_first_pattern_stops_at_non_terminal() {
     // NestedStmt fields: LetKw (terminal), LetBinding (non-terminal)
-    // Walk: include LetKw's pattern, LetKw is terminal so continue,
-    // include LetBinding's first_pattern (the full joined pattern), LetBinding is NOT terminal so stop.
+    // Walk: include LetKw's pattern, check LetBinding IS_TERMINAL (false), stop.
+    // Non-terminal patterns are excluded to prevent deadlock on recursive types.
     let pattern = NestedStmt::first_pattern();
-    let expected = format!("let(?:\\s+)?{}", LetBinding::first_pattern());
-    assert_eq!(pattern, expected);
+    assert_eq!(pattern, "let");
 }
 
 #[derive(Parse)]

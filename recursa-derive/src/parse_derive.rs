@@ -104,12 +104,14 @@ fn derive_parse_named_struct(
 
     // Build nested if-chain for first_pattern: walk consecutive terminal fields,
     // collecting their patterns joined with IGNORE separator.
+    // Check IS_TERMINAL BEFORE calling first_pattern() to avoid deadlock on
+    // recursive types (e.g., FuncCall → Seq<Expr, ...> → Expr → FuncCall).
     let first_pattern_body = {
         let mut body = quote! {};
         for ty in field_types.iter().rev() {
             body = quote! {
-                parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
                 if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
+                    parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
                     #body
                 }
             };
@@ -187,13 +189,14 @@ fn derive_parse_tuple_struct(
         .map(|i| syn::Ident::new(&format!("__f{i}"), proc_macro2::Span::call_site()))
         .collect();
 
-    // Build nested if-chain for first_pattern (same logic as named struct)
+    // Build nested if-chain for first_pattern (same logic as named struct).
+    // Check IS_TERMINAL BEFORE calling first_pattern() to avoid deadlock on recursive types.
     let first_pattern_body = {
         let mut body = quote! {};
         for ty in field_types.iter().rev() {
             body = quote! {
-                parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
                 if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
+                    parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
                     #body
                 }
             };
@@ -506,24 +509,65 @@ fn derive_parse_pratt_enum(
         .map(|(_, op_ty, _)| op_ty.clone())
         .collect();
 
-    // Generate atom peek arms (for the top-level peek)
-    let atom_peek_arms = atom_variants.iter().map(|(_vname, ty)| {
-        quote! {
-            if <#ty as ::recursa_core::Parse>::peek(input, &#rules_type) {
-                return true;
-            }
-        }
-    });
+    // Generate atom pattern expressions for building the combined regex
+    let atom_pattern_exprs: Vec<_> = atom_types
+        .iter()
+        .map(|ty| {
+            quote! { <#ty as ::recursa_core::Parse>::first_pattern() }
+        })
+        .collect();
 
-    // Generate atom parse arms (for the nud position) -- break out of 'nud block
-    let atom_parse_arms = atom_variants.iter().map(|(vname, ty)| {
-        quote! {
-            if <#ty as ::recursa_core::Parse>::peek(input, &#rules_type) {
-                let inner = <#ty as ::recursa_core::Parse>::parse(input, &#rules_type)?;
-                break 'nud #name::#vname(inner);
+    // Generate named capture group names for atoms: _a0, _a1, ...
+    let atom_group_names: Vec<String> = (0..atom_types.len()).map(|i| format!("_a{i}")).collect();
+
+    // Generate per-atom regex statics for individual matching
+    let atom_regex_static_names: Vec<_> = (0..atom_types.len())
+        .map(|i| syn::Ident::new(&format!("ATOM_REGEX_{i}"), proc_macro2::Span::call_site()))
+        .collect();
+
+    // Generate per-atom match arms: check each atom's regex individually,
+    // collecting all matches with their lengths for longest-match-wins dispatch.
+    let atom_match_collect_arms: Vec<_> = atom_types
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| {
+            let static_name = &atom_regex_static_names[i];
+            let i_lit = syn::Index::from(i);
+            quote! {
+                {
+                    static #static_name: ::std::sync::OnceLock<::regex::Regex> = ::std::sync::OnceLock::new();
+                    let re = #static_name.get_or_init(|| {
+                        let pat = ::std::format!(r"\A(?:{})", <#ty as ::recursa_core::Parse>::first_pattern());
+                        ::regex::Regex::new(&pat).unwrap()
+                    });
+                    if let ::std::option::Option::Some(m) = re.find(__atom_remaining) {
+                        __atom_candidates.push((m.len(), #i_lit));
+                    }
+                }
             }
-        }
-    });
+        })
+        .collect();
+
+    // Generate fork-and-try dispatch arms for atom variants in the nud block.
+    // Each arm forks the input, attempts parsing, and on success commits and
+    // breaks out; on failure it falls through to the next candidate.
+    let atom_try_arms: Vec<_> = atom_types
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| {
+            let vname = &atom_variants[i].0;
+            let i_lit = syn::Index::from(i);
+            quote! {
+                #i_lit => {
+                    let mut fork = input.fork();
+                    if let ::std::result::Result::Ok(inner) = <#ty as ::recursa_core::Parse>::parse(&mut fork, &#rules_type) {
+                        input.commit(fork);
+                        break 'nud #name::#vname(inner);
+                    }
+                }
+            }
+        })
+        .collect();
 
     // Generate prefix parse arms (for the nud position) -- break out of 'nud block
     let prefix_parse_arms = prefix_variants.iter().map(|(vname, op_ty, bp)| {
@@ -604,6 +648,22 @@ fn derive_parse_pratt_enum(
 
     Ok(quote! {
         const _: () = {
+            static ATOM_REGEX: ::std::sync::OnceLock<::regex::Regex> = ::std::sync::OnceLock::new();
+
+            fn atom_regex<#fn_lt>() -> &'static ::regex::Regex {
+                ATOM_REGEX.get_or_init(|| {
+                    let group_names: &[&str] = &[#(#atom_group_names),*];
+                    let variant_patterns: &[&str] = &[#(#atom_pattern_exprs),*];
+                    let named_groups: ::std::vec::Vec<::std::string::String> = group_names
+                        .iter()
+                        .zip(variant_patterns.iter())
+                        .map(|(name, pat)| ::std::format!("(?P<{}>{})", name, pat))
+                        .collect();
+                    let combined = ::std::format!(r"\A(?:{})", named_groups.join("|"));
+                    ::regex::Regex::new(&combined).unwrap()
+                })
+            }
+
             fn parse_expr<#fn_lt>(
                 input: &mut ::recursa_core::Input<#fn_lt>,
                 min_bp: u32,
@@ -612,11 +672,26 @@ fn derive_parse_pratt_enum(
 
                 // Parse prefix or atom (nud position)
                 let mut lhs = 'nud: {
-                    // Try prefix operators first
+                    // Try prefix operators first (sequential -- tokens, no ambiguity)
                     #(#prefix_parse_arms)*
 
-                    // Try atoms
-                    #(#atom_parse_arms)*
+                    // Try atoms via per-atom regex matching (longest-match-wins,
+                    // declaration order tiebreaker, fork-and-try fallback).
+                    // Each atom's first_pattern is matched independently to find
+                    // ALL candidates, avoiding regex alternation's first-match semantics.
+                    {
+                        let __atom_remaining = input.remaining();
+                        let mut __atom_candidates: ::std::vec::Vec<(usize, usize)> = ::std::vec::Vec::new();
+                        #(#atom_match_collect_arms)*
+                        // Sort by length descending, declaration order ascending
+                        __atom_candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+                        for &(_, idx) in &__atom_candidates {
+                            match idx {
+                                #(#atom_try_arms)*
+                                _ => {}
+                            }
+                        }
+                    }
 
                     return Err(::recursa_core::ParseError::new(
                         input.source().to_string(),
@@ -652,7 +727,12 @@ fn derive_parse_pratt_enum(
                 }
 
                 fn peek<R: ::recursa_core::ParseRules>(input: &::recursa_core::Input<#impl_lt>, _rules: &R) -> bool {
-                    #(#atom_peek_arms)*
+                    let mut peek_input = input.fork();
+                    <#rules_type as ::recursa_core::ParseRules>::consume_ignored(&mut peek_input);
+                    if atom_regex().is_match(peek_input.remaining()) {
+                        return true;
+                    }
+                    // Prefix operators stay sequential
                     #(#prefix_peek_arms)*
                     false
                 }
