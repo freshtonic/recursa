@@ -112,50 +112,11 @@ pub struct ParenExpr {
 }
 
 /// Function-style type cast: `bool 'value'`, `text 'hello'`
-///
-/// Manual Parse: needs two-token lookahead (type keyword followed by string
-/// literal) to avoid matching plain identifiers or type keywords used in other
-/// contexts.
-#[derive(Visit, Debug, Clone)]
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
 pub struct TypeCastFunc {
     pub type_name: TypeName,
     pub value: tokens::StringLit,
-}
-
-impl<'input> Parse<'input> for TypeCastFunc {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        r"(?i:BOOLEAN|BOOL|TEXT|INT)\b"
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
-        let mut fork = input.fork();
-        SqlRules::consume_ignored(&mut fork);
-
-        // Must be a known type keyword (not an arbitrary identifier)
-        let type_kw = tokens::Boolean::peek(&fork, &SqlRules)
-            || tokens::Bool::peek(&fork, &SqlRules)
-            || tokens::Text::peek(&fork, &SqlRules)
-            || tokens::Int::peek(&fork, &SqlRules);
-
-        if !type_kw {
-            return false;
-        }
-
-        // Consume the type keyword and check for string literal
-        let _ = TypeName::parse(&mut fork, &SqlRules);
-        SqlRules::consume_ignored(&mut fork);
-        tokens::StringLit::peek(&fork, &SqlRules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
-        SqlRules::consume_ignored(input);
-        let type_name = TypeName::parse(input, &SqlRules)?;
-        SqlRules::consume_ignored(input);
-        let value = tokens::StringLit::parse(input, &SqlRules)?;
-        Ok(TypeCastFunc { type_name, value })
-    }
 }
 
 // --- Pratt expression enum ---
