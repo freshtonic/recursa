@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use recursa::{Input, Parse, ParseError, ParseRules, Scan};
+use recursa::{Input, Parse, ParseError, ParseRules, Scan, Visit};
 use regex::Regex;
 
 // Keywords (case-insensitive, with word boundary)
@@ -207,6 +207,14 @@ impl recursa::Visit for Ident {
 }
 
 impl recursa::AsNodeKey for Ident {}
+
+// --- Alias name (any SQL word — identifier or keyword) ---
+
+/// Matches any SQL word including keywords. Used for alias names where
+/// SQL allows keywords (e.g., `SELECT 1 AS true`).
+#[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+pub struct AliasName(pub String);
 
 // --- Rest of line ---
 

@@ -1,15 +1,14 @@
 /// CREATE TABLE statement AST.
 use recursa::seq::Seq;
-use recursa::{Input, Parse, ParseError, ParseRules, Visit};
+use recursa::{Parse, Visit};
 
 use crate::ast::expr::TypeName;
 use crate::rules::SqlRules;
 use crate::tokens;
 
 /// A column definition: `name type`.
-///
-/// Manual Parse: ident followed by TypeName, not a uniform struct sequence.
-#[derive(Debug, Clone, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct ColumnDef {
     pub name: tokens::Ident,
     pub type_name: TypeName,
@@ -25,26 +24,6 @@ pub struct CreateTableStmt {
     pub lparen: tokens::LParen,
     pub columns: Seq<ColumnDef, tokens::Comma>,
     pub rparen: tokens::RParen,
-}
-
-// --- Parse implementations ---
-
-impl<'input> Parse<'input> for ColumnDef {
-    const IS_TERMINAL: bool = false;
-    fn first_pattern() -> &'static str {
-        tokens::Ident::first_pattern()
-    }
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
-        let mut fork = input.fork();
-        SqlRules::consume_ignored(&mut fork);
-        tokens::Ident::peek(&fork, &SqlRules)
-    }
-    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
-        SqlRules::consume_ignored(input);
-        let name = tokens::Ident::parse(input, &SqlRules)?;
-        let type_name = TypeName::parse(input, &SqlRules)?;
-        Ok(ColumnDef { name, type_name })
-    }
 }
 
 #[cfg(test)]

@@ -81,17 +81,17 @@ fn print_select_item(output: &mut String, item: &SelectItem) {
     print_expr(output, &item.expr);
     if let Some(alias) = &item.alias {
         output.push_str(" AS ");
-        output.push_str(&alias.name);
+        output.push_str(&alias.name.0);
     }
 }
 
 fn print_table_ref(output: &mut String, table_ref: &TableRef) {
     match table_ref {
         TableRef::Table(ident) => output.push_str(&ident.0),
-        TableRef::FuncCall { name, args } => {
-            output.push_str(&name.0);
+        TableRef::Func(func_call) => {
+            output.push_str(&func_call.name.0);
             output.push('(');
-            for (i, arg) in args.iter().enumerate() {
+            for (i, arg) in func_call.args.iter().enumerate() {
                 if i > 0 {
                     output.push_str(", ");
                 }
