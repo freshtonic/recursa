@@ -7,7 +7,7 @@ pub mod select;
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::rules::SqlRules;
-use crate::tokens;
+use crate::tokens::{literals, punct};
 
 use self::create_table::CreateTableStmt;
 use self::drop_table::DropTableStmt;
@@ -29,15 +29,15 @@ pub enum Statement {
 #[parse(rules = SqlRules)]
 pub struct TerminatedStatement {
     pub stmt: Statement,
-    pub semi: tokens::Semi,
+    pub semi: punct::Semi,
 }
 
 /// A psql directive: backslash followed by the rest of the line.
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PsqlDirective {
-    pub backslash: tokens::BackSlash,
-    pub rest: tokens::RestOfLine,
+    pub backslash: punct::BackSlash,
+    pub rest: literals::RestOfLine,
 }
 
 /// A command in a psql input file: either a SQL statement or a psql directive.

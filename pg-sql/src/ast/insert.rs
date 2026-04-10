@@ -7,25 +7,25 @@ use recursa::{Parse, Visit};
 
 use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
-use crate::tokens;
+use crate::tokens::{keyword, literals, punct};
 
 /// INSERT INTO statement.
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertStmt {
-    pub _insert: PhantomData<tokens::Insert>,
-    pub _into: PhantomData<tokens::Into>,
-    pub table_name: tokens::Ident,
+    pub _insert: PhantomData<keyword::Insert>,
+    pub _into: PhantomData<keyword::Into>,
+    pub table_name: literals::Ident,
     pub columns: Option<ColumnList>,
-    pub _values: PhantomData<tokens::Values>,
+    pub _values: PhantomData<keyword::Values>,
     pub values: ValueList,
 }
 
 /// Column list: `(col1, col2, ...)`.
-pub type ColumnList = Surrounded<tokens::LParen, Seq<tokens::Ident, tokens::Comma>, tokens::RParen>;
+pub type ColumnList = Surrounded<punct::LParen, Seq<literals::Ident, punct::Comma>, punct::RParen>;
 
 /// Value list: `(col1, col2, ...)`.
-pub type ValueList = Surrounded<tokens::LParen, Seq<Expr, tokens::Comma>, tokens::RParen>;
+pub type ValueList = Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>;
 
 #[cfg(test)]
 mod tests {

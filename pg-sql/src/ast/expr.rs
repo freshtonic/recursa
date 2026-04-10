@@ -7,17 +7,17 @@ use recursa::surrounded::Surrounded;
 use recursa::{Parse, Visit};
 
 use crate::rules::SqlRules;
-use crate::tokens;
+use crate::tokens::{keyword, literals, punct};
 
 /// Type name for casts.
 #[derive(Debug, Clone, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TypeName {
-    Bool(tokens::Bool),
-    Boolean(tokens::Boolean),
-    Text(tokens::Text),
-    Int(tokens::Int),
-    Ident(tokens::Ident),
+    Bool(keyword::Bool),
+    Boolean(keyword::Boolean),
+    Text(keyword::Text),
+    Int(keyword::Int),
+    Ident(literals::Ident),
 }
 
 // --- Boolean test suffix structs ---
@@ -26,35 +26,35 @@ pub enum TypeName {
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotTrue(pub tokens::Not, pub tokens::True);
+pub struct IsNotTrue(pub keyword::Not, pub keyword::True);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotFalse(pub tokens::Not, pub tokens::False);
+pub struct IsNotFalse(pub keyword::Not, pub keyword::False);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotUnknown(pub tokens::Not, pub tokens::Unknown);
+pub struct IsNotUnknown(pub keyword::Not, pub keyword::Unknown);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotNull(pub tokens::Not, pub tokens::Null);
+pub struct IsNotNull(pub keyword::Not, pub keyword::Null);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsTrue(pub tokens::True);
+pub struct IsTrue(pub keyword::True);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsFalse(pub tokens::False);
+pub struct IsFalse(pub keyword::False);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsUnknown(pub tokens::Unknown);
+pub struct IsUnknown(pub keyword::Unknown);
 
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNull(pub tokens::Null);
+pub struct IsNull(pub keyword::Null);
 
 /// Boolean test suffix: the part after `IS` in `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`.
 ///
@@ -79,18 +79,18 @@ pub enum BoolTestKind {
 #[derive(Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedRef {
-    pub table: tokens::Ident,
-    pub dot: tokens::Dot,
-    pub column: tokens::Ident,
+    pub table: literals::Ident,
+    pub dot: punct::Dot,
+    pub column: literals::Ident,
 }
 
 /// Qualified wildcard: `table.*`
 #[derive(Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedWildcard {
-    pub table: tokens::Ident,
-    pub dot: tokens::Dot,
-    pub star: tokens::Star,
+    pub table: literals::Ident,
+    pub dot: punct::Dot,
+    pub star: punct::Star,
 }
 
 /// Function call: `name(arg1, arg2, ...)`
@@ -102,21 +102,21 @@ pub struct QualifiedWildcard {
 #[derive(Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct FuncCall {
-    pub name: tokens::Ident,
-    pub lparen: tokens::LParen,
-    pub args: Seq<Expr, tokens::Comma>,
-    pub rparen: tokens::RParen,
+    pub name: literals::Ident,
+    pub lparen: punct::LParen,
+    pub args: Seq<Expr, punct::Comma>,
+    pub rparen: punct::RParen,
 }
 
 /// Parenthesized expression: `(expr)`
-pub type ParenExpr = Surrounded<tokens::LParen, Box<Expr>, tokens::RParen>;
+pub type ParenExpr = Surrounded<punct::LParen, Box<Expr>, punct::RParen>;
 
 /// Function-style type cast: `bool 'value'`, `text 'hello'`
 #[derive(Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TypeCastFunc {
     pub type_name: TypeName,
-    pub value: tokens::StringLit,
+    pub value: literals::StringLit,
 }
 
 // --- Pratt expression enum ---
@@ -127,34 +127,34 @@ pub struct TypeCastFunc {
 pub enum Expr {
     // --- Prefix ---
     #[parse(prefix, bp = 15)]
-    Not(tokens::Not, Box<Expr>),
+    Not(keyword::Not, Box<Expr>),
 
     // --- Postfix ---
     /// Postgres-style cast: `expr::type`
     #[parse(postfix, bp = 20)]
-    Cast(Box<Expr>, tokens::ColonColon, TypeName),
+    Cast(Box<Expr>, punct::ColonColon, TypeName),
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
-    BoolTest(Box<Expr>, tokens::Is, BoolTestKind),
+    BoolTest(Box<Expr>, keyword::Is, BoolTestKind),
 
     // --- Infix ---
     // Multi-char operators before single-char to avoid partial matching
     #[parse(infix, bp = 1)]
-    Or(Box<Expr>, tokens::Or, Box<Expr>),
+    Or(Box<Expr>, keyword::Or, Box<Expr>),
     #[parse(infix, bp = 2)]
-    And(Box<Expr>, tokens::And, Box<Expr>),
+    And(Box<Expr>, keyword::And, Box<Expr>),
     #[parse(infix, bp = 5)]
-    Neq(Box<Expr>, tokens::Neq, Box<Expr>),
+    Neq(Box<Expr>, punct::Neq, Box<Expr>),
     #[parse(infix, bp = 5)]
-    Lte(Box<Expr>, tokens::Lte, Box<Expr>),
+    Lte(Box<Expr>, punct::Lte, Box<Expr>),
     #[parse(infix, bp = 5)]
-    Gte(Box<Expr>, tokens::Gte, Box<Expr>),
+    Gte(Box<Expr>, punct::Gte, Box<Expr>),
     #[parse(infix, bp = 5)]
-    Eq(Box<Expr>, tokens::Eq, Box<Expr>),
+    Eq(Box<Expr>, punct::Eq, Box<Expr>),
     #[parse(infix, bp = 5)]
-    Lt(Box<Expr>, tokens::Lt, Box<Expr>),
+    Lt(Box<Expr>, punct::Lt, Box<Expr>),
     #[parse(infix, bp = 5)]
-    Gt(Box<Expr>, tokens::Gt, Box<Expr>),
+    Gt(Box<Expr>, punct::Gt, Box<Expr>),
 
     // --- Atoms ---
     /// Function-style type cast: `bool 't'` -- must come before ColumnRef
@@ -175,25 +175,25 @@ pub enum Expr {
     Paren(ParenExpr),
     /// Integer literal: `42`
     #[parse(atom)]
-    IntegerLit(tokens::IntegerLit),
+    IntegerLit(literals::IntegerLit),
     /// String literal: `'hello'`
     #[parse(atom)]
-    StringLit(tokens::StringLit),
+    StringLit(literals::StringLit),
     /// Boolean true
     #[parse(atom)]
-    BoolTrue(tokens::True),
+    BoolTrue(keyword::True),
     /// Boolean false
     #[parse(atom)]
-    BoolFalse(tokens::False),
+    BoolFalse(keyword::False),
     /// NULL
     #[parse(atom)]
-    Null(tokens::Null),
+    Null(keyword::Null),
     /// Unqualified column reference: `f1`
     #[parse(atom)]
-    ColumnRef(tokens::Ident),
+    ColumnRef(literals::Ident),
     /// Bare wildcard: `*`
     #[parse(atom)]
-    Star(tokens::Star),
+    Star(punct::Star),
 }
 
 #[cfg(test)]

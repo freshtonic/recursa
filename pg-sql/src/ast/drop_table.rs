@@ -4,15 +4,15 @@ use std::marker::PhantomData;
 use recursa::{Parse, Visit};
 
 use crate::rules::SqlRules;
-use crate::tokens;
+use crate::tokens::{keyword, literals};
 
 /// DROP TABLE statement.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropTableStmt {
-    pub _drop: PhantomData<tokens::Drop>,
-    pub _table: PhantomData<tokens::Table>,
-    pub name: tokens::Ident,
+    pub _drop: PhantomData<keyword::Drop>,
+    pub _table: PhantomData<keyword::Table>,
+    pub name: literals::Ident,
 }
 
 #[cfg(test)]

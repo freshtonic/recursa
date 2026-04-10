@@ -7,13 +7,13 @@ use recursa::{Parse, Visit};
 
 use crate::ast::expr::TypeName;
 use crate::rules::SqlRules;
-use crate::tokens;
+use crate::tokens::{keyword, literals, punct};
 
 /// A column definition: `name type`.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnDef {
-    pub name: tokens::Ident,
+    pub name: literals::Ident,
     pub type_name: TypeName,
 }
 
@@ -21,10 +21,10 @@ pub struct ColumnDef {
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTableStmt {
-    pub _create: PhantomData<tokens::Create>,
-    pub _table: PhantomData<tokens::Table>,
-    pub name: tokens::Ident,
-    pub columns: Surrounded<tokens::LParen, Seq<ColumnDef, tokens::Comma>, tokens::RParen>,
+    pub _create: PhantomData<keyword::Create>,
+    pub _table: PhantomData<keyword::Table>,
+    pub name: literals::Ident,
+    pub columns: Surrounded<punct::LParen, Seq<ColumnDef, punct::Comma>, punct::RParen>,
 }
 
 #[cfg(test)]

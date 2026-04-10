@@ -1,112 +1,123 @@
 use recursa::{ParseError, Scan, Visit};
 
-// Keywords (case-insensitive, with word boundary)
-recursa::keywords! {
-    Select  => r"SELECT\b",
-    From    => r"FROM\b",
-    Where   => r"WHERE\b",
-    As      => r"AS\b",
-    And     => r"AND\b",
-    Or      => r"OR\b",
-    Not     => r"NOT\b",
-    True    => r"TRUE\b",
-    False   => r"FALSE\b",
-    Null    => r"NULL\b",
-    Is      => r"IS\b",
-    Unknown => r"UNKNOWN\b",
-    Create  => r"CREATE\b",
-    Table   => r"TABLE\b",
-    Insert  => r"INSERT\b",
-    Into    => r"INTO\b",
-    Values  => r"VALUES\b",
-    Drop    => r"DROP\b",
-    Order   => r"ORDER\b",
-    By      => r"BY\b",
-    Bool    => r"BOOL\b",
-    Boolean => r"BOOLEAN\b",
-    Text    => r"TEXT\b",
-    Int     => r"INT\b",
-}
-
-// Punctuation
-recursa::punctuation! {
-    Semi      => ";",
-    Comma     => ",",
-    LParen    => r"\(",
-    RParen    => r"\)",
-    Star      => r"\*",
-    Dot       => r"\.",
-    Eq        => "=",
-    Neq       => "<>",
-    Lte       => "<=",
-    Gte       => ">=",
-    Lt        => "<",
-    Gt        => ">",
-    ColonColon => "::",
-    BackSlash  => r"\\",
-}
-
-// Literals
-recursa::literals! {
-    StringLit  => r"'[^']*(?:''[^']*)*'",
-    IntegerLit => r"[0-9]+",
-}
-
-// --- Identifier ---
-
-/// All SQL keywords (uppercase) for identifier exclusion.
-const SQL_KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "AS", "AND", "OR", "NOT", "TRUE", "FALSE", "NULL", "IS", "UNKNOWN",
-    "CREATE", "TABLE", "INSERT", "INTO", "VALUES", "DROP", "ORDER", "BY", "BOOL", "BOOLEAN",
-    "TEXT", "INT",
-];
-
-fn is_keyword(s: &str) -> bool {
-    SQL_KEYWORDS.iter().any(|kw| kw.eq_ignore_ascii_case(s))
-}
-
-/// Postcondition: reject identifiers that are SQL keywords.
-fn not_keyword(ident: &Ident) -> Result<(), ParseError> {
-    if is_keyword(&ident.0) {
-        Err(ParseError::new(
-            ident.0.clone(),
-            0..ident.0.len(),
-            "identifier (not a keyword)",
-        ))
-    } else {
-        Ok(())
+/// Keywords
+pub mod keyword {
+    // Keywords (case-insensitive, with word boundary)
+    recursa::keywords! {
+        Select  => r"SELECT\b",
+        From    => r"FROM\b",
+        Where   => r"WHERE\b",
+        As      => r"AS\b",
+        And     => r"AND\b",
+        Or      => r"OR\b",
+        Not     => r"NOT\b",
+        True    => r"TRUE\b",
+        False   => r"FALSE\b",
+        Null    => r"NULL\b",
+        Is      => r"IS\b",
+        Unknown => r"UNKNOWN\b",
+        Create  => r"CREATE\b",
+        Table   => r"TABLE\b",
+        Insert  => r"INSERT\b",
+        Into    => r"INTO\b",
+        Values  => r"VALUES\b",
+        Drop    => r"DROP\b",
+        Order   => r"ORDER\b",
+        By      => r"BY\b",
+        Bool    => r"BOOL\b",
+        Boolean => r"BOOLEAN\b",
+        Text    => r"TEXT\b",
+        Int     => r"INT\b",
     }
 }
 
-/// SQL identifier: `[a-zA-Z_][a-zA-Z0-9_]*` but NOT a keyword.
-#[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-#[parse(postcondition = not_keyword)]
-#[visit(terminal)]
-pub struct Ident(pub String);
+/// Punctuation
+pub mod punct {
+    recursa::punctuation! {
+        Semi      => ";",
+        Comma     => ",",
+        LParen    => r"\(",
+        RParen    => r"\)",
+        Star      => r"\*",
+        Dot       => r"\.",
+        Eq        => "=",
+        Neq       => "<>",
+        Lte       => "<=",
+        Gte       => ">=",
+        Lt        => "<",
+        Gt        => ">",
+        ColonColon => "::",
+        BackSlash  => r"\\",
+    }
+}
 
-// --- Alias name (any SQL word — identifier or keyword) ---
+// Literals
+pub mod literals {
+    use super::*;
 
-/// Matches any SQL word including keywords. Used for alias names where
-/// SQL allows keywords (e.g., `SELECT 1 AS true`).
-#[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-#[visit(terminal)]
-pub struct AliasName(pub String);
+    recursa::literals! {
+        StringLit  => r"'[^']*(?:''[^']*)*'",
+        IntegerLit => r"[0-9]+",
+    }
 
-// --- Rest of line ---
+    // --- Identifier ---
 
-/// Matches the remainder of text on the current line (up to newline or end of input).
-#[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[scan(pattern = r"[^\n]*")]
-#[visit(terminal)]
-pub struct RestOfLine(pub String);
+    /// All SQL keywords (uppercase) for identifier exclusion.
+    const SQL_KEYWORDS: &[&str] = &[
+        "SELECT", "FROM", "WHERE", "AS", "AND", "OR", "NOT", "TRUE", "FALSE", "NULL", "IS",
+        "UNKNOWN", "CREATE", "TABLE", "INSERT", "INTO", "VALUES", "DROP", "ORDER", "BY", "BOOL",
+        "BOOLEAN", "TEXT", "INT",
+    ];
+
+    fn is_keyword(s: &str) -> bool {
+        SQL_KEYWORDS.iter().any(|kw| kw.eq_ignore_ascii_case(s))
+    }
+
+    /// Postcondition: reject identifiers that are SQL keywords.
+    fn not_keyword(ident: &Ident) -> Result<(), ParseError> {
+        if is_keyword(&ident.0) {
+            Err(ParseError::new(
+                ident.0.clone(),
+                0..ident.0.len(),
+                "identifier (not a keyword)",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// SQL identifier: `[a-zA-Z_][a-zA-Z0-9_]*` but NOT a keyword.
+    #[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    #[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+    #[parse(postcondition = not_keyword)]
+    #[visit(terminal)]
+    pub struct Ident(pub String);
+
+    // --- Alias name (any SQL word — identifier or keyword) ---
+
+    /// Matches any SQL word including keywords. Used for alias names where
+    /// SQL allows keywords (e.g., `SELECT 1 AS true`).
+    #[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    #[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+    #[visit(terminal)]
+    pub struct AliasName(pub String);
+
+    // --- Rest of line ---
+
+    /// Matches the remainder of text on the current line (up to newline or end of input).
+    #[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    #[scan(pattern = r"[^\n]*")]
+    #[visit(terminal)]
+    pub struct RestOfLine(pub String);
+}
 
 #[cfg(test)]
 mod tests {
     use recursa::{Input, NoRules, Parse};
 
-    use super::*;
+    use super::keyword::*;
+    use super::literals::*;
+    use super::punct::*;
 
     // --- Keyword tests ---
 

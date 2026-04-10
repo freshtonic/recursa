@@ -6,7 +6,7 @@ use recursa::{Parse, Visit};
 
 use crate::ast::expr::{Expr, FuncCall};
 use crate::rules::SqlRules;
-use crate::tokens;
+use crate::tokens::{keyword, literals, punct};
 
 /// A single item in the SELECT list: `expr [AS alias]`.
 #[derive(Debug, Clone, Parse, Visit)]
@@ -20,16 +20,16 @@ pub struct SelectItem {
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct Alias {
-    pub _as: PhantomData<tokens::As>,
-    pub name: tokens::AliasName,
+    pub _as: PhantomData<keyword::As>,
+    pub name: literals::AliasName,
 }
 
 /// FROM clause: `FROM table [, table ...]`.
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FromClause {
-    pub _from: PhantomData<tokens::From>,
-    pub tables: Seq<TableRef, tokens::Comma>,
+    pub _from: PhantomData<keyword::From>,
+    pub tables: Seq<TableRef, punct::Comma>,
 }
 
 /// A table reference: either a plain table name or a function call.
@@ -39,14 +39,14 @@ pub struct FromClause {
 #[parse(rules = SqlRules)]
 pub enum TableRef {
     Func(FuncCall),
-    Table(tokens::Ident),
+    Table(literals::Ident),
 }
 
 /// WHERE clause: `WHERE expr`.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhereClause {
-    pub _where: PhantomData<tokens::Where>,
+    pub _where: PhantomData<keyword::Where>,
     pub condition: Expr,
 }
 
@@ -54,17 +54,17 @@ pub struct WhereClause {
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrderByClause {
-    pub _order: PhantomData<tokens::Order>,
-    pub _by: PhantomData<tokens::By>,
-    pub items: Seq<Expr, tokens::Comma>,
+    pub _order: PhantomData<keyword::Order>,
+    pub _by: PhantomData<keyword::By>,
+    pub items: Seq<Expr, punct::Comma>,
 }
 
 /// SELECT statement.
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SelectStmt {
-    pub _select: PhantomData<tokens::Select>,
-    pub items: Seq<SelectItem, tokens::Comma>,
+    pub _select: PhantomData<keyword::Select>,
+    pub items: Seq<SelectItem, punct::Comma>,
     pub from_clause: Option<FromClause>,
     pub where_clause: Option<WhereClause>,
     pub order_by: Option<OrderByClause>,
