@@ -1,6 +1,6 @@
 /// INSERT INTO statement AST.
 use recursa::seq::Seq;
-use recursa::{Input, Parse, ParseError, ParseRules, Visit};
+use recursa::{Parse, Visit};
 
 use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
@@ -21,52 +21,12 @@ pub struct InsertStmt {
 }
 
 /// Optional column list: `(col1, col2, ...)`.
-///
-/// Manual Parse (recursa gap): Option<ColumnList> needs ColumnList::peek to
-/// return false when the parens contain expressions (VALUES clause), not
-/// identifiers. A derived ColumnList's first_pattern starts with `\(` which
-/// also matches the VALUES clause. Option<T> propagates parse errors when
-/// peek succeeds, so it can't recover from the misidentification.
-#[derive(Debug, Visit)]
+#[derive(Debug, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct ColumnList {
     pub lparen: tokens::LParen,
     pub columns: Seq<tokens::Ident, tokens::Comma>,
     pub rparen: tokens::RParen,
-}
-
-// --- Parse implementations ---
-
-impl<'input> Parse<'input> for ColumnList {
-    const IS_TERMINAL: bool = false;
-    fn first_pattern() -> &'static str {
-        tokens::LParen::first_pattern()
-    }
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
-        // Column list starts with '(' and the first token inside should be an identifier
-        let mut fork = input.fork();
-        SqlRules::consume_ignored(&mut fork);
-        if !tokens::LParen::peek(&fork, &SqlRules) {
-            return false;
-        }
-        // Peek further: after '(' we need an identifier (not an expression like VALUES has)
-        let Ok(_) = tokens::LParen::parse(&mut fork, &SqlRules) else {
-            return false;
-        };
-        SqlRules::consume_ignored(&mut fork);
-        tokens::Ident::peek(&fork, &SqlRules)
-    }
-    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
-        SqlRules::consume_ignored(input);
-        let lparen = tokens::LParen::parse(input, &SqlRules)?;
-        let columns = Seq::<tokens::Ident, tokens::Comma>::parse(input, &SqlRules)?;
-        SqlRules::consume_ignored(input);
-        let rparen = tokens::RParen::parse(input, &SqlRules)?;
-        Ok(ColumnList {
-            lparen,
-            columns,
-            rparen,
-        })
-    }
 }
 
 #[cfg(test)]
