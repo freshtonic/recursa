@@ -79,6 +79,12 @@ A manual `Parse` impl means either:
 
 Every manual `Parse` impl must have a comment explaining which of these applies and what would be needed to eliminate it. Treat manual impls as tech debt, not as a normal pattern.
 
+## No Manual Clone or Debug Impls
+
+Always use `#[derive(Clone)]` and `#[derive(Debug)]`. If derive doesn't work, it means a field type or variant type is missing Clone or Debug — fix the dependency, don't write a manual impl.
+
+The same applies to `PartialEq`, `Eq`, `Hash`. If a type should be comparable or hashable, derive it and ensure all constituent types also derive it.
+
 ## Code Style
 
 - **Use method syntax, not UFCS.** Write `T::parse(input, rules)` not `<T as Parse>::parse(input, rules)`.
