@@ -18,11 +18,14 @@ pub struct InsertStmt {
     pub table_name: tokens::Ident,
     pub columns: Option<ColumnList>,
     pub _values: PhantomData<tokens::Values>,
-    pub values: Surrounded<tokens::LParen, Seq<Expr, tokens::Comma>, tokens::RParen>,
+    pub values: ValueList,
 }
 
-/// Optional column list: `(col1, col2, ...)`.
+/// Column list: `(col1, col2, ...)`.
 pub type ColumnList = Surrounded<tokens::LParen, Seq<tokens::Ident, tokens::Comma>, tokens::RParen>;
+
+/// Value list: `(col1, col2, ...)`.
+pub type ValueList = Surrounded<tokens::LParen, Seq<Expr, tokens::Comma>, tokens::RParen>;
 
 #[cfg(test)]
 mod tests {
