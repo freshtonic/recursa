@@ -1,4 +1,5 @@
 pub mod create_table;
+pub mod delete;
 pub mod drop_table;
 pub mod expr;
 pub mod insert;
@@ -10,6 +11,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 
 use self::create_table::CreateTableStmt;
+use self::delete::DeleteStmt;
 use self::drop_table::DropTableStmt;
 use self::insert::InsertStmt;
 use self::select::SelectStmt;
@@ -21,6 +23,7 @@ pub enum Statement {
     Select(SelectStmt),
     CreateTable(CreateTableStmt),
     Insert(InsertStmt),
+    Delete(DeleteStmt),
     DropTable(DropTableStmt),
 }
 
@@ -92,6 +95,13 @@ mod tests {
         let mut input = Input::new("INSERT INTO t (f1) VALUES (true)");
         let stmt = Statement::parse(&mut input, &SqlRules).unwrap();
         assert!(matches!(stmt, Statement::Insert(_)));
+    }
+
+    #[test]
+    fn parse_statement_delete() {
+        let mut input = Input::new("DELETE FROM t WHERE a > 1");
+        let stmt = Statement::parse(&mut input, &SqlRules).unwrap();
+        assert!(matches!(stmt, Statement::Delete(_)));
     }
 
     #[test]
@@ -169,6 +179,44 @@ mod tests {
         assert!(
             input.is_empty(),
             "leftover input at offset {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
+    }
+
+    #[test]
+    fn parse_comments_sql_fixture() {
+        let sql = std::fs::read_to_string("fixtures/sql/comments.sql")
+            .expect("comments.sql fixture not found");
+        let mut input = Input::new(&sql);
+        let commands = parse_sql_file(&mut input).unwrap();
+        assert!(
+            commands.len() > 3,
+            "expected >3 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
+    }
+
+    #[test]
+    fn parse_delete_sql_fixture() {
+        let sql = std::fs::read_to_string("fixtures/sql/delete.sql")
+            .expect("delete.sql fixture not found");
+        let mut input = Input::new(&sql);
+        let commands = parse_sql_file(&mut input).unwrap();
+        assert!(
+            commands.len() > 5,
+            "expected >5 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
             input.cursor(),
             &input.remaining()[..input.remaining().len().min(100)]
         );

@@ -17,6 +17,7 @@ pub enum TypeName {
     Boolean(keyword::Boolean),
     Text(keyword::Text),
     Int(keyword::Int),
+    Serial(keyword::Serial),
     Ident(literal::Ident),
 }
 

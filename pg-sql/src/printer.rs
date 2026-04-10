@@ -5,6 +5,7 @@
 //! identifiers as-is from the AST).
 
 use crate::ast::create_table::CreateTableStmt;
+use crate::ast::delete::{DeleteStmt, TableAlias};
 use crate::ast::drop_table::DropTableStmt;
 use crate::ast::expr::{
     BoolTestKind, Expr, FuncCall, ParenExpr, QualifiedRef, QualifiedWildcard, TypeCastFunc,
@@ -45,6 +46,7 @@ fn print_statement_to(output: &mut String, stmt: &Statement) {
         Statement::Select(s) => print_select(output, s),
         Statement::CreateTable(s) => print_create_table(output, s),
         Statement::Insert(s) => print_insert(output, s),
+        Statement::Delete(s) => print_delete(output, s),
         Statement::DropTable(s) => print_drop_table(output, s),
     }
 }
@@ -125,6 +127,9 @@ fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
         output.push_str(&col.name.0);
         output.push(' ');
         print_type_name(output, &col.type_name);
+        if col.primary_key.is_some() {
+            output.push_str(" PRIMARY KEY");
+        }
     }
     output.push(')');
 }
@@ -152,6 +157,29 @@ fn print_insert(output: &mut String, stmt: &InsertStmt) {
         print_expr(output, val);
     }
     output.push(')');
+}
+
+// --- DELETE ---
+
+fn print_delete(output: &mut String, stmt: &DeleteStmt) {
+    output.push_str("DELETE FROM ");
+    output.push_str(&stmt.table_name.0);
+    if let Some(alias) = &stmt.alias {
+        match alias {
+            TableAlias::WithAs(_) => {
+                output.push_str(" AS ");
+                output.push_str(alias.name());
+            }
+            TableAlias::Bare(_) => {
+                output.push(' ');
+                output.push_str(alias.name());
+            }
+        }
+    }
+    if let Some(where_clause) = &stmt.where_clause {
+        output.push_str(" WHERE ");
+        print_expr(output, &where_clause.condition);
+    }
 }
 
 // --- DROP TABLE ---
@@ -295,6 +323,7 @@ fn print_type_name(output: &mut String, type_name: &TypeName) {
         TypeName::Boolean(_) => output.push_str("boolean"),
         TypeName::Text(_) => output.push_str("text"),
         TypeName::Int(_) => output.push_str("int"),
+        TypeName::Serial(_) => output.push_str("SERIAL"),
         TypeName::Ident(ident) => output.push_str(&ident.0),
     }
 }
@@ -476,6 +505,40 @@ mod tests {
     fn print_insert_without_columns() {
         let result = round_trip_stmt("INSERT INTO booltbl4 VALUES (false, true, null)");
         assert_eq!(result, "INSERT INTO booltbl4 VALUES (FALSE, TRUE, NULL)");
+    }
+
+    // --- CREATE TABLE with PRIMARY KEY ---
+
+    #[test]
+    fn print_create_table_with_primary_key() {
+        let result = round_trip_stmt("CREATE TABLE t (id SERIAL PRIMARY KEY, a INT, b text)");
+        assert_eq!(
+            result,
+            "CREATE TABLE t (id SERIAL PRIMARY KEY, a int, b text)"
+        );
+    }
+
+    // --- DELETE ---
+
+    #[test]
+    fn print_delete_simple() {
+        let result = round_trip_stmt("DELETE FROM delete_test WHERE a > 25");
+        assert_eq!(result, "DELETE FROM delete_test WHERE a > 25");
+    }
+
+    #[test]
+    fn print_delete_with_as_alias() {
+        let result = round_trip_stmt("DELETE FROM delete_test AS dt WHERE dt.a > 75");
+        assert_eq!(result, "DELETE FROM delete_test AS dt WHERE dt.a > 75");
+    }
+
+    #[test]
+    fn print_delete_with_bare_alias() {
+        let result = round_trip_stmt("DELETE FROM delete_test dt WHERE delete_test.a > 25");
+        assert_eq!(
+            result,
+            "DELETE FROM delete_test dt WHERE delete_test.a > 25"
+        );
     }
 
     // --- DROP TABLE ---

@@ -9,12 +9,18 @@ use crate::ast::expr::TypeName;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
-/// A column definition: `name type`.
+/// PRIMARY KEY column constraint.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct PrimaryKey(PhantomData<keyword::Primary>, PhantomData<keyword::Key>);
+
+/// A column definition: `name type [PRIMARY KEY]`.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnDef {
     pub name: literal::Ident,
     pub type_name: TypeName,
+    pub primary_key: Option<PrimaryKey>,
 }
 
 /// CREATE TABLE statement.

@@ -242,6 +242,7 @@ fn is_psql_status_line(line: &str) -> bool {
     trimmed == "CREATE TABLE"
         || trimmed == "DROP TABLE"
         || (trimmed.starts_with("INSERT ") && !trimmed.starts_with("INSERT INTO"))
+        || (trimmed.starts_with("DELETE ") && !trimmed.starts_with("DELETE FROM"))
         || trimmed == "SET"
         || trimmed.starts_with("Null display")
         || trimmed.starts_with("Pager")
@@ -402,6 +403,18 @@ mod tests {
         fn regress_boolean() {
             let (_container, uri) = start_postgres();
             run_regression_test("boolean", &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_comments() {
+            let (_container, uri) = start_postgres();
+            run_regression_test("comments", &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_delete() {
+            let (_container, uri) = start_postgres();
+            run_regression_test("delete", &uri).unwrap();
         }
     }
 }

@@ -22,12 +22,16 @@ pub mod keyword {
         Into    => r"INTO\b",
         Values  => r"VALUES\b",
         Drop    => r"DROP\b",
+        Delete  => r"DELETE\b",
         Order   => r"ORDER\b",
         By      => r"BY\b",
         Bool    => r"BOOL\b",
         Boolean => r"BOOLEAN\b",
         Text    => r"TEXT\b",
         Int     => r"INT\b",
+        Serial  => r"SERIAL\b",
+        Primary => r"PRIMARY\b",
+        Key     => r"KEY\b",
     }
 }
 
@@ -65,8 +69,8 @@ pub mod literal {
     /// All SQL keywords (uppercase) for identifier exclusion.
     const SQL_KEYWORDS: &[&str] = &[
         "SELECT", "FROM", "WHERE", "AS", "AND", "OR", "NOT", "TRUE", "FALSE", "NULL", "IS",
-        "UNKNOWN", "CREATE", "TABLE", "INSERT", "INTO", "VALUES", "DROP", "ORDER", "BY", "BOOL",
-        "BOOLEAN", "TEXT", "INT",
+        "UNKNOWN", "CREATE", "TABLE", "INSERT", "INTO", "VALUES", "DROP", "DELETE", "ORDER", "BY",
+        "BOOL", "BOOLEAN", "TEXT", "INT", "SERIAL", "PRIMARY", "KEY",
     ];
 
     fn is_keyword(s: &str) -> bool {
