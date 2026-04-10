@@ -185,7 +185,7 @@ fn derive_parse_enum(
             _ => {
                 return Err(syn::Error::new_spanned(
                     vname,
-                    "Parse enum variants must be single-field newtypes, e.g. Variant(InnerType)",
+                    "Parse enum variants must be single-field tuple variants, e.g. Variant(InnerType). Struct-like variants are not supported — wrap multiple fields in a separate struct that derives Parse.",
                 ));
             }
         };
@@ -352,7 +352,7 @@ fn derive_parse_pratt_enum(
             _ => {
                 return Err(syn::Error::new_spanned(
                     vname,
-                    "Pratt variants must use tuple fields",
+                    "Pratt enum variants must use tuple fields, not struct-like fields. Use e.g. Variant(Box<Self>, OpToken, Box<Self>) not Variant { left: Box<Self>, op: OpToken, right: Box<Self> }.",
                 ));
             }
         };
