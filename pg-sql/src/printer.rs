@@ -1028,4 +1028,286 @@ mod tests {
         let result = round_trip_stmt("SELECT b FROM t WHERE b IS NOT NULL");
         assert!(result.contains("b IS NOT NULL"));
     }
+
+    // --- ORDER BY USING ---
+
+    #[test]
+    fn print_order_by_using_gt() {
+        let result = round_trip_stmt("SELECT f1 FROM t ORDER BY f1 USING >");
+        assert_eq!(result, "SELECT f1 FROM t ORDER BY f1 USING >");
+    }
+
+    #[test]
+    fn print_order_by_using_lt() {
+        let result = round_trip_stmt("SELECT f1 FROM t ORDER BY f1 USING <");
+        assert_eq!(result, "SELECT f1 FROM t ORDER BY f1 USING <");
+    }
+
+    #[test]
+    fn print_order_by_asc() {
+        let result = round_trip_stmt("SELECT * FROM t ORDER BY f1 ASC");
+        assert_eq!(result, "SELECT * FROM t ORDER BY f1 ASC");
+    }
+
+    #[test]
+    fn print_order_by_desc() {
+        let result = round_trip_stmt("SELECT * FROM t ORDER BY f1 DESC");
+        assert_eq!(result, "SELECT * FROM t ORDER BY f1 DESC");
+    }
+
+    #[test]
+    fn print_order_by_nulls_first() {
+        let result = round_trip_stmt("SELECT * FROM t ORDER BY f1 NULLS FIRST");
+        assert_eq!(result, "SELECT * FROM t ORDER BY f1 NULLS FIRST");
+    }
+
+    #[test]
+    fn print_order_by_desc_nulls_last() {
+        let result = round_trip_stmt("SELECT * FROM t ORDER BY f1 DESC NULLS LAST");
+        assert_eq!(result, "SELECT * FROM t ORDER BY f1 DESC NULLS LAST");
+    }
+
+    // --- OFFSET / LIMIT ---
+
+    #[test]
+    fn print_select_offset() {
+        let result = round_trip_stmt("SELECT 1 OFFSET 0");
+        assert_eq!(result, "SELECT 1 OFFSET 0");
+    }
+
+    #[test]
+    fn print_select_limit() {
+        let result = round_trip_stmt("SELECT 1 LIMIT 1");
+        assert_eq!(result, "SELECT 1 LIMIT 1");
+    }
+
+    #[test]
+    fn print_select_limit_offset() {
+        let result = round_trip_stmt("SELECT * FROM t LIMIT 10 OFFSET 5");
+        assert_eq!(result, "SELECT * FROM t LIMIT 10 OFFSET 5");
+    }
+
+    // --- FOR UPDATE ---
+
+    #[test]
+    fn print_select_for_update() {
+        let result = round_trip_stmt("SELECT f1 FROM t FOR UPDATE");
+        assert_eq!(result, "SELECT f1 FROM t FOR UPDATE");
+    }
+
+    // --- SET / RESET ---
+
+    #[test]
+    fn print_set_to() {
+        let result = round_trip_stmt("SET enable_seqscan TO off");
+        assert_eq!(result, "SET enable_seqscan TO off");
+    }
+
+    #[test]
+    fn print_set_eq() {
+        let result = round_trip_stmt("SET enable_sort = false");
+        assert_eq!(result, "SET enable_sort = false");
+    }
+
+    #[test]
+    fn print_reset() {
+        let result = round_trip_stmt("RESET enable_seqscan");
+        assert_eq!(result, "RESET enable_seqscan");
+    }
+
+    // --- ANALYZE ---
+
+    #[test]
+    fn print_analyze() {
+        let result = round_trip_stmt("ANALYZE onek2");
+        assert_eq!(result, "ANALYZE onek2");
+    }
+
+    // --- EXPLAIN ---
+
+    #[test]
+    fn print_explain_costs_off() {
+        let result = round_trip_stmt("EXPLAIN (costs off) SELECT * FROM t");
+        assert_eq!(result, "EXPLAIN (costs off) SELECT * FROM t");
+    }
+
+    // --- CREATE INDEX / DROP INDEX ---
+
+    #[test]
+    fn print_create_index() {
+        let result = round_trip_stmt("CREATE INDEX fooi ON foo (f1)");
+        assert_eq!(result, "CREATE INDEX fooi ON foo (f1)");
+    }
+
+    #[test]
+    fn print_create_index_desc_nulls_last() {
+        let result = round_trip_stmt("CREATE INDEX fooi ON foo (f1 DESC NULLS LAST)");
+        assert_eq!(result, "CREATE INDEX fooi ON foo (f1 DESC NULLS LAST)");
+    }
+
+    #[test]
+    fn print_drop_index() {
+        let result = round_trip_stmt("DROP INDEX fooi");
+        assert_eq!(result, "DROP INDEX fooi");
+    }
+
+    // --- CREATE FUNCTION / DROP FUNCTION ---
+
+    #[test]
+    fn print_create_function_immutable() {
+        let result = round_trip_stmt(
+            "CREATE FUNCTION sillysrf(int) RETURNS SETOF int AS 'values (1),(10),(2),($1)' LANGUAGE sql IMMUTABLE",
+        );
+        assert_eq!(
+            result,
+            "CREATE FUNCTION sillysrf(int) RETURNS SETOF int AS 'values (1),(10),(2),($1)' LANGUAGE sql IMMUTABLE"
+        );
+    }
+
+    #[test]
+    fn print_drop_function() {
+        let result = round_trip_stmt("DROP FUNCTION sillysrf(int)");
+        assert_eq!(result, "DROP FUNCTION sillysrf(int)");
+    }
+
+    // --- VALUES / TABLE / UNION ALL ---
+
+    #[test]
+    fn print_values() {
+        let result = round_trip_stmt("VALUES (1, 2), (3, 4)");
+        assert_eq!(result, "VALUES (1, 2), (3, 4)");
+    }
+
+    #[test]
+    fn print_table_stmt() {
+        let result = round_trip_stmt("TABLE int8_tbl");
+        assert_eq!(result, "TABLE int8_tbl");
+    }
+
+    #[test]
+    fn print_values_union_all_select() {
+        let result =
+            round_trip_stmt("VALUES (1, 2), (3, 4) UNION ALL SELECT 5, 6 UNION ALL TABLE t");
+        assert_eq!(
+            result,
+            "VALUES (1, 2), (3, 4) UNION ALL SELECT 5, 6 UNION ALL TABLE t"
+        );
+    }
+
+    // --- Arithmetic / negation / numeric ---
+
+    #[test]
+    fn print_addition() {
+        let result = round_trip_stmt("SELECT 4 + 4");
+        assert_eq!(result, "SELECT 4 + 4");
+    }
+
+    #[test]
+    fn print_negation() {
+        let result = round_trip_stmt("SELECT -1");
+        assert_eq!(result, "SELECT -1");
+    }
+
+    #[test]
+    fn print_numeric_literal() {
+        let result = round_trip_stmt("SELECT 77.7");
+        assert_eq!(result, "SELECT 77.7");
+    }
+
+    // --- IN expression ---
+
+    #[test]
+    fn print_in_list() {
+        let result = round_trip_stmt("SELECT * FROM t WHERE f1 IN (1, 2, 3)");
+        assert_eq!(result, "SELECT * FROM t WHERE f1 IN (1, 2, 3)");
+    }
+
+    // --- Subquery in parens ---
+
+    #[test]
+    fn print_subquery_in_parens() {
+        let result = round_trip_stmt("SELECT (SELECT 1)");
+        assert_eq!(result, "SELECT (SELECT 1)");
+    }
+
+    // --- Table refs: subquery, lateral, inherited ---
+
+    #[test]
+    fn print_subquery_ref() {
+        let result = round_trip_stmt("SELECT foo FROM (SELECT 1 OFFSET 0) AS foo");
+        assert_eq!(result, "SELECT foo FROM (SELECT 1 OFFSET 0) AS foo");
+    }
+
+    #[test]
+    fn print_lateral_ref() {
+        let result = round_trip_stmt("SELECT * FROM t, LATERAL (VALUES (1)) v");
+        assert_eq!(result, "SELECT * FROM t, LATERAL (VALUES (1)) v");
+    }
+
+    #[test]
+    fn print_inherited_table() {
+        let result = round_trip_stmt("SELECT p.name FROM person* p");
+        assert_eq!(result, "SELECT p.name FROM person* p");
+    }
+
+    // --- Subquery alias with column list ---
+
+    #[test]
+    fn print_subquery_alias_with_columns() {
+        let result = round_trip_stmt("SELECT * FROM (VALUES (1, 2)) AS v (i, j)");
+        assert_eq!(result, "SELECT * FROM (VALUES (1, 2)) AS v (i, j)");
+    }
+
+    // --- Row expression (tuple in parentheses) ---
+
+    #[test]
+    fn print_row_expression() {
+        let result = round_trip_stmt("SELECT * FROM t WHERE (a, b) IN (VALUES (1, 1), (2, 2))");
+        assert_eq!(
+            result,
+            "SELECT * FROM t WHERE (a, b) IN (VALUES (1, 1), (2, 2))"
+        );
+    }
+
+    // --- Partition tables ---
+
+    #[test]
+    fn print_create_partitioned_table() {
+        let result = round_trip_stmt("CREATE TABLE t (a int, b int) PARTITION BY list (a)");
+        assert_eq!(
+            result,
+            "CREATE TABLE t (a int, b int) PARTITION BY list (a)"
+        );
+    }
+
+    #[test]
+    fn print_create_partition_of() {
+        let result = round_trip_stmt(
+            "CREATE TABLE t1 PARTITION OF t FOR VALUES IN (1) PARTITION BY list (b)",
+        );
+        assert_eq!(
+            result,
+            "CREATE TABLE t1 PARTITION OF t FOR VALUES IN (1) PARTITION BY list (b)"
+        );
+    }
+
+    // --- Full select.sql round-trip parse+print ---
+
+    #[test]
+    fn round_trip_select_sql_parses_and_prints() {
+        let sql = std::fs::read_to_string("fixtures/sql/select.sql")
+            .expect("select.sql fixture not found");
+        let mut input = Input::new(&sql);
+        let commands = parse_sql_file(&mut input).unwrap();
+        let printed = print_commands(&commands);
+
+        // Verify the printed output can be re-parsed
+        let mut input2 = Input::new(&printed);
+        let commands2 = parse_sql_file(&mut input2).unwrap();
+        assert_eq!(
+            commands.len(),
+            commands2.len(),
+            "re-parsed command count should match"
+        );
+    }
 }

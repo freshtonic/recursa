@@ -458,8 +458,8 @@ mod tests {
         #[test]
         fn regress_select() {
             let (_container, uri) = start_postgres();
-            // select.sql depends on tables created by test_setup
-            run_prerequisites(&["test_setup"], &uri).unwrap();
+            // select.sql depends on tables and indexes created by test_setup and create_index
+            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
             run_regression_test("select", &uri).unwrap();
         }
     }
