@@ -290,11 +290,11 @@ fn print_binop_operand(output: &mut String, expr: &Expr) {
 
 fn print_type_name(output: &mut String, type_name: &TypeName) {
     match type_name {
-        TypeName::Bool => output.push_str("bool"),
-        TypeName::Boolean => output.push_str("boolean"),
-        TypeName::Text => output.push_str("text"),
-        TypeName::Int => output.push_str("int"),
-        TypeName::Ident(name) => output.push_str(name),
+        TypeName::Bool(_) => output.push_str("bool"),
+        TypeName::Boolean(_) => output.push_str("boolean"),
+        TypeName::Text(_) => output.push_str("text"),
+        TypeName::Int(_) => output.push_str("int"),
+        TypeName::Ident(ident) => output.push_str(&ident.0),
     }
 }
 

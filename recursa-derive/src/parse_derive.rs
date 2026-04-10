@@ -168,7 +168,14 @@ fn derive_parse_enum(
 ) -> syn::Result<TokenStream> {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let lt = generics
+    // For the peek_regex function, we need a named lifetime (not '_')
+    let fn_lt = generics
+        .lifetimes()
+        .next()
+        .map(|l| l.lifetime.clone())
+        .unwrap_or_else(|| syn::Lifetime::new("'__input", proc_macro2::Span::call_site()));
+    // For the impl block, we can use '_ when no lifetime is present
+    let impl_lt = generics
         .lifetimes()
         .next()
         .map(|l| l.lifetime.clone())
@@ -245,7 +252,7 @@ fn derive_parse_enum(
         const _: () = {
             static PEEK_REGEX: ::std::sync::OnceLock<::regex::Regex> = ::std::sync::OnceLock::new();
 
-            fn peek_regex<#lt>() -> &'static ::regex::Regex {
+            fn peek_regex<#fn_lt>() -> &'static ::regex::Regex {
                 PEEK_REGEX.get_or_init(|| {
                     let group_names: &[&str] = &[#(#group_names),*];
                     let variant_patterns: &[&str] = &[#(#variant_pattern_exprs),*];
@@ -259,7 +266,7 @@ fn derive_parse_enum(
                 })
             }
 
-            impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
+            impl #impl_generics ::recursa_core::Parse<#impl_lt> for #name #ty_generics #where_clause {
                 const IS_TERMINAL: bool = false;
 
                 fn first_pattern() -> &'static str {
@@ -274,13 +281,13 @@ fn derive_parse_enum(
                     })
                 }
 
-                fn peek<R: ::recursa_core::ParseRules>(input: &::recursa_core::Input<#lt>, _rules: &R) -> bool {
+                fn peek<R: ::recursa_core::ParseRules>(input: &::recursa_core::Input<#impl_lt>, _rules: &R) -> bool {
                     let mut peek_input = input.fork();
                     <#rules_type as ::recursa_core::ParseRules>::consume_ignored(&mut peek_input);
                     peek_regex().is_match(peek_input.remaining())
                 }
 
-                fn parse<R: ::recursa_core::ParseRules>(input: &mut ::recursa_core::Input<#lt>, _rules: &R) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+                fn parse<R: ::recursa_core::ParseRules>(input: &mut ::recursa_core::Input<#impl_lt>, _rules: &R) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
                     let regex = peek_regex();
                     let mut fork = input.fork();
                     <#rules_type as ::recursa_core::ParseRules>::consume_ignored(&mut fork);

@@ -22,65 +22,15 @@ pub enum BoolTestKind {
     IsNotNull,
 }
 
-/// Type name for casts (the types that boolean.sql uses).
-///
-/// Manual Parse: keyword-to-variant dispatch that the derive macro cannot express.
-#[derive(Debug, Clone, PartialEq, Eq, Visit)]
+/// Type name for casts.
+#[derive(Debug, Clone, PartialEq, Eq, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub enum TypeName {
-    Bool,
-    Boolean,
-    Text,
-    Int,
-    /// A type name that is an identifier (for pg_input_error_info etc.)
-    Ident(String),
-}
-
-impl<'input> Parse<'input> for TypeName {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        // Type names start with a keyword or identifier
-        r"(?i:BOOLEAN|BOOL|TEXT|INT)\b|[a-zA-Z_][a-zA-Z0-9_]*"
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
-        let mut fork = input.fork();
-        SqlRules::consume_ignored(&mut fork);
-        tokens::Boolean::peek(&fork, &SqlRules)
-            || tokens::Bool::peek(&fork, &SqlRules)
-            || tokens::Text::peek(&fork, &SqlRules)
-            || tokens::Int::peek(&fork, &SqlRules)
-            || tokens::Ident::peek(&fork, &SqlRules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
-        SqlRules::consume_ignored(input);
-        if tokens::Boolean::peek(input, &SqlRules) {
-            tokens::Boolean::parse(input, &SqlRules)?;
-            return Ok(TypeName::Boolean);
-        }
-        if tokens::Bool::peek(input, &SqlRules) {
-            tokens::Bool::parse(input, &SqlRules)?;
-            return Ok(TypeName::Bool);
-        }
-        if tokens::Text::peek(input, &SqlRules) {
-            tokens::Text::parse(input, &SqlRules)?;
-            return Ok(TypeName::Text);
-        }
-        if tokens::Int::peek(input, &SqlRules) {
-            tokens::Int::parse(input, &SqlRules)?;
-            return Ok(TypeName::Int);
-        }
-        if tokens::Ident::peek(input, &SqlRules) {
-            let ident = tokens::Ident::parse(input, &SqlRules)?;
-            return Ok(TypeName::Ident(ident.0));
-        }
-        Err(ParseError::new(
-            input.source().to_string(),
-            input.cursor()..input.cursor(),
-            "type name",
-        ))
-    }
+    Bool(tokens::Bool),
+    Boolean(tokens::Boolean),
+    Text(tokens::Text),
+    Int(tokens::Int),
+    Ident(tokens::Ident),
 }
 
 /// Parses the suffix after `IS` in a boolean test: [NOT] TRUE/FALSE/UNKNOWN/NULL.
