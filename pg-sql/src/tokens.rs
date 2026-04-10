@@ -52,7 +52,7 @@ pub mod punct {
 }
 
 // Literals
-pub mod literals {
+pub mod literal {
     use super::*;
 
     recursa::literals! {
@@ -116,7 +116,7 @@ mod tests {
     use recursa::{Input, NoRules, Parse};
 
     use super::keyword::*;
-    use super::literals::*;
+    use super::literal::*;
     use super::punct::*;
 
     // --- Keyword tests ---

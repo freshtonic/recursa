@@ -7,7 +7,7 @@ use recursa::{Parse, Visit};
 
 use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literals, punct};
+use crate::tokens::{keyword, literal, punct};
 
 /// INSERT INTO statement.
 #[derive(Debug, Parse, Visit)]
@@ -15,14 +15,14 @@ use crate::tokens::{keyword, literals, punct};
 pub struct InsertStmt {
     pub _insert: PhantomData<keyword::Insert>,
     pub _into: PhantomData<keyword::Into>,
-    pub table_name: literals::Ident,
+    pub table_name: literal::Ident,
     pub columns: Option<ColumnList>,
     pub _values: PhantomData<keyword::Values>,
     pub values: ValueList,
 }
 
 /// Column list: `(col1, col2, ...)`.
-pub type ColumnList = Surrounded<punct::LParen, Seq<literals::Ident, punct::Comma>, punct::RParen>;
+pub type ColumnList = Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>;
 
 /// Value list: `(col1, col2, ...)`.
 pub type ValueList = Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>;

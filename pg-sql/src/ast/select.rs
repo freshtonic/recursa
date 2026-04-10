@@ -6,7 +6,7 @@ use recursa::{Parse, Visit};
 
 use crate::ast::expr::{Expr, FuncCall};
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literals, punct};
+use crate::tokens::{keyword, literal, punct};
 
 /// A single item in the SELECT list: `expr [AS alias]`.
 #[derive(Debug, Clone, Parse, Visit)]
@@ -21,7 +21,7 @@ pub struct SelectItem {
 #[parse(rules = SqlRules)]
 pub struct Alias {
     pub _as: PhantomData<keyword::As>,
-    pub name: literals::AliasName,
+    pub name: literal::AliasName,
 }
 
 /// FROM clause: `FROM table [, table ...]`.
@@ -39,7 +39,7 @@ pub struct FromClause {
 #[parse(rules = SqlRules)]
 pub enum TableRef {
     Func(FuncCall),
-    Table(literals::Ident),
+    Table(literal::Ident),
 }
 
 /// WHERE clause: `WHERE expr`.

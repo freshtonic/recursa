@@ -7,7 +7,7 @@ use recursa::surrounded::Surrounded;
 use recursa::{Parse, Visit};
 
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literals, punct};
+use crate::tokens::{keyword, literal, punct};
 
 /// Type name for casts.
 #[derive(Debug, Clone, PartialEq, Eq, Parse, Visit)]
@@ -17,7 +17,7 @@ pub enum TypeName {
     Boolean(keyword::Boolean),
     Text(keyword::Text),
     Int(keyword::Int),
-    Ident(literals::Ident),
+    Ident(literal::Ident),
 }
 
 // --- Boolean test suffix structs ---
@@ -79,16 +79,16 @@ pub enum BoolTestKind {
 #[derive(Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedRef {
-    pub table: literals::Ident,
+    pub table: literal::Ident,
     pub dot: punct::Dot,
-    pub column: literals::Ident,
+    pub column: literal::Ident,
 }
 
 /// Qualified wildcard: `table.*`
 #[derive(Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedWildcard {
-    pub table: literals::Ident,
+    pub table: literal::Ident,
     pub dot: punct::Dot,
     pub star: punct::Star,
 }
@@ -102,7 +102,7 @@ pub struct QualifiedWildcard {
 #[derive(Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct FuncCall {
-    pub name: literals::Ident,
+    pub name: literal::Ident,
     pub lparen: punct::LParen,
     pub args: Seq<Expr, punct::Comma>,
     pub rparen: punct::RParen,
@@ -116,7 +116,7 @@ pub type ParenExpr = Surrounded<punct::LParen, Box<Expr>, punct::RParen>;
 #[parse(rules = SqlRules)]
 pub struct TypeCastFunc {
     pub type_name: TypeName,
-    pub value: literals::StringLit,
+    pub value: literal::StringLit,
 }
 
 // --- Pratt expression enum ---
@@ -175,10 +175,10 @@ pub enum Expr {
     Paren(ParenExpr),
     /// Integer literal: `42`
     #[parse(atom)]
-    IntegerLit(literals::IntegerLit),
+    IntegerLit(literal::IntegerLit),
     /// String literal: `'hello'`
     #[parse(atom)]
-    StringLit(literals::StringLit),
+    StringLit(literal::StringLit),
     /// Boolean true
     #[parse(atom)]
     BoolTrue(keyword::True),
@@ -190,7 +190,7 @@ pub enum Expr {
     Null(keyword::Null),
     /// Unqualified column reference: `f1`
     #[parse(atom)]
-    ColumnRef(literals::Ident),
+    ColumnRef(literal::Ident),
     /// Bare wildcard: `*`
     #[parse(atom)]
     Star(punct::Star),
