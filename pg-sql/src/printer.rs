@@ -12,18 +12,19 @@ use crate::ast::expr::{
 };
 use crate::ast::insert::InsertStmt;
 use crate::ast::select::{OrderByClause, SelectItem, SelectStmt, TableRef};
-use crate::ast::{PsqlCommand, Statement};
+use crate::ast::{PsqlCommand, PsqlDirective, Statement, TerminatedStatement};
 
 /// Print a sequence of psql commands back to SQL text.
 pub fn print_commands(commands: &[PsqlCommand]) -> String {
     let mut output = String::new();
     for cmd in commands {
         match cmd {
-            PsqlCommand::Directive(d) => {
-                output.push_str(d);
+            PsqlCommand::Directive(PsqlDirective { rest, .. }) => {
+                output.push('\\');
+                output.push_str(&rest.0);
                 output.push('\n');
             }
-            PsqlCommand::Statement(stmt, _semi) => {
+            PsqlCommand::Statement(TerminatedStatement { stmt, .. }) => {
                 print_statement_to(&mut output, stmt);
                 output.push_str(";\n");
             }

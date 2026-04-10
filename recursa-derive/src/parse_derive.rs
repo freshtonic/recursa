@@ -102,13 +102,16 @@ fn derive_parse_named_struct(
         syn::Error::new_spanned(name, "Parse struct must have at least one field")
     })?;
 
-    // Build nested if-chain for first_pattern: walk consecutive terminal fields,
-    // collecting their patterns joined with IGNORE separator.
-    // Check IS_TERMINAL BEFORE calling first_pattern() to avoid deadlock on
-    // recursive types (e.g., FuncCall → Seq<Expr, ...> → Expr → FuncCall).
-    let first_pattern_body = {
+    // Build nested chain for first_pattern: always include the first field's
+    // pattern, then continue while IS_TERMINAL is true. For non-terminal fields
+    // after the first, we check IS_TERMINAL BEFORE calling first_pattern() to
+    // avoid deadlock on recursive types.
+    let first_pattern_body = if field_types.is_empty() {
+        quote! {}
+    } else {
+        let first_ty = &field_types[0];
         let mut body = quote! {};
-        for ty in field_types.iter().rev() {
+        for ty in field_types[1..].iter().rev() {
             body = quote! {
                 if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
                     parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
@@ -116,7 +119,14 @@ fn derive_parse_named_struct(
                 }
             };
         }
-        body
+        // First field is always included (even if non-terminal),
+        // then continue only if it's terminal.
+        quote! {
+            parts.push(<#first_ty as ::recursa_core::Parse>::first_pattern().to_string());
+            if <#first_ty as ::recursa_core::Parse>::IS_TERMINAL {
+                #body
+            }
+        }
     };
 
     // Generate the parse body: consume_ignored + parse each field
@@ -189,11 +199,13 @@ fn derive_parse_tuple_struct(
         .map(|i| syn::Ident::new(&format!("__f{i}"), proc_macro2::Span::call_site()))
         .collect();
 
-    // Build nested if-chain for first_pattern (same logic as named struct).
-    // Check IS_TERMINAL BEFORE calling first_pattern() to avoid deadlock on recursive types.
-    let first_pattern_body = {
+    // Build first_pattern chain (same logic as named struct).
+    let first_pattern_body = if field_types.is_empty() {
+        quote! {}
+    } else {
+        let first_ty = &field_types[0];
         let mut body = quote! {};
-        for ty in field_types.iter().rev() {
+        for ty in field_types[1..].iter().rev() {
             body = quote! {
                 if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
                     parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
@@ -201,7 +213,12 @@ fn derive_parse_tuple_struct(
                 }
             };
         }
-        body
+        quote! {
+            parts.push(<#first_ty as ::recursa_core::Parse>::first_pattern().to_string());
+            if <#first_ty as ::recursa_core::Parse>::IS_TERMINAL {
+                #body
+            }
+        }
     };
 
     // Generate the parse body: consume_ignored + parse each field

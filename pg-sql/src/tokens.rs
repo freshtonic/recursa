@@ -46,6 +46,7 @@ recursa::punctuation! {
     Lt        => "<",
     Gt        => ">",
     ColonColon => "::",
+    BackSlash  => r"\\",
 }
 
 // --- String literal ---
@@ -206,6 +207,43 @@ impl recursa::Visit for Ident {
 }
 
 impl recursa::AsNodeKey for Ident {}
+
+// --- Rest of line ---
+
+/// Matches the remainder of text on the current line (up to newline or end of input).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RestOfLine(pub String);
+
+impl Scan<'_> for RestOfLine {
+    const PATTERN: &'static str = r"[^\n]*";
+
+    fn regex() -> &'static Regex {
+        static REGEX: OnceLock<Regex> = OnceLock::new();
+        REGEX.get_or_init(|| Regex::new(r"\A[^\n]*").unwrap())
+    }
+
+    fn from_match(matched: &str) -> Result<Self, ParseError> {
+        Ok(RestOfLine(matched.to_string()))
+    }
+}
+
+recursa::impl_parse_for_scan!(RestOfLine);
+
+impl recursa::Visit for RestOfLine {
+    fn visit<V: recursa::Visitor>(
+        &self,
+        visitor: &mut V,
+    ) -> std::ops::ControlFlow<recursa::Break<V::Error>> {
+        match visitor.enter(self) {
+            std::ops::ControlFlow::Continue(())
+            | std::ops::ControlFlow::Break(recursa::Break::SkipChildren) => {}
+            other => return other,
+        }
+        visitor.exit(self)
+    }
+}
+
+impl recursa::AsNodeKey for RestOfLine {}
 
 #[cfg(test)]
 mod tests {
