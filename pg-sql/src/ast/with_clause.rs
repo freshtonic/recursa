@@ -52,67 +52,33 @@ pub struct SearchClause {
 }
 
 /// CYCLE clause: `CYCLE col, ... SET col [TO val DEFAULT val] USING col`
-///
-/// Manual Parse impl needed because the TO/DEFAULT parts are optional and
-/// the USING keyword conflicts with the keyword declaration.
-/// To eliminate this, recursa would need contextual keyword support.
-#[derive(Debug, Clone, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct CycleClause {
+    pub _cycle: PhantomData<keyword::Cycle>,
     pub columns: Seq<literal::AliasName, punct::Comma>,
-    pub set_column: literal::AliasName,
-    pub to_value: Option<Expr>,
-    pub default_value: Option<Expr>,
+    pub _set: PhantomData<keyword::Set>,
+    pub set_column: CycleSetColumn,
+    pub _using: PhantomData<keyword::Using>,
     pub using_column: literal::AliasName,
 }
 
-impl<'input> Parse<'input> for CycleClause {
-    const IS_TERMINAL: bool = false;
+/// SET column with optional TO/DEFAULT values.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CycleSetColumn {
+    pub name: literal::AliasName,
+    pub to_default: Option<CycleToDefault>,
+}
 
-    fn first_pattern() -> &'static str {
-        keyword::Cycle::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        keyword::Cycle::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        PhantomData::<keyword::Cycle>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let columns = Seq::<literal::AliasName, punct::Comma>::parse(input, rules)?;
-        R::consume_ignored(input);
-        PhantomData::<keyword::Set>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let set_column = literal::AliasName::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        // Optional TO val DEFAULT val
-        let (to_value, default_value) = if keyword::To::peek(input, rules) {
-            PhantomData::<keyword::To>::parse(input, rules)?;
-            R::consume_ignored(input);
-            let to_val = Expr::parse(input, rules)?;
-            R::consume_ignored(input);
-            PhantomData::<keyword::Default>::parse(input, rules)?;
-            R::consume_ignored(input);
-            let default_val = Expr::parse(input, rules)?;
-            R::consume_ignored(input);
-            (Some(to_val), Some(default_val))
-        } else {
-            (None, None)
-        };
-
-        PhantomData::<keyword::Using>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let using_column = literal::AliasName::parse(input, rules)?;
-
-        Ok(CycleClause {
-            columns,
-            set_column,
-            to_value,
-            default_value,
-            using_column,
-        })
-    }
+/// TO value DEFAULT value
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CycleToDefault {
+    pub _to: PhantomData<keyword::To>,
+    pub to_value: Expr,
+    pub _default: PhantomData<keyword::Default>,
+    pub default_value: Expr,
 }
 
 /// A single CTE definition: `name [(col, ...)] AS [MATERIALIZED|NOT MATERIALIZED] (query)

@@ -1097,6 +1097,47 @@ fn print_with_statement(output: &mut String, stmt: &WithStatement) {
         output.push('(');
         print_statement_to(output, &cte.query.inner);
         output.push(')');
+        // SEARCH clause
+        if let Some(search) = &cte.search {
+            output.push_str(" SEARCH ");
+            match &search.direction {
+                crate::ast::with_clause::SearchDirection::Depth(_) => {
+                    output.push_str("DEPTH ");
+                }
+                crate::ast::with_clause::SearchDirection::Breadth(_) => {
+                    output.push_str("BREADTH ");
+                }
+            }
+            output.push_str("FIRST BY ");
+            for (j, col) in search.columns.iter().enumerate() {
+                if j > 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(&col.0);
+            }
+            output.push_str(" SET ");
+            output.push_str(&search.set_column.0);
+        }
+        // CYCLE clause
+        if let Some(cycle) = &cte.cycle {
+            output.push_str(" CYCLE ");
+            for (j, col) in cycle.columns.iter().enumerate() {
+                if j > 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(&col.0);
+            }
+            output.push_str(" SET ");
+            output.push_str(&cycle.set_column.name.0);
+            if let Some(to_default) = &cycle.set_column.to_default {
+                output.push_str(" TO ");
+                print_expr(output, &to_default.to_value);
+                output.push_str(" DEFAULT ");
+                print_expr(output, &to_default.default_value);
+            }
+            output.push_str(" USING ");
+            output.push_str(&cycle.using_column.0);
+        }
     }
     output.push(' ');
     print_statement_to(output, &stmt.body);
