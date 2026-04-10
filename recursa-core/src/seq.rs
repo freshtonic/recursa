@@ -38,6 +38,16 @@ pub struct Seq<T, S, Trailing = NoTrailing, Empty = AllowEmpty> {
     _phantom: PhantomData<(Trailing, Empty)>,
 }
 
+impl<T: Clone, S: Clone, Trailing, Empty> Clone for Seq<T, S, Trailing, Empty> {
+    fn clone(&self) -> Self {
+        Self {
+            pairs: self.pairs.clone(),
+            elements: self.elements.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
 impl<T: Clone, S, Trailing, Empty> Seq<T, S, Trailing, Empty> {
     /// Create a Seq from raw element-separator pairs.
     pub fn from_pairs(pairs: Vec<(T, Option<S>)>) -> Self {
