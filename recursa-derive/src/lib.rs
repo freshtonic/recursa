@@ -47,7 +47,7 @@ use proc_macro::TokenStream;
 ///
 /// - `#[scan(pattern = "...")]` — regex pattern for the token
 /// - `#[scan(case_insensitive)]` — wraps pattern in `(?i:...)`
-#[proc_macro_derive(Scan, attributes(scan))]
+#[proc_macro_derive(Scan, attributes(scan, parse))]
 pub fn derive_scan(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     match scan_derive::derive_scan(input) {

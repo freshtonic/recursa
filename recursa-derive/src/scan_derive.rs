@@ -2,8 +2,30 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, LitStr};
 
+/// Parse an optional `#[parse(postcondition = path)]` attribute.
+fn get_postcondition(input: &DeriveInput) -> syn::Result<Option<syn::Path>> {
+    for attr in &input.attrs {
+        if attr.path().is_ident("parse") {
+            let mut postcondition = None;
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("postcondition") {
+                    let value = meta.value()?;
+                    let path: syn::Path = value.parse()?;
+                    postcondition = Some(path);
+                    Ok(())
+                } else {
+                    Err(meta.error("expected `postcondition`"))
+                }
+            })?;
+            return Ok(postcondition);
+        }
+    }
+    Ok(None)
+}
+
 pub fn derive_scan(input: DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
+    let postcondition = get_postcondition(&input)?;
 
     match &input.data {
         Data::Struct(data) => {
@@ -18,9 +40,10 @@ pub fn derive_scan(input: DeriveInput) -> syn::Result<TokenStream> {
                     impl_generics,
                     ty_generics,
                     where_clause,
+                    &postcondition,
                 ),
                 Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                    derive_scan_tuple_struct(name, &pattern, generics)
+                    derive_scan_tuple_struct(name, &pattern, generics, &postcondition)
                 }
                 _ => Err(syn::Error::new_spanned(
                     name,
@@ -28,7 +51,7 @@ pub fn derive_scan(input: DeriveInput) -> syn::Result<TokenStream> {
                 )),
             }
         }
-        Data::Enum(data) => derive_scan_enum(name, &input.generics, data),
+        Data::Enum(data) => derive_scan_enum(name, &input.generics, data, &postcondition),
         _ => Err(syn::Error::new_spanned(
             name,
             "Scan cannot be derived for unions",
@@ -80,13 +103,33 @@ fn get_scan_attrs(input: &DeriveInput) -> syn::Result<ScanAttrs> {
 }
 
 /// Generates a `Parse` impl that delegates to `Scan` for a given type.
+/// If `postcondition` is Some, the parse result is validated before committing.
 fn generate_parse_for_scan(
     name: &syn::Ident,
     impl_generics: &syn::ImplGenerics,
     ty_generics: &syn::TypeGenerics,
     where_clause: Option<&syn::WhereClause>,
     lt: &proc_macro2::TokenStream,
+    postcondition: &Option<syn::Path>,
 ) -> TokenStream {
+    // Generate the postcondition check (empty if none)
+    let postcondition_check = postcondition.as_ref().map(|path| {
+        quote! { #path(&result)?; }
+    });
+
+    // When there's a postcondition, peek must try a full parse (fork + parse + postcondition)
+    // instead of just checking the regex, since the regex can't express the postcondition.
+    let peek_body = if postcondition.is_some() {
+        quote! {
+            let mut fork = input.fork();
+            Self::parse(&mut fork, _rules).is_ok()
+        }
+    } else {
+        quote! {
+            <Self as ::recursa_core::Scan<#lt>>::regex().is_match(input.remaining())
+        }
+    };
+
     quote! {
         impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
             const IS_TERMINAL: bool = true;
@@ -99,7 +142,7 @@ fn generate_parse_for_scan(
                 input: &::recursa_core::Input<#lt>,
                 _rules: &R,
             ) -> bool {
-                <Self as ::recursa_core::Scan<#lt>>::regex().is_match(input.remaining())
+                #peek_body
             }
 
             fn parse<R: ::recursa_core::ParseRules>(
@@ -110,6 +153,7 @@ fn generate_parse_for_scan(
                     ::std::option::Option::Some(m) if m.start() == 0 => {
                         let matched = &input.source()[input.cursor()..input.cursor() + m.len()];
                         let result = <Self as ::recursa_core::Scan<#lt>>::from_match(matched)?;
+                        #postcondition_check
                         input.advance(m.len());
                         ::std::result::Result::Ok(result)
                     }
@@ -130,11 +174,12 @@ fn derive_scan_unit_struct(
     impl_generics: syn::ImplGenerics,
     ty_generics: syn::TypeGenerics,
     where_clause: Option<&syn::WhereClause>,
+    postcondition: &Option<syn::Path>,
 ) -> syn::Result<TokenStream> {
     let anchored_pattern = format!(r"\A(?:{})", pattern);
 
     let lt = quote! { '_ };
-    let parse_impl = generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt);
+    let parse_impl = generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt, postcondition);
 
     Ok(quote! {
         impl #impl_generics ::recursa_core::Scan<'_> for #name #ty_generics #where_clause {
@@ -158,6 +203,7 @@ fn derive_scan_tuple_struct(
     name: &syn::Ident,
     pattern: &str,
     generics: &syn::Generics,
+    postcondition: &Option<syn::Path>,
 ) -> syn::Result<TokenStream> {
     let anchored_pattern = format!(r"\A(?:{})", pattern);
 
@@ -168,7 +214,7 @@ fn derive_scan_tuple_struct(
 
         let lt_tokens = quote! { #lt };
         let parse_impl =
-            generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt_tokens);
+            generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt_tokens, postcondition);
 
         Ok(quote! {
             impl #impl_generics ::recursa_core::Scan<#lt> for #name #ty_generics #where_clause {
@@ -191,7 +237,7 @@ fn derive_scan_tuple_struct(
         let lt = quote! { '_ };
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
         let parse_impl =
-            generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt);
+            generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt, postcondition);
 
         Ok(quote! {
             impl #impl_generics ::recursa_core::Scan<'_> for #name #ty_generics #where_clause {
@@ -216,6 +262,7 @@ fn derive_scan_enum(
     name: &syn::Ident,
     generics: &syn::Generics,
     data: &syn::DataEnum,
+    _postcondition: &Option<syn::Path>,
 ) -> syn::Result<TokenStream> {
     let lt = generics
         .lifetimes()

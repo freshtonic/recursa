@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use recursa::{Input, Parse, ParseError, ParseRules, Scan, Visit};
+use recursa::{ParseError, Scan, Visit};
 use regex::Regex;
 
 // Keywords (case-insensitive, with word boundary)
@@ -123,13 +123,6 @@ impl recursa::AsNodeKey for IntegerLit {}
 
 // --- Identifier ---
 
-/// SQL identifier: [a-zA-Z_][a-zA-Z0-9_]* but NOT a keyword.
-///
-/// Uses a manual `Parse` impl that matches the identifier regex, then
-/// rejects matches that are SQL keywords via `is_keyword()`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Ident(pub String);
-
 /// All SQL keywords (uppercase) for identifier exclusion.
 const SQL_KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "AS", "AND", "OR", "NOT", "TRUE", "FALSE", "NULL", "IS", "UNKNOWN",
@@ -141,72 +134,24 @@ fn is_keyword(s: &str) -> bool {
     SQL_KEYWORDS.iter().any(|kw| kw.eq_ignore_ascii_case(s))
 }
 
-impl Scan<'_> for Ident {
-    const PATTERN: &'static str = r"[a-zA-Z_][a-zA-Z0-9_]*";
-
-    fn regex() -> &'static Regex {
-        static REGEX: OnceLock<Regex> = OnceLock::new();
-        REGEX.get_or_init(|| Regex::new(r"\A[a-zA-Z_][a-zA-Z0-9_]*").unwrap())
-    }
-
-    fn from_match(matched: &str) -> Result<Self, ParseError> {
-        Ok(Ident(matched.to_string()))
-    }
-}
-
-impl<'input> Parse<'input> for Ident {
-    const IS_TERMINAL: bool = true;
-
-    fn first_pattern() -> &'static str {
-        Self::PATTERN
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
-        match Self::regex().find(input.remaining()) {
-            Some(m) if m.start() == 0 => !is_keyword(m.as_str()),
-            _ => false,
-        }
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
-        match Self::regex().find(input.remaining()) {
-            Some(m) if m.start() == 0 => {
-                let matched = &input.source()[input.cursor()..input.cursor() + m.len()];
-                if is_keyword(matched) {
-                    return Err(ParseError::new(
-                        input.source().to_string(),
-                        input.cursor()..input.cursor() + m.len(),
-                        "identifier (not a keyword)",
-                    ));
-                }
-                let result = Self::from_match(matched)?;
-                input.advance(m.len());
-                Ok(result)
-            }
-            _ => Err(ParseError::new(
-                input.source().to_string(),
-                input.cursor()..input.cursor(),
-                Self::PATTERN,
-            )),
-        }
+/// Postcondition: reject identifiers that are SQL keywords.
+fn not_keyword(ident: &Ident) -> Result<(), ParseError> {
+    if is_keyword(&ident.0) {
+        Err(ParseError::new(
+            ident.0.clone(),
+            0..ident.0.len(),
+            "identifier (not a keyword)",
+        ))
+    } else {
+        Ok(())
     }
 }
 
-impl recursa::Visit for Ident {
-    fn visit<V: recursa::Visitor>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::Break<V::Error>> {
-        match visitor.enter(self) {
-            std::ops::ControlFlow::Continue(())
-            | std::ops::ControlFlow::Break(recursa::Break::SkipChildren) => {}
-            other => return other,
-        }
-        visitor.exit(self)
-    }
-}
-
-impl recursa::AsNodeKey for Ident {}
+/// SQL identifier: `[a-zA-Z_][a-zA-Z0-9_]*` but NOT a keyword.
+#[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+#[parse(postcondition = not_keyword)]
+pub struct Ident(pub String);
 
 // --- Alias name (any SQL word — identifier or keyword) ---
 
