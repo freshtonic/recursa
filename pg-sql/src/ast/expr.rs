@@ -2,6 +2,7 @@
 ///
 /// Handles atoms, prefix (NOT), infix (AND, OR, comparisons), and
 /// postfix operators (::type cast, IS [NOT] TRUE/FALSE/UNKNOWN/NULL).
+use recursa::seq::Seq;
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::rules::SqlRules;
@@ -74,156 +75,31 @@ pub enum BoolTestKind {
 // --- Atom wrapper structs ---
 
 /// Qualified column reference: `table.column`
-///
-/// Manual Parse: needs three-token lookahead (ident.ident) to distinguish from
-/// plain column ref, qualified wildcard, and function call.
-#[derive(Visit, Debug, Clone)]
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
 pub struct QualifiedRef {
     pub table: tokens::Ident,
     pub dot: tokens::Dot,
     pub column: tokens::Ident,
 }
 
-impl<'input> Parse<'input> for QualifiedRef {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        tokens::Ident::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
-        let mut fork = input.fork();
-        SqlRules::consume_ignored(&mut fork);
-        if !tokens::Ident::peek(&fork, &SqlRules) {
-            return false;
-        }
-        let _ = tokens::Ident::parse(&mut fork, &SqlRules);
-        SqlRules::consume_ignored(&mut fork);
-        if !tokens::Dot::peek(&fork, &SqlRules) {
-            return false;
-        }
-        let _ = tokens::Dot::parse(&mut fork, &SqlRules);
-        SqlRules::consume_ignored(&mut fork);
-        tokens::Ident::peek(&fork, &SqlRules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
-        SqlRules::consume_ignored(input);
-        let table = tokens::Ident::parse(input, &SqlRules)?;
-        SqlRules::consume_ignored(input);
-        let dot = tokens::Dot::parse(input, &SqlRules)?;
-        SqlRules::consume_ignored(input);
-        let column = tokens::Ident::parse(input, &SqlRules)?;
-        Ok(QualifiedRef { table, dot, column })
-    }
-}
-
 /// Qualified wildcard: `table.*`
-///
-/// Manual Parse: needs three-token lookahead (ident.*) to distinguish from
-/// plain column ref and qualified column ref.
-#[derive(Visit, Debug, Clone)]
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
 pub struct QualifiedWildcard {
     pub table: tokens::Ident,
     pub dot: tokens::Dot,
     pub star: tokens::Star,
 }
 
-impl<'input> Parse<'input> for QualifiedWildcard {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        tokens::Ident::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
-        let mut fork = input.fork();
-        SqlRules::consume_ignored(&mut fork);
-        if !tokens::Ident::peek(&fork, &SqlRules) {
-            return false;
-        }
-        let _ = tokens::Ident::parse(&mut fork, &SqlRules);
-        SqlRules::consume_ignored(&mut fork);
-        if !tokens::Dot::peek(&fork, &SqlRules) {
-            return false;
-        }
-        let _ = tokens::Dot::parse(&mut fork, &SqlRules);
-        SqlRules::consume_ignored(&mut fork);
-        tokens::Star::peek(&fork, &SqlRules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
-        SqlRules::consume_ignored(input);
-        let table = tokens::Ident::parse(input, &SqlRules)?;
-        SqlRules::consume_ignored(input);
-        let dot = tokens::Dot::parse(input, &SqlRules)?;
-        SqlRules::consume_ignored(input);
-        let star = tokens::Star::parse(input, &SqlRules)?;
-        Ok(QualifiedWildcard { table, dot, star })
-    }
-}
-
 /// Function call: `name(arg1, arg2, ...)`
-///
-/// Manual Parse: needs special handling for the comma-separated argument list
-/// and empty argument case. Manual Visit: uses Vec<Expr> which implements Visit
-/// but Seq does not.
-#[derive(Debug, Clone, Visit)]
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
 pub struct FuncCall {
     pub name: tokens::Ident,
     pub lparen: tokens::LParen,
-    pub args: Vec<Expr>,
+    pub args: Seq<Expr, tokens::Comma>,
     pub rparen: tokens::RParen,
-}
-
-impl<'input> Parse<'input> for FuncCall {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        tokens::Ident::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
-        let mut fork = input.fork();
-        SqlRules::consume_ignored(&mut fork);
-        if !tokens::Ident::peek(&fork, &SqlRules) {
-            return false;
-        }
-        // Must be ident followed by '('
-        let _ = tokens::Ident::parse(&mut fork, &SqlRules);
-        SqlRules::consume_ignored(&mut fork);
-        tokens::LParen::peek(&fork, &SqlRules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
-        SqlRules::consume_ignored(input);
-        let name = tokens::Ident::parse(input, &SqlRules)?;
-        SqlRules::consume_ignored(input);
-        let lparen = tokens::LParen::parse(input, &SqlRules)?;
-
-        let mut args = Vec::new();
-        SqlRules::consume_ignored(input);
-        if !tokens::RParen::peek(input, &SqlRules) {
-            args.push(Expr::parse(input, &SqlRules)?);
-            loop {
-                SqlRules::consume_ignored(input);
-                if !tokens::Comma::peek(input, &SqlRules) {
-                    break;
-                }
-                tokens::Comma::parse(input, &SqlRules)?;
-                args.push(Expr::parse(input, &SqlRules)?);
-            }
-        }
-        SqlRules::consume_ignored(input);
-        let rparen = tokens::RParen::parse(input, &SqlRules)?;
-
-        Ok(FuncCall {
-            name,
-            lparen,
-            args,
-            rparen,
-        })
-    }
 }
 
 /// Parenthesized expression: `(expr)`
