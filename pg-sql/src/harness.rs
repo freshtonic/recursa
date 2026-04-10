@@ -22,7 +22,7 @@ pub fn run_prerequisites(prereqs: &[&str], psql_uri: &str) -> Result<(), String>
         let sql_path = base.join(format!("fixtures/sql/{prereq}.sql"));
         let sql = std::fs::read_to_string(&sql_path)
             .map_err(|e| format!("cannot read {}: {e}", sql_path.display()))?;
-        let output = execute_via_psql(&sql, psql_uri)?;
+        let _output = execute_via_psql(&sql, psql_uri)?;
     }
     Ok(())
 }
@@ -100,9 +100,6 @@ pub fn run_regression_test(test_name: &str, psql_uri: &str) -> Result<(), String
 /// Uses `sh -c` with `2>&1` to merge stderr into stdout at the point errors occur,
 /// matching how psql output appears in the expected `.out` files.
 fn execute_via_psql(sql: &str, psql_uri: &str) -> Result<String, String> {
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let fixtures_dir = base.join("fixtures");
-
     let output = std::process::Command::new("sh")
         // PG_ABS_SRCDIR points to the CONTAINER path where fixtures are mounted,
         // not the host path. test_setup.sql uses \getenv to read this, then

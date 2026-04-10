@@ -5,7 +5,6 @@ use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{Parse, Visit};
 
-use crate::ast::select::SelectStmt;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
@@ -30,13 +29,44 @@ pub struct ExplainOption {
 pub type ExplainOptions =
     Surrounded<punct::LParen, Seq<ExplainOption, punct::Comma>, punct::RParen>;
 
-/// EXPLAIN statement: `EXPLAIN [(options)] select_stmt`.
-#[derive(Debug, Clone, Parse, Visit)]
-#[parse(rules = SqlRules)]
+/// EXPLAIN statement: `EXPLAIN [(options)] statement`.
+///
+/// Manual Parse impl needed because the body can be SELECT, WITH, INSERT,
+/// UPDATE, DELETE, or MERGE -- not just SelectStmt.
+/// To eliminate this, recursa would need a way to parse "any of these" inline.
+#[derive(Debug, Clone, Visit)]
 pub struct ExplainStmt {
     pub _explain: PhantomData<keyword::Explain>,
     pub options: Option<ExplainOptions>,
-    pub stmt: SelectStmt,
+    pub body: Box<crate::ast::Statement>,
+}
+
+impl<'input> recursa::Parse<'input> for ExplainStmt {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        keyword::Explain::first_pattern()
+    }
+
+    fn peek<R: recursa::ParseRules>(input: &recursa::Input<'input>, rules: &R) -> bool {
+        keyword::Explain::peek(input, rules)
+    }
+
+    fn parse<R: recursa::ParseRules>(
+        input: &mut recursa::Input<'input>,
+        rules: &R,
+    ) -> Result<Self, recursa::ParseError> {
+        let _explain = PhantomData::<keyword::Explain>::parse(input, rules)?;
+        R::consume_ignored(input);
+        let options = Option::<ExplainOptions>::parse(input, rules)?;
+        R::consume_ignored(input);
+        let body = Box::new(crate::ast::Statement::parse(input, rules)?);
+        Ok(ExplainStmt {
+            _explain,
+            options,
+            body,
+        })
+    }
 }
 
 #[cfg(test)]

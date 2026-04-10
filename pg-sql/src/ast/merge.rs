@@ -10,9 +10,8 @@ use recursa::surrounded::Surrounded;
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::ast::expr::Expr;
-use crate::ast::select::{SelectItem, TableRef};
+use crate::ast::select::TableRef;
 use crate::ast::update::{ReturningClause, SetAssignment};
-use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// WHEN MATCHED THEN UPDATE SET ...
@@ -25,17 +24,13 @@ pub struct WhenMatchedUpdate {
 #[derive(Debug, Clone, Visit)]
 pub struct WhenMatchedDelete;
 
-impl recursa::visitor::AsNodeKey for WhenMatchedDelete {}
-impl recursa::visitor::AsNodeKey for WhenMatchedUpdate {}
-
 /// WHEN NOT MATCHED THEN INSERT VALUES (...)
 #[derive(Debug, Clone, Visit)]
 pub struct WhenNotMatchedInsert {
-    pub columns: Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+    pub columns:
+        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
     pub values: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
 }
-
-impl recursa::visitor::AsNodeKey for WhenNotMatchedInsert {}
 
 /// A WHEN clause in MERGE
 #[derive(Debug, Clone)]
@@ -86,7 +81,12 @@ impl<'input> Parse<'input> for WhenClause {
             let columns = if punct::LParen::peek(input, rules) {
                 // Check if this is a column list or VALUES
                 let mut fork = input.fork();
-                match Surrounded::<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>::parse(&mut fork, rules) {
+                match Surrounded::<
+                    punct::LParen,
+                    Seq<literal::AliasName, punct::Comma>,
+                    punct::RParen,
+                >::parse(&mut fork, rules)
+                {
                     Ok(cols) => {
                         // Check if VALUES follows
                         R::consume_ignored(&mut fork);
@@ -139,7 +139,7 @@ impl<'input> Parse<'input> for WhenClause {
 /// Manual Parse impl needed because the USING source can be a subquery or
 /// a table reference, and the WHEN clauses are a variable-length sequence.
 /// To eliminate this, recursa would need multi-variant sequence parsing.
-#[derive(Debug, Visit)]
+#[derive(Debug, Clone, Visit)]
 pub struct MergeStmt {
     pub _merge: PhantomData<keyword::Merge>,
     pub _into: PhantomData<keyword::Into>,

@@ -5,23 +5,29 @@
 //! identifiers as-is from the AST).
 
 use crate::ast::analyze::AnalyzeStmt;
-use crate::ast::create_function::{CreateFunctionStmt, DropFunctionStmt, ReturnType};
+use crate::ast::create_function::{
+    CreateFunctionStmt, DropFunctionStmt, FuncBody, FuncReturnType, FuncReturnTypeName,
+};
 use crate::ast::create_index::{CreateIndexStmt, DropIndexStmt};
 use crate::ast::create_table::{CreateTableBody, CreateTableStmt};
+use crate::ast::create_view::{CreateViewStmt, DropViewStmt};
 use crate::ast::delete::{DeleteStmt, TableAlias};
 use crate::ast::drop_table::DropTableStmt;
 use crate::ast::explain::ExplainStmt;
 use crate::ast::expr::{
-    ArrayExpr, BoolTestKind, CastType, Expr, FuncCall, ParenExpr, QualifiedRef,
-    QualifiedWildcard, TypeCastFunc, TypeName,
+    ArrayExpr, BoolTestKind, CastType, Expr, FuncCall, ParenExpr, QualifiedRef, QualifiedWildcard,
+    TypeCastFunc, TypeName,
 };
 use crate::ast::insert::InsertStmt;
+use crate::ast::merge::MergeStmt;
 use crate::ast::select::{
     LateralRef, NullsOrder, OrderByClause, OrderByItem, SelectItem, SelectStmt, SortDir,
     SubqueryRef, TableRef, UsingClause, ValuesBody,
 };
 use crate::ast::set_reset::{ResetStmt, SetSep, SetStmt, SetValue};
+use crate::ast::update::UpdateStmt;
 use crate::ast::values::{CompoundBody, CompoundQuery, TableStmt};
+use crate::ast::with_clause::WithStatement;
 use crate::ast::{PsqlCommand, PsqlDirective, Statement, TerminatedStatement};
 
 /// Print a sequence of psql commands back to SQL text.
@@ -52,11 +58,16 @@ pub fn print_statement(stmt: &Statement) -> String {
 
 fn print_statement_to(output: &mut String, stmt: &Statement) {
     match stmt {
+        Statement::With(s) => print_with_statement(output, s),
         Statement::Select(s) => print_select(output, s),
         Statement::CreateTable(s) => print_create_table(output, s),
+        Statement::CreateView(s) => print_create_view(output, s),
         Statement::Insert(s) => print_insert(output, s),
+        Statement::Update(s) => print_update(output, s),
+        Statement::Merge(s) => print_merge(output, s),
         Statement::Delete(s) => print_delete(output, s),
         Statement::DropTable(s) => print_drop_table(output, s),
+        Statement::DropView(s) => print_drop_view(output, s),
         Statement::Set(s) => print_set(output, s),
         Statement::Reset(s) => print_reset(output, s),
         Statement::Analyze(s) => print_analyze(output, s),
@@ -67,6 +78,7 @@ fn print_statement_to(output: &mut String, stmt: &Statement) {
         Statement::DropFunction(s) => print_drop_function(output, s),
         Statement::Values(s) => print_compound_query(output, s),
         Statement::Table(s) => print_table_stmt(output, s),
+        Statement::Raw(s) => output.push_str(&s.text),
     }
 }
 
@@ -128,7 +140,11 @@ fn print_select(output: &mut String, stmt: &SelectStmt) {
 fn print_select_item(output: &mut String, item: &SelectItem) {
     print_expr(output, &item.expr);
     if let Some(alias) = &item.alias {
-        output.push_str(" AS ");
+        if alias.has_as {
+            output.push_str(" AS ");
+        } else {
+            output.push(' ');
+        }
         output.push_str(&alias.name.0);
     }
 }
@@ -174,11 +190,20 @@ fn print_simple_table_ref(output: &mut String, table_ref: &crate::ast::select::S
         SimpleTableRef::Table(plain) => {
             output.push_str(&plain.name.0);
             if let Some(alias) = &plain.alias {
-                output.push(' ');
+                if plain.has_as {
+                    output.push_str(" AS ");
+                } else {
+                    output.push(' ');
+                }
                 output.push_str(&alias.0);
             }
         }
-        SimpleTableRef::Func(func_call) => print_func_call(output, func_call),
+        SimpleTableRef::Func(func_ref) => {
+            print_func_call(output, &func_ref.func);
+            if let Some(alias) = &func_ref.alias {
+                print_table_alias(output, alias);
+            }
+        }
         SimpleTableRef::Inherited(inh) => {
             output.push_str(&inh.name.0);
             output.push('*');
@@ -194,14 +219,14 @@ fn print_simple_table_ref(output: &mut String, table_ref: &crate::ast::select::S
 
 fn print_subquery_ref(output: &mut String, sub: &SubqueryRef) {
     output.push('(');
-    print_select_body(output, &sub.query);
+    print_compound_query(output, &sub.query);
     output.push(')');
     print_table_alias(output, &sub.alias);
 }
 
 fn print_lateral_ref(output: &mut String, lat: &LateralRef) {
     output.push_str("LATERAL (");
-    print_select_body(output, &lat.query);
+    print_compound_query(output, &lat.query);
     output.push(')');
     if let Some(alias) = &lat.alias {
         output.push(' ');
@@ -230,7 +255,8 @@ fn print_table_alias(output: &mut String, alias: &crate::ast::select::TableAlias
 
 fn print_select_body(output: &mut String, body: &crate::ast::select::SelectBody) {
     match body {
-        crate::ast::select::SelectBody::Select(s) => print_select(output, s),
+        crate::ast::select::SelectBody::WithBody(w) => print_with_statement(output, w),
+        crate::ast::select::SelectBody::Select(s) => print_select(output, s.as_ref()),
         crate::ast::select::SelectBody::Values(v) => print_values_body(output, v),
     }
 }
@@ -301,6 +327,7 @@ fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
     match &stmt.body {
         CreateTableBody::Columns {
             columns,
+            inherits,
             partition_by,
         } => {
             output.push_str(" (");
@@ -310,15 +337,55 @@ fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
                 }
                 output.push_str(&col.name.0);
                 output.push(' ');
-                print_type_name(output, &col.type_name);
-                if col.primary_key.is_some() {
-                    output.push_str(" PRIMARY KEY");
+                print_cast_type(output, &col.type_name);
+                for constraint in &col.constraints {
+                    match constraint {
+                        crate::ast::create_table::ColumnConstraint::PrimaryKey => {
+                            output.push_str(" PRIMARY KEY");
+                        }
+                        crate::ast::create_table::ColumnConstraint::NotNull => {
+                            output.push_str(" NOT NULL");
+                        }
+                        crate::ast::create_table::ColumnConstraint::Unique => {
+                            output.push_str(" UNIQUE");
+                        }
+                        crate::ast::create_table::ColumnConstraint::References(table, col_ref) => {
+                            output.push_str(" REFERENCES ");
+                            output.push_str(table);
+                            if let Some(c) = col_ref {
+                                output.push('(');
+                                output.push_str(c);
+                                output.push(')');
+                            }
+                        }
+                        crate::ast::create_table::ColumnConstraint::GeneratedAlwaysAsIdentity => {
+                            output.push_str(" GENERATED ALWAYS AS IDENTITY");
+                        }
+                        crate::ast::create_table::ColumnConstraint::Default(expr) => {
+                            output.push_str(" DEFAULT ");
+                            print_expr(output, expr);
+                        }
+                    }
                 }
             }
             output.push(')');
+            if let Some(inh) = inherits {
+                output.push_str(" INHERITS (");
+                for (i, parent) in inh.inner.iter().enumerate() {
+                    if i > 0 {
+                        output.push_str(", ");
+                    }
+                    output.push_str(&parent.0);
+                }
+                output.push(')');
+            }
             if let Some(pb) = partition_by {
                 print_partition_by(output, pb);
             }
+        }
+        CreateTableBody::AsQuery { query } => {
+            output.push_str(" AS ");
+            print_statement_to(output, query);
         }
         CreateTableBody::PartitionOf {
             parent,
@@ -390,6 +457,67 @@ fn print_insert(output: &mut String, stmt: &InsertStmt) {
                 output.push(')');
             }
         }
+        crate::ast::insert::InsertSource::Select(query) => {
+            output.push(' ');
+            print_compound_query(output, query);
+        }
+    }
+    if let Some(oc) = &stmt.on_conflict {
+        output.push_str(" ON CONFLICT ");
+        if let Some(target) = &oc.target {
+            output.push('(');
+            for (i, col) in target.inner.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(&col.0);
+            }
+            output.push_str(") ");
+        }
+        match &oc.action {
+            crate::ast::insert::ConflictAction::DoNothing => {
+                output.push_str("DO NOTHING");
+            }
+            crate::ast::insert::ConflictAction::DoUpdate(update) => {
+                output.push_str("DO UPDATE SET ");
+                for (i, asgn) in update.assignments.iter().enumerate() {
+                    if i > 0 {
+                        output.push_str(", ");
+                    }
+                    match asgn {
+                        crate::ast::update::SetAssignment::Single { column, value } => {
+                            output.push_str(&column.0);
+                            output.push_str(" = ");
+                            print_expr(output, value);
+                        }
+                        crate::ast::update::SetAssignment::Tuple { columns, values } => {
+                            output.push('(');
+                            for (j, col) in columns.iter().enumerate() {
+                                if j > 0 {
+                                    output.push_str(", ");
+                                }
+                                output.push_str(&col.0);
+                            }
+                            output.push_str(") = ");
+                            print_expr(output, values);
+                        }
+                    }
+                }
+                if let Some(w) = &update.where_clause {
+                    output.push_str(" WHERE ");
+                    print_expr(output, &w.condition);
+                }
+            }
+        }
+    }
+    if let Some(ret) = &stmt.returning {
+        output.push_str(" RETURNING ");
+        for (i, item) in ret.items.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            print_select_item(output, item);
+        }
     }
 }
 
@@ -410,9 +538,27 @@ fn print_delete(output: &mut String, stmt: &DeleteStmt) {
             }
         }
     }
+    if let Some(using) = &stmt.using_clause {
+        output.push_str(" USING ");
+        for (i, table_ref) in using.tables.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            print_table_ref(output, table_ref);
+        }
+    }
     if let Some(where_clause) = &stmt.where_clause {
         output.push_str(" WHERE ");
         print_expr(output, &where_clause.condition);
+    }
+    if let Some(ret) = &stmt.returning {
+        output.push_str(" RETURNING ");
+        for (i, item) in ret.items.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            print_select_item(output, item);
+        }
     }
 }
 
@@ -476,7 +622,7 @@ fn print_explain(output: &mut String, stmt: &ExplainStmt) {
         }
         output.push_str(") ");
     }
-    print_select(output, &stmt.stmt);
+    print_statement_to(output, &stmt.body);
 }
 
 // --- CREATE INDEX / DROP INDEX ---
@@ -516,7 +662,11 @@ fn print_drop_index(output: &mut String, stmt: &DropIndexStmt) {
 // --- CREATE FUNCTION / DROP FUNCTION ---
 
 fn print_create_function(output: &mut String, stmt: &CreateFunctionStmt) {
-    output.push_str("CREATE FUNCTION ");
+    output.push_str("CREATE ");
+    if stmt.or_replace {
+        output.push_str("OR REPLACE ");
+    }
+    output.push_str("FUNCTION ");
     output.push_str(&stmt.name.0);
     output.push('(');
     for (i, arg) in stmt.args.inner.iter().enumerate() {
@@ -527,18 +677,28 @@ fn print_create_function(output: &mut String, stmt: &CreateFunctionStmt) {
     }
     output.push_str(") RETURNS ");
     match &stmt.returns.return_type {
-        ReturnType::Setof(s) => {
+        FuncReturnType::Setof(s) => {
             output.push_str("SETOF ");
-            print_type_name(output, &s.type_name);
+            print_func_return_type_name(output, &s.type_name);
         }
-        ReturnType::Plain(t) => print_type_name(output, t),
+        FuncReturnType::Plain(t) => print_func_return_type_name(output, t),
     }
     output.push_str(" AS ");
-    output.push_str(&stmt.body.0);
+    match &stmt.body {
+        FuncBody::String(s) => output.push_str(&s.0),
+        FuncBody::Dollar(d) => output.push_str(&d.0),
+    }
     output.push_str(" LANGUAGE ");
     output.push_str(&stmt.language.name.0);
     if stmt.immutable.is_some() {
         output.push_str(" IMMUTABLE");
+    }
+}
+
+fn print_func_return_type_name(output: &mut String, name: &FuncReturnTypeName) {
+    match name {
+        FuncReturnTypeName::Trigger(_) => output.push_str("trigger"),
+        FuncReturnTypeName::Base(t) => print_type_name(output, t),
     }
 }
 
@@ -559,6 +719,14 @@ fn print_drop_function(output: &mut String, stmt: &DropFunctionStmt) {
 
 fn print_compound_query(output: &mut String, query: &CompoundQuery) {
     match query {
+        CompoundQuery::Paren(p) => {
+            output.push('(');
+            print_compound_query(output, &p.inner.inner);
+            output.push(')');
+            if let Some(set_op) = &p.set_op {
+                print_set_op(output, set_op);
+            }
+        }
         CompoundQuery::Table(t) => print_table_stmt(output, t),
         CompoundQuery::Body(b) => print_compound_body(output, b),
     }
@@ -567,17 +735,21 @@ fn print_compound_query(output: &mut String, query: &CompoundQuery) {
 fn print_compound_body(output: &mut String, body: &CompoundBody) {
     print_select_body(output, &body.body);
     if let Some(set_op) = &body.set_op {
-        match &set_op.op {
-            crate::ast::values::SetOp::UnionAll => output.push_str(" UNION ALL "),
-            crate::ast::values::SetOp::UnionDistinct => output.push_str(" UNION DISTINCT "),
-            crate::ast::values::SetOp::Union => output.push_str(" UNION "),
-            crate::ast::values::SetOp::ExceptAll => output.push_str(" EXCEPT ALL "),
-            crate::ast::values::SetOp::Except => output.push_str(" EXCEPT "),
-            crate::ast::values::SetOp::IntersectAll => output.push_str(" INTERSECT ALL "),
-            crate::ast::values::SetOp::Intersect => output.push_str(" INTERSECT "),
-        }
-        print_compound_query(output, &set_op.right);
+        print_set_op(output, set_op);
     }
+}
+
+fn print_set_op(output: &mut String, set_op: &crate::ast::values::SetOpCombiner) {
+    match &set_op.op {
+        crate::ast::values::SetOp::UnionAll => output.push_str(" UNION ALL "),
+        crate::ast::values::SetOp::UnionDistinct => output.push_str(" UNION DISTINCT "),
+        crate::ast::values::SetOp::Union => output.push_str(" UNION "),
+        crate::ast::values::SetOp::ExceptAll => output.push_str(" EXCEPT ALL "),
+        crate::ast::values::SetOp::Except => output.push_str(" EXCEPT "),
+        crate::ast::values::SetOp::IntersectAll => output.push_str(" INTERSECT ALL "),
+        crate::ast::values::SetOp::Intersect => output.push_str(" INTERSECT "),
+    }
+    print_compound_query(output, &set_op.right);
 }
 
 fn print_table_stmt(output: &mut String, stmt: &TableStmt) {
@@ -611,7 +783,7 @@ fn print_expr(output: &mut String, expr: &Expr) {
             output.push('(');
             match inner {
                 crate::ast::expr::ParenContent::Subquery(body) => {
-                    print_select_body(output, body);
+                    print_compound_query(output, body);
                 }
                 crate::ast::expr::ParenContent::Exprs(exprs) => {
                     for (i, e) in exprs.iter().enumerate() {
@@ -646,13 +818,16 @@ fn print_expr(output: &mut String, expr: &Expr) {
         Expr::Or(left, _, right)
         | Expr::And(left, _, right)
         | Expr::Eq(left, _, right)
+        | Expr::BangEq(left, _, right)
         | Expr::Neq(left, _, right)
         | Expr::Lt(left, _, right)
         | Expr::Gt(left, _, right)
         | Expr::Lte(left, _, right)
         | Expr::Gte(left, _, right)
         | Expr::Add(left, _, right)
-        | Expr::Sub(left, _, right) => {
+        | Expr::Sub(left, _, right)
+        | Expr::Mul(left, _, right)
+        | Expr::Div(left, _, right) => {
             print_binop_operand(output, left);
             output.push(' ');
             print_infix_op(output, expr);
@@ -682,7 +857,7 @@ fn print_expr(output: &mut String, expr: &Expr) {
             output.push_str(" IN (");
             match &list.inner {
                 crate::ast::expr::InContent::Subquery(body) => {
-                    print_select_body(output, body);
+                    print_compound_query(output, body);
                 }
                 crate::ast::expr::InContent::Exprs(exprs) => {
                     for (i, val) in exprs.iter().enumerate() {
@@ -700,7 +875,7 @@ fn print_expr(output: &mut String, expr: &Expr) {
             output.push_str(" NOT IN (");
             match &suffix.list.inner {
                 crate::ast::expr::InContent::Subquery(body) => {
-                    print_select_body(output, body);
+                    print_compound_query(output, body);
                 }
                 crate::ast::expr::InContent::Exprs(exprs) => {
                     for (i, val) in exprs.iter().enumerate() {
@@ -731,7 +906,7 @@ fn print_expr(output: &mut String, expr: &Expr) {
         }
         Expr::Exists(e) => {
             output.push_str("EXISTS (");
-            print_select_body(output, &e.subquery.inner);
+            print_compound_query(output, &e.subquery.inner);
             output.push(')');
         }
         Expr::Array(arr) => {
@@ -749,7 +924,7 @@ fn print_expr(output: &mut String, expr: &Expr) {
                 }
                 ArrayExpr::Subquery(sub) => {
                     output.push('(');
-                    print_select_body(output, &sub.inner);
+                    print_compound_query(output, &sub.inner);
                     output.push(')');
                 }
             }
@@ -809,6 +984,7 @@ fn is_infix(expr: &Expr) -> bool {
         Expr::Or(..)
             | Expr::And(..)
             | Expr::Eq(..)
+            | Expr::BangEq(..)
             | Expr::Neq(..)
             | Expr::Lt(..)
             | Expr::Gt(..)
@@ -816,6 +992,8 @@ fn is_infix(expr: &Expr) -> bool {
             | Expr::Gte(..)
             | Expr::Add(..)
             | Expr::Sub(..)
+            | Expr::Mul(..)
+            | Expr::Div(..)
             | Expr::Concat(..)
             | Expr::Mod(..)
     )
@@ -827,6 +1005,7 @@ fn print_infix_op(output: &mut String, expr: &Expr) {
         Expr::And(..) => output.push_str("AND"),
         Expr::Or(..) => output.push_str("OR"),
         Expr::Eq(..) => output.push('='),
+        Expr::BangEq(..) => output.push_str("!="),
         Expr::Neq(..) => output.push_str("<>"),
         Expr::Lt(..) => output.push('<'),
         Expr::Gt(..) => output.push('>'),
@@ -834,6 +1013,8 @@ fn print_infix_op(output: &mut String, expr: &Expr) {
         Expr::Gte(..) => output.push_str(">="),
         Expr::Add(..) => output.push('+'),
         Expr::Sub(..) => output.push('-'),
+        Expr::Mul(..) => output.push('*'),
+        Expr::Div(..) => output.push('/'),
         _ => {}
     }
 }
@@ -878,6 +1059,208 @@ fn print_cast_type(output: &mut String, ct: &CastType) {
     if ct.array_suffix.is_some() {
         output.push_str("[]");
     }
+}
+
+// --- WITH ---
+
+fn print_with_statement(output: &mut String, stmt: &WithStatement) {
+    output.push_str("WITH ");
+    if stmt.with_clause.recursive.is_some() {
+        output.push_str("RECURSIVE ");
+    }
+    for (i, cte) in stmt.with_clause.ctes.iter().enumerate() {
+        if i > 0 {
+            output.push_str(", ");
+        }
+        output.push_str(&cte.name.0);
+        if let Some(cols) = &cte.columns {
+            output.push_str(" (");
+            for (j, col) in cols.inner.iter().enumerate() {
+                if j > 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(&col.0);
+            }
+            output.push(')');
+        }
+        output.push_str(" AS ");
+        if let Some(mat) = &cte.materialized {
+            match mat {
+                crate::ast::with_clause::MaterializedOption::Materialized(_) => {
+                    output.push_str("MATERIALIZED ");
+                }
+                crate::ast::with_clause::MaterializedOption::NotMaterialized(_) => {
+                    output.push_str("NOT MATERIALIZED ");
+                }
+            }
+        }
+        output.push('(');
+        print_statement_to(output, &cte.query.inner);
+        output.push(')');
+    }
+    output.push(' ');
+    print_statement_to(output, &stmt.body);
+}
+
+// --- UPDATE ---
+
+fn print_update(output: &mut String, stmt: &UpdateStmt) {
+    output.push_str("UPDATE ");
+    output.push_str(&stmt.table_name.0);
+    if let Some(alias) = &stmt.alias {
+        output.push(' ');
+        output.push_str(&alias.0);
+    }
+    output.push_str(" SET ");
+    for (i, asgn) in stmt.assignments.iter().enumerate() {
+        if i > 0 {
+            output.push_str(", ");
+        }
+        match asgn {
+            crate::ast::update::SetAssignment::Single { column, value } => {
+                output.push_str(&column.0);
+                output.push_str(" = ");
+                print_expr(output, value);
+            }
+            crate::ast::update::SetAssignment::Tuple { columns, values } => {
+                output.push('(');
+                for (j, col) in columns.iter().enumerate() {
+                    if j > 0 {
+                        output.push_str(", ");
+                    }
+                    output.push_str(&col.0);
+                }
+                output.push_str(") = ");
+                print_expr(output, values);
+            }
+        }
+    }
+    if let Some(from) = &stmt.from_clause {
+        output.push_str(" FROM ");
+        for (i, table_ref) in from.tables.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            print_table_ref(output, table_ref);
+        }
+    }
+    if let Some(w) = &stmt.where_clause {
+        output.push_str(" WHERE ");
+        print_expr(output, &w.condition);
+    }
+    if let Some(ret) = &stmt.returning {
+        output.push_str(" RETURNING ");
+        for (i, item) in ret.items.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            print_select_item(output, item);
+        }
+    }
+}
+
+// --- MERGE ---
+
+fn print_merge(output: &mut String, stmt: &MergeStmt) {
+    output.push_str("MERGE INTO ");
+    output.push_str(&stmt.table_name.0);
+    output.push_str(" USING ");
+    print_table_ref(output, &stmt.source);
+    output.push_str(" ON ");
+    print_expr(output, &stmt.condition);
+    for wc in &stmt.when_clauses {
+        match wc {
+            crate::ast::merge::WhenClause::MatchedUpdate(u) => {
+                output.push_str(" WHEN MATCHED THEN UPDATE SET ");
+                for (i, asgn) in u.assignments.iter().enumerate() {
+                    if i > 0 {
+                        output.push_str(", ");
+                    }
+                    match asgn {
+                        crate::ast::update::SetAssignment::Single { column, value } => {
+                            output.push_str(&column.0);
+                            output.push_str(" = ");
+                            print_expr(output, value);
+                        }
+                        crate::ast::update::SetAssignment::Tuple { columns, values } => {
+                            output.push('(');
+                            for (j, col) in columns.iter().enumerate() {
+                                if j > 0 {
+                                    output.push_str(", ");
+                                }
+                                output.push_str(&col.0);
+                            }
+                            output.push_str(") = ");
+                            print_expr(output, values);
+                        }
+                    }
+                }
+            }
+            crate::ast::merge::WhenClause::MatchedDelete(_) => {
+                output.push_str(" WHEN MATCHED THEN DELETE");
+            }
+            crate::ast::merge::WhenClause::NotMatchedInsert(ins) => {
+                output.push_str(" WHEN NOT MATCHED THEN INSERT ");
+                if let Some(cols) = &ins.columns {
+                    output.push('(');
+                    for (i, col) in cols.inner.iter().enumerate() {
+                        if i > 0 {
+                            output.push_str(", ");
+                        }
+                        output.push_str(&col.0);
+                    }
+                    output.push_str(") ");
+                }
+                output.push_str("VALUES (");
+                for (i, val) in ins.values.inner.iter().enumerate() {
+                    if i > 0 {
+                        output.push_str(", ");
+                    }
+                    print_expr(output, val);
+                }
+                output.push(')');
+            }
+        }
+    }
+}
+
+// --- CREATE VIEW ---
+
+fn print_create_view(output: &mut String, stmt: &CreateViewStmt) {
+    output.push_str("CREATE ");
+    if stmt.or_replace {
+        output.push_str("OR REPLACE ");
+    }
+    if stmt.temp {
+        output.push_str("TEMPORARY ");
+    }
+    if stmt.recursive {
+        output.push_str("RECURSIVE ");
+    }
+    output.push_str("VIEW ");
+    output.push_str(&stmt.name.0);
+    if let Some(cols) = &stmt.columns {
+        output.push_str(" (");
+        for (i, col) in cols.inner.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            output.push_str(&col.0);
+        }
+        output.push(')');
+    }
+    output.push_str(" AS ");
+    print_compound_query(output, &stmt.query);
+}
+
+// --- DROP VIEW ---
+
+fn print_drop_view(output: &mut String, stmt: &DropViewStmt) {
+    output.push_str("DROP VIEW ");
+    if stmt.if_exists {
+        output.push_str("IF EXISTS ");
+    }
+    output.push_str(&stmt.name.0);
 }
 
 #[cfg(test)]

@@ -18,7 +18,6 @@ use recursa::surrounded::Surrounded;
 use recursa::visitor::{AsNodeKey, Break, Visitor};
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
-use crate::ast::expr::TypeName;
 use crate::ast::partition::{ForValuesInClause, PartitionByClause};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
@@ -28,26 +27,161 @@ use crate::tokens::{keyword, literal, punct};
 #[parse(rules = SqlRules)]
 pub struct PrimaryKey(PhantomData<keyword::Primary>, PhantomData<keyword::Key>);
 
-/// A column definition: `name type [PRIMARY KEY]`.
-#[derive(Debug, Clone, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ColumnDef {
-    pub name: literal::Ident,
-    pub type_name: TypeName,
-    pub primary_key: Option<PrimaryKey>,
+/// Column constraint kind.
+#[derive(Debug, Clone)]
+pub enum ColumnConstraint {
+    PrimaryKey,
+    NotNull,
+    Unique,
+    References(String, Option<String>),
+    GeneratedAlwaysAsIdentity,
+    Default(crate::ast::expr::Expr),
 }
 
-/// Optional TEMP keyword.
+impl AsNodeKey for ColumnConstraint {}
+impl Visit for ColumnConstraint {
+    fn visit<V: Visitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        ControlFlow::Continue(())
+    }
+}
+
+/// A column definition: `name type [constraints...]`.
+///
+/// Manual Parse impl needed because column constraints are a variable-length
+/// sequence of optional clauses (PRIMARY KEY, NOT NULL, REFERENCES, UNIQUE,
+/// GENERATED ALWAYS AS IDENTITY, DEFAULT) that must be consumed in any order.
+/// To eliminate this, recursa would need unordered optional field groups.
+#[derive(Debug, Clone)]
+pub struct ColumnDef {
+    pub name: literal::Ident,
+    pub type_name: crate::ast::expr::CastType,
+    pub constraints: Vec<ColumnConstraint>,
+}
+
+impl ColumnDef {
+    /// Returns the primary_key constraint if present (for backward compat).
+    pub fn primary_key(&self) -> bool {
+        self.constraints
+            .iter()
+            .any(|c| matches!(c, ColumnConstraint::PrimaryKey))
+    }
+}
+
+impl AsNodeKey for ColumnDef {}
+
+impl Visit for ColumnDef {
+    fn visit<V: Visitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        ControlFlow::Continue(())
+    }
+}
+
+impl<'input> Parse<'input> for ColumnDef {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        literal::Ident::first_pattern()
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        literal::Ident::peek(input, rules)
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        let name = literal::Ident::parse(input, rules)?;
+        R::consume_ignored(input);
+        let type_name = crate::ast::expr::CastType::parse(input, rules)?;
+        R::consume_ignored(input);
+
+        let mut constraints = Vec::new();
+        loop {
+            if keyword::Primary::peek(input, rules) {
+                PhantomData::<keyword::Primary>::parse(input, rules)?;
+                R::consume_ignored(input);
+                PhantomData::<keyword::Key>::parse(input, rules)?;
+                R::consume_ignored(input);
+                constraints.push(ColumnConstraint::PrimaryKey);
+            } else if keyword::Not::peek(input, rules) {
+                // NOT NULL
+                let mut fork = input.fork();
+                if PhantomData::<keyword::Not>::parse(&mut fork, rules).is_ok() {
+                    R::consume_ignored(&mut fork);
+                    if keyword::Null::peek(&fork, rules) {
+                        PhantomData::<keyword::Null>::parse(&mut fork, rules)?;
+                        input.advance(fork.cursor() - input.cursor());
+                        R::consume_ignored(input);
+                        constraints.push(ColumnConstraint::NotNull);
+                        continue;
+                    }
+                }
+                break;
+            } else if keyword::Unique::peek(input, rules) {
+                PhantomData::<keyword::Unique>::parse(input, rules)?;
+                R::consume_ignored(input);
+                constraints.push(ColumnConstraint::Unique);
+            } else if keyword::References::peek(input, rules) {
+                PhantomData::<keyword::References>::parse(input, rules)?;
+                R::consume_ignored(input);
+                let ref_table = literal::AliasName::parse(input, rules)?;
+                R::consume_ignored(input);
+                // Optional (col) reference
+                let ref_col = if punct::LParen::peek(input, rules) {
+                    punct::LParen::parse(input, rules)?;
+                    R::consume_ignored(input);
+                    let col = literal::AliasName::parse(input, rules)?;
+                    R::consume_ignored(input);
+                    punct::RParen::parse(input, rules)?;
+                    R::consume_ignored(input);
+                    Some(col.0)
+                } else {
+                    None
+                };
+                constraints.push(ColumnConstraint::References(ref_table.0, ref_col));
+            } else if keyword::Generated::peek(input, rules) {
+                // GENERATED ALWAYS AS IDENTITY
+                PhantomData::<keyword::Generated>::parse(input, rules)?;
+                R::consume_ignored(input);
+                PhantomData::<keyword::Always>::parse(input, rules)?;
+                R::consume_ignored(input);
+                PhantomData::<keyword::As>::parse(input, rules)?;
+                R::consume_ignored(input);
+                PhantomData::<keyword::Identity>::parse(input, rules)?;
+                R::consume_ignored(input);
+                constraints.push(ColumnConstraint::GeneratedAlwaysAsIdentity);
+            } else if keyword::Default::peek(input, rules) {
+                PhantomData::<keyword::Default>::parse(input, rules)?;
+                R::consume_ignored(input);
+                let expr = crate::ast::expr::Expr::parse(input, rules)?;
+                R::consume_ignored(input);
+                constraints.push(ColumnConstraint::Default(expr));
+            } else {
+                break;
+            }
+        }
+
+        Ok(ColumnDef {
+            name,
+            type_name,
+            constraints,
+        })
+    }
+}
+
+/// Optional TEMP or TEMPORARY keyword.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TempKw(PhantomData<keyword::Temp>);
+pub enum TempKw {
+    Temp(PhantomData<keyword::Temp>),
+    Temporary(PhantomData<keyword::Temporary>),
+}
 
 /// The body of a CREATE TABLE statement after `CREATE [TEMP] TABLE name`.
 #[derive(Debug, Clone)]
 pub enum CreateTableBody {
-    /// Regular or partitioned: `(cols) [PARTITION BY ...]`
+    /// Regular or partitioned: `(cols) [PARTITION BY ...] [INHERITS (parent, ...)]`
     Columns {
         columns: Surrounded<punct::LParen, Seq<ColumnDef, punct::Comma>, punct::RParen>,
+        inherits:
+            Option<Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>>,
         partition_by: Option<PartitionByClause>,
     },
     /// Partition of: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
@@ -56,6 +190,8 @@ pub enum CreateTableBody {
         for_values: ForValuesInClause,
         partition_by: Option<PartitionByClause>,
     },
+    /// AS query: `AS SELECT ...`
+    AsQuery { query: Box<crate::ast::Statement> },
 }
 
 impl AsNodeKey for CreateTableBody {}
@@ -67,7 +203,7 @@ impl Visit for CreateTableBody {
 }
 
 /// CREATE [TEMP] TABLE statement.
-#[derive(Debug, Visit)]
+#[derive(Debug, Clone, Visit)]
 pub struct CreateTableStmt {
     pub _create: PhantomData<keyword::Create>,
     pub temp: Option<TempKw>,
@@ -83,7 +219,7 @@ impl CreateTableStmt {
     ) -> Option<&Surrounded<punct::LParen, Seq<ColumnDef, punct::Comma>, punct::RParen>> {
         match &self.body {
             CreateTableBody::Columns { columns, .. } => Some(columns),
-            CreateTableBody::PartitionOf { .. } => None,
+            CreateTableBody::PartitionOf { .. } | CreateTableBody::AsQuery { .. } => None,
         }
     }
 }
@@ -92,11 +228,19 @@ impl<'input> Parse<'input> for CreateTableStmt {
     const IS_TERMINAL: bool = false;
 
     fn first_pattern() -> &'static str {
-        keyword::Create::first_pattern()
+        // Pattern to distinguish CREATE [TEMP|TEMPORARY] TABLE from CREATE RULE/TRIGGER/etc.
+        static PATTERN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        PATTERN.get_or_init(|| {
+            r"(?i:CREATE\b)(?:\s+(?i:TEMP\b|\bTEMPORARY\b))?\s+(?i:TABLE\b)".to_string()
+        })
     }
 
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        keyword::Create::peek(input, rules)
+    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| {
+            regex::Regex::new(&format!(r"\A(?:{})", Self::first_pattern())).unwrap()
+        });
+        re.is_match(input.remaining())
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
@@ -109,8 +253,14 @@ impl<'input> Parse<'input> for CreateTableStmt {
         let name = literal::Ident::parse(input, rules)?;
         R::consume_ignored(input);
 
-        // Distinguish: PARTITION OF ... vs (columns) [PARTITION BY ...]
-        let body = if keyword::Partition::peek(input, rules) {
+        // Distinguish: AS query vs PARTITION OF ... vs (columns) [PARTITION BY ...]
+        let body = if keyword::As::peek(input, rules) {
+            // AS query
+            PhantomData::<keyword::As>::parse(input, rules)?;
+            R::consume_ignored(input);
+            let query = Box::new(crate::ast::Statement::parse(input, rules)?);
+            CreateTableBody::AsQuery { query }
+        } else if keyword::Partition::peek(input, rules) {
             // PARTITION OF parent FOR VALUES IN (...)
             PhantomData::<keyword::Partition>::parse(input, rules)?;
             R::consume_ignored(input);
@@ -127,12 +277,22 @@ impl<'input> Parse<'input> for CreateTableStmt {
                 partition_by,
             }
         } else {
-            // (columns) [PARTITION BY ...]
+            // (columns) [INHERITS (...)] [PARTITION BY ...]
             let columns = Surrounded::parse(input, rules)?;
+            R::consume_ignored(input);
+            // Optional INHERITS (parent, ...)
+            let inherits = if keyword::Inherits::peek(input, rules) {
+                PhantomData::<keyword::Inherits>::parse(input, rules)?;
+                R::consume_ignored(input);
+                Some(Surrounded::parse(input, rules)?)
+            } else {
+                None
+            };
             R::consume_ignored(input);
             let partition_by = Option::<PartitionByClause>::parse(input, rules)?;
             CreateTableBody::Columns {
                 columns,
+                inherits,
                 partition_by,
             }
         };

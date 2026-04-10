@@ -6,12 +6,11 @@
 ///   [, ...] SELECT|INSERT|UPDATE|DELETE|MERGE`
 use std::marker::PhantomData;
 
-use recursa::seq::{NonEmpty, NoTrailing, Seq};
+use recursa::seq::{NoTrailing, NonEmpty, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::ast::expr::Expr;
-use crate::ast::values::CompoundQuery;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
@@ -26,7 +25,10 @@ pub enum MaterializedOption {
 /// NOT MATERIALIZED
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct NotMaterialized(PhantomData<keyword::Not>, PhantomData<keyword::Materialized>);
+pub struct NotMaterialized(
+    PhantomData<keyword::Not>,
+    PhantomData<keyword::Materialized>,
+);
 
 /// SEARCH direction: DEPTH or BREADTH
 #[derive(Debug, Clone, Parse, Visit)]
@@ -125,7 +127,7 @@ pub struct CteDefinition {
     pub columns:
         Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
     pub materialized: Option<MaterializedOption>,
-    pub query: Surrounded<punct::LParen, CompoundQuery, punct::RParen>,
+    pub query: Surrounded<punct::LParen, Box<crate::ast::Statement>, punct::RParen>,
     pub search: Option<SearchClause>,
     pub cycle: Option<CycleClause>,
 }
@@ -157,27 +159,28 @@ impl<'input> Parse<'input> for CteDefinition {
         R::consume_ignored(input);
 
         // Optional MATERIALIZED / NOT MATERIALIZED (before the paren)
-        let materialized = if keyword::Not::peek(input, rules) || keyword::Materialized::peek(input, rules) {
-            // Peek ahead: if NOT then must be NOT MATERIALIZED
-            // if MATERIALIZED then just MATERIALIZED
-            // But we need to be careful -- NOT could also be start of expression inside parens
-            if keyword::Materialized::peek(input, rules) {
-                Some(MaterializedOption::parse(input, rules)?)
-            } else {
-                // NOT -- check if next is MATERIALIZED
-                let mut fork = input.fork();
-                match MaterializedOption::parse(&mut fork, rules) {
-                    Ok(m) => {
-                        input.advance(fork.cursor() - input.cursor());
-                        R::consume_ignored(input);
-                        Some(m)
+        let materialized =
+            if keyword::Not::peek(input, rules) || keyword::Materialized::peek(input, rules) {
+                // Peek ahead: if NOT then must be NOT MATERIALIZED
+                // if MATERIALIZED then just MATERIALIZED
+                // But we need to be careful -- NOT could also be start of expression inside parens
+                if keyword::Materialized::peek(input, rules) {
+                    Some(MaterializedOption::parse(input, rules)?)
+                } else {
+                    // NOT -- check if next is MATERIALIZED
+                    let mut fork = input.fork();
+                    match MaterializedOption::parse(&mut fork, rules) {
+                        Ok(m) => {
+                            input.advance(fork.cursor() - input.cursor());
+                            R::consume_ignored(input);
+                            Some(m)
+                        }
+                        Err(_) => None,
                     }
-                    Err(_) => None,
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         R::consume_ignored(input);
 
         let query = Surrounded::parse(input, rules)?;
@@ -266,8 +269,9 @@ mod tests {
 
     #[test]
     fn parse_with_recursive() {
-        let mut input =
-            Input::new("WITH RECURSIVE t(n) AS (VALUES (1) UNION ALL SELECT n+1 FROM t WHERE n < 100) SELECT sum(n) FROM t");
+        let mut input = Input::new(
+            "WITH RECURSIVE t(n) AS (VALUES (1) UNION ALL SELECT n+1 FROM t WHERE n < 100) SELECT sum(n) FROM t",
+        );
         let stmt = WithStatement::parse(&mut input, &SqlRules).unwrap();
         assert!(stmt.with_clause.recursive.is_some());
         assert!(input.is_empty());

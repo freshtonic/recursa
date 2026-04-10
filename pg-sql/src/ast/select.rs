@@ -9,20 +9,108 @@ use crate::ast::expr::{Expr, FuncCall};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
-/// A single item in the SELECT list: `expr [AS alias]`.
-#[derive(Debug, Clone, Parse, Visit)]
-#[parse(rules = SqlRules)]
+/// A single item in the SELECT list: `expr [AS alias]` or `expr alias`.
+///
+/// Manual Parse impl needed because bare aliases (without AS) conflict with
+/// subsequent commas or FROM keywords when trying to distinguish alias from
+/// next keyword.
+/// To eliminate this, recursa would need context-aware alias detection.
+#[derive(Debug, Clone)]
 pub struct SelectItem {
     pub expr: Expr,
     pub alias: Option<Alias>,
 }
 
-/// AS alias clause.
-#[derive(Debug, Clone, Parse, Visit)]
-#[parse(rules = SqlRules)]
+impl recursa::visitor::AsNodeKey for SelectItem {}
+
+impl Visit for SelectItem {
+    fn visit<V: recursa::visitor::Visitor>(
+        &self,
+        _visitor: &mut V,
+    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+impl<'input> Parse<'input> for SelectItem {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        Expr::first_pattern()
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        Expr::peek(input, rules)
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        let expr = Expr::parse(input, rules)?;
+        R::consume_ignored(input);
+
+        // Try AS alias first
+        if keyword::As::peek(input, rules) {
+            let alias = Alias::parse(input, rules)?;
+            return Ok(SelectItem {
+                expr,
+                alias: Some(alias),
+            });
+        }
+
+        // Try bare alias (an identifier that's not a keyword reserved for SQL clauses)
+        // We use a fork to check if an Ident parses here
+        if literal::Ident::peek(input, rules) {
+            let mut fork = input.fork();
+            if let Ok(ident) = literal::Ident::parse(&mut fork, rules) {
+                input.advance(fork.cursor() - input.cursor());
+                return Ok(SelectItem {
+                    expr,
+                    alias: Some(Alias {
+                        has_as: false,
+                        name: literal::AliasName(ident.0),
+                    }),
+                });
+            }
+        }
+
+        Ok(SelectItem { expr, alias: None })
+    }
+}
+
+/// AS alias clause, or bare alias.
+#[derive(Debug, Clone)]
 pub struct Alias {
-    pub _as: PhantomData<keyword::As>,
+    pub has_as: bool,
     pub name: literal::AliasName,
+}
+
+impl recursa::visitor::AsNodeKey for Alias {}
+
+impl Visit for Alias {
+    fn visit<V: recursa::visitor::Visitor>(
+        &self,
+        _visitor: &mut V,
+    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+impl<'input> Parse<'input> for Alias {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        keyword::As::first_pattern()
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        keyword::As::peek(input, rules)
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        PhantomData::<keyword::As>::parse(input, rules)?;
+        R::consume_ignored(input);
+        let name = literal::AliasName::parse(input, rules)?;
+        Ok(Alias { has_as: true, name })
+    }
 }
 
 /// FROM clause: `FROM table [, table ...]`.
@@ -114,7 +202,7 @@ pub struct TableAlias {
 #[parse(rules = SqlRules)]
 pub struct SubqueryRef {
     pub _lparen: punct::LParen,
-    pub query: Box<SelectBody>,
+    pub query: Box<crate::ast::values::CompoundQuery>,
     pub _rparen: punct::RParen,
     pub alias: TableAlias,
 }
@@ -125,22 +213,37 @@ pub struct SubqueryRef {
 pub struct LateralRef {
     pub _lateral: PhantomData<keyword::Lateral>,
     pub _lparen: punct::LParen,
-    pub query: Box<SelectBody>,
+    pub query: Box<crate::ast::values::CompoundQuery>,
     pub _rparen: punct::RParen,
     pub alias: Option<literal::AliasName>,
 }
 
-/// Plain table reference with optional alias: `tablename [alias]`
+/// Plain table reference with optional alias: `tablename [AS] alias`
 ///
 /// Manual Parse impl required because `Option<Ident>` propagates
 /// postcondition errors when peek matches a keyword pattern. Uses
 /// fork-based approach to try Ident and fall back to None on failure.
+/// Also supports optional AS keyword before alias.
 /// To eliminate this manual impl, recursa would need Option to
 /// return None on postcondition failure (try-parse semantics).
-#[derive(Debug, Clone, Visit)]
+/// Manual Visit impl needed because `has_as: bool` doesn't implement Visit.
+/// To eliminate this, recursa would need `#[visit(skip)]` field attribute support.
+#[derive(Debug, Clone)]
 pub struct PlainTable {
     pub name: literal::Ident,
+    pub has_as: bool,
     pub alias: Option<literal::Ident>,
+}
+
+impl recursa::visitor::AsNodeKey for PlainTable {}
+
+impl Visit for PlainTable {
+    fn visit<V: recursa::visitor::Visitor>(
+        &self,
+        _visitor: &mut V,
+    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
+        std::ops::ControlFlow::Continue(())
+    }
 }
 
 impl<'input> Parse<'input> for PlainTable {
@@ -158,6 +261,22 @@ impl<'input> Parse<'input> for PlainTable {
         let name = literal::Ident::parse(input, rules)?;
         R::consume_ignored(input);
 
+        // Try AS alias
+        if keyword::As::peek(input, rules) {
+            let mut fork = input.fork();
+            let _ = PhantomData::<keyword::As>::parse(&mut fork, rules);
+            R::consume_ignored(&mut fork);
+            if let Ok(ident) = literal::Ident::parse(&mut fork, rules) {
+                input.advance(fork.cursor() - input.cursor());
+                return Ok(PlainTable {
+                    name,
+                    has_as: true,
+                    alias: Some(ident),
+                });
+            }
+        }
+
+        // Try bare alias
         let alias = {
             let mut fork = input.fork();
             if literal::Ident::peek(&fork, rules) {
@@ -173,7 +292,65 @@ impl<'input> Parse<'input> for PlainTable {
             }
         };
 
-        Ok(PlainTable { name, alias })
+        Ok(PlainTable {
+            name,
+            has_as: false,
+            alias,
+        })
+    }
+}
+
+/// Function call used as table reference with optional alias.
+///
+/// Manual Parse impl needed because the optional alias after the function call
+/// uses the same keyword/identifier disambiguation issue as PlainTable.
+/// To eliminate this, recursa would need try-parse Option semantics.
+#[derive(Debug, Clone)]
+pub struct FuncTableRef {
+    pub func: FuncCall,
+    pub alias: Option<TableAlias>,
+}
+
+impl recursa::visitor::AsNodeKey for FuncTableRef {}
+impl Visit for FuncTableRef {
+    fn visit<V: recursa::visitor::Visitor>(
+        &self,
+        _visitor: &mut V,
+    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+impl<'input> Parse<'input> for FuncTableRef {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        FuncCall::first_pattern()
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        FuncCall::peek(input, rules)
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        let func = FuncCall::parse(input, rules)?;
+        R::consume_ignored(input);
+
+        // Try alias (AS name or bare name)
+        let alias = if keyword::As::peek(input, rules) || literal::AliasName::peek(input, rules) {
+            let mut fork = input.fork();
+            match TableAlias::parse(&mut fork, rules) {
+                Ok(a) => {
+                    input.advance(fork.cursor() - input.cursor());
+                    Some(a)
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        Ok(FuncTableRef { func, alias })
     }
 }
 
@@ -189,7 +366,7 @@ impl<'input> Parse<'input> for PlainTable {
 #[parse(rules = SqlRules)]
 pub enum SimpleTableRef {
     Lateral(LateralRef),
-    Func(FuncCall),
+    Func(FuncTableRef),
     Subquery(SubqueryRef),
     Inherited(InheritedTable),
     Table(PlainTable),
@@ -227,8 +404,7 @@ pub struct JoinOn {
 #[parse(rules = SqlRules)]
 pub struct JoinUsing {
     pub _using: PhantomData<keyword::Using>,
-    pub columns:
-        Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>,
+    pub columns: Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>,
 }
 
 /// A single join suffix: `[LEFT|RIGHT|FULL|INNER|CROSS] JOIN table [ON expr | USING (...)]`
@@ -414,12 +590,14 @@ pub struct SelectStmt {
     pub for_update: Option<ForUpdateClause>,
 }
 
-/// A SELECT body that can appear in subqueries -- either SELECT or VALUES.
+/// A SELECT body that can appear in subqueries -- WITH, SELECT, or VALUES.
+/// WithBody must come before Select so `WITH ... SELECT` matches before bare `SELECT`.
 /// SelectStmt must come before ValuesStmt so `SELECT` keyword wins over ambiguity.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SelectBody {
-    Select(SelectStmt),
+    WithBody(Box<crate::ast::with_clause::WithStatement>),
+    Select(Box<SelectStmt>),
     Values(ValuesBody),
 }
 

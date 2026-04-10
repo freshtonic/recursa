@@ -1,11 +1,12 @@
 /// VALUES statement, TABLE statement, and set operation support (UNION, EXCEPT, INTERSECT).
 use std::marker::PhantomData;
 
+use recursa::surrounded::Surrounded;
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::ast::select::SelectBody;
 use crate::rules::SqlRules;
-use crate::tokens::keyword;
+use crate::tokens::{keyword, punct};
 
 /// TABLE statement: `TABLE tablename`.
 #[derive(Debug, Clone, Parse, Visit)]
@@ -103,11 +104,22 @@ impl<'input> Parse<'input> for SetOpCombiner {
 
 /// A compound query: a query body optionally followed by a set operation.
 /// This allows chaining: `VALUES ... UNION ALL SELECT ... EXCEPT TABLE ...`
+/// Paren variant handles `(WITH ... SELECT ... UNION ...)` grouping.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum CompoundQuery {
+    Paren(CompoundParen),
     Table(TableStmt),
     Body(CompoundBody),
+}
+
+/// Parenthesized compound query with optional set operation continuation.
+/// e.g., `(SELECT ... UNION ALL ...) EXCEPT ...`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CompoundParen {
+    pub inner: Surrounded<punct::LParen, Box<CompoundQuery>, punct::RParen>,
+    pub set_op: Option<SetOpCombiner>,
 }
 
 /// A SELECT or VALUES body with optional set operation continuation.
@@ -137,7 +149,7 @@ mod tests {
     fn parse_values_standalone() {
         let mut input = Input::new("VALUES (1,2), (3,4), (7,8)");
         let body = CompoundBody::parse(&mut input, &SqlRules).unwrap();
-        assert!(body.union_all.is_none());
+        assert!(body.set_op.is_none());
         assert!(input.is_empty());
     }
 
@@ -145,7 +157,7 @@ mod tests {
     fn parse_values_union_all_select() {
         let mut input = Input::new("VALUES (1,2) UNION ALL SELECT 3, 4");
         let body = CompoundBody::parse(&mut input, &SqlRules).unwrap();
-        assert!(body.union_all.is_some());
+        assert!(body.set_op.is_some());
         assert!(input.is_empty());
     }
 
@@ -153,7 +165,7 @@ mod tests {
     fn parse_values_union_all_table() {
         let mut input = Input::new("VALUES (1,2) UNION ALL TABLE t");
         let body = CompoundBody::parse(&mut input, &SqlRules).unwrap();
-        assert!(body.union_all.is_some());
+        assert!(body.set_op.is_some());
         assert!(input.is_empty());
     }
 }

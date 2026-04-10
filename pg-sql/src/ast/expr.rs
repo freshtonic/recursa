@@ -14,7 +14,7 @@ use crate::tokens::{keyword, literal, punct};
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InContent {
-    Subquery(Box<crate::ast::select::SelectBody>),
+    Subquery(Box<crate::ast::values::CompoundQuery>),
     Exprs(Seq<Expr, punct::Comma>),
 }
 
@@ -101,19 +101,21 @@ pub enum BoolTestKind {
 // --- Atom wrapper structs ---
 
 /// Qualified column reference: `table.column`
+///
+/// Uses AliasName for the table part to allow keywords like EXCLUDED, NEW, OLD.
 #[derive(Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedRef {
-    pub table: literal::Ident,
+    pub table: literal::AliasName,
     pub dot: punct::Dot,
-    pub column: literal::Ident,
+    pub column: literal::AliasName,
 }
 
 /// Qualified wildcard: `table.*`
 #[derive(Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedWildcard {
-    pub table: literal::Ident,
+    pub table: literal::AliasName,
     pub dot: punct::Dot,
     pub star: punct::Star,
 }
@@ -157,7 +159,7 @@ pub struct WindowPartitionBy {
 /// Manual Visit impl needed because `star_arg: bool` doesn't implement Visit.
 /// To eliminate this, recursa would need `#[visit(skip)]` field attribute support.
 pub struct FuncCall {
-    pub name: literal::Ident,
+    pub name: literal::AliasName,
     pub lparen: punct::LParen,
     /// True when function is called as `func(*)` (e.g., `count(*)`)
     pub star_arg: bool,
@@ -179,6 +181,8 @@ impl std::fmt::Debug for FuncCall {
     }
 }
 
+// Clone is derivable because all fields implement Clone, but we need manual
+// impl since FuncCall itself isn't derived.
 impl Clone for FuncCall {
     fn clone(&self) -> Self {
         FuncCall {
@@ -208,13 +212,15 @@ impl<'input> Parse<'input> for FuncCall {
     const IS_TERMINAL: bool = false;
 
     fn first_pattern() -> &'static str {
-        // Chain ident + ignore? + lparen for longest-match disambiguation
+        // Chain word + ignore? + lparen for longest-match disambiguation.
+        // Uses AliasName pattern (any word including keywords) since function
+        // names can be keywords like ANY, ROW, etc.
         static PATTERN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         PATTERN.get_or_init(|| {
             let sep = format!("(?:{})?", SqlRules::IGNORE);
             format!(
                 "{}{}{}",
-                literal::Ident::first_pattern(),
+                literal::AliasName::first_pattern(),
                 sep,
                 punct::LParen::first_pattern()
             )
@@ -230,7 +236,7 @@ impl<'input> Parse<'input> for FuncCall {
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let name = literal::Ident::parse(input, rules)?;
+        let name = literal::AliasName::parse(input, rules)?;
         R::consume_ignored(input);
         let lparen = punct::LParen::parse(input, rules)?;
         R::consume_ignored(input);
@@ -297,12 +303,12 @@ impl<'input> Parse<'input> for FuncCall {
 }
 
 /// Content inside parentheses: either a subquery or a comma-separated expression list.
-/// SelectBody must come first so SELECT/VALUES keywords are matched before trying
-/// to parse as a regular expression.
+/// Subquery (CompoundQuery) must come first so SELECT/VALUES/WITH keywords are matched
+/// before trying to parse as a regular expression.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ParenContent {
-    Subquery(Box<crate::ast::select::SelectBody>),
+    Subquery(Box<crate::ast::values::CompoundQuery>),
     Exprs(Seq<Expr, punct::Comma>),
 }
 
@@ -314,7 +320,7 @@ pub type ParenExpr = Surrounded<punct::LParen, ParenContent, punct::RParen>;
 #[parse(rules = SqlRules)]
 pub struct ExistsExpr {
     pub _exists: keyword::Exists,
-    pub subquery: Surrounded<punct::LParen, Box<crate::ast::select::SelectBody>, punct::RParen>,
+    pub subquery: Surrounded<punct::LParen, Box<crate::ast::values::CompoundQuery>, punct::RParen>,
 }
 
 /// ARRAY constructor: `ARRAY[expr, ...]` or `ARRAY(subquery)`
@@ -328,7 +334,7 @@ pub enum ArrayExpr {
         elements: Seq<Expr, punct::Comma>,
         rbracket: punct::RBracket,
     },
-    Subquery(Surrounded<punct::LParen, Box<crate::ast::select::SelectBody>, punct::RParen>),
+    Subquery(Surrounded<punct::LParen, Box<crate::ast::values::CompoundQuery>, punct::RParen>),
 }
 
 impl<'input> Parse<'input> for ArrayExpr {
@@ -485,6 +491,8 @@ pub enum Expr {
     #[parse(infix, bp = 2)]
     And(Box<Expr>, keyword::And, Box<Expr>),
     #[parse(infix, bp = 5)]
+    BangEq(Box<Expr>, punct::BangEq, Box<Expr>),
+    #[parse(infix, bp = 5)]
     Neq(Box<Expr>, punct::Neq, Box<Expr>),
     #[parse(infix, bp = 5)]
     Lte(Box<Expr>, punct::Lte, Box<Expr>),
@@ -503,6 +511,12 @@ pub enum Expr {
     Add(Box<Expr>, punct::Plus, Box<Expr>),
     #[parse(infix, bp = 10)]
     Sub(Box<Expr>, punct::Minus, Box<Expr>),
+    /// Multiplication: `expr * expr`
+    #[parse(infix, bp = 11)]
+    Mul(Box<Expr>, punct::Star, Box<Expr>),
+    /// Division: `expr / expr`
+    #[parse(infix, bp = 11)]
+    Div(Box<Expr>, punct::Slash, Box<Expr>),
     /// Modulo: `expr % expr`
     #[parse(infix, bp = 11)]
     Mod(Box<Expr>, punct::Percent, Box<Expr>),

@@ -7,6 +7,7 @@ use recursa::visitor::{AsNodeKey, Break, Visitor};
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::ast::select::WhereClause;
+use crate::ast::update::ReturningClause;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal};
 
@@ -43,7 +44,15 @@ impl TableAlias {
     }
 }
 
-/// DELETE FROM statement: `DELETE FROM table [alias] [WHERE expr]`.
+/// `USING table, ...` clause in DELETE statements.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DeleteUsingClause {
+    pub _using: PhantomData<keyword::Using>,
+    pub tables: recursa::seq::Seq<crate::ast::select::TableRef, crate::tokens::punct::Comma>,
+}
+
+/// DELETE FROM statement: `DELETE FROM table [alias] [USING ...] [WHERE expr] [RETURNING ...]`.
 ///
 /// Manual Parse impl required because `Option<TableAlias>` doesn't work with
 /// derive: the bare alias variant uses `Ident` whose regex pattern matches
@@ -53,15 +62,17 @@ impl TableAlias {
 /// `WHERE` as the start of the WHERE clause.
 ///
 /// To eliminate this manual impl, recursa would need either:
-/// 1. `Option<T>` to return `None` on postcondition failure (try-parse), or
-/// 2. Negative lookahead support in the regex crate for scan patterns.
-#[derive(Debug, Visit)]
+/// - `Option<T>` to return `None` on postcondition failure (try-parse), or
+/// - Negative lookahead support in the regex crate for scan patterns.
+#[derive(Debug, Clone, Visit)]
 pub struct DeleteStmt {
     pub _delete: PhantomData<keyword::Delete>,
     pub _from: PhantomData<keyword::From>,
     pub table_name: literal::Ident,
     pub alias: Option<TableAlias>,
+    pub using_clause: Option<DeleteUsingClause>,
     pub where_clause: Option<WhereClause>,
+    pub returning: Option<ReturningClause>,
 }
 
 impl<'input> Parse<'input> for DeleteStmt {
@@ -108,14 +119,20 @@ impl<'input> Parse<'input> for DeleteStmt {
             }
         };
 
+        let using_clause = Option::<DeleteUsingClause>::parse(input, rules)?;
+        R::consume_ignored(input);
         let where_clause = Option::<WhereClause>::parse(input, rules)?;
+        R::consume_ignored(input);
+        let returning = Option::<ReturningClause>::parse(input, rules)?;
 
         Ok(DeleteStmt {
             _delete,
             _from,
             table_name,
             alias,
+            using_clause,
             where_clause,
+            returning,
         })
     }
 }

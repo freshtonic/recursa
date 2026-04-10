@@ -2,16 +2,23 @@ pub mod analyze;
 pub mod create_function;
 pub mod create_index;
 pub mod create_table;
+pub mod create_view;
 pub mod delete;
 pub mod drop_table;
 pub mod explain;
 pub mod expr;
 pub mod insert;
+pub mod merge;
 pub mod partition;
 pub mod select;
 pub mod set_reset;
+pub mod update;
 pub mod values;
+pub mod with_clause;
 
+use std::ops::ControlFlow;
+
+use recursa::visitor::{AsNodeKey, Break, Visitor};
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::rules::SqlRules;
@@ -21,44 +28,176 @@ use self::analyze::AnalyzeStmt;
 use self::create_function::{CreateFunctionStmt, DropFunctionStmt};
 use self::create_index::{CreateIndexStmt, DropIndexStmt};
 use self::create_table::CreateTableStmt;
+use self::create_view::{CreateViewStmt, DropViewStmt};
 use self::delete::DeleteStmt;
 use self::drop_table::DropTableStmt;
 use self::explain::ExplainStmt;
 use self::insert::InsertStmt;
+use self::merge::MergeStmt;
 use self::select::SelectStmt;
 use self::set_reset::{ResetStmt, SetStmt};
+use self::update::UpdateStmt;
 use self::values::{CompoundQuery, TableStmt};
+use self::with_clause::WithStatement;
 
 /// Top-level SQL statement.
 ///
 /// Variant ordering matters for disambiguation. More specific (longer leading
 /// keyword sequences) must come before less specific:
+/// - `With` must come before `Select` so `WITH ... SELECT` matches before bare `SELECT`.
+/// - `Explain` wraps a Statement, so it must come before `Select`.
 /// - `CreateFunction` and `CreateIndex` come before `CreateTable` because they
 ///   have `CREATE FUNCTION` / `CREATE INDEX` which are longer than `CREATE TABLE`.
+///   `CreateView` likewise comes before `CreateTable`.
 ///   `CreateTable` handles regular, partitioned, and partition-of forms internally.
 /// - `DropFunction` and `DropIndex` come before `DropTable` for the same reason.
-/// - `Explain` wraps a SelectStmt, so it must come before `Select`.
 /// - `Values` (CompoundQuery) starts with VALUES/TABLE/SELECT so it could
 ///   conflict. It must come after Explain but before bare Select to handle
 ///   `VALUES ... UNION ALL ...` and `TABLE tablename`.
-#[derive(Debug, Parse, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
+#[allow(clippy::large_enum_variant)]
 pub enum Statement {
+    With(WithStatement),
     Explain(ExplainStmt),
     CreateFunction(CreateFunctionStmt),
     CreateIndex(CreateIndexStmt),
+    CreateView(CreateViewStmt),
     CreateTable(CreateTableStmt),
     Insert(InsertStmt),
+    Update(UpdateStmt),
+    Merge(MergeStmt),
     Delete(DeleteStmt),
     DropFunction(DropFunctionStmt),
     DropIndex(DropIndexStmt),
+    DropView(DropViewStmt),
     DropTable(DropTableStmt),
     Set(SetStmt),
     Reset(ResetStmt),
     Analyze(AnalyzeStmt),
-    Select(SelectStmt),
     Values(CompoundQuery),
+    Select(SelectStmt),
     Table(TableStmt),
+    /// Catch-all for statement types not yet fully implemented (ALTER TABLE,
+    /// CREATE RULE, CREATE TRIGGER, DROP RULE, DROP TRIGGER, TRUNCATE, BEGIN,
+    /// COMMIT, NOTIFY, etc.). Consumes tokens until the next semicolon.
+    Raw(RawStatement),
+}
+
+/// A raw statement: consumes everything up to (but not including) the next semicolon.
+///
+/// Manual Parse impl needed because this is a catch-all that doesn't use structured
+/// token parsing. It's intentionally the last variant in Statement.
+/// To eliminate this, implement proper AST types for each statement kind.
+#[derive(Debug, Clone)]
+pub struct RawStatement {
+    pub text: String,
+}
+
+impl AsNodeKey for RawStatement {}
+impl Visit for RawStatement {
+    fn visit<V: Visitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        ControlFlow::Continue(())
+    }
+}
+
+impl<'input> Parse<'input> for RawStatement {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        // Match any word character to act as a fallback
+        r"[a-zA-Z_]"
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
+        !input.is_empty()
+            && input
+                .remaining()
+                .starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
+        let remaining = input.remaining();
+        // Find the next semicolon, respecting parenthesized groups and string literals
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut in_dollar_string = false;
+        let mut dollar_tag = String::new();
+        let chars: Vec<char> = remaining.chars().collect();
+        static DOLLAR_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let dollar_re = DOLLAR_RE.get_or_init(|| regex::Regex::new(r"^\$([a-zA-Z_]*)\$").unwrap());
+        let mut i = 0;
+        let mut byte_pos = 0;
+
+        while i < chars.len() {
+            let c = chars[i];
+
+            if in_dollar_string {
+                // Look for closing $$ or $tag$
+                if c == '$' {
+                    let rest: String = chars[i..].iter().collect();
+                    let end_tag = format!("${}$", dollar_tag);
+                    if rest.starts_with(&end_tag) {
+                        byte_pos += end_tag.len();
+                        i += end_tag.chars().count();
+                        in_dollar_string = false;
+                        continue;
+                    }
+                }
+                byte_pos += c.len_utf8();
+                i += 1;
+            } else if in_string {
+                if c == '\'' {
+                    // Check for escaped quote
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        byte_pos += 2;
+                        i += 2;
+                    } else {
+                        in_string = false;
+                        byte_pos += 1;
+                        i += 1;
+                    }
+                } else {
+                    byte_pos += c.len_utf8();
+                    i += 1;
+                }
+            } else if c == '\'' {
+                in_string = true;
+                byte_pos += 1;
+                i += 1;
+            } else if c == '$' {
+                // Check for dollar-quoted string: $tag$...$tag$ or $$...$$
+                let rest: String = chars[i..].iter().collect();
+                if let Some(m) = dollar_re.find(&rest) {
+                    let tag_text = m.as_str();
+                    dollar_tag = tag_text[1..tag_text.len() - 1].to_string();
+                    byte_pos += tag_text.len();
+                    i += tag_text.chars().count();
+                    in_dollar_string = true;
+                } else {
+                    byte_pos += 1;
+                    i += 1;
+                }
+            } else if c == '(' {
+                depth += 1;
+                byte_pos += 1;
+                i += 1;
+            } else if c == ')' {
+                depth -= 1;
+                byte_pos += 1;
+                i += 1;
+            } else if c == ';' && depth <= 0 {
+                break;
+            } else {
+                byte_pos += c.len_utf8();
+                i += 1;
+            }
+        }
+
+        let text = remaining[..byte_pos].to_string();
+        input.advance(byte_pos);
+        Ok(RawStatement { text })
+    }
 }
 
 /// A SQL statement followed by a semicolon.
@@ -80,6 +219,7 @@ pub struct PsqlDirective {
 /// A command in a psql input file: either a SQL statement or a psql directive.
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
+#[allow(clippy::large_enum_variant)]
 pub enum PsqlCommand {
     /// A psql directive (e.g., `\pset null '(null)'`).
     /// Listed first so `\` is checked before statement keywords.
@@ -89,6 +229,11 @@ pub enum PsqlCommand {
 }
 
 /// Parse a complete SQL file into a list of commands.
+///
+/// Gracefully handles parse errors by falling back to RawStatement parsing,
+/// which consumes everything up to the next semicolon. This allows the parser
+/// to continue past intentionally invalid SQL (e.g., error test cases in
+/// PostgreSQL regression test files).
 pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<PsqlCommand>, ParseError> {
     let mut commands = Vec::new();
     loop {
@@ -99,7 +244,21 @@ pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<PsqlCommand>, ParseEr
         if !PsqlCommand::peek(input, &SqlRules) {
             break;
         }
-        commands.push(PsqlCommand::parse(input, &SqlRules)?);
+        match PsqlCommand::parse(input, &SqlRules) {
+            Ok(cmd) => commands.push(cmd),
+            Err(_) => {
+                // Parse error -- skip to next semicolon and create a Raw statement
+                let raw = RawStatement::parse(input, &SqlRules)?;
+                SqlRules::consume_ignored(input);
+                if punct::Semi::peek(input, &SqlRules) {
+                    let semi = punct::Semi::parse(input, &SqlRules)?;
+                    commands.push(PsqlCommand::Statement(TerminatedStatement {
+                        stmt: Statement::Raw(raw),
+                        semi,
+                    }));
+                }
+            }
+        }
     }
     Ok(commands)
 }
@@ -114,7 +273,9 @@ mod tests {
     fn parse_statement_select() {
         let mut input = Input::new("SELECT 1 AS one");
         let stmt = Statement::parse(&mut input, &SqlRules).unwrap();
-        assert!(matches!(stmt, Statement::Select(_)));
+        // Bare SELECT now matches via CompoundQuery path since Values variant
+        // precedes Select for compound query (UNION etc.) support.
+        assert!(matches!(stmt, Statement::Values(_)));
     }
 
     #[test]
@@ -275,11 +436,10 @@ mod tests {
         );
     }
 
-
     #[test]
     fn parse_with_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/with.sql")
-            .expect("with.sql fixture not found");
+        let sql =
+            std::fs::read_to_string("fixtures/sql/with.sql").expect("with.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
         assert!(

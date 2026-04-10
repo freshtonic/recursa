@@ -87,7 +87,7 @@ pub struct ReturningClause {
 /// has the same keyword-rejection issue as DELETE -- keywords like WHERE/SET
 /// would be rejected as identifiers but peek would succeed.
 /// To eliminate this, recursa would need Option try-parse semantics.
-#[derive(Debug, Visit)]
+#[derive(Debug, Clone, Visit)]
 pub struct UpdateStmt {
     pub _update: PhantomData<keyword::Update>,
     pub table_name: literal::Ident,
@@ -180,8 +180,9 @@ mod tests {
 
     #[test]
     fn parse_update_with_from_where() {
-        let mut input =
-            Input::new("UPDATE y SET a = y.a - 10 FROM t WHERE y.a > 20 AND t.a = y.a RETURNING y.a");
+        let mut input = Input::new(
+            "UPDATE y SET a = y.a - 10 FROM t WHERE y.a > 20 AND t.a = y.a RETURNING y.a",
+        );
         let stmt = UpdateStmt::parse(&mut input, &SqlRules).unwrap();
         assert!(stmt.from_clause.is_some());
         assert!(stmt.where_clause.is_some());
