@@ -8,8 +8,7 @@ use crate::tokens;
 
 /// A column definition: `name type`.
 ///
-/// Manual Parse: type name parsing uses keyword-to-variant dispatch
-/// that the derive macro cannot express.
+/// Manual Parse: ident followed by TypeName, not a uniform struct sequence.
 #[derive(Debug, Clone, Visit)]
 pub struct ColumnDef {
     pub name: tokens::Ident,
@@ -30,36 +29,6 @@ pub struct CreateTableStmt {
 
 // --- Parse implementations ---
 
-/// Parse a type name for column definitions.
-fn parse_column_type(input: &mut Input<'_>) -> Result<TypeName, ParseError> {
-    SqlRules::consume_ignored(input);
-    if tokens::Boolean::peek(input, &SqlRules) {
-        tokens::Boolean::parse(input, &SqlRules)?;
-        return Ok(TypeName::Boolean);
-    }
-    if tokens::Bool::peek(input, &SqlRules) {
-        tokens::Bool::parse(input, &SqlRules)?;
-        return Ok(TypeName::Bool);
-    }
-    if tokens::Text::peek(input, &SqlRules) {
-        tokens::Text::parse(input, &SqlRules)?;
-        return Ok(TypeName::Text);
-    }
-    if tokens::Int::peek(input, &SqlRules) {
-        tokens::Int::parse(input, &SqlRules)?;
-        return Ok(TypeName::Int);
-    }
-    if tokens::Ident::peek(input, &SqlRules) {
-        let ident = tokens::Ident::parse(input, &SqlRules)?;
-        return Ok(TypeName::Ident(ident.0));
-    }
-    Err(ParseError::new(
-        input.source().to_string(),
-        input.cursor()..input.cursor(),
-        "column type name",
-    ))
-}
-
 impl<'input> Parse<'input> for ColumnDef {
     const IS_TERMINAL: bool = false;
     fn first_pattern() -> &'static str {
@@ -73,7 +42,7 @@ impl<'input> Parse<'input> for ColumnDef {
     fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
         SqlRules::consume_ignored(input);
         let name = tokens::Ident::parse(input, &SqlRules)?;
-        let type_name = parse_column_type(input)?;
+        let type_name = TypeName::parse(input, &SqlRules)?;
         Ok(ColumnDef { name, type_name })
     }
 }

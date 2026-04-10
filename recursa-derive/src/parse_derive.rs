@@ -333,7 +333,14 @@ fn derive_parse_pratt_enum(
 ) -> syn::Result<TokenStream> {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let lt = generics
+    // For the inner parse_expr function, we need a named lifetime (not '_')
+    let fn_lt = generics
+        .lifetimes()
+        .next()
+        .map(|l| l.lifetime.clone())
+        .unwrap_or_else(|| syn::Lifetime::new("'__input", proc_macro2::Span::call_site()));
+    // For the impl block, we can use '_ when no lifetime is present
+    let impl_lt = generics
         .lifetimes()
         .next()
         .map(|l| l.lifetime.clone())
@@ -503,8 +510,8 @@ fn derive_parse_pratt_enum(
 
     Ok(quote! {
         const _: () = {
-            fn parse_expr<#lt>(
-                input: &mut ::recursa_core::Input<#lt>,
+            fn parse_expr<#fn_lt>(
+                input: &mut ::recursa_core::Input<#fn_lt>,
                 min_bp: u32,
             ) -> ::std::result::Result<#name #ty_generics, ::recursa_core::ParseError> {
                 <#rules_type as ::recursa_core::ParseRules>::consume_ignored(input);
@@ -534,7 +541,7 @@ fn derive_parse_pratt_enum(
                 Ok(lhs)
             }
 
-            impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
+            impl #impl_generics ::recursa_core::Parse<#impl_lt> for #name #ty_generics #where_clause {
                 const IS_TERMINAL: bool = false;
 
                 fn first_pattern() -> &'static str {
@@ -550,13 +557,13 @@ fn derive_parse_pratt_enum(
                     })
                 }
 
-                fn peek<R: ::recursa_core::ParseRules>(input: &::recursa_core::Input<#lt>, _rules: &R) -> bool {
+                fn peek<R: ::recursa_core::ParseRules>(input: &::recursa_core::Input<#impl_lt>, _rules: &R) -> bool {
                     #(#atom_peek_arms)*
                     #(#prefix_peek_arms)*
                     false
                 }
 
-                fn parse<R: ::recursa_core::ParseRules>(input: &mut ::recursa_core::Input<#lt>, _rules: &R) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
+                fn parse<R: ::recursa_core::ParseRules>(input: &mut ::recursa_core::Input<#impl_lt>, _rules: &R) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
                     parse_expr(input, 0)
                 }
             }

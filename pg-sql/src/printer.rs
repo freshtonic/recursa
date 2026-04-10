@@ -6,7 +6,10 @@
 
 use crate::ast::create_table::CreateTableStmt;
 use crate::ast::drop_table::DropTableStmt;
-use crate::ast::expr::{BinOpKind, BoolTestKind, Expr, TypeName};
+use crate::ast::expr::{
+    BoolTestKind, Expr, FuncCall, ParenExpr, QualifiedRef, QualifiedWildcard, TypeCastFunc,
+    TypeName,
+};
 use crate::ast::insert::InsertStmt;
 use crate::ast::select::{OrderByClause, SelectItem, SelectStmt, TableRef};
 use crate::ast::{PsqlCommand, Statement};
@@ -167,17 +170,17 @@ fn print_expr(output: &mut String, expr: &Expr) {
         Expr::BoolFalse(_) => output.push_str("FALSE"),
         Expr::Null(_) => output.push_str("NULL"),
         Expr::ColumnRef(ident) => output.push_str(&ident.0),
-        Expr::QualifiedRef { table, column, .. } => {
+        Expr::QualRef(QualifiedRef { table, column, .. }) => {
             output.push_str(&table.0);
             output.push('.');
             output.push_str(&column.0);
         }
-        Expr::QualifiedWildcard { table, .. } => {
+        Expr::QualWild(QualifiedWildcard { table, .. }) => {
             output.push_str(&table.0);
             output.push_str(".*");
         }
         Expr::Star(_) => output.push('*'),
-        Expr::FuncCall { name, args } => {
+        Expr::Func(FuncCall { name, args, .. }) => {
             output.push_str(&name.0);
             output.push('(');
             for (i, arg) in args.iter().enumerate() {
@@ -188,20 +191,20 @@ fn print_expr(output: &mut String, expr: &Expr) {
             }
             output.push(')');
         }
-        Expr::Paren { inner } => {
+        Expr::Paren(ParenExpr { inner, .. }) => {
             output.push('(');
             print_expr(output, inner);
             output.push(')');
         }
-        Expr::TypeCastFunc { type_name, value } => {
+        Expr::CastFunc(TypeCastFunc { type_name, value }) => {
             print_type_name(output, type_name);
             output.push(' ');
             output.push_str(&value.0);
         }
         Expr::Not(_, operand) => {
             output.push_str("NOT ");
-            // Parenthesize if the operand is a binary op to avoid ambiguity
-            if matches!(operand.as_ref(), Expr::BinOp { .. }) {
+            // Parenthesize if the operand is an infix op to avoid ambiguity
+            if is_infix(operand) {
                 output.push('(');
                 print_expr(output, operand);
                 output.push(')');
@@ -209,22 +212,28 @@ fn print_expr(output: &mut String, expr: &Expr) {
                 print_expr(output, operand);
             }
         }
-        Expr::BinOp { left, op, right } => {
-            // Always parenthesize sub-expressions that are binary ops
+        Expr::Or(left, _, right)
+        | Expr::And(left, _, right)
+        | Expr::Eq(left, _, right)
+        | Expr::Neq(left, _, right)
+        | Expr::Lt(left, _, right)
+        | Expr::Gt(left, _, right)
+        | Expr::Lte(left, _, right)
+        | Expr::Gte(left, _, right) => {
             print_binop_operand(output, left);
             output.push(' ');
-            print_binop_kind(output, op);
+            print_infix_op(output, expr);
             output.push(' ');
             print_binop_operand(output, right);
         }
-        Expr::Cast { expr, type_name } => {
-            print_expr(output, expr);
+        Expr::Cast(inner, _, type_name) => {
+            print_expr(output, inner);
             output.push_str("::");
             print_type_name(output, type_name);
         }
-        Expr::BooleanTest { expr, test } => {
-            print_expr(output, expr);
-            match test {
+        Expr::BoolTest(inner, _, suffix) => {
+            print_expr(output, inner);
+            match &suffix.kind {
                 BoolTestKind::IsTrue => output.push_str(" IS TRUE"),
                 BoolTestKind::IsNotTrue => output.push_str(" IS NOT TRUE"),
                 BoolTestKind::IsFalse => output.push_str(" IS FALSE"),
@@ -238,27 +247,44 @@ fn print_expr(output: &mut String, expr: &Expr) {
     }
 }
 
-/// Print a binary operator operand, parenthesizing if it is itself a binary op.
+/// Returns true if the expression is an infix binary operation.
+fn is_infix(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Or(..)
+            | Expr::And(..)
+            | Expr::Eq(..)
+            | Expr::Neq(..)
+            | Expr::Lt(..)
+            | Expr::Gt(..)
+            | Expr::Lte(..)
+            | Expr::Gte(..)
+    )
+}
+
+/// Print the operator keyword/symbol for an infix expression.
+fn print_infix_op(output: &mut String, expr: &Expr) {
+    match expr {
+        Expr::And(..) => output.push_str("AND"),
+        Expr::Or(..) => output.push_str("OR"),
+        Expr::Eq(..) => output.push('='),
+        Expr::Neq(..) => output.push_str("<>"),
+        Expr::Lt(..) => output.push('<'),
+        Expr::Gt(..) => output.push('>'),
+        Expr::Lte(..) => output.push_str("<="),
+        Expr::Gte(..) => output.push_str(">="),
+        _ => {}
+    }
+}
+
+/// Print a binary operator operand, parenthesizing if it is itself an infix op.
 fn print_binop_operand(output: &mut String, expr: &Expr) {
-    if matches!(expr, Expr::BinOp { .. }) {
+    if is_infix(expr) {
         output.push('(');
         print_expr(output, expr);
         output.push(')');
     } else {
         print_expr(output, expr);
-    }
-}
-
-fn print_binop_kind(output: &mut String, op: &BinOpKind) {
-    match op {
-        BinOpKind::And => output.push_str("AND"),
-        BinOpKind::Or => output.push_str("OR"),
-        BinOpKind::Eq => output.push('='),
-        BinOpKind::Neq => output.push_str("<>"),
-        BinOpKind::Lt => output.push('<'),
-        BinOpKind::Gt => output.push('>'),
-        BinOpKind::Lte => output.push_str("<="),
-        BinOpKind::Gte => output.push_str(">="),
     }
 }
 
