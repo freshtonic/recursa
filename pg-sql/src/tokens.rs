@@ -1,7 +1,4 @@
-use std::sync::OnceLock;
-
 use recursa::{ParseError, Scan, Visit};
-use regex::Regex;
 
 // Keywords (case-insensitive, with word boundary)
 recursa::keywords! {
@@ -49,77 +46,11 @@ recursa::punctuation! {
     BackSlash  => r"\\",
 }
 
-// --- String literal ---
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct StringLit(pub String);
-
-impl Scan<'_> for StringLit {
-    const PATTERN: &'static str = r"'[^']*(?:''[^']*)*'";
-
-    fn regex() -> &'static Regex {
-        static REGEX: OnceLock<Regex> = OnceLock::new();
-        REGEX.get_or_init(|| Regex::new(r"\A(?:'[^']*(?:''[^']*)*')").unwrap())
-    }
-
-    fn from_match(matched: &str) -> Result<Self, ParseError> {
-        Ok(StringLit(matched.to_string()))
-    }
+// Literals
+recursa::literals! {
+    StringLit  => r"'[^']*(?:''[^']*)*'",
+    IntegerLit => r"[0-9]+",
 }
-
-recursa::impl_parse_for_scan!(StringLit);
-
-impl recursa::Visit for StringLit {
-    fn visit<V: recursa::Visitor>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::Break<V::Error>> {
-        match visitor.enter(self) {
-            std::ops::ControlFlow::Continue(())
-            | std::ops::ControlFlow::Break(recursa::Break::SkipChildren) => {}
-            other => return other,
-        }
-        visitor.exit(self)
-    }
-}
-
-impl recursa::AsNodeKey for StringLit {}
-
-// --- Integer literal ---
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct IntegerLit(pub String);
-
-impl Scan<'_> for IntegerLit {
-    const PATTERN: &'static str = r"[0-9]+";
-
-    fn regex() -> &'static Regex {
-        static REGEX: OnceLock<Regex> = OnceLock::new();
-        REGEX.get_or_init(|| Regex::new(r"\A(?:[0-9]+)").unwrap())
-    }
-
-    fn from_match(matched: &str) -> Result<Self, ParseError> {
-        Ok(IntegerLit(matched.to_string()))
-    }
-}
-
-recursa::impl_parse_for_scan!(IntegerLit);
-
-impl recursa::Visit for IntegerLit {
-    fn visit<V: recursa::Visitor>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::Break<V::Error>> {
-        match visitor.enter(self) {
-            std::ops::ControlFlow::Continue(())
-            | std::ops::ControlFlow::Break(recursa::Break::SkipChildren) => {}
-            other => return other,
-        }
-        visitor.exit(self)
-    }
-}
-
-impl recursa::AsNodeKey for IntegerLit {}
 
 // --- Identifier ---
 
@@ -151,6 +82,7 @@ fn not_keyword(ident: &Ident) -> Result<(), ParseError> {
 #[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
 #[parse(postcondition = not_keyword)]
+#[visit(terminal)]
 pub struct Ident(pub String);
 
 // --- Alias name (any SQL word — identifier or keyword) ---
@@ -159,44 +91,16 @@ pub struct Ident(pub String);
 /// SQL allows keywords (e.g., `SELECT 1 AS true`).
 #[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+#[visit(terminal)]
 pub struct AliasName(pub String);
 
 // --- Rest of line ---
 
 /// Matches the remainder of text on the current line (up to newline or end of input).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[scan(pattern = r"[^\n]*")]
+#[visit(terminal)]
 pub struct RestOfLine(pub String);
-
-impl Scan<'_> for RestOfLine {
-    const PATTERN: &'static str = r"[^\n]*";
-
-    fn regex() -> &'static Regex {
-        static REGEX: OnceLock<Regex> = OnceLock::new();
-        REGEX.get_or_init(|| Regex::new(r"\A[^\n]*").unwrap())
-    }
-
-    fn from_match(matched: &str) -> Result<Self, ParseError> {
-        Ok(RestOfLine(matched.to_string()))
-    }
-}
-
-recursa::impl_parse_for_scan!(RestOfLine);
-
-impl recursa::Visit for RestOfLine {
-    fn visit<V: recursa::Visitor>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::Break<V::Error>> {
-        match visitor.enter(self) {
-            std::ops::ControlFlow::Continue(())
-            | std::ops::ControlFlow::Break(recursa::Break::SkipChildren) => {}
-            other => return other,
-        }
-        visitor.exit(self)
-    }
-}
-
-impl recursa::AsNodeKey for RestOfLine {}
 
 #[cfg(test)]
 mod tests {
@@ -377,7 +281,6 @@ mod tests {
 
     #[test]
     fn identifier_accepts_keyword_prefix() {
-        // "isfalse" starts with "is" but is not a keyword
         let mut input = Input::new("isfalse");
         let id = Ident::parse(&mut input, &NoRules).unwrap();
         assert_eq!(id.0, "isfalse");

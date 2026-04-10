@@ -2,18 +2,85 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields};
 
+/// Parse the `#[visit(...)]` attribute to determine visit mode.
+enum VisitMode {
+    /// Normal: enter, visit children, exit.
+    Normal,
+    /// Terminal: enter and exit, but do NOT visit children.
+    /// Use for data-carrying tokens (e.g., `StringLit(String)`).
+    Terminal,
+    /// Ignore: completely transparent to visitors. No enter/exit calls.
+    /// Use for tokens that carry no information (keywords, punctuation).
+    Ignore,
+}
+
+fn get_visit_mode(input: &DeriveInput) -> syn::Result<VisitMode> {
+    for attr in &input.attrs {
+        if attr.path().is_ident("visit") {
+            let mut mode = None;
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("terminal") {
+                    mode = Some(VisitMode::Terminal);
+                    Ok(())
+                } else if meta.path.is_ident("ignore") {
+                    mode = Some(VisitMode::Ignore);
+                    Ok(())
+                } else {
+                    Err(meta.error("expected `terminal` or `ignore`"))
+                }
+            })?;
+            if let Some(mode) = mode {
+                return Ok(mode);
+            }
+        }
+    }
+    Ok(VisitMode::Normal)
+}
+
 pub fn derive_visit(input: DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    let visit_body = match &input.data {
-        Data::Struct(data) => derive_visit_struct(data)?,
-        Data::Enum(data) => derive_visit_enum(data)?,
-        _ => {
-            return Err(syn::Error::new_spanned(
-                name,
-                "Visit can only be derived for structs and enums",
-            ));
+    let mode = get_visit_mode(&input)?;
+
+    let visit_fn_body = match mode {
+        VisitMode::Ignore => {
+            // Completely transparent — no enter/exit
+            quote! {
+                ::std::ops::ControlFlow::Continue(())
+            }
+        }
+        VisitMode::Terminal => {
+            // Enter and exit, but no child traversal
+            quote! {
+                match ::recursa_core::Visitor::enter(visitor, self) {
+                    ::std::ops::ControlFlow::Continue(()) | ::std::ops::ControlFlow::Break(::recursa_core::Break::SkipChildren) => {}
+                    other => return other,
+                }
+                ::recursa_core::Visitor::exit(visitor, self)
+            }
+        }
+        VisitMode::Normal => {
+            let children_body = match &input.data {
+                Data::Struct(data) => derive_visit_struct(data)?,
+                Data::Enum(data) => derive_visit_enum(data)?,
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        name,
+                        "Visit can only be derived for structs and enums",
+                    ));
+                }
+            };
+            quote! {
+                match ::recursa_core::Visitor::enter(visitor, self) {
+                    ::std::ops::ControlFlow::Continue(()) => {
+                        #children_body
+                    }
+                    ::std::ops::ControlFlow::Break(::recursa_core::Break::SkipChildren) => {}
+                    other => return other,
+                }
+                ::recursa_core::Visitor::exit(visitor, self)
+            }
         }
     };
 
@@ -25,14 +92,7 @@ pub fn derive_visit(input: DeriveInput) -> syn::Result<TokenStream> {
                 &self,
                 visitor: &mut V,
             ) -> ::std::ops::ControlFlow<::recursa_core::Break<V::Error>> {
-                match ::recursa_core::Visitor::enter(visitor, self) {
-                    ::std::ops::ControlFlow::Continue(()) => {
-                        #visit_body
-                    }
-                    ::std::ops::ControlFlow::Break(::recursa_core::Break::SkipChildren) => {}
-                    other => return other,
-                }
-                ::recursa_core::Visitor::exit(visitor, self)
+                #visit_fn_body
             }
         }
     })
@@ -43,6 +103,10 @@ fn derive_visit_struct(data: &syn::DataStruct) -> syn::Result<TokenStream> {
         Fields::Named(fields) => fields
             .named
             .iter()
+            .filter(|f| {
+                // Skip PhantomData fields (they have no data to visit)
+                !is_phantom_data_type(&f.ty)
+            })
             .map(|f| {
                 let name = &f.ident;
                 quote! { ::recursa_core::Visit::visit(&self.#name, visitor)?; }
@@ -52,6 +116,7 @@ fn derive_visit_struct(data: &syn::DataStruct) -> syn::Result<TokenStream> {
             .unnamed
             .iter()
             .enumerate()
+            .filter(|(_, f)| !is_phantom_data_type(&f.ty))
             .map(|(i, _)| {
                 let idx = syn::Index::from(i);
                 quote! { ::recursa_core::Visit::visit(&self.#idx, visitor)?; }
@@ -61,6 +126,16 @@ fn derive_visit_struct(data: &syn::DataStruct) -> syn::Result<TokenStream> {
     };
 
     Ok(quote! { #(#field_visits)* })
+}
+
+/// Check if a type is `PhantomData<...>` (no data to visit).
+fn is_phantom_data_type(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+    {
+        return segment.ident == "PhantomData";
+    }
+    false
 }
 
 fn derive_visit_enum(data: &syn::DataEnum) -> syn::Result<TokenStream> {

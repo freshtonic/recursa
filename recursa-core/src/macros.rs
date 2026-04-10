@@ -1,8 +1,7 @@
 /// Declare keyword token types and a combined `Keyword` enum.
 ///
 /// Each entry generates a unit struct with `#[derive(Scan)]` and the
-/// specified pattern. A combined `Keyword` enum is also generated
-/// with all variants.
+/// specified pattern. Keywords are case-insensitive and invisible to visitors.
 ///
 /// # Example
 ///
@@ -22,10 +21,12 @@ macro_rules! keywords {
         $(
             #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             #[scan(pattern = $pattern, case_insensitive)]
+            #[visit(ignore)]
             pub struct $name;
         )*
 
         #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[visit(ignore)]
         pub enum Keyword {
             $($name($name)),*
         }
@@ -35,8 +36,7 @@ macro_rules! keywords {
 /// Declare punctuation token types and a combined `Punctuation` enum.
 ///
 /// Each entry generates a unit struct with `#[derive(Scan)]` and the
-/// specified pattern. A combined `Punctuation` enum is also generated
-/// with all variants.
+/// specified pattern. Punctuation is invisible to visitors.
 ///
 /// Patterns must be valid regex. For literal punctuation characters that
 /// are regex metacharacters, provide already-escaped patterns
@@ -56,10 +56,12 @@ macro_rules! punctuation {
         $(
             #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             #[scan(pattern = $pattern)]
+            #[visit(ignore)]
             pub struct $name;
         )*
 
         #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[visit(ignore)]
         pub enum Punctuation {
             $($name($name)),*
         }
@@ -69,8 +71,8 @@ macro_rules! punctuation {
 /// Declare literal/capturing token types and a combined `Literal` enum.
 ///
 /// Each entry generates a tuple struct wrapping `String` with
-/// `#[derive(Scan)]` and the specified pattern. A combined `Literal`
-/// enum is also generated with all variants.
+/// `#[derive(Scan)]` and the specified pattern. Literals are terminal
+/// nodes for visitors (enter/exit called, but children not walked).
 ///
 /// # Example
 ///
@@ -86,10 +88,12 @@ macro_rules! literals {
         $(
             #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             #[scan(pattern = $pattern)]
+            #[visit(terminal)]
             pub struct $name(pub String);
         )*
 
         #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[visit(terminal)]
         pub enum Literal {
             $($name($name)),*
         }

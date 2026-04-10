@@ -153,7 +153,7 @@ pub fn derive_parse(input: TokenStream) -> TokenStream {
 ///     Insert(InsertStmt),
 /// }
 /// ```
-#[proc_macro_derive(Visit)]
+#[proc_macro_derive(Visit, attributes(visit))]
 pub fn derive_visit(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     match visit_derive::derive_visit(input) {
