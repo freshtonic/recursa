@@ -1,5 +1,8 @@
 /// CREATE TABLE statement AST.
+use std::marker::PhantomData;
+
 use recursa::seq::Seq;
+use recursa::surrounded::Surrounded;
 use recursa::{Parse, Visit};
 
 use crate::ast::expr::TypeName;
@@ -18,12 +21,10 @@ pub struct ColumnDef {
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTableStmt {
-    pub create_kw: tokens::Create,
-    pub table_kw: tokens::Table,
+    pub _create: PhantomData<tokens::Create>,
+    pub _table: PhantomData<tokens::Table>,
     pub name: tokens::Ident,
-    pub lparen: tokens::LParen,
-    pub columns: Seq<ColumnDef, tokens::Comma>,
-    pub rparen: tokens::RParen,
+    pub columns: Surrounded<tokens::LParen, Seq<ColumnDef, tokens::Comma>, tokens::RParen>,
 }
 
 #[cfg(test)]

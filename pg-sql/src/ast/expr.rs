@@ -3,7 +3,8 @@
 /// Handles atoms, prefix (NOT), infix (AND, OR, comparisons), and
 /// postfix operators (::type cast, IS [NOT] TRUE/FALSE/UNKNOWN/NULL).
 use recursa::seq::Seq;
-use recursa::{Input, Parse, ParseError, ParseRules, Visit};
+use recursa::surrounded::Surrounded;
+use recursa::{Parse, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens;
@@ -93,6 +94,11 @@ pub struct QualifiedWildcard {
 }
 
 /// Function call: `name(arg1, arg2, ...)`
+///
+/// Keeps explicit `lparen` field rather than using `Surrounded` because the
+/// derive macro chains `IS_TERMINAL` fields for `first_pattern` — the
+/// `Ident + LParen` pattern is what disambiguates `FuncCall` from a plain
+/// `Ident` in `TableRef` enum lookahead.
 #[derive(Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct FuncCall {
@@ -103,13 +109,7 @@ pub struct FuncCall {
 }
 
 /// Parenthesized expression: `(expr)`
-#[derive(Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct ParenExpr {
-    pub lparen: tokens::LParen,
-    pub inner: Box<Expr>,
-    pub rparen: tokens::RParen,
-}
+pub type ParenExpr = Surrounded<tokens::LParen, Box<Expr>, tokens::RParen>;
 
 /// Function-style type cast: `bool 'value'`, `text 'hello'`
 #[derive(Parse, Visit, Debug, Clone)]

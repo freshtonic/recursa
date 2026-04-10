@@ -118,7 +118,7 @@ fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
     output.push_str("CREATE TABLE ");
     output.push_str(&stmt.name.0);
     output.push_str(" (");
-    for (i, col) in stmt.columns.iter().enumerate() {
+    for (i, col) in stmt.columns.inner.iter().enumerate() {
         if i > 0 {
             output.push_str(", ");
         }
@@ -136,7 +136,7 @@ fn print_insert(output: &mut String, stmt: &InsertStmt) {
     output.push_str(&stmt.table_name.0);
     if let Some(col_list) = &stmt.columns {
         output.push_str(" (");
-        for (i, col) in col_list.columns.iter().enumerate() {
+        for (i, col) in col_list.inner.iter().enumerate() {
             if i > 0 {
                 output.push_str(", ");
             }
@@ -145,7 +145,7 @@ fn print_insert(output: &mut String, stmt: &InsertStmt) {
         output.push(')');
     }
     output.push_str(" VALUES (");
-    for (i, val) in stmt.values.iter().enumerate() {
+    for (i, val) in stmt.values.inner.iter().enumerate() {
         if i > 0 {
             output.push_str(", ");
         }

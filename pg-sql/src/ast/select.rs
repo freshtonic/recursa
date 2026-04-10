@@ -1,4 +1,6 @@
 /// SELECT statement AST.
+use std::marker::PhantomData;
+
 use recursa::seq::Seq;
 use recursa::{Parse, Visit};
 
@@ -18,7 +20,7 @@ pub struct SelectItem {
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct Alias {
-    pub as_kw: tokens::As,
+    pub _as: PhantomData<tokens::As>,
     pub name: tokens::AliasName,
 }
 
@@ -26,7 +28,7 @@ pub struct Alias {
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FromClause {
-    pub from_kw: tokens::From,
+    pub _from: PhantomData<tokens::From>,
     pub tables: Seq<TableRef, tokens::Comma>,
 }
 
@@ -44,7 +46,7 @@ pub enum TableRef {
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhereClause {
-    pub where_kw: tokens::Where,
+    pub _where: PhantomData<tokens::Where>,
     pub condition: Expr,
 }
 
@@ -52,8 +54,8 @@ pub struct WhereClause {
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrderByClause {
-    pub order_kw: tokens::Order,
-    pub by_kw: tokens::By,
+    pub _order: PhantomData<tokens::Order>,
+    pub _by: PhantomData<tokens::By>,
     pub items: Seq<Expr, tokens::Comma>,
 }
 
@@ -61,7 +63,7 @@ pub struct OrderByClause {
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SelectStmt {
-    pub select_kw: tokens::Select,
+    pub _select: PhantomData<tokens::Select>,
     pub items: Seq<SelectItem, tokens::Comma>,
     pub from_clause: Option<FromClause>,
     pub where_clause: Option<WhereClause>,
