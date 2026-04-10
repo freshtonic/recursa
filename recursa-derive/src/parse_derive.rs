@@ -341,6 +341,7 @@ fn derive_parse_pratt_enum(
 
     let mut atom_variants = Vec::new();
     let mut prefix_variants = Vec::new();
+    let mut postfix_variants = Vec::new();
     let mut infix_variants = Vec::new();
 
     for variant in &data.variants {
@@ -374,6 +375,16 @@ fn derive_parse_pratt_enum(
                     ));
                 }
                 prefix_variants.push((vname.clone(), fields[0].ty.clone(), bp));
+            }
+            PrattKind::Postfix { bp } => {
+                if fields.len() < 2 {
+                    return Err(syn::Error::new_spanned(
+                        vname,
+                        "postfix variants must have at least two fields (lhs, operator, ...)",
+                    ));
+                }
+                let all_field_types: Vec<_> = fields.iter().map(|f| f.ty.clone()).collect();
+                postfix_variants.push((vname.clone(), all_field_types, bp));
             }
             PrattKind::Infix { bp, right_assoc } => {
                 if fields.len() != 3 {
@@ -433,6 +444,47 @@ fn derive_parse_pratt_enum(
         }
     });
 
+    // Generate postfix check/parse arms (for the led loop, before infix)
+    let postfix_arms = postfix_variants.iter().map(|(vname, field_types, bp)| {
+        // field_types[0] = Box<Self> (lhs), field_types[1] = operator, field_types[2..] = remaining
+        let op_ty = &field_types[1];
+        let remaining_types = &field_types[2..];
+
+        // Generate field bindings for operator + remaining fields
+        let mut field_parses = Vec::new();
+        let mut field_idents = Vec::new();
+
+        // Parse the operator (field index 1)
+        let op_ident = syn::Ident::new("__f1", proc_macro2::Span::call_site());
+        field_parses.push(quote! {
+            let #op_ident = <#op_ty as ::recursa_core::Parse>::parse(input, &#rules_type)?;
+        });
+        field_idents.push(op_ident);
+
+        // Parse remaining fields (indices 2..)
+        for (i, ty) in remaining_types.iter().enumerate() {
+            let ident = syn::Ident::new(&format!("__f{}", i + 2), proc_macro2::Span::call_site());
+            field_parses.push(quote! {
+                <#rules_type as ::recursa_core::ParseRules>::consume_ignored(input);
+                let #ident = <#ty as ::recursa_core::Parse>::parse(input, &#rules_type)?;
+            });
+            field_idents.push(ident);
+        }
+
+        let all_idents = &field_idents;
+
+        quote! {
+            {
+                <#rules_type as ::recursa_core::ParseRules>::consume_ignored(input);
+                if <#op_ty as ::recursa_core::Parse>::peek(input, &#rules_type) && #bp >= min_bp {
+                    #(#field_parses)*
+                    lhs = #name::#vname(Box::new(lhs), #(#all_idents),*);
+                    continue;
+                }
+            }
+        }
+    });
+
     // Generate infix check/parse arms (for the led loop)
     let infix_arms = infix_variants.iter().map(|(vname, op_ty, bp, right_assoc)| {
         let right_bp: u32 = if *right_assoc { *bp } else { bp + 1 };
@@ -472,8 +524,9 @@ fn derive_parse_pratt_enum(
                     ));
                 };
 
-                // Infix loop (led position)
+                // Led loop (postfix then infix)
                 loop {
+                    #(#postfix_arms)*
                     #(#infix_arms)*
                     break;
                 }
@@ -514,6 +567,7 @@ fn derive_parse_pratt_enum(
 enum PrattKind {
     Atom,
     Prefix { bp: u32 },
+    Postfix { bp: u32 },
     Infix { bp: u32, right_assoc: bool },
 }
 
@@ -529,6 +583,8 @@ fn parse_pratt_attrs(attrs: &[syn::Attribute]) -> syn::Result<PrattKind> {
                     kind = Some("atom");
                 } else if meta.path.is_ident("prefix") {
                     kind = Some("prefix");
+                } else if meta.path.is_ident("postfix") {
+                    kind = Some("postfix");
                 } else if meta.path.is_ident("infix") {
                     kind = Some("infix");
                 } else if meta.path.is_ident("bp") {
@@ -550,19 +606,22 @@ fn parse_pratt_attrs(attrs: &[syn::Attribute]) -> syn::Result<PrattKind> {
                 Some("prefix") => Ok(PrattKind::Prefix {
                     bp: bp.ok_or_else(|| syn::Error::new_spanned(attr, "prefix requires bp"))?,
                 }),
+                Some("postfix") => Ok(PrattKind::Postfix {
+                    bp: bp.ok_or_else(|| syn::Error::new_spanned(attr, "postfix requires bp"))?,
+                }),
                 Some("infix") => Ok(PrattKind::Infix {
                     bp: bp.ok_or_else(|| syn::Error::new_spanned(attr, "infix requires bp"))?,
                     right_assoc,
                 }),
                 _ => Err(syn::Error::new_spanned(
                     attr,
-                    "expected atom, prefix, or infix",
+                    "expected atom, prefix, postfix, or infix",
                 )),
             };
         }
     }
     Err(syn::Error::new(
         proc_macro2::Span::call_site(),
-        "pratt enum variant missing #[parse(atom|prefix|infix, ...)] attribute",
+        "pratt enum variant missing #[parse(atom|prefix|postfix|infix, ...)] attribute",
     ))
 }

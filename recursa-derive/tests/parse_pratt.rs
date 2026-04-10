@@ -27,6 +27,10 @@ struct Ident<'input>(&'input str);
 #[scan(pattern = r"\^")]
 struct Caret;
 
+#[derive(Scan, Debug)]
+#[scan(pattern = r"\?")]
+struct Question;
+
 struct WsRules;
 impl ParseRules for WsRules {
     const IGNORE: &'static str = r"\s+";
@@ -50,6 +54,9 @@ enum Expr<'input> {
 
     #[parse(infix, bp = 7, assoc = "right")]
     Pow(Box<Expr<'input>>, Caret, Box<Expr<'input>>),
+
+    #[parse(postfix, bp = 20)]
+    PostfixQuestion(Box<Expr<'input>>, Question),
 
     #[parse(atom)]
     Lit(IntLit<'input>),
@@ -182,4 +189,55 @@ fn pratt_first_pattern_includes_atoms_and_prefix() {
     assert!(pattern.contains("-"));
     assert!(!pattern.contains(r"\+"));
     assert!(!pattern.contains(r"\*"));
+}
+
+#[test]
+fn pratt_postfix_simple() {
+    let mut input = Input::new("42?");
+    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    match expr {
+        Expr::PostfixQuestion(inner, _) => {
+            assert!(matches!(*inner, Expr::Lit(_)));
+        }
+        other => panic!("expected PostfixQuestion, got {other:?}"),
+    }
+}
+
+#[test]
+fn pratt_postfix_chains() {
+    let mut input = Input::new("42??");
+    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    match expr {
+        Expr::PostfixQuestion(inner, _) => {
+            assert!(matches!(*inner, Expr::PostfixQuestion(_, _)));
+        }
+        other => panic!("expected nested PostfixQuestion, got {other:?}"),
+    }
+}
+
+#[test]
+fn pratt_postfix_with_infix() {
+    // 1 + 2? should parse as 1 + (2?) because postfix bp=20 > infix bp=5
+    let mut input = Input::new("1 + 2?");
+    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    match expr {
+        Expr::Add(left, _, right) => {
+            assert!(matches!(*left, Expr::Lit(_)));
+            assert!(matches!(*right, Expr::PostfixQuestion(_, _)));
+        }
+        other => panic!("expected Add at top level, got {other:?}"),
+    }
+}
+
+#[test]
+fn pratt_postfix_with_prefix() {
+    // -42? should parse as -(42?) because postfix bp=20 > prefix bp=9
+    let mut input = Input::new("-42?");
+    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    match expr {
+        Expr::Neg(_, inner) => {
+            assert!(matches!(*inner, Expr::PostfixQuestion(_, _)));
+        }
+        other => panic!("expected Neg at top level, got {other:?}"),
+    }
 }
