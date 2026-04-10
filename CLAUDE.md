@@ -44,7 +44,16 @@ enum Statement {
 
 This principle also applies to Pratt enum atoms. Prefix, infix, and postfix variants have specific field layouts (see derive macro docs).
 
+## Manual Parse Impls Are a Red Flag
+
+A manual `Parse` impl means either:
+
+1. **Recursa has a gap** — the derive macro can't express the required parsing pattern. This should be filed as a limitation to fix in recursa.
+2. **The AST design needs a rethink** — the type structure doesn't fit recursa's model. Restructure the types so they can be derived.
+
+Every manual `Parse` impl must have a comment explaining which of these applies and what would be needed to eliminate it. Treat manual impls as tech debt, not as a normal pattern.
+
 ## Code Style
 
 - **Use method syntax, not UFCS.** Write `T::parse(input, rules)` not `<T as Parse>::parse(input, rules)`.
-- **Derive Parse/Scan/Visit wherever possible.** Manual impls only when the derive macro can't handle the case. Document why with a comment.
+- **Derive Parse/Scan/Visit wherever possible.** Manual impls only as a last resort (see above). Document why with a comment.
