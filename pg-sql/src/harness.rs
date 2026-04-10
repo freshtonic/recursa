@@ -466,5 +466,26 @@ mod tests {
             run_prerequisites(&["test_setup"], &uri).unwrap();
             run_regression_test("with", &uri).unwrap();
         }
+
+        #[test]
+        fn regress_case() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_regression_test("case", &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_union() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_regression_test("union", &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_subselect() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_regression_test("subselect", &uri).unwrap();
+        }
     }
 }
