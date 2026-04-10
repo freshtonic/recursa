@@ -177,7 +177,7 @@ impl<'input> Parse<'input> for PlainTable {
     }
 }
 
-/// A table reference: function call, inherited table, subquery, lateral, or plain table.
+/// A single table reference (no joins). Used as building block for JoinTableRef.
 ///
 /// Variant ordering matters for disambiguation via longest-match-wins:
 /// - Lateral before Func: both match `keyword(` pattern length, Lateral
@@ -187,12 +187,104 @@ impl<'input> Parse<'input> for PlainTable {
 /// - Inherited before Table: `person*` matches longer than `person`.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum TableRef {
+pub enum SimpleTableRef {
     Lateral(LateralRef),
     Func(FuncCall),
     Subquery(SubqueryRef),
     Inherited(InheritedTable),
     Table(PlainTable),
+}
+
+/// Join type: LEFT, RIGHT, FULL, INNER, CROSS, or plain JOIN.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum JoinType {
+    Left(keyword::Left),
+    Right(keyword::Right),
+    Full(keyword::Full),
+    Inner(keyword::Inner),
+    Cross(keyword::Cross),
+}
+
+/// JOIN condition: ON expr or USING (col, ...)
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum JoinCondition {
+    On(JoinOn),
+    Using(JoinUsing),
+}
+
+/// ON condition for JOIN
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct JoinOn {
+    pub _on: PhantomData<keyword::On>,
+    pub condition: Expr,
+}
+
+/// USING clause for JOIN: `USING (col, ...)`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct JoinUsing {
+    pub _using: PhantomData<keyword::Using>,
+    pub columns:
+        Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>,
+}
+
+/// A single join suffix: `[LEFT|RIGHT|FULL|INNER|CROSS] JOIN table [ON expr | USING (...)]`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct JoinSuffix {
+    pub join_type: Option<JoinType>,
+    pub _join: PhantomData<keyword::Join>,
+    pub table: SimpleTableRef,
+    pub condition: Option<JoinCondition>,
+}
+
+/// A table reference that may have zero or more JOIN suffixes.
+///
+/// Manual Parse impl needed because JOINs are left-associative and we need
+/// to parse a sequence: `table JOIN table ON ... LEFT JOIN table ON ...`
+/// To eliminate this, recursa would need postfix-style sequence parsing for
+/// non-Pratt types.
+#[derive(Debug, Clone, Visit)]
+pub struct TableRef {
+    pub base: SimpleTableRef,
+    pub joins: Vec<JoinSuffix>,
+}
+
+impl<'input> Parse<'input> for TableRef {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        SimpleTableRef::first_pattern()
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        SimpleTableRef::peek(input, rules)
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        let base = SimpleTableRef::parse(input, rules)?;
+        let mut joins = Vec::new();
+        loop {
+            R::consume_ignored(input);
+            // Check for JOIN keyword or join type keyword (LEFT, RIGHT, FULL, INNER, CROSS)
+            if keyword::Join::peek(input, rules)
+                || keyword::Left::peek(input, rules)
+                || keyword::Right::peek(input, rules)
+                || keyword::Full::peek(input, rules)
+                || keyword::Inner::peek(input, rules)
+                || keyword::Cross::peek(input, rules)
+            {
+                let join = JoinSuffix::parse(input, rules)?;
+                joins.push(join);
+            } else {
+                break;
+            }
+        }
+        Ok(TableRef { base, joins })
+    }
 }
 
 /// WHERE clause: `WHERE expr`.
@@ -288,14 +380,34 @@ pub struct ForUpdateClause {
     pub _update: PhantomData<keyword::Update>,
 }
 
+/// GROUP BY clause: `GROUP BY expr, ...`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct GroupByClause {
+    pub _group: PhantomData<keyword::Group>,
+    pub _by: PhantomData<keyword::By>,
+    pub exprs: Seq<Expr, punct::Comma>,
+}
+
+/// HAVING clause: `HAVING expr`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct HavingClause {
+    pub _having: PhantomData<keyword::Having>,
+    pub condition: Expr,
+}
+
 /// SELECT statement.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SelectStmt {
     pub _select: PhantomData<keyword::Select>,
+    pub distinct: Option<PhantomData<keyword::Distinct>>,
     pub items: Seq<SelectItem, punct::Comma>,
     pub from_clause: Option<FromClause>,
     pub where_clause: Option<WhereClause>,
+    pub group_by: Option<GroupByClause>,
+    pub having: Option<HavingClause>,
     pub order_by: Option<OrderByClause>,
     pub limit: Option<LimitClause>,
     pub offset: Option<OffsetClause>,

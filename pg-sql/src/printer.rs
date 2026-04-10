@@ -12,8 +12,8 @@ use crate::ast::delete::{DeleteStmt, TableAlias};
 use crate::ast::drop_table::DropTableStmt;
 use crate::ast::explain::ExplainStmt;
 use crate::ast::expr::{
-    BoolTestKind, Expr, FuncCall, ParenExpr, QualifiedRef, QualifiedWildcard, TypeCastFunc,
-    TypeName,
+    ArrayExpr, BoolTestKind, CastType, Expr, FuncCall, ParenExpr, QualifiedRef,
+    QualifiedWildcard, TypeCastFunc, TypeName,
 };
 use crate::ast::insert::InsertStmt;
 use crate::ast::select::{
@@ -74,6 +74,9 @@ fn print_statement_to(output: &mut String, stmt: &Statement) {
 
 fn print_select(output: &mut String, stmt: &SelectStmt) {
     output.push_str("SELECT ");
+    if stmt.distinct.is_some() {
+        output.push_str("DISTINCT ");
+    }
     for (i, item) in stmt.items.iter().enumerate() {
         if i > 0 {
             output.push_str(", ");
@@ -92,6 +95,19 @@ fn print_select(output: &mut String, stmt: &SelectStmt) {
     if let Some(where_clause) = &stmt.where_clause {
         output.push_str(" WHERE ");
         print_expr(output, &where_clause.condition);
+    }
+    if let Some(group_by) = &stmt.group_by {
+        output.push_str(" GROUP BY ");
+        for (i, e) in group_by.exprs.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            print_expr(output, e);
+        }
+    }
+    if let Some(having) = &stmt.having {
+        output.push_str(" HAVING ");
+        print_expr(output, &having.condition);
     }
     if let Some(order_by) = &stmt.order_by {
         print_order_by(output, order_by);
@@ -118,16 +134,52 @@ fn print_select_item(output: &mut String, item: &SelectItem) {
 }
 
 fn print_table_ref(output: &mut String, table_ref: &TableRef) {
+    print_simple_table_ref(output, &table_ref.base);
+    for join in &table_ref.joins {
+        if let Some(jt) = &join.join_type {
+            match jt {
+                crate::ast::select::JoinType::Left(_) => output.push_str(" LEFT"),
+                crate::ast::select::JoinType::Right(_) => output.push_str(" RIGHT"),
+                crate::ast::select::JoinType::Full(_) => output.push_str(" FULL"),
+                crate::ast::select::JoinType::Inner(_) => output.push_str(" INNER"),
+                crate::ast::select::JoinType::Cross(_) => output.push_str(" CROSS"),
+            }
+        }
+        output.push_str(" JOIN ");
+        print_simple_table_ref(output, &join.table);
+        if let Some(cond) = &join.condition {
+            match cond {
+                crate::ast::select::JoinCondition::On(on) => {
+                    output.push_str(" ON ");
+                    print_expr(output, &on.condition);
+                }
+                crate::ast::select::JoinCondition::Using(u) => {
+                    output.push_str(" USING (");
+                    for (i, col) in u.columns.inner.iter().enumerate() {
+                        if i > 0 {
+                            output.push_str(", ");
+                        }
+                        output.push_str(&col.0);
+                    }
+                    output.push(')');
+                }
+            }
+        }
+    }
+}
+
+fn print_simple_table_ref(output: &mut String, table_ref: &crate::ast::select::SimpleTableRef) {
+    use crate::ast::select::SimpleTableRef;
     match table_ref {
-        TableRef::Table(plain) => {
+        SimpleTableRef::Table(plain) => {
             output.push_str(&plain.name.0);
             if let Some(alias) = &plain.alias {
                 output.push(' ');
                 output.push_str(&alias.0);
             }
         }
-        TableRef::Func(func_call) => print_func_call(output, func_call),
-        TableRef::Inherited(inh) => {
+        SimpleTableRef::Func(func_call) => print_func_call(output, func_call),
+        SimpleTableRef::Inherited(inh) => {
             output.push_str(&inh.name.0);
             output.push('*');
             if let Some(alias) = &inh.alias {
@@ -135,8 +187,8 @@ fn print_table_ref(output: &mut String, table_ref: &TableRef) {
                 output.push_str(&alias.0);
             }
         }
-        TableRef::Subquery(sub) => print_subquery_ref(output, sub),
-        TableRef::Lateral(lat) => print_lateral_ref(output, lat),
+        SimpleTableRef::Subquery(sub) => print_subquery_ref(output, sub),
+        SimpleTableRef::Lateral(lat) => print_lateral_ref(output, lat),
     }
 }
 
@@ -514,9 +566,17 @@ fn print_compound_query(output: &mut String, query: &CompoundQuery) {
 
 fn print_compound_body(output: &mut String, body: &CompoundBody) {
     print_select_body(output, &body.body);
-    if let Some(union_all) = &body.union_all {
-        output.push_str(" UNION ALL ");
-        print_compound_query(output, &union_all.right);
+    if let Some(set_op) = &body.set_op {
+        match &set_op.op {
+            crate::ast::values::SetOp::UnionAll => output.push_str(" UNION ALL "),
+            crate::ast::values::SetOp::UnionDistinct => output.push_str(" UNION DISTINCT "),
+            crate::ast::values::SetOp::Union => output.push_str(" UNION "),
+            crate::ast::values::SetOp::ExceptAll => output.push_str(" EXCEPT ALL "),
+            crate::ast::values::SetOp::Except => output.push_str(" EXCEPT "),
+            crate::ast::values::SetOp::IntersectAll => output.push_str(" INTERSECT ALL "),
+            crate::ast::values::SetOp::Intersect => output.push_str(" INTERSECT "),
+        }
+        print_compound_query(output, &set_op.right);
     }
 }
 
@@ -599,10 +659,10 @@ fn print_expr(output: &mut String, expr: &Expr) {
             output.push(' ');
             print_binop_operand(output, right);
         }
-        Expr::Cast(inner, _, type_name) => {
+        Expr::Cast(inner, _, cast_type) => {
             print_expr(output, inner);
             output.push_str("::");
-            print_type_name(output, type_name);
+            print_cast_type(output, cast_type);
         }
         Expr::BoolTest(inner, _, kind) => {
             print_expr(output, inner);
@@ -635,19 +695,111 @@ fn print_expr(output: &mut String, expr: &Expr) {
             }
             output.push(')');
         }
+        Expr::NotInExpr(inner, suffix) => {
+            print_expr(output, inner);
+            output.push_str(" NOT IN (");
+            match &suffix.list.inner {
+                crate::ast::expr::InContent::Subquery(body) => {
+                    print_select_body(output, body);
+                }
+                crate::ast::expr::InContent::Exprs(exprs) => {
+                    for (i, val) in exprs.iter().enumerate() {
+                        if i > 0 {
+                            output.push_str(", ");
+                        }
+                        print_expr(output, val);
+                    }
+                }
+            }
+            output.push(')');
+        }
+        Expr::Subscript(inner, _, idx, _) => {
+            print_expr(output, inner);
+            output.push('[');
+            print_expr(output, idx);
+            output.push(']');
+        }
+        Expr::Concat(left, _, right) => {
+            print_binop_operand(output, left);
+            output.push_str(" || ");
+            print_binop_operand(output, right);
+        }
+        Expr::Mod(left, _, right) => {
+            print_binop_operand(output, left);
+            output.push_str(" % ");
+            print_binop_operand(output, right);
+        }
+        Expr::Exists(e) => {
+            output.push_str("EXISTS (");
+            print_select_body(output, &e.subquery.inner);
+            output.push(')');
+        }
+        Expr::Array(arr) => {
+            output.push_str("ARRAY");
+            match arr {
+                ArrayExpr::Bracket { elements, .. } => {
+                    output.push('[');
+                    for (i, elem) in elements.iter().enumerate() {
+                        if i > 0 {
+                            output.push_str(", ");
+                        }
+                        print_expr(output, elem);
+                    }
+                    output.push(']');
+                }
+                ArrayExpr::Subquery(sub) => {
+                    output.push('(');
+                    print_select_body(output, &sub.inner);
+                    output.push(')');
+                }
+            }
+        }
+        Expr::RowExpr(r) => {
+            output.push_str("ROW(");
+            for (i, val) in r.values.inner.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                print_expr(output, val);
+            }
+            output.push(')');
+        }
     }
 }
 
 fn print_func_call(output: &mut String, func_call: &FuncCall) {
     output.push_str(&func_call.name.0);
     output.push('(');
-    for (i, arg) in func_call.args.iter().enumerate() {
-        if i > 0 {
-            output.push_str(", ");
+    if func_call.star_arg {
+        output.push('*');
+    } else {
+        if func_call.distinct.is_some() {
+            output.push_str("DISTINCT ");
         }
-        print_expr(output, arg);
+        for (i, arg) in func_call.args.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            print_expr(output, arg);
+        }
     }
     output.push(')');
+    if let Some(window) = &func_call.window {
+        output.push_str(" OVER (");
+        if let Some(pb) = &window.partition_by {
+            output.push_str("PARTITION BY ");
+            for (i, e) in pb.exprs.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                print_expr(output, e);
+            }
+        }
+        if let Some(ob) = &window.order_by {
+            print_order_by(output, ob);
+        }
+        output.push(')');
+    }
 }
 
 /// Returns true if the expression is an infix binary operation.
@@ -664,6 +816,8 @@ fn is_infix(expr: &Expr) -> bool {
             | Expr::Gte(..)
             | Expr::Add(..)
             | Expr::Sub(..)
+            | Expr::Concat(..)
+            | Expr::Mod(..)
     )
 }
 
@@ -700,9 +854,29 @@ fn print_type_name(output: &mut String, type_name: &TypeName) {
         TypeName::Bool(_) => output.push_str("bool"),
         TypeName::Boolean(_) => output.push_str("boolean"),
         TypeName::Text(_) => output.push_str("text"),
+        TypeName::Integer(_) => output.push_str("integer"),
         TypeName::Int(_) => output.push_str("int"),
         TypeName::Serial(_) => output.push_str("SERIAL"),
+        TypeName::Numeric(_) => output.push_str("numeric"),
+        TypeName::Varchar(_) => output.push_str("varchar"),
         TypeName::Ident(ident) => output.push_str(&ident.0),
+    }
+}
+
+fn print_cast_type(output: &mut String, ct: &CastType) {
+    print_type_name(output, &ct.base);
+    if let Some(prec) = &ct.precision {
+        output.push('(');
+        for (i, p) in prec.inner.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            output.push_str(&p.0);
+        }
+        output.push(')');
+    }
+    if ct.array_suffix.is_some() {
+        output.push_str("[]");
     }
 }
 

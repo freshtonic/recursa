@@ -274,4 +274,24 @@ mod tests {
             &input.remaining()[..input.remaining().len().min(100)]
         );
     }
+
+
+    #[test]
+    fn parse_with_sql_fixture() {
+        let sql = std::fs::read_to_string("fixtures/sql/with.sql")
+            .expect("with.sql fixture not found");
+        let mut input = Input::new(&sql);
+        let commands = parse_sql_file(&mut input).unwrap();
+        assert!(
+            commands.len() > 10,
+            "expected >10 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
+    }
 }

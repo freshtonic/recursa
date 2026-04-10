@@ -79,6 +79,24 @@ A manual `Parse` impl means either:
 
 Every manual `Parse` impl must have a comment explaining which of these applies and what would be needed to eliminate it. Treat manual impls as tech debt, not as a normal pattern.
 
+## Always Use Surrounded for Delimited Groups
+
+Any content enclosed in matching delimiters — `( ... )`, `[ ... ]`, `{ ... }`, `< ... >` — must use `Surrounded<Open, Inner, Close>`. Never store open/close delimiter tokens as separate struct fields.
+
+```rust
+// Correct
+pub struct FuncArgs {
+    pub args: Surrounded<LParen, Seq<Expr, Comma>, RParen>,
+}
+
+// Wrong: separate delimiter fields
+pub struct FuncArgs {
+    pub lparen: LParen,
+    pub args: Seq<Expr, Comma>,
+    pub rparen: RParen,
+}
+```
+
 ## No Manual Clone or Debug Impls
 
 Always use `#[derive(Clone)]` and `#[derive(Debug)]`. If derive doesn't work, it means a field type or variant type is missing Clone or Debug — fix the dependency, don't write a manual impl.

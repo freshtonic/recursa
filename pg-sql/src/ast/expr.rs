@@ -5,7 +5,7 @@
 /// IN (list)).
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
@@ -21,6 +21,15 @@ pub enum InContent {
 /// `IN (expr, ...)` or `IN (subquery)` postfix suffix.
 pub type InList = Surrounded<punct::LParen, InContent, punct::RParen>;
 
+/// Parenthesized precision/scale for type names: `(10,2)` or `(3)`.
+pub type TypePrecision =
+    Surrounded<punct::LParen, Seq<literal::IntegerLit, punct::Comma>, punct::RParen>;
+
+/// Array type suffix: `[]`
+#[derive(Debug, Clone, PartialEq, Eq, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ArrayTypeSuffix(pub punct::LBracket, pub punct::RBracket);
+
 /// Type name for casts.
 #[derive(Debug, Clone, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
@@ -28,8 +37,11 @@ pub enum TypeName {
     Bool(keyword::Bool),
     Boolean(keyword::Boolean),
     Text(keyword::Text),
+    Integer(keyword::Integer),
     Int(keyword::Int),
     Serial(keyword::Serial),
+    Numeric(keyword::Numeric),
+    Varchar(keyword::Varchar),
     Ident(literal::Ident),
 }
 
@@ -106,19 +118,182 @@ pub struct QualifiedWildcard {
     pub star: punct::Star,
 }
 
+/// Optional DISTINCT keyword in function calls: `count(DISTINCT x)`
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct DistinctKw(pub keyword::Distinct);
+
+/// Window specification: `OVER (...)` or `OVER ()`.
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct WindowSpec {
+    pub _over: keyword::Over,
+    pub _lparen: punct::LParen,
+    pub partition_by: Option<WindowPartitionBy>,
+    pub order_by: Option<crate::ast::select::OrderByClause>,
+    pub _rparen: punct::RParen,
+}
+
+/// PARTITION BY in window: `PARTITION BY expr, ...`
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct WindowPartitionBy {
+    pub _partition: keyword::Partition,
+    pub _by: keyword::By,
+    pub exprs: Seq<Expr, punct::Comma>,
+}
+
 /// Function call: `name(arg1, arg2, ...)`
 ///
 /// Keeps explicit `lparen` field rather than using `Surrounded` because the
 /// derive macro chains `IS_TERMINAL` fields for `first_pattern` — the
 /// `Ident + LParen` pattern is what disambiguates `FuncCall` from a plain
 /// `Ident` in `TableRef` enum lookahead.
-#[derive(Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
+///
+/// Manual Parse impl needed because the optional `distinct` keyword inside
+/// the argument list can conflict with identifier parsing, and the optional
+/// window spec after `)` requires careful handling.
+///
+/// Manual Visit impl needed because `star_arg: bool` doesn't implement Visit.
+/// To eliminate this, recursa would need `#[visit(skip)]` field attribute support.
 pub struct FuncCall {
     pub name: literal::Ident,
     pub lparen: punct::LParen,
+    /// True when function is called as `func(*)` (e.g., `count(*)`)
+    pub star_arg: bool,
+    pub distinct: Option<DistinctKw>,
     pub args: Seq<Expr, punct::Comma>,
     pub rparen: punct::RParen,
+    pub window: Option<WindowSpec>,
+}
+
+impl std::fmt::Debug for FuncCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FuncCall")
+            .field("name", &self.name)
+            .field("star_arg", &self.star_arg)
+            .field("distinct", &self.distinct)
+            .field("args", &self.args)
+            .field("window", &self.window)
+            .finish()
+    }
+}
+
+impl Clone for FuncCall {
+    fn clone(&self) -> Self {
+        FuncCall {
+            name: self.name.clone(),
+            lparen: self.lparen.clone(),
+            star_arg: self.star_arg,
+            distinct: self.distinct.clone(),
+            args: self.args.clone(),
+            rparen: self.rparen.clone(),
+            window: self.window.clone(),
+        }
+    }
+}
+
+impl recursa::visitor::AsNodeKey for FuncCall {}
+
+impl Visit for FuncCall {
+    fn visit<V: recursa::visitor::Visitor>(
+        &self,
+        _visitor: &mut V,
+    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+impl<'input> Parse<'input> for FuncCall {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        // Chain ident + ignore? + lparen for longest-match disambiguation
+        static PATTERN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        PATTERN.get_or_init(|| {
+            let sep = format!("(?:{})?", SqlRules::IGNORE);
+            format!(
+                "{}{}{}",
+                literal::Ident::first_pattern(),
+                sep,
+                punct::LParen::first_pattern()
+            )
+        })
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| {
+            regex::Regex::new(&format!(r"\A(?:{})", Self::first_pattern())).unwrap()
+        });
+        re.is_match(input.remaining())
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        let name = literal::Ident::parse(input, rules)?;
+        R::consume_ignored(input);
+        let lparen = punct::LParen::parse(input, rules)?;
+        R::consume_ignored(input);
+
+        // Check for count(*) pattern
+        let star_arg = if punct::Star::peek(input, rules) {
+            // Check if next after star is rparen
+            let mut fork = input.fork();
+            let _ = punct::Star::parse(&mut fork, rules);
+            R::consume_ignored(&mut fork);
+            if punct::RParen::peek(&fork, rules) {
+                input.advance(fork.cursor() - input.cursor());
+                R::consume_ignored(input);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        let (distinct, args) = if star_arg {
+            (None, Seq::empty())
+        } else {
+            // Try DISTINCT keyword before args
+            let distinct = if keyword::Distinct::peek(input, rules) {
+                let mut fork = input.fork();
+                match keyword::Distinct::parse(&mut fork, rules) {
+                    Ok(_) => {
+                        input.advance(fork.cursor() - input.cursor());
+                        R::consume_ignored(input);
+                        Some(DistinctKw(keyword::Distinct))
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+            let args = Seq::<Expr, punct::Comma>::parse(input, rules)?;
+            R::consume_ignored(input);
+            (distinct, args)
+        };
+
+        let rparen = punct::RParen::parse(input, rules)?;
+        R::consume_ignored(input);
+
+        // Check for window spec
+        let window = if keyword::Over::peek(input, rules) {
+            Some(WindowSpec::parse(input, rules)?)
+        } else {
+            None
+        };
+
+        Ok(FuncCall {
+            name,
+            lparen,
+            star_arg,
+            distinct,
+            args,
+            rparen,
+            window,
+        })
+    }
 }
 
 /// Content inside parentheses: either a subquery or a comma-separated expression list.
@@ -133,6 +308,138 @@ pub enum ParenContent {
 
 /// Parenthesized expression: `(expr)`, `(expr, expr, ...)`, or `(SELECT/VALUES ...)`
 pub type ParenExpr = Surrounded<punct::LParen, ParenContent, punct::RParen>;
+
+/// EXISTS subquery: `EXISTS (SELECT ...)`
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct ExistsExpr {
+    pub _exists: keyword::Exists,
+    pub subquery: Surrounded<punct::LParen, Box<crate::ast::select::SelectBody>, punct::RParen>,
+}
+
+/// ARRAY constructor: `ARRAY[expr, ...]` or `ARRAY(subquery)`
+///
+/// Manual Parse impl needed because ARRAY[] uses brackets and ARRAY() uses parens.
+/// To eliminate this manual impl, recursa would need bracket-delimited support.
+#[derive(Visit, Debug, Clone)]
+pub enum ArrayExpr {
+    Bracket {
+        lbracket: punct::LBracket,
+        elements: Seq<Expr, punct::Comma>,
+        rbracket: punct::RBracket,
+    },
+    Subquery(Surrounded<punct::LParen, Box<crate::ast::select::SelectBody>, punct::RParen>),
+}
+
+impl<'input> Parse<'input> for ArrayExpr {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        keyword::Array::first_pattern()
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        keyword::Array::peek(input, rules)
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        keyword::Array::parse(input, rules)?;
+        R::consume_ignored(input);
+        if punct::LBracket::peek(input, rules) {
+            let lbracket = punct::LBracket::parse(input, rules)?;
+            R::consume_ignored(input);
+            let elements = Seq::<Expr, punct::Comma>::parse(input, rules)?;
+            R::consume_ignored(input);
+            let rbracket = punct::RBracket::parse(input, rules)?;
+            Ok(ArrayExpr::Bracket {
+                lbracket,
+                elements,
+                rbracket,
+            })
+        } else {
+            let subquery = Surrounded::parse(input, rules)?;
+            Ok(ArrayExpr::Subquery(subquery))
+        }
+    }
+}
+
+/// ROW constructor: `ROW(expr, ...)`
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct RowExpr {
+    pub _row: keyword::Row,
+    pub values: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
+}
+
+/// Cast type with optional precision/array suffix: `numeric(10,0)`, `integer[]`
+///
+/// Manual Parse impl needed because the optional precision parentheses conflict
+/// with other uses of LParen in the expression grammar. We parse greedily.
+/// To eliminate this manual impl, recursa would need context-aware Optional.
+#[derive(Visit, Debug, Clone)]
+pub struct CastType {
+    pub base: TypeName,
+    pub precision: Option<TypePrecision>,
+    pub array_suffix: Option<ArrayTypeSuffix>,
+}
+
+impl<'input> Parse<'input> for CastType {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        TypeName::first_pattern()
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        TypeName::peek(input, rules)
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        let base = TypeName::parse(input, rules)?;
+        R::consume_ignored(input);
+        // Try precision parentheses
+        let precision = if punct::LParen::peek(input, rules) {
+            let mut fork = input.fork();
+            match TypePrecision::parse(&mut fork, rules) {
+                Ok(p) => {
+                    input.advance(fork.cursor() - input.cursor());
+                    R::consume_ignored(input);
+                    Some(p)
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        // Try array suffix []
+        let array_suffix = if punct::LBracket::peek(input, rules) {
+            let mut fork = input.fork();
+            match ArrayTypeSuffix::parse(&mut fork, rules) {
+                Ok(s) => {
+                    input.advance(fork.cursor() - input.cursor());
+                    Some(s)
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        Ok(CastType {
+            base,
+            precision,
+            array_suffix,
+        })
+    }
+}
+
+/// NOT IN list: `expr NOT IN (val, ...)` suffix.
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct NotInSuffix {
+    pub _not: keyword::Not,
+    pub _in: keyword::In,
+    pub list: InList,
+}
 
 /// Function-style type cast: `bool 'value'`, `text 'hello'`
 #[derive(Parse, Visit, Debug, Clone)]
@@ -157,10 +464,16 @@ pub enum Expr {
     // --- Postfix ---
     /// Postgres-style cast: `expr::type`
     #[parse(postfix, bp = 20)]
-    Cast(Box<Expr>, punct::ColonColon, TypeName),
+    Cast(Box<Expr>, punct::ColonColon, CastType),
+    /// Array subscript: `expr[idx]`
+    #[parse(postfix, bp = 20)]
+    Subscript(Box<Expr>, punct::LBracket, Box<Expr>, punct::RBracket),
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
     BoolTest(Box<Expr>, keyword::Is, BoolTestKind),
+    /// NOT IN list: `expr NOT IN (val, ...)`
+    #[parse(postfix, bp = 6)]
+    NotInExpr(Box<Expr>, NotInSuffix),
     /// IN list: `expr IN (val, ...)`
     #[parse(postfix, bp = 6)]
     InExpr(Box<Expr>, keyword::In, InList),
@@ -183,12 +496,27 @@ pub enum Expr {
     Lt(Box<Expr>, punct::Lt, Box<Expr>),
     #[parse(infix, bp = 5)]
     Gt(Box<Expr>, punct::Gt, Box<Expr>),
+    /// String concatenation: `expr || expr`
+    #[parse(infix, bp = 10)]
+    Concat(Box<Expr>, punct::Concat, Box<Expr>),
     #[parse(infix, bp = 10)]
     Add(Box<Expr>, punct::Plus, Box<Expr>),
     #[parse(infix, bp = 10)]
     Sub(Box<Expr>, punct::Minus, Box<Expr>),
+    /// Modulo: `expr % expr`
+    #[parse(infix, bp = 11)]
+    Mod(Box<Expr>, punct::Percent, Box<Expr>),
 
     // --- Atoms ---
+    /// EXISTS subquery: `EXISTS (SELECT ...)`
+    #[parse(atom)]
+    Exists(ExistsExpr),
+    /// ARRAY constructor: `ARRAY[...]` or `ARRAY(...)`
+    #[parse(atom)]
+    Array(ArrayExpr),
+    /// ROW constructor: `ROW(...)`
+    #[parse(atom)]
+    RowExpr(RowExpr),
     /// Function-style type cast: `bool 't'` -- must come before ColumnRef
     /// since type keywords like `bool` overlap with identifiers
     #[parse(atom)]
