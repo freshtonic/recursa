@@ -7,21 +7,6 @@ use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 use crate::rules::SqlRules;
 use crate::tokens;
 
-/// Boolean test kinds for IS [NOT] TRUE/FALSE/UNKNOWN/NULL.
-///
-/// No derive(Parse): keyword-sequence-to-variant mapping is handled manually.
-#[derive(Debug, Clone, PartialEq, Eq, Visit)]
-pub enum BoolTestKind {
-    IsTrue,
-    IsNotTrue,
-    IsFalse,
-    IsNotFalse,
-    IsUnknown,
-    IsNotUnknown,
-    IsNull,
-    IsNotNull,
-}
-
 /// Type name for casts.
 #[derive(Debug, Clone, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
@@ -33,81 +18,57 @@ pub enum TypeName {
     Ident(tokens::Ident),
 }
 
-/// Parses the suffix after `IS` in a boolean test: [NOT] TRUE/FALSE/UNKNOWN/NULL.
+// --- Boolean test suffix structs ---
+// NOT variants listed before non-NOT variants so the longer pattern wins via
+// longest-match lookahead (e.g., "NOT TRUE" matches before "TRUE").
+
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IsNotTrue { pub not_kw: tokens::Not, pub true_kw: tokens::True }
+
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IsNotFalse { pub not_kw: tokens::Not, pub false_kw: tokens::False }
+
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IsNotUnknown { pub not_kw: tokens::Not, pub unknown_kw: tokens::Unknown }
+
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IsNotNull { pub not_kw: tokens::Not, pub null_kw: tokens::Null }
+
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IsTrue { pub true_kw: tokens::True }
+
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IsFalse { pub false_kw: tokens::False }
+
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IsUnknown { pub unknown_kw: tokens::Unknown }
+
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IsNull { pub null_kw: tokens::Null }
+
+/// Boolean test suffix: the part after `IS` in `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`.
 ///
-/// Manual Parse: complex keyword dispatch with optional NOT that the derive macro
-/// cannot express.
-#[derive(Debug, Clone, Visit)]
-pub struct BoolTestSuffix {
-    pub kind: BoolTestKind,
-}
-
-impl<'input> Parse<'input> for BoolTestSuffix {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        r"(?i:NOT|TRUE|FALSE|UNKNOWN|NULL)\b"
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
-        let mut fork = input.fork();
-        SqlRules::consume_ignored(&mut fork);
-        tokens::Not::peek(&fork, &SqlRules)
-            || tokens::True::peek(&fork, &SqlRules)
-            || tokens::False::peek(&fork, &SqlRules)
-            || tokens::Unknown::peek(&fork, &SqlRules)
-            || tokens::Null::peek(&fork, &SqlRules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
-        SqlRules::consume_ignored(input);
-
-        let negated = if tokens::Not::peek(input, &SqlRules) {
-            tokens::Not::parse(input, &SqlRules)?;
-            SqlRules::consume_ignored(input);
-            true
-        } else {
-            false
-        };
-
-        let kind = if tokens::True::peek(input, &SqlRules) {
-            tokens::True::parse(input, &SqlRules)?;
-            if negated {
-                BoolTestKind::IsNotTrue
-            } else {
-                BoolTestKind::IsTrue
-            }
-        } else if tokens::False::peek(input, &SqlRules) {
-            tokens::False::parse(input, &SqlRules)?;
-            if negated {
-                BoolTestKind::IsNotFalse
-            } else {
-                BoolTestKind::IsFalse
-            }
-        } else if tokens::Unknown::peek(input, &SqlRules) {
-            tokens::Unknown::parse(input, &SqlRules)?;
-            if negated {
-                BoolTestKind::IsNotUnknown
-            } else {
-                BoolTestKind::IsUnknown
-            }
-        } else if tokens::Null::peek(input, &SqlRules) {
-            tokens::Null::parse(input, &SqlRules)?;
-            if negated {
-                BoolTestKind::IsNotNull
-            } else {
-                BoolTestKind::IsNull
-            }
-        } else {
-            return Err(ParseError::new(
-                input.source().to_string(),
-                input.cursor()..input.cursor(),
-                "TRUE, FALSE, UNKNOWN, or NULL",
-            ));
-        };
-
-        Ok(BoolTestSuffix { kind })
-    }
+/// NOT variants are listed first so the combined peek regex disambiguates
+/// via longest match (e.g., `NOT TRUE` is longer than `TRUE`).
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum BoolTestKind {
+    IsNotTrue(IsNotTrue),
+    IsNotFalse(IsNotFalse),
+    IsNotUnknown(IsNotUnknown),
+    IsNotNull(IsNotNull),
+    IsTrue(IsTrue),
+    IsFalse(IsFalse),
+    IsUnknown(IsUnknown),
+    IsNull(IsNull),
 }
 
 // --- Atom wrapper structs ---
@@ -337,7 +298,7 @@ pub enum Expr {
     Cast(Box<Expr>, tokens::ColonColon, TypeName),
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
-    BoolTest(Box<Expr>, tokens::Is, BoolTestSuffix),
+    BoolTest(Box<Expr>, tokens::Is, BoolTestKind),
 
     // --- Infix ---
     // Multi-char operators before single-char to avoid partial matching

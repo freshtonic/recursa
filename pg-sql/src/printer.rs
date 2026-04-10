@@ -231,17 +231,17 @@ fn print_expr(output: &mut String, expr: &Expr) {
             output.push_str("::");
             print_type_name(output, type_name);
         }
-        Expr::BoolTest(inner, _, suffix) => {
+        Expr::BoolTest(inner, _, kind) => {
             print_expr(output, inner);
-            match &suffix.kind {
-                BoolTestKind::IsTrue => output.push_str(" IS TRUE"),
-                BoolTestKind::IsNotTrue => output.push_str(" IS NOT TRUE"),
-                BoolTestKind::IsFalse => output.push_str(" IS FALSE"),
-                BoolTestKind::IsNotFalse => output.push_str(" IS NOT FALSE"),
-                BoolTestKind::IsUnknown => output.push_str(" IS UNKNOWN"),
-                BoolTestKind::IsNotUnknown => output.push_str(" IS NOT UNKNOWN"),
-                BoolTestKind::IsNull => output.push_str(" IS NULL"),
-                BoolTestKind::IsNotNull => output.push_str(" IS NOT NULL"),
+            match kind {
+                BoolTestKind::IsTrue(_) => output.push_str(" IS TRUE"),
+                BoolTestKind::IsNotTrue(_) => output.push_str(" IS NOT TRUE"),
+                BoolTestKind::IsFalse(_) => output.push_str(" IS FALSE"),
+                BoolTestKind::IsNotFalse(_) => output.push_str(" IS NOT FALSE"),
+                BoolTestKind::IsUnknown(_) => output.push_str(" IS UNKNOWN"),
+                BoolTestKind::IsNotUnknown(_) => output.push_str(" IS NOT UNKNOWN"),
+                BoolTestKind::IsNull(_) => output.push_str(" IS NULL"),
+                BoolTestKind::IsNotNull(_) => output.push_str(" IS NOT NULL"),
             }
         }
     }
