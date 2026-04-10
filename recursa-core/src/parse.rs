@@ -122,6 +122,26 @@ impl<'input, T: Parse<'input>> Parse<'input> for Option<T> {
     }
 }
 
+/// Blanket implementation: `PhantomData<T>` parses `T` but discards the value.
+/// Useful for keyword tokens in structs where the token is needed for parsing
+/// but carries no information worth storing.
+impl<'input, T: Parse<'input>> Parse<'input> for std::marker::PhantomData<T> {
+    const IS_TERMINAL: bool = T::IS_TERMINAL;
+
+    fn first_pattern() -> &'static str {
+        T::first_pattern()
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        T::peek(input, rules)
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        T::parse(input, rules)?;
+        Ok(std::marker::PhantomData)
+    }
+}
+
 /// Blanket implementation: `Vec<T>` parses zero-or-more `T` with no separator.
 /// Repeatedly parses `T` while `T::peek` succeeds.
 impl<'input, T: Parse<'input>> Parse<'input> for Vec<T> {

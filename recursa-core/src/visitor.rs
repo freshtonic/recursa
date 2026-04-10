@@ -114,6 +114,15 @@ impl<T: Visit> Visit for Vec<T> {
     }
 }
 
+// -- PhantomData is transparent for Visit (nothing to visit) --
+
+impl<T: 'static> AsNodeKey for std::marker::PhantomData<T> {}
+impl<T: 'static> Visit for std::marker::PhantomData<T> {
+    fn visit<V: Visitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        ControlFlow::Continue(())
+    }
+}
+
 // -- Leaf Visit impl for String (used by literals! macro types) --
 
 impl AsNodeKey for String {}

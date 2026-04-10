@@ -7,6 +7,7 @@ mod parse;
 mod rules;
 mod scan;
 pub mod seq;
+pub mod surrounded;
 pub mod visitor;
 
 pub use error::ParseError;
