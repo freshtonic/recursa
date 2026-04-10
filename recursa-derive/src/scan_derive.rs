@@ -179,7 +179,14 @@ fn derive_scan_unit_struct(
     let anchored_pattern = format!(r"\A(?:{})", pattern);
 
     let lt = quote! { '_ };
-    let parse_impl = generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt, postcondition);
+    let parse_impl = generate_parse_for_scan(
+        name,
+        &impl_generics,
+        &ty_generics,
+        where_clause,
+        &lt,
+        postcondition,
+    );
 
     Ok(quote! {
         impl #impl_generics ::recursa_core::Scan<'_> for #name #ty_generics #where_clause {
@@ -213,8 +220,14 @@ fn derive_scan_tuple_struct(
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
         let lt_tokens = quote! { #lt };
-        let parse_impl =
-            generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt_tokens, postcondition);
+        let parse_impl = generate_parse_for_scan(
+            name,
+            &impl_generics,
+            &ty_generics,
+            where_clause,
+            &lt_tokens,
+            postcondition,
+        );
 
         Ok(quote! {
             impl #impl_generics ::recursa_core::Scan<#lt> for #name #ty_generics #where_clause {
@@ -236,8 +249,14 @@ fn derive_scan_tuple_struct(
         // Owned variant: struct Foo(String)
         let lt = quote! { '_ };
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-        let parse_impl =
-            generate_parse_for_scan(name, &impl_generics, &ty_generics, where_clause, &lt, postcondition);
+        let parse_impl = generate_parse_for_scan(
+            name,
+            &impl_generics,
+            &ty_generics,
+            where_clause,
+            &lt,
+            postcondition,
+        );
 
         Ok(quote! {
             impl #impl_generics ::recursa_core::Scan<'_> for #name #ty_generics #where_clause {
