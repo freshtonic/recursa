@@ -22,8 +22,11 @@ pub struct InsertStmt {
 
 /// Optional column list: `(col1, col2, ...)`.
 ///
-/// Manual Parse: peek requires two-token lookahead (LParen then Ident)
-/// to distinguish `(col1, col2)` from `VALUES (expr, expr)`.
+/// Manual Parse (recursa gap): Option<ColumnList> needs ColumnList::peek to
+/// return false when the parens contain expressions (VALUES clause), not
+/// identifiers. A derived ColumnList's first_pattern starts with `\(` which
+/// also matches the VALUES clause. Option<T> propagates parse errors when
+/// peek succeeds, so it can't recover from the misidentification.
 #[derive(Debug, Visit)]
 pub struct ColumnList {
     pub lparen: tokens::LParen,
