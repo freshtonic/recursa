@@ -1,30 +1,64 @@
+pub mod analyze;
+pub mod create_function;
+pub mod create_index;
 pub mod create_table;
 pub mod delete;
 pub mod drop_table;
+pub mod explain;
 pub mod expr;
 pub mod insert;
+pub mod partition;
 pub mod select;
+pub mod set_reset;
+pub mod values;
 
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 
+use self::analyze::AnalyzeStmt;
+use self::create_function::{CreateFunctionStmt, DropFunctionStmt};
+use self::create_index::{CreateIndexStmt, DropIndexStmt};
 use self::create_table::CreateTableStmt;
 use self::delete::DeleteStmt;
 use self::drop_table::DropTableStmt;
+use self::explain::ExplainStmt;
 use self::insert::InsertStmt;
 use self::select::SelectStmt;
+use self::set_reset::{ResetStmt, SetStmt};
+use self::values::{CompoundQuery, TableStmt};
 
 /// Top-level SQL statement.
+///
+/// Variant ordering matters for disambiguation. More specific (longer leading
+/// keyword sequences) must come before less specific:
+/// - `CreateFunction` and `CreateIndex` come before `CreateTable` because they
+///   have `CREATE FUNCTION` / `CREATE INDEX` which are longer than `CREATE TABLE`.
+///   `CreateTable` handles regular, partitioned, and partition-of forms internally.
+/// - `DropFunction` and `DropIndex` come before `DropTable` for the same reason.
+/// - `Explain` wraps a SelectStmt, so it must come before `Select`.
+/// - `Values` (CompoundQuery) starts with VALUES/TABLE/SELECT so it could
+///   conflict. It must come after Explain but before bare Select to handle
+///   `VALUES ... UNION ALL ...` and `TABLE tablename`.
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum Statement {
-    Select(SelectStmt),
+    Explain(ExplainStmt),
+    CreateFunction(CreateFunctionStmt),
+    CreateIndex(CreateIndexStmt),
     CreateTable(CreateTableStmt),
     Insert(InsertStmt),
     Delete(DeleteStmt),
+    DropFunction(DropFunctionStmt),
+    DropIndex(DropIndexStmt),
     DropTable(DropTableStmt),
+    Set(SetStmt),
+    Reset(ResetStmt),
+    Analyze(AnalyzeStmt),
+    Select(SelectStmt),
+    Values(CompoundQuery),
+    Table(TableStmt),
 }
 
 /// A SQL statement followed by a semicolon.
@@ -193,6 +227,25 @@ mod tests {
         assert!(
             commands.len() > 3,
             "expected >3 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
+    }
+
+    #[test]
+    fn parse_select_sql_fixture() {
+        let sql = std::fs::read_to_string("fixtures/sql/select.sql")
+            .expect("select.sql fixture not found");
+        let mut input = Input::new(&sql);
+        let commands = parse_sql_file(&mut input).unwrap();
+        assert!(
+            commands.len() > 10,
+            "expected >10 commands, got {}",
             commands.len()
         );
         assert!(

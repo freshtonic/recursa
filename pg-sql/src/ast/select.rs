@@ -2,7 +2,8 @@
 use std::marker::PhantomData;
 
 use recursa::seq::Seq;
-use recursa::{Parse, Visit};
+use recursa::surrounded::Surrounded;
+use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::ast::expr::{Expr, FuncCall};
 use crate::rules::SqlRules;
@@ -25,21 +26,173 @@ pub struct Alias {
 }
 
 /// FROM clause: `FROM table [, table ...]`.
-#[derive(Debug, Parse, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FromClause {
     pub _from: PhantomData<keyword::From>,
     pub tables: Seq<TableRef, punct::Comma>,
 }
 
-/// A table reference: either a plain table name or a function call.
-/// FuncCall listed first — its longer first_pattern (ident + lparen) wins
-/// over plain Ident via longest-match dispatch.
+/// Table name with inheritance marker and optional alias: `person* p`
+///
+/// Manual Parse impl required because `Option<Ident>` propagates
+/// postcondition errors when peek matches a keyword pattern. The
+/// fork-based approach tries Ident and falls back to None on failure.
+/// To eliminate this manual impl, recursa would need Option to
+/// return None on postcondition failure (try-parse semantics).
+#[derive(Debug, Clone, Visit)]
+pub struct InheritedTable {
+    pub name: literal::Ident,
+    pub _star: punct::Star,
+    pub alias: Option<literal::Ident>,
+}
+
+impl<'input> Parse<'input> for InheritedTable {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        // Chain ident + ignore? + star for longest-match disambiguation
+        // against plain Table(Ident) in the TableRef enum.
+        static PATTERN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        PATTERN.get_or_init(|| {
+            let sep = format!("(?:{})?", SqlRules::IGNORE);
+            format!(
+                "{}{}{}",
+                literal::Ident::first_pattern(),
+                sep,
+                punct::Star::first_pattern()
+            )
+        })
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
+        // Use a regex that requires ident + star for lookahead
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| {
+            regex::Regex::new(&format!(r"\A(?:{})", Self::first_pattern())).unwrap()
+        });
+        re.is_match(input.remaining())
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        let name = literal::Ident::parse(input, rules)?;
+        R::consume_ignored(input);
+        let _star = punct::Star::parse(input, rules)?;
+        R::consume_ignored(input);
+
+        let alias = {
+            let mut fork = input.fork();
+            if literal::Ident::peek(&fork, rules) {
+                match literal::Ident::parse(&mut fork, rules) {
+                    Ok(ident) => {
+                        input.advance(fork.cursor() - input.cursor());
+                        Some(ident)
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        };
+
+        Ok(InheritedTable { name, _star, alias })
+    }
+}
+
+/// Table alias: `AS name [(col1, col2)]` or bare `name [(col1, col2)]`.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TableAlias {
+    pub _as: Option<PhantomData<keyword::As>>,
+    pub name: literal::AliasName,
+    pub columns:
+        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+}
+
+/// Subquery in FROM: `(SELECT ...) AS alias`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SubqueryRef {
+    pub _lparen: punct::LParen,
+    pub query: Box<SelectBody>,
+    pub _rparen: punct::RParen,
+    pub alias: TableAlias,
+}
+
+/// LATERAL subquery in FROM: `LATERAL (VALUES(...)) v`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct LateralRef {
+    pub _lateral: PhantomData<keyword::Lateral>,
+    pub _lparen: punct::LParen,
+    pub query: Box<SelectBody>,
+    pub _rparen: punct::RParen,
+    pub alias: Option<literal::AliasName>,
+}
+
+/// Plain table reference with optional alias: `tablename [alias]`
+///
+/// Manual Parse impl required because `Option<Ident>` propagates
+/// postcondition errors when peek matches a keyword pattern. Uses
+/// fork-based approach to try Ident and fall back to None on failure.
+/// To eliminate this manual impl, recursa would need Option to
+/// return None on postcondition failure (try-parse semantics).
+#[derive(Debug, Clone, Visit)]
+pub struct PlainTable {
+    pub name: literal::Ident,
+    pub alias: Option<literal::Ident>,
+}
+
+impl<'input> Parse<'input> for PlainTable {
+    const IS_TERMINAL: bool = false;
+
+    fn first_pattern() -> &'static str {
+        literal::Ident::first_pattern()
+    }
+
+    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
+        literal::Ident::peek(input, rules)
+    }
+
+    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
+        let name = literal::Ident::parse(input, rules)?;
+        R::consume_ignored(input);
+
+        let alias = {
+            let mut fork = input.fork();
+            if literal::Ident::peek(&fork, rules) {
+                match literal::Ident::parse(&mut fork, rules) {
+                    Ok(ident) => {
+                        input.advance(fork.cursor() - input.cursor());
+                        Some(ident)
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        };
+
+        Ok(PlainTable { name, alias })
+    }
+}
+
+/// A table reference: function call, inherited table, subquery, lateral, or plain table.
+///
+/// Variant ordering matters for disambiguation via longest-match-wins:
+/// - Lateral before Func: both match `keyword(` pattern length, Lateral
+///   wins via declaration order since LATERAL is a keyword (not an Ident).
+/// - Func before Inherited/Table: FuncCall's `ident(` pattern is longer
+///   than bare ident.
+/// - Inherited before Table: `person*` matches longer than `person`.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TableRef {
+    Lateral(LateralRef),
     Func(FuncCall),
-    Table(literal::Ident),
+    Subquery(SubqueryRef),
+    Inherited(InheritedTable),
+    Table(PlainTable),
 }
 
 /// WHERE clause: `WHERE expr`.
@@ -50,17 +203,93 @@ pub struct WhereClause {
     pub condition: Expr,
 }
 
-/// ORDER BY clause: `ORDER BY expr [, expr ...]`.
-#[derive(Debug, Parse, Visit)]
+/// USING operator in ORDER BY: `USING > | USING <`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum UsingOp {
+    Gt(punct::Gt),
+    Lt(punct::Lt),
+}
+
+/// USING clause in ORDER BY: `USING op`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct UsingClause {
+    pub _using: PhantomData<keyword::Using>,
+    pub op: UsingOp,
+}
+
+/// Sort direction: ASC or DESC.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum SortDir {
+    Asc(keyword::Asc),
+    Desc(keyword::Desc),
+}
+
+/// NULLS FIRST or NULLS LAST.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum NullsOrder {
+    First(NullsFirst),
+    Last(NullsLast),
+}
+
+/// NULLS FIRST
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NullsFirst(PhantomData<keyword::Nulls>, PhantomData<keyword::First>);
+
+/// NULLS LAST
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NullsLast(PhantomData<keyword::Nulls>, PhantomData<keyword::Last>);
+
+/// A single ORDER BY item: `expr [ASC|DESC] [USING op] [NULLS FIRST|LAST]`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct OrderByItem {
+    pub expr: Expr,
+    pub dir: Option<SortDir>,
+    pub using: Option<UsingClause>,
+    pub nulls: Option<NullsOrder>,
+}
+
+/// ORDER BY clause: `ORDER BY item [, item ...]`.
+#[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrderByClause {
     pub _order: PhantomData<keyword::Order>,
     pub _by: PhantomData<keyword::By>,
-    pub items: Seq<Expr, punct::Comma>,
+    pub items: Seq<OrderByItem, punct::Comma>,
+}
+
+/// OFFSET clause: `OFFSET expr`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct OffsetClause {
+    pub _offset: PhantomData<keyword::Offset>,
+    pub count: Expr,
+}
+
+/// LIMIT clause: `LIMIT expr`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct LimitClause {
+    pub _limit: PhantomData<keyword::Limit>,
+    pub count: Expr,
+}
+
+/// FOR UPDATE clause.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ForUpdateClause {
+    pub _for: PhantomData<keyword::For>,
+    pub _update: PhantomData<keyword::Update>,
 }
 
 /// SELECT statement.
-#[derive(Debug, Parse, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SelectStmt {
     pub _select: PhantomData<keyword::Select>,
@@ -68,6 +297,27 @@ pub struct SelectStmt {
     pub from_clause: Option<FromClause>,
     pub where_clause: Option<WhereClause>,
     pub order_by: Option<OrderByClause>,
+    pub limit: Option<LimitClause>,
+    pub offset: Option<OffsetClause>,
+    pub for_update: Option<ForUpdateClause>,
+}
+
+/// A SELECT body that can appear in subqueries -- either SELECT or VALUES.
+/// SelectStmt must come before ValuesStmt so `SELECT` keyword wins over ambiguity.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum SelectBody {
+    Select(SelectStmt),
+    Values(ValuesBody),
+}
+
+/// VALUES body: `VALUES (expr, ...), (expr, ...)`
+/// Can appear standalone or inside subqueries.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ValuesBody {
+    pub _values: PhantomData<keyword::Values>,
+    pub rows: Seq<Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>, punct::Comma>,
 }
 
 #[cfg(test)]
@@ -121,5 +371,75 @@ mod tests {
         let mut input = Input::new("SELECT * FROM pg_input_error_info('junk', 'bool')");
         let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
         assert!(stmt.from_clause.is_some());
+    }
+
+    // --- ORDER BY enhancements ---
+
+    #[test]
+    fn parse_order_by_using() {
+        let mut input = Input::new("SELECT f1 FROM t ORDER BY f1 using >");
+        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        assert!(stmt.order_by.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_order_by_asc() {
+        let mut input = Input::new("SELECT * FROM t ORDER BY f1 ASC");
+        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        assert!(stmt.order_by.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_order_by_desc() {
+        let mut input = Input::new("SELECT * FROM t ORDER BY f1 DESC");
+        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        assert!(stmt.order_by.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_order_by_nulls_first() {
+        let mut input = Input::new("SELECT * FROM t ORDER BY f1 NULLS FIRST");
+        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        assert!(stmt.order_by.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_order_by_desc_nulls_last() {
+        let mut input = Input::new("SELECT * FROM t ORDER BY f1 DESC NULLS LAST");
+        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        assert!(stmt.order_by.is_some());
+        assert!(input.is_empty());
+    }
+
+    // --- OFFSET/LIMIT ---
+
+    #[test]
+    fn parse_select_offset() {
+        let mut input = Input::new("SELECT 1 OFFSET 0");
+        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        assert!(stmt.offset.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_limit() {
+        let mut input = Input::new("SELECT 1 LIMIT 1");
+        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        assert!(stmt.limit.is_some());
+        assert!(input.is_empty());
+    }
+
+    // --- FOR UPDATE ---
+
+    #[test]
+    fn parse_select_for_update() {
+        let mut input = Input::new("SELECT f1 FROM t FOR UPDATE");
+        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        assert!(stmt.for_update.is_some());
+        assert!(input.is_empty());
     }
 }

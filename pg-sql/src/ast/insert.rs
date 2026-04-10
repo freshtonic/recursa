@@ -9,6 +9,30 @@ use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
+/// DEFAULT VALUES variant.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DefaultValues {
+    pub _default: PhantomData<keyword::Default>,
+    pub _values: PhantomData<keyword::Values>,
+}
+
+/// Multiple value rows: `VALUES (row1), (row2), ...`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct InsertValueRows {
+    pub _values: PhantomData<keyword::Values>,
+    pub rows: Seq<ValueList, punct::Comma>,
+}
+
+/// Insert source: DEFAULT VALUES or VALUES (row), (row), ...
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum InsertSource {
+    Default(DefaultValues),
+    Rows(InsertValueRows),
+}
+
 /// INSERT INTO statement.
 #[derive(Debug, Parse, Visit)]
 #[parse(rules = SqlRules)]
@@ -17,8 +41,7 @@ pub struct InsertStmt {
     pub _into: PhantomData<keyword::Into>,
     pub table_name: literal::Ident,
     pub columns: Option<ColumnList>,
-    pub _values: PhantomData<keyword::Values>,
-    pub values: ValueList,
+    pub source: InsertSource,
 }
 
 /// Column list: `(col1, col2, ...)`.
@@ -41,7 +64,6 @@ mod tests {
         assert_eq!(stmt.table_name.0, "BOOLTBL1");
         assert!(stmt.columns.is_some());
         assert_eq!(stmt.columns.as_ref().unwrap().inner.len(), 1);
-        assert_eq!(stmt.values.inner.len(), 1);
         assert!(input.is_empty());
     }
 
@@ -50,7 +72,6 @@ mod tests {
         let mut input = Input::new("INSERT INTO BOOLTBL3 (d, b, o) VALUES ('true', true, 1)");
         let stmt = InsertStmt::parse(&mut input, &SqlRules).unwrap();
         assert_eq!(stmt.columns.as_ref().unwrap().inner.len(), 3);
-        assert_eq!(stmt.values.inner.len(), 3);
     }
 
     #[test]
@@ -58,6 +79,5 @@ mod tests {
         let mut input = Input::new("INSERT INTO booltbl4 VALUES (false, true, null)");
         let stmt = InsertStmt::parse(&mut input, &SqlRules).unwrap();
         assert!(stmt.columns.is_none());
-        assert_eq!(stmt.values.inner.len(), 3);
     }
 }

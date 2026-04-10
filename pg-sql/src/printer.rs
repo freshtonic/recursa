@@ -4,15 +4,24 @@
 //! equivalent SQL with consistent casing (uppercase keywords, lowercase for
 //! identifiers as-is from the AST).
 
-use crate::ast::create_table::CreateTableStmt;
+use crate::ast::analyze::AnalyzeStmt;
+use crate::ast::create_function::{CreateFunctionStmt, DropFunctionStmt, ReturnType};
+use crate::ast::create_index::{CreateIndexStmt, DropIndexStmt};
+use crate::ast::create_table::{CreateTableBody, CreateTableStmt};
 use crate::ast::delete::{DeleteStmt, TableAlias};
 use crate::ast::drop_table::DropTableStmt;
+use crate::ast::explain::ExplainStmt;
 use crate::ast::expr::{
     BoolTestKind, Expr, FuncCall, ParenExpr, QualifiedRef, QualifiedWildcard, TypeCastFunc,
     TypeName,
 };
 use crate::ast::insert::InsertStmt;
-use crate::ast::select::{OrderByClause, SelectItem, SelectStmt, TableRef};
+use crate::ast::select::{
+    LateralRef, NullsOrder, OrderByClause, OrderByItem, SelectItem, SelectStmt, SortDir,
+    SubqueryRef, TableRef, UsingClause, ValuesBody,
+};
+use crate::ast::set_reset::{ResetStmt, SetSep, SetStmt, SetValue};
+use crate::ast::values::{CompoundBody, CompoundQuery, TableStmt};
 use crate::ast::{PsqlCommand, PsqlDirective, Statement, TerminatedStatement};
 
 /// Print a sequence of psql commands back to SQL text.
@@ -48,6 +57,16 @@ fn print_statement_to(output: &mut String, stmt: &Statement) {
         Statement::Insert(s) => print_insert(output, s),
         Statement::Delete(s) => print_delete(output, s),
         Statement::DropTable(s) => print_drop_table(output, s),
+        Statement::Set(s) => print_set(output, s),
+        Statement::Reset(s) => print_reset(output, s),
+        Statement::Analyze(s) => print_analyze(output, s),
+        Statement::Explain(s) => print_explain(output, s),
+        Statement::CreateIndex(s) => print_create_index(output, s),
+        Statement::DropIndex(s) => print_drop_index(output, s),
+        Statement::CreateFunction(s) => print_create_function(output, s),
+        Statement::DropFunction(s) => print_drop_function(output, s),
+        Statement::Values(s) => print_compound_query(output, s),
+        Statement::Table(s) => print_table_stmt(output, s),
     }
 }
 
@@ -77,6 +96,17 @@ fn print_select(output: &mut String, stmt: &SelectStmt) {
     if let Some(order_by) = &stmt.order_by {
         print_order_by(output, order_by);
     }
+    if let Some(limit) = &stmt.limit {
+        output.push_str(" LIMIT ");
+        print_expr(output, &limit.count);
+    }
+    if let Some(offset) = &stmt.offset {
+        output.push_str(" OFFSET ");
+        print_expr(output, &offset.count);
+    }
+    if stmt.for_update.is_some() {
+        output.push_str(" FOR UPDATE");
+    }
 }
 
 fn print_select_item(output: &mut String, item: &SelectItem) {
@@ -89,18 +119,84 @@ fn print_select_item(output: &mut String, item: &SelectItem) {
 
 fn print_table_ref(output: &mut String, table_ref: &TableRef) {
     match table_ref {
-        TableRef::Table(ident) => output.push_str(&ident.0),
-        TableRef::Func(func_call) => {
-            output.push_str(&func_call.name.0);
-            output.push('(');
-            for (i, arg) in func_call.args.iter().enumerate() {
-                if i > 0 {
-                    output.push_str(", ");
-                }
-                print_expr(output, arg);
+        TableRef::Table(plain) => {
+            output.push_str(&plain.name.0);
+            if let Some(alias) = &plain.alias {
+                output.push(' ');
+                output.push_str(&alias.0);
             }
-            output.push(')');
         }
+        TableRef::Func(func_call) => print_func_call(output, func_call),
+        TableRef::Inherited(inh) => {
+            output.push_str(&inh.name.0);
+            output.push('*');
+            if let Some(alias) = &inh.alias {
+                output.push(' ');
+                output.push_str(&alias.0);
+            }
+        }
+        TableRef::Subquery(sub) => print_subquery_ref(output, sub),
+        TableRef::Lateral(lat) => print_lateral_ref(output, lat),
+    }
+}
+
+fn print_subquery_ref(output: &mut String, sub: &SubqueryRef) {
+    output.push('(');
+    print_select_body(output, &sub.query);
+    output.push(')');
+    print_table_alias(output, &sub.alias);
+}
+
+fn print_lateral_ref(output: &mut String, lat: &LateralRef) {
+    output.push_str("LATERAL (");
+    print_select_body(output, &lat.query);
+    output.push(')');
+    if let Some(alias) = &lat.alias {
+        output.push(' ');
+        output.push_str(&alias.0);
+    }
+}
+
+fn print_table_alias(output: &mut String, alias: &crate::ast::select::TableAlias) {
+    if alias._as.is_some() {
+        output.push_str(" AS ");
+    } else {
+        output.push(' ');
+    }
+    output.push_str(&alias.name.0);
+    if let Some(cols) = &alias.columns {
+        output.push_str(" (");
+        for (i, col) in cols.inner.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            output.push_str(&col.0);
+        }
+        output.push(')');
+    }
+}
+
+fn print_select_body(output: &mut String, body: &crate::ast::select::SelectBody) {
+    match body {
+        crate::ast::select::SelectBody::Select(s) => print_select(output, s),
+        crate::ast::select::SelectBody::Values(v) => print_values_body(output, v),
+    }
+}
+
+fn print_values_body(output: &mut String, v: &ValuesBody) {
+    output.push_str("VALUES ");
+    for (i, row) in v.rows.iter().enumerate() {
+        if i > 0 {
+            output.push_str(", ");
+        }
+        output.push('(');
+        for (j, expr) in row.inner.iter().enumerate() {
+            if j > 0 {
+                output.push_str(", ");
+            }
+            print_expr(output, expr);
+        }
+        output.push(')');
     }
 }
 
@@ -110,26 +206,99 @@ fn print_order_by(output: &mut String, order_by: &OrderByClause) {
         if i > 0 {
             output.push_str(", ");
         }
-        print_expr(output, item);
+        print_order_by_item(output, item);
+    }
+}
+
+fn print_order_by_item(output: &mut String, item: &OrderByItem) {
+    print_expr(output, &item.expr);
+    if let Some(dir) = &item.dir {
+        match dir {
+            SortDir::Asc(_) => output.push_str(" ASC"),
+            SortDir::Desc(_) => output.push_str(" DESC"),
+        }
+    }
+    if let Some(using) = &item.using {
+        print_using_clause(output, using);
+    }
+    if let Some(nulls) = &item.nulls {
+        match nulls {
+            NullsOrder::First(_) => output.push_str(" NULLS FIRST"),
+            NullsOrder::Last(_) => output.push_str(" NULLS LAST"),
+        }
+    }
+}
+
+fn print_using_clause(output: &mut String, using: &UsingClause) {
+    output.push_str(" USING ");
+    match &using.op {
+        crate::ast::select::UsingOp::Gt(_) => output.push('>'),
+        crate::ast::select::UsingOp::Lt(_) => output.push('<'),
     }
 }
 
 // --- CREATE TABLE ---
 
 fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
-    output.push_str("CREATE TABLE ");
+    output.push_str("CREATE ");
+    if stmt.temp.is_some() {
+        output.push_str("TEMP ");
+    }
+    output.push_str("TABLE ");
     output.push_str(&stmt.name.0);
+    match &stmt.body {
+        CreateTableBody::Columns {
+            columns,
+            partition_by,
+        } => {
+            output.push_str(" (");
+            for (i, col) in columns.inner.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(&col.name.0);
+                output.push(' ');
+                print_type_name(output, &col.type_name);
+                if col.primary_key.is_some() {
+                    output.push_str(" PRIMARY KEY");
+                }
+            }
+            output.push(')');
+            if let Some(pb) = partition_by {
+                print_partition_by(output, pb);
+            }
+        }
+        CreateTableBody::PartitionOf {
+            parent,
+            for_values,
+            partition_by,
+        } => {
+            output.push_str(" PARTITION OF ");
+            output.push_str(&parent.0);
+            output.push_str(" FOR VALUES IN (");
+            for (i, val) in for_values.values.inner.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                print_expr(output, val);
+            }
+            output.push(')');
+            if let Some(pb) = partition_by {
+                print_partition_by(output, pb);
+            }
+        }
+    }
+}
+
+fn print_partition_by(output: &mut String, pb: &crate::ast::partition::PartitionByClause) {
+    output.push_str(" PARTITION BY ");
+    output.push_str(&pb.strategy.0);
     output.push_str(" (");
-    for (i, col) in stmt.columns.inner.iter().enumerate() {
+    for (i, col) in pb.columns.inner.iter().enumerate() {
         if i > 0 {
             output.push_str(", ");
         }
-        output.push_str(&col.name.0);
-        output.push(' ');
-        print_type_name(output, &col.type_name);
-        if col.primary_key.is_some() {
-            output.push_str(" PRIMARY KEY");
-        }
+        output.push_str(&col.0);
     }
     output.push(')');
 }
@@ -149,14 +318,27 @@ fn print_insert(output: &mut String, stmt: &InsertStmt) {
         }
         output.push(')');
     }
-    output.push_str(" VALUES (");
-    for (i, val) in stmt.values.inner.iter().enumerate() {
-        if i > 0 {
-            output.push_str(", ");
+    match &stmt.source {
+        crate::ast::insert::InsertSource::Default(_) => {
+            output.push_str(" DEFAULT VALUES");
         }
-        print_expr(output, val);
+        crate::ast::insert::InsertSource::Rows(rows) => {
+            output.push_str(" VALUES ");
+            for (i, row) in rows.rows.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                output.push('(');
+                for (j, val) in row.inner.iter().enumerate() {
+                    if j > 0 {
+                        output.push_str(", ");
+                    }
+                    print_expr(output, val);
+                }
+                output.push(')');
+            }
+        }
     }
-    output.push(')');
 }
 
 // --- DELETE ---
@@ -189,11 +371,166 @@ fn print_drop_table(output: &mut String, stmt: &DropTableStmt) {
     output.push_str(&stmt.name.0);
 }
 
+// --- SET / RESET ---
+
+fn print_set(output: &mut String, stmt: &SetStmt) {
+    output.push_str("SET ");
+    output.push_str(&stmt.param.0);
+    match &stmt.sep {
+        SetSep::To(_) => output.push_str(" TO "),
+        SetSep::Eq(_) => output.push_str(" = "),
+    }
+    match &stmt.value {
+        SetValue::On(_) => output.push_str("on"),
+        SetValue::Off(_) => output.push_str("off"),
+        SetValue::True(_) => output.push_str("true"),
+        SetValue::False(_) => output.push_str("false"),
+        SetValue::StringLit(s) => output.push_str(&s.0),
+        SetValue::Ident(i) => output.push_str(&i.0),
+    }
+}
+
+fn print_reset(output: &mut String, stmt: &ResetStmt) {
+    output.push_str("RESET ");
+    output.push_str(&stmt.param.0);
+}
+
+// --- ANALYZE ---
+
+fn print_analyze(output: &mut String, stmt: &AnalyzeStmt) {
+    output.push_str("ANALYZE ");
+    output.push_str(&stmt.table_name.0);
+}
+
+// --- EXPLAIN ---
+
+fn print_explain(output: &mut String, stmt: &ExplainStmt) {
+    output.push_str("EXPLAIN ");
+    if let Some(opts) = &stmt.options {
+        output.push('(');
+        for (i, opt) in opts.inner.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            output.push_str(&opt.name.0);
+            if let Some(val) = &opt.value {
+                output.push(' ');
+                match val {
+                    crate::ast::explain::ExplainOptValue::On(_) => output.push_str("on"),
+                    crate::ast::explain::ExplainOptValue::Off(_) => output.push_str("off"),
+                    crate::ast::explain::ExplainOptValue::Ident(i) => output.push_str(&i.0),
+                }
+            }
+        }
+        output.push_str(") ");
+    }
+    print_select(output, &stmt.stmt);
+}
+
+// --- CREATE INDEX / DROP INDEX ---
+
+fn print_create_index(output: &mut String, stmt: &CreateIndexStmt) {
+    output.push_str("CREATE INDEX ");
+    output.push_str(&stmt.name.0);
+    output.push_str(" ON ");
+    output.push_str(&stmt.table_name.0);
+    output.push_str(" (");
+    for (i, elem) in stmt.columns.inner.iter().enumerate() {
+        if i > 0 {
+            output.push_str(", ");
+        }
+        output.push_str(&elem.column.0);
+        if let Some(dir) = &elem.dir {
+            match dir {
+                SortDir::Asc(_) => output.push_str(" ASC"),
+                SortDir::Desc(_) => output.push_str(" DESC"),
+            }
+        }
+        if let Some(nulls) = &elem.nulls {
+            match nulls {
+                NullsOrder::First(_) => output.push_str(" NULLS FIRST"),
+                NullsOrder::Last(_) => output.push_str(" NULLS LAST"),
+            }
+        }
+    }
+    output.push(')');
+}
+
+fn print_drop_index(output: &mut String, stmt: &DropIndexStmt) {
+    output.push_str("DROP INDEX ");
+    output.push_str(&stmt.name.0);
+}
+
+// --- CREATE FUNCTION / DROP FUNCTION ---
+
+fn print_create_function(output: &mut String, stmt: &CreateFunctionStmt) {
+    output.push_str("CREATE FUNCTION ");
+    output.push_str(&stmt.name.0);
+    output.push('(');
+    for (i, arg) in stmt.args.inner.iter().enumerate() {
+        if i > 0 {
+            output.push_str(", ");
+        }
+        print_type_name(output, arg);
+    }
+    output.push_str(") RETURNS ");
+    match &stmt.returns.return_type {
+        ReturnType::Setof(s) => {
+            output.push_str("SETOF ");
+            print_type_name(output, &s.type_name);
+        }
+        ReturnType::Plain(t) => print_type_name(output, t),
+    }
+    output.push_str(" AS ");
+    output.push_str(&stmt.body.0);
+    output.push_str(" LANGUAGE ");
+    output.push_str(&stmt.language.name.0);
+    if stmt.immutable.is_some() {
+        output.push_str(" IMMUTABLE");
+    }
+}
+
+fn print_drop_function(output: &mut String, stmt: &DropFunctionStmt) {
+    output.push_str("DROP FUNCTION ");
+    output.push_str(&stmt.name.0);
+    output.push('(');
+    for (i, arg) in stmt.args.inner.iter().enumerate() {
+        if i > 0 {
+            output.push_str(", ");
+        }
+        print_type_name(output, arg);
+    }
+    output.push(')');
+}
+
+// --- VALUES / TABLE / UNION ALL ---
+
+fn print_compound_query(output: &mut String, query: &CompoundQuery) {
+    match query {
+        CompoundQuery::Table(t) => print_table_stmt(output, t),
+        CompoundQuery::Body(b) => print_compound_body(output, b),
+    }
+}
+
+fn print_compound_body(output: &mut String, body: &CompoundBody) {
+    print_select_body(output, &body.body);
+    if let Some(union_all) = &body.union_all {
+        output.push_str(" UNION ALL ");
+        print_compound_query(output, &union_all.right);
+    }
+}
+
+fn print_table_stmt(output: &mut String, stmt: &TableStmt) {
+    output.push_str("TABLE ");
+    output.push_str(&stmt.table_name.0);
+}
+
 // --- Expressions ---
 
 fn print_expr(output: &mut String, expr: &Expr) {
     match expr {
         Expr::IntegerLit(lit) => output.push_str(&lit.0),
+        Expr::NumericLit(lit) => output.push_str(&lit.0),
         Expr::StringLit(lit) => output.push_str(&lit.0),
         Expr::BoolTrue(_) => output.push_str("TRUE"),
         Expr::BoolFalse(_) => output.push_str("FALSE"),
@@ -209,20 +546,22 @@ fn print_expr(output: &mut String, expr: &Expr) {
             output.push_str(".*");
         }
         Expr::Star(_) => output.push('*'),
-        Expr::Func(FuncCall { name, args, .. }) => {
-            output.push_str(&name.0);
-            output.push('(');
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 {
-                    output.push_str(", ");
-                }
-                print_expr(output, arg);
-            }
-            output.push(')');
-        }
+        Expr::Func(func_call) => print_func_call(output, func_call),
         Expr::Paren(ParenExpr { inner, .. }) => {
             output.push('(');
-            print_expr(output, inner);
+            match inner {
+                crate::ast::expr::ParenContent::Subquery(body) => {
+                    print_select_body(output, body);
+                }
+                crate::ast::expr::ParenContent::Exprs(exprs) => {
+                    for (i, e) in exprs.iter().enumerate() {
+                        if i > 0 {
+                            output.push_str(", ");
+                        }
+                        print_expr(output, e);
+                    }
+                }
+            }
             output.push(')');
         }
         Expr::CastFunc(TypeCastFunc { type_name, value }) => {
@@ -232,7 +571,6 @@ fn print_expr(output: &mut String, expr: &Expr) {
         }
         Expr::Not(_, operand) => {
             output.push_str("NOT ");
-            // Parenthesize if the operand is an infix op to avoid ambiguity
             if is_infix(operand) {
                 output.push('(');
                 print_expr(output, operand);
@@ -241,6 +579,10 @@ fn print_expr(output: &mut String, expr: &Expr) {
                 print_expr(output, operand);
             }
         }
+        Expr::Neg(_, operand) => {
+            output.push('-');
+            print_expr(output, operand);
+        }
         Expr::Or(left, _, right)
         | Expr::And(left, _, right)
         | Expr::Eq(left, _, right)
@@ -248,7 +590,9 @@ fn print_expr(output: &mut String, expr: &Expr) {
         | Expr::Lt(left, _, right)
         | Expr::Gt(left, _, right)
         | Expr::Lte(left, _, right)
-        | Expr::Gte(left, _, right) => {
+        | Expr::Gte(left, _, right)
+        | Expr::Add(left, _, right)
+        | Expr::Sub(left, _, right) => {
             print_binop_operand(output, left);
             output.push(' ');
             print_infix_op(output, expr);
@@ -273,7 +617,37 @@ fn print_expr(output: &mut String, expr: &Expr) {
                 BoolTestKind::IsNotNull(_) => output.push_str(" IS NOT NULL"),
             }
         }
+        Expr::InExpr(inner, _, list) => {
+            print_expr(output, inner);
+            output.push_str(" IN (");
+            match &list.inner {
+                crate::ast::expr::InContent::Subquery(body) => {
+                    print_select_body(output, body);
+                }
+                crate::ast::expr::InContent::Exprs(exprs) => {
+                    for (i, val) in exprs.iter().enumerate() {
+                        if i > 0 {
+                            output.push_str(", ");
+                        }
+                        print_expr(output, val);
+                    }
+                }
+            }
+            output.push(')');
+        }
     }
+}
+
+fn print_func_call(output: &mut String, func_call: &FuncCall) {
+    output.push_str(&func_call.name.0);
+    output.push('(');
+    for (i, arg) in func_call.args.iter().enumerate() {
+        if i > 0 {
+            output.push_str(", ");
+        }
+        print_expr(output, arg);
+    }
+    output.push(')');
 }
 
 /// Returns true if the expression is an infix binary operation.
@@ -288,6 +662,8 @@ fn is_infix(expr: &Expr) -> bool {
             | Expr::Gt(..)
             | Expr::Lte(..)
             | Expr::Gte(..)
+            | Expr::Add(..)
+            | Expr::Sub(..)
     )
 }
 
@@ -302,6 +678,8 @@ fn print_infix_op(output: &mut String, expr: &Expr) {
         Expr::Gt(..) => output.push('>'),
         Expr::Lte(..) => output.push_str("<="),
         Expr::Gte(..) => output.push_str(">="),
+        Expr::Add(..) => output.push('+'),
+        Expr::Sub(..) => output.push('-'),
         _ => {}
     }
 }

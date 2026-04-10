@@ -241,6 +241,12 @@ fn is_psql_status_line(line: &str) -> bool {
     let trimmed = line.trim();
     trimmed == "CREATE TABLE"
         || trimmed == "DROP TABLE"
+        || trimmed == "CREATE INDEX"
+        || trimmed == "DROP INDEX"
+        || trimmed == "CREATE FUNCTION"
+        || trimmed == "DROP FUNCTION"
+        || trimmed == "ANALYZE"
+        || trimmed == "RESET"
         || (trimmed.starts_with("INSERT ") && !trimmed.starts_with("INSERT INTO"))
         || (trimmed.starts_with("DELETE ") && !trimmed.starts_with("DELETE FROM"))
         || trimmed == "SET"
@@ -415,6 +421,12 @@ mod tests {
         fn regress_delete() {
             let (_container, uri) = start_postgres();
             run_regression_test("delete", &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_select() {
+            let (_container, uri) = start_postgres();
+            run_regression_test("select", &uri).unwrap();
         }
     }
 }

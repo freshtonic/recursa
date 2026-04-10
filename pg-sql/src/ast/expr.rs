@@ -1,13 +1,25 @@
 /// SQL expression AST with derived Pratt parsing for operator precedence.
 ///
-/// Handles atoms, prefix (NOT), infix (AND, OR, comparisons), and
-/// postfix operators (::type cast, IS [NOT] TRUE/FALSE/UNKNOWN/NULL).
+/// Handles atoms, prefix (NOT, unary minus), infix (AND, OR, comparisons,
+/// arithmetic), and postfix operators (::type cast, IS [NOT] TRUE/FALSE/UNKNOWN/NULL,
+/// IN (list)).
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{Parse, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+
+/// Content inside IN parentheses: either a subquery or expression list.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum InContent {
+    Subquery(Box<crate::ast::select::SelectBody>),
+    Exprs(Seq<Expr, punct::Comma>),
+}
+
+/// `IN (expr, ...)` or `IN (subquery)` postfix suffix.
+pub type InList = Surrounded<punct::LParen, InContent, punct::RParen>;
 
 /// Type name for casts.
 #[derive(Debug, Clone, PartialEq, Eq, Parse, Visit)]
@@ -109,8 +121,18 @@ pub struct FuncCall {
     pub rparen: punct::RParen,
 }
 
-/// Parenthesized expression: `(expr)`
-pub type ParenExpr = Surrounded<punct::LParen, Box<Expr>, punct::RParen>;
+/// Content inside parentheses: either a subquery or a comma-separated expression list.
+/// SelectBody must come first so SELECT/VALUES keywords are matched before trying
+/// to parse as a regular expression.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ParenContent {
+    Subquery(Box<crate::ast::select::SelectBody>),
+    Exprs(Seq<Expr, punct::Comma>),
+}
+
+/// Parenthesized expression: `(expr)`, `(expr, expr, ...)`, or `(SELECT/VALUES ...)`
+pub type ParenExpr = Surrounded<punct::LParen, ParenContent, punct::RParen>;
 
 /// Function-style type cast: `bool 'value'`, `text 'hello'`
 #[derive(Parse, Visit, Debug, Clone)]
@@ -129,6 +151,8 @@ pub enum Expr {
     // --- Prefix ---
     #[parse(prefix, bp = 15)]
     Not(keyword::Not, Box<Expr>),
+    #[parse(prefix, bp = 12)]
+    Neg(punct::Minus, Box<Expr>),
 
     // --- Postfix ---
     /// Postgres-style cast: `expr::type`
@@ -137,6 +161,9 @@ pub enum Expr {
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
     BoolTest(Box<Expr>, keyword::Is, BoolTestKind),
+    /// IN list: `expr IN (val, ...)`
+    #[parse(postfix, bp = 6)]
+    InExpr(Box<Expr>, keyword::In, InList),
 
     // --- Infix ---
     // Multi-char operators before single-char to avoid partial matching
@@ -156,6 +183,10 @@ pub enum Expr {
     Lt(Box<Expr>, punct::Lt, Box<Expr>),
     #[parse(infix, bp = 5)]
     Gt(Box<Expr>, punct::Gt, Box<Expr>),
+    #[parse(infix, bp = 10)]
+    Add(Box<Expr>, punct::Plus, Box<Expr>),
+    #[parse(infix, bp = 10)]
+    Sub(Box<Expr>, punct::Minus, Box<Expr>),
 
     // --- Atoms ---
     /// Function-style type cast: `bool 't'` -- must come before ColumnRef
@@ -174,6 +205,9 @@ pub enum Expr {
     /// Parenthesized expression: `(expr)`
     #[parse(atom)]
     Paren(ParenExpr),
+    /// Numeric literal: `77.7` -- must come before IntegerLit for longest match
+    #[parse(atom)]
+    NumericLit(literal::NumericLit),
     /// Integer literal: `42`
     #[parse(atom)]
     IntegerLit(literal::IntegerLit),
@@ -452,5 +486,61 @@ mod tests {
         let mut input = Input::new("true::boolean::text");
         let expr = Expr::parse(&mut input, &SqlRules).unwrap();
         assert!(matches!(expr, Expr::Cast(..)));
+    }
+
+    // --- Arithmetic operators ---
+
+    #[test]
+    fn parse_addition() {
+        let mut input = Input::new("4+4");
+        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        assert!(matches!(expr, Expr::Add(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_subtraction() {
+        let mut input = Input::new("10-3");
+        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        assert!(matches!(expr, Expr::Sub(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_unary_minus() {
+        let mut input = Input::new("-1");
+        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        assert!(matches!(expr, Expr::Neg(..)));
+        assert!(input.is_empty());
+    }
+
+    // --- Numeric literal ---
+
+    #[test]
+    fn parse_numeric_literal() {
+        let mut input = Input::new("77.7");
+        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        assert!(matches!(expr, Expr::NumericLit(_)));
+        assert!(input.is_empty());
+    }
+
+    // --- IN expression ---
+
+    #[test]
+    fn parse_in_expr() {
+        let mut input = Input::new("f1 IN (1, 2, 3)");
+        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        assert!(matches!(expr, Expr::InExpr(..)));
+        assert!(input.is_empty());
+    }
+
+    // --- Subquery expression ---
+
+    #[test]
+    fn parse_subquery_expr() {
+        let mut input = Input::new("(SELECT 1)");
+        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        assert!(matches!(expr, Expr::Paren(_)));
+        assert!(input.is_empty());
     }
 }
