@@ -14,6 +14,19 @@ use crate::printer::print_commands;
 ///
 /// Reads `fixtures/sql/{test_name}.sql`, parses it, prints it back to SQL,
 /// executes via `psql`, and compares against `fixtures/expected/{test_name}.out`.
+/// Run prerequisite SQL scripts directly via psql (without parsing through recursa).
+/// Used to set up tables that later regression tests depend on.
+pub fn run_prerequisites(prereqs: &[&str], psql_uri: &str) -> Result<(), String> {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for prereq in prereqs {
+        let sql_path = base.join(format!("fixtures/sql/{prereq}.sql"));
+        let sql = std::fs::read_to_string(&sql_path)
+            .map_err(|e| format!("cannot read {}: {e}", sql_path.display()))?;
+        let output = execute_via_psql(&sql, psql_uri)?;
+    }
+    Ok(())
+}
+
 pub fn run_regression_test(test_name: &str, psql_uri: &str) -> Result<(), String> {
     let base = Path::new(env!("CARGO_MANIFEST_DIR"));
     let sql_path = base.join(format!("fixtures/sql/{test_name}.sql"));
@@ -87,7 +100,16 @@ pub fn run_regression_test(test_name: &str, psql_uri: &str) -> Result<(), String
 /// Uses `sh -c` with `2>&1` to merge stderr into stdout at the point errors occur,
 /// matching how psql output appears in the expected `.out` files.
 fn execute_via_psql(sql: &str, psql_uri: &str) -> Result<String, String> {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixtures_dir = base.join("fixtures");
+
     let output = std::process::Command::new("sh")
+        // PG_ABS_SRCDIR points to the CONTAINER path where fixtures are mounted,
+        // not the host path. test_setup.sql uses \getenv to read this, then
+        // COPY ... FROM uses the path on the server side (inside the container).
+        .env("PG_ABS_SRCDIR", "/fixtures")
+        .env("PG_LIBDIR", "/usr/lib/postgresql/17/lib")
+        .env("PG_DLSUFFIX", ".so")
         .args([
             "-c",
             &format!("psql '{}' --no-psqlrc --echo-all -f - 2>&1", psql_uri),
@@ -385,14 +407,24 @@ mod tests {
         use testcontainers::runners::SyncRunner;
         use testcontainers_modules::postgres::Postgres;
 
-        use crate::harness::run_regression_test;
+        use crate::harness::{run_prerequisites, run_regression_test};
 
         /// Start a Postgres container and return the psql connection URI.
         /// Returns the container (must be kept alive) and the URI.
         fn start_postgres() -> (testcontainers::Container<Postgres>, String) {
+            let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let fixtures_dir = base.join("fixtures");
+
             // Use Postgres 17 to match the vendored test fixtures (from REL_17_9).
+            // Mount the fixtures directory into the container so COPY commands
+            // in test_setup.sql can find the data files.
             let container = Postgres::default()
                 .with_tag("17")
+                .with_mount(testcontainers::core::Mount::bind_mount(
+                    fixtures_dir.to_str().unwrap(),
+                    "/fixtures",
+                ))
+                .with_env_var("PG_ABS_SRCDIR", "/fixtures")
                 .start()
                 .expect("Failed to start Postgres container");
 
@@ -426,6 +458,8 @@ mod tests {
         #[test]
         fn regress_select() {
             let (_container, uri) = start_postgres();
+            // select.sql depends on tables created by test_setup
+            run_prerequisites(&["test_setup"], &uri).unwrap();
             run_regression_test("select", &uri).unwrap();
         }
     }
