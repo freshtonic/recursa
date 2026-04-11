@@ -2,6 +2,7 @@
 
 mod parse_derive;
 mod scan_derive;
+mod total_visitor_derive;
 mod visit_derive;
 
 use proc_macro::TokenStream;
@@ -157,6 +158,34 @@ pub fn derive_parse(input: TokenStream) -> TokenStream {
 pub fn derive_visit(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     match visit_derive::derive_visit(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive `TotalVisitor` for type-safe visitor dispatch.
+///
+/// Generates a `TotalVisitor` impl that dispatches `total_enter`/`total_exit`
+/// to your `Visitor<N>` impls based on `TypeId`.
+///
+/// # Example
+///
+/// ```text
+/// #[derive(TotalVisitor)]
+/// #[total_visitor(dispatch = [SelectStmt, Expr], error = MyError)]
+/// struct MyVisitor { ... }
+///
+/// impl Visitor<SelectStmt> for MyVisitor {
+///     type Error = MyError;
+///     fn enter(&mut self, node: &SelectStmt) -> ControlFlow<Break<MyError>> {
+///         // type-safe, no downcast needed
+///     }
+/// }
+/// ```
+#[proc_macro_derive(TotalVisitor, attributes(total_visitor))]
+pub fn derive_total_visitor(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    match total_visitor_derive::derive_total_visitor(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

@@ -118,3 +118,44 @@ fn visit_skip_children() {
     // Should complete successfully (SkipChildren is not an error)
     assert!(matches!(result, ControlFlow::Continue(())));
 }
+
+// -- Test #[derive(TotalVisitor)] --
+
+use recursa_core::Visitor;
+use recursa_derive::TotalVisitor;
+
+#[derive(TotalVisitor)]
+#[total_visitor(dispatch = [TwoTokens], error = ())]
+struct TwoTokensCounter {
+    two_tokens_count: usize,
+}
+
+impl Visitor<TwoTokens> for TwoTokensCounter {
+    type Error = ();
+    fn enter(&mut self, _node: &TwoTokens) -> ControlFlow<Break<()>> {
+        self.two_tokens_count += 1;
+        ControlFlow::Continue(())
+    }
+}
+
+#[test]
+fn derive_total_visitor_dispatches_to_typed_visitor() {
+    let node = Choice::Second(TwoTokens { a: Token, b: Token });
+    let mut v = TwoTokensCounter {
+        two_tokens_count: 0,
+    };
+    let _ = node.visit(&mut v);
+    // Only TwoTokens triggers the counter, not Choice or Token
+    assert_eq!(v.two_tokens_count, 1);
+}
+
+#[test]
+fn derive_total_visitor_ignores_undispatched_types() {
+    let node = Choice::First(Token);
+    let mut v = TwoTokensCounter {
+        two_tokens_count: 0,
+    };
+    let _ = node.visit(&mut v);
+    // Token is not in the dispatch list, so count stays 0
+    assert_eq!(v.two_tokens_count, 0);
+}
