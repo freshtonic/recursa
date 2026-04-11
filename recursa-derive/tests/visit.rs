@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use recursa_core::{AsNodeKey, Break, Visit, Visitor};
+use recursa_core::{AsNodeKey, Break, TotalVisitor, Visit};
 use recursa_derive::Visit;
 
 // -- Leaf types (manual Visit impl for testing) --
@@ -8,12 +8,12 @@ use recursa_derive::Visit;
 struct Token;
 impl AsNodeKey for Token {}
 impl Visit for Token {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        match visitor.enter(self) {
+    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        match visitor.total_enter(self) {
             ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
             other => return other,
         }
-        visitor.exit(self)
+        visitor.total_exit(self)
     }
 }
 
@@ -38,15 +38,15 @@ struct Counter {
     exits: usize,
 }
 
-impl Visitor for Counter {
+impl TotalVisitor for Counter {
     type Error = ();
 
-    fn enter<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+    fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
         self.enters += 1;
         ControlFlow::Continue(())
     }
 
-    fn exit<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+    fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
         self.exits += 1;
         ControlFlow::Continue(())
     }
@@ -96,15 +96,19 @@ fn visit_enum_second_variant() {
 #[test]
 fn visit_skip_children() {
     struct SkipTwoTokens;
-    impl Visitor for SkipTwoTokens {
+    impl TotalVisitor for SkipTwoTokens {
         type Error = ();
 
-        fn enter<N: Visit>(&mut self, node: &N) -> ControlFlow<Break<()>> {
-            if node.is::<TwoTokens>() {
+        fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+            if std::any::TypeId::of::<N>() == std::any::TypeId::of::<TwoTokens>() {
                 ControlFlow::Break(Break::SkipChildren)
             } else {
                 ControlFlow::Continue(())
             }
+        }
+
+        fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+            ControlFlow::Continue(())
         }
     }
 

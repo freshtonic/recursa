@@ -18,7 +18,7 @@ pub mod with_clause;
 
 use std::ops::ControlFlow;
 
-use recursa::visitor::{AsNodeKey, Break, Visitor};
+use recursa::visitor::{AsNodeKey, Break, TotalVisitor};
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::rules::SqlRules;
@@ -96,7 +96,7 @@ pub struct RawStatement {
 
 impl AsNodeKey for RawStatement {}
 impl Visit for RawStatement {
-    fn visit<V: Visitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         ControlFlow::Continue(())
     }
 }

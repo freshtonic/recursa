@@ -15,7 +15,7 @@ pub use input::Input;
 pub use parse::Parse;
 pub use rules::{NoRules, ParseRules};
 pub use scan::Scan;
-pub use visitor::{AsNodeKey, Break, NodeKey, Visit, Visitor};
+pub use visitor::{AsNodeKey, Break, NodeKey, TotalVisitor, Visit, Visitor};
 
 #[cfg(test)]
 mod tests {
@@ -380,7 +380,7 @@ mod tests {
         let _err: Break<String> = Break::Err("oops".to_string());
     }
 
-    use crate::visitor::{Visit, Visitor};
+    use crate::visitor::{TotalVisitor, Visit, Visitor};
     use std::ops::ControlFlow;
 
     // A simple manual Visit impl for testing
@@ -389,29 +389,30 @@ mod tests {
     impl AsNodeKey for Leaf {}
 
     impl Visit for Leaf {
-        fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-            match visitor.enter(self) {
+        fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+            match visitor.total_enter(self) {
                 ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
                 other => return other,
             }
-            visitor.exit(self)
+            visitor.total_exit(self)
         }
     }
 
+    /// A simple TotalVisitor that counts all enter/exit calls.
     struct Counter {
         enter_count: usize,
         exit_count: usize,
     }
 
-    impl Visitor for Counter {
+    impl TotalVisitor for Counter {
         type Error = ();
 
-        fn enter<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+        fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
             self.enter_count += 1;
             ControlFlow::Continue(())
         }
 
-        fn exit<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+        fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
             self.exit_count += 1;
             ControlFlow::Continue(())
         }
@@ -431,16 +432,32 @@ mod tests {
 
     #[test]
     fn visitor_downcast_in_enter() {
+        /// A TotalVisitor that dispatches to Visitor<Leaf> for type-safe access.
         struct TypeChecker {
             found_leaf: bool,
         }
-        impl Visitor for TypeChecker {
+
+        impl Visitor<Leaf> for TypeChecker {
             type Error = ();
-            fn enter<N: Visit>(&mut self, node: &N) -> ControlFlow<Break<Self::Error>> {
-                if let Some(leaf) = node.downcast_ref::<Leaf>() {
-                    self.found_leaf = true;
-                    assert_eq!(leaf.0, 42);
+            fn enter(&mut self, leaf: &Leaf) -> ControlFlow<Break<()>> {
+                self.found_leaf = true;
+                assert_eq!(leaf.0, 42);
+                ControlFlow::Continue(())
+            }
+        }
+
+        impl TotalVisitor for TypeChecker {
+            type Error = ();
+
+            fn total_enter<N: 'static>(&mut self, node: &N) -> ControlFlow<Break<()>> {
+                if std::any::TypeId::of::<N>() == std::any::TypeId::of::<Leaf>() {
+                    let node = unsafe { &*(node as *const N as *const Leaf) };
+                    return <Self as Visitor<Leaf>>::enter(self, node);
                 }
+                ControlFlow::Continue(())
+            }
+
+            fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
                 ControlFlow::Continue(())
             }
         }
@@ -453,14 +470,16 @@ mod tests {
 
     #[test]
     fn visitor_skip_children() {
-        // SkipChildren should not propagate up as an error
         struct Skipper;
-        impl Visitor for Skipper {
+
+        impl TotalVisitor for Skipper {
             type Error = ();
-            fn enter<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+
+            fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
                 ControlFlow::Break(Break::SkipChildren)
             }
-            fn exit<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+
+            fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
                 ControlFlow::Continue(())
             }
         }

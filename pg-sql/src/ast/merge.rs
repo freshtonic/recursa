@@ -43,7 +43,7 @@ pub enum WhenClause {
 impl recursa::visitor::AsNodeKey for WhenClause {}
 
 impl Visit for WhenClause {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {

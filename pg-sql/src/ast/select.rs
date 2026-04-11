@@ -24,7 +24,7 @@ pub struct SelectItem {
 impl recursa::visitor::AsNodeKey for SelectItem {}
 
 impl Visit for SelectItem {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
@@ -86,7 +86,7 @@ pub struct Alias {
 impl recursa::visitor::AsNodeKey for Alias {}
 
 impl Visit for Alias {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
@@ -238,7 +238,7 @@ pub struct PlainTable {
 impl recursa::visitor::AsNodeKey for PlainTable {}
 
 impl Visit for PlainTable {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
@@ -313,7 +313,7 @@ pub struct FuncTableRef {
 
 impl recursa::visitor::AsNodeKey for FuncTableRef {}
 impl Visit for FuncTableRef {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {

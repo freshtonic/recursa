@@ -108,7 +108,7 @@ pub struct CreateFunctionStmt {
 impl recursa::visitor::AsNodeKey for CreateFunctionStmt {}
 
 impl Visit for CreateFunctionStmt {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {

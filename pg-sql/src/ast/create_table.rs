@@ -15,7 +15,7 @@ use std::ops::ControlFlow;
 
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
-use recursa::visitor::{AsNodeKey, Break, Visitor};
+use recursa::visitor::{AsNodeKey, Break, TotalVisitor};
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::ast::partition::{ForValuesInClause, PartitionByClause};
@@ -40,7 +40,7 @@ pub enum ColumnConstraint {
 
 impl AsNodeKey for ColumnConstraint {}
 impl Visit for ColumnConstraint {
-    fn visit<V: Visitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         ControlFlow::Continue(())
     }
 }
@@ -70,7 +70,7 @@ impl ColumnDef {
 impl AsNodeKey for ColumnDef {}
 
 impl Visit for ColumnDef {
-    fn visit<V: Visitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         ControlFlow::Continue(())
     }
 }
@@ -197,7 +197,7 @@ pub enum CreateTableBody {
 impl AsNodeKey for CreateTableBody {}
 
 impl Visit for CreateTableBody {
-    fn visit<V: Visitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         ControlFlow::Continue(())
     }
 }

@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use recursa::{Break, Input, Parse, ParseRules, Scan, Visit, Visitor};
+use recursa::{Break, Input, Parse, ParseRules, Scan, TotalVisitor, Visit};
 
 #[derive(Scan, Visit, Debug, Clone)]
 #[scan(pattern = "let")]
@@ -45,13 +45,17 @@ struct IdentCollector {
     idents: Vec<String>,
 }
 
-impl Visitor for IdentCollector {
+impl TotalVisitor for IdentCollector {
     type Error = ();
 
-    fn enter<N: Visit>(&mut self, node: &N) -> ControlFlow<Break<()>> {
-        if let Some(ident) = node.downcast_ref::<Ident>() {
+    fn total_enter<N: 'static>(&mut self, node: &N) -> ControlFlow<Break<()>> {
+        if let Some(ident) = (node as &dyn std::any::Any).downcast_ref::<Ident>() {
             self.idents.push(ident.0.clone());
         }
+        ControlFlow::Continue(())
+    }
+
+    fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
         ControlFlow::Continue(())
     }
 }
@@ -68,14 +72,17 @@ fn visitor_collects_idents() {
 #[test]
 fn visitor_skip_children_prevents_descent() {
     struct SkipLetStmt;
-    impl Visitor for SkipLetStmt {
+    impl TotalVisitor for SkipLetStmt {
         type Error = ();
-        fn enter<N: Visit>(&mut self, node: &N) -> ControlFlow<Break<()>> {
-            if node.is::<LetStmt>() {
+        fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+            if std::any::TypeId::of::<N>() == std::any::TypeId::of::<LetStmt>() {
                 ControlFlow::Break(Break::SkipChildren)
             } else {
                 ControlFlow::Continue(())
             }
+        }
+        fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+            ControlFlow::Continue(())
         }
     }
 
@@ -91,10 +98,13 @@ fn visitor_counts_all_nodes() {
     struct NodeCounter {
         count: usize,
     }
-    impl Visitor for NodeCounter {
+    impl TotalVisitor for NodeCounter {
         type Error = ();
-        fn enter<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+        fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
             self.count += 1;
+            ControlFlow::Continue(())
+        }
+        fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
             ControlFlow::Continue(())
         }
     }

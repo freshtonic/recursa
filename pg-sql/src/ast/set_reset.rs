@@ -46,7 +46,7 @@ pub struct SetStmt {
 impl recursa::visitor::AsNodeKey for SetStmt {}
 
 impl recursa::Visit for SetStmt {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {

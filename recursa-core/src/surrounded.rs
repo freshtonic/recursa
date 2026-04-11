@@ -5,7 +5,7 @@ use crate::error::ParseError;
 use crate::input::Input;
 use crate::parse::Parse;
 use crate::rules::ParseRules;
-use crate::visitor::{AsNodeKey, Break, Visit, Visitor};
+use crate::visitor::{AsNodeKey, Break, TotalVisitor, Visit};
 
 /// A value surrounded by open and close delimiters.
 ///
@@ -85,7 +85,7 @@ where
 
 impl<Open: 'static, Inner: Visit, Close: 'static> AsNodeKey for Surrounded<Open, Inner, Close> {}
 impl<Open: 'static, Inner: Visit, Close: 'static> Visit for Surrounded<Open, Inner, Close> {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> std::ops::ControlFlow<Break<V::Error>> {
+    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> std::ops::ControlFlow<Break<V::Error>> {
         self.inner.visit(visitor)
     }
 }

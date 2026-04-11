@@ -53,11 +53,11 @@ pub fn derive_visit(input: DeriveInput) -> syn::Result<TokenStream> {
         VisitMode::Terminal => {
             // Enter and exit, but no child traversal
             quote! {
-                match ::recursa_core::Visitor::enter(visitor, self) {
+                match visitor.total_enter(self) {
                     ::std::ops::ControlFlow::Continue(()) | ::std::ops::ControlFlow::Break(::recursa_core::Break::SkipChildren) => {}
                     other => return other,
                 }
-                ::recursa_core::Visitor::exit(visitor, self)
+                visitor.total_exit(self)
             }
         }
         VisitMode::Normal => {
@@ -72,14 +72,14 @@ pub fn derive_visit(input: DeriveInput) -> syn::Result<TokenStream> {
                 }
             };
             quote! {
-                match ::recursa_core::Visitor::enter(visitor, self) {
+                match visitor.total_enter(self) {
                     ::std::ops::ControlFlow::Continue(()) => {
                         #children_body
                     }
                     ::std::ops::ControlFlow::Break(::recursa_core::Break::SkipChildren) => {}
                     other => return other,
                 }
-                ::recursa_core::Visitor::exit(visitor, self)
+                visitor.total_exit(self)
             }
         }
     };
@@ -88,7 +88,7 @@ pub fn derive_visit(input: DeriveInput) -> syn::Result<TokenStream> {
         impl #impl_generics ::recursa_core::AsNodeKey for #name #ty_generics #where_clause {}
 
         impl #impl_generics ::recursa_core::Visit for #name #ty_generics #where_clause {
-            fn visit<V: ::recursa_core::Visitor>(
+            fn visit<V: ::recursa_core::TotalVisitor>(
                 &self,
                 visitor: &mut V,
             ) -> ::std::ops::ControlFlow<::recursa_core::Break<V::Error>> {

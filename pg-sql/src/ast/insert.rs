@@ -46,7 +46,7 @@ pub enum InsertSource {
 impl recursa::visitor::AsNodeKey for InsertSource {}
 
 impl Visit for InsertSource {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
@@ -90,7 +90,7 @@ pub struct DoUpdateAction {
 
 impl recursa::visitor::AsNodeKey for DoUpdateAction {}
 impl Visit for DoUpdateAction {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
@@ -108,7 +108,7 @@ pub enum ConflictAction {
 impl recursa::visitor::AsNodeKey for ConflictAction {}
 
 impl Visit for ConflictAction {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
@@ -131,7 +131,7 @@ pub struct OnConflictClause {
 impl recursa::visitor::AsNodeKey for OnConflictClause {}
 
 impl Visit for OnConflictClause {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {

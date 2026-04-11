@@ -55,10 +55,10 @@ pub trait AsNodeKey: 'static {
 
 /// Marks AST types as traversable via the visitor pattern.
 ///
-/// The `visit` method drives traversal by calling `visitor.enter(self)`,
-/// visiting children, then `visitor.exit(self)`.
+/// The `visit` method drives traversal by calling `visitor.total_enter(self)`,
+/// visiting children, then `visitor.total_exit(self)`.
 pub trait Visit: 'static + Sized + AsNodeKey {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>>;
+    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>>;
 
     fn downcast_ref<Target: Visit>(&self) -> Option<&Target> {
         (self as &dyn Any).downcast_ref::<Target>()
@@ -69,34 +69,55 @@ pub trait Visit: 'static + Sized + AsNodeKey {
     }
 }
 
-/// Defines hooks called during AST traversal.
+/// Type-safe visitor hooks for a specific node type.
 ///
-/// Override `enter` and/or `exit` to inspect nodes. Use `downcast_ref`
-/// inside the body to check for specific node types.
-pub trait Visitor: Sized {
+/// Implement this for each AST type you want to handle in your visitor.
+/// The `#[derive(TotalVisitor)]` macro generates the dispatch from
+/// `TotalVisitor` to your `Visitor<N>` impls.
+pub trait Visitor<N>: Sized {
     type Error;
 
-    fn enter<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+    fn enter(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
         ControlFlow::Continue(())
     }
 
-    fn exit<N: Visit>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+    fn exit(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
         ControlFlow::Continue(())
     }
+}
+
+/// Universal visitor dispatch trait.
+///
+/// Called by `Visit::visit` for every AST node. Implementations dispatch
+/// to type-specific `Visitor<N>` impls based on `TypeId`.
+///
+/// Use `#[derive(TotalVisitor)]` to generate this automatically:
+///
+/// ```text
+/// #[derive(TotalVisitor)]
+/// #[total_visitor(dispatch = [Statement, Expr], error = MyError)]
+/// struct MyVisitor { ... }
+/// ```
+pub trait TotalVisitor: Sized {
+    type Error;
+
+    fn total_enter<N: 'static>(&mut self, node: &N) -> ControlFlow<Break<Self::Error>>;
+
+    fn total_exit<N: 'static>(&mut self, node: &N) -> ControlFlow<Break<Self::Error>>;
 }
 
 // -- Blanket Visit impls for container types --
 
 impl<T: Visit> AsNodeKey for Box<T> {}
 impl<T: Visit> Visit for Box<T> {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         (**self).visit(visitor)
     }
 }
 
 impl<T: Visit> AsNodeKey for Option<T> {}
 impl<T: Visit> Visit for Option<T> {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         if let Some(inner) = self {
             inner.visit(visitor)?;
         }
@@ -106,7 +127,7 @@ impl<T: Visit> Visit for Option<T> {
 
 impl<T: Visit> AsNodeKey for Vec<T> {}
 impl<T: Visit> Visit for Vec<T> {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         for item in self {
             item.visit(visitor)?;
         }
@@ -118,21 +139,21 @@ impl<T: Visit> Visit for Vec<T> {
 
 impl<T: 'static> AsNodeKey for std::marker::PhantomData<T> {}
 impl<T: 'static> Visit for std::marker::PhantomData<T> {
-    fn visit<V: Visitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         ControlFlow::Continue(())
     }
 }
 
-// -- Leaf Visit impl for String (used by literals! macro types) --
+// -- Leaf Visit impl for String --
 
 impl AsNodeKey for String {}
 impl Visit for String {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        match visitor.enter(self) {
+    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        match visitor.total_enter(self) {
             ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
             other => return other,
         }
-        visitor.exit(self)
+        visitor.total_exit(self)
     }
 }
 
@@ -146,7 +167,7 @@ impl<T: Visit + Clone, S: Visit + Clone, Trailing: 'static, Empty: 'static> AsNo
 impl<T: Visit + Clone, S: Visit + Clone, Trailing: 'static, Empty: 'static> Visit
     for Seq<T, S, Trailing, Empty>
 {
-    fn visit<V: Visitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         for (element, sep) in self.pairs() {
             element.visit(visitor)?;
             if let Some(sep) = sep {
@@ -156,3 +177,4 @@ impl<T: Visit + Clone, S: Visit + Clone, Trailing: 'static, Empty: 'static> Visi
         ControlFlow::Continue(())
     }
 }
+

@@ -32,7 +32,7 @@ pub struct CreateViewStmt {
 impl recursa::visitor::AsNodeKey for CreateViewStmt {}
 
 impl Visit for CreateViewStmt {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
@@ -156,7 +156,7 @@ pub struct DropViewStmt {
 impl recursa::visitor::AsNodeKey for DropViewStmt {}
 
 impl Visit for DropViewStmt {
-    fn visit<V: recursa::visitor::Visitor>(
+    fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
         _visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {

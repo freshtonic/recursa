@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use std::ops::ControlFlow;
 
-use recursa::visitor::{AsNodeKey, Break, Visitor};
+use recursa::visitor::{AsNodeKey, Break, TotalVisitor};
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::ast::select::WhereClause;
@@ -29,7 +29,7 @@ pub enum TableAlias {
 impl AsNodeKey for TableAlias {}
 
 impl Visit for TableAlias {
-    fn visit<V: Visitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         ControlFlow::Continue(())
     }
 }
