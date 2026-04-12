@@ -115,7 +115,14 @@ impl<'input, T: Parse<'input>> Parse<'input> for Option<T> {
 
     fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
         if T::peek(input, rules) {
-            Ok(Some(T::parse(input, rules)?))
+            let mut fork = input.fork();
+            match T::parse(&mut fork, rules) {
+                Ok(val) => {
+                    input.commit(fork);
+                    Ok(Some(val))
+                }
+                Err(_) => Ok(None),
+            }
         } else {
             Ok(None)
         }

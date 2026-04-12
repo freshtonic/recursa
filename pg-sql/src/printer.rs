@@ -140,12 +140,16 @@ fn print_select(output: &mut String, stmt: &SelectStmt) {
 fn print_select_item(output: &mut String, item: &SelectItem) {
     print_expr(output, &item.expr);
     if let Some(alias) = &item.alias {
-        if alias.has_as {
-            output.push_str(" AS ");
-        } else {
-            output.push(' ');
+        match alias {
+            crate::ast::select::Alias::WithAs(a) => {
+                output.push_str(" AS ");
+                output.push_str(&a.name.0);
+            }
+            crate::ast::select::Alias::Bare(ident) => {
+                output.push(' ');
+                output.push_str(&ident.0);
+            }
         }
-        output.push_str(&alias.name.0);
     }
 }
 
@@ -190,12 +194,16 @@ fn print_simple_table_ref(output: &mut String, table_ref: &crate::ast::select::S
         SimpleTableRef::Table(plain) => {
             output.push_str(&plain.name.0);
             if let Some(alias) = &plain.alias {
-                if plain.has_as {
-                    output.push_str(" AS ");
-                } else {
-                    output.push(' ');
+                match alias {
+                    crate::ast::delete::TableAlias::WithAs(a) => {
+                        output.push_str(" AS ");
+                        output.push_str(&a.name.0);
+                    }
+                    crate::ast::delete::TableAlias::Bare(ident) => {
+                        output.push(' ');
+                        output.push_str(&ident.0);
+                    }
                 }
-                output.push_str(&alias.0);
             }
         }
         SimpleTableRef::Func(func_ref) => {

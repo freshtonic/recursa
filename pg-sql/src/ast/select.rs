@@ -5,126 +5,46 @@ use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
+use crate::ast::delete::TableAlias as IdentAlias;
 use crate::ast::expr::{Expr, FuncCall};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// A single item in the SELECT list: `expr [AS alias]` or `expr alias`.
-///
-/// Manual Parse impl needed because bare aliases (without AS) conflict with
-/// subsequent commas or FROM keywords when trying to distinguish alias from
-/// next keyword.
-/// To eliminate this, recursa would need context-aware alias detection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct SelectItem {
     pub expr: Expr,
     pub alias: Option<Alias>,
 }
 
-impl recursa::visitor::AsNodeKey for SelectItem {}
-
-impl Visit for SelectItem {
-    fn visit<V: recursa::visitor::TotalVisitor>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
-        match visitor.total_enter(self) {
-            std::ops::ControlFlow::Continue(()) => {
-                self.expr.visit(visitor)?;
-                self.alias.visit(visitor)?;
-            }
-            std::ops::ControlFlow::Break(recursa::visitor::Break::SkipChildren) => {}
-            other => return other,
-        }
-        visitor.total_exit(self)
-    }
-}
-
-impl<'input> Parse<'input> for SelectItem {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        Expr::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        Expr::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let expr = Expr::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        // Try AS alias first
-        if keyword::As::peek(input, rules) {
-            let alias = Alias::parse(input, rules)?;
-            return Ok(SelectItem {
-                expr,
-                alias: Some(alias),
-            });
-        }
-
-        // Try bare alias (an identifier that's not a keyword reserved for SQL clauses)
-        // We use a fork to check if an Ident parses here
-        if literal::Ident::peek(input, rules) {
-            let mut fork = input.fork();
-            if let Ok(ident) = literal::Ident::parse(&mut fork, rules) {
-                input.advance(fork.cursor() - input.cursor());
-                return Ok(SelectItem {
-                    expr,
-                    alias: Some(Alias {
-                        has_as: false,
-                        name: literal::AliasName(ident.0),
-                    }),
-                });
-            }
-        }
-
-        Ok(SelectItem { expr, alias: None })
-    }
-}
-
-/// AS alias clause, or bare alias.
-#[derive(Debug, Clone)]
-pub struct Alias {
-    pub has_as: bool,
+/// Alias with explicit AS keyword: `AS name`.
+/// Uses AliasName so keywords are accepted (e.g., `SELECT 1 AS true`).
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AsAlias {
+    pub _as: PhantomData<keyword::As>,
     pub name: literal::AliasName,
 }
 
-impl recursa::visitor::AsNodeKey for Alias {}
-
-impl Visit for Alias {
-    fn visit<V: recursa::visitor::TotalVisitor>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
-        match visitor.total_enter(self) {
-            std::ops::ControlFlow::Continue(()) => {
-                self.name.visit(visitor)?;
-            }
-            std::ops::ControlFlow::Break(recursa::visitor::Break::SkipChildren) => {}
-            other => return other,
-        }
-        visitor.total_exit(self)
-    }
+/// AS alias clause, or bare alias.
+///
+/// Variant ordering: WithAs (`AS name`) has a longer first_pattern than
+/// Bare (`ident`), so longest-match-wins picks it when AS is present.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum Alias {
+    WithAs(AsAlias),
+    Bare(literal::Ident),
 }
 
-impl<'input> Parse<'input> for Alias {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        keyword::As::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        keyword::As::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        PhantomData::<keyword::As>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let name = literal::AliasName::parse(input, rules)?;
-        Ok(Alias { has_as: true, name })
+impl Alias {
+    /// Returns the alias name regardless of variant.
+    pub fn name(&self) -> &str {
+        match self {
+            Alias::WithAs(a) => &a.name.0,
+            Alias::Bare(ident) => &ident.0,
+        }
     }
 }
 
@@ -137,69 +57,12 @@ pub struct FromClause {
 }
 
 /// Table name with inheritance marker and optional alias: `person* p`
-///
-/// Manual Parse impl required because `Option<Ident>` propagates
-/// postcondition errors when peek matches a keyword pattern. The
-/// fork-based approach tries Ident and falls back to None on failure.
-/// To eliminate this manual impl, recursa would need Option to
-/// return None on postcondition failure (try-parse semantics).
-#[derive(Debug, Clone, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct InheritedTable {
     pub name: literal::Ident,
     pub _star: punct::Star,
     pub alias: Option<literal::Ident>,
-}
-
-impl<'input> Parse<'input> for InheritedTable {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        // Chain ident + ignore? + star for longest-match disambiguation
-        // against plain Table(Ident) in the TableRef enum.
-        static PATTERN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        PATTERN.get_or_init(|| {
-            let sep = format!("(?:{})?", SqlRules::IGNORE);
-            format!(
-                "{}{}{}",
-                literal::Ident::first_pattern(),
-                sep,
-                punct::Star::first_pattern()
-            )
-        })
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
-        // Use a regex that requires ident + star for lookahead
-        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        let re = RE.get_or_init(|| {
-            regex::Regex::new(&format!(r"\A(?:{})", Self::first_pattern())).unwrap()
-        });
-        re.is_match(input.remaining())
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let name = literal::Ident::parse(input, rules)?;
-        R::consume_ignored(input);
-        let _star = punct::Star::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        let alias = {
-            let mut fork = input.fork();
-            if literal::Ident::peek(&fork, rules) {
-                match literal::Ident::parse(&mut fork, rules) {
-                    Ok(ident) => {
-                        input.advance(fork.cursor() - input.cursor());
-                        Some(ident)
-                    }
-                    Err(_) => None,
-                }
-            } else {
-                None
-            }
-        };
-
-        Ok(InheritedTable { name, _star, alias })
-    }
 }
 
 /// Table alias: `AS name [(col1, col2)]` or bare `name [(col1, col2)]`.
@@ -234,94 +97,11 @@ pub struct LateralRef {
 }
 
 /// Plain table reference with optional alias: `tablename [AS] alias`
-///
-/// Manual Parse impl required because `Option<Ident>` propagates
-/// postcondition errors when peek matches a keyword pattern. Uses
-/// fork-based approach to try Ident and fall back to None on failure.
-/// Also supports optional AS keyword before alias.
-/// To eliminate this manual impl, recursa would need Option to
-/// return None on postcondition failure (try-parse semantics).
-/// Manual Visit impl needed because `has_as: bool` doesn't implement Visit.
-/// To eliminate this, recursa would need `#[visit(skip)]` field attribute support.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct PlainTable {
     pub name: literal::Ident,
-    pub has_as: bool,
-    pub alias: Option<literal::Ident>,
-}
-
-impl recursa::visitor::AsNodeKey for PlainTable {}
-
-impl Visit for PlainTable {
-    fn visit<V: recursa::visitor::TotalVisitor>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
-        match visitor.total_enter(self) {
-            std::ops::ControlFlow::Continue(()) => {
-                self.name.visit(visitor)?;
-                // has_as: bool — not visitable, skip
-                self.alias.visit(visitor)?;
-            }
-            std::ops::ControlFlow::Break(recursa::visitor::Break::SkipChildren) => {}
-            other => return other,
-        }
-        visitor.total_exit(self)
-    }
-}
-
-impl<'input> Parse<'input> for PlainTable {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        literal::Ident::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        literal::Ident::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let name = literal::Ident::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        // Try AS alias
-        if keyword::As::peek(input, rules) {
-            let mut fork = input.fork();
-            let _ = PhantomData::<keyword::As>::parse(&mut fork, rules);
-            R::consume_ignored(&mut fork);
-            if let Ok(ident) = literal::Ident::parse(&mut fork, rules) {
-                input.advance(fork.cursor() - input.cursor());
-                return Ok(PlainTable {
-                    name,
-                    has_as: true,
-                    alias: Some(ident),
-                });
-            }
-        }
-
-        // Try bare alias
-        let alias = {
-            let mut fork = input.fork();
-            if literal::Ident::peek(&fork, rules) {
-                match literal::Ident::parse(&mut fork, rules) {
-                    Ok(ident) => {
-                        input.advance(fork.cursor() - input.cursor());
-                        Some(ident)
-                    }
-                    Err(_) => None,
-                }
-            } else {
-                None
-            }
-        };
-
-        Ok(PlainTable {
-            name,
-            has_as: false,
-            alias,
-        })
-    }
+    pub alias: Option<IdentAlias>,
 }
 
 /// Function call used as table reference with optional alias.
@@ -678,7 +458,7 @@ mod tests {
         let mut input = Input::new("SELECT 1 AS true");
         let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
         let alias = stmt.items[0].alias.as_ref().unwrap();
-        assert_eq!(alias.name.0, "true");
+        assert_eq!(alias.name(), "true");
     }
 
     #[test]

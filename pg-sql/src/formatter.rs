@@ -10,7 +10,7 @@ use std::ops::ControlFlow;
 use recursa::fmt::{FormatStyle, GroupKind, PrintEngine, Token};
 use recursa::{Break, TotalVisitor, Visit, Visitor};
 
-use crate::ast::select::{Alias, FromClause, OrderByClause, SelectItem, SelectStmt, WhereClause};
+use crate::ast::select::{AsAlias, FromClause, OrderByClause, SelectItem, SelectStmt, WhereClause};
 use crate::ast::{PsqlCommand, Statement, TerminatedStatement};
 use crate::tokens::literal;
 
@@ -34,7 +34,7 @@ pub fn format_sql(root: &impl Visit, style: FormatStyle) -> String {
         Statement,
         SelectStmt,
         SelectItem,
-        Alias,
+        AsAlias,
         FromClause,
         WhereClause,
         OrderByClause,
@@ -164,12 +164,10 @@ impl Visitor<SelectItem> for SqlFormatter {
     }
 }
 
-impl Visitor<Alias> for SqlFormatter {
+impl Visitor<AsAlias> for SqlFormatter {
     type Error = ();
-    fn enter(&mut self, node: &Alias) -> ControlFlow<Break<()>> {
-        if node.has_as {
-            self.keyword("AS");
-        }
+    fn enter(&mut self, _node: &AsAlias) -> ControlFlow<Break<()>> {
+        self.keyword("AS");
         ControlFlow::Continue(())
     }
 }
@@ -244,11 +242,10 @@ impl Visitor<literal::IntegerLit> for SqlFormatter {
 
 #[cfg(test)]
 mod tests {
-    use recursa::{Input, Parse};
+    use recursa::Input;
 
     use super::*;
     use crate::ast::parse_sql_file;
-    use crate::rules::SqlRules;
 
     fn format(sql: &str) -> String {
         let mut input = Input::new(sql);

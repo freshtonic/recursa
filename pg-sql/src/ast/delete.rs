@@ -1,10 +1,7 @@
 /// DELETE FROM statement AST.
 use std::marker::PhantomData;
 
-use std::ops::ControlFlow;
-
-use recursa::visitor::{AsNodeKey, Break, TotalVisitor};
-use recursa::{Input, Parse, ParseError, ParseRules, Visit};
+use recursa::{Parse, Visit};
 
 use crate::ast::select::WhereClause;
 use crate::ast::update::ReturningClause;
@@ -20,18 +17,14 @@ pub struct AsAlias {
 }
 
 /// Table alias in DELETE FROM: either `AS alias` or bare `alias`.
-#[derive(Debug, Clone)]
+///
+/// Variant ordering: WithAs (`AS ident`) has a longer first_pattern than
+/// Bare (`ident`), so longest-match-wins picks it when AS is present.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub enum TableAlias {
     WithAs(AsAlias),
     Bare(literal::Ident),
-}
-
-impl AsNodeKey for TableAlias {}
-
-impl Visit for TableAlias {
-    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        ControlFlow::Continue(())
-    }
 }
 
 impl TableAlias {
@@ -53,18 +46,8 @@ pub struct DeleteUsingClause {
 }
 
 /// DELETE FROM statement: `DELETE FROM table [alias] [USING ...] [WHERE expr] [RETURNING ...]`.
-///
-/// Manual Parse impl required because `Option<TableAlias>` doesn't work with
-/// derive: the bare alias variant uses `Ident` whose regex pattern matches
-/// SQL keywords, but whose postcondition rejects them. Since `Option<T>`
-/// propagates parse errors when peek succeeds but parse fails (postcondition
-/// rejection), `DELETE FROM t WHERE ...` would error instead of treating
-/// `WHERE` as the start of the WHERE clause.
-///
-/// To eliminate this manual impl, recursa would need either:
-/// - `Option<T>` to return `None` on postcondition failure (try-parse), or
-/// - Negative lookahead support in the regex crate for scan patterns.
-#[derive(Debug, Clone, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct DeleteStmt {
     pub _delete: PhantomData<keyword::Delete>,
     pub _from: PhantomData<keyword::From>,
@@ -73,68 +56,6 @@ pub struct DeleteStmt {
     pub using_clause: Option<DeleteUsingClause>,
     pub where_clause: Option<WhereClause>,
     pub returning: Option<ReturningClause>,
-}
-
-impl<'input> Parse<'input> for DeleteStmt {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        keyword::Delete::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        keyword::Delete::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let _delete = PhantomData::<keyword::Delete>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let _from = PhantomData::<keyword::From>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let table_name = literal::Ident::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        // Try AS alias first, then bare alias (Ident), falling back to None.
-        // For the bare alias case, we fork the input and attempt Ident::parse.
-        // If the postcondition rejects a keyword (e.g., WHERE), we discard the
-        // fork and return None, leaving the input cursor unchanged.
-        let alias = if AsAlias::peek(input, rules) {
-            let a = AsAlias::parse(input, rules)?;
-            R::consume_ignored(input);
-            Some(TableAlias::WithAs(a))
-        } else {
-            let mut fork = input.fork();
-            if literal::Ident::peek(&fork, rules) {
-                match literal::Ident::parse(&mut fork, rules) {
-                    Ok(ident) => {
-                        // Commit the fork's position back to input
-                        input.advance(fork.cursor() - input.cursor());
-                        R::consume_ignored(input);
-                        Some(TableAlias::Bare(ident))
-                    }
-                    Err(_) => None,
-                }
-            } else {
-                None
-            }
-        };
-
-        let using_clause = Option::<DeleteUsingClause>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let where_clause = Option::<WhereClause>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let returning = Option::<ReturningClause>::parse(input, rules)?;
-
-        Ok(DeleteStmt {
-            _delete,
-            _from,
-            table_name,
-            alias,
-            using_clause,
-            where_clause,
-            returning,
-        })
-    }
 }
 
 #[cfg(test)]
