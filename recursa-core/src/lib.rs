@@ -1,6 +1,7 @@
 //! Core traits and types for the recursa parser framework.
 
 mod error;
+pub mod fmt;
 mod input;
 mod macros;
 mod parse;
