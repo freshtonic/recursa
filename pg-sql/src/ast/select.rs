@@ -105,65 +105,11 @@ pub struct PlainTable {
 }
 
 /// Function call used as table reference with optional alias.
-///
-/// Manual Parse impl needed because the optional alias after the function call
-/// uses the same keyword/identifier disambiguation issue as PlainTable.
-/// To eliminate this, recursa would need try-parse Option semantics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct FuncTableRef {
     pub func: FuncCall,
     pub alias: Option<TableAlias>,
-}
-
-impl recursa::visitor::AsNodeKey for FuncTableRef {}
-impl Visit for FuncTableRef {
-    fn visit<V: recursa::visitor::TotalVisitor>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
-        match visitor.total_enter(self) {
-            std::ops::ControlFlow::Continue(()) => {
-                self.func.visit(visitor)?;
-                self.alias.visit(visitor)?;
-            }
-            std::ops::ControlFlow::Break(recursa::visitor::Break::SkipChildren) => {}
-            other => return other,
-        }
-        visitor.total_exit(self)
-    }
-}
-
-impl<'input> Parse<'input> for FuncTableRef {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        FuncCall::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        FuncCall::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let func = FuncCall::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        // Try alias (AS name or bare name)
-        let alias = if keyword::As::peek(input, rules) || literal::AliasName::peek(input, rules) {
-            let mut fork = input.fork();
-            match TableAlias::parse(&mut fork, rules) {
-                Ok(a) => {
-                    input.advance(fork.cursor() - input.cursor());
-                    Some(a)
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
-
-        Ok(FuncTableRef { func, alias })
-    }
 }
 
 /// A single table reference (no joins). Used as building block for JoinTableRef.

@@ -2,6 +2,77 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Type};
 
+/// Check if a type is `Option<...>`.
+fn is_option_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+    {
+        return segment.ident == "Option";
+    }
+    false
+}
+
+/// Generate peek body that falls through leading Optional fields.
+///
+/// For `struct Foo { a: Option<X>, b: Option<Y>, c: Z }`, generates:
+/// ```ignore
+/// if <Option<X>>::peek(&peek_input, &Rules) { return true; }
+/// if <Option<Y>>::peek(&peek_input, &Rules) { return true; }
+/// <Z>::peek(&peek_input, &Rules)
+/// ```
+///
+/// For `struct Bar { a: X, b: Y }` (no leading Options), generates:
+/// ```ignore
+/// <X>::peek(&peek_input, &Rules)
+/// ```
+fn generate_peek_body(field_types: &[&Type], rules_type: &Type) -> TokenStream {
+    // Find the run of leading Option fields
+    let first_required = field_types.iter().position(|ty| !is_option_type(ty));
+
+    match first_required {
+        // No leading Options — just check the first field
+        Some(0) => {
+            let first = &field_types[0];
+            quote! { <#first as ::recursa_core::Parse>::peek(&peek_input, &#rules_type) }
+        }
+        // Leading Options followed by a required field
+        Some(idx) => {
+            let option_checks: Vec<_> = field_types[..idx]
+                .iter()
+                .map(|ty| {
+                    quote! {
+                        if <#ty as ::recursa_core::Parse>::peek(&peek_input, &#rules_type) {
+                            return true;
+                        }
+                    }
+                })
+                .collect();
+            let required = &field_types[idx];
+            quote! {
+                #(#option_checks)*
+                <#required as ::recursa_core::Parse>::peek(&peek_input, &#rules_type)
+            }
+        }
+        // ALL fields are Optional — check each one
+        None => {
+            let checks: Vec<_> = field_types
+                .iter()
+                .map(|ty| {
+                    quote! {
+                        if <#ty as ::recursa_core::Parse>::peek(&peek_input, &#rules_type) {
+                            return true;
+                        }
+                    }
+                })
+                .collect();
+            quote! {
+                #(#checks)*
+                false
+            }
+        }
+    }
+}
+
 pub fn derive_parse(input: DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
 
@@ -98,9 +169,13 @@ fn derive_parse_named_struct(
 
     let field_names: Vec<_> = fields.named.iter().map(|f| &f.ident).collect();
     let field_types: Vec<_> = fields.named.iter().map(|f| &f.ty).collect();
-    let first_field_type = field_types.first().ok_or_else(|| {
-        syn::Error::new_spanned(name, "Parse struct must have at least one field")
-    })?;
+    if field_types.is_empty() {
+        return Err(syn::Error::new_spanned(
+            name,
+            "Parse struct must have at least one field",
+        ));
+    }
+    let peek_body = generate_peek_body(&field_types, rules_type);
 
     // Build nested chain for first_pattern: always include the first field's
     // pattern, then continue while IS_TERMINAL is true. For non-terminal fields
@@ -162,7 +237,7 @@ fn derive_parse_named_struct(
             fn peek<R: ::recursa_core::ParseRules>(input: &::recursa_core::Input<#lt>, _rules: &R) -> bool {
                 let mut peek_input = input.fork();
                 <#rules_type as ::recursa_core::ParseRules>::consume_ignored(&mut peek_input);
-                <#first_field_type as ::recursa_core::Parse>::peek(&peek_input, &#rules_type)
+                #peek_body
             }
 
             fn parse<R: ::recursa_core::ParseRules>(input: &mut ::recursa_core::Input<#lt>, _rules: &R) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
@@ -190,9 +265,13 @@ fn derive_parse_tuple_struct(
         .unwrap_or_else(|| syn::Lifetime::new("'_", proc_macro2::Span::call_site()));
 
     let field_types: Vec<_> = fields.unnamed.iter().map(|f| &f.ty).collect();
-    let first_field_type = field_types.first().ok_or_else(|| {
-        syn::Error::new_spanned(name, "Parse tuple struct must have at least one field")
-    })?;
+    if field_types.is_empty() {
+        return Err(syn::Error::new_spanned(
+            name,
+            "Parse tuple struct must have at least one field",
+        ));
+    }
+    let peek_body = generate_peek_body(&field_types, rules_type);
 
     // Generate field binding names: __f0, __f1, ...
     let field_bindings: Vec<_> = (0..field_types.len())
@@ -254,7 +333,7 @@ fn derive_parse_tuple_struct(
             fn peek<R: ::recursa_core::ParseRules>(input: &::recursa_core::Input<#lt>, _rules: &R) -> bool {
                 let mut peek_input = input.fork();
                 <#rules_type as ::recursa_core::ParseRules>::consume_ignored(&mut peek_input);
-                <#first_field_type as ::recursa_core::Parse>::peek(&peek_input, &#rules_type)
+                #peek_body
             }
 
             fn parse<R: ::recursa_core::ParseRules>(input: &mut ::recursa_core::Input<#lt>, _rules: &R) -> ::std::result::Result<Self, ::recursa_core::ParseError> {
