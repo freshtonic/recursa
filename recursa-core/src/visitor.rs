@@ -157,24 +157,4 @@ impl Visit for String {
     }
 }
 
-use crate::seq::Seq;
-
-impl<T: Visit + Clone, S: Visit + Clone, Trailing: 'static, Empty: 'static> AsNodeKey
-    for Seq<T, S, Trailing, Empty>
-{
-}
-
-impl<T: Visit + Clone, S: Visit + Clone, Trailing: 'static, Empty: 'static> Visit
-    for Seq<T, S, Trailing, Empty>
-{
-    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        for (element, sep) in self.pairs() {
-            element.visit(visitor)?;
-            if let Some(sep) = sep {
-                sep.visit(visitor)?;
-            }
-        }
-        ControlFlow::Continue(())
-    }
-}
 

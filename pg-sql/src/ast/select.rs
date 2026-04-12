@@ -26,9 +26,17 @@ impl recursa::visitor::AsNodeKey for SelectItem {}
 impl Visit for SelectItem {
     fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
-        _visitor: &mut V,
+        visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
-        std::ops::ControlFlow::Continue(())
+        match visitor.total_enter(self) {
+            std::ops::ControlFlow::Continue(()) => {
+                self.expr.visit(visitor)?;
+                self.alias.visit(visitor)?;
+            }
+            std::ops::ControlFlow::Break(recursa::visitor::Break::SkipChildren) => {}
+            other => return other,
+        }
+        visitor.total_exit(self)
     }
 }
 
@@ -88,9 +96,16 @@ impl recursa::visitor::AsNodeKey for Alias {}
 impl Visit for Alias {
     fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
-        _visitor: &mut V,
+        visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
-        std::ops::ControlFlow::Continue(())
+        match visitor.total_enter(self) {
+            std::ops::ControlFlow::Continue(()) => {
+                self.name.visit(visitor)?;
+            }
+            std::ops::ControlFlow::Break(recursa::visitor::Break::SkipChildren) => {}
+            other => return other,
+        }
+        visitor.total_exit(self)
     }
 }
 
@@ -240,9 +255,18 @@ impl recursa::visitor::AsNodeKey for PlainTable {}
 impl Visit for PlainTable {
     fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
-        _visitor: &mut V,
+        visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
-        std::ops::ControlFlow::Continue(())
+        match visitor.total_enter(self) {
+            std::ops::ControlFlow::Continue(()) => {
+                self.name.visit(visitor)?;
+                // has_as: bool — not visitable, skip
+                self.alias.visit(visitor)?;
+            }
+            std::ops::ControlFlow::Break(recursa::visitor::Break::SkipChildren) => {}
+            other => return other,
+        }
+        visitor.total_exit(self)
     }
 }
 
@@ -315,9 +339,17 @@ impl recursa::visitor::AsNodeKey for FuncTableRef {}
 impl Visit for FuncTableRef {
     fn visit<V: recursa::visitor::TotalVisitor>(
         &self,
-        _visitor: &mut V,
+        visitor: &mut V,
     ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
-        std::ops::ControlFlow::Continue(())
+        match visitor.total_enter(self) {
+            std::ops::ControlFlow::Continue(()) => {
+                self.func.visit(visitor)?;
+                self.alias.visit(visitor)?;
+            }
+            std::ops::ControlFlow::Break(recursa::visitor::Break::SkipChildren) => {}
+            other => return other,
+        }
+        visitor.total_exit(self)
     }
 }
 

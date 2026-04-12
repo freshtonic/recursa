@@ -1,11 +1,12 @@
 use std::fmt;
 use std::marker::PhantomData;
-use std::ops::Deref;
+use std::ops::{ControlFlow, Deref};
 
 use crate::error::ParseError;
 use crate::input::Input;
 use crate::parse::Parse;
 use crate::rules::ParseRules;
+use crate::visitor::{AsNodeKey, Break, TotalVisitor, Visit};
 
 // -- Marker types --
 
@@ -357,5 +358,26 @@ where
         }
         let pairs = parse_required_trailing::<T, S, R>(input, rules)?;
         Ok(Self::from_pairs(pairs))
+    }
+}
+
+// -- Visit --
+
+impl<T: Visit + Clone, S: Visit + Clone, Trailing: 'static, Empty: 'static> AsNodeKey
+    for Seq<T, S, Trailing, Empty>
+{
+}
+
+impl<T: Visit + Clone, S: Visit + Clone, Trailing: 'static, Empty: 'static> Visit
+    for Seq<T, S, Trailing, Empty>
+{
+    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        for (element, sep) in self.pairs() {
+            element.visit(visitor)?;
+            if let Some(sep) = sep {
+                sep.visit(visitor)?;
+            }
+        }
+        ControlFlow::Continue(())
     }
 }

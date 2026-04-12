@@ -50,7 +50,9 @@ struct SqlFormatter {
 
 impl SqlFormatter {
     fn push(&mut self, s: impl Into<String>) {
-        self.tokens.push(Token::String(s.into()));
+        let s = s.into();
+        eprintln!("TOKEN: String({s:?})");
+        self.tokens.push(Token::String(s));
     }
 
     fn softline(&mut self) {
