@@ -127,7 +127,8 @@ impl Visitor<Statement> for SqlFormatter {
 
 impl Visitor<SelectStmt> for SqlFormatter {
     type Error = ();
-    fn enter(&mut self, _node: &SelectStmt) -> ControlFlow<Break<()>> {
+    fn enter(&mut self, node: &SelectStmt) -> ControlFlow<Break<()>> {
+        eprintln!("FORMATTER: SelectStmt enter, items count: {}", node.items.len());
         self.begin(GroupKind::Consistent);
         self.keyword("SELECT");
         self.indent();
@@ -213,6 +214,7 @@ impl Visitor<literal::StringLit> for SqlFormatter {
 impl Visitor<literal::IntegerLit> for SqlFormatter {
     type Error = ();
     fn enter(&mut self, node: &literal::IntegerLit) -> ControlFlow<Break<()>> {
+        eprintln!("FORMATTER: IntegerLit enter: {}", &node.0);
         self.push(&node.0);
         ControlFlow::Continue(())
     }
@@ -250,6 +252,7 @@ mod tests {
     #[test]
     fn format_select_where() {
         let result = format("select a from t where a = 1;");
+        eprintln!("format_select_where got: {result}");
         assert!(result.contains("SELECT"), "got: {result}");
         assert!(result.contains("FROM"), "got: {result}");
         assert!(result.contains("WHERE"), "got: {result}");

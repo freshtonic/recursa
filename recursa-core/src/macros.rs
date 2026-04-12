@@ -88,12 +88,12 @@ macro_rules! literals {
         $(
             #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             #[scan(pattern = $pattern)]
-            #[visit(ignore)]
+            #[visit(terminal)]
             pub struct $name(pub String);
         )*
 
         #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-        #[visit(ignore)]
+        #[visit(terminal)]
         pub enum Literal {
             $($name($name)),*
         }
