@@ -10,7 +10,7 @@ use std::ops::ControlFlow;
 use recursa::fmt::{FormatStyle, GroupKind, PrintEngine, Token};
 use recursa::{Break, TotalVisitor, Visit, Visitor};
 
-use crate::ast::select::{FromClause, OrderByClause, SelectItem, SelectStmt, WhereClause};
+use crate::ast::select::{Alias, FromClause, OrderByClause, SelectItem, SelectStmt, WhereClause};
 use crate::ast::{PsqlCommand, Statement, TerminatedStatement};
 use crate::tokens::literal;
 
@@ -19,6 +19,7 @@ pub fn format_sql(root: &impl Visit, style: FormatStyle) -> String {
     let mut formatter = SqlFormatter {
         tokens: Vec::new(),
         style: style.clone(),
+        needs_space: false,
     };
     let _ = root.visit(&mut formatter);
     let engine = PrintEngine::new(style);
@@ -33,6 +34,7 @@ pub fn format_sql(root: &impl Visit, style: FormatStyle) -> String {
         Statement,
         SelectStmt,
         SelectItem,
+        Alias,
         FromClause,
         WhereClause,
         OrderByClause,
@@ -46,13 +48,23 @@ pub fn format_sql(root: &impl Visit, style: FormatStyle) -> String {
 struct SqlFormatter {
     tokens: Vec<Token>,
     style: FormatStyle,
+    needs_space: bool,
 }
 
 impl SqlFormatter {
-    fn push(&mut self, s: impl Into<String>) {
-        let s = s.into();
-        eprintln!("TOKEN: String({s:?})");
-        self.tokens.push(Token::String(s));
+    /// Emit a word token, auto-inserting a space after the previous word.
+    fn word(&mut self, s: impl Into<String>) {
+        if self.needs_space {
+            self.tokens.push(Token::String(" ".into()));
+        }
+        self.tokens.push(Token::String(s.into()));
+        self.needs_space = true;
+    }
+
+    /// Emit a punctuation token that attaches to the previous word (no space).
+    fn punct(&mut self, s: impl Into<String>) {
+        self.tokens.push(Token::String(s.into()));
+        self.needs_space = false;
     }
 
     fn softline(&mut self) {
@@ -60,6 +72,7 @@ impl SqlFormatter {
             flat: " ".into(),
             broken: "\n".into(),
         });
+        self.needs_space = false;
     }
 
     fn hardline(&mut self) {
@@ -67,6 +80,7 @@ impl SqlFormatter {
             flat: "\n".into(),
             broken: "\n".into(),
         });
+        self.needs_space = false;
     }
 
     fn begin(&mut self, kind: GroupKind) {
@@ -87,9 +101,9 @@ impl SqlFormatter {
 
     fn keyword(&mut self, kw: &str) {
         if self.style.uppercase_keywords {
-            self.push(kw.to_uppercase());
+            self.word(kw.to_uppercase());
         } else {
-            self.push(kw.to_lowercase());
+            self.word(kw.to_lowercase());
         }
     }
 }
@@ -113,7 +127,7 @@ impl Visitor<TerminatedStatement> for SqlFormatter {
         ControlFlow::Continue(())
     }
     fn exit(&mut self, _node: &TerminatedStatement) -> ControlFlow<Break<()>> {
-        self.push(";");
+        self.punct(";");
         ControlFlow::Continue(())
     }
 }
@@ -129,8 +143,7 @@ impl Visitor<Statement> for SqlFormatter {
 
 impl Visitor<SelectStmt> for SqlFormatter {
     type Error = ();
-    fn enter(&mut self, node: &SelectStmt) -> ControlFlow<Break<()>> {
-        eprintln!("FORMATTER: SelectStmt enter, items count: {}", node.items.len());
+    fn enter(&mut self, _node: &SelectStmt) -> ControlFlow<Break<()>> {
         self.begin(GroupKind::Consistent);
         self.keyword("SELECT");
         self.indent();
@@ -151,14 +164,24 @@ impl Visitor<SelectItem> for SqlFormatter {
     }
 }
 
+impl Visitor<Alias> for SqlFormatter {
+    type Error = ();
+    fn enter(&mut self, node: &Alias) -> ControlFlow<Break<()>> {
+        if node.has_as {
+            self.keyword("AS");
+        }
+        ControlFlow::Continue(())
+    }
+}
+
 impl Visitor<FromClause> for SqlFormatter {
     type Error = ();
     fn enter(&mut self, _node: &FromClause) -> ControlFlow<Break<()>> {
         self.dedent();
         self.softline();
         self.keyword("FROM");
-        self.push(" ");
         self.indent();
+        self.softline();
         ControlFlow::Continue(())
     }
     fn exit(&mut self, _node: &FromClause) -> ControlFlow<Break<()>> {
@@ -172,7 +195,6 @@ impl Visitor<WhereClause> for SqlFormatter {
     fn enter(&mut self, _node: &WhereClause) -> ControlFlow<Break<()>> {
         self.softline();
         self.keyword("WHERE");
-        self.push(" ");
         ControlFlow::Continue(())
     }
 }
@@ -182,7 +204,6 @@ impl Visitor<OrderByClause> for SqlFormatter {
     fn enter(&mut self, _node: &OrderByClause) -> ControlFlow<Break<()>> {
         self.softline();
         self.keyword("ORDER BY");
-        self.push(" ");
         ControlFlow::Continue(())
     }
 }
@@ -192,7 +213,7 @@ impl Visitor<OrderByClause> for SqlFormatter {
 impl Visitor<literal::Ident> for SqlFormatter {
     type Error = ();
     fn enter(&mut self, node: &literal::Ident) -> ControlFlow<Break<()>> {
-        self.push(&node.0);
+        self.word(&node.0);
         ControlFlow::Continue(())
     }
 }
@@ -200,7 +221,7 @@ impl Visitor<literal::Ident> for SqlFormatter {
 impl Visitor<literal::AliasName> for SqlFormatter {
     type Error = ();
     fn enter(&mut self, node: &literal::AliasName) -> ControlFlow<Break<()>> {
-        self.push(&node.0);
+        self.word(&node.0);
         ControlFlow::Continue(())
     }
 }
@@ -208,7 +229,7 @@ impl Visitor<literal::AliasName> for SqlFormatter {
 impl Visitor<literal::StringLit> for SqlFormatter {
     type Error = ();
     fn enter(&mut self, node: &literal::StringLit) -> ControlFlow<Break<()>> {
-        self.push(&node.0);
+        self.word(&node.0);
         ControlFlow::Continue(())
     }
 }
@@ -216,8 +237,7 @@ impl Visitor<literal::StringLit> for SqlFormatter {
 impl Visitor<literal::IntegerLit> for SqlFormatter {
     type Error = ();
     fn enter(&mut self, node: &literal::IntegerLit) -> ControlFlow<Break<()>> {
-        eprintln!("FORMATTER: IntegerLit enter: {}", &node.0);
-        self.push(&node.0);
+        self.word(&node.0);
         ControlFlow::Continue(())
     }
 }
@@ -240,7 +260,7 @@ mod tests {
     fn format_simple_select() {
         let result = format("select 1 as one;");
         assert!(result.contains("SELECT"), "got: {result}");
-        assert!(result.contains("one"), "got: {result}");
+        assert!(result.contains("AS one"), "got: {result}");
     }
 
     #[test]
@@ -254,7 +274,6 @@ mod tests {
     #[test]
     fn format_select_where() {
         let result = format("select a from t where a = 1;");
-        eprintln!("format_select_where got: {result}");
         assert!(result.contains("SELECT"), "got: {result}");
         assert!(result.contains("FROM"), "got: {result}");
         assert!(result.contains("WHERE"), "got: {result}");
