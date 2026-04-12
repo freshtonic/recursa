@@ -2,7 +2,7 @@
 
 ## Principles
 
-1. **Derive Parse/Scan/Visit wherever possible.** Manual impls only when the derive macro can't handle the case (e.g., Pratt postfix operators, non-standard parsing like psql directives). When a manual impl is needed, document why with a comment.
+1. **NEVER manually implement Parse/Scan/Visit** When encountering a piece of SQL syntax that seems to make derivation with `recursa` impossible STOP what you are doing, explain the problem and ask for feedback.
 
 2. **Use method syntax, not UFCS.** Write `T::parse(input, rules)` not `<T as Parse>::parse(input, rules)`. Since `Scan` no longer has `peek`/`parse` methods, there is no ambiguity.
 
