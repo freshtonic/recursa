@@ -135,6 +135,15 @@ impl<T: Visit> Visit for Vec<T> {
     }
 }
 
+// -- Unit type is transparent for Visit (no-op separator in Seq<T, ()>) --
+
+impl AsNodeKey for () {}
+impl Visit for () {
+    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        ControlFlow::Continue(())
+    }
+}
+
 // -- PhantomData is transparent for Visit (nothing to visit) --
 
 impl<T: 'static> AsNodeKey for std::marker::PhantomData<T> {}

@@ -1,9 +1,9 @@
 /// SELECT statement AST.
 use std::marker::PhantomData;
 
-use recursa::seq::Seq;
+use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
-use recursa::{Input, Parse, ParseError, ParseRules, Visit};
+use recursa::{Parse, Visit};
 
 use crate::ast::delete::TableAlias as IdentAlias;
 use crate::ast::expr::{Expr, FuncCall};
@@ -176,49 +176,11 @@ pub struct JoinSuffix {
 }
 
 /// A table reference that may have zero or more JOIN suffixes.
-///
-/// Manual Parse impl needed because JOINs are left-associative and we need
-/// to parse a sequence: `table JOIN table ON ... LEFT JOIN table ON ...`
-/// To eliminate this, recursa would need postfix-style sequence parsing for
-/// non-Pratt types.
-#[derive(Debug, Clone, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct TableRef {
     pub base: SimpleTableRef,
-    pub joins: Vec<JoinSuffix>,
-}
-
-impl<'input> Parse<'input> for TableRef {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        SimpleTableRef::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        SimpleTableRef::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let base = SimpleTableRef::parse(input, rules)?;
-        let mut joins = Vec::new();
-        loop {
-            R::consume_ignored(input);
-            // Check for JOIN keyword or join type keyword (LEFT, RIGHT, FULL, INNER, CROSS)
-            if keyword::Join::peek(input, rules)
-                || keyword::Left::peek(input, rules)
-                || keyword::Right::peek(input, rules)
-                || keyword::Full::peek(input, rules)
-                || keyword::Inner::peek(input, rules)
-                || keyword::Cross::peek(input, rules)
-            {
-                let join = JoinSuffix::parse(input, rules)?;
-                joins.push(join);
-            } else {
-                break;
-            }
-        }
-        Ok(TableRef { base, joins })
-    }
+    pub joins: Seq<JoinSuffix, (), OptionalTrailing>,
 }
 
 /// WHERE clause: `WHERE expr`.

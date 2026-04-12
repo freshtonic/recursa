@@ -155,7 +155,7 @@ fn print_select_item(output: &mut String, item: &SelectItem) {
 
 fn print_table_ref(output: &mut String, table_ref: &TableRef) {
     print_simple_table_ref(output, &table_ref.base);
-    for join in &table_ref.joins {
+    for join in table_ref.joins.iter() {
         if let Some(jt) = &join.join_type {
             match jt {
                 crate::ast::select::JoinType::Left(_) => output.push_str(" LEFT"),

@@ -129,6 +129,25 @@ impl<'input, T: Parse<'input>> Parse<'input> for Option<T> {
     }
 }
 
+/// Unit type as a no-op separator for `Seq<T, ()>`.
+/// Always peeks true and parses without consuming input.
+/// Use with `OptionalTrailing` so the loop checks `T::peek` between elements.
+impl<'input> Parse<'input> for () {
+    const IS_TERMINAL: bool = true;
+
+    fn first_pattern() -> &'static str {
+        ""
+    }
+
+    fn peek<R: ParseRules>(_input: &Input<'input>, _rules: &R) -> bool {
+        true
+    }
+
+    fn parse<R: ParseRules>(_input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
+        Ok(())
+    }
+}
+
 /// Blanket implementation: `PhantomData<T>` parses `T` but discards the value.
 /// Useful for keyword tokens in structs where the token is needed for parsing
 /// but carries no information worth storing.
