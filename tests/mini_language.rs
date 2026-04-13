@@ -2,36 +2,36 @@
 
 #![allow(dead_code)]
 
-use recursa::{Input, Parse, ParseRules, Scan};
+use recursa::{Input, Parse, ParseRules};
 
 // -- Token types --
 
-#[derive(Scan, Debug)]
-#[scan(pattern = "let")]
+#[derive(Parse, Debug)]
+#[parse(pattern = "let")]
 struct LetKw;
 
-#[derive(Scan, Debug)]
-#[scan(pattern = "=")]
+#[derive(Parse, Debug)]
+#[parse(pattern = "=")]
 struct Eq;
 
-#[derive(Scan, Debug)]
-#[scan(pattern = ";")]
+#[derive(Parse, Debug)]
+#[parse(pattern = ";")]
 struct Semi;
 
-#[derive(Scan, Debug)]
-#[scan(pattern = r"\+")]
+#[derive(Parse, Debug)]
+#[parse(pattern = r"\+")]
 struct Plus;
 
-#[derive(Scan, Debug)]
-#[scan(pattern = r"\*")]
+#[derive(Parse, Debug)]
+#[parse(pattern = r"\*")]
 struct Star;
 
-#[derive(Scan, Debug)]
-#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+#[derive(Parse, Debug)]
+#[parse(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
 struct Ident<'input>(&'input str);
 
-#[derive(Scan, Debug)]
-#[scan(pattern = r"[0-9]+")]
+#[derive(Parse, Debug)]
+#[parse(pattern = r"[0-9]+")]
 struct IntLit<'input>(&'input str);
 
 // -- Grammar rules --
@@ -78,7 +78,7 @@ struct LetStmt<'input> {
 #[test]
 fn parse_let_with_expression() {
     let mut input = Input::new("let x = 1 + 2 * 3;");
-    let stmt = LetStmt::parse(&mut input, &Lang).unwrap();
+    let stmt = LetStmt::parse::<Lang>(&mut input).unwrap();
     assert_eq!(stmt.name.0, "x");
     // value should be Add(Lit(1), Mul(Lit(2), Lit(3)))
     match stmt.value {
@@ -95,7 +95,7 @@ fn parse_let_with_expression() {
 fn parse_error_has_span() {
     use recursa::miette::Diagnostic;
     let mut input = Input::new("let 123 = 1;");
-    let err = LetStmt::parse(&mut input, &Lang).unwrap_err();
+    let err = LetStmt::parse::<Lang>(&mut input).unwrap_err();
     // Error should have labels (spans)
     assert!(err.labels().is_some());
 }

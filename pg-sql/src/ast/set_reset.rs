@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn parse_set_to() {
         let mut input = Input::new("SET enable_seqscan TO off");
-        let stmt = SetStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SetStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.param.0, "enable_seqscan");
         assert!(input.is_empty());
     }
@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn parse_set_eq() {
         let mut input = Input::new("SET enable_sort = false");
-        let stmt = SetStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SetStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.param.0, "enable_sort");
         assert!(input.is_empty());
     }
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn parse_reset() {
         let mut input = Input::new("RESET enable_seqscan");
-        let stmt = ResetStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = ResetStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.param.0, "enable_seqscan");
         assert!(input.is_empty());
     }

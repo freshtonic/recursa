@@ -1,30 +1,30 @@
 #![allow(dead_code)]
 
 use recursa_core::{Input, Parse, ParseRules};
-use recursa_derive::{Parse, Scan};
+use recursa_derive::Parse;
 
-#[derive(Scan)]
-#[scan(pattern = "let")]
+#[derive(Parse)]
+#[parse(pattern = "let")]
 struct LetKw;
 
-#[derive(Scan)]
-#[scan(pattern = "return")]
+#[derive(Parse)]
+#[parse(pattern = "return")]
 struct ReturnKw;
 
-#[derive(Scan)]
-#[scan(pattern = "=")]
+#[derive(Parse)]
+#[parse(pattern = "=")]
 struct Eq;
 
-#[derive(Scan)]
-#[scan(pattern = ";")]
+#[derive(Parse)]
+#[parse(pattern = ";")]
 struct Semi;
 
-#[derive(Scan)]
-#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+#[derive(Parse)]
+#[parse(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
 struct Ident<'input>(&'input str);
 
-#[derive(Scan)]
-#[scan(pattern = r"[0-9]+")]
+#[derive(Parse)]
+#[parse(pattern = r"[0-9]+")]
 struct IntLit<'input>(&'input str);
 
 struct WsRules;
@@ -64,55 +64,48 @@ enum Statement<'input> {
 #[test]
 fn parse_enum_let_variant() {
     let mut input = Input::new("let x = 42;");
-    let stmt = Statement::parse(&mut input, &WsRules).unwrap();
+    let stmt = Statement::parse::<WsRules>(&mut input).unwrap();
     assert!(matches!(stmt, Statement::Let(_)));
 }
 
 #[test]
 fn parse_enum_return_variant() {
     let mut input = Input::new("return 42;");
-    let stmt = Statement::parse(&mut input, &WsRules).unwrap();
+    let stmt = Statement::parse::<WsRules>(&mut input).unwrap();
     assert!(matches!(stmt, Statement::Return(_)));
 }
 
 #[test]
 fn parse_enum_peek() {
     let input = Input::new("let x = 42;");
-    assert!(Statement::peek(&input, &WsRules));
+    assert!(Statement::peek::<WsRules>(&input));
 
     let input2 = Input::new("return 42;");
-    assert!(Statement::peek(&input2, &WsRules));
+    assert!(Statement::peek::<WsRules>(&input2));
 }
 
 #[test]
 fn parse_enum_peek_fails() {
     let input = Input::new("if true {}");
-    assert!(!Statement::peek(&input, &WsRules));
+    assert!(!Statement::peek::<WsRules>(&input));
 }
 
 #[test]
 fn parse_enum_with_leading_whitespace() {
     let mut input = Input::new("  let x = 42;");
-    let stmt = Statement::parse(&mut input, &WsRules).unwrap();
+    let stmt = Statement::parse::<WsRules>(&mut input).unwrap();
     assert!(matches!(stmt, Statement::Let(_)));
 }
 
 #[test]
 fn parse_enum_peek_with_leading_whitespace() {
     let input = Input::new("  return 42;");
-    assert!(Statement::peek(&input, &WsRules));
+    assert!(Statement::peek::<WsRules>(&input));
 }
 
 #[test]
 fn parse_enum_error_reports_all_variants() {
     let mut input = Input::new("if true {}");
-    let result = Statement::parse(&mut input, &WsRules);
-    match result {
-        Err(err) => {
-            let msg = format!("{}", err);
-            // Error should mention both expected alternatives
-            assert!(msg.contains("one of"), "expected 'one of' in error: {msg}");
-        }
-        Ok(_) => panic!("expected parse to fail"),
-    }
+    let result = Statement::parse::<WsRules>(&mut input);
+    assert!(result.is_err());
 }

@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn parse_simple_with() {
         let mut input = Input::new("WITH q1(x,y) AS (SELECT 1,2) SELECT * FROM q1");
-        let stmt = WithStatement::parse(&mut input, &SqlRules).unwrap();
+        let stmt = WithStatement::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.with_clause.ctes.len(), 1);
         assert!(input.is_empty());
     }
@@ -134,7 +134,7 @@ mod tests {
         let mut input = Input::new(
             "WITH RECURSIVE t(n) AS (VALUES (1) UNION ALL SELECT n+1 FROM t WHERE n < 100) SELECT sum(n) FROM t",
         );
-        let stmt = WithStatement::parse(&mut input, &SqlRules).unwrap();
+        let stmt = WithStatement::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.with_clause.recursive.is_some());
         assert!(input.is_empty());
     }
@@ -144,7 +144,7 @@ mod tests {
         let mut input = Input::new(
             "WITH x AS MATERIALIZED (SELECT unique1 FROM tenk1) SELECT count(*) FROM tenk1 a WHERE unique1 IN (SELECT * FROM x)",
         );
-        let stmt = WithStatement::parse(&mut input, &SqlRules).unwrap();
+        let stmt = WithStatement::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(
             stmt.with_clause.ctes[0].materialized,
             Some(MaterializedOption::Materialized(_))
@@ -157,7 +157,7 @@ mod tests {
         let mut input = Input::new(
             "WITH RECURSIVE y (id) AS (VALUES (1)), x (id) AS (SELECT * FROM y UNION ALL SELECT id+1 FROM x WHERE id < 5) SELECT * FROM x",
         );
-        let stmt = WithStatement::parse(&mut input, &SqlRules).unwrap();
+        let stmt = WithStatement::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.with_clause.ctes.len(), 2);
         assert!(input.is_empty());
     }
@@ -166,7 +166,7 @@ mod tests {
     fn parse_with_search_depth_first() {
         let sql = "WITH RECURSIVE search_graph(f, t, label) AS (SELECT * FROM graph0 g UNION ALL SELECT g.* FROM graph0 g, search_graph sg WHERE g.f = sg.t) SEARCH DEPTH FIRST BY f, t SET seq SELECT * FROM search_graph";
         let mut input = Input::new(sql);
-        let stmt = WithStatement::parse(&mut input, &SqlRules).unwrap();
+        let stmt = WithStatement::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.with_clause.ctes[0].search.is_some());
         assert!(input.is_empty());
     }
@@ -175,7 +175,7 @@ mod tests {
     fn parse_with_cycle() {
         let sql = "WITH RECURSIVE search_graph(f, t, label) AS (SELECT * FROM graph g UNION ALL SELECT g.* FROM graph g, search_graph sg WHERE g.f = sg.t) CYCLE f, t SET is_cycle USING path SELECT * FROM search_graph";
         let mut input = Input::new(sql);
-        let stmt = WithStatement::parse(&mut input, &SqlRules).unwrap();
+        let stmt = WithStatement::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.with_clause.ctes[0].cycle.is_some());
         assert!(input.is_empty());
     }

@@ -76,7 +76,7 @@ mod tests {
     fn parse_create_partitioned_table() {
         let mut input =
             Input::new("create table list_parted_tbl (a int,b int) partition by list (a)");
-        let stmt = CreatePartitionedTableStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = CreatePartitionedTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "list_parted_tbl");
         assert!(input.is_empty());
     }
@@ -86,7 +86,7 @@ mod tests {
         let mut input = Input::new(
             "create table list_parted_tbl1 partition of list_parted_tbl for values in (1) partition by list(b)",
         );
-        let stmt = CreatePartitionOfStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = CreatePartitionOfStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "list_parted_tbl1");
         assert_eq!(stmt.parent.text(), "list_parted_tbl");
         assert!(stmt.partition_by.is_some());

@@ -11,16 +11,6 @@ use crate::visitor::{AsNodeKey, Break, TotalVisitor, Visit};
 ///
 /// The delimiters are parsed and consumed but not stored — only the inner
 /// value is accessible. Derefs to the inner value.
-///
-/// # Example
-///
-/// ```text
-/// use recursa::surrounded::Surrounded;
-///
-/// struct ParenExpr {
-///     inner: Surrounded<LParen, Expr, RParen>,
-/// }
-/// ```
 pub struct Surrounded<Open, Inner, Close> {
     _open: PhantomData<Open>,
     pub inner: Inner,
@@ -59,22 +49,16 @@ where
     Inner: Parse<'input>,
     Close: Parse<'input>,
 {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        Open::first_pattern()
+    fn peek<R: ParseRules>(input: &Input<'input>) -> bool {
+        Open::peek::<R>(input)
     }
 
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        Open::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        Open::parse(input, rules)?;
+    fn parse<R: ParseRules>(input: &mut Input<'input>) -> Result<Self, ParseError> {
+        Open::parse::<R>(input)?;
         R::consume_ignored(input);
-        let inner = Inner::parse(input, rules)?;
+        let inner = Inner::parse::<R>(input)?;
         R::consume_ignored(input);
-        Close::parse(input, rules)?;
+        Close::parse::<R>(input)?;
         Ok(Surrounded {
             _open: PhantomData,
             inner,

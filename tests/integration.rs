@@ -1,8 +1,7 @@
-use recursa::{Input, NoRules, Parse, ParseRules, Scan};
+use recursa::{Input, NoRules, Parse, ParseRules};
 
-// Verify that derive macros are accessible through the recursa crate
-#[derive(Scan)]
-#[scan(pattern = "hello")]
+#[derive(Parse)]
+#[parse(pattern = "hello")]
 struct Hello;
 
 struct MyRules;
@@ -15,9 +14,9 @@ impl ParseRules for MyRules {
 }
 
 #[test]
-fn recursa_reexports_scan_trait() {
+fn recursa_reexports_parse_trait() {
     let mut input = Input::new("hello");
-    let _h = Hello::parse(&mut input, &NoRules).unwrap();
+    let _h = Hello::parse::<NoRules>(&mut input).unwrap();
     assert_eq!(input.cursor(), 5);
 }
 
@@ -32,11 +31,9 @@ fn recursa_reexports_parse_rules() {
 fn recursa_reexports_parse_error() {
     use recursa::miette::Diagnostic;
     let err = recursa::ParseError::new("test", 0..4, "something");
-    // Verify ParseError is accessible and implements Diagnostic
     let _: &dyn Diagnostic = &err;
 }
 
-// Verify bulk macros work through the recursa crate
 recursa::keywords! {
     TestLet => "let",
 }
@@ -44,6 +41,6 @@ recursa::keywords! {
 #[test]
 fn recursa_reexports_macros() {
     let mut input = Input::new("let");
-    let _kw = TestLet::parse(&mut input, &NoRules).unwrap();
+    let _kw = TestLet::parse::<NoRules>(&mut input).unwrap();
     assert_eq!(input.cursor(), 3);
 }

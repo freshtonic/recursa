@@ -1,25 +1,25 @@
 use std::ops::ControlFlow;
 
-use recursa::{Break, Input, Parse, ParseRules, Scan, TotalVisitor, Visit};
+use recursa::{Break, Input, Parse, ParseRules, TotalVisitor, Visit};
 
-#[derive(Scan, Visit, Debug, Clone)]
-#[scan(pattern = "let")]
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(pattern = "let")]
 struct LetKw;
 
-#[derive(Scan, Visit, Debug, Clone)]
-#[scan(pattern = "=")]
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(pattern = "=")]
 struct EqSign;
 
-#[derive(Scan, Visit, Debug, Clone)]
-#[scan(pattern = ";")]
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(pattern = ";")]
 struct Semi;
 
-#[derive(Scan, Visit, Debug, Clone)]
-#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
 struct Ident(String);
 
-#[derive(Scan, Visit, Debug, Clone)]
-#[scan(pattern = r"[0-9]+")]
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(pattern = r"[0-9]+")]
 struct IntLit(String);
 
 struct Lang;
@@ -63,7 +63,7 @@ impl TotalVisitor for IdentCollector {
 #[test]
 fn visitor_collects_idents() {
     let mut input = Input::new("let x = 42;");
-    let stmt = LetStmt::parse(&mut input, &Lang).unwrap();
+    let stmt = LetStmt::parse::<Lang>(&mut input).unwrap();
     let mut collector = IdentCollector { idents: vec![] };
     let _ = stmt.visit(&mut collector);
     assert_eq!(collector.idents, vec!["x"]);
@@ -87,7 +87,7 @@ fn visitor_skip_children_prevents_descent() {
     }
 
     let mut input = Input::new("let x = 42;");
-    let stmt = LetStmt::parse(&mut input, &Lang).unwrap();
+    let stmt = LetStmt::parse::<Lang>(&mut input).unwrap();
     let mut skipper = SkipLetStmt;
     let result = stmt.visit(&mut skipper);
     assert!(matches!(result, ControlFlow::Continue(())));
@@ -110,7 +110,7 @@ fn visitor_counts_all_nodes() {
     }
 
     let mut input = Input::new("let x = 42;");
-    let stmt = LetStmt::parse(&mut input, &Lang).unwrap();
+    let stmt = LetStmt::parse::<Lang>(&mut input).unwrap();
     let mut counter = NodeCounter { count: 0 };
     let _ = stmt.visit(&mut counter);
     // LetStmt + LetKw + Ident + String(x) + EqSign + IntLit + String(42) + Semi = 8

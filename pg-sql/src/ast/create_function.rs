@@ -125,7 +125,7 @@ mod tests {
         let mut input = Input::new(
             "create function sillysrf(int) returns setof int as 'values (1),(10),(2),($1)' language sql immutable",
         );
-        let stmt = CreateFunctionStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "sillysrf");
         assert!(stmt.immutable.is_some());
         assert!(input.is_empty());
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn parse_drop_function() {
         let mut input = Input::new("drop function sillysrf(int)");
-        let stmt = DropFunctionStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = DropFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "sillysrf");
         assert!(input.is_empty());
     }

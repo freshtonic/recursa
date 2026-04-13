@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn parse_delete_simple() {
         let mut input = Input::new("DELETE FROM delete_test WHERE a > 25");
-        let stmt = DeleteStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = DeleteStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.table_name.text(), "delete_test");
         assert!(stmt.alias.is_none());
         assert!(stmt.where_clause.is_some());
@@ -82,7 +82,7 @@ mod tests {
     #[test]
     fn parse_delete_with_as_alias() {
         let mut input = Input::new("DELETE FROM delete_test AS dt WHERE dt.a > 75");
-        let stmt = DeleteStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = DeleteStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.table_name.text(), "delete_test");
         assert!(matches!(stmt.alias, Some(TableAlias::WithAs(_))));
         assert_eq!(stmt.alias.as_ref().unwrap().name(), "dt");
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn parse_delete_with_bare_alias() {
         let mut input = Input::new("DELETE FROM delete_test dt WHERE delete_test.a > 25");
-        let stmt = DeleteStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = DeleteStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.table_name.text(), "delete_test");
         assert!(matches!(stmt.alias, Some(TableAlias::Bare(_))));
         assert_eq!(stmt.alias.as_ref().unwrap().name(), "dt");
@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn parse_delete_no_where() {
         let mut input = Input::new("DELETE FROM t");
-        let stmt = DeleteStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = DeleteStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.table_name.text(), "t");
         assert!(stmt.alias.is_none());
         assert!(stmt.where_clause.is_none());

@@ -49,7 +49,7 @@ mod tests {
     #[test]
     fn parse_create_index() {
         let mut input = Input::new("CREATE INDEX fooi ON foo (f1)");
-        let stmt = CreateIndexStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "fooi");
         assert_eq!(stmt.table_name.text(), "foo");
         assert!(input.is_empty());
@@ -58,21 +58,21 @@ mod tests {
     #[test]
     fn parse_create_index_with_desc() {
         let mut input = Input::new("CREATE INDEX fooi ON foo (f1 DESC)");
-        let _stmt = CreateIndexStmt::parse(&mut input, &SqlRules).unwrap();
+        let _stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
     #[test]
     fn parse_create_index_desc_nulls_last() {
         let mut input = Input::new("CREATE INDEX fooi ON foo (f1 DESC NULLS LAST)");
-        let _stmt = CreateIndexStmt::parse(&mut input, &SqlRules).unwrap();
+        let _stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
     #[test]
     fn parse_drop_index() {
         let mut input = Input::new("DROP INDEX fooi");
-        let stmt = DropIndexStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = DropIndexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "fooi");
         assert!(input.is_empty());
     }

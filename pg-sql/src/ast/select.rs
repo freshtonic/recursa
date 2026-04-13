@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn parse_simple_select() {
         let mut input = Input::new("SELECT 1 AS one");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.items.len(), 1);
         assert!(input.is_empty());
     }
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn parse_select_from_where() {
         let mut input = Input::new("SELECT f1 FROM BOOLTBL1 WHERE f1 = true");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.items.len(), 1);
         assert!(stmt.from_clause.is_some());
         assert!(stmt.where_clause.is_some());
@@ -367,14 +367,14 @@ mod tests {
     #[test]
     fn parse_select_star() {
         let mut input = Input::new("SELECT * FROM t");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.items.len(), 1);
     }
 
     #[test]
     fn parse_select_with_alias_keyword() {
         let mut input = Input::new("SELECT 1 AS true");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         let alias = stmt.items[0].alias.as_ref().unwrap();
         assert_eq!(alias.name(), "true");
     }
@@ -382,14 +382,14 @@ mod tests {
     #[test]
     fn parse_select_order_by() {
         let mut input = Input::new("SELECT f1 FROM t ORDER BY f1");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.order_by.is_some());
     }
 
     #[test]
     fn parse_select_from_function() {
         let mut input = Input::new("SELECT * FROM pg_input_error_info('junk', 'bool')");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.from_clause.is_some());
     }
 
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn parse_order_by_using() {
         let mut input = Input::new("SELECT f1 FROM t ORDER BY f1 using >");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.order_by.is_some());
         assert!(input.is_empty());
     }
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn parse_order_by_asc() {
         let mut input = Input::new("SELECT * FROM t ORDER BY f1 ASC");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.order_by.is_some());
         assert!(input.is_empty());
     }
@@ -414,7 +414,7 @@ mod tests {
     #[test]
     fn parse_order_by_desc() {
         let mut input = Input::new("SELECT * FROM t ORDER BY f1 DESC");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.order_by.is_some());
         assert!(input.is_empty());
     }
@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn parse_order_by_nulls_first() {
         let mut input = Input::new("SELECT * FROM t ORDER BY f1 NULLS FIRST");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.order_by.is_some());
         assert!(input.is_empty());
     }
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn parse_order_by_desc_nulls_last() {
         let mut input = Input::new("SELECT * FROM t ORDER BY f1 DESC NULLS LAST");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.order_by.is_some());
         assert!(input.is_empty());
     }
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn parse_select_offset() {
         let mut input = Input::new("SELECT 1 OFFSET 0");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.offset.is_some());
         assert!(input.is_empty());
     }
@@ -448,7 +448,7 @@ mod tests {
     #[test]
     fn parse_select_limit() {
         let mut input = Input::new("SELECT 1 LIMIT 1");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.limit.is_some());
         assert!(input.is_empty());
     }
@@ -458,7 +458,7 @@ mod tests {
     #[test]
     fn parse_select_for_update() {
         let mut input = Input::new("SELECT f1 FROM t FOR UPDATE");
-        let stmt = SelectStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.for_update.is_some());
         assert!(input.is_empty());
     }

@@ -1,26 +1,26 @@
 #![allow(dead_code)]
 
 use recursa_core::{Input, Parse, ParseRules};
-use recursa_derive::{Parse, Scan};
+use recursa_derive::Parse;
 
-#[derive(Scan)]
-#[scan(pattern = "let")]
+#[derive(Parse)]
+#[parse(pattern = "let")]
 struct LetKw;
 
-#[derive(Scan)]
-#[scan(pattern = "=")]
+#[derive(Parse)]
+#[parse(pattern = "=")]
 struct Eq;
 
-#[derive(Scan)]
-#[scan(pattern = ";")]
+#[derive(Parse)]
+#[parse(pattern = ";")]
 struct Semi;
 
-#[derive(Scan)]
-#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+#[derive(Parse)]
+#[parse(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
 struct Ident<'input>(&'input str);
 
-#[derive(Scan)]
-#[scan(pattern = r"[0-9]+")]
+#[derive(Parse)]
+#[parse(pattern = r"[0-9]+")]
 struct IntLit<'input>(&'input str);
 
 struct WsRules;
@@ -45,7 +45,7 @@ struct LetBinding<'input> {
 #[test]
 fn parse_struct_sequence() {
     let mut input = Input::new("let x = 42;");
-    let binding = LetBinding::parse(&mut input, &WsRules).unwrap();
+    let binding = LetBinding::parse::<WsRules>(&mut input).unwrap();
     assert_eq!(binding.name.0, "x");
     assert_eq!(binding.value.0, "42");
     assert_eq!(input.cursor(), 11);
@@ -54,69 +54,19 @@ fn parse_struct_sequence() {
 #[test]
 fn parse_struct_peek() {
     let input = Input::new("let x = 42;");
-    assert!(LetBinding::peek(&input, &WsRules));
+    assert!(LetBinding::peek::<WsRules>(&input));
 }
 
 #[test]
 fn parse_struct_peek_fails() {
     let input = Input::new("var x = 42;");
-    assert!(!LetBinding::peek(&input, &WsRules));
+    assert!(!LetBinding::peek::<WsRules>(&input));
 }
 
 #[test]
 fn parse_struct_error_on_bad_field() {
     let mut input = Input::new("let 123 = 42;");
-    let err = LetBinding::parse(&mut input, &WsRules);
+    let err = LetBinding::parse::<WsRules>(&mut input);
     assert!(err.is_err());
-    // Cursor should NOT have advanced (fork was not committed)
     assert_eq!(input.cursor(), 0);
-}
-
-#[test]
-fn parse_struct_is_not_terminal() {
-    const { assert!(!LetBinding::IS_TERMINAL) };
-}
-
-#[test]
-fn parse_struct_first_pattern_consecutive_terminals() {
-    // LetBinding fields: LetKw, Ident, Eq, IntLit, Semi
-    // All are Scan (terminal) types, so first_pattern joins all with IGNORE separator.
-    let pattern = LetBinding::first_pattern();
-    assert_eq!(
-        pattern,
-        r"let(?:\s+)?[a-zA-Z_][a-zA-Z0-9_]*(?:\s+)?=(?:\s+)?[0-9]+(?:\s+)?;"
-    );
-}
-
-#[derive(Parse)]
-#[parse(rules = WsRules)]
-struct NestedStmt<'input> {
-    let_kw: LetKw,
-    binding: LetBinding<'input>,
-}
-
-#[test]
-fn parse_struct_first_pattern_stops_at_non_terminal() {
-    // NestedStmt fields: LetKw (terminal), LetBinding (non-terminal)
-    // Walk: include LetKw's pattern, check LetBinding IS_TERMINAL (false), stop.
-    // Non-terminal patterns are excluded to prevent deadlock on recursive types.
-    let pattern = NestedStmt::first_pattern();
-    assert_eq!(pattern, "let");
-}
-
-#[derive(Parse)]
-#[parse(rules = WsRules)]
-struct NestedWithTrailing<'input> {
-    let_kw: LetKw,
-    binding: LetBinding<'input>,
-    semi: Semi, // should NOT appear in first_patterns
-}
-
-#[test]
-fn parse_struct_first_pattern_does_not_include_fields_after_non_terminal() {
-    // NestedWithTrailing: LetKw (terminal), LetBinding (non-terminal), Semi (terminal)
-    // Walk stops after LetBinding (non-terminal), so Semi's pattern ";" is NOT included.
-    let pattern = NestedWithTrailing::first_pattern();
-    // Same as NestedStmt — the trailing Semi is not visited
-    assert_eq!(pattern, NestedStmt::first_pattern());
 }

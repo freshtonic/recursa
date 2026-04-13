@@ -2,61 +2,10 @@
 
 mod format_tokens_derive;
 mod parse_derive;
-mod scan_derive;
 mod total_visitor_derive;
 mod visit_derive;
 
 use proc_macro::TokenStream;
-
-/// Derive `Scan` and `Parse` for token types.
-///
-/// # Unit structs (keywords)
-///
-/// ```ignore
-/// #[derive(Scan)]
-/// #[scan(pattern = "let")]
-/// struct LetKw;
-/// ```
-///
-/// # Tuple structs (capturing tokens)
-///
-/// With a lifetime parameter, captures `&'input str`:
-/// ```ignore
-/// #[derive(Scan)]
-/// #[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-/// struct Ident<'input>(&'input str);
-/// ```
-///
-/// Without a lifetime parameter, captures `String`:
-/// ```ignore
-/// #[derive(Scan)]
-/// #[scan(pattern = r"[0-9]+")]
-/// struct IntLit(String);
-/// ```
-///
-/// # Enums (combined scanner)
-///
-/// All variants must be single-field tuple variants wrapping a `Scan` type:
-/// ```ignore
-/// #[derive(Scan)]
-/// enum Keyword {
-///     Let(LetKw),
-///     If(IfKw),
-/// }
-/// ```
-///
-/// # Attributes
-///
-/// - `#[scan(pattern = "...")]` — regex pattern for the token
-/// - `#[scan(case_insensitive)]` — wraps pattern in `(?i:...)`
-#[proc_macro_derive(Scan, attributes(scan))]
-pub fn derive_scan(input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as syn::DeriveInput);
-    match scan_derive::derive_scan(input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
-    }
-}
 
 /// Derive `Parse` for AST types.
 ///

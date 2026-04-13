@@ -6,7 +6,6 @@ mod input;
 mod macros;
 mod parse;
 mod rules;
-mod scan;
 pub mod seq;
 pub mod surrounded;
 pub mod visitor;
@@ -16,7 +15,6 @@ pub use fmt::{FormatTokens, TokenText};
 pub use input::Input;
 pub use parse::Parse;
 pub use rules::{NoRules, ParseRules};
-pub use scan::Scan;
 pub use visitor::{AsNodeKey, Break, NodeKey, TotalVisitor, Visit, Visitor};
 
 #[cfg(test)]
@@ -121,104 +119,84 @@ mod tests {
         assert!(input.is_empty());
     }
 
-    use regex::Regex;
-    use std::sync::OnceLock;
-
     struct TestKeyword;
 
-    impl Scan<'_> for TestKeyword {
-        const PATTERN: &'static str = r"test";
-
-        fn regex() -> &'static Regex {
-            static REGEX: OnceLock<Regex> = OnceLock::new();
-            REGEX.get_or_init(|| Regex::new(r"\Atest").unwrap())
+    impl<'input> Parse<'input> for TestKeyword {
+        fn peek<R: ParseRules>(input: &Input<'input>) -> bool {
+            input.remaining().starts_with("test")
         }
 
-        fn from_match(_matched: &str) -> Result<Self, ParseError> {
-            Ok(TestKeyword)
+        fn parse<R: ParseRules>(input: &mut Input<'input>) -> Result<Self, ParseError> {
+            if input.remaining().starts_with("test") {
+                input.advance(4);
+                Ok(TestKeyword)
+            } else {
+                Err(ParseError::new(
+                    input.source().to_string(),
+                    input.cursor()..input.cursor(),
+                    "test",
+                ))
+            }
         }
     }
 
-    impl_parse_for_scan!(TestKeyword);
-
     struct TestIdent<'input>(&'input str);
 
-    impl<'input> Scan<'input> for TestIdent<'input> {
-        const PATTERN: &'static str = r"[a-zA-Z_][a-zA-Z0-9_]*";
-
-        fn regex() -> &'static Regex {
-            static REGEX: OnceLock<Regex> = OnceLock::new();
-            REGEX.get_or_init(|| Regex::new(r"\A[a-zA-Z_][a-zA-Z0-9_]*").unwrap())
+    impl<'input> Parse<'input> for TestIdent<'input> {
+        fn peek<R: ParseRules>(input: &Input<'input>) -> bool {
+            let r = input.remaining();
+            r.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         }
 
-        fn from_match(matched: &'input str) -> Result<Self, ParseError> {
+        fn parse<R: ParseRules>(input: &mut Input<'input>) -> Result<Self, ParseError> {
+            let r = input.remaining();
+            let len = r
+                .char_indices()
+                .take_while(|(_, c)| c.is_ascii_alphanumeric() || *c == '_')
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0);
+            if len == 0 {
+                return Err(ParseError::new(
+                    input.source().to_string(),
+                    input.cursor()..input.cursor(),
+                    "identifier",
+                ));
+            }
+            let start = input.cursor();
+            let matched = &input.source()[start..start + len];
+            input.advance(len);
             Ok(TestIdent(matched))
         }
     }
 
-    impl_parse_for_scan!(TestIdent<'input>);
-
     #[test]
-    fn scan_keyword_peek() {
+    fn parse_keyword_peek() {
         let input = Input::new("test foo");
-        assert!(TestKeyword::peek(&input, &NoRules));
+        assert!(TestKeyword::peek::<NoRules>(&input));
     }
 
     #[test]
-    fn scan_keyword_peek_fails() {
+    fn parse_keyword_peek_fails() {
         let input = Input::new("foo bar");
-        assert!(!TestKeyword::peek(&input, &NoRules));
+        assert!(!TestKeyword::peek::<NoRules>(&input));
     }
 
     #[test]
-    fn scan_keyword_parse() {
+    fn parse_keyword_parse() {
         let mut input = Input::new("test foo");
-        let _kw = TestKeyword::parse(&mut input, &NoRules).unwrap();
+        let _kw = TestKeyword::parse::<NoRules>(&mut input).unwrap();
         assert_eq!(input.cursor(), 4);
     }
 
     #[test]
-    fn scan_ident_parse_captures() {
+    fn parse_ident_parse_captures() {
         let mut input = Input::new("hello world");
-        let ident = TestIdent::parse(&mut input, &NoRules).unwrap();
+        let ident = TestIdent::parse::<NoRules>(&mut input).unwrap();
         assert_eq!(ident.0, "hello");
         assert_eq!(input.cursor(), 5);
-    }
-
-    #[test]
-    fn scan_type_implements_parse() {
-        // TestKeyword implements Scan, so it should also implement Parse via blanket impl
-        let mut input = Input::new("test foo");
-        let _kw = TestKeyword::parse(&mut input, &NoRules).unwrap();
-        assert_eq!(input.cursor(), 4);
-    }
-
-    #[test]
-    fn scan_type_peek_through_parse() {
-        let input = Input::new("test foo");
-        assert!(TestKeyword::peek(&input, &NoRules));
-    }
-
-    #[test]
-    fn scan_type_peek_through_parse_fails() {
-        let input = Input::new("foo bar");
-        assert!(!TestKeyword::peek(&input, &NoRules));
-    }
-
-    #[test]
-    fn scan_type_is_terminal() {
-        let is_terminal = TestKeyword::IS_TERMINAL;
-        assert!(is_terminal);
-    }
-
-    #[test]
-    fn scan_type_first_pattern() {
-        assert_eq!(TestKeyword::first_pattern(), "test");
-    }
-
-    #[test]
-    fn scan_ident_first_pattern() {
-        assert_eq!(TestIdent::first_pattern(), r"[a-zA-Z_][a-zA-Z0-9_]*");
     }
 
     struct WhitespaceRules;
@@ -256,7 +234,7 @@ mod tests {
     #[test]
     fn box_parse_delegates_to_inner() {
         let mut input = Input::new("test foo");
-        let boxed = <Box<TestKeyword> as Parse>::parse(&mut input, &NoRules).unwrap();
+        let boxed = Box::<TestKeyword>::parse::<NoRules>(&mut input).unwrap();
         let _: Box<TestKeyword> = boxed;
         assert_eq!(input.cursor(), 4);
     }
@@ -264,26 +242,13 @@ mod tests {
     #[test]
     fn box_peek_delegates_to_inner() {
         let input = Input::new("test foo");
-        assert!(<Box<TestKeyword> as Parse>::peek(&input, &NoRules));
-    }
-
-    #[test]
-    fn box_is_terminal_delegates() {
-        const { assert!(<Box<TestKeyword> as Parse>::IS_TERMINAL) };
-    }
-
-    #[test]
-    fn box_first_pattern_delegates() {
-        assert_eq!(
-            <Box<TestKeyword> as Parse>::first_pattern(),
-            TestKeyword::first_pattern()
-        );
+        assert!(Box::<TestKeyword>::peek::<NoRules>(&input));
     }
 
     #[test]
     fn option_parse_some_when_peek_matches() {
         let mut input = Input::new("test foo");
-        let result = <Option<TestKeyword> as Parse>::parse(&mut input, &NoRules).unwrap();
+        let result = Option::<TestKeyword>::parse::<NoRules>(&mut input).unwrap();
         assert!(result.is_some());
         assert_eq!(input.cursor(), 4);
     }
@@ -291,32 +256,24 @@ mod tests {
     #[test]
     fn option_parse_none_when_peek_fails() {
         let mut input = Input::new("foo bar");
-        let result = <Option<TestKeyword> as Parse>::parse(&mut input, &NoRules).unwrap();
+        let result = Option::<TestKeyword>::parse::<NoRules>(&mut input).unwrap();
         assert!(result.is_none());
-        assert_eq!(input.cursor(), 0); // no input consumed
+        assert_eq!(input.cursor(), 0);
     }
 
     #[test]
     fn option_peek_delegates() {
         let input = Input::new("test foo");
-        assert!(<Option<TestKeyword> as Parse>::peek(&input, &NoRules));
+        assert!(Option::<TestKeyword>::peek::<NoRules>(&input));
 
         let input2 = Input::new("foo bar");
-        assert!(!<Option<TestKeyword> as Parse>::peek(&input2, &NoRules));
-    }
-
-    #[test]
-    fn option_first_pattern_delegates() {
-        assert_eq!(
-            <Option<TestKeyword> as Parse>::first_pattern(),
-            TestKeyword::first_pattern()
-        );
+        assert!(!Option::<TestKeyword>::peek::<NoRules>(&input2));
     }
 
     #[test]
     fn vec_parse_zero_or_more() {
         let mut input = Input::new("testtesttest foo");
-        let items = <Vec<TestKeyword> as Parse>::parse(&mut input, &NoRules).unwrap();
+        let items = Vec::<TestKeyword>::parse::<NoRules>(&mut input).unwrap();
         assert_eq!(items.len(), 3);
         assert_eq!(input.remaining(), " foo");
     }
@@ -324,16 +281,15 @@ mod tests {
     #[test]
     fn vec_parse_zero_or_more_with_whitespace_rules() {
         let mut input = Input::new("test test test foo");
-        let items = <Vec<TestKeyword> as Parse>::parse(&mut input, &WhitespaceRules).unwrap();
+        let items = Vec::<TestKeyword>::parse::<WhitespaceRules>(&mut input).unwrap();
         assert_eq!(items.len(), 3);
-        // Whitespace before "foo" is NOT consumed (fork wasn't committed)
         assert_eq!(input.remaining(), " foo");
     }
 
     #[test]
     fn vec_parse_empty() {
         let mut input = Input::new("foo bar");
-        let items = <Vec<TestKeyword> as Parse>::parse(&mut input, &NoRules).unwrap();
+        let items = Vec::<TestKeyword>::parse::<NoRules>(&mut input).unwrap();
         assert_eq!(items.len(), 0);
         assert_eq!(input.cursor(), 0);
     }

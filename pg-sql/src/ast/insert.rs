@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn parse_insert_with_columns() {
         let mut input = Input::new("INSERT INTO BOOLTBL1 (f1) VALUES (bool 't')");
-        let stmt = InsertStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.table_name.text(), "BOOLTBL1");
         assert!(stmt.columns.is_some());
         assert_eq!(stmt.columns.as_ref().unwrap().inner.len(), 1);
@@ -127,21 +127,21 @@ mod tests {
     #[test]
     fn parse_insert_multiple_columns() {
         let mut input = Input::new("INSERT INTO BOOLTBL3 (d, b, o) VALUES ('true', true, 1)");
-        let stmt = InsertStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.columns.as_ref().unwrap().inner.len(), 3);
     }
 
     #[test]
     fn parse_insert_without_columns() {
         let mut input = Input::new("INSERT INTO booltbl4 VALUES (false, true, null)");
-        let stmt = InsertStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.columns.is_none());
     }
 
     #[test]
     fn parse_insert_default_values_returning() {
         let mut input = Input::new("INSERT INTO t DEFAULT VALUES RETURNING *");
-        let stmt = InsertStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(stmt.source, super::InsertSource::Default(_)));
         assert!(stmt.returning.is_some());
         assert!(input.is_empty());
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn parse_insert_select() {
         let mut input = Input::new("INSERT INTO y SELECT generate_series(1, 10)");
-        let stmt = InsertStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(stmt.source, super::InsertSource::Select(_)));
         assert!(input.is_empty());
     }
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn parse_insert_on_conflict_do_nothing() {
         let mut input = Input::new("INSERT INTO t VALUES (1) ON CONFLICT (k) DO NOTHING");
-        let stmt = InsertStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.on_conflict.is_some());
         assert!(input.is_empty());
     }
@@ -167,7 +167,7 @@ mod tests {
     fn parse_insert_on_conflict_do_update() {
         let mut input =
             Input::new("INSERT INTO t VALUES (1) ON CONFLICT (k) DO UPDATE SET v = 'updated'");
-        let stmt = InsertStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.on_conflict.is_some());
         assert!(input.is_empty());
     }

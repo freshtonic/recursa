@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn parse_table_stmt() {
         let mut input = Input::new("TABLE int8_tbl");
-        let stmt = TableStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = TableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.table_name.text(), "int8_tbl");
         assert!(input.is_empty());
     }
@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn parse_values_standalone() {
         let mut input = Input::new("VALUES (1,2), (3,4), (7,8)");
-        let body = CompoundBody::parse(&mut input, &SqlRules).unwrap();
+        let body = CompoundBody::parse::<SqlRules>(&mut input).unwrap();
         assert!(body.set_op.is_none());
         assert!(input.is_empty());
     }
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn parse_values_union_all_select() {
         let mut input = Input::new("VALUES (1,2) UNION ALL SELECT 3, 4");
-        let body = CompoundBody::parse(&mut input, &SqlRules).unwrap();
+        let body = CompoundBody::parse::<SqlRules>(&mut input).unwrap();
         assert!(body.set_op.is_some());
         assert!(input.is_empty());
     }
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn parse_values_union_all_table() {
         let mut input = Input::new("VALUES (1,2) UNION ALL TABLE t");
-        let body = CompoundBody::parse(&mut input, &SqlRules).unwrap();
+        let body = CompoundBody::parse::<SqlRules>(&mut input).unwrap();
         assert!(body.set_op.is_some());
         assert!(input.is_empty());
     }

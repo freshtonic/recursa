@@ -25,7 +25,7 @@ mod tests {
     #[test]
     fn parse_drop_table() {
         let mut input = Input::new("DROP TABLE BOOLTBL1");
-        let stmt = DropTableStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = DropTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "BOOLTBL1");
         assert!(input.is_empty());
     }
@@ -33,7 +33,7 @@ mod tests {
     #[test]
     fn parse_drop_table_lowercase() {
         let mut input = Input::new("drop table my_table");
-        let stmt = DropTableStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = DropTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "my_table");
     }
 }

@@ -1,34 +1,34 @@
 #![allow(dead_code)]
 
 use recursa_core::{Input, Parse, ParseRules};
-use recursa_derive::{Parse, Scan};
+use recursa_derive::Parse;
 
-#[derive(Scan, Debug)]
-#[scan(pattern = r"\+")]
+#[derive(Parse, Debug)]
+#[parse(pattern = r"\+")]
 struct Plus;
 
-#[derive(Scan, Debug)]
-#[scan(pattern = r"\*")]
+#[derive(Parse, Debug)]
+#[parse(pattern = r"\*")]
 struct Star;
 
-#[derive(Scan, Debug)]
-#[scan(pattern = r"-")]
+#[derive(Parse, Debug)]
+#[parse(pattern = r"-")]
 struct Minus;
 
-#[derive(Scan, Debug)]
-#[scan(pattern = r"[0-9]+")]
+#[derive(Parse, Debug)]
+#[parse(pattern = r"[0-9]+")]
 struct IntLit<'input>(&'input str);
 
-#[derive(Scan, Debug)]
-#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+#[derive(Parse, Debug)]
+#[parse(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
 struct Ident<'input>(&'input str);
 
-#[derive(Scan, Debug)]
-#[scan(pattern = r"\^")]
+#[derive(Parse, Debug)]
+#[parse(pattern = r"\^")]
 struct Caret;
 
-#[derive(Scan, Debug)]
-#[scan(pattern = r"\?")]
+#[derive(Parse, Debug)]
+#[parse(pattern = r"\?")]
 struct Question;
 
 struct WsRules;
@@ -68,14 +68,14 @@ enum Expr<'input> {
 #[test]
 fn pratt_atom() {
     let mut input = Input::new("42");
-    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
     assert!(matches!(expr, Expr::Lit(_)));
 }
 
 #[test]
 fn pratt_simple_add() {
     let mut input = Input::new("1 + 2");
-    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
     assert!(matches!(expr, Expr::Add(_, _, _)));
 }
 
@@ -83,7 +83,7 @@ fn pratt_simple_add() {
 fn pratt_precedence_mul_over_add() {
     // 1 + 2 * 3 should parse as 1 + (2 * 3)
     let mut input = Input::new("1 + 2 * 3");
-    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
     match expr {
         Expr::Add(left, _, right) => {
             assert!(matches!(*left, Expr::Lit(_)));
@@ -97,7 +97,7 @@ fn pratt_precedence_mul_over_add() {
 fn pratt_left_associativity() {
     // 1 + 2 + 3 should parse as (1 + 2) + 3
     let mut input = Input::new("1 + 2 + 3");
-    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
     match expr {
         Expr::Add(left, _, right) => {
             assert!(matches!(*left, Expr::Add(_, _, _)));
@@ -110,7 +110,7 @@ fn pratt_left_associativity() {
 #[test]
 fn pratt_prefix_neg() {
     let mut input = Input::new("-42");
-    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
     match expr {
         Expr::Neg(_, inner) => assert!(matches!(*inner, Expr::Lit(_))),
         _ => panic!("expected Neg"),
@@ -121,7 +121,7 @@ fn pratt_prefix_neg() {
 fn pratt_prefix_in_expression() {
     // -1 + 2 should parse as (-1) + 2 because prefix bp=9 > infix bp=5
     let mut input = Input::new("-1 + 2");
-    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
     match expr {
         Expr::Add(left, _, right) => {
             assert!(matches!(*left, Expr::Neg(_, _)));
@@ -135,7 +135,7 @@ fn pratt_prefix_in_expression() {
 fn pratt_right_associativity() {
     // 2 ^ 3 ^ 4 should parse as 2 ^ (3 ^ 4) because ^ is right-associative
     let mut input = Input::new("2 ^ 3 ^ 4");
-    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
     match expr {
         Expr::Pow(left, _, right) => {
             assert!(matches!(*left, Expr::Lit(_)));
@@ -148,53 +148,37 @@ fn pratt_right_associativity() {
 #[test]
 fn pratt_peek_valid() {
     let input = Input::new("42");
-    assert!(Expr::peek(&input, &WsRules));
+    assert!(Expr::peek::<WsRules>(&input));
 
     let input = Input::new("foo");
-    assert!(Expr::peek(&input, &WsRules));
+    assert!(Expr::peek::<WsRules>(&input));
 
     // Prefix operator is a valid start
     let input = Input::new("-1");
-    assert!(Expr::peek(&input, &WsRules));
+    assert!(Expr::peek::<WsRules>(&input));
 }
 
 #[test]
 fn pratt_peek_invalid() {
     let input = Input::new("+ 1");
-    assert!(!Expr::peek(&input, &WsRules));
+    assert!(!Expr::peek::<WsRules>(&input));
 
     let input = Input::new("");
-    assert!(!Expr::peek(&input, &WsRules));
+    assert!(!Expr::peek::<WsRules>(&input));
 }
 
 #[test]
 fn pratt_error_on_empty() {
     let mut input = Input::new("");
-    let result = Expr::parse(&mut input, &WsRules);
+    let result = Expr::parse::<WsRules>(&mut input);
     assert!(result.is_err());
 }
 
-#[test]
-fn pratt_is_not_terminal() {
-    const { assert!(!Expr::IS_TERMINAL) };
-}
-
-#[test]
-fn pratt_first_pattern_includes_atoms_and_prefix() {
-    let pattern = Expr::first_pattern();
-    // Should include atom patterns (IntLit, Ident) and prefix operator (Minus)
-    // but NOT infix operators (Plus, Star)
-    assert!(pattern.contains(r"[0-9]+"));
-    assert!(pattern.contains(r"[a-zA-Z_][a-zA-Z0-9_]*"));
-    assert!(pattern.contains("-"));
-    assert!(!pattern.contains(r"\+"));
-    assert!(!pattern.contains(r"\*"));
-}
 
 #[test]
 fn pratt_postfix_simple() {
     let mut input = Input::new("42?");
-    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
     match expr {
         Expr::PostfixQuestion(inner, _) => {
             assert!(matches!(*inner, Expr::Lit(_)));
@@ -206,7 +190,7 @@ fn pratt_postfix_simple() {
 #[test]
 fn pratt_postfix_chains() {
     let mut input = Input::new("42??");
-    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
     match expr {
         Expr::PostfixQuestion(inner, _) => {
             assert!(matches!(*inner, Expr::PostfixQuestion(_, _)));
@@ -219,7 +203,7 @@ fn pratt_postfix_chains() {
 fn pratt_postfix_with_infix() {
     // 1 + 2? should parse as 1 + (2?) because postfix bp=20 > infix bp=5
     let mut input = Input::new("1 + 2?");
-    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
     match expr {
         Expr::Add(left, _, right) => {
             assert!(matches!(*left, Expr::Lit(_)));
@@ -233,7 +217,7 @@ fn pratt_postfix_with_infix() {
 fn pratt_postfix_with_prefix() {
     // -42? should parse as -(42?) because postfix bp=20 > prefix bp=9
     let mut input = Input::new("-42?");
-    let expr = Expr::parse(&mut input, &WsRules).unwrap();
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
     match expr {
         Expr::Neg(_, inner) => {
             assert!(matches!(*inner, Expr::PostfixQuestion(_, _)));

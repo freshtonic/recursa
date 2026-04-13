@@ -205,21 +205,14 @@ pub struct RawStatement {
 }
 
 impl<'input> Parse<'input> for RawStatement {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        // Match any word character to act as a fallback
-        r"[a-zA-Z_]"
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
+    fn peek<R: ParseRules>(input: &Input<'input>) -> bool {
         !input.is_empty()
             && input
                 .remaining()
                 .starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
     }
 
-    fn parse<R: ParseRules>(input: &mut Input<'input>, _rules: &R) -> Result<Self, ParseError> {
+    fn parse<R: ParseRules>(input: &mut Input<'input>) -> Result<Self, ParseError> {
         let remaining = input.remaining();
         // Find the next semicolon, respecting parenthesized groups and string literals
         let mut depth = 0i32;
@@ -405,7 +398,7 @@ pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<FileItem>, ParseError
         if input.is_empty() {
             break;
         }
-        if !PsqlCommand::peek(input, &SqlRules) {
+        if !PsqlCommand::peek::<SqlRules>(input) {
             // Collect unparseable lines (e.g., COPY FROM stdin data blocks).
             let line = take_line(input);
             raw_buf.push_str(&line);
@@ -416,14 +409,14 @@ pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<FileItem>, ParseError
         if !raw_buf.is_empty() {
             items.push(FileItem::RawLines(std::mem::take(&mut raw_buf)));
         }
-        match PsqlCommand::parse(input, &SqlRules) {
+        match PsqlCommand::parse::<SqlRules>(input) {
             Ok(cmd) => items.push(FileItem::Command(cmd)),
             Err(_) => {
                 // Parse error -- skip to next semicolon and create a Raw statement
-                let raw = RawStatement::parse(input, &SqlRules)?;
+                let raw = RawStatement::parse::<SqlRules>(input)?;
                 SqlRules::consume_ignored(input);
-                if punct::Semi::peek(input, &SqlRules) {
-                    let semi = punct::Semi::parse(input, &SqlRules)?;
+                if punct::Semi::peek::<SqlRules>(input) {
+                    let semi = punct::Semi::parse::<SqlRules>(input)?;
                     items.push(FileItem::Command(PsqlCommand::Statement(
                         TerminatedStatement {
                             stmt: Statement::Raw(raw),
@@ -467,7 +460,7 @@ mod tests {
     #[test]
     fn parse_statement_select() {
         let mut input = Input::new("SELECT 1 AS one");
-        let stmt = Statement::parse(&mut input, &SqlRules).unwrap();
+        let stmt = Statement::parse::<SqlRules>(&mut input).unwrap();
         // Bare SELECT now matches via CompoundQuery path since Values variant
         // precedes Select for compound query (UNION etc.) support.
         assert!(matches!(stmt, Statement::Values(_)));
@@ -476,35 +469,35 @@ mod tests {
     #[test]
     fn parse_statement_create_table() {
         let mut input = Input::new("CREATE TABLE t (f1 bool)");
-        let stmt = Statement::parse(&mut input, &SqlRules).unwrap();
+        let stmt = Statement::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(stmt, Statement::CreateTable(_)));
     }
 
     #[test]
     fn parse_statement_insert() {
         let mut input = Input::new("INSERT INTO t (f1) VALUES (true)");
-        let stmt = Statement::parse(&mut input, &SqlRules).unwrap();
+        let stmt = Statement::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(stmt, Statement::Insert(_)));
     }
 
     #[test]
     fn parse_statement_delete() {
         let mut input = Input::new("DELETE FROM t WHERE a > 1");
-        let stmt = Statement::parse(&mut input, &SqlRules).unwrap();
+        let stmt = Statement::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(stmt, Statement::Delete(_)));
     }
 
     #[test]
     fn parse_statement_drop_table() {
         let mut input = Input::new("DROP TABLE t");
-        let stmt = Statement::parse(&mut input, &SqlRules).unwrap();
+        let stmt = Statement::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(stmt, Statement::DropTable(_)));
     }
 
     #[test]
     fn parse_psql_command_statement() {
         let mut input = Input::new("SELECT 1;");
-        let cmd = PsqlCommand::parse(&mut input, &SqlRules).unwrap();
+        let cmd = PsqlCommand::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(cmd, PsqlCommand::Statement(_)));
         assert!(input.is_empty());
     }
@@ -512,7 +505,7 @@ mod tests {
     #[test]
     fn parse_psql_command_directive() {
         let mut input = Input::new("\\pset null '(null)'\n");
-        let cmd = PsqlCommand::parse(&mut input, &SqlRules).unwrap();
+        let cmd = PsqlCommand::parse::<SqlRules>(&mut input).unwrap();
         match cmd {
             PsqlCommand::Directive(d) => assert_eq!(d.rest.0, "pset null '(null)'"),
             _ => panic!("expected directive"),
@@ -542,7 +535,7 @@ mod tests {
     #[test]
     fn parse_select_with_where_and_bool_test() {
         let mut input = Input::new("SELECT f1 FROM BOOLTBL1 WHERE f1 IS TRUE;");
-        let cmd = PsqlCommand::parse(&mut input, &SqlRules).unwrap();
+        let cmd = PsqlCommand::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(cmd, PsqlCommand::Statement(_)));
         assert!(input.is_empty());
     }
@@ -550,7 +543,7 @@ mod tests {
     #[test]
     fn parse_full_insert_with_type_cast() {
         let mut input = Input::new("INSERT INTO BOOLTBL1 (f1) VALUES (bool 't');");
-        let cmd = PsqlCommand::parse(&mut input, &SqlRules).unwrap();
+        let cmd = PsqlCommand::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(cmd, PsqlCommand::Statement(_)));
     }
 

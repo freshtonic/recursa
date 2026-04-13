@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn parse_create_view() {
         let mut input = Input::new("CREATE VIEW v AS SELECT 1");
-        let stmt = CreateViewStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = CreateViewStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "v");
         assert!(stmt.or_replace.is_none());
         assert!(stmt.temp.is_none());
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn parse_create_temp_view() {
         let mut input = Input::new("CREATE TEMPORARY VIEW v AS SELECT 1");
-        let stmt = CreateViewStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = CreateViewStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.temp.is_some());
         assert!(input.is_empty());
     }
@@ -87,7 +87,7 @@ mod tests {
         let mut input = Input::new(
             "CREATE RECURSIVE VIEW nums (n) AS VALUES (1) UNION ALL SELECT n+1 FROM nums WHERE n < 5",
         );
-        let stmt = CreateViewStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = CreateViewStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.recursive.is_some());
         assert!(stmt.columns.is_some());
         assert!(input.is_empty());
@@ -98,7 +98,7 @@ mod tests {
         let mut input = Input::new(
             "CREATE OR REPLACE RECURSIVE VIEW nums (n) AS VALUES (1) UNION ALL SELECT n+1 FROM nums WHERE n < 6",
         );
-        let stmt = CreateViewStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = CreateViewStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.or_replace.is_some());
         assert!(stmt.recursive.is_some());
         assert!(input.is_empty());
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn parse_drop_view() {
         let mut input = Input::new("DROP VIEW v");
-        let stmt = DropViewStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = DropViewStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "v");
         assert!(stmt.if_exists.is_none());
         assert!(input.is_empty());

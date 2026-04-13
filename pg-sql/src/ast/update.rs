@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn parse_update_simple() {
         let mut input = Input::new("UPDATE y SET a = a + 1");
-        let stmt = UpdateStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = UpdateStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.table_name.text(), "y");
         assert!(input.is_empty());
     }
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn parse_update_with_returning() {
         let mut input = Input::new("UPDATE y SET a = a + 1 RETURNING *");
-        let stmt = UpdateStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = UpdateStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.returning.is_some());
         assert!(input.is_empty());
     }
@@ -98,7 +98,7 @@ mod tests {
         let mut input = Input::new(
             "UPDATE y SET a = y.a - 10 FROM t WHERE y.a > 20 AND t.a = y.a RETURNING y.a",
         );
-        let stmt = UpdateStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = UpdateStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.from_clause.is_some());
         assert!(stmt.where_clause.is_some());
         assert!(stmt.returning.is_some());
@@ -110,7 +110,7 @@ mod tests {
         let mut input = Input::new(
             "UPDATE parent SET (k, v) = (SELECT k, v FROM simpletup WHERE simpletup.k = parent.k)",
         );
-        let _stmt = UpdateStmt::parse(&mut input, &SqlRules).unwrap();
+        let _stmt = UpdateStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 }

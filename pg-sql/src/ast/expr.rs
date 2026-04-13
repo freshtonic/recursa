@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn parse_integer_literal() {
         let mut input = Input::new("42");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::IntegerLit(_)));
         assert!(input.is_empty());
     }
@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn parse_string_literal() {
         let mut input = Input::new("'hello'");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::StringLit(_)));
         assert!(input.is_empty());
     }
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn parse_bool_true() {
         let mut input = Input::new("true");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::BoolTrue(_)));
         assert!(input.is_empty());
     }
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn parse_bool_false() {
         let mut input = Input::new("false");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::BoolFalse(_)));
         assert!(input.is_empty());
     }
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn parse_null() {
         let mut input = Input::new("null");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Null(_)));
         assert!(input.is_empty());
     }
@@ -421,56 +421,56 @@ mod tests {
     #[test]
     fn parse_column_ref() {
         let mut input = Input::new("f1");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::ColumnRef(_)));
     }
 
     #[test]
     fn parse_qualified_column_ref() {
         let mut input = Input::new("BOOLTBL1.f1");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::QualRef(_)));
     }
 
     #[test]
     fn parse_qualified_wildcard() {
         let mut input = Input::new("BOOLTBL1.*");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::QualWild(_)));
     }
 
     #[test]
     fn parse_star() {
         let mut input = Input::new("*");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Star(_)));
     }
 
     #[test]
     fn parse_function_call_no_args() {
         let mut input = Input::new("foo()");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Func(_)));
     }
 
     #[test]
     fn parse_function_call_with_args() {
         let mut input = Input::new("pg_input_is_valid('true', 'bool')");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Func(_)));
     }
 
     #[test]
     fn parse_function_call_booleq() {
         let mut input = Input::new("booleq(bool 'false', f1)");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Func(_)));
     }
 
     #[test]
     fn parse_parenthesized_expr() {
         let mut input = Input::new("(1)");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Paren(_)));
     }
 
@@ -479,14 +479,14 @@ mod tests {
     #[test]
     fn parse_type_cast_bool_string() {
         let mut input = Input::new("bool 't'");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::CastFunc(_)));
     }
 
     #[test]
     fn parse_type_cast_boolean_string() {
         let mut input = Input::new("boolean 'false'");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::CastFunc(_)));
     }
 
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn parse_not_expr() {
         let mut input = Input::new("not false");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Not(_, _)));
     }
 
@@ -504,28 +504,28 @@ mod tests {
     #[test]
     fn parse_and_expr() {
         let mut input = Input::new("true AND false");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::And(..)));
     }
 
     #[test]
     fn parse_or_expr() {
         let mut input = Input::new("true OR false");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Or(..)));
     }
 
     #[test]
     fn parse_eq_expr() {
         let mut input = Input::new("f1 = true");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Eq(..)));
     }
 
     #[test]
     fn parse_neq_expr() {
         let mut input = Input::new("f1 <> false");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Neq(..)));
     }
 
@@ -534,14 +534,14 @@ mod tests {
     #[test]
     fn parse_cast_colon_colon() {
         let mut input = Input::new("0::boolean");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Cast(..)));
     }
 
     #[test]
     fn parse_chained_cast() {
         let mut input = Input::new("'TrUe'::text::boolean");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         // Outer should be Cast
         assert!(matches!(expr, Expr::Cast(..)));
     }
@@ -551,28 +551,28 @@ mod tests {
     #[test]
     fn parse_is_true() {
         let mut input = Input::new("f1 IS TRUE");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::BoolTest(..)));
     }
 
     #[test]
     fn parse_is_not_false() {
         let mut input = Input::new("f1 IS NOT FALSE");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::BoolTest(..)));
     }
 
     #[test]
     fn parse_is_unknown() {
         let mut input = Input::new("b IS UNKNOWN");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::BoolTest(..)));
     }
 
     #[test]
     fn parse_is_not_unknown() {
         let mut input = Input::new("b IS NOT UNKNOWN");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::BoolTest(..)));
     }
 
@@ -582,7 +582,7 @@ mod tests {
     fn and_binds_tighter_than_or() {
         // a OR b AND c should parse as a OR (b AND c)
         let mut input = Input::new("true OR false AND true");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         // Top-level should be OR
         match &expr {
             Expr::Or(..) => {}
@@ -594,7 +594,7 @@ mod tests {
     fn comparison_binds_tighter_than_and() {
         // a AND b = c should parse as a AND (b = c)
         let mut input = Input::new("true AND f1 = false");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         match &expr {
             Expr::And(..) => {}
             other => panic!("expected AND at top level, got {other:?}"),
@@ -605,7 +605,7 @@ mod tests {
     fn bool_cast_or_expr() {
         // bool 't' or bool 'f' should parse as (bool 't') OR (bool 'f')
         let mut input = Input::new("bool 't' or bool 'f'");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Or(..)));
     }
 
@@ -613,7 +613,7 @@ mod tests {
     fn is_true_in_select_item() {
         // b IS TRUE should parse without consuming AS that follows
         let mut input = Input::new("b IS TRUE");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::BoolTest(..)));
         assert!(input.is_empty());
     }
@@ -622,7 +622,7 @@ mod tests {
     fn cast_chain_in_expression() {
         // true::boolean::text should chain
         let mut input = Input::new("true::boolean::text");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Cast(..)));
     }
 
@@ -631,7 +631,7 @@ mod tests {
     #[test]
     fn parse_addition() {
         let mut input = Input::new("4+4");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Add(..)));
         assert!(input.is_empty());
     }
@@ -639,7 +639,7 @@ mod tests {
     #[test]
     fn parse_subtraction() {
         let mut input = Input::new("10-3");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Sub(..)));
         assert!(input.is_empty());
     }
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     fn parse_unary_minus() {
         let mut input = Input::new("-1");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Neg(..)));
         assert!(input.is_empty());
     }
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn parse_numeric_literal() {
         let mut input = Input::new("77.7");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::NumericLit(_)));
         assert!(input.is_empty());
     }
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn parse_in_expr() {
         let mut input = Input::new("f1 IN (1, 2, 3)");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::InExpr(..)));
         assert!(input.is_empty());
     }
@@ -677,7 +677,7 @@ mod tests {
     #[test]
     fn parse_subquery_expr() {
         let mut input = Input::new("(SELECT 1)");
-        let expr = Expr::parse(&mut input, &SqlRules).unwrap();
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Paren(_)));
         assert!(input.is_empty());
     }

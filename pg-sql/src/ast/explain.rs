@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn parse_explain_costs_off() {
         let mut input = Input::new("explain (costs off) select * from t");
-        let stmt = ExplainStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = ExplainStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.options.is_some());
         assert!(input.is_empty());
     }
@@ -57,7 +57,7 @@ mod tests {
     fn parse_explain_multiple_options() {
         let mut input =
             Input::new("explain (costs off, analyze on, timing off, summary off) select * from t");
-        let stmt = ExplainStmt::parse(&mut input, &SqlRules).unwrap();
+        let stmt = ExplainStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.options.is_some());
         assert!(input.is_empty());
     }

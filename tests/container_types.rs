@@ -1,38 +1,38 @@
 #![allow(dead_code)]
 
 use recursa::seq::{NonEmpty, OptionalTrailing, Seq};
-use recursa::{Input, Parse, ParseRules, Scan};
+use recursa::{Input, Parse, ParseRules};
 
-#[derive(Scan, Debug, Clone)]
-#[scan(pattern = "let")]
+#[derive(Parse, Debug, Clone)]
+#[parse(pattern = "let")]
 struct LetKw;
 
-#[derive(Scan, Debug, Clone)]
-#[scan(pattern = "=")]
+#[derive(Parse, Debug, Clone)]
+#[parse(pattern = "=")]
 struct Eq;
 
-#[derive(Scan, Debug, Clone)]
-#[scan(pattern = ";")]
+#[derive(Parse, Debug, Clone)]
+#[parse(pattern = ";")]
 struct Semi;
 
-#[derive(Scan, Debug, Clone)]
-#[scan(pattern = ",")]
+#[derive(Parse, Debug, Clone)]
+#[parse(pattern = ",")]
 struct Comma;
 
-#[derive(Scan, Debug, Clone)]
-#[scan(pattern = r"\[")]
+#[derive(Parse, Debug, Clone)]
+#[parse(pattern = r"\[")]
 struct LBracket;
 
-#[derive(Scan, Debug, Clone)]
-#[scan(pattern = r"\]")]
+#[derive(Parse, Debug, Clone)]
+#[parse(pattern = r"\]")]
 struct RBracket;
 
-#[derive(Scan, Debug, Clone)]
-#[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
+#[derive(Parse, Debug, Clone)]
+#[parse(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
 struct Ident<'input>(&'input str);
 
-#[derive(Scan, Debug, Clone)]
-#[scan(pattern = r"[0-9]+")]
+#[derive(Parse, Debug, Clone)]
+#[parse(pattern = r"[0-9]+")]
 struct IntLit<'input>(&'input str);
 
 struct Lang;
@@ -67,7 +67,7 @@ struct LetStmt<'input> {
 #[test]
 fn integration_array_with_trailing_comma() {
     let mut input = Input::new("let x = [1, 2, 3,];");
-    let stmt = LetStmt::parse(&mut input, &Lang).unwrap();
+    let stmt = LetStmt::parse::<Lang>(&mut input).unwrap();
     assert_eq!(stmt.name.0, "x");
     assert_eq!(stmt.value.elements.len(), 3);
     assert!(input.is_empty());
@@ -76,14 +76,14 @@ fn integration_array_with_trailing_comma() {
 #[test]
 fn integration_array_without_trailing_comma() {
     let mut input = Input::new("let x = [1, 2, 3];");
-    let stmt = LetStmt::parse(&mut input, &Lang).unwrap();
+    let stmt = LetStmt::parse::<Lang>(&mut input).unwrap();
     assert_eq!(stmt.value.elements.len(), 3);
 }
 
 #[test]
 fn integration_empty_array() {
     let mut input = Input::new("let x = [];");
-    let stmt = LetStmt::parse(&mut input, &Lang).unwrap();
+    let stmt = LetStmt::parse::<Lang>(&mut input).unwrap();
     assert!(stmt.value.elements.is_empty());
 }
 
@@ -99,7 +99,7 @@ struct NonEmptyArrayLit<'input> {
 #[test]
 fn integration_non_empty_array_parses() {
     let mut input = Input::new("[1, 2, 3]");
-    let arr = NonEmptyArrayLit::parse(&mut input, &Lang).unwrap();
+    let arr = NonEmptyArrayLit::parse::<Lang>(&mut input).unwrap();
     assert_eq!(arr.elements.len(), 3);
     // Deref to slice works
     let slice: &[IntLit] = &arr.elements;
@@ -109,7 +109,7 @@ fn integration_non_empty_array_parses() {
 #[test]
 fn integration_non_empty_array_rejects_empty() {
     let mut input = Input::new("[]");
-    let result = NonEmptyArrayLit::parse(&mut input, &Lang);
+    let result = NonEmptyArrayLit::parse::<Lang>(&mut input);
     assert!(result.is_err());
 }
 
@@ -124,7 +124,7 @@ struct MaybeTerminated<'input> {
 #[test]
 fn integration_option_some() {
     let mut input = Input::new("foo;");
-    let mt = MaybeTerminated::parse(&mut input, &Lang).unwrap();
+    let mt = MaybeTerminated::parse::<Lang>(&mut input).unwrap();
     assert_eq!(mt.name.0, "foo");
     assert!(mt.semi.is_some());
     assert!(input.is_empty());
@@ -133,7 +133,7 @@ fn integration_option_some() {
 #[test]
 fn integration_option_none() {
     let mut input = Input::new("foo");
-    let mt = MaybeTerminated::parse(&mut input, &Lang).unwrap();
+    let mt = MaybeTerminated::parse::<Lang>(&mut input).unwrap();
     assert_eq!(mt.name.0, "foo");
     assert!(mt.semi.is_none());
     assert!(input.is_empty());
