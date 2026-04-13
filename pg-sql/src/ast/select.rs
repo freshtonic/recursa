@@ -96,10 +96,14 @@ pub struct LateralRef {
     pub alias: Option<literal::AliasName>,
 }
 
-/// Plain table reference with optional alias: `tablename [AS] alias`
+/// Plain table reference with optional alias: `[ONLY] tablename [AS] alias`
+///
+/// `ONLY` means do not recurse into inheritance children (the opposite
+/// of the `table *` `InheritedTable` form).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PlainTable {
+    pub only: Option<PhantomData<keyword::Only>>,
     pub name: literal::Ident,
     pub alias: Option<IdentAlias>,
 }
@@ -454,6 +458,22 @@ mod tests {
     }
 
     // --- FOR UPDATE ---
+
+    #[test]
+    fn parse_select_from_only() {
+        let mut input = Input::new("SELECT f1 FROM ONLY t");
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.from_clause.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_from_only_with_alias() {
+        let mut input = Input::new("SELECT f1 FROM ONLY t AS x");
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.from_clause.is_some());
+        assert!(input.is_empty());
+    }
 
     #[test]
     fn parse_select_for_update() {

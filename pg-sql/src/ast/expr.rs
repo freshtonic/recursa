@@ -281,7 +281,40 @@ pub enum Expr {
     InExpr(Box<Expr>, keyword::In, InList),
 
     // --- Infix ---
-    // Multi-char operators before single-char to avoid partial matching
+    // Multi-char operators before single-char to avoid partial matching.
+    //
+    // JSON / JSONB operators are listed FIRST among infix so that their
+    // longer tokens are peeked before conflicting shorter ones
+    // (e.g. `<@` before `<`, `->` before `-`). All use bp = 10 — same tier
+    // as Concat/Add/Sub (which is Postgres's convention for these ops).
+    /// JSON path as text: `expr #>> path`
+    #[parse(infix, bp = 10)]
+    JsonPathText(Box<Expr>, punct::HashArrowArrow, Box<Expr>),
+    /// JSON path: `expr #> path`
+    #[parse(infix, bp = 10)]
+    JsonPath(Box<Expr>, punct::HashArrow, Box<Expr>),
+    /// JSON field as text: `expr ->> field`
+    #[parse(infix, bp = 10)]
+    JsonFieldText(Box<Expr>, punct::ArrowArrow, Box<Expr>),
+    /// JSON field: `expr -> field`
+    #[parse(infix, bp = 10)]
+    JsonField(Box<Expr>, punct::Arrow, Box<Expr>),
+    /// JSON any-key-exists: `expr ?| keys`
+    #[parse(infix, bp = 10)]
+    JsonAnyKey(Box<Expr>, punct::QuestionPipe, Box<Expr>),
+    /// JSON all-keys-exist: `expr ?& keys`
+    #[parse(infix, bp = 10)]
+    JsonAllKeys(Box<Expr>, punct::QuestionAmp, Box<Expr>),
+    /// JSON key-exists: `expr ? key`
+    #[parse(infix, bp = 10)]
+    JsonKey(Box<Expr>, punct::Question, Box<Expr>),
+    /// JSONB contains: `expr @> expr`
+    #[parse(infix, bp = 10)]
+    JsonContains(Box<Expr>, punct::AtGt, Box<Expr>),
+    /// JSONB contained-by: `expr <@ expr`
+    #[parse(infix, bp = 10)]
+    JsonContainedBy(Box<Expr>, punct::LtAt, Box<Expr>),
+
     #[parse(infix, bp = 1)]
     Or(Box<Expr>, keyword::Or, Box<Expr>),
     #[parse(infix, bp = 2)]
@@ -669,6 +702,80 @@ mod tests {
         let mut input = Input::new("f1 IN (1, 2, 3)");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::InExpr(..)));
+        assert!(input.is_empty());
+    }
+
+    // --- JSON / JSONB operators ---
+
+    #[test]
+    fn parse_json_field() {
+        let mut input = Input::new("data -> 'key'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::JsonField(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_json_field_text() {
+        let mut input = Input::new("data ->> 'key'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::JsonFieldText(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_json_path() {
+        let mut input = Input::new("data #> '{a,b}'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::JsonPath(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_json_path_text() {
+        let mut input = Input::new("data #>> '{a,b}'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::JsonPathText(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_jsonb_contains() {
+        let mut input = Input::new("a @> b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::JsonContains(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_jsonb_contained_by() {
+        let mut input = Input::new("a <@ b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::JsonContainedBy(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_jsonb_key_exists() {
+        let mut input = Input::new("a ? 'k'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::JsonKey(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_jsonb_any_key() {
+        let mut input = Input::new("a ?| b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::JsonAnyKey(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_jsonb_all_keys() {
+        let mut input = Input::new("a ?& b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::JsonAllKeys(..)));
         assert!(input.is_empty());
     }
 

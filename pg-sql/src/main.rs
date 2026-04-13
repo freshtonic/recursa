@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use recursa::Input;
 use recursa_core::fmt::FormatStyle;
 
-use pg_sql::ast::{parse_sql_file, parse_stats};
+use pg_sql::ast::{parse_sql_file, parse_stats, FileItem, PsqlCommand, Statement};
 use pg_sql::formatter::format_file;
 
 #[derive(Parser)]
@@ -26,6 +26,14 @@ enum Command {
     Coverage {
         /// SQL files to analyze
         files: Vec<String>,
+    },
+    /// Dump the first 200 chars of each Raw statement in a file
+    DumpRaw {
+        /// SQL file to analyze
+        file: String,
+        /// Maximum number of raw statements to print
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
     },
 }
 
@@ -60,6 +68,31 @@ fn main() {
                 }
             };
             print!("{}", format_file(&items, FormatStyle::default()));
+        }
+        Command::DumpRaw { file, limit } => {
+            let sql = read_sql(&file);
+            let mut input = Input::new(&sql);
+            let items = match parse_sql_file(&mut input) {
+                Ok(items) => items,
+                Err(e) => {
+                    eprintln!("{e}");
+                    process::exit(1);
+                }
+            };
+            let mut count = 0usize;
+            for item in &items {
+                if let FileItem::Command(PsqlCommand::Statement(ts)) = item
+                    && let Statement::Raw(r) = &ts.stmt
+                {
+                    let text = r.text.trim().replace('\n', " ");
+                    let truncated: String = text.chars().take(200).collect();
+                    println!("{truncated}");
+                    count += 1;
+                    if count >= limit {
+                        break;
+                    }
+                }
+            }
         }
         Command::Coverage { files } => {
             let mut total_structured = 0usize;

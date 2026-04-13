@@ -242,6 +242,28 @@ pub mod keyword {
         Wrapper     => r"WRAPPER\b",
         Mapping     => r"MAPPING\b",
         Event       => r"EVENT\b",
+        // Constraint-related keywords
+        Constraint  => r"CONSTRAINT\b",
+        Check       => r"CHECK\b",
+        Match       => r"MATCH\b",
+        Partial     => r"PARTIAL\b",
+        Simple      => r"SIMPLE\b",
+        Restrict    => r"RESTRICT\b",
+        Action      => r"ACTION\b",
+        Deferrable  => r"DEFERRABLE\b",
+        Initially   => r"INITIALLY\b",
+        Deferred    => r"DEFERRED\b",
+        Immediate   => r"IMMEDIATE\b",
+        Inherit     => r"INHERIT\b",
+        Cascade     => r"CASCADE\b",
+        Include     => r"INCLUDE\b",
+        // Index method keywords
+        Btree       => r"BTREE\b",
+        Gin         => r"GIN\b",
+        Gist        => r"GIST\b",
+        Hash        => r"HASH\b",
+        Spgist      => r"SPGIST\b",
+        Brin        => r"BRIN\b",
     }
 }
 
@@ -271,6 +293,16 @@ pub mod punct {
         Percent    => "%",         "%",
         LBracket   => r"\[",       "[",
         RBracket   => r"\]",       "]",
+        // JSON/JSONB operators. Longer before shorter (longest-match-wins).
+        HashArrowArrow => r"#>>",      "#>>",
+        HashArrow      => r"#>",       "#>",
+        ArrowArrow     => r"->>",      "->>",
+        Arrow          => r"->",       "->",
+        QuestionPipe   => r"\?\|",     "?|",
+        QuestionAmp    => r"\?&",      "?&",
+        AtGt           => r"@>",       "@>",
+        LtAt           => r"<@",       "<@",
+        Question       => r"\?",       "?",
     }
 }
 
@@ -475,6 +507,26 @@ pub mod literal {
         "WRAPPER",
         "MAPPING",
         "EVENT",
+        "CONSTRAINT",
+        "CHECK",
+        "MATCH",
+        "PARTIAL",
+        "SIMPLE",
+        "RESTRICT",
+        "ACTION",
+        "DEFERRABLE",
+        "INITIALLY",
+        "DEFERRED",
+        "IMMEDIATE",
+        "INHERIT",
+        "CASCADE",
+        "INCLUDE",
+        "BTREE",
+        "GIN",
+        "GIST",
+        "HASH",
+        "SPGIST",
+        "BRIN",
     ];
 
     fn is_keyword(s: &str) -> bool {
