@@ -706,5 +706,1110 @@ mod tests {
             let (_c, uri) = start_postgres();
             run_regression_test("conversion", &[], &uri).unwrap();
         }
+
+        #[test]
+        fn regress_advisory_lock() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("advisory_lock", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_alter_generic() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("alter_generic", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_alter_operator() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("alter_operator", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_amutils() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("amutils", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_async() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("async", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_bitmapops() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("bitmapops", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_box() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("box", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_brin() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("brin", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_brin_bloom() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("brin_bloom", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_brin_multi() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("brin_multi", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_circle() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("circle", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_collate() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("collate", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_collate_icu_utf8() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("collate.icu.utf8", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_collate_linux_utf8() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("collate.linux.utf8", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_collate_utf8() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("collate.utf8", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        #[ignore = "Windows-specific collation test"]
+        fn regress_collate_windows_win1252() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("collate.windows.win1252", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_compression() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("compression", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_copy2() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("copy2", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_aggregate() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_aggregate", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_am() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_am", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_cast() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_cast", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_function_c() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_function_c", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_index_spgist() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_index_spgist", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_operator() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_operator", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_procedure() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_procedure", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_role() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_role", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_schema() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_schema", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_table_like() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_table_like", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_type() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_type", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_view() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_view", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_database() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("database", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_date() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("date", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_dbsize() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("dbsize", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_dependency() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("dependency", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_domain() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("domain", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_drop_operator() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("drop_operator", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_encoding() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("encoding", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_enum() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("enum", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_equivclass() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("equivclass", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_errors() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("errors", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_euc_kr() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("euc_kr", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_event_trigger() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("event_trigger", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_event_trigger_login() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("event_trigger_login", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_explain() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("explain", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_expressions() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("expressions", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_fast_default() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("fast_default", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_float4() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("float4", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_float8() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("float8", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_foreign_data() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("foreign_data", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_foreign_key() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("foreign_key", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_functional_deps() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("functional_deps", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_generated() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("generated", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_geometry() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("geometry", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_gin() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("gin", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_gist() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("gist", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_groupingsets() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("groupingsets", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_guc() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("guc", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_hash_func() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("hash_func", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_hash_part() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("hash_part", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_horology() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("horology", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_identity() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("identity", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_incremental_sort() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("incremental_sort", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_index_including() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("index_including", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_index_including_gist() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("index_including_gist", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_indexing() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("indexing", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_indirect_toast() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("indirect_toast", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_inet() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("inet", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_infinite_recurse() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("infinite_recurse", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_inherit() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("inherit", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_init_privs() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("init_privs", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_insert_conflict() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("insert_conflict", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_int2() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("int2", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_int4() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("int4", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_int8() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("int8", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_interval() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("interval", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_join_hash() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("join_hash", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_json() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("json", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_json_encoding() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("json_encoding", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_jsonb() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("jsonb", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_jsonb_jsonpath() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("jsonb_jsonpath", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_jsonpath() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("jsonpath", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_jsonpath_encoding() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("jsonpath_encoding", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_largeobject() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("largeobject", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_line() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("line", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_lock() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("lock", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_lseg() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("lseg", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_macaddr() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("macaddr", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_macaddr8() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("macaddr8", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_maintain_every() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("maintain_every", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_matview() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("matview", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_md5() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("md5", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_memoize() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("memoize", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_merge() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("merge", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_misc() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("misc", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_misc_functions() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("misc_functions", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_misc_sanity() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("misc_sanity", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_money() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("money", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_multirangetypes() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("multirangetypes", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_mvcc() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("mvcc", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_name() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("name", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_numeric() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("numeric", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_numeric_big() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("numeric_big", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_numerology() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("numerology", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_object_address() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("object_address", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_oid() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("oid", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_oidjoins() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("oidjoins", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_opr_sanity() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("opr_sanity", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_partition_aggregate() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("partition_aggregate", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_partition_info() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("partition_info", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_partition_join() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("partition_join", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_partition_prune() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("partition_prune", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_password() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("password", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_path() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("path", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_pg_lsn() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("pg_lsn", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_plancache() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("plancache", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_plpgsql() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("plpgsql", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_point() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("point", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_polygon() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("polygon", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_polymorphism() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("polymorphism", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_portals() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("portals", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_portals_p2() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("portals_p2", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_predicate() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("predicate", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_prepare() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("prepare", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_privileges() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("privileges", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_psql() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("psql", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_psql_crosstab() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("psql_crosstab", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_publication() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("publication", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_random() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("random", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_rangefuncs() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("rangefuncs", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_rangetypes() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("rangetypes", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_regex() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("regex", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_regproc() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("regproc", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_reindex_catalog() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("reindex_catalog", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_reloptions() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("reloptions", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_replica_identity() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("replica_identity", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_roleattributes() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("roleattributes", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_rowsecurity() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("rowsecurity", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_rowtypes() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("rowtypes", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_rules() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("rules", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_sanity_check() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("sanity_check", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_security_label() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("security_label", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_select_distinct_on() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("select_distinct_on", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_select_parallel() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("select_parallel", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_select_views() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("select_views", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_sequence() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("sequence", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_spgist() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("spgist", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_sqljson() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("sqljson", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_sqljson_jsontable() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("sqljson_jsontable", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_sqljson_queryfuncs() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("sqljson_queryfuncs", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_stats() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("stats", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_stats_ext() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("stats_ext", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_strings() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("strings", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_subscription() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("subscription", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_sysviews() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("sysviews", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_tablesample() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("tablesample", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_tablespace() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("tablespace", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_temp() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("temp", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_test_setup() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("test_setup", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_text() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("text", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_tid() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("tid", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_tidrangescan() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("tidrangescan", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_tidscan() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("tidscan", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_time() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("time", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_timestamp() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("timestamp", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_timestamptz() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("timestamptz", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_timetz() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("timetz", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_triggers() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("triggers", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_tsdicts() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("tsdicts", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_tsearch() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("tsearch", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_tsrf() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("tsrf", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_tstypes() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("tstypes", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_tuplesort() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("tuplesort", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_txid() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("txid", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_type_sanity() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("type_sanity", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_unicode() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("unicode", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_updatable_views() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("updatable_views", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_uuid() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("uuid", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_vacuum_parallel() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("vacuum_parallel", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_varchar() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("varchar", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_window() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("window", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_write_parallel() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("write_parallel", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_xid() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("xid", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_xml() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("xml", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_xmlmap() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("xmlmap", &["test_setup"], &uri).unwrap();
+        }
     }
 }
