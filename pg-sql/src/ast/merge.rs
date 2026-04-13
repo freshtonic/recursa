@@ -37,7 +37,9 @@ pub struct WhenMatchedDelete {
     pub _delete: PhantomData<keyword::Delete>,
 }
 
+/// ```sql
 /// WHEN NOT MATCHED THEN INSERT [columns] VALUES (...)
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhenNotMatchedInsert {

@@ -143,7 +143,9 @@ pub enum CreateTableBody {
     Columns(ColumnsBody),
 }
 
+/// ```sql
 /// CREATE [TEMP] TABLE statement.
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTableStmt {

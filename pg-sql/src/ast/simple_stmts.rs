@@ -30,7 +30,9 @@ pub struct CommitStmt {
     pub tail: Option<RawStatement>,
 }
 
+/// ```sql
 /// ROLLBACK [WORK | TRANSACTION] [TO [SAVEPOINT] name]
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RollbackStmt {
@@ -46,7 +48,9 @@ pub struct SavepointStmt {
     pub tail: Option<RawStatement>,
 }
 
+/// ```sql
 /// RELEASE [SAVEPOINT] name
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReleaseStmt {
@@ -72,7 +76,9 @@ pub struct ExecuteStmt {
     pub tail: Option<RawStatement>,
 }
 
+/// ```sql
 /// DEALLOCATE [PREPARE] name | ALL
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeallocateStmt {
@@ -110,7 +116,9 @@ pub struct CopyStmt {
 
 // --- TRUNCATE ---
 
+/// ```sql
 /// TRUNCATE [TABLE] name [, ...] [CASCADE | RESTRICT]
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TruncateStmt {
@@ -130,7 +138,9 @@ pub struct CommentStmt {
 
 // --- LOCK ---
 
+/// ```sql
 /// LOCK [TABLE] name [, ...] [IN mode MODE] [NOWAIT]
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LockStmt {
@@ -148,7 +158,9 @@ pub struct DeclareStmt {
     pub tail: Option<RawStatement>,
 }
 
+/// ```sql
 /// FETCH [direction] [FROM | IN] cursor
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchStmt {
@@ -164,7 +176,9 @@ pub struct CloseStmt {
     pub tail: Option<RawStatement>,
 }
 
+/// ```sql
 /// MOVE [direction] [FROM | IN] cursor
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MoveStmt {
@@ -184,7 +198,9 @@ pub struct ReindexStmt {
 
 // --- REFRESH ---
 
+/// ```sql
 /// REFRESH MATERIALIZED VIEW [CONCURRENTLY] name [WITH [NO] DATA]
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RefreshStmt {
@@ -260,7 +276,9 @@ pub struct SecurityLabelStmt {
 
 // --- CLUSTER ---
 
+/// ```sql
 /// CLUSTER [VERBOSE] [table [USING index]]
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ClusterStmt {
