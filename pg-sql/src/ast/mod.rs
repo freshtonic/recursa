@@ -232,7 +232,10 @@ pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<PsqlCommand>, ParseEr
             break;
         }
         if !PsqlCommand::peek(input, &SqlRules) {
-            break;
+            // Skip unparseable lines (e.g., COPY FROM stdin data blocks).
+            // Advance past the current line and retry.
+            skip_line(input);
+            continue;
         }
         match PsqlCommand::parse(input, &SqlRules) {
             Ok(cmd) => commands.push(cmd),
@@ -251,6 +254,15 @@ pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<PsqlCommand>, ParseEr
         }
     }
     Ok(commands)
+}
+
+/// Skip past the current line (advance to after the next newline, or to EOF).
+fn skip_line(input: &mut Input<'_>) {
+    let remaining = input.remaining();
+    match remaining.find('\n') {
+        Some(pos) => input.advance(pos + 1),
+        None => input.advance(remaining.len()),
+    }
 }
 
 #[cfg(test)]
