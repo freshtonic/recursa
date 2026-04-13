@@ -12,6 +12,20 @@ fn is_option_type(ty: &Type) -> bool {
     false
 }
 
+/// Extract the inner type `T` from `Option<T>`.
+fn option_inner_type(ty: &Type) -> Option<&Type> {
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+        && segment.ident == "Option"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        Some(inner)
+    } else {
+        None
+    }
+}
+
 /// Generate peek body that falls through leading Optional fields.
 ///
 /// For `struct Foo { a: Option<X>, b: Option<Y>, c: Z }`, generates:
@@ -68,6 +82,68 @@ fn generate_peek_body(field_types: &[&Type], rules_type: &Type) -> TokenStream {
             quote! {
                 #(#checks)*
                 false
+            }
+        }
+    }
+}
+
+/// Generate the body of `first_pattern()` for a struct.
+///
+/// Chains field patterns while fields are terminal. When a field is `Option<T>`,
+/// includes `T`'s pattern as an optional regex group `(?:sep pattern)?` and
+/// continues chaining. This allows patterns to reach through optional keyword
+/// prefixes to the distinguishing keyword.
+///
+/// Example: `{ _create: PhantomData<Create>, _temp: Option<PhantomData<Temp>>, _table: PhantomData<Table> }`
+/// produces: `CREATE(?:\s+TEMP\b)?(?:\s+TABLE\b)`
+fn generate_first_pattern_body(field_types: &[&Type]) -> TokenStream {
+    if field_types.is_empty() {
+        return quote! {};
+    }
+
+    let first_ty = &field_types[0];
+    let continuation = generate_first_pattern_chain(&field_types[1..]);
+
+    quote! {
+        parts.push(<#first_ty as ::recursa_core::Parse>::first_pattern().to_string());
+        if <#first_ty as ::recursa_core::Parse>::IS_TERMINAL {
+            #continuation
+        }
+    }
+}
+
+/// Recursive helper: generate the chain for remaining fields after the first.
+fn generate_first_pattern_chain(field_types: &[&Type]) -> TokenStream {
+    if field_types.is_empty() {
+        return quote! {};
+    }
+
+    let ty = &field_types[0];
+    let rest = &field_types[1..];
+
+    if is_option_type(ty) {
+        if let Some(inner) = option_inner_type(ty) {
+            let continuation = generate_first_pattern_chain(rest);
+            quote! {
+                {
+                    let inner_pat = <#inner as ::recursa_core::Parse>::first_pattern();
+                    if !inner_pat.is_empty() {
+                        parts.push(::std::format!("(?:{}{})?", sep, inner_pat));
+                    }
+                }
+                if <#inner as ::recursa_core::Parse>::IS_TERMINAL {
+                    #continuation
+                }
+            }
+        } else {
+            // Can't extract inner type — stop
+            quote! {}
+        }
+    } else {
+        // Required field: include if terminal, then stop
+        quote! {
+            if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
+                parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
             }
         }
     }
@@ -177,32 +253,7 @@ fn derive_parse_named_struct(
     }
     let peek_body = generate_peek_body(&field_types, rules_type);
 
-    // Build nested chain for first_pattern: always include the first field's
-    // pattern, then continue while IS_TERMINAL is true. For non-terminal fields
-    // after the first, we check IS_TERMINAL BEFORE calling first_pattern() to
-    // avoid deadlock on recursive types.
-    let first_pattern_body = if field_types.is_empty() {
-        quote! {}
-    } else {
-        let first_ty = &field_types[0];
-        let mut body = quote! {};
-        for ty in field_types[1..].iter().rev() {
-            body = quote! {
-                if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
-                    parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
-                    #body
-                }
-            };
-        }
-        // First field is always included (even if non-terminal),
-        // then continue only if it's terminal.
-        quote! {
-            parts.push(<#first_ty as ::recursa_core::Parse>::first_pattern().to_string());
-            if <#first_ty as ::recursa_core::Parse>::IS_TERMINAL {
-                #body
-            }
-        }
-    };
+    let first_pattern_body = generate_first_pattern_body(&field_types);
 
     // Generate the parse body: consume_ignored + parse each field
     let parse_fields = field_names
@@ -278,27 +329,7 @@ fn derive_parse_tuple_struct(
         .map(|i| syn::Ident::new(&format!("__f{i}"), proc_macro2::Span::call_site()))
         .collect();
 
-    // Build first_pattern chain (same logic as named struct).
-    let first_pattern_body = if field_types.is_empty() {
-        quote! {}
-    } else {
-        let first_ty = &field_types[0];
-        let mut body = quote! {};
-        for ty in field_types[1..].iter().rev() {
-            body = quote! {
-                if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
-                    parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
-                    #body
-                }
-            };
-        }
-        quote! {
-            parts.push(<#first_ty as ::recursa_core::Parse>::first_pattern().to_string());
-            if <#first_ty as ::recursa_core::Parse>::IS_TERMINAL {
-                #body
-            }
-        }
-    };
+    let first_pattern_body = generate_first_pattern_body(&field_types);
 
     // Generate the parse body: consume_ignored + parse each field
     let parse_fields = field_bindings
