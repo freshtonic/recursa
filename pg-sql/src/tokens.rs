@@ -279,7 +279,8 @@ pub mod literal {
     use super::*;
 
     recursa::literals! {
-        DollarStringLit => r"\$[a-zA-Z_]*\$[\s\S]*?\$[a-zA-Z_]*\$",
+        DollarStringLit => r#"\$[a-zA-Z_]*\$[\s\S]*?\$[a-zA-Z_]*\$"#,
+        QuotedIdent => r#""[^"]*(?:""[^"]*)*""#,
         StringLit  => r"'[^']*(?:''[^']*)*'",
         NumericLit => r"[0-9]+\.[0-9]+",
         IntegerLit => r"[0-9]+",
@@ -481,7 +482,7 @@ pub mod literal {
     }
 
     /// Postcondition: reject identifiers that are SQL keywords.
-    fn not_keyword(ident: &Ident) -> Result<(), ParseError> {
+    fn not_keyword(ident: &UnquotedIdent) -> Result<(), ParseError> {
         if is_keyword(&ident.0) {
             Err(ParseError::new(
                 ident.0.clone(),
@@ -493,16 +494,36 @@ pub mod literal {
         }
     }
 
-    /// SQL identifier: `[a-zA-Z_][a-zA-Z0-9_]*` but NOT a keyword.
+    /// Unquoted SQL identifier: `[a-zA-Z_][a-zA-Z0-9_]*` but NOT a keyword.
     #[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
     #[parse(postcondition = not_keyword)]
     #[visit(terminal)]
-    pub struct Ident(pub String);
+    pub struct UnquotedIdent(pub String);
 
-    impl recursa::FormatTokens for Ident {
+    impl recursa::FormatTokens for UnquotedIdent {
         fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
             tokens.push(recursa::fmt::Token::String(self.0.clone()));
+        }
+    }
+
+    /// SQL identifier: unquoted (`foo`) or double-quoted (`"Foo"`).
+    ///
+    /// Quoted before Unquoted so `"` is tried first (different first char).
+    #[derive(recursa::Parse, recursa::Visit, recursa::FormatTokens, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    #[parse(rules = crate::rules::SqlRules)]
+    pub enum Ident {
+        Quoted(QuotedIdent),
+        Unquoted(UnquotedIdent),
+    }
+
+    impl Ident {
+        /// The raw text of the identifier.
+        pub fn text(&self) -> &str {
+            match self {
+                Ident::Quoted(q) => &q.0,
+                Ident::Unquoted(u) => &u.0,
+            }
         }
     }
 
@@ -680,80 +701,97 @@ mod tests {
     fn identifier_simple() {
         let mut input = Input::new("my_table");
         let id = Ident::parse(&mut input, &NoRules).unwrap();
-        assert_eq!(id.0, "my_table");
+        assert_eq!(id.text(), "my_table");
     }
 
     #[test]
     fn identifier_with_digits() {
         let mut input = Input::new("f1");
         let id = Ident::parse(&mut input, &NoRules).unwrap();
-        assert_eq!(id.0, "f1");
+        assert_eq!(id.text(), "f1");
     }
 
     #[test]
     fn identifier_uppercase() {
         let mut input = Input::new("BOOLTBL1");
         let id = Ident::parse(&mut input, &NoRules).unwrap();
-        assert_eq!(id.0, "BOOLTBL1");
+        assert_eq!(id.text(), "BOOLTBL1");
     }
 
     #[test]
-    fn identifier_rejects_keyword_select() {
+    fn unquoted_rejects_keyword_select() {
         let input = Input::new("SELECT");
-        assert!(!Ident::peek(&input, &NoRules));
+        assert!(!UnquotedIdent::peek(&input, &NoRules));
     }
 
     #[test]
-    fn identifier_rejects_keyword_true() {
+    fn unquoted_rejects_keyword_true() {
         let input = Input::new("true");
-        assert!(!Ident::peek(&input, &NoRules));
+        assert!(!UnquotedIdent::peek(&input, &NoRules));
     }
 
     #[test]
-    fn identifier_rejects_keyword_null() {
+    fn unquoted_rejects_keyword_null() {
         let input = Input::new("NULL");
-        assert!(!Ident::peek(&input, &NoRules));
+        assert!(!UnquotedIdent::peek(&input, &NoRules));
+    }
+
+    #[test]
+    fn ident_enum_peeks_keyword_but_parse_fails() {
+        // Ident enum peeks true (regex matches) but parse fails (postcondition)
+        let input = Input::new("SELECT");
+        assert!(Ident::peek(&input, &NoRules));
+        let mut input2 = Input::new("SELECT");
+        assert!(Ident::parse(&mut input2, &NoRules).is_err());
+    }
+
+    #[test]
+    fn ident_enum_parses_quoted() {
+        let mut input = Input::new("\"SELECT\"");
+        let id = Ident::parse(&mut input, &NoRules).unwrap();
+        assert_eq!(id.text(), "\"SELECT\"");
+        assert!(input.is_empty());
     }
 
     #[test]
     fn identifier_accepts_keyword_prefix() {
         let mut input = Input::new("isfalse");
         let id = Ident::parse(&mut input, &NoRules).unwrap();
-        assert_eq!(id.0, "isfalse");
+        assert_eq!(id.text(), "isfalse");
     }
 
     #[test]
     fn identifier_accepts_booleq() {
         let mut input = Input::new("booleq");
         let id = Ident::parse(&mut input, &NoRules).unwrap();
-        assert_eq!(id.0, "booleq");
+        assert_eq!(id.text(), "booleq");
     }
 
     #[test]
     fn identifier_accepts_boolne() {
         let mut input = Input::new("boolne");
         let id = Ident::parse(&mut input, &NoRules).unwrap();
-        assert_eq!(id.0, "boolne");
+        assert_eq!(id.text(), "boolne");
     }
 
     #[test]
     fn identifier_accepts_isnul() {
         let mut input = Input::new("isnul");
         let id = Ident::parse(&mut input, &NoRules).unwrap();
-        assert_eq!(id.0, "isnul");
+        assert_eq!(id.text(), "isnul");
     }
 
     #[test]
     fn identifier_accepts_istrue() {
         let mut input = Input::new("istrue");
         let id = Ident::parse(&mut input, &NoRules).unwrap();
-        assert_eq!(id.0, "istrue");
+        assert_eq!(id.text(), "istrue");
     }
 
     #[test]
     fn identifier_accepts_pg_input_is_valid() {
         let mut input = Input::new("pg_input_is_valid");
         let id = Ident::parse(&mut input, &NoRules).unwrap();
-        assert_eq!(id.0, "pg_input_is_valid");
+        assert_eq!(id.text(), "pg_input_is_valid");
     }
 }

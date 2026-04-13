@@ -118,7 +118,7 @@ mod tests {
     fn parse_insert_with_columns() {
         let mut input = Input::new("INSERT INTO BOOLTBL1 (f1) VALUES (bool 't')");
         let stmt = InsertStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.table_name.0, "BOOLTBL1");
+        assert_eq!(stmt.table_name.text(), "BOOLTBL1");
         assert!(stmt.columns.is_some());
         assert_eq!(stmt.columns.as_ref().unwrap().inner.len(), 1);
         assert!(input.is_empty());

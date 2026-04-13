@@ -361,7 +361,7 @@ pub enum Expr {
     /// NULL
     #[parse(atom)]
     Null(keyword::Null),
-    /// Unqualified column reference: `f1`
+    /// Unqualified column reference: `f1` or `"Foo"`
     #[parse(atom)]
     ColumnRef(literal::Ident),
     /// Bare wildcard: `*`

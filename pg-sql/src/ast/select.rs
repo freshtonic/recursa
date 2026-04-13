@@ -43,7 +43,7 @@ impl Alias {
     pub fn name(&self) -> &str {
         match self {
             Alias::WithAs(a) => &a.name.0,
-            Alias::Bare(ident) => &ident.0,
+            Alias::Bare(ident) => ident.text(),
         }
     }
 }

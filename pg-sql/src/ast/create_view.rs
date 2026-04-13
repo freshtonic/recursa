@@ -67,7 +67,7 @@ mod tests {
     fn parse_create_view() {
         let mut input = Input::new("CREATE VIEW v AS SELECT 1");
         let stmt = CreateViewStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.name.0, "v");
+        assert_eq!(stmt.name.text(), "v");
         assert!(stmt.or_replace.is_none());
         assert!(stmt.temp.is_none());
         assert!(stmt.recursive.is_none());
@@ -108,7 +108,7 @@ mod tests {
     fn parse_drop_view() {
         let mut input = Input::new("DROP VIEW v");
         let stmt = DropViewStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.name.0, "v");
+        assert_eq!(stmt.name.text(), "v");
         assert!(stmt.if_exists.is_none());
         assert!(input.is_empty());
     }

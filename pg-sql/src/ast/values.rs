@@ -115,7 +115,7 @@ mod tests {
     fn parse_table_stmt() {
         let mut input = Input::new("TABLE int8_tbl");
         let stmt = TableStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.table_name.0, "int8_tbl");
+        assert_eq!(stmt.table_name.text(), "int8_tbl");
         assert!(input.is_empty());
     }
 

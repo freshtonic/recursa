@@ -25,7 +25,7 @@ mod tests {
     fn parse_analyze() {
         let mut input = Input::new("ANALYZE onek2");
         let stmt = AnalyzeStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.table_name.0, "onek2");
+        assert_eq!(stmt.table_name.text(), "onek2");
         assert!(input.is_empty());
     }
 }

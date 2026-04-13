@@ -50,8 +50,8 @@ mod tests {
     fn parse_create_index() {
         let mut input = Input::new("CREATE INDEX fooi ON foo (f1)");
         let stmt = CreateIndexStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.name.0, "fooi");
-        assert_eq!(stmt.table_name.0, "foo");
+        assert_eq!(stmt.name.text(), "fooi");
+        assert_eq!(stmt.table_name.text(), "foo");
         assert!(input.is_empty());
     }
 
@@ -73,7 +73,7 @@ mod tests {
     fn parse_drop_index() {
         let mut input = Input::new("DROP INDEX fooi");
         let stmt = DropIndexStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.name.0, "fooi");
+        assert_eq!(stmt.name.text(), "fooi");
         assert!(input.is_empty());
     }
 }

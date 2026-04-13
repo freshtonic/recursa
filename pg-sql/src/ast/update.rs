@@ -81,7 +81,7 @@ mod tests {
     fn parse_update_simple() {
         let mut input = Input::new("UPDATE y SET a = a + 1");
         let stmt = UpdateStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.table_name.0, "y");
+        assert_eq!(stmt.table_name.text(), "y");
         assert!(input.is_empty());
     }
 

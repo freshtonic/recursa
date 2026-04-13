@@ -177,7 +177,7 @@ mod tests {
     fn parse_create_table_single_column() {
         let mut input = Input::new("CREATE TABLE BOOLTBL1 (f1 bool)");
         let stmt = CreateTableStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.name.0, "BOOLTBL1");
+        assert_eq!(stmt.name.text(), "BOOLTBL1");
         assert_eq!(stmt.columns().unwrap().len(), 1);
         assert!(input.is_empty());
     }
@@ -186,7 +186,7 @@ mod tests {
     fn parse_create_table_multiple_columns() {
         let mut input = Input::new("CREATE TABLE BOOLTBL3 (d text, b bool, o int)");
         let stmt = CreateTableStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.name.0, "BOOLTBL3");
+        assert_eq!(stmt.name.text(), "BOOLTBL3");
         assert_eq!(stmt.columns().unwrap().len(), 3);
         assert!(input.is_empty());
     }
@@ -203,7 +203,7 @@ mod tests {
         let mut input = Input::new("CREATE TEMP TABLE foo (f1 int)");
         let stmt = CreateTableStmt::parse(&mut input, &SqlRules).unwrap();
         assert!(stmt.temp.is_some());
-        assert_eq!(stmt.name.0, "foo");
+        assert_eq!(stmt.name.text(), "foo");
         assert!(input.is_empty());
     }
 
@@ -212,7 +212,7 @@ mod tests {
         let mut input =
             Input::new("create table list_parted_tbl (a int,b int) partition by list (a)");
         let stmt = CreateTableStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.name.0, "list_parted_tbl");
+        assert_eq!(stmt.name.text(), "list_parted_tbl");
         assert!(input.is_empty());
     }
 
@@ -222,7 +222,7 @@ mod tests {
             "create table list_parted_tbl1 partition of list_parted_tbl for values in (1) partition by list(b)",
         );
         let stmt = CreateTableStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.name.0, "list_parted_tbl1");
+        assert_eq!(stmt.name.text(), "list_parted_tbl1");
         assert!(input.is_empty());
     }
 

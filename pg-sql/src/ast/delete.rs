@@ -31,8 +31,8 @@ impl TableAlias {
     /// Returns the alias name regardless of variant.
     pub fn name(&self) -> &str {
         match self {
-            TableAlias::WithAs(a) => &a.name.0,
-            TableAlias::Bare(ident) => &ident.0,
+            TableAlias::WithAs(a) => a.name.text(),
+            TableAlias::Bare(ident) => ident.text(),
         }
     }
 }
@@ -73,7 +73,7 @@ mod tests {
     fn parse_delete_simple() {
         let mut input = Input::new("DELETE FROM delete_test WHERE a > 25");
         let stmt = DeleteStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.table_name.0, "delete_test");
+        assert_eq!(stmt.table_name.text(), "delete_test");
         assert!(stmt.alias.is_none());
         assert!(stmt.where_clause.is_some());
         assert!(input.is_empty());
@@ -83,7 +83,7 @@ mod tests {
     fn parse_delete_with_as_alias() {
         let mut input = Input::new("DELETE FROM delete_test AS dt WHERE dt.a > 75");
         let stmt = DeleteStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.table_name.0, "delete_test");
+        assert_eq!(stmt.table_name.text(), "delete_test");
         assert!(matches!(stmt.alias, Some(TableAlias::WithAs(_))));
         assert_eq!(stmt.alias.as_ref().unwrap().name(), "dt");
         assert!(stmt.where_clause.is_some());
@@ -94,7 +94,7 @@ mod tests {
     fn parse_delete_with_bare_alias() {
         let mut input = Input::new("DELETE FROM delete_test dt WHERE delete_test.a > 25");
         let stmt = DeleteStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.table_name.0, "delete_test");
+        assert_eq!(stmt.table_name.text(), "delete_test");
         assert!(matches!(stmt.alias, Some(TableAlias::Bare(_))));
         assert_eq!(stmt.alias.as_ref().unwrap().name(), "dt");
         assert!(stmt.where_clause.is_some());
@@ -105,7 +105,7 @@ mod tests {
     fn parse_delete_no_where() {
         let mut input = Input::new("DELETE FROM t");
         let stmt = DeleteStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.table_name.0, "t");
+        assert_eq!(stmt.table_name.text(), "t");
         assert!(stmt.alias.is_none());
         assert!(stmt.where_clause.is_none());
         assert!(input.is_empty());

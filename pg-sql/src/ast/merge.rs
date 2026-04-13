@@ -93,7 +93,7 @@ mod tests {
         let sql = "MERGE INTO m USING (select 0 k, 'v' v) o ON m.k = o.k WHEN MATCHED THEN UPDATE SET v = 'updated' WHEN NOT MATCHED THEN INSERT VALUES(o.k, o.v)";
         let mut input = Input::new(sql);
         let stmt = MergeStmt::parse(&mut input, &SqlRules).unwrap();
-        assert_eq!(stmt.table_name.0, "m");
+        assert_eq!(stmt.table_name.text(), "m");
         assert_eq!(stmt.when_clauses.len(), 2);
         assert!(input.is_empty());
     }
