@@ -138,7 +138,7 @@ pub struct PrintEngine {
 }
 
 struct GroupState {
-    _kind: GroupKind,
+    kind: GroupKind,
     /// Whether this group has decided to break.
     broken: bool,
 }
@@ -173,11 +173,14 @@ impl PrintEngine {
                     needs_space = !is_opening_punct(s);
                 }
                 Token::Break { flat, broken } => {
-                    let should_break = self
-                        .groups
-                        .last()
-                        .map(|g| g.broken)
-                        .unwrap_or(false);
+                    let should_break = match self.groups.last() {
+                        Some(g) if g.broken && g.kind == GroupKind::Consistent => true,
+                        Some(g) if g.broken && g.kind == GroupKind::Inconsistent => {
+                            // Each break independently checks if it fits
+                            self.column + flat.len() > self.style.max_width
+                        }
+                        _ => false,
+                    };
 
                     if should_break {
                         self.output.push_str(broken);
@@ -201,7 +204,7 @@ impl PrintEngine {
                     };
                     group_idx += 1;
                     self.groups.push(GroupState {
-                        _kind: *kind,
+                        kind: *kind,
                         broken,
                     });
                 }
@@ -354,5 +357,89 @@ mod tests {
         });
         let result = engine.print(&tokens);
         assert_eq!(result, "SELECT\n    a");
+    }
+
+    #[test]
+    fn consistent_group_breaks_all_or_none() {
+        // Two breaks in a consistent group that exceeds max_width:
+        // both breaks should break.
+        let tokens = vec![
+            Token::Begin(GroupKind::Consistent),
+            Token::String("aaaaaaaaaa".into()),
+            Token::Break {
+                flat: " ".into(),
+                broken: "\n".into(),
+            },
+            Token::String("bbbbbbbbbb".into()),
+            Token::Break {
+                flat: " ".into(),
+                broken: "\n".into(),
+            },
+            Token::String("cccccccccc".into()),
+            Token::End,
+        ];
+        let engine = PrintEngine::new(FormatStyle {
+            max_width: 25, // 10+1+10+1+10 = 32, exceeds 25
+            ..Default::default()
+        });
+        let result = engine.print(&tokens);
+        assert_eq!(result, "aaaaaaaaaa\nbbbbbbbbbb\ncccccccccc");
+    }
+
+    #[test]
+    fn inconsistent_group_breaks_independently() {
+        // Three breaks in an inconsistent group that exceeds max_width.
+        // Only breaks where the column is past max_width should break;
+        // others stay flat.
+        let tokens = vec![
+            Token::Begin(GroupKind::Inconsistent),
+            Token::String("aaa".into()),
+            Token::Break {
+                flat: " ".into(),
+                broken: "\n".into(),
+            },
+            Token::String("bbb".into()),
+            Token::Break {
+                flat: " ".into(),
+                broken: "\n".into(),
+            },
+            Token::String("ccc".into()),
+            Token::Break {
+                flat: " ".into(),
+                broken: "\n".into(),
+            },
+            Token::String("ddd".into()),
+            Token::End,
+        ];
+        let engine = PrintEngine::new(FormatStyle {
+            max_width: 10,
+            ..Default::default()
+        });
+        let result = engine.print(&tokens);
+        // "aaa bbb" fits (7 chars), then break at column 7+1=8 would make "ccc" start
+        // at column 11 if flat, so it breaks. Then "ccc ddd" fits on new line.
+        assert_eq!(result, "aaa bbb\nccc ddd");
+    }
+
+    #[test]
+    fn inconsistent_group_fits_stays_flat() {
+        // An inconsistent group that fits entirely on one line stays flat.
+        let tokens = vec![
+            Token::Begin(GroupKind::Inconsistent),
+            Token::String("a".into()),
+            Token::Break {
+                flat: " ".into(),
+                broken: "\n".into(),
+            },
+            Token::String("b".into()),
+            Token::Break {
+                flat: " ".into(),
+                broken: "\n".into(),
+            },
+            Token::String("c".into()),
+            Token::End,
+        ];
+        let engine = PrintEngine::new(FormatStyle::default());
+        assert_eq!(engine.print(&tokens), "a b c");
     }
 }
