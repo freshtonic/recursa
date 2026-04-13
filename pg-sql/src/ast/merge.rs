@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 
 use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
-use recursa::{Input, Parse, ParseError, ParseRules, Visit};
+use recursa::{Parse, Visit};
 
 use crate::ast::expr::Expr;
 use crate::ast::select::TableRef;
@@ -16,123 +16,53 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// WHEN MATCHED THEN UPDATE SET ...
-#[derive(Debug, Clone, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct WhenMatchedUpdate {
+    pub _when: PhantomData<keyword::When>,
+    pub _matched: PhantomData<keyword::Matched>,
+    pub _then: PhantomData<keyword::Then>,
+    pub _update: PhantomData<keyword::Update>,
+    pub _set: PhantomData<keyword::Set>,
     pub assignments: Seq<SetAssignment, punct::Comma>,
 }
 
 /// WHEN MATCHED THEN DELETE
-#[derive(Debug, Clone, Visit)]
-pub struct WhenMatchedDelete;
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct WhenMatchedDelete {
+    pub _when: PhantomData<keyword::When>,
+    pub _matched: PhantomData<keyword::Matched>,
+    pub _then: PhantomData<keyword::Then>,
+    pub _delete: PhantomData<keyword::Delete>,
+}
 
-/// WHEN NOT MATCHED THEN INSERT VALUES (...)
-#[derive(Debug, Clone, Visit)]
+/// WHEN NOT MATCHED THEN INSERT [columns] VALUES (...)
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct WhenNotMatchedInsert {
+    pub _when: PhantomData<keyword::When>,
+    pub _not: PhantomData<keyword::Not>,
+    pub _matched: PhantomData<keyword::Matched>,
+    pub _then: PhantomData<keyword::Then>,
+    pub _insert: PhantomData<keyword::Insert>,
     pub columns:
         Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+    pub _values: PhantomData<keyword::Values>,
     pub values: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
 }
 
-/// A WHEN clause in MERGE
-#[derive(Debug, Clone)]
+/// A WHEN clause in MERGE.
+///
+/// Variant ordering: NotMatchedInsert (`WHEN NOT ...`) is longest,
+/// then MatchedDelete/MatchedUpdate (`WHEN MATCHED THEN DELETE/UPDATE`)
+/// are disambiguated by their trailing keyword.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub enum WhenClause {
-    MatchedUpdate(WhenMatchedUpdate),
-    MatchedDelete(WhenMatchedDelete),
     NotMatchedInsert(WhenNotMatchedInsert),
-}
-
-impl recursa::visitor::AsNodeKey for WhenClause {}
-
-impl Visit for WhenClause {
-    fn visit<V: recursa::visitor::TotalVisitor>(
-        &self,
-        _visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
-        std::ops::ControlFlow::Continue(())
-    }
-}
-
-impl<'input> Parse<'input> for WhenClause {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        keyword::When::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        keyword::When::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        PhantomData::<keyword::When>::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        if keyword::Not::peek(input, rules) {
-            // WHEN NOT MATCHED THEN INSERT ...
-            PhantomData::<keyword::Not>::parse(input, rules)?;
-            R::consume_ignored(input);
-            PhantomData::<keyword::Matched>::parse(input, rules)?;
-            R::consume_ignored(input);
-            PhantomData::<keyword::Then>::parse(input, rules)?;
-            R::consume_ignored(input);
-            PhantomData::<keyword::Insert>::parse(input, rules)?;
-            R::consume_ignored(input);
-
-            // Optional column list
-            let columns = if punct::LParen::peek(input, rules) {
-                // Check if this is a column list or VALUES
-                let mut fork = input.fork();
-                match Surrounded::<
-                    punct::LParen,
-                    Seq<literal::AliasName, punct::Comma>,
-                    punct::RParen,
-                >::parse(&mut fork, rules)
-                {
-                    Ok(cols) => {
-                        // Check if VALUES follows
-                        R::consume_ignored(&mut fork);
-                        if keyword::Values::peek(&fork, rules) {
-                            input.advance(fork.cursor() - input.cursor());
-                            R::consume_ignored(input);
-                            Some(cols)
-                        } else {
-                            None
-                        }
-                    }
-                    Err(_) => None,
-                }
-            } else {
-                None
-            };
-
-            PhantomData::<keyword::Values>::parse(input, rules)?;
-            R::consume_ignored(input);
-            let values = Surrounded::parse(input, rules)?;
-
-            Ok(WhenClause::NotMatchedInsert(WhenNotMatchedInsert {
-                columns,
-                values,
-            }))
-        } else {
-            // WHEN MATCHED THEN UPDATE SET ... | DELETE
-            PhantomData::<keyword::Matched>::parse(input, rules)?;
-            R::consume_ignored(input);
-            PhantomData::<keyword::Then>::parse(input, rules)?;
-            R::consume_ignored(input);
-
-            if keyword::Delete::peek(input, rules) {
-                PhantomData::<keyword::Delete>::parse(input, rules)?;
-                Ok(WhenClause::MatchedDelete(WhenMatchedDelete))
-            } else {
-                PhantomData::<keyword::Update>::parse(input, rules)?;
-                R::consume_ignored(input);
-                PhantomData::<keyword::Set>::parse(input, rules)?;
-                R::consume_ignored(input);
-                let assignments = Seq::parse(input, rules)?;
-                Ok(WhenClause::MatchedUpdate(WhenMatchedUpdate { assignments }))
-            }
-        }
-    }
+    MatchedDelete(WhenMatchedDelete),
+    MatchedUpdate(WhenMatchedUpdate),
 }
 
 /// MERGE statement.

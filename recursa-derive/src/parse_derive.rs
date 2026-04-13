@@ -141,11 +141,13 @@ fn generate_first_pattern_chain(field_types: &[&Type]) -> TokenStream {
             quote! {}
         }
     } else {
-        // Required field: append with separator if terminal, then stop
+        let continuation = generate_first_pattern_chain(rest);
+        // Required field: append with separator if terminal, then continue
         quote! {
             if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
                 pattern.push_str(&sep);
                 pattern.push_str(<#ty as ::recursa_core::Parse>::first_pattern());
+                #continuation
             }
         }
     }
