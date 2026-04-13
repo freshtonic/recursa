@@ -21,21 +21,23 @@ use recursa::{FormatTokens, Input, Parse, ParseError, ParseRules, Visit};
 use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 
-use self::analyze::AnalyzeStmt;
-use self::create_function::{CreateFunctionStmt, DropFunctionStmt};
-use self::create_index::{CreateIndexStmt, DropIndexStmt};
-use self::create_table::CreateTableStmt;
-use self::create_view::{CreateViewStmt, DropViewStmt};
-use self::delete::DeleteStmt;
-use self::drop_table::DropTableStmt;
-use self::explain::ExplainStmt;
-use self::insert::InsertStmt;
-use self::merge::MergeStmt;
-use self::select::SelectStmt;
-use self::set_reset::{ResetStmt, SetStmt};
-use self::update::UpdateStmt;
-use self::values::{CompoundQuery, TableStmt};
-use self::with_clause::WithStatement;
+use self::{
+    analyze::AnalyzeStmt,
+    create_function::{CreateFunctionStmt, DropFunctionStmt},
+    create_index::{CreateIndexStmt, DropIndexStmt},
+    create_table::CreateTableStmt,
+    create_view::{CreateViewStmt, DropViewStmt},
+    delete::DeleteStmt,
+    drop_table::DropTableStmt,
+    explain::ExplainStmt,
+    insert::InsertStmt,
+    merge::MergeStmt,
+    select::SelectStmt,
+    set_reset::{ResetStmt, SetStmt},
+    update::UpdateStmt,
+    values::{CompoundQuery, TableStmt},
+    with_clause::WithStatement,
+};
 
 /// Top-level SQL statement.
 ///
@@ -231,6 +233,55 @@ pub enum FileItem {
     RawLines(String),
 }
 
+/// Statistics about how statements were parsed in a file.
+#[derive(Debug, Default)]
+pub struct ParseStats {
+    /// Statements parsed into structured AST types (SELECT, INSERT, etc.)
+    pub structured: usize,
+    /// Statements that fell through to RawStatement (catch-all)
+    pub raw: usize,
+    /// Psql directives (\pset, etc.)
+    pub directives: usize,
+    /// Raw lines (COPY FROM stdin data, etc.)
+    pub raw_lines: usize,
+}
+
+impl ParseStats {
+    /// Percentage of SQL statements (excluding directives/raw lines) that were
+    /// parsed into structured AST types.
+    pub fn structured_pct(&self) -> f64 {
+        let total = self.structured + self.raw;
+        if total == 0 {
+            100.0
+        } else {
+            (self.structured as f64 / total as f64) * 100.0
+        }
+    }
+}
+
+/// Compute parsing statistics for a list of file items.
+pub fn parse_stats(items: &[FileItem]) -> ParseStats {
+    let mut stats = ParseStats::default();
+    for item in items {
+        match item {
+            FileItem::Command(PsqlCommand::Statement(ts)) => {
+                if matches!(ts.stmt, Statement::Raw(_)) {
+                    stats.raw += 1;
+                } else {
+                    stats.structured += 1;
+                }
+            }
+            FileItem::Command(PsqlCommand::Directive(_)) => {
+                stats.directives += 1;
+            }
+            FileItem::RawLines(_) => {
+                stats.raw_lines += 1;
+            }
+        }
+    }
+    stats
+}
+
 /// Parse a complete SQL file into a list of file items.
 ///
 /// Gracefully handles parse errors and unparseable content (COPY FROM stdin
@@ -363,9 +414,18 @@ mod tests {
         let mut input = Input::new(sql);
         let items = parse_sql_file(&mut input).unwrap();
         assert_eq!(items.len(), 3);
-        assert!(matches!(items[0], FileItem::Command(PsqlCommand::Statement(_))));
-        assert!(matches!(items[1], FileItem::Command(PsqlCommand::Directive(_))));
-        assert!(matches!(items[2], FileItem::Command(PsqlCommand::Statement(_))));
+        assert!(matches!(
+            items[0],
+            FileItem::Command(PsqlCommand::Statement(_))
+        ));
+        assert!(matches!(
+            items[1],
+            FileItem::Command(PsqlCommand::Directive(_))
+        ));
+        assert!(matches!(
+            items[2],
+            FileItem::Command(PsqlCommand::Statement(_))
+        ));
     }
 
     #[test]
@@ -452,12 +512,21 @@ mod tests {
 
     #[test]
     fn parse_union_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/union.sql")
-            .expect("union.sql fixture not found");
+        let sql =
+            std::fs::read_to_string("fixtures/sql/union.sql").expect("union.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 10, "expected >10 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 10,
+            "expected >10 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -466,18 +535,36 @@ mod tests {
             .expect("subselect.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 10, "expected >10 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 10,
+            "expected >10 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
     fn parse_case_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/case.sql")
-            .expect("case.sql fixture not found");
+        let sql =
+            std::fs::read_to_string("fixtures/sql/case.sql").expect("case.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 10, "expected >10 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 10,
+            "expected >10 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -524,8 +611,17 @@ mod tests {
             .expect("select_having.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -534,8 +630,17 @@ mod tests {
             .expect("select_implicit.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -544,8 +649,17 @@ mod tests {
             .expect("select_distinct.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -554,8 +668,17 @@ mod tests {
             .expect("select_into.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -564,8 +687,17 @@ mod tests {
             .expect("prepared_xacts.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -574,8 +706,17 @@ mod tests {
             .expect("namespace.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -584,8 +725,17 @@ mod tests {
             .expect("btree_index.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -594,8 +744,17 @@ mod tests {
             .expect("hash_index.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -604,8 +763,17 @@ mod tests {
             .expect("update.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -614,8 +782,17 @@ mod tests {
             .expect("transactions.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -624,8 +801,17 @@ mod tests {
             .expect("aggregates.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -634,28 +820,55 @@ mod tests {
             .expect("arrays.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
     fn parse_join_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/join.sql")
-            .expect("join.sql fixture not found");
+        let sql =
+            std::fs::read_to_string("fixtures/sql/join.sql").expect("join.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
     fn parse_limit_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/limit.sql")
-            .expect("limit.sql fixture not found");
+        let sql =
+            std::fs::read_to_string("fixtures/sql/limit.sql").expect("limit.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -664,8 +877,17 @@ mod tests {
             .expect("returning.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -674,8 +896,17 @@ mod tests {
             .expect("truncate.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -684,8 +915,17 @@ mod tests {
             .expect("alter_table.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -694,8 +934,17 @@ mod tests {
             .expect("create_table.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -704,8 +953,17 @@ mod tests {
             .expect("insert.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -714,8 +972,17 @@ mod tests {
             .expect("typed_table.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -724,8 +991,17 @@ mod tests {
             .expect("vacuum.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 
     #[test]
@@ -734,7 +1010,16 @@ mod tests {
             .expect("drop_if_exists.sql fixture not found");
         let mut input = Input::new(&sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        assert!(commands.len() > 0, "expected >0 commands, got {}", commands.len());
-        assert!(input.is_empty(), "leftover at {}: {:?}", input.cursor(), &input.remaining()[..input.remaining().len().min(100)]);
+        assert!(
+            commands.len() > 0,
+            "expected >0 commands, got {}",
+            commands.len()
+        );
+        assert!(
+            input.is_empty(),
+            "leftover at {}: {:?}",
+            input.cursor(),
+            &input.remaining()[..input.remaining().len().min(100)]
+        );
     }
 }
