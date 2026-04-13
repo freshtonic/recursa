@@ -12,6 +12,7 @@ pub mod merge;
 pub mod partition;
 pub mod select;
 pub mod set_reset;
+pub mod simple_stmts;
 pub mod update;
 pub mod values;
 pub mod with_clause;
@@ -34,6 +35,7 @@ use self::{
     merge::MergeStmt,
     select::SelectStmt,
     set_reset::{ResetStmt, SetStmt},
+    simple_stmts::*,
     update::UpdateStmt,
     values::{CompoundQuery, TableStmt},
     with_clause::WithStatement,
@@ -57,29 +59,73 @@ use self::{
 #[parse(rules = SqlRules)]
 #[allow(clippy::large_enum_variant)]
 pub enum Statement {
+    // --- Multi-keyword statements (longest first_pattern first) ---
     With(WithStatement),
     Explain(ExplainStmt),
+    // CREATE variants: longer keyword sequences before shorter
     CreateFunction(CreateFunctionStmt),
+    CreateTrigger(CreateTriggerStmt),
     CreateIndex(CreateIndexStmt),
     CreateView(CreateViewStmt),
+    CreateRule(CreateRuleStmt),
     CreateTable(CreateTableStmt),
+    // DROP variants: longer before shorter
+    DropFunction(DropFunctionStmt),
+    DropTrigger(DropTriggerStmt),
+    DropIndex(DropIndexStmt),
+    DropView(DropViewStmt),
+    DropRule(DropRuleStmt),
+    DropTable(DropTableStmt),
+    // ALTER TABLE
+    AlterTable(AlterTableStmt),
+    // DML
     Insert(InsertStmt),
     Update(UpdateStmt),
     Merge(MergeStmt),
     Delete(DeleteStmt),
-    DropFunction(DropFunctionStmt),
-    DropIndex(DropIndexStmt),
-    DropView(DropViewStmt),
-    DropTable(DropTableStmt),
+    // Transaction control
+    Rollback(RollbackStmt),
+    Savepoint(SavepointStmt),
+    Release(ReleaseStmt),
+    Begin(BeginStmt),
+    Commit(CommitStmt),
+    // PREPARE / EXECUTE / DEALLOCATE
+    Deallocate(DeallocateStmt),
+    Prepare(PrepareStmt),
+    Execute(ExecuteStmt),
+    // Permissions
+    Grant(GrantStmt),
+    Revoke(RevokeStmt),
+    // Utility
+    SecurityLabel(SecurityLabelStmt),
+    Comment(CommentStmt),
+    Copy(CopyStmt),
+    Truncate(TruncateStmt),
+    Reindex(ReindexStmt),
+    Refresh(RefreshStmt),
+    Cluster(ClusterStmt),
+    Vacuum(VacuumStmt),
+    Lock(LockStmt),
+    Notify(NotifyStmt),
+    Listen(ListenStmt),
+    Unlisten(UnlistenStmt),
+    Discard(DiscardStmt),
+    Reassign(ReassignStmt),
+    Do(DoStmt),
+    // Cursor
+    Declare(DeclareStmt),
+    Fetch(FetchStmt),
+    Close(CloseStmt),
+    Move(MoveStmt),
+    // Configuration
     Set(SetStmt),
     Reset(ResetStmt),
     Analyze(AnalyzeStmt),
+    // Query
     Values(CompoundQuery),
     Select(SelectStmt),
     Table(TableStmt),
-    /// Catch-all for statement types not yet fully implemented (ALTER TABLE,
-    /// CREATE RULE, CREATE TRIGGER, DROP RULE, DROP TRIGGER, TRUNCATE, BEGIN,
-    /// COMMIT, NOTIFY, etc.). Consumes tokens until the next semicolon.
+    /// Catch-all: consumes tokens until the next semicolon.
     Raw(RawStatement),
 }
 

@@ -173,8 +173,49 @@ pub mod keyword {
         // REFERENCES already declared above
         // NOT NULL constraint -- Not already declared
         // GENERATED ALWAYS AS IDENTITY -- Generated, Always, Identity already declared
-        // Additional statement types
         No          => r"NO\b",
+        // Transaction control
+        Rollback    => r"ROLLBACK\b",
+        Savepoint   => r"SAVEPOINT\b",
+        Release     => r"RELEASE\b",
+        // PREPARE / EXECUTE / DEALLOCATE
+        Prepare     => r"PREPARE\b",
+        Deallocate  => r"DEALLOCATE\b",
+        // GRANT / REVOKE
+        Grant       => r"GRANT\b",
+        Revoke      => r"REVOKE\b",
+        // COMMENT
+        Comment     => r"COMMENT\b",
+        // COPY
+        Copy        => r"COPY\b",
+        // LOCK
+        Lock        => r"LOCK\b",
+        // Cursor operations
+        Declare     => r"DECLARE\b",
+        Fetch       => r"FETCH\b",
+        Close       => r"CLOSE\b",
+        Move        => r"MOVE\b",
+        Cursor      => r"CURSOR\b",
+        // REINDEX
+        Reindex     => r"REINDEX\b",
+        // REFRESH
+        Refresh     => r"REFRESH\b",
+        // DO
+        DoBlock     => r"DO\b",
+        // LISTEN / UNLISTEN
+        Listen      => r"LISTEN\b",
+        Unlisten    => r"UNLISTEN\b",
+        // DISCARD
+        Discard     => r"DISCARD\b",
+        // REASSIGN
+        Reassign    => r"REASSIGN\b",
+        // SECURITY LABEL
+        Security    => r"SECURITY\b",
+        Label       => r"LABEL\b",
+        // CLUSTER
+        Clusterw    => r"CLUSTER\b",
+        // VACUUM
+        Vacuumw     => r"VACUUM\b",
     }
 }
 
@@ -357,6 +398,31 @@ pub mod literal {
         "IF",
         "ONLY",
         "NO",
+        "ROLLBACK",
+        "SAVEPOINT",
+        "RELEASE",
+        "PREPARE",
+        "DEALLOCATE",
+        "GRANT",
+        "REVOKE",
+        "COMMENT",
+        "COPY",
+        "LOCK",
+        "DECLARE",
+        "FETCH",
+        "CLOSE",
+        "MOVE",
+        "CURSOR",
+        "REINDEX",
+        "REFRESH",
+        "LISTEN",
+        "UNLISTEN",
+        "DISCARD",
+        "REASSIGN",
+        "SECURITY",
+        "LABEL",
+        "CLUSTER",
+        "VACUUM",
     ];
 
     fn is_keyword(s: &str) -> bool {
