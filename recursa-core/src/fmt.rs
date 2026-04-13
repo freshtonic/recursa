@@ -138,7 +138,7 @@ pub struct PrintEngine {
 }
 
 struct GroupState {
-    kind: GroupKind,
+    _kind: GroupKind,
     /// Whether this group has decided to break.
     broken: bool,
 }
@@ -201,7 +201,7 @@ impl PrintEngine {
                     };
                     group_idx += 1;
                     self.groups.push(GroupState {
-                        kind: *kind,
+                        _kind: *kind,
                         broken,
                     });
                 }
@@ -242,18 +242,15 @@ fn compute_breaks(tokens: &[Token], max_width: usize) -> Vec<bool> {
 
     // Measure flat size of each group
     let mut current_sizes: Vec<usize> = Vec::new(); // stack of running sizes
-    let mut column = 0usize;
 
     for token in tokens {
         match token {
             Token::String(s) => {
-                column += s.len();
                 for size in &mut current_sizes {
                     *size += s.len();
                 }
             }
             Token::Break { flat, .. } => {
-                column += flat.len();
                 for size in &mut current_sizes {
                     *size += flat.len();
                 }

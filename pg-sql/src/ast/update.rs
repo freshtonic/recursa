@@ -110,7 +110,7 @@ mod tests {
         let mut input = Input::new(
             "UPDATE parent SET (k, v) = (SELECT k, v FROM simpletup WHERE simpletup.k = parent.k)",
         );
-        let stmt = UpdateStmt::parse(&mut input, &SqlRules).unwrap();
+        let _stmt = UpdateStmt::parse(&mut input, &SqlRules).unwrap();
         assert!(input.is_empty());
     }
 }

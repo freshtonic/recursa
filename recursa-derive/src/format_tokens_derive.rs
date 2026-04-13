@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, Lit, Meta, Type};
+use syn::{Data, DeriveInput, Fields, Lit, Type};
 
 /// Check if a type is `Option<...>`.
 fn is_option_type(ty: &Type) -> bool {
