@@ -15,7 +15,17 @@ use crate::tokens::{keyword, literal, punct};
 /// PRIMARY KEY column constraint.
 #[derive(Debug, Clone, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct PrimaryKey(PhantomData<keyword::Primary>, PhantomData<keyword::Key>);
+pub struct PrimaryKeyConstraint(PhantomData<keyword::Primary>, PhantomData<keyword::Key>);
+
+/// NOT NULL column constraint.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NotNullConstraint(PhantomData<keyword::Not>, PhantomData<keyword::Null>);
+
+/// UNIQUE column constraint.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct UniqueConstraint(PhantomData<keyword::Unique>);
 
 /// REFERENCES constraint: `REFERENCES table [(col)]`
 #[derive(Debug, Clone, Parse, Visit)]
@@ -26,22 +36,40 @@ pub struct ReferencesConstraint {
     pub column: Option<Surrounded<punct::LParen, literal::AliasName, punct::RParen>>,
 }
 
-/// Column constraint kind.
-#[derive(Debug, Clone)]
-pub enum ColumnConstraint {
-    PrimaryKey,
-    NotNull,
-    Unique,
-    References(ReferencesConstraint),
-    GeneratedAlwaysAsIdentity,
-    Default(crate::ast::expr::Expr),
+/// GENERATED ALWAYS AS IDENTITY column constraint.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct GeneratedIdentityConstraint(
+    PhantomData<keyword::Generated>,
+    PhantomData<keyword::Always>,
+    PhantomData<keyword::As>,
+    PhantomData<keyword::Identity>,
+);
+
+/// DEFAULT expr column constraint.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DefaultConstraint {
+    pub _default: PhantomData<keyword::Default>,
+    pub expr: crate::ast::expr::Expr,
 }
 
-impl AsNodeKey for ColumnConstraint {}
-impl Visit for ColumnConstraint {
-    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        ControlFlow::Continue(())
-    }
+/// Column constraint kind.
+///
+/// Variant ordering for longest-match-wins:
+/// - GeneratedIdentity (`GENERATED`) before others (unique keyword)
+/// - PrimaryKey (`PRIMARY KEY`) before others (unique keyword)
+/// - NotNull (`NOT NULL`) before others (unique keyword)
+/// - References, Unique, Default all start with distinct keywords
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ColumnConstraint {
+    GeneratedIdentity(GeneratedIdentityConstraint),
+    PrimaryKey(PrimaryKeyConstraint),
+    NotNull(NotNullConstraint),
+    Unique(UniqueConstraint),
+    References(ReferencesConstraint),
+    Default(DefaultConstraint),
 }
 
 /// A column definition: `name type [constraints...]`.
@@ -62,7 +90,7 @@ impl ColumnDef {
     pub fn primary_key(&self) -> bool {
         self.constraints
             .iter()
-            .any(|c| matches!(c, ColumnConstraint::PrimaryKey))
+            .any(|c| matches!(c, ColumnConstraint::PrimaryKey(_)))
     }
 }
 
@@ -93,51 +121,16 @@ impl<'input> Parse<'input> for ColumnDef {
 
         let mut constraints = Vec::new();
         loop {
-            if keyword::Primary::peek(input, rules) {
-                PhantomData::<keyword::Primary>::parse(input, rules)?;
-                R::consume_ignored(input);
-                PhantomData::<keyword::Key>::parse(input, rules)?;
-                R::consume_ignored(input);
-                constraints.push(ColumnConstraint::PrimaryKey);
-            } else if keyword::Not::peek(input, rules) {
-                // NOT NULL
+            if ColumnConstraint::peek(input, rules) {
                 let mut fork = input.fork();
-                if PhantomData::<keyword::Not>::parse(&mut fork, rules).is_ok() {
-                    R::consume_ignored(&mut fork);
-                    if keyword::Null::peek(&fork, rules) {
-                        PhantomData::<keyword::Null>::parse(&mut fork, rules)?;
-                        input.advance(fork.cursor() - input.cursor());
+                match ColumnConstraint::parse(&mut fork, rules) {
+                    Ok(c) => {
+                        input.commit(fork);
                         R::consume_ignored(input);
-                        constraints.push(ColumnConstraint::NotNull);
-                        continue;
+                        constraints.push(c);
                     }
+                    Err(_) => break,
                 }
-                break;
-            } else if keyword::Unique::peek(input, rules) {
-                PhantomData::<keyword::Unique>::parse(input, rules)?;
-                R::consume_ignored(input);
-                constraints.push(ColumnConstraint::Unique);
-            } else if keyword::References::peek(input, rules) {
-                let rc = ReferencesConstraint::parse(input, rules)?;
-                R::consume_ignored(input);
-                constraints.push(ColumnConstraint::References(rc));
-            } else if keyword::Generated::peek(input, rules) {
-                // GENERATED ALWAYS AS IDENTITY
-                PhantomData::<keyword::Generated>::parse(input, rules)?;
-                R::consume_ignored(input);
-                PhantomData::<keyword::Always>::parse(input, rules)?;
-                R::consume_ignored(input);
-                PhantomData::<keyword::As>::parse(input, rules)?;
-                R::consume_ignored(input);
-                PhantomData::<keyword::Identity>::parse(input, rules)?;
-                R::consume_ignored(input);
-                constraints.push(ColumnConstraint::GeneratedAlwaysAsIdentity);
-            } else if keyword::Default::peek(input, rules) {
-                PhantomData::<keyword::Default>::parse(input, rules)?;
-                R::consume_ignored(input);
-                let expr = crate::ast::expr::Expr::parse(input, rules)?;
-                R::consume_ignored(input);
-                constraints.push(ColumnConstraint::Default(expr));
             } else {
                 break;
             }

@@ -344,13 +344,13 @@ fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
                 print_cast_type(output, &col.type_name);
                 for constraint in &col.constraints {
                     match constraint {
-                        crate::ast::create_table::ColumnConstraint::PrimaryKey => {
+                        crate::ast::create_table::ColumnConstraint::PrimaryKey(_) => {
                             output.push_str(" PRIMARY KEY");
                         }
-                        crate::ast::create_table::ColumnConstraint::NotNull => {
+                        crate::ast::create_table::ColumnConstraint::NotNull(_) => {
                             output.push_str(" NOT NULL");
                         }
-                        crate::ast::create_table::ColumnConstraint::Unique => {
+                        crate::ast::create_table::ColumnConstraint::Unique(_) => {
                             output.push_str(" UNIQUE");
                         }
                         crate::ast::create_table::ColumnConstraint::References(rc) => {
@@ -362,12 +362,12 @@ fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
                                 output.push(')');
                             }
                         }
-                        crate::ast::create_table::ColumnConstraint::GeneratedAlwaysAsIdentity => {
+                        crate::ast::create_table::ColumnConstraint::GeneratedIdentity(_) => {
                             output.push_str(" GENERATED ALWAYS AS IDENTITY");
                         }
-                        crate::ast::create_table::ColumnConstraint::Default(expr) => {
+                        crate::ast::create_table::ColumnConstraint::Default(dc) => {
                             output.push_str(" DEFAULT ");
-                            print_expr(output, expr);
+                            print_expr(output, &dc.expr);
                         }
                     }
                 }
