@@ -327,3 +327,194 @@ pub struct DropRuleStmt {
     pub _rule: PhantomData<keyword::Rule>,
     pub tail: Option<RawStatement>,
 }
+
+// --- CREATE/DROP/ALTER for remaining object types ---
+// Each captures the leading keyword pair for enum disambiguation.
+
+macro_rules! create_drop_stmts {
+    ($($name:ident, $create_name:ident, $drop_name:ident, $kw:ident);* $(;)?) => {
+        $(
+            #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+            #[parse(rules = SqlRules)]
+            pub struct $create_name {
+                pub _create: PhantomData<keyword::Create>,
+                pub _obj: PhantomData<keyword::$kw>,
+                pub tail: Option<RawStatement>,
+            }
+
+            #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+            #[parse(rules = SqlRules)]
+            pub struct $drop_name {
+                pub _drop: PhantomData<keyword::Drop>,
+                pub _obj: PhantomData<keyword::$kw>,
+                pub tail: Option<RawStatement>,
+            }
+        )*
+    };
+}
+
+create_drop_stmts! {
+    Role, CreateRoleStmt, DropRoleStmt, Role;
+    User, CreateUserStmt, DropUserStmt, User;
+    Schema, CreateSchemaStmt, DropSchemaStmt, Schema;
+    Sequence, CreateSequenceStmt, DropSequenceStmt, Sequence;
+    Type, CreateTypeStmt, DropTypeStmt, Type;
+    Domain, CreateDomainStmt, DropDomainStmt, Domain;
+    Aggregate, CreateAggregateStmt, DropAggregateStmt, Aggregate;
+    Operator, CreateOperatorStmt, DropOperatorStmt, Operator;
+    Cast, CreateCastStmt, DropCastStmt, Cast;
+    Collation, CreateCollationStmt, DropCollationStmt, Collation;
+    Extension, CreateExtensionStmt, DropExtensionStmt, Extension;
+    Policy, CreatePolicyStmt, DropPolicyStmt, Policy;
+    Statistics, CreateStatisticsStmt, DropStatisticsStmt, Statistics;
+    Publication, CreatePublicationStmt, DropPublicationStmt, Publication;
+    Subscription, CreateSubscriptionStmt, DropSubscriptionStmt, Subscription;
+    Conversion, CreateConversionStmt, DropConversionStmt, Conversion;
+    Server, CreateServerStmt, DropServerStmt, Server;
+}
+
+macro_rules! alter_stmts {
+    ($($name:ident, $alter_name:ident, $kw:ident);* $(;)?) => {
+        $(
+            #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+            #[parse(rules = SqlRules)]
+            pub struct $alter_name {
+                pub _alter: PhantomData<keyword::Alter>,
+                pub _obj: PhantomData<keyword::$kw>,
+                pub tail: Option<RawStatement>,
+            }
+        )*
+    };
+}
+
+alter_stmts! {
+    Role, AlterRoleStmt, Role;
+    User, AlterUserStmt, User;
+    Schema, AlterSchemaStmt, Schema;
+    Sequence, AlterSequenceStmt, Sequence;
+    Type, AlterTypeStmt, Type;
+    Domain, AlterDomainStmt, Domain;
+    Aggregate, AlterAggregateStmt, Aggregate;
+    Operator, AlterOperatorStmt, Operator;
+    Collation, AlterCollationStmt, Collation;
+    Extension, AlterExtensionStmt, Extension;
+    Policy, AlterPolicyStmt, Policy;
+    Statistics, AlterStatisticsStmt, Statistics;
+    Publication, AlterPublicationStmt, Publication;
+    Subscription, AlterSubscriptionStmt, Subscription;
+    Conversion, AlterConversionStmt, Conversion;
+    Server, AlterServerStmt, Server;
+    Index, AlterIndexStmt, Index;
+    View, AlterViewStmt, View;
+    Function, AlterFunctionStmt, Function;
+}
+
+// Special multi-keyword DDL types
+
+/// CREATE FOREIGN TABLE / DATA WRAPPER
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterForeignStmt {
+    pub _alter: PhantomData<keyword::Alter>,
+    pub _foreign: PhantomData<keyword::Foreign>,
+    pub tail: Option<RawStatement>,
+}
+
+/// CREATE EVENT TRIGGER
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CreateEventTriggerStmt {
+    pub _create: PhantomData<keyword::Create>,
+    pub _event: PhantomData<keyword::Event>,
+    pub tail: Option<RawStatement>,
+}
+
+/// DROP EVENT TRIGGER
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DropEventTriggerStmt {
+    pub _drop: PhantomData<keyword::Drop>,
+    pub _event: PhantomData<keyword::Event>,
+    pub tail: Option<RawStatement>,
+}
+
+/// ALTER EVENT TRIGGER
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterEventTriggerStmt {
+    pub _alter: PhantomData<keyword::Alter>,
+    pub _event: PhantomData<keyword::Event>,
+    pub tail: Option<RawStatement>,
+}
+
+/// DROP OWNED BY
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DropOwnedStmt {
+    pub _drop: PhantomData<keyword::Drop>,
+    pub _owned: PhantomData<keyword::Owned>,
+    pub tail: Option<RawStatement>,
+}
+
+/// CREATE ACCESS METHOD
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CreateAccessMethodStmt {
+    pub _create: PhantomData<keyword::Create>,
+    pub _access: PhantomData<keyword::Access>,
+    pub tail: Option<RawStatement>,
+}
+
+/// DROP ACCESS METHOD
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DropAccessMethodStmt {
+    pub _drop: PhantomData<keyword::Drop>,
+    pub _access: PhantomData<keyword::Access>,
+    pub tail: Option<RawStatement>,
+}
+
+/// CREATE MATERIALIZED VIEW
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CreateMaterializedViewStmt {
+    pub _create: PhantomData<keyword::Create>,
+    pub _materialized: PhantomData<keyword::Materialized>,
+    pub tail: Option<RawStatement>,
+}
+
+/// DROP MATERIALIZED VIEW
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DropMaterializedViewStmt {
+    pub _drop: PhantomData<keyword::Drop>,
+    pub _materialized: PhantomData<keyword::Materialized>,
+    pub tail: Option<RawStatement>,
+}
+
+/// ALTER MATERIALIZED VIEW
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterMaterializedViewStmt {
+    pub _alter: PhantomData<keyword::Alter>,
+    pub _materialized: PhantomData<keyword::Materialized>,
+    pub tail: Option<RawStatement>,
+}
+
+/// CREATE FOREIGN ...
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CreateForeignStmt {
+    pub _create: PhantomData<keyword::Create>,
+    pub _foreign: PhantomData<keyword::Foreign>,
+    pub tail: Option<RawStatement>,
+}
+
+/// DROP FOREIGN ...
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DropForeignStmt {
+    pub _drop: PhantomData<keyword::Drop>,
+    pub _foreign: PhantomData<keyword::Foreign>,
+    pub tail: Option<RawStatement>,
+}
