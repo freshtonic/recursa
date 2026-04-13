@@ -592,5 +592,119 @@ mod tests {
             let (_c, uri) = start_postgres();
             run_regression_test("namespace", &["test_setup"], &uri).unwrap();
         }
+
+        #[test]
+        fn regress_btree_index() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("btree_index", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_hash_index() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("hash_index", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_index() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_index", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_misc() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_misc", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_create_function_sql() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_function_sql", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_constraints() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("constraints", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_copy() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("copy", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_copyselect() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("copyselect", &["test_setup", "create_index"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_copydml() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("copydml", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_vacuum() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("vacuum", &[], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_prepared_xacts() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("prepared_xacts", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_typed_table() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("typed_table", &[], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_select_into() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("select_into", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_alter_table() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("alter_table", &["test_setup"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_bit() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("bit", &[], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_char() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("char", &[], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_cluster() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("cluster", &["test_setup", "create_index"], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_combocid() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("combocid", &[], &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_conversion() {
+            let (_c, uri) = start_postgres();
+            run_regression_test("conversion", &[], &uri).unwrap();
+        }
     }
 }
