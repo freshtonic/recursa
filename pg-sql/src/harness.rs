@@ -501,5 +501,123 @@ mod tests {
             run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
             run_regression_test("subselect", &uri).unwrap();
         }
+
+        #[test]
+        fn regress_join() {
+            let (_container, uri) = start_postgres();
+            disable_parallel_query(&uri);
+            run_prerequisites(&["test_setup", "create_index", "create_misc"], &uri).unwrap();
+            run_regression_test("join", &uri).unwrap();
+        }
+
+        #[test]
+        #[ignore = "COPY FROM stdin data lost during parse/reformat"]
+        fn regress_aggregates() {
+            let (_container, uri) = start_postgres();
+            disable_parallel_query(&uri);
+            run_prerequisites(
+                &["test_setup", "create_index", "create_misc", "create_aggregate"],
+                &uri,
+            )
+            .unwrap();
+            run_regression_test("aggregates", &uri).unwrap();
+        }
+
+        #[test]
+        #[ignore = "needs CREATE TYPE for custom enum not yet parsed"]
+        fn regress_arrays() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_regression_test("arrays", &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_limit() {
+            let (_container, uri) = start_postgres();
+            disable_parallel_query(&uri);
+            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
+            run_regression_test("limit", &uri).unwrap();
+        }
+
+        #[test]
+        #[ignore = "PG17 \\d output has Compression column not in expected .out"]
+        fn regress_create_table() {
+            let (_container, uri) = start_postgres();
+            run_regression_test("create_table", &uri).unwrap();
+        }
+
+        #[test]
+        #[ignore = "uses CREATE USER/ROLE/GROUP not yet parsed"]
+        fn regress_drop_if_exists() {
+            let (_container, uri) = start_postgres();
+            run_regression_test("drop_if_exists", &uri).unwrap();
+        }
+
+        #[test]
+        #[ignore = "PG17 \\d output has Compression column not in expected .out"]
+        fn regress_insert() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
+            run_regression_test("insert", &uri).unwrap();
+        }
+
+        #[test]
+        #[ignore = "strip_echoed_sql misclassifies SQL comments as output"]
+        fn regress_update() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
+            run_regression_test("update", &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_returning() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_regression_test("returning", &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_select_distinct() {
+            let (_container, uri) = start_postgres();
+            disable_parallel_query(&uri);
+            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
+            run_regression_test("select_distinct", &uri).unwrap();
+        }
+
+        #[test]
+        #[ignore = "row ordering differs due to locale/collation"]
+        fn regress_select_having() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_regression_test("select_having", &uri).unwrap();
+        }
+
+        #[test]
+        #[ignore = "row ordering differs due to locale/collation"]
+        fn regress_select_implicit() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_regression_test("select_implicit", &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_transactions() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_regression_test("transactions", &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_truncate() {
+            let (_container, uri) = start_postgres();
+            run_regression_test("truncate", &uri).unwrap();
+        }
+
+        #[test]
+        fn regress_namespace() {
+            let (_container, uri) = start_postgres();
+            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_regression_test("namespace", &uri).unwrap();
+        }
     }
 }
