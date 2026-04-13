@@ -16,9 +16,6 @@ pub mod update;
 pub mod values;
 pub mod with_clause;
 
-use std::ops::ControlFlow;
-
-use recursa::visitor::{AsNodeKey, Break, TotalVisitor};
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::rules::SqlRules;
@@ -89,16 +86,9 @@ pub enum Statement {
 /// Manual Parse impl needed because this is a catch-all that doesn't use structured
 /// token parsing. It's intentionally the last variant in Statement.
 /// To eliminate this, implement proper AST types for each statement kind.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Visit)]
 pub struct RawStatement {
     pub text: String,
-}
-
-impl AsNodeKey for RawStatement {}
-impl Visit for RawStatement {
-    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        ControlFlow::Continue(())
-    }
 }
 
 impl<'input> Parse<'input> for RawStatement {
