@@ -274,19 +274,39 @@ fn emit_field_inner(access: TokenStream, attrs: &FieldAttrs) -> TokenStream {
         ::recursa_core::FormatTokens::format_tokens(&#access, tokens);
     };
 
-    // Wrap with indent if requested
-    let with_indent = if attrs.indent {
+    // Nesting order: group → indent → break → content → dedent → end
+    //
+    // Indent must be set before Break fires so the broken newline
+    // renders at the correct indentation level.
+
+    // Innermost: content with break prepended
+    let with_break = if let Some(brk) = &attrs.break_ {
+        let flat = &brk.flat;
+        let broken = &brk.broken;
         quote! {
-            tokens.push(::recursa_core::fmt::Token::Indent);
+            tokens.push(::recursa_core::fmt::Token::Break {
+                flat: #flat.to_string(),
+                broken: #broken.to_string(),
+            });
             #core_emit
-            tokens.push(::recursa_core::fmt::Token::Dedent);
         }
     } else {
         core_emit
     };
 
-    // Wrap with group if requested
-    let with_group = if let Some(group) = &attrs.group {
+    // Wrap with indent
+    let with_indent = if attrs.indent {
+        quote! {
+            tokens.push(::recursa_core::fmt::Token::Indent);
+            #with_break
+            tokens.push(::recursa_core::fmt::Token::Dedent);
+        }
+    } else {
+        with_break
+    };
+
+    // Wrap with group (outermost)
+    if let Some(group) = &attrs.group {
         let kind = group_kind_tokens(group);
         quote! {
             tokens.push(::recursa_core::fmt::Token::Begin(#kind));
@@ -295,20 +315,5 @@ fn emit_field_inner(access: TokenStream, attrs: &FieldAttrs) -> TokenStream {
         }
     } else {
         with_indent
-    };
-
-    // Prepend break if requested
-    if let Some(brk) = &attrs.break_ {
-        let flat = &brk.flat;
-        let broken = &brk.broken;
-        quote! {
-            tokens.push(::recursa_core::fmt::Token::Break {
-                flat: #flat.to_string(),
-                broken: #broken.to_string(),
-            });
-            #with_group
-        }
-    } else {
-        with_group
     }
 }

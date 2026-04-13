@@ -394,6 +394,13 @@ impl<T: FormatTokens + Clone, S: FormatTokens + Clone, Trailing: 'static, Empty:
             element.format_tokens(tokens);
             if let Some(sep) = sep {
                 sep.format_tokens(tokens);
+                // Break opportunity after each separator.
+                // In a Consistent group, all breaks break together.
+                // In flat mode, uses a space.
+                tokens.push(crate::fmt::Token::Break {
+                    flat: " ".into(),
+                    broken: "\n".into(),
+                });
             }
         }
     }
