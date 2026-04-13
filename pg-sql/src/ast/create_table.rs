@@ -17,13 +17,22 @@ use crate::tokens::{keyword, literal, punct};
 #[parse(rules = SqlRules)]
 pub struct PrimaryKey(PhantomData<keyword::Primary>, PhantomData<keyword::Key>);
 
+/// REFERENCES constraint: `REFERENCES table [(col)]`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ReferencesConstraint {
+    pub _references: PhantomData<keyword::References>,
+    pub table: literal::AliasName,
+    pub column: Option<Surrounded<punct::LParen, literal::AliasName, punct::RParen>>,
+}
+
 /// Column constraint kind.
 #[derive(Debug, Clone)]
 pub enum ColumnConstraint {
     PrimaryKey,
     NotNull,
     Unique,
-    References(String, Option<String>),
+    References(ReferencesConstraint),
     GeneratedAlwaysAsIdentity,
     Default(crate::ast::expr::Expr),
 }
@@ -109,23 +118,9 @@ impl<'input> Parse<'input> for ColumnDef {
                 R::consume_ignored(input);
                 constraints.push(ColumnConstraint::Unique);
             } else if keyword::References::peek(input, rules) {
-                PhantomData::<keyword::References>::parse(input, rules)?;
+                let rc = ReferencesConstraint::parse(input, rules)?;
                 R::consume_ignored(input);
-                let ref_table = literal::AliasName::parse(input, rules)?;
-                R::consume_ignored(input);
-                // Optional (col) reference
-                let ref_col = if punct::LParen::peek(input, rules) {
-                    punct::LParen::parse(input, rules)?;
-                    R::consume_ignored(input);
-                    let col = literal::AliasName::parse(input, rules)?;
-                    R::consume_ignored(input);
-                    punct::RParen::parse(input, rules)?;
-                    R::consume_ignored(input);
-                    Some(col.0)
-                } else {
-                    None
-                };
-                constraints.push(ColumnConstraint::References(ref_table.0, ref_col));
+                constraints.push(ColumnConstraint::References(rc));
             } else if keyword::Generated::peek(input, rules) {
                 // GENERATED ALWAYS AS IDENTITY
                 PhantomData::<keyword::Generated>::parse(input, rules)?;

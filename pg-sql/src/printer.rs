@@ -353,12 +353,12 @@ fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
                         crate::ast::create_table::ColumnConstraint::Unique => {
                             output.push_str(" UNIQUE");
                         }
-                        crate::ast::create_table::ColumnConstraint::References(table, col_ref) => {
+                        crate::ast::create_table::ColumnConstraint::References(rc) => {
                             output.push_str(" REFERENCES ");
-                            output.push_str(table);
-                            if let Some(c) = col_ref {
+                            output.push_str(&rc.table.0);
+                            if let Some(col) = &rc.column {
                                 output.push('(');
-                                output.push_str(c);
+                                output.push_str(&col.inner.0);
                                 output.push(')');
                             }
                         }
