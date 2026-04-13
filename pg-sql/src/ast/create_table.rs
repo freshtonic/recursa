@@ -1,12 +1,9 @@
 /// CREATE TABLE statement AST.
 use std::marker::PhantomData;
 
-use std::ops::ControlFlow;
-
-use recursa::seq::Seq;
+use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
-use recursa::visitor::{AsNodeKey, Break, TotalVisitor};
-use recursa::{Input, Parse, ParseError, ParseRules, Visit};
+use recursa::{Parse, Visit};
 
 use crate::ast::partition::{ForValuesInClause, PartitionByClause};
 use crate::rules::SqlRules;
@@ -73,16 +70,12 @@ pub enum ColumnConstraint {
 }
 
 /// A column definition: `name type [constraints...]`.
-///
-/// Manual Parse impl needed because column constraints are a variable-length
-/// sequence of optional clauses (PRIMARY KEY, NOT NULL, REFERENCES, UNIQUE,
-/// GENERATED ALWAYS AS IDENTITY, DEFAULT) that must be consumed in any order.
-/// To eliminate this, recursa would need unordered optional field groups.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct ColumnDef {
     pub name: literal::Ident,
     pub type_name: crate::ast::expr::CastType,
-    pub constraints: Vec<ColumnConstraint>,
+    pub constraints: Seq<ColumnConstraint, (), OptionalTrailing>,
 }
 
 impl ColumnDef {
@@ -91,56 +84,6 @@ impl ColumnDef {
         self.constraints
             .iter()
             .any(|c| matches!(c, ColumnConstraint::PrimaryKey(_)))
-    }
-}
-
-impl AsNodeKey for ColumnDef {}
-
-impl Visit for ColumnDef {
-    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        ControlFlow::Continue(())
-    }
-}
-
-impl<'input> Parse<'input> for ColumnDef {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        literal::Ident::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        literal::Ident::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let name = literal::Ident::parse(input, rules)?;
-        R::consume_ignored(input);
-        let type_name = crate::ast::expr::CastType::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        let mut constraints = Vec::new();
-        loop {
-            if ColumnConstraint::peek(input, rules) {
-                let mut fork = input.fork();
-                match ColumnConstraint::parse(&mut fork, rules) {
-                    Ok(c) => {
-                        input.commit(fork);
-                        R::consume_ignored(input);
-                        constraints.push(c);
-                    }
-                    Err(_) => break,
-                }
-            } else {
-                break;
-            }
-        }
-
-        Ok(ColumnDef {
-            name,
-            type_name,
-            constraints,
-        })
     }
 }
 

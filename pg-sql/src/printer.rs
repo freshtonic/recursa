@@ -342,7 +342,7 @@ fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
                 output.push_str(&col.name.0);
                 output.push(' ');
                 print_cast_type(output, &col.type_name);
-                for constraint in &col.constraints {
+                for constraint in col.constraints.iter() {
                     match constraint {
                         crate::ast::create_table::ColumnConstraint::PrimaryKey(_) => {
                             output.push_str(" PRIMARY KEY");
