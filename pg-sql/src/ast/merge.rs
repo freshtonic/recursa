@@ -5,13 +5,14 @@
 ///   WHEN NOT MATCHED THEN INSERT VALUES (...)`
 use std::marker::PhantomData;
 
-use recursa::seq::Seq;
+use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::ast::expr::Expr;
 use crate::ast::select::TableRef;
 use crate::ast::update::{ReturningClause, SetAssignment};
+use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// WHEN MATCHED THEN UPDATE SET ...
@@ -135,11 +136,8 @@ impl<'input> Parse<'input> for WhenClause {
 }
 
 /// MERGE statement.
-///
-/// Manual Parse impl needed because the USING source can be a subquery or
-/// a table reference, and the WHEN clauses are a variable-length sequence.
-/// To eliminate this, recursa would need multi-variant sequence parsing.
-#[derive(Debug, Clone, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct MergeStmt {
     pub _merge: PhantomData<keyword::Merge>,
     pub _into: PhantomData<keyword::Into>,
@@ -148,57 +146,8 @@ pub struct MergeStmt {
     pub source: TableRef,
     pub _on: PhantomData<keyword::On>,
     pub condition: Expr,
-    pub when_clauses: Vec<WhenClause>,
+    pub when_clauses: Seq<WhenClause, (), OptionalTrailing>,
     pub returning: Option<ReturningClause>,
-}
-
-impl<'input> Parse<'input> for MergeStmt {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        keyword::Merge::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        keyword::Merge::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let _merge = PhantomData::<keyword::Merge>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let _into = PhantomData::<keyword::Into>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let table_name = literal::Ident::parse(input, rules)?;
-        R::consume_ignored(input);
-        let _using = PhantomData::<keyword::Using>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let source = TableRef::parse(input, rules)?;
-        R::consume_ignored(input);
-        let _on = PhantomData::<keyword::On>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let condition = Expr::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        let mut when_clauses = Vec::new();
-        while keyword::When::peek(input, rules) {
-            when_clauses.push(WhenClause::parse(input, rules)?);
-            R::consume_ignored(input);
-        }
-
-        let returning = Option::<ReturningClause>::parse(input, rules)?;
-
-        Ok(MergeStmt {
-            _merge,
-            _into,
-            table_name,
-            _using,
-            source,
-            _on,
-            condition,
-            when_clauses,
-            returning,
-        })
-    }
 }
 
 #[cfg(test)]

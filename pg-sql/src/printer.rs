@@ -1217,7 +1217,7 @@ fn print_merge(output: &mut String, stmt: &MergeStmt) {
     print_table_ref(output, &stmt.source);
     output.push_str(" ON ");
     print_expr(output, &stmt.condition);
-    for wc in &stmt.when_clauses {
+    for wc in stmt.when_clauses.iter() {
         match wc {
             crate::ast::merge::WhenClause::MatchedUpdate(u) => {
                 output.push_str(" WHEN MATCHED THEN UPDATE SET ");

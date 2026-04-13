@@ -32,53 +32,14 @@ pub struct InsertValueRows {
 
 /// Insert source: DEFAULT VALUES, VALUES (row), ..., or SELECT query.
 ///
-/// Manual Parse impl needed because DEFAULT VALUES and VALUES share
-/// the VALUES keyword but DEFAULT VALUES must be checked first.
-/// The SELECT variant allows a full compound query as insert source.
-/// To eliminate this, recursa would need contextual keyword disambiguation.
-#[derive(Debug, Clone)]
+/// Variant ordering: Default (`DEFAULT VALUES`) is longer than Rows (`VALUES`),
+/// so longest-match-wins picks it when DEFAULT is present.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub enum InsertSource {
     Default(DefaultValues),
     Rows(InsertValueRows),
     Select(Box<crate::ast::values::CompoundQuery>),
-}
-
-impl recursa::visitor::AsNodeKey for InsertSource {}
-
-impl Visit for InsertSource {
-    fn visit<V: recursa::visitor::TotalVisitor>(
-        &self,
-        _visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
-        std::ops::ControlFlow::Continue(())
-    }
-}
-
-impl<'input> Parse<'input> for InsertSource {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        keyword::Default::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        keyword::Default::peek(input, rules)
-            || keyword::Values::peek(input, rules)
-            || keyword::Select::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        if keyword::Default::peek(input, rules) {
-            let dv = DefaultValues::parse(input, rules)?;
-            Ok(InsertSource::Default(dv))
-        } else if keyword::Values::peek(input, rules) {
-            let rows = InsertValueRows::parse(input, rules)?;
-            Ok(InsertSource::Rows(rows))
-        } else {
-            let query = Box::new(crate::ast::values::CompoundQuery::parse(input, rules)?);
-            Ok(InsertSource::Select(query))
-        }
-    }
 }
 
 /// ON CONFLICT DO UPDATE details.
