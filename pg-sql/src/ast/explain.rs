@@ -3,13 +3,13 @@ use std::marker::PhantomData;
 
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// An explain option value: ON, OFF, or identifier.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ExplainOptValue {
     On(keyword::On),
@@ -18,7 +18,7 @@ pub enum ExplainOptValue {
 }
 
 /// A single explain option: `name value` (e.g., `costs off`).
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExplainOption {
     pub name: literal::AliasName,
@@ -30,7 +30,7 @@ pub type ExplainOptions =
     Surrounded<punct::LParen, Seq<ExplainOption, punct::Comma>, punct::RParen>;
 
 /// EXPLAIN statement: `EXPLAIN [(options)] statement`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExplainStmt {
     pub _explain: PhantomData<keyword::Explain>,

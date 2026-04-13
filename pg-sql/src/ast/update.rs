@@ -4,7 +4,7 @@
 use std::marker::PhantomData;
 
 use recursa::seq::Seq;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::expr::Expr;
 use crate::ast::select::{FromClause, WhereClause};
@@ -12,7 +12,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// Single SET assignment: `col = expr`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SingleAssignment {
     pub column: literal::AliasName,
@@ -21,7 +21,7 @@ pub struct SingleAssignment {
 }
 
 /// Tuple SET assignment: `(col, ...) = expr`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TupleAssignment {
     pub columns:
@@ -34,7 +34,7 @@ pub struct TupleAssignment {
 ///
 /// Variant ordering: Tuple starts with `(` which is longer than a bare
 /// identifier, so longest-match-wins picks it when parens are present.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetAssignment {
     Tuple(TupleAssignment),
@@ -42,7 +42,7 @@ pub enum SetAssignment {
 }
 
 /// RETURNING clause: `RETURNING expr, ...`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReturningClause {
     pub _returning: PhantomData<keyword::Returning>,
@@ -50,7 +50,7 @@ pub struct ReturningClause {
 }
 
 /// UPDATE statement: `UPDATE table [alias] SET assignments [FROM ...] [WHERE ...] [RETURNING ...]`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UpdateStmt {
     pub _update: PhantomData<keyword::Update>,

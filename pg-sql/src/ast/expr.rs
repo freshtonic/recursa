@@ -7,13 +7,13 @@ use std::marker::PhantomData;
 
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
-use recursa::{Input, Parse, ParseError, ParseRules, Visit};
+use recursa::{FormatTokens, Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// Content inside IN parentheses: either a subquery or expression list.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InContent {
     Subquery(Box<crate::ast::values::CompoundQuery>),
@@ -28,12 +28,12 @@ pub type TypePrecision =
     Surrounded<punct::LParen, Seq<literal::IntegerLit, punct::Comma>, punct::RParen>;
 
 /// Array type suffix: `[]`
-#[derive(Debug, Clone, PartialEq, Eq, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ArrayTypeSuffix(pub punct::LBracket, pub punct::RBracket);
 
 /// Type name for casts.
-#[derive(Debug, Clone, PartialEq, Eq, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TypeName {
     Bool(keyword::Bool),
@@ -51,35 +51,35 @@ pub enum TypeName {
 // NOT variants listed before non-NOT variants so the longer pattern wins via
 // longest-match lookahead (e.g., "NOT TRUE" matches before "TRUE").
 
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotTrue(pub keyword::Not, pub keyword::True);
 
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotFalse(pub keyword::Not, pub keyword::False);
 
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotUnknown(pub keyword::Not, pub keyword::Unknown);
 
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotNull(pub keyword::Not, pub keyword::Null);
 
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsTrue(pub keyword::True);
 
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsFalse(pub keyword::False);
 
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsUnknown(pub keyword::Unknown);
 
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNull(pub keyword::Null);
 
@@ -87,7 +87,7 @@ pub struct IsNull(pub keyword::Null);
 ///
 /// NOT variants are listed first so the combined peek regex disambiguates
 /// via longest match (e.g., `NOT TRUE` is longer than `TRUE`).
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum BoolTestKind {
     IsNotTrue(IsNotTrue),
@@ -105,7 +105,7 @@ pub enum BoolTestKind {
 /// Qualified column reference: `table.column`
 ///
 /// Uses AliasName for the table part to allow keywords like EXCLUDED, NEW, OLD.
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedRef {
     pub table: literal::AliasName,
@@ -114,7 +114,7 @@ pub struct QualifiedRef {
 }
 
 /// Qualified wildcard: `table.*`
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedWildcard {
     pub table: literal::AliasName,
@@ -123,12 +123,12 @@ pub struct QualifiedWildcard {
 }
 
 /// Optional DISTINCT keyword in function calls: `count(DISTINCT x)`
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct DistinctKw(pub keyword::Distinct);
 
 /// Window specification: `OVER (...)` or `OVER ()`.
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowSpec {
     pub _over: keyword::Over,
@@ -139,7 +139,7 @@ pub struct WindowSpec {
 }
 
 /// PARTITION BY in window: `PARTITION BY expr, ...`
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowPartitionBy {
     pub _partition: keyword::Partition,
@@ -155,7 +155,7 @@ pub struct WindowPartitionBy {
 /// `Ident` in `TableRef` enum lookahead.
 ///
 /// Function call: `name([*] [DISTINCT] args) [OVER (...)]`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncCall {
     pub name: literal::AliasName,
@@ -170,7 +170,7 @@ pub struct FuncCall {
 /// Content inside parentheses: either a subquery or a comma-separated expression list.
 /// Subquery (CompoundQuery) must come first so SELECT/VALUES/WITH keywords are matched
 /// before trying to parse as a regular expression.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ParenContent {
     Subquery(Box<crate::ast::values::CompoundQuery>),
@@ -181,7 +181,7 @@ pub enum ParenContent {
 pub type ParenExpr = Surrounded<punct::LParen, ParenContent, punct::RParen>;
 
 /// EXISTS subquery: `EXISTS (SELECT ...)`
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ExistsExpr {
     pub _exists: keyword::Exists,
@@ -189,7 +189,7 @@ pub struct ExistsExpr {
 }
 
 /// ARRAY bracket constructor: `ARRAY[expr, ...]`
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ArrayBracket {
     pub _array: PhantomData<keyword::Array>,
@@ -199,7 +199,7 @@ pub struct ArrayBracket {
 }
 
 /// ARRAY subquery constructor: `ARRAY(subquery)`
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ArraySubquery {
     pub _array: PhantomData<keyword::Array>,
@@ -210,7 +210,7 @@ pub struct ArraySubquery {
 ///
 /// Variant ordering: Bracket (`ARRAY[`) has a longer first_pattern than
 /// Subquery (`ARRAY(`) because `[` is a different token than `(`.
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum ArrayExpr {
     Bracket(ArrayBracket),
@@ -218,7 +218,7 @@ pub enum ArrayExpr {
 }
 
 /// ROW constructor: `ROW(expr, ...)`
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct RowExpr {
     pub _row: keyword::Row,
@@ -226,7 +226,7 @@ pub struct RowExpr {
 }
 
 /// Cast type with optional precision/array suffix: `numeric(10,0)`, `integer[]`
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CastType {
     pub base: TypeName,
@@ -235,7 +235,7 @@ pub struct CastType {
 }
 
 /// NOT IN list: `expr NOT IN (val, ...)` suffix.
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct NotInSuffix {
     pub _not: keyword::Not,
@@ -244,7 +244,7 @@ pub struct NotInSuffix {
 }
 
 /// Function-style type cast: `bool 'value'`, `text 'hello'`
-#[derive(Parse, Visit, Debug, Clone)]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TypeCastFunc {
     pub type_name: TypeName,
@@ -254,7 +254,7 @@ pub struct TypeCastFunc {
 // --- Pratt expression enum ---
 
 /// SQL expression with Pratt-derived parsing.
-#[derive(Parse, Debug, Clone, Visit)]
+#[derive(FormatTokens, Parse, Debug, Clone, Visit)]
 #[parse(rules = SqlRules, pratt)]
 pub enum Expr {
     // --- Prefix ---

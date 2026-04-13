@@ -1,7 +1,7 @@
 /// DELETE FROM statement AST.
 use std::marker::PhantomData;
 
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::select::WhereClause;
 use crate::ast::update::ReturningClause;
@@ -9,7 +9,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal};
 
 /// Table alias with explicit AS keyword: `AS alias`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsAlias {
     pub _as: PhantomData<keyword::As>,
@@ -20,7 +20,7 @@ pub struct AsAlias {
 ///
 /// Variant ordering: WithAs (`AS ident`) has a longer first_pattern than
 /// Bare (`ident`), so longest-match-wins picks it when AS is present.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TableAlias {
     WithAs(AsAlias),
@@ -38,7 +38,7 @@ impl TableAlias {
 }
 
 /// `USING table, ...` clause in DELETE statements.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeleteUsingClause {
     pub _using: PhantomData<keyword::Using>,
@@ -46,7 +46,7 @@ pub struct DeleteUsingClause {
 }
 
 /// DELETE FROM statement: `DELETE FROM table [alias] [USING ...] [WHERE expr] [RETURNING ...]`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeleteStmt {
     pub _delete: PhantomData<keyword::Delete>,

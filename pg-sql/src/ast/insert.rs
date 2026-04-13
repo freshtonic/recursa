@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::expr::Expr;
 use crate::ast::select::WhereClause;
@@ -15,7 +15,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// DEFAULT VALUES variant.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DefaultValues {
     pub _default: PhantomData<keyword::Default>,
@@ -23,7 +23,7 @@ pub struct DefaultValues {
 }
 
 /// Multiple value rows: `VALUES (row1), (row2), ...`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertValueRows {
     pub _values: PhantomData<keyword::Values>,
@@ -34,7 +34,7 @@ pub struct InsertValueRows {
 ///
 /// Variant ordering: Default (`DEFAULT VALUES`) is longer than Rows (`VALUES`),
 /// so longest-match-wins picks it when DEFAULT is present.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InsertSource {
     Default(DefaultValues),
@@ -43,7 +43,7 @@ pub enum InsertSource {
 }
 
 /// DO UPDATE SET ... [WHERE ...] action.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoUpdateAction {
     pub _do: PhantomData<keyword::Do>,
@@ -54,7 +54,7 @@ pub struct DoUpdateAction {
 }
 
 /// DO NOTHING action.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoNothingAction {
     pub _do: PhantomData<keyword::Do>,
@@ -66,7 +66,7 @@ pub struct DoNothingAction {
 /// Variant ordering: DoUpdate (`DO UPDATE SET`) is longer than
 /// DoNothing (`DO NOTHING`), but both start with `DO` and diverge
 /// at the next keyword, so the regex disambiguates.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ConflictAction {
     DoUpdate(DoUpdateAction),
@@ -74,7 +74,7 @@ pub enum ConflictAction {
 }
 
 /// ON CONFLICT clause: `ON CONFLICT [(col, ...)] DO UPDATE SET ... | DO NOTHING`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnConflictClause {
     pub _on: PhantomData<keyword::On>,
@@ -85,7 +85,7 @@ pub struct OnConflictClause {
 }
 
 /// INSERT INTO statement with optional ON CONFLICT and RETURNING.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertStmt {
     pub _insert: PhantomData<keyword::Insert>,

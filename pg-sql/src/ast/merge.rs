@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 
 use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::expr::Expr;
 use crate::ast::select::TableRef;
@@ -16,7 +16,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// WHEN MATCHED THEN UPDATE SET ...
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhenMatchedUpdate {
     pub _when: PhantomData<keyword::When>,
@@ -28,7 +28,7 @@ pub struct WhenMatchedUpdate {
 }
 
 /// WHEN MATCHED THEN DELETE
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhenMatchedDelete {
     pub _when: PhantomData<keyword::When>,
@@ -38,7 +38,7 @@ pub struct WhenMatchedDelete {
 }
 
 /// WHEN NOT MATCHED THEN INSERT [columns] VALUES (...)
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhenNotMatchedInsert {
     pub _when: PhantomData<keyword::When>,
@@ -57,7 +57,7 @@ pub struct WhenNotMatchedInsert {
 /// Variant ordering: NotMatchedInsert (`WHEN NOT ...`) is longest,
 /// then MatchedDelete/MatchedUpdate (`WHEN MATCHED THEN DELETE/UPDATE`)
 /// are disambiguated by their trailing keyword.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum WhenClause {
     NotMatchedInsert(WhenNotMatchedInsert),
@@ -66,7 +66,7 @@ pub enum WhenClause {
 }
 
 /// MERGE statement.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MergeStmt {
     pub _merge: PhantomData<keyword::Merge>,

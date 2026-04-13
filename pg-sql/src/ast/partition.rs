@@ -6,14 +6,14 @@ use std::marker::PhantomData;
 
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::expr::{Expr, TypeName};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// PARTITION BY LIST (col) clause.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PartitionByClause {
     pub _partition: PhantomData<keyword::Partition>,
@@ -23,7 +23,7 @@ pub struct PartitionByClause {
 }
 
 /// FOR VALUES IN (val, ...) clause.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForValuesInClause {
     pub _for: PhantomData<keyword::For>,
@@ -33,7 +33,7 @@ pub struct ForValuesInClause {
 }
 
 /// Column definition in partition table: `name type`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PartitionColumnDef {
     pub name: literal::Ident,
@@ -41,7 +41,7 @@ pub struct PartitionColumnDef {
 }
 
 /// CREATE TABLE with PARTITION BY: `CREATE TABLE name (cols) PARTITION BY strategy (cols)`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreatePartitionedTableStmt {
     pub _create: PhantomData<keyword::Create>,
@@ -52,7 +52,7 @@ pub struct CreatePartitionedTableStmt {
 }
 
 /// CREATE TABLE ... PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...].
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreatePartitionOfStmt {
     pub _create: PhantomData<keyword::Create>,

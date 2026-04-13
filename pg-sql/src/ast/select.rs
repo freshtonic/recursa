@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::delete::TableAlias as IdentAlias;
 use crate::ast::expr::{Expr, FuncCall};
@@ -11,7 +11,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// A single item in the SELECT list: `expr [AS alias]` or `expr alias`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SelectItem {
     pub expr: Expr,
@@ -20,7 +20,7 @@ pub struct SelectItem {
 
 /// Alias with explicit AS keyword: `AS name`.
 /// Uses AliasName so keywords are accepted (e.g., `SELECT 1 AS true`).
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsAlias {
     pub _as: PhantomData<keyword::As>,
@@ -31,7 +31,7 @@ pub struct AsAlias {
 ///
 /// Variant ordering: WithAs (`AS name`) has a longer first_pattern than
 /// Bare (`ident`), so longest-match-wins picks it when AS is present.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum Alias {
     WithAs(AsAlias),
@@ -49,7 +49,7 @@ impl Alias {
 }
 
 /// FROM clause: `FROM table [, table ...]`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FromClause {
     pub _from: PhantomData<keyword::From>,
@@ -57,7 +57,7 @@ pub struct FromClause {
 }
 
 /// Table name with inheritance marker and optional alias: `person* p`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InheritedTable {
     pub name: literal::Ident,
@@ -66,7 +66,7 @@ pub struct InheritedTable {
 }
 
 /// Table alias: `AS name [(col1, col2)]` or bare `name [(col1, col2)]`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableAlias {
     pub _as: Option<PhantomData<keyword::As>>,
@@ -76,7 +76,7 @@ pub struct TableAlias {
 }
 
 /// Subquery in FROM: `(SELECT ...) AS alias`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubqueryRef {
     pub _lparen: punct::LParen,
@@ -86,7 +86,7 @@ pub struct SubqueryRef {
 }
 
 /// LATERAL subquery in FROM: `LATERAL (VALUES(...)) v`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LateralRef {
     pub _lateral: PhantomData<keyword::Lateral>,
@@ -97,7 +97,7 @@ pub struct LateralRef {
 }
 
 /// Plain table reference with optional alias: `tablename [AS] alias`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PlainTable {
     pub name: literal::Ident,
@@ -105,7 +105,7 @@ pub struct PlainTable {
 }
 
 /// Function call used as table reference with optional alias.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncTableRef {
     pub func: FuncCall,
@@ -120,7 +120,7 @@ pub struct FuncTableRef {
 /// - Func before Inherited/Table: FuncCall's `ident(` pattern is longer
 ///   than bare ident.
 /// - Inherited before Table: `person*` matches longer than `person`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SimpleTableRef {
     Lateral(LateralRef),
@@ -131,7 +131,7 @@ pub enum SimpleTableRef {
 }
 
 /// Join type: LEFT, RIGHT, FULL, INNER, CROSS, or plain JOIN.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum JoinType {
     Left(keyword::Left),
@@ -142,7 +142,7 @@ pub enum JoinType {
 }
 
 /// JOIN condition: ON expr or USING (col, ...)
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum JoinCondition {
     On(JoinOn),
@@ -150,7 +150,7 @@ pub enum JoinCondition {
 }
 
 /// ON condition for JOIN
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinOn {
     pub _on: PhantomData<keyword::On>,
@@ -158,7 +158,7 @@ pub struct JoinOn {
 }
 
 /// USING clause for JOIN: `USING (col, ...)`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinUsing {
     pub _using: PhantomData<keyword::Using>,
@@ -166,7 +166,7 @@ pub struct JoinUsing {
 }
 
 /// A single join suffix: `[LEFT|RIGHT|FULL|INNER|CROSS] JOIN table [ON expr | USING (...)]`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinSuffix {
     pub join_type: Option<JoinType>,
@@ -176,7 +176,7 @@ pub struct JoinSuffix {
 }
 
 /// A table reference that may have zero or more JOIN suffixes.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableRef {
     pub base: SimpleTableRef,
@@ -184,7 +184,7 @@ pub struct TableRef {
 }
 
 /// WHERE clause: `WHERE expr`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhereClause {
     pub _where: PhantomData<keyword::Where>,
@@ -192,7 +192,7 @@ pub struct WhereClause {
 }
 
 /// USING operator in ORDER BY: `USING > | USING <`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum UsingOp {
     Gt(punct::Gt),
@@ -200,7 +200,7 @@ pub enum UsingOp {
 }
 
 /// USING clause in ORDER BY: `USING op`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UsingClause {
     pub _using: PhantomData<keyword::Using>,
@@ -208,7 +208,7 @@ pub struct UsingClause {
 }
 
 /// Sort direction: ASC or DESC.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SortDir {
     Asc(keyword::Asc),
@@ -216,7 +216,7 @@ pub enum SortDir {
 }
 
 /// NULLS FIRST or NULLS LAST.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum NullsOrder {
     First(NullsFirst),
@@ -224,17 +224,17 @@ pub enum NullsOrder {
 }
 
 /// NULLS FIRST
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NullsFirst(PhantomData<keyword::Nulls>, PhantomData<keyword::First>);
 
 /// NULLS LAST
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NullsLast(PhantomData<keyword::Nulls>, PhantomData<keyword::Last>);
 
 /// A single ORDER BY item: `expr [ASC|DESC] [USING op] [NULLS FIRST|LAST]`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrderByItem {
     pub expr: Expr,
@@ -244,7 +244,7 @@ pub struct OrderByItem {
 }
 
 /// ORDER BY clause: `ORDER BY item [, item ...]`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrderByClause {
     pub _order: PhantomData<keyword::Order>,
@@ -253,7 +253,7 @@ pub struct OrderByClause {
 }
 
 /// OFFSET clause: `OFFSET expr`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OffsetClause {
     pub _offset: PhantomData<keyword::Offset>,
@@ -261,7 +261,7 @@ pub struct OffsetClause {
 }
 
 /// LIMIT clause: `LIMIT expr`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LimitClause {
     pub _limit: PhantomData<keyword::Limit>,
@@ -269,7 +269,7 @@ pub struct LimitClause {
 }
 
 /// FOR UPDATE clause.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForUpdateClause {
     pub _for: PhantomData<keyword::For>,
@@ -277,7 +277,7 @@ pub struct ForUpdateClause {
 }
 
 /// GROUP BY clause: `GROUP BY expr, ...`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GroupByClause {
     pub _group: PhantomData<keyword::Group>,
@@ -286,7 +286,7 @@ pub struct GroupByClause {
 }
 
 /// HAVING clause: `HAVING expr`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct HavingClause {
     pub _having: PhantomData<keyword::Having>,
@@ -294,7 +294,7 @@ pub struct HavingClause {
 }
 
 /// SELECT statement.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SelectStmt {
     pub _select: PhantomData<keyword::Select>,
@@ -313,7 +313,7 @@ pub struct SelectStmt {
 /// A SELECT body that can appear in subqueries -- WITH, SELECT, or VALUES.
 /// WithBody must come before Select so `WITH ... SELECT` matches before bare `SELECT`.
 /// SelectStmt must come before ValuesStmt so `SELECT` keyword wins over ambiguity.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SelectBody {
     WithBody(Box<crate::ast::with_clause::WithStatement>),
@@ -323,7 +323,7 @@ pub enum SelectBody {
 
 /// VALUES body: `VALUES (expr, ...), (expr, ...)`
 /// Can appear standalone or inside subqueries.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ValuesBody {
     pub _values: PhantomData<keyword::Values>,

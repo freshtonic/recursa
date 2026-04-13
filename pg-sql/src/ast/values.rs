@@ -2,14 +2,14 @@
 use std::marker::PhantomData;
 
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::select::SelectBody;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, punct};
 
 /// TABLE statement: `TABLE tablename`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableStmt {
     pub _table: PhantomData<keyword::Table>,
@@ -17,37 +17,37 @@ pub struct TableStmt {
 }
 
 /// UNION ALL
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnionAllOp(PhantomData<keyword::Union>, PhantomData<keyword::All>);
 
 /// UNION DISTINCT
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnionDistinctOp(PhantomData<keyword::Union>, PhantomData<keyword::Distinct>);
 
 /// UNION (bare)
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnionOp(PhantomData<keyword::Union>);
 
 /// EXCEPT ALL
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExceptAllOp(PhantomData<keyword::Except>, PhantomData<keyword::All>);
 
 /// EXCEPT (bare)
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExceptOp(PhantomData<keyword::Except>);
 
 /// INTERSECT ALL
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IntersectAllOp(PhantomData<keyword::Intersect>, PhantomData<keyword::All>);
 
 /// INTERSECT (bare)
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IntersectOp(PhantomData<keyword::Intersect>);
 
@@ -55,7 +55,7 @@ pub struct IntersectOp(PhantomData<keyword::Intersect>);
 ///
 /// Variant ordering: longer keyword sequences first within each group
 /// so longest-match-wins picks UNION ALL over bare UNION, etc.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetOp {
     UnionAll(UnionAllOp),
@@ -69,7 +69,7 @@ pub enum SetOp {
 
 /// A set operation combiner: `UNION [ALL|DISTINCT] | EXCEPT [ALL] | INTERSECT [ALL]`
 /// followed by the right-hand query.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetOpCombiner {
     pub op: SetOp,
@@ -79,7 +79,7 @@ pub struct SetOpCombiner {
 /// A compound query: a query body optionally followed by a set operation.
 /// This allows chaining: `VALUES ... UNION ALL SELECT ... EXCEPT TABLE ...`
 /// Paren variant handles `(WITH ... SELECT ... UNION ...)` grouping.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum CompoundQuery {
     Paren(CompoundParen),
@@ -89,7 +89,7 @@ pub enum CompoundQuery {
 
 /// Parenthesized compound query with optional set operation continuation.
 /// e.g., `(SELECT ... UNION ALL ...) EXCEPT ...`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CompoundParen {
     pub inner: Surrounded<punct::LParen, Box<CompoundQuery>, punct::RParen>,
@@ -97,7 +97,7 @@ pub struct CompoundParen {
 }
 
 /// A SELECT or VALUES body with optional set operation continuation.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CompoundBody {
     pub body: SelectBody,

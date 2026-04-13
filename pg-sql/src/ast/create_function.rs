@@ -3,14 +3,14 @@ use std::marker::PhantomData;
 
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::expr::TypeName;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// SETOF type: `SETOF typename`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetofReturn {
     pub _setof: PhantomData<keyword::Setof>,
@@ -18,7 +18,7 @@ pub struct SetofReturn {
 }
 
 /// Function return type: `SETOF type` or plain `type`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ReturnType {
     Setof(SetofReturn),
@@ -26,7 +26,7 @@ pub enum ReturnType {
 }
 
 /// RETURNS clause: `RETURNS type`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReturnsClause {
     pub _returns: PhantomData<keyword::Returns>,
@@ -34,7 +34,7 @@ pub struct ReturnsClause {
 }
 
 /// LANGUAGE clause: `LANGUAGE name`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LanguageClause {
     pub _language: PhantomData<keyword::Language>,
@@ -42,12 +42,12 @@ pub struct LanguageClause {
 }
 
 /// IMMUTABLE attribute.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ImmutableAttr(pub PhantomData<keyword::Immutable>);
 
 /// Function body: either single-quoted string or dollar-quoted string.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncBody {
     Dollar(literal::DollarStringLit),
@@ -56,7 +56,7 @@ pub enum FuncBody {
 
 /// Function return type name -- extends TypeName with additional types
 /// that are valid as function return types (e.g., `trigger`, `void`).
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncReturnTypeName {
     Trigger(keyword::Trigger),
@@ -64,7 +64,7 @@ pub enum FuncReturnTypeName {
 }
 
 /// RETURNS clause for functions: `RETURNS [SETOF] type`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncReturnsClause {
     pub _returns: PhantomData<keyword::Returns>,
@@ -72,7 +72,7 @@ pub struct FuncReturnsClause {
 }
 
 /// Function return type: SETOF type, VOID, or plain type.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncReturnType {
     Setof(FuncSetofReturn),
@@ -80,7 +80,7 @@ pub enum FuncReturnType {
 }
 
 /// SETOF type for function returns.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncSetofReturn {
     pub _setof: PhantomData<keyword::Setof>,
@@ -88,7 +88,7 @@ pub struct FuncSetofReturn {
 }
 
 /// CREATE [OR REPLACE] FUNCTION statement.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateFunctionStmt {
     pub _create: PhantomData<keyword::Create>,
@@ -104,7 +104,7 @@ pub struct CreateFunctionStmt {
 }
 
 /// DROP FUNCTION statement: `DROP FUNCTION name(args)`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropFunctionStmt {
     pub _drop: PhantomData<keyword::Drop>,

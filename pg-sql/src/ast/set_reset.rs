@@ -1,13 +1,13 @@
 /// SET/RESET statement AST.
 use std::marker::PhantomData;
 
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// The value in a SET statement: identifier, string literal, or keyword ON/OFF.
-#[derive(Debug, Clone, Parse, Visit, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[parse(rules = SqlRules)]
 pub enum SetValue {
     On(keyword::On),
@@ -19,7 +19,7 @@ pub enum SetValue {
 }
 
 /// The separator between param and value: TO or =.
-#[derive(Debug, Clone, Parse, Visit, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[parse(rules = SqlRules)]
 pub enum SetSep {
     To(keyword::To),
@@ -27,7 +27,7 @@ pub enum SetSep {
 }
 
 /// SET statement: `SET [LOCAL] param TO|= value`.
-#[derive(Debug, Clone, Parse, Visit, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[parse(rules = SqlRules)]
 pub struct SetStmt {
     pub _set: PhantomData<keyword::Set>,
@@ -38,7 +38,7 @@ pub struct SetStmt {
 }
 
 /// RESET statement: `RESET param`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ResetStmt {
     pub _reset: PhantomData<keyword::Reset>,

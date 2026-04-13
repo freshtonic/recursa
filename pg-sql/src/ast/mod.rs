@@ -16,7 +16,7 @@ pub mod update;
 pub mod values;
 pub mod with_clause;
 
-use recursa::{Input, Parse, ParseError, ParseRules, Visit};
+use recursa::{FormatTokens, Input, Parse, ParseError, ParseRules, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
@@ -51,7 +51,7 @@ use self::with_clause::WithStatement;
 /// - `Values` (CompoundQuery) starts with VALUES/TABLE/SELECT so it could
 ///   conflict. It must come after Explain but before bare Select to handle
 ///   `VALUES ... UNION ALL ...` and `TABLE tablename`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[allow(clippy::large_enum_variant)]
 pub enum Statement {
@@ -86,7 +86,7 @@ pub enum Statement {
 /// Manual Parse impl needed because this is a catch-all that doesn't use structured
 /// token parsing. It's intentionally the last variant in Statement.
 /// To eliminate this, implement proper AST types for each statement kind.
-#[derive(Debug, Clone, Visit)]
+#[derive(Debug, Clone, FormatTokens, Visit)]
 pub struct RawStatement {
     pub text: String,
 }
@@ -191,7 +191,7 @@ impl<'input> Parse<'input> for RawStatement {
 }
 
 /// A SQL statement followed by a semicolon.
-#[derive(Debug, Parse, Visit)]
+#[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TerminatedStatement {
     pub stmt: Statement,
@@ -199,7 +199,7 @@ pub struct TerminatedStatement {
 }
 
 /// A psql directive: backslash followed by the rest of the line.
-#[derive(Debug, Parse, Visit)]
+#[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PsqlDirective {
     pub backslash: punct::BackSlash,
@@ -207,7 +207,7 @@ pub struct PsqlDirective {
 }
 
 /// A command in a psql input file: either a SQL statement or a psql directive.
-#[derive(Debug, Parse, Visit)]
+#[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[allow(clippy::large_enum_variant)]
 pub enum PsqlCommand {

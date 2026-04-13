@@ -3,29 +3,29 @@ use std::marker::PhantomData;
 
 use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::partition::{ForValuesInClause, PartitionByClause};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// PRIMARY KEY column constraint.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PrimaryKeyConstraint(PhantomData<keyword::Primary>, PhantomData<keyword::Key>);
 
 /// NOT NULL column constraint.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotNullConstraint(PhantomData<keyword::Not>, PhantomData<keyword::Null>);
 
 /// UNIQUE column constraint.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UniqueConstraint(PhantomData<keyword::Unique>);
 
 /// REFERENCES constraint: `REFERENCES table [(col)]`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReferencesConstraint {
     pub _references: PhantomData<keyword::References>,
@@ -34,7 +34,7 @@ pub struct ReferencesConstraint {
 }
 
 /// GENERATED ALWAYS AS IDENTITY column constraint.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GeneratedIdentityConstraint(
     PhantomData<keyword::Generated>,
@@ -44,7 +44,7 @@ pub struct GeneratedIdentityConstraint(
 );
 
 /// DEFAULT expr column constraint.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DefaultConstraint {
     pub _default: PhantomData<keyword::Default>,
@@ -58,7 +58,7 @@ pub struct DefaultConstraint {
 /// - PrimaryKey (`PRIMARY KEY`) before others (unique keyword)
 /// - NotNull (`NOT NULL`) before others (unique keyword)
 /// - References, Unique, Default all start with distinct keywords
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ColumnConstraint {
     GeneratedIdentity(GeneratedIdentityConstraint),
@@ -70,7 +70,7 @@ pub enum ColumnConstraint {
 }
 
 /// A column definition: `name type [constraints...]`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnDef {
     pub name: literal::Ident,
@@ -88,7 +88,7 @@ impl ColumnDef {
 }
 
 /// Optional TEMP or TEMPORARY keyword.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TempKw {
     Temp(PhantomData<keyword::Temp>),
@@ -96,7 +96,7 @@ pub enum TempKw {
 }
 
 /// INHERITS clause: `INHERITS (parent, ...)`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InheritsClause {
     pub _inherits: PhantomData<keyword::Inherits>,
@@ -104,7 +104,7 @@ pub struct InheritsClause {
 }
 
 /// Column-based table body: `(cols) [INHERITS (...)] [PARTITION BY ...]`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnsBody {
     pub columns: Surrounded<punct::LParen, Seq<ColumnDef, punct::Comma>, punct::RParen>,
@@ -113,7 +113,7 @@ pub struct ColumnsBody {
 }
 
 /// Partition-of table body: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PartitionOfBody {
     pub _partition: PhantomData<keyword::Partition>,
@@ -124,7 +124,7 @@ pub struct PartitionOfBody {
 }
 
 /// AS-query table body: `AS SELECT ...`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsQueryBody {
     pub _as: PhantomData<keyword::As>,
@@ -135,7 +135,7 @@ pub struct AsQueryBody {
 ///
 /// Variant ordering: AsQuery (`AS`) and PartitionOf (`PARTITION`) start with
 /// keywords; Columns starts with `(`. Longest-match-wins disambiguates.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum CreateTableBody {
     AsQuery(AsQueryBody),
@@ -144,7 +144,7 @@ pub enum CreateTableBody {
 }
 
 /// CREATE [TEMP] TABLE statement.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTableStmt {
     pub _create: PhantomData<keyword::Create>,

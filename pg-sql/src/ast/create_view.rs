@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::create_table::TempKw;
 use crate::ast::values::CompoundQuery;
@@ -14,7 +14,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// OR REPLACE keyword pair.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrReplaceKw {
     pub _or: PhantomData<keyword::Or>,
@@ -22,7 +22,7 @@ pub struct OrReplaceKw {
 }
 
 /// IF EXISTS keyword pair.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IfExistsKw {
     pub _if: PhantomData<keyword::If>,
@@ -30,7 +30,7 @@ pub struct IfExistsKw {
 }
 
 /// CREATE VIEW statement.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateViewStmt {
     pub _create: PhantomData<keyword::Create>,
@@ -46,7 +46,7 @@ pub struct CreateViewStmt {
 }
 
 /// DROP VIEW statement: `DROP VIEW [IF EXISTS] name`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropViewStmt {
     pub _drop: PhantomData<keyword::Drop>,

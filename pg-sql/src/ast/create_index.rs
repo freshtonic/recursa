@@ -3,14 +3,14 @@ use std::marker::PhantomData;
 
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::select::{NullsOrder, SortDir};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// An index element: `column [ASC|DESC] [NULLS FIRST|LAST]`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IndexElem {
     pub column: literal::Ident,
@@ -19,7 +19,7 @@ pub struct IndexElem {
 }
 
 /// CREATE INDEX statement: `CREATE INDEX name ON table (col, ...)`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateIndexStmt {
     pub _create: PhantomData<keyword::Create>,
@@ -31,7 +31,7 @@ pub struct CreateIndexStmt {
 }
 
 /// DROP INDEX statement: `DROP INDEX name`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropIndexStmt {
     pub _drop: PhantomData<keyword::Drop>,

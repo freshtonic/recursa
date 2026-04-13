@@ -8,14 +8,14 @@ use std::marker::PhantomData;
 
 use recursa::seq::{NoTrailing, NonEmpty, Seq};
 use recursa::surrounded::Surrounded;
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// Materialization option: `MATERIALIZED` or `NOT MATERIALIZED`.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum MaterializedOption {
     NotMaterialized(NotMaterialized),
@@ -23,7 +23,7 @@ pub enum MaterializedOption {
 }
 
 /// NOT MATERIALIZED
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotMaterialized(
     PhantomData<keyword::Not>,
@@ -31,7 +31,7 @@ pub struct NotMaterialized(
 );
 
 /// SEARCH direction: DEPTH or BREADTH
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SearchDirection {
     Depth(keyword::Depth),
@@ -39,7 +39,7 @@ pub enum SearchDirection {
 }
 
 /// SEARCH clause: `SEARCH DEPTH|BREADTH FIRST BY col, ... SET col`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SearchClause {
     pub _search: PhantomData<keyword::Search>,
@@ -52,7 +52,7 @@ pub struct SearchClause {
 }
 
 /// CYCLE clause: `CYCLE col, ... SET col [TO val DEFAULT val] USING col`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CycleClause {
     pub _cycle: PhantomData<keyword::Cycle>,
@@ -64,7 +64,7 @@ pub struct CycleClause {
 }
 
 /// SET column with optional TO/DEFAULT values.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CycleSetColumn {
     pub name: literal::AliasName,
@@ -72,7 +72,7 @@ pub struct CycleSetColumn {
 }
 
 /// TO value DEFAULT value
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CycleToDefault {
     pub _to: PhantomData<keyword::To>,
@@ -83,7 +83,7 @@ pub struct CycleToDefault {
 
 /// A single CTE definition: `name [(col, ...)] AS [MATERIALIZED|NOT MATERIALIZED] (query)
 ///   [SEARCH ...] [CYCLE ...]`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CteDefinition {
     pub name: literal::AliasName,
@@ -97,7 +97,7 @@ pub struct CteDefinition {
 }
 
 /// WITH clause: `WITH [RECURSIVE] cte_def, ...`
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithClause {
     pub _with: PhantomData<keyword::With>,
@@ -106,7 +106,7 @@ pub struct WithClause {
 }
 
 /// WITH statement: WITH clause followed by a body statement.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithStatement {
     pub with_clause: WithClause,

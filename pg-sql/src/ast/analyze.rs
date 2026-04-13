@@ -1,13 +1,13 @@
 /// ANALYZE statement AST: `ANALYZE tablename`.
 use std::marker::PhantomData;
 
-use recursa::{Parse, Visit};
+use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal};
 
 /// ANALYZE statement.
-#[derive(Debug, Clone, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AnalyzeStmt {
     pub _analyze: PhantomData<keyword::Analyze>,
