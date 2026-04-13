@@ -89,3 +89,15 @@ impl<Open: 'static, Inner: Visit, Close: 'static> Visit for Surrounded<Open, Inn
         self.inner.visit(visitor)
     }
 }
+
+// -- FormatTokens --
+
+impl<Open: crate::fmt::TokenText, Inner: crate::fmt::FormatTokens, Close: crate::fmt::TokenText>
+    crate::fmt::FormatTokens for Surrounded<Open, Inner, Close>
+{
+    fn format_tokens(&self, tokens: &mut Vec<crate::fmt::Token>) {
+        tokens.push(crate::fmt::Token::String(Open::TEXT.to_string()));
+        self.inner.format_tokens(tokens);
+        tokens.push(crate::fmt::Token::String(Close::TEXT.to_string()));
+    }
+}

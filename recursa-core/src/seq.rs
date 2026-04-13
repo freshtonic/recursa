@@ -2,6 +2,8 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{ControlFlow, Deref};
 
+use crate::fmt::FormatTokens;
+
 use crate::error::ParseError;
 use crate::input::Input;
 use crate::parse::Parse;
@@ -379,5 +381,20 @@ impl<T: Visit + Clone, S: Visit + Clone, Trailing: 'static, Empty: 'static> Visi
             }
         }
         ControlFlow::Continue(())
+    }
+}
+
+// -- FormatTokens --
+
+impl<T: FormatTokens + Clone, S: FormatTokens + Clone, Trailing: 'static, Empty: 'static>
+    FormatTokens for Seq<T, S, Trailing, Empty>
+{
+    fn format_tokens(&self, tokens: &mut Vec<crate::fmt::Token>) {
+        for (element, sep) in self.pairs() {
+            element.format_tokens(tokens);
+            if let Some(sep) = sep {
+                sep.format_tokens(tokens);
+            }
+        }
     }
 }

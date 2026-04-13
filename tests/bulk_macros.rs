@@ -7,9 +7,9 @@ recursa_core::keywords! {
 }
 
 recursa_core::punctuation! {
-    Plus   => r"\+",
-    Minus  => r"\-",
-    LParen => r"\(",
+    Plus   => r"\+", "+",
+    Minus  => r"\-", "-",
+    LParen => r"\(", "(",
 }
 
 recursa_core::literals! {

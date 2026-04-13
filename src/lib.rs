@@ -26,8 +26,8 @@ pub use recursa_core::keywords;
 ///
 /// ```
 /// recursa::punctuation! {
-///     Plus   => r"\+",
-///     LParen => r"\(",
+///     Plus   => r"\+", "+",
+///     LParen => r"\(", "(",
 /// }
 /// ```
 #[doc(inline)]

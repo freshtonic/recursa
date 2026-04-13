@@ -23,12 +23,32 @@ macro_rules! keywords {
             #[scan(pattern = $pattern, case_insensitive)]
             #[visit(ignore)]
             pub struct $name;
+
+            impl $crate::fmt::TokenText for $name {
+                const TEXT: &'static str = $crate::fmt::strip_word_boundary($pattern);
+            }
+
+            impl $crate::fmt::FormatTokens for $name {
+                fn format_tokens(&self, tokens: &mut Vec<$crate::fmt::Token>) {
+                    tokens.push($crate::fmt::Token::String(
+                        <Self as $crate::fmt::TokenText>::TEXT.to_string()
+                    ));
+                }
+            }
         )*
 
         #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[visit(ignore)]
         pub enum Keyword {
             $($name($name)),*
+        }
+
+        impl $crate::fmt::FormatTokens for Keyword {
+            fn format_tokens(&self, tokens: &mut Vec<$crate::fmt::Token>) {
+                match self {
+                    $(Keyword::$name(inner) => inner.format_tokens(tokens),)*
+                }
+            }
         }
     };
 }
@@ -52,18 +72,38 @@ macro_rules! keywords {
 /// ```
 #[macro_export]
 macro_rules! punctuation {
-    ($($name:ident => $pattern:literal),* $(,)?) => {
+    ($($name:ident => $pattern:literal, $display:literal),* $(,)?) => {
         $(
             #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             #[scan(pattern = $pattern)]
             #[visit(ignore)]
             pub struct $name;
+
+            impl $crate::fmt::TokenText for $name {
+                const TEXT: &'static str = $display;
+            }
+
+            impl $crate::fmt::FormatTokens for $name {
+                fn format_tokens(&self, tokens: &mut Vec<$crate::fmt::Token>) {
+                    tokens.push($crate::fmt::Token::String(
+                        <Self as $crate::fmt::TokenText>::TEXT.to_string()
+                    ));
+                }
+            }
         )*
 
         #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[visit(ignore)]
         pub enum Punctuation {
             $($name($name)),*
+        }
+
+        impl $crate::fmt::FormatTokens for Punctuation {
+            fn format_tokens(&self, tokens: &mut Vec<$crate::fmt::Token>) {
+                match self {
+                    $(Punctuation::$name(inner) => inner.format_tokens(tokens),)*
+                }
+            }
         }
     };
 }
@@ -90,12 +130,26 @@ macro_rules! literals {
             #[scan(pattern = $pattern)]
             #[visit(terminal)]
             pub struct $name(pub String);
+
+            impl $crate::fmt::FormatTokens for $name {
+                fn format_tokens(&self, tokens: &mut Vec<$crate::fmt::Token>) {
+                    tokens.push($crate::fmt::Token::String(self.0.clone()));
+                }
+            }
         )*
 
         #[derive(::recursa_derive::Scan, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[visit(terminal)]
         pub enum Literal {
             $($name($name)),*
+        }
+
+        impl $crate::fmt::FormatTokens for Literal {
+            fn format_tokens(&self, tokens: &mut Vec<$crate::fmt::Token>) {
+                match self {
+                    $(Literal::$name(inner) => inner.format_tokens(tokens),)*
+                }
+            }
         }
     };
 }

@@ -1,5 +1,7 @@
 //! Pretty-printing IR tokens and Wadler-style printer engine.
 
+use std::marker::PhantomData;
+
 /// A token in the pretty-printing intermediate representation.
 #[derive(Debug, Clone)]
 pub enum Token {
@@ -25,6 +27,75 @@ pub enum GroupKind {
     Consistent,
     /// Each break independently decides whether to break.
     Inconsistent,
+}
+
+// -- TokenText trait --
+
+/// Trait for token types with a fixed textual representation.
+/// Implemented by keyword and punctuation unit structs via their macros.
+pub trait TokenText {
+    const TEXT: &'static str;
+}
+
+/// Strip trailing `\b` (word boundary) from a keyword pattern at compile time.
+/// `r"SELECT\b"` → `"SELECT"`.
+pub const fn strip_word_boundary(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    if len >= 2 && bytes[len - 2] == b'\\' && bytes[len - 1] == b'b' {
+        // SAFETY: removing valid ASCII suffix from valid UTF-8 string.
+        // We use from_raw_parts to avoid the const-indexing limitation.
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes.as_ptr(), len - 2)) }
+    } else {
+        s
+    }
+}
+
+// -- FormatTokens trait --
+
+/// Emit pretty-printer tokens for an AST node.
+pub trait FormatTokens {
+    fn format_tokens(&self, tokens: &mut Vec<Token>);
+}
+
+// -- Blanket impls --
+
+impl<T: TokenText> FormatTokens for PhantomData<T> {
+    fn format_tokens(&self, tokens: &mut Vec<Token>) {
+        tokens.push(Token::String(T::TEXT.to_string()));
+    }
+}
+
+impl FormatTokens for String {
+    fn format_tokens(&self, tokens: &mut Vec<Token>) {
+        tokens.push(Token::String(self.clone()));
+    }
+}
+
+impl<T: FormatTokens> FormatTokens for Option<T> {
+    fn format_tokens(&self, tokens: &mut Vec<Token>) {
+        if let Some(inner) = self {
+            inner.format_tokens(tokens);
+        }
+    }
+}
+
+impl<T: FormatTokens> FormatTokens for Box<T> {
+    fn format_tokens(&self, tokens: &mut Vec<Token>) {
+        (**self).format_tokens(tokens);
+    }
+}
+
+impl<T: FormatTokens> FormatTokens for Vec<T> {
+    fn format_tokens(&self, tokens: &mut Vec<Token>) {
+        for item in self {
+            item.format_tokens(tokens);
+        }
+    }
+}
+
+impl FormatTokens for () {
+    fn format_tokens(&self, _tokens: &mut Vec<Token>) {}
 }
 
 /// Runtime formatting style configuration.

@@ -12,6 +12,7 @@ pub mod surrounded;
 pub mod visitor;
 
 pub use error::ParseError;
+pub use fmt::{FormatTokens, TokenText};
 pub use input::Input;
 pub use parse::Parse;
 pub use rules::{NoRules, ParseRules};

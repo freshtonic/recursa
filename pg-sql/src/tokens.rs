@@ -181,29 +181,29 @@ pub mod keyword {
 /// Punctuation
 pub mod punct {
     recursa::punctuation! {
-        Semi      => ";",
-        Comma     => ",",
-        LParen    => r"\(",
-        RParen    => r"\)",
-        Star      => r"\*",
-        Dot       => r"\.",
-        Eq        => "=",
-        BangEq    => "!=",
-        Neq       => "<>",
-        Lte       => "<=",
-        Gte       => ">=",
-        Lt        => "<",
-        Gt        => ">",
-        ColonColon => "::",
-        BackSlash  => r"\\",
-        Plus       => r"\+",
-        Minus      => "-",
-        DollarNum  => r"\$[0-9]+",
-        Concat     => r"\|\|",
-        Slash      => "/",
-        Percent    => "%",
-        LBracket   => r"\[",
-        RBracket   => r"\]",
+        Semi      => ";",          ";",
+        Comma     => ",",          ",",
+        LParen    => r"\(",        "(",
+        RParen    => r"\)",        ")",
+        Star      => r"\*",        "*",
+        Dot       => r"\.",        ".",
+        Eq        => "=",          "=",
+        BangEq    => "!=",         "!=",
+        Neq       => "<>",         "<>",
+        Lte       => "<=",         "<=",
+        Gte       => ">=",         ">=",
+        Lt        => "<",          "<",
+        Gt        => ">",          ">",
+        ColonColon => "::",        "::",
+        BackSlash  => r"\\",       "\\",
+        Plus       => r"\+",       "+",
+        Minus      => "-",         "-",
+        DollarNum  => r"\$[0-9]+", "$",
+        Concat     => r"\|\|",     "||",
+        Slash      => "/",         "/",
+        Percent    => "%",         "%",
+        LBracket   => r"\[",       "[",
+        RBracket   => r"\]",       "]",
     }
 }
 
@@ -383,6 +383,12 @@ pub mod literal {
     #[visit(terminal)]
     pub struct Ident(pub String);
 
+    impl recursa::FormatTokens for Ident {
+        fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
+            tokens.push(recursa::fmt::Token::String(self.0.clone()));
+        }
+    }
+
     // --- Alias name (any SQL word — identifier or keyword) ---
 
     /// Matches any SQL word including keywords. Used for alias names where
@@ -392,6 +398,12 @@ pub mod literal {
     #[visit(terminal)]
     pub struct AliasName(pub String);
 
+    impl recursa::FormatTokens for AliasName {
+        fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
+            tokens.push(recursa::fmt::Token::String(self.0.clone()));
+        }
+    }
+
     // --- Rest of line ---
 
     /// Matches the remainder of text on the current line (up to newline or end of input).
@@ -399,6 +411,12 @@ pub mod literal {
     #[scan(pattern = r"[^\n]*")]
     #[visit(terminal)]
     pub struct RestOfLine(pub String);
+
+    impl recursa::FormatTokens for RestOfLine {
+        fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
+            tokens.push(recursa::fmt::Token::String(self.0.clone()));
+        }
+    }
 }
 
 #[cfg(test)]
