@@ -741,13 +741,13 @@ fn print_compound_body(output: &mut String, body: &CompoundBody) {
 
 fn print_set_op(output: &mut String, set_op: &crate::ast::values::SetOpCombiner) {
     match &set_op.op {
-        crate::ast::values::SetOp::UnionAll => output.push_str(" UNION ALL "),
-        crate::ast::values::SetOp::UnionDistinct => output.push_str(" UNION DISTINCT "),
-        crate::ast::values::SetOp::Union => output.push_str(" UNION "),
-        crate::ast::values::SetOp::ExceptAll => output.push_str(" EXCEPT ALL "),
-        crate::ast::values::SetOp::Except => output.push_str(" EXCEPT "),
-        crate::ast::values::SetOp::IntersectAll => output.push_str(" INTERSECT ALL "),
-        crate::ast::values::SetOp::Intersect => output.push_str(" INTERSECT "),
+        crate::ast::values::SetOp::UnionAll(_) => output.push_str(" UNION ALL "),
+        crate::ast::values::SetOp::UnionDistinct(_) => output.push_str(" UNION DISTINCT "),
+        crate::ast::values::SetOp::Union(_) => output.push_str(" UNION "),
+        crate::ast::values::SetOp::ExceptAll(_) => output.push_str(" EXCEPT ALL "),
+        crate::ast::values::SetOp::Except(_) => output.push_str(" EXCEPT "),
+        crate::ast::values::SetOp::IntersectAll(_) => output.push_str(" INTERSECT ALL "),
+        crate::ast::values::SetOp::Intersect(_) => output.push_str(" INTERSECT "),
     }
     print_compound_query(output, &set_op.right);
 }

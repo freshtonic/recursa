@@ -2,7 +2,7 @@
 use std::marker::PhantomData;
 
 use recursa::surrounded::Surrounded;
-use recursa::{Input, Parse, ParseError, ParseRules, Visit};
+use recursa::{Parse, Visit};
 
 use crate::ast::select::SelectBody;
 use crate::rules::SqlRules;
@@ -16,90 +16,64 @@ pub struct TableStmt {
     pub table_name: crate::tokens::literal::Ident,
 }
 
-/// Set operation type: UNION ALL, UNION DISTINCT, UNION, EXCEPT ALL, EXCEPT, INTERSECT ALL, INTERSECT
-#[derive(Debug, Clone)]
+/// UNION ALL
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct UnionAllOp(PhantomData<keyword::Union>, PhantomData<keyword::All>);
+
+/// UNION DISTINCT
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct UnionDistinctOp(PhantomData<keyword::Union>, PhantomData<keyword::Distinct>);
+
+/// UNION (bare)
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct UnionOp(PhantomData<keyword::Union>);
+
+/// EXCEPT ALL
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ExceptAllOp(PhantomData<keyword::Except>, PhantomData<keyword::All>);
+
+/// EXCEPT (bare)
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ExceptOp(PhantomData<keyword::Except>);
+
+/// INTERSECT ALL
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IntersectAllOp(PhantomData<keyword::Intersect>, PhantomData<keyword::All>);
+
+/// INTERSECT (bare)
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IntersectOp(PhantomData<keyword::Intersect>);
+
+/// Set operation type.
+///
+/// Variant ordering: longer keyword sequences first within each group
+/// so longest-match-wins picks UNION ALL over bare UNION, etc.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub enum SetOp {
-    UnionAll,
-    UnionDistinct,
-    Union,
-    ExceptAll,
-    Except,
-    IntersectAll,
-    Intersect,
-}
-
-impl recursa::visitor::AsNodeKey for SetOp {}
-
-impl Visit for SetOp {
-    fn visit<V: recursa::visitor::TotalVisitor>(
-        &self,
-        _visitor: &mut V,
-    ) -> std::ops::ControlFlow<recursa::visitor::Break<V::Error>> {
-        std::ops::ControlFlow::Continue(())
-    }
+    UnionAll(UnionAllOp),
+    UnionDistinct(UnionDistinctOp),
+    ExceptAll(ExceptAllOp),
+    IntersectAll(IntersectAllOp),
+    Union(UnionOp),
+    Except(ExceptOp),
+    Intersect(IntersectOp),
 }
 
 /// A set operation combiner: `UNION [ALL|DISTINCT] | EXCEPT [ALL] | INTERSECT [ALL]`
-///
-/// Manual Parse impl because the operator keyword must be consumed first,
-/// then the optional ALL/DISTINCT modifier, before we know which variant we have.
-/// To eliminate this, recursa would need multi-keyword compound tokens.
-#[derive(Debug, Clone, Visit)]
+/// followed by the right-hand query.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct SetOpCombiner {
     pub op: SetOp,
     pub right: Box<CompoundQuery>,
-}
-
-impl<'input> Parse<'input> for SetOpCombiner {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        // Union starts with UNION, but EXCEPT and INTERSECT also valid
-        keyword::Union::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        keyword::Union::peek(input, rules)
-            || keyword::Except::peek(input, rules)
-            || keyword::Intersect::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let op = if keyword::Union::peek(input, rules) {
-            PhantomData::<keyword::Union>::parse(input, rules)?;
-            R::consume_ignored(input);
-            if keyword::All::peek(input, rules) {
-                PhantomData::<keyword::All>::parse(input, rules)?;
-                SetOp::UnionAll
-            } else if keyword::Distinct::peek(input, rules) {
-                PhantomData::<keyword::Distinct>::parse(input, rules)?;
-                SetOp::UnionDistinct
-            } else {
-                SetOp::Union
-            }
-        } else if keyword::Except::peek(input, rules) {
-            PhantomData::<keyword::Except>::parse(input, rules)?;
-            R::consume_ignored(input);
-            if keyword::All::peek(input, rules) {
-                PhantomData::<keyword::All>::parse(input, rules)?;
-                SetOp::ExceptAll
-            } else {
-                SetOp::Except
-            }
-        } else {
-            PhantomData::<keyword::Intersect>::parse(input, rules)?;
-            R::consume_ignored(input);
-            if keyword::All::peek(input, rules) {
-                PhantomData::<keyword::All>::parse(input, rules)?;
-                SetOp::IntersectAll
-            } else {
-                SetOp::Intersect
-            }
-        };
-        R::consume_ignored(input);
-        let right = Box::new(CompoundQuery::parse(input, rules)?);
-        Ok(SetOpCombiner { op, right })
-    }
 }
 
 /// A compound query: a query body optionally followed by a set operation.
