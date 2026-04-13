@@ -290,7 +290,7 @@ fn is_attached_punct(s: &str) -> bool {
 
 /// Punctuation that attaches to the following token (no space after).
 fn is_opening_punct(s: &str) -> bool {
-    matches!(s, "(" | "[" | "." | "::")
+    matches!(s, "(" | "[" | "." | "::" | "\\")
 }
 
 #[cfg(test)]
@@ -389,36 +389,40 @@ mod tests {
     #[test]
     fn inconsistent_group_breaks_independently() {
         // Three breaks in an inconsistent group that exceeds max_width.
-        // Only breaks where the column is past max_width should break;
-        // others stay flat.
+        // Only breaks where the column would exceed max_width should break;
+        // others stay flat. Auto-spacing adds spaces between String tokens.
         let tokens = vec![
             Token::Begin(GroupKind::Inconsistent),
-            Token::String("aaa".into()),
+            Token::String("aaaa".into()),
             Token::Break {
                 flat: " ".into(),
                 broken: "\n".into(),
             },
-            Token::String("bbb".into()),
+            Token::String("bbbb".into()),
             Token::Break {
                 flat: " ".into(),
                 broken: "\n".into(),
             },
-            Token::String("ccc".into()),
+            Token::String("cccc".into()),
             Token::Break {
                 flat: " ".into(),
                 broken: "\n".into(),
             },
-            Token::String("ddd".into()),
+            Token::String("dddd".into()),
             Token::End,
         ];
         let engine = PrintEngine::new(FormatStyle {
-            max_width: 10,
+            max_width: 12,
             ..Default::default()
         });
         let result = engine.print(&tokens);
-        // "aaa bbb" fits (7 chars), then break at column 7+1=8 would make "ccc" start
-        // at column 11 if flat, so it breaks. Then "ccc ddd" fits on new line.
-        assert_eq!(result, "aaa bbb\nccc ddd");
+        // "aaaa bbbb" = 9 chars, fits within 12.
+        // Next break: column 9+1=10, flat " " would be 11 ≤ 12, but then
+        // auto-space + "cccc" = 9+1+1+4 = 15 > 12. The break fires.
+        // Actually: break check is column(9) + flat.len(1) = 10 ≤ 12, so flat.
+        // Then auto-space + cccc puts us at 15. Next break: 15+1 > 12, breaks.
+        // Result: "aaaa bbbb cccc\ndddd"
+        assert_eq!(result, "aaaa bbbb cccc\ndddd");
     }
 
     #[test]

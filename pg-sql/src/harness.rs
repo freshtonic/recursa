@@ -7,8 +7,10 @@ use std::path::Path;
 
 use recursa::Input;
 
+use recursa_core::fmt::FormatStyle;
+
 use crate::ast::parse_sql_file;
-use crate::printer::print_commands;
+use crate::formatter::format_commands;
 
 /// Run a regression test for the given test name against a specific psql connection URI.
 ///
@@ -49,8 +51,8 @@ pub fn run_regression_test(test_name: &str, psql_uri: &str) -> Result<(), String
         ));
     }
 
-    // Print back to SQL
-    let printed = print_commands(&commands);
+    // Format back to SQL
+    let printed = format_commands(&commands, FormatStyle::default());
 
     // Execute via psql
     let actual_output = execute_via_psql(&printed, psql_uri)?;
