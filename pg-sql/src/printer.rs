@@ -475,7 +475,7 @@ fn print_insert(output: &mut String, stmt: &InsertStmt) {
             output.push_str(") ");
         }
         match &oc.action {
-            crate::ast::insert::ConflictAction::DoNothing => {
+            crate::ast::insert::ConflictAction::DoNothing(_) => {
                 output.push_str("DO NOTHING");
             }
             crate::ast::insert::ConflictAction::DoUpdate(update) => {
