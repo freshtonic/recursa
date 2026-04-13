@@ -2,10 +2,10 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, LitStr};
 
-/// Parse an optional `#[parse(postcondition = path)]` attribute.
+/// Parse an optional `#[scan(postcondition = path)]` attribute.
 fn get_postcondition(input: &DeriveInput) -> syn::Result<Option<syn::Path>> {
     for attr in &input.attrs {
-        if attr.path().is_ident("parse") {
+        if attr.path().is_ident("scan") {
             let mut postcondition = None;
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("postcondition") {
@@ -13,11 +13,21 @@ fn get_postcondition(input: &DeriveInput) -> syn::Result<Option<syn::Path>> {
                     let path: syn::Path = value.parse()?;
                     postcondition = Some(path);
                     Ok(())
+                } else if meta.path.is_ident("pattern") {
+                    // Handled elsewhere in the Scan derive; consume the value and skip
+                    let _value = meta.value()?;
+                    let _: syn::LitStr = _value.parse()?;
+                    Ok(())
+                } else if meta.path.is_ident("case_insensitive") {
+                    // Handled elsewhere; skip
+                    Ok(())
                 } else {
-                    Err(meta.error("expected `postcondition`"))
+                    Err(meta.error("expected `postcondition`, `pattern`, or `case_insensitive`"))
                 }
             })?;
-            return Ok(postcondition);
+            if postcondition.is_some() {
+                return Ok(postcondition);
+            }
         }
     }
     Ok(None)
@@ -78,8 +88,13 @@ fn get_scan_attrs(input: &DeriveInput) -> syn::Result<ScanAttrs> {
                 } else if meta.path.is_ident("case_insensitive") {
                     case_insensitive = true;
                     Ok(())
+                } else if meta.path.is_ident("postcondition") {
+                    // Handled by get_postcondition; consume and skip
+                    let _value = meta.value()?;
+                    let _: syn::Path = _value.parse()?;
+                    Ok(())
                 } else {
-                    Err(meta.error("expected `pattern` or `case_insensitive`"))
+                    Err(meta.error("expected `pattern`, `case_insensitive`, or `postcondition`"))
                 }
             })?;
             let pattern = pattern.ok_or_else(|| {
@@ -281,7 +296,7 @@ fn derive_scan_enum(
     name: &syn::Ident,
     generics: &syn::Generics,
     data: &syn::DataEnum,
-    _postcondition: &Option<syn::Path>,
+    postcondition: &Option<syn::Path>,
 ) -> syn::Result<TokenStream> {
     let lt = generics
         .lifetimes()
@@ -350,6 +365,22 @@ fn derive_scan_enum(
         }
     });
 
+    // When there's a postcondition, peek must try a full parse
+    let peek_body = if postcondition.is_some() {
+        quote! {
+            let mut fork = input.fork();
+            Self::parse(&mut fork, _rules).is_ok()
+        }
+    } else {
+        quote! {
+            <Self as ::recursa_core::Scan<#lt>>::regex().is_match(input.remaining())
+        }
+    };
+
+    let postcondition_check = postcondition.as_ref().map(|path| {
+        quote! { #path(&result)?; }
+    }).unwrap_or_default();
+
     Ok(quote! {
         impl #impl_generics ::recursa_core::Scan<#lt> for #name #ty_generics #where_clause {
             const PATTERN: &'static str = ""; // Combined pattern is built at runtime
@@ -373,14 +404,21 @@ fn derive_scan_enum(
             const IS_TERMINAL: bool = true;
 
             fn first_pattern() -> &'static str {
-                <Self as ::recursa_core::Scan<#lt>>::PATTERN
+                static FIRST_PATTERN: ::std::sync::OnceLock<::std::string::String> = ::std::sync::OnceLock::new();
+                FIRST_PATTERN.get_or_init(|| {
+                    let mut parts: ::std::vec::Vec<::std::string::String> = ::std::vec::Vec::new();
+                    #(
+                        parts.push(::std::format!("({})", <#variant_types as ::recursa_core::Scan>::PATTERN));
+                    )*
+                    parts.join("|")
+                })
             }
 
             fn peek<R: ::recursa_core::ParseRules>(
                 input: &::recursa_core::Input<#lt>,
                 _rules: &R,
             ) -> bool {
-                <Self as ::recursa_core::Scan<#lt>>::regex().is_match(input.remaining())
+                #peek_body
             }
 
             fn parse<R: ::recursa_core::ParseRules>(
@@ -403,14 +441,16 @@ fn derive_scan_enum(
                 let mut best_index: ::std::option::Option<usize> = ::std::option::Option::None;
                 #(#match_arms_for_len)*
 
-                match best_index {
+                let result = match best_index {
                     #(#dispatch_arms)*
                     _ => ::std::result::Result::Err(::recursa_core::ParseError::new(
                         input.source().to_string(),
                         input.cursor()..input.cursor(),
                         stringify!(#name),
                     )),
-                }
+                }?;
+                #postcondition_check
+                ::std::result::Result::Ok(result)
             }
         }
     })

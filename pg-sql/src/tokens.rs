@@ -494,10 +494,17 @@ pub mod literal {
         }
     }
 
+    /// Postcondition: reject identifiers that are SQL keywords.
+    fn ident_is_not_keyword(ident: &Ident) -> Result<(), ParseError> {
+        if let Ident::Unquoted(unquoted) = ident {
+            return not_keyword(unquoted);
+        }
+        Ok(())
+    }
+
     /// Unquoted SQL identifier: `[a-zA-Z_][a-zA-Z0-9_]*` but NOT a keyword.
     #[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-    #[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-    #[parse(postcondition = not_keyword)]
+    #[scan(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*", postcondition = not_keyword)]
     #[visit(terminal)]
     pub struct UnquotedIdent(pub String);
 
@@ -510,11 +517,21 @@ pub mod literal {
     /// SQL identifier: unquoted (`foo`) or double-quoted (`"Foo"`).
     ///
     /// Quoted before Unquoted so `"` is tried first (different first char).
-    #[derive(recursa::Parse, recursa::Visit, recursa::FormatTokens, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-    #[parse(rules = crate::rules::SqlRules)]
+    #[derive(Scan, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    #[scan(postcondition = ident_is_not_keyword)]
+    #[visit(terminal)]
     pub enum Ident {
         Quoted(QuotedIdent),
         Unquoted(UnquotedIdent),
+    }
+
+    impl recursa::FormatTokens for Ident {
+        fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
+            match self {
+                Ident::Quoted(quoted) => quoted.format_tokens(tokens),
+                Ident::Unquoted(unquoted) => unquoted.format_tokens(tokens),
+            }
+        }
     }
 
     impl Ident {
@@ -801,7 +818,7 @@ mod ident_enum_tests {
     use super::literal::*;
     use recursa::{Input, Parse};
     use crate::rules::SqlRules;
-    
+
     #[test]
     fn ident_peek_rejects_from_keyword() {
         let input = Input::new("FROM");
