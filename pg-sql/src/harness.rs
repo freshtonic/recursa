@@ -99,7 +99,7 @@ pub fn run_regression_test(test_name: &str, psql_uri: &str) -> Result<(), String
 ///
 /// Uses `sh -c` with `2>&1` to merge stderr into stdout at the point errors occur,
 /// matching how psql output appears in the expected `.out` files.
-fn execute_via_psql(sql: &str, psql_uri: &str) -> Result<String, String> {
+pub(crate) fn execute_via_psql(sql: &str, psql_uri: &str) -> Result<String, String> {
     let output = std::process::Command::new("sh")
         // PG_ABS_SRCDIR points to the CONTAINER path where fixtures are mounted,
         // not the host path. test_setup.sql uses \getenv to read this, then
@@ -404,7 +404,16 @@ mod tests {
         use testcontainers::runners::SyncRunner;
         use testcontainers_modules::postgres::Postgres;
 
-        use crate::harness::{run_prerequisites, run_regression_test};
+        use crate::harness::{execute_via_psql, run_prerequisites, run_regression_test};
+
+        /// Disable parallel query for deterministic EXPLAIN output.
+        fn disable_parallel_query(uri: &str) {
+            execute_via_psql(
+                "ALTER SYSTEM SET max_parallel_workers_per_gather = 0; SELECT pg_reload_conf();",
+                uri,
+            )
+            .unwrap();
+        }
 
         /// Start a Postgres container and return the psql connection URI.
         /// Returns the container (must be kept alive) and the URI.
@@ -463,7 +472,9 @@ mod tests {
         #[test]
         fn regress_with() {
             let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup"], &uri).unwrap();
+            // Disable parallel query for deterministic EXPLAIN output
+            disable_parallel_query(&uri);
+            run_prerequisites(&["test_setup", "create_index", "create_misc"], &uri).unwrap();
             run_regression_test("with", &uri).unwrap();
         }
 
@@ -477,14 +488,14 @@ mod tests {
         #[test]
         fn regress_union() {
             let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
             run_regression_test("union", &uri).unwrap();
         }
 
         #[test]
         fn regress_subselect() {
             let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup"], &uri).unwrap();
+            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
             run_regression_test("subselect", &uri).unwrap();
         }
     }
