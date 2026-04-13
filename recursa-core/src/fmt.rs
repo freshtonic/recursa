@@ -160,11 +160,17 @@ impl PrintEngine {
         let break_decisions = compute_breaks(tokens, self.style.max_width);
 
         let mut group_idx = 0;
+        let mut needs_space = false;
         for token in tokens {
             match token {
                 Token::String(s) => {
+                    if needs_space && !is_attached_punct(s) {
+                        self.output.push(' ');
+                        self.column += 1;
+                    }
                     self.output.push_str(s);
                     self.column += s.len();
+                    needs_space = !is_opening_punct(s);
                 }
                 Token::Break { flat, broken } => {
                     let should_break = self
@@ -185,6 +191,7 @@ impl PrintEngine {
                         self.output.push_str(flat);
                         self.column += flat.len();
                     }
+                    needs_space = false;
                 }
                 Token::Begin(kind) => {
                     let broken = if group_idx < break_decisions.len() {
@@ -274,6 +281,16 @@ fn compute_breaks(tokens: &[Token], max_width: usize) -> Vec<bool> {
     }
 
     decisions
+}
+
+/// Punctuation that attaches to the preceding token (no space before).
+fn is_attached_punct(s: &str) -> bool {
+    matches!(s, ";" | "," | ")" | "]" | "." | "::")
+}
+
+/// Punctuation that attaches to the following token (no space after).
+fn is_opening_punct(s: &str) -> bool {
+    matches!(s, "(" | "[" | "." | "::")
 }
 
 #[cfg(test)]

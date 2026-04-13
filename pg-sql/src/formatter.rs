@@ -240,6 +240,14 @@ impl Visitor<literal::IntegerLit> for SqlFormatter {
     }
 }
 
+/// Format an AST into pretty-printed SQL using the FormatTokens trait.
+pub fn format_tokens_sql(root: &impl recursa::FormatTokens, style: FormatStyle) -> String {
+    let mut tokens = Vec::new();
+    root.format_tokens(&mut tokens);
+    let engine = PrintEngine::new(style);
+    engine.print(&tokens)
+}
+
 #[cfg(test)]
 mod tests {
     use recursa::Input;
@@ -250,7 +258,7 @@ mod tests {
     fn format(sql: &str) -> String {
         let mut input = Input::new(sql);
         let commands = parse_sql_file(&mut input).unwrap();
-        format_sql(&commands[0], FormatStyle::default())
+        format_tokens_sql(&commands[0], FormatStyle::default())
     }
 
     #[test]
