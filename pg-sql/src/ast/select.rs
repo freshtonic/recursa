@@ -296,17 +296,27 @@ pub struct HavingClause {
 /// SELECT statement.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
+#[format_tokens(group(consistent))]
 pub struct SelectStmt {
     pub _select: PhantomData<keyword::Select>,
     pub distinct: Option<PhantomData<keyword::Distinct>>,
+    #[format_tokens(indent, break(flat = " ", broken = "\n"))]
     pub items: Seq<SelectItem, punct::Comma>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub from_clause: Option<FromClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub where_clause: Option<WhereClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub group_by: Option<GroupByClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub having: Option<HavingClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub order_by: Option<OrderByClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub limit: Option<LimitClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub offset: Option<OffsetClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub for_update: Option<ForUpdateClause>,
 }
 

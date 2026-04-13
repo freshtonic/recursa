@@ -194,20 +194,20 @@ pub fn derive_total_visitor(input: TokenStream) -> TokenStream {
 
 /// Derive `FormatTokens` for pretty-printer token emission.
 ///
-/// Emits `Token::String` for each field by default. Use `#[format_token(...)]`
+/// Emits `Token::String` for each field by default. Use `#[format_tokens(...)]`
 /// attributes to add structural tokens (groups, breaks, indentation).
 ///
 /// # Attributes
 ///
 /// ## Struct-level
-/// - `#[format_token(group(consistent))]` — wrap all tokens in `Begin`/`End`
-/// - `#[format_token(group(inconsistent))]` — same, with inconsistent breaking
+/// - `#[format_tokens(group(consistent))]` — wrap all tokens in `Begin`/`End`
+/// - `#[format_tokens(group(inconsistent))]` — same, with inconsistent breaking
 ///
 /// ## Field-level
-/// - `#[format_token(break(flat = " ", broken = "\n"))]` — emit `Break` before field
-/// - `#[format_token(indent)]` — wrap field in `Indent`/`Dedent`
-/// - `#[format_token(group(consistent))]` — wrap field in `Begin`/`End`
-#[proc_macro_derive(FormatTokens, attributes(format_token))]
+/// - `#[format_tokens(break(flat = " ", broken = "\n"))]` — emit `Break` before field
+/// - `#[format_tokens(indent)]` — wrap field in `Indent`/`Dedent`
+/// - `#[format_tokens(group(consistent))]` — wrap field in `Begin`/`End`
+#[proc_macro_derive(FormatTokens, attributes(format_tokens))]
 pub fn derive_format_tokens(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     match format_tokens_derive::derive_format_tokens(input) {

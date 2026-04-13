@@ -48,13 +48,17 @@ pub struct DeleteUsingClause {
 /// DELETE FROM statement: `DELETE FROM table [alias] [USING ...] [WHERE expr] [RETURNING ...]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
+#[format_tokens(group(consistent))]
 pub struct DeleteStmt {
     pub _delete: PhantomData<keyword::Delete>,
     pub _from: PhantomData<keyword::From>,
     pub table_name: literal::Ident,
     pub alias: Option<TableAlias>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub using_clause: Option<DeleteUsingClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub where_clause: Option<WhereClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub returning: Option<ReturningClause>,
 }
 

@@ -87,13 +87,17 @@ pub struct OnConflictClause {
 /// INSERT INTO statement with optional ON CONFLICT and RETURNING.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
+#[format_tokens(group(consistent))]
 pub struct InsertStmt {
     pub _insert: PhantomData<keyword::Insert>,
     pub _into: PhantomData<keyword::Into>,
     pub table_name: literal::Ident,
     pub columns: Option<ColumnList>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub source: InsertSource,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub on_conflict: Option<OnConflictClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub returning: Option<ReturningClause>,
 }
 

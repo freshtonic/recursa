@@ -1,6 +1,16 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, Lit, Meta};
+use syn::{Data, DeriveInput, Fields, Lit, Meta, Type};
+
+/// Check if a type is `Option<...>`.
+fn is_option_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+    {
+        return segment.ident == "Option";
+    }
+    false
+}
 
 pub fn derive_format_tokens(input: DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
@@ -56,7 +66,7 @@ struct BreakAttr {
 fn parse_struct_attrs(input: &DeriveInput) -> syn::Result<StructAttrs> {
     let mut attrs = StructAttrs::default();
     for attr in &input.attrs {
-        if attr.path().is_ident("format_token") {
+        if attr.path().is_ident("format_tokens") {
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("group") {
                     let content;
@@ -76,7 +86,7 @@ fn parse_struct_attrs(input: &DeriveInput) -> syn::Result<StructAttrs> {
 fn parse_field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
     let mut attrs = FieldAttrs::default();
     for attr in &field.attrs {
-        if attr.path().is_ident("format_token") {
+        if attr.path().is_ident("format_tokens") {
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("group") {
                     let content;
@@ -156,7 +166,8 @@ fn derive_struct(data: &syn::DataStruct, struct_attrs: &StructAttrs) -> syn::Res
             for f in &fields.named {
                 let name = &f.ident;
                 let attrs = parse_field_attrs(f)?;
-                emissions.push(emit_field(quote! { self.#name }, &attrs));
+                let is_option = is_option_type(&f.ty);
+                emissions.push(emit_field(quote! { self.#name }, &attrs, is_option));
             }
             emissions
         }
@@ -165,7 +176,8 @@ fn derive_struct(data: &syn::DataStruct, struct_attrs: &StructAttrs) -> syn::Res
             for (i, f) in fields.unnamed.iter().enumerate() {
                 let idx = syn::Index::from(i);
                 let attrs = parse_field_attrs(f)?;
-                emissions.push(emit_field(quote! { self.#idx }, &attrs));
+                let is_option = is_option_type(&f.ty);
+                emissions.push(emit_field(quote! { self.#idx }, &attrs, is_option));
             }
             emissions
         }
@@ -229,7 +241,35 @@ fn derive_enum(data: &syn::DataEnum) -> syn::Result<TokenStream> {
     })
 }
 
-fn emit_field(access: TokenStream, attrs: &FieldAttrs) -> TokenStream {
+fn emit_field(access: TokenStream, attrs: &FieldAttrs, is_option: bool) -> TokenStream {
+    let has_attrs = attrs.break_.is_some() || attrs.indent || attrs.group.is_some();
+
+    // For Option fields with formatting attributes, wrap the entire
+    // attributed emission in an `if let Some` check so breaks/indents
+    // are not emitted when the Option is None.
+    if is_option && has_attrs {
+        let inner_emit = emit_field_inner(
+            quote! { *__inner },
+            attrs,
+        );
+        quote! {
+            if let ::std::option::Option::Some(__inner) = &#access {
+                #inner_emit
+            }
+        }
+    } else if has_attrs {
+        emit_field_inner(access, attrs)
+    } else {
+        // No attributes — just delegate
+        quote! {
+            ::recursa_core::FormatTokens::format_tokens(&#access, tokens);
+        }
+    }
+}
+
+/// Emit a field with formatting attributes applied.
+/// `access` is the expression to call format_tokens on.
+fn emit_field_inner(access: TokenStream, attrs: &FieldAttrs) -> TokenStream {
     let core_emit = quote! {
         ::recursa_core::FormatTokens::format_tokens(&#access, tokens);
     };

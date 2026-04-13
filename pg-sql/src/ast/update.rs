@@ -52,14 +52,20 @@ pub struct ReturningClause {
 /// UPDATE statement: `UPDATE table [alias] SET assignments [FROM ...] [WHERE ...] [RETURNING ...]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
+#[format_tokens(group(consistent))]
 pub struct UpdateStmt {
     pub _update: PhantomData<keyword::Update>,
     pub table_name: literal::Ident,
     pub alias: Option<literal::Ident>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub _set: PhantomData<keyword::Set>,
+    #[format_tokens(indent)]
     pub assignments: Seq<SetAssignment, punct::Comma>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub from_clause: Option<FromClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub where_clause: Option<WhereClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
     pub returning: Option<ReturningClause>,
 }
 
