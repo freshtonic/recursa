@@ -300,7 +300,7 @@ pub struct HavingClause {
 pub struct SelectStmt {
     pub _select: PhantomData<keyword::Select>,
     pub distinct: Option<PhantomData<keyword::Distinct>>,
-    #[format_tokens(indent, break(flat = " ", broken = "\n"))]
+    #[format_tokens(group(consistent), indent, break(flat = " ", broken = "\n"))]
     pub items: Seq<SelectItem, punct::Comma>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub from_clause: Option<FromClause>,
