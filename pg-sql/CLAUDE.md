@@ -2,7 +2,7 @@
 
 ## Principles
 
-1. **NEVER manually implement Parse/Scan/Visit** When encountering a piece of SQL syntax that seems to make derivation with `recursa` impossible STOP what you are doing, explain the problem and ask for feedback.
+1. **NEVER manually implement Parse/Scan/Visit/Debug** ONLY derive these traits! When encountering a piece of SQL syntax that seems to make derivation with `recursa` impossible STOP what you are doing, explain the problem and ask for feedback.
 
 2. **Use method syntax, not UFCS.** Write `T::parse(input, rules)` not `<T as Parse>::parse(input, rules)`. Since `Scan` no longer has `peek`/`parse` methods, there is no ambiguity.
 
