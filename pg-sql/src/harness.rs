@@ -10,38 +10,22 @@ use recursa::Input;
 use recursa_core::fmt::FormatStyle;
 
 use crate::ast::parse_sql_file;
-use crate::formatter::format_commands;
+use crate::formatter::format_file;
 
-/// Run a regression test for the given test name against a specific psql connection URI.
-///
-/// Reads `fixtures/sql/{test_name}.sql`, parses it, prints it back to SQL,
-/// executes via `psql`, and compares against `fixtures/expected/{test_name}.out`.
-/// Run prerequisite SQL scripts directly via psql (without parsing through recursa).
-/// Used to set up tables that later regression tests depend on.
-pub fn run_prerequisites(prereqs: &[&str], psql_uri: &str) -> Result<(), String> {
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for prereq in prereqs {
-        let sql_path = base.join(format!("fixtures/sql/{prereq}.sql"));
-        let sql = std::fs::read_to_string(&sql_path)
-            .map_err(|e| format!("cannot read {}: {e}", sql_path.display()))?;
-        let _output = execute_via_psql(&sql, psql_uri)?;
-    }
-    Ok(())
-}
-
-pub fn run_regression_test(test_name: &str, psql_uri: &str) -> Result<(), String> {
+pub fn run_regression_test(
+    test_name: &str,
+    prereqs: &[&str],
+    psql_uri: &str,
+) -> Result<(), String> {
     let base = Path::new(env!("CARGO_MANIFEST_DIR"));
     let sql_path = base.join(format!("fixtures/sql/{test_name}.sql"));
-    let out_path = base.join(format!("fixtures/expected/{test_name}.out"));
 
     let sql_source = std::fs::read_to_string(&sql_path)
         .map_err(|e| format!("cannot read {}: {e}", sql_path.display()))?;
-    let expected_output = std::fs::read_to_string(&out_path)
-        .map_err(|e| format!("cannot read {}: {e}", out_path.display()))?;
 
-    // Parse
+    // Parse and reformat
     let mut input = Input::new(&sql_source);
-    let commands = parse_sql_file(&mut input).map_err(|e| format!("parse error: {e}"))?;
+    let items = parse_sql_file(&mut input).map_err(|e| format!("parse error: {e}"))?;
 
     if !input.is_empty() {
         return Err(format!(
@@ -51,11 +35,33 @@ pub fn run_regression_test(test_name: &str, psql_uri: &str) -> Result<(), String
         ));
     }
 
-    // Format back to SQL
-    let printed = format_commands(&commands, FormatStyle::default());
+    let printed = format_file(&items, FormatStyle::default());
 
-    // Execute via psql
-    let actual_output = execute_via_psql(&printed, psql_uri)?;
+    // Execute both original and reformatted SQL in separate databases
+    // on the same PG instance, avoiding version mismatches with .out files.
+    // Create separate databases for expected (original SQL) and actual (reformatted)
+    execute_via_psql("CREATE DATABASE regress_expected;", psql_uri)?;
+    execute_via_psql("CREATE DATABASE regress_actual;", psql_uri)?;
+
+    let expected_uri = psql_uri.replace("/postgres", "/regress_expected");
+    let actual_uri = psql_uri.replace("/postgres", "/regress_actual");
+
+    // Disable parallel query for deterministic EXPLAIN output on both
+    let disable_parallel =
+        "ALTER SYSTEM SET max_parallel_workers_per_gather = 0; SELECT pg_reload_conf();";
+    let _ = execute_via_psql(disable_parallel, psql_uri);
+
+    // Run prerequisites on both databases
+    for prereq in prereqs {
+        let prereq_path = base.join(format!("fixtures/sql/{prereq}.sql"));
+        let prereq_sql = std::fs::read_to_string(&prereq_path)
+            .map_err(|e| format!("cannot read {}: {e}", prereq_path.display()))?;
+        let _ = execute_via_psql(&prereq_sql, &expected_uri);
+        let _ = execute_via_psql(&prereq_sql, &actual_uri);
+    }
+
+    let expected_output = execute_via_psql(&sql_source, &expected_uri)?;
+    let actual_output = execute_via_psql(&printed, &actual_uri)?;
 
     // Compare outputs (strip echoed SQL from both)
     let expected_results = strip_echoed_sql(&expected_output);
@@ -102,10 +108,7 @@ pub fn run_regression_test(test_name: &str, psql_uri: &str) -> Result<(), String
 /// Uses `sh -c` with `2>&1` to merge stderr into stdout at the point errors occur,
 /// matching how psql output appears in the expected `.out` files.
 pub(crate) fn execute_via_psql(sql: &str, psql_uri: &str) -> Result<String, String> {
-    let output = std::process::Command::new("sh")
-        // PG_ABS_SRCDIR points to the CONTAINER path where fixtures are mounted,
-        // not the host path. test_setup.sql uses \getenv to read this, then
-        // COPY ... FROM uses the path on the server side (inside the container).
+    let mut child = std::process::Command::new("sh")
         .env("PG_ABS_SRCDIR", "/fixtures")
         .env("PG_LIBDIR", "/usr/lib/postgresql/17/lib")
         .env("PG_DLSUFFIX", ".so")
@@ -117,12 +120,18 @@ pub(crate) fn execute_via_psql(sql: &str, psql_uri: &str) -> Result<String, Stri
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child.stdin.take().unwrap().write_all(sql.as_bytes())?;
-            child.wait_with_output()
-        })
-        .map_err(|e| format!("psql failed: {e}"))?;
+        .map_err(|e| format!("psql failed to start: {e}"))?;
+
+    // Write stdin in a separate thread to avoid deadlock on large inputs
+    let sql_owned = sql.to_string();
+    let mut stdin = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || {
+        use std::io::Write;
+        let _ = stdin.write_all(sql_owned.as_bytes());
+    });
+
+    let output = child.wait_with_output().map_err(|e| format!("psql failed: {e}"))?;
+    let _ = writer.join();
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
@@ -406,16 +415,7 @@ mod tests {
         use testcontainers::runners::SyncRunner;
         use testcontainers_modules::postgres::Postgres;
 
-        use crate::harness::{execute_via_psql, run_prerequisites, run_regression_test};
-
-        /// Disable parallel query for deterministic EXPLAIN output.
-        fn disable_parallel_query(uri: &str) {
-            execute_via_psql(
-                "ALTER SYSTEM SET max_parallel_workers_per_gather = 0; SELECT pg_reload_conf();",
-                uri,
-            )
-            .unwrap();
-        }
+        use crate::harness::run_regression_test;
 
         /// Start a Postgres container and return the psql connection URI.
         /// Returns the container (must be kept alive) and the URI.
@@ -433,6 +433,8 @@ mod tests {
                     "/fixtures",
                 ))
                 .with_env_var("PG_ABS_SRCDIR", "/fixtures")
+                // Use C locale for deterministic sort ordering matching expected .out files
+                .with_env_var("POSTGRES_INITDB_ARGS", "--locale=C")
                 .start()
                 .expect("Failed to start Postgres container");
 
@@ -447,177 +449,148 @@ mod tests {
 
         #[test]
         fn regress_boolean() {
-            let (_container, uri) = start_postgres();
-            run_regression_test("boolean", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("boolean", &[], &uri).unwrap();
         }
 
         #[test]
         fn regress_comments() {
-            let (_container, uri) = start_postgres();
-            run_regression_test("comments", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("comments", &[], &uri).unwrap();
         }
 
         #[test]
         fn regress_delete() {
-            let (_container, uri) = start_postgres();
-            run_regression_test("delete", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("delete", &[], &uri).unwrap();
         }
 
         #[test]
         fn regress_select() {
-            let (_container, uri) = start_postgres();
-            // select.sql depends on tables and indexes created by test_setup and create_index
-            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
-            run_regression_test("select", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("select", &["test_setup", "create_index"], &uri).unwrap();
         }
 
         #[test]
-        #[ignore = "printer bug: WITH RECURSIVE output changes error semantics"]
         fn regress_with() {
-            let (_container, uri) = start_postgres();
-            // Disable parallel query for deterministic EXPLAIN output
-            disable_parallel_query(&uri);
-            run_prerequisites(&["test_setup", "create_index", "create_misc"], &uri).unwrap();
-            run_regression_test("with", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("with", &["test_setup", "create_index", "create_misc"], &uri)
+                .unwrap();
         }
 
         #[test]
         fn regress_case() {
-            let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup"], &uri).unwrap();
-            run_regression_test("case", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("case", &["test_setup"], &uri).unwrap();
         }
 
         #[test]
         fn regress_union() {
-            let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
-            run_regression_test("union", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("union", &["test_setup", "create_index"], &uri).unwrap();
         }
 
         #[test]
         fn regress_subselect() {
-            let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
-            run_regression_test("subselect", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("subselect", &["test_setup", "create_index"], &uri).unwrap();
         }
 
         #[test]
         fn regress_join() {
-            let (_container, uri) = start_postgres();
-            disable_parallel_query(&uri);
-            run_prerequisites(&["test_setup", "create_index", "create_misc"], &uri).unwrap();
-            run_regression_test("join", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("join", &["test_setup", "create_index", "create_misc"], &uri)
+                .unwrap();
         }
 
         #[test]
-        #[ignore = "COPY FROM stdin data lost during parse/reformat"]
         fn regress_aggregates() {
-            let (_container, uri) = start_postgres();
-            disable_parallel_query(&uri);
-            run_prerequisites(
+            let (_c, uri) = start_postgres();
+            run_regression_test(
+                "aggregates",
                 &["test_setup", "create_index", "create_misc", "create_aggregate"],
                 &uri,
             )
             .unwrap();
-            run_regression_test("aggregates", &uri).unwrap();
         }
 
         #[test]
-        #[ignore = "needs CREATE TYPE for custom enum not yet parsed"]
         fn regress_arrays() {
-            let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup"], &uri).unwrap();
-            run_regression_test("arrays", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("arrays", &["test_setup"], &uri).unwrap();
         }
 
         #[test]
         fn regress_limit() {
-            let (_container, uri) = start_postgres();
-            disable_parallel_query(&uri);
-            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
-            run_regression_test("limit", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("limit", &["test_setup", "create_index"], &uri).unwrap();
         }
 
         #[test]
-        #[ignore = "PG17 \\d output has Compression column not in expected .out"]
         fn regress_create_table() {
-            let (_container, uri) = start_postgres();
-            run_regression_test("create_table", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("create_table", &[], &uri).unwrap();
         }
 
         #[test]
-        #[ignore = "uses CREATE USER/ROLE/GROUP not yet parsed"]
         fn regress_drop_if_exists() {
-            let (_container, uri) = start_postgres();
-            run_regression_test("drop_if_exists", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("drop_if_exists", &[], &uri).unwrap();
         }
 
         #[test]
-        #[ignore = "PG17 \\d output has Compression column not in expected .out"]
         fn regress_insert() {
-            let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
-            run_regression_test("insert", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("insert", &["test_setup", "create_index"], &uri).unwrap();
         }
 
         #[test]
-        #[ignore = "strip_echoed_sql misclassifies SQL comments as output"]
+        #[ignore = "uses psql :variable syntax not supported by parser"]
         fn regress_update() {
-            let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
-            run_regression_test("update", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("update", &["test_setup", "create_index"], &uri).unwrap();
         }
 
         #[test]
         fn regress_returning() {
-            let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup"], &uri).unwrap();
-            run_regression_test("returning", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("returning", &["test_setup"], &uri).unwrap();
         }
 
         #[test]
         fn regress_select_distinct() {
-            let (_container, uri) = start_postgres();
-            disable_parallel_query(&uri);
-            run_prerequisites(&["test_setup", "create_index"], &uri).unwrap();
-            run_regression_test("select_distinct", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("select_distinct", &["test_setup", "create_index"], &uri).unwrap();
         }
 
         #[test]
-        #[ignore = "row ordering differs due to locale/collation"]
         fn regress_select_having() {
-            let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup"], &uri).unwrap();
-            run_regression_test("select_having", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("select_having", &["test_setup"], &uri).unwrap();
         }
 
         #[test]
-        #[ignore = "row ordering differs due to locale/collation"]
         fn regress_select_implicit() {
-            let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup"], &uri).unwrap();
-            run_regression_test("select_implicit", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("select_implicit", &["test_setup"], &uri).unwrap();
         }
 
         #[test]
         fn regress_transactions() {
-            let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup"], &uri).unwrap();
-            run_regression_test("transactions", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("transactions", &["test_setup"], &uri).unwrap();
         }
 
         #[test]
         fn regress_truncate() {
-            let (_container, uri) = start_postgres();
-            run_regression_test("truncate", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("truncate", &[], &uri).unwrap();
         }
 
         #[test]
         fn regress_namespace() {
-            let (_container, uri) = start_postgres();
-            run_prerequisites(&["test_setup"], &uri).unwrap();
-            run_regression_test("namespace", &uri).unwrap();
+            let (_c, uri) = start_postgres();
+            run_regression_test("namespace", &["test_setup"], &uri).unwrap();
         }
     }
 }

@@ -6,7 +6,7 @@ use recursa::Input;
 use recursa_core::fmt::FormatStyle;
 
 use pg_sql::ast::parse_sql_file;
-use pg_sql::formatter::format_commands;
+use pg_sql::formatter::format_file;
 
 #[derive(Parser)]
 #[command(name = "pg-sql", about = "PostgreSQL SQL tools")]
@@ -44,15 +44,15 @@ fn main() {
             };
 
             let mut input = Input::new(&sql);
-            let commands = match parse_sql_file(&mut input) {
-                Ok(cmds) => cmds,
+            let items = match parse_sql_file(&mut input) {
+                Ok(items) => items,
                 Err(e) => {
                     eprintln!("{e}");
                     process::exit(1);
                 }
             };
 
-            print!("{}", format_commands(&commands, FormatStyle::default()));
+            print!("{}", format_file(&items, FormatStyle::default()));
         }
     }
 }

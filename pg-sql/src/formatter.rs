@@ -10,12 +10,19 @@ pub fn format_tokens_sql(root: &impl recursa::FormatTokens, style: FormatStyle) 
     engine.print(&tokens)
 }
 
-/// Format a list of parsed commands into SQL text.
-pub fn format_commands(commands: &[crate::ast::PsqlCommand], style: FormatStyle) -> String {
+/// Format a list of parsed file items into SQL text.
+pub fn format_file(items: &[crate::ast::FileItem], style: FormatStyle) -> String {
     let mut output = String::new();
-    for cmd in commands {
-        output.push_str(&format_tokens_sql(cmd, style.clone()));
-        output.push('\n');
+    for item in items {
+        match item {
+            crate::ast::FileItem::Command(cmd) => {
+                output.push_str(&format_tokens_sql(cmd, style.clone()));
+                output.push('\n');
+            }
+            crate::ast::FileItem::RawLines(text) => {
+                output.push_str(text);
+            }
+        }
     }
     output
 }
@@ -29,8 +36,13 @@ mod tests {
 
     fn format(sql: &str) -> String {
         let mut input = Input::new(sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        format_tokens_sql(&commands[0], FormatStyle::default())
+        let items = parse_sql_file(&mut input).unwrap();
+        match &items[0] {
+            crate::ast::FileItem::Command(cmd) => {
+                format_tokens_sql(cmd, FormatStyle::default())
+            }
+            crate::ast::FileItem::RawLines(text) => text.clone(),
+        }
     }
 
     #[test]

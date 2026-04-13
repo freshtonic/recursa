@@ -224,44 +224,75 @@ pub enum PsqlCommand {
 /// which consumes everything up to the next semicolon. This allows the parser
 /// to continue past intentionally invalid SQL (e.g., error test cases in
 /// PostgreSQL regression test files).
-pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<PsqlCommand>, ParseError> {
-    let mut commands = Vec::new();
+/// An item in a parsed SQL file: either a parsed command or raw text
+/// (e.g., COPY FROM stdin data blocks that can't be parsed as SQL).
+pub enum FileItem {
+    Command(PsqlCommand),
+    RawLines(String),
+}
+
+/// Parse a complete SQL file into a list of file items.
+///
+/// Gracefully handles parse errors and unparseable content (COPY FROM stdin
+/// data blocks, etc.) by preserving them as `RawLines`.
+pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<FileItem>, ParseError> {
+    let mut items = Vec::new();
+    let mut raw_buf = String::new();
     loop {
         SqlRules::consume_ignored(input);
         if input.is_empty() {
             break;
         }
         if !PsqlCommand::peek(input, &SqlRules) {
-            // Skip unparseable lines (e.g., COPY FROM stdin data blocks).
-            // Advance past the current line and retry.
-            skip_line(input);
+            // Collect unparseable lines (e.g., COPY FROM stdin data blocks).
+            let line = take_line(input);
+            raw_buf.push_str(&line);
+            raw_buf.push('\n');
             continue;
         }
+        // Flush any accumulated raw lines before the next command
+        if !raw_buf.is_empty() {
+            items.push(FileItem::RawLines(std::mem::take(&mut raw_buf)));
+        }
         match PsqlCommand::parse(input, &SqlRules) {
-            Ok(cmd) => commands.push(cmd),
+            Ok(cmd) => items.push(FileItem::Command(cmd)),
             Err(_) => {
                 // Parse error -- skip to next semicolon and create a Raw statement
                 let raw = RawStatement::parse(input, &SqlRules)?;
                 SqlRules::consume_ignored(input);
                 if punct::Semi::peek(input, &SqlRules) {
                     let semi = punct::Semi::parse(input, &SqlRules)?;
-                    commands.push(PsqlCommand::Statement(TerminatedStatement {
-                        stmt: Statement::Raw(raw),
-                        semi,
-                    }));
+                    items.push(FileItem::Command(PsqlCommand::Statement(
+                        TerminatedStatement {
+                            stmt: Statement::Raw(raw),
+                            semi,
+                        },
+                    )));
                 }
             }
         }
     }
-    Ok(commands)
+    // Flush trailing raw lines
+    if !raw_buf.is_empty() {
+        items.push(FileItem::RawLines(raw_buf));
+    }
+    Ok(items)
 }
 
-/// Skip past the current line (advance to after the next newline, or to EOF).
-fn skip_line(input: &mut Input<'_>) {
+/// Take the current line from input and advance past it.
+fn take_line<'a>(input: &mut Input<'a>) -> &'a str {
     let remaining = input.remaining();
     match remaining.find('\n') {
-        Some(pos) => input.advance(pos + 1),
-        None => input.advance(remaining.len()),
+        Some(pos) => {
+            let line = &remaining[..pos];
+            input.advance(pos + 1);
+            line
+        }
+        None => {
+            let line = remaining;
+            input.advance(remaining.len());
+            line
+        }
     }
 }
 
@@ -330,11 +361,11 @@ mod tests {
     fn parse_multiple_commands() {
         let sql = "SELECT 1;\n\\pset null '(null)'\nSELECT 2;\n";
         let mut input = Input::new(sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert_eq!(commands.len(), 3);
-        assert!(matches!(commands[0], PsqlCommand::Statement(_)));
-        assert!(matches!(commands[1], PsqlCommand::Directive(_)));
-        assert!(matches!(commands[2], PsqlCommand::Statement(_)));
+        let items = parse_sql_file(&mut input).unwrap();
+        assert_eq!(items.len(), 3);
+        assert!(matches!(items[0], FileItem::Command(PsqlCommand::Statement(_))));
+        assert!(matches!(items[1], FileItem::Command(PsqlCommand::Directive(_))));
+        assert!(matches!(items[2], FileItem::Command(PsqlCommand::Statement(_))));
     }
 
     #[test]
