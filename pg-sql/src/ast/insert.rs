@@ -197,12 +197,8 @@ impl<'input> Parse<'input> for OnConflictClause {
 }
 
 /// INSERT INTO statement with optional ON CONFLICT and RETURNING.
-///
-/// Manual Parse impl needed because the optional column list before the
-/// insert source uses parentheses that could be confused with VALUES rows,
-/// and ON CONFLICT requires lookahead for the ON keyword.
-/// To eliminate this, recursa would need contextual paren disambiguation.
-#[derive(Debug, Clone, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct InsertStmt {
     pub _insert: PhantomData<keyword::Insert>,
     pub _into: PhantomData<keyword::Into>,
@@ -211,75 +207,6 @@ pub struct InsertStmt {
     pub source: InsertSource,
     pub on_conflict: Option<OnConflictClause>,
     pub returning: Option<ReturningClause>,
-}
-
-impl<'input> Parse<'input> for InsertStmt {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        keyword::Insert::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        keyword::Insert::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let _insert = PhantomData::<keyword::Insert>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let _into = PhantomData::<keyword::Into>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let table_name = literal::Ident::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        // Optional column list: check if parens contain identifiers followed by VALUES/SELECT/DEFAULT
-        let columns = if punct::LParen::peek(input, rules) {
-            // Fork to check if this is a column list
-            let mut fork = input.fork();
-            match ColumnList::parse(&mut fork, rules) {
-                Ok(cols) => {
-                    R::consume_ignored(&mut fork);
-                    // Check that a source keyword follows
-                    if keyword::Values::peek(&fork, rules)
-                        || keyword::Default::peek(&fork, rules)
-                        || keyword::Select::peek(&fork, rules)
-                    {
-                        input.advance(fork.cursor() - input.cursor());
-                        R::consume_ignored(input);
-                        Some(cols)
-                    } else {
-                        None
-                    }
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
-
-        let source = InsertSource::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        // Optional ON CONFLICT
-        let on_conflict = if OnConflictClause::peek(input, rules) {
-            Some(OnConflictClause::parse(input, rules)?)
-        } else {
-            None
-        };
-        R::consume_ignored(input);
-
-        let returning = Option::<ReturningClause>::parse(input, rules)?;
-
-        Ok(InsertStmt {
-            _insert,
-            _into,
-            table_name,
-            columns,
-            source,
-            on_conflict,
-            returning,
-        })
-    }
 }
 
 /// Column list: `(col1, col2, ...)`.

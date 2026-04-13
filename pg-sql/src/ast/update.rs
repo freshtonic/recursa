@@ -82,12 +82,8 @@ pub struct ReturningClause {
 }
 
 /// UPDATE statement: `UPDATE table [alias] SET assignments [FROM ...] [WHERE ...] [RETURNING ...]`
-///
-/// Manual Parse impl needed because the optional alias after the table name
-/// has the same keyword-rejection issue as DELETE -- keywords like WHERE/SET
-/// would be rejected as identifiers but peek would succeed.
-/// To eliminate this, recursa would need Option try-parse semantics.
-#[derive(Debug, Clone, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct UpdateStmt {
     pub _update: PhantomData<keyword::Update>,
     pub table_name: literal::Ident,
@@ -97,61 +93,6 @@ pub struct UpdateStmt {
     pub from_clause: Option<FromClause>,
     pub where_clause: Option<WhereClause>,
     pub returning: Option<ReturningClause>,
-}
-
-impl<'input> Parse<'input> for UpdateStmt {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        keyword::Update::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        keyword::Update::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let _update = PhantomData::<keyword::Update>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let table_name = literal::Ident::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        // Try alias (not SET keyword)
-        let alias = if keyword::Set::peek(input, rules) {
-            None
-        } else {
-            let mut fork = input.fork();
-            match literal::Ident::parse(&mut fork, rules) {
-                Ok(ident) => {
-                    input.advance(fork.cursor() - input.cursor());
-                    R::consume_ignored(input);
-                    Some(ident)
-                }
-                Err(_) => None,
-            }
-        };
-
-        let _set = PhantomData::<keyword::Set>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let assignments = Seq::<SetAssignment, punct::Comma>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let from_clause = Option::<FromClause>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let where_clause = Option::<WhereClause>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let returning = Option::<ReturningClause>::parse(input, rules)?;
-
-        Ok(UpdateStmt {
-            _update,
-            table_name,
-            alias,
-            _set,
-            assignments,
-            from_clause,
-            where_clause,
-            returning,
-        })
-    }
 }
 
 #[cfg(test)]

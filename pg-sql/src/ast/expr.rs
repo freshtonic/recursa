@@ -378,64 +378,12 @@ pub struct RowExpr {
 }
 
 /// Cast type with optional precision/array suffix: `numeric(10,0)`, `integer[]`
-///
-/// Manual Parse impl needed because the optional precision parentheses conflict
-/// with other uses of LParen in the expression grammar. We parse greedily.
-/// To eliminate this manual impl, recursa would need context-aware Optional.
-#[derive(Visit, Debug, Clone)]
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
 pub struct CastType {
     pub base: TypeName,
     pub precision: Option<TypePrecision>,
     pub array_suffix: Option<ArrayTypeSuffix>,
-}
-
-impl<'input> Parse<'input> for CastType {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        TypeName::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        TypeName::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let base = TypeName::parse(input, rules)?;
-        R::consume_ignored(input);
-        // Try precision parentheses
-        let precision = if punct::LParen::peek(input, rules) {
-            let mut fork = input.fork();
-            match TypePrecision::parse(&mut fork, rules) {
-                Ok(p) => {
-                    input.advance(fork.cursor() - input.cursor());
-                    R::consume_ignored(input);
-                    Some(p)
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
-        // Try array suffix []
-        let array_suffix = if punct::LBracket::peek(input, rules) {
-            let mut fork = input.fork();
-            match ArrayTypeSuffix::parse(&mut fork, rules) {
-                Ok(s) => {
-                    input.advance(fork.cursor() - input.cursor());
-                    Some(s)
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
-        Ok(CastType {
-            base,
-            precision,
-            array_suffix,
-        })
-    }
 }
 
 /// NOT IN list: `expr NOT IN (val, ...)` suffix.
