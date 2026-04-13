@@ -1,16 +1,6 @@
 /// CREATE TABLE statement AST.
-///
-/// Handles three forms:
-/// 1. `CREATE [TEMP] TABLE name (cols)`
-/// 2. `CREATE [TEMP] TABLE name (cols) PARTITION BY strategy (cols)`
-/// 3. `CREATE TABLE name PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
-///
-/// Manual Parse impl required because the three forms share the same leading
-/// keywords (`CREATE [TEMP] TABLE name`) but diverge after the name. The derive
-/// macro's enum dispatch uses longest-match on first_pattern without fork-and-try,
-/// so it can't distinguish between these forms at the regex level. A single struct
-/// with a manual impl handles all three via sequential token inspection.
 use std::marker::PhantomData;
+
 use std::ops::ControlFlow;
 
 use recursa::seq::Seq;
@@ -174,36 +164,57 @@ pub enum TempKw {
     Temporary(PhantomData<keyword::Temporary>),
 }
 
-/// The body of a CREATE TABLE statement after `CREATE [TEMP] TABLE name`.
-#[derive(Debug, Clone)]
-pub enum CreateTableBody {
-    /// Regular or partitioned: `(cols) [PARTITION BY ...] [INHERITS (parent, ...)]`
-    Columns {
-        columns: Surrounded<punct::LParen, Seq<ColumnDef, punct::Comma>, punct::RParen>,
-        inherits:
-            Option<Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>>,
-        partition_by: Option<PartitionByClause>,
-    },
-    /// Partition of: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
-    PartitionOf {
-        parent: literal::Ident,
-        for_values: ForValuesInClause,
-        partition_by: Option<PartitionByClause>,
-    },
-    /// AS query: `AS SELECT ...`
-    AsQuery { query: Box<crate::ast::Statement> },
+/// INHERITS clause: `INHERITS (parent, ...)`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct InheritsClause {
+    pub _inherits: PhantomData<keyword::Inherits>,
+    pub parents: Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>,
 }
 
-impl AsNodeKey for CreateTableBody {}
+/// Column-based table body: `(cols) [INHERITS (...)] [PARTITION BY ...]`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ColumnsBody {
+    pub columns: Surrounded<punct::LParen, Seq<ColumnDef, punct::Comma>, punct::RParen>,
+    pub inherits: Option<InheritsClause>,
+    pub partition_by: Option<PartitionByClause>,
+}
 
-impl Visit for CreateTableBody {
-    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ControlFlow<Break<V::Error>> {
-        ControlFlow::Continue(())
-    }
+/// Partition-of table body: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct PartitionOfBody {
+    pub _partition: PhantomData<keyword::Partition>,
+    pub _of: PhantomData<keyword::Of>,
+    pub parent: literal::Ident,
+    pub for_values: ForValuesInClause,
+    pub partition_by: Option<PartitionByClause>,
+}
+
+/// AS-query table body: `AS SELECT ...`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AsQueryBody {
+    pub _as: PhantomData<keyword::As>,
+    pub query: Box<crate::ast::Statement>,
+}
+
+/// The body of a CREATE TABLE statement after `CREATE [TEMP] TABLE name`.
+///
+/// Variant ordering: AsQuery (`AS`) and PartitionOf (`PARTITION`) start with
+/// keywords; Columns starts with `(`. Longest-match-wins disambiguates.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum CreateTableBody {
+    AsQuery(AsQueryBody),
+    PartitionOf(PartitionOfBody),
+    Columns(ColumnsBody),
 }
 
 /// CREATE [TEMP] TABLE statement.
-#[derive(Debug, Clone, Visit)]
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
 pub struct CreateTableStmt {
     pub _create: PhantomData<keyword::Create>,
     pub temp: Option<TempKw>,
@@ -218,92 +229,9 @@ impl CreateTableStmt {
         &self,
     ) -> Option<&Surrounded<punct::LParen, Seq<ColumnDef, punct::Comma>, punct::RParen>> {
         match &self.body {
-            CreateTableBody::Columns { columns, .. } => Some(columns),
-            CreateTableBody::PartitionOf { .. } | CreateTableBody::AsQuery { .. } => None,
+            CreateTableBody::Columns(b) => Some(&b.columns),
+            CreateTableBody::PartitionOf(_) | CreateTableBody::AsQuery(_) => None,
         }
-    }
-}
-
-impl<'input> Parse<'input> for CreateTableStmt {
-    const IS_TERMINAL: bool = false;
-
-    fn first_pattern() -> &'static str {
-        // Pattern to distinguish CREATE [TEMP|TEMPORARY] TABLE from CREATE RULE/TRIGGER/etc.
-        static PATTERN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        PATTERN.get_or_init(|| {
-            r"(?i:CREATE\b)(?:\s+(?i:TEMP\b|\bTEMPORARY\b))?\s+(?i:TABLE\b)".to_string()
-        })
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, _rules: &R) -> bool {
-        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        let re = RE.get_or_init(|| {
-            regex::Regex::new(&format!(r"\A(?:{})", Self::first_pattern())).unwrap()
-        });
-        re.is_match(input.remaining())
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        let _create = PhantomData::<keyword::Create>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let temp = Option::<TempKw>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let _table = PhantomData::<keyword::Table>::parse(input, rules)?;
-        R::consume_ignored(input);
-        let name = literal::Ident::parse(input, rules)?;
-        R::consume_ignored(input);
-
-        // Distinguish: AS query vs PARTITION OF ... vs (columns) [PARTITION BY ...]
-        let body = if keyword::As::peek(input, rules) {
-            // AS query
-            PhantomData::<keyword::As>::parse(input, rules)?;
-            R::consume_ignored(input);
-            let query = Box::new(crate::ast::Statement::parse(input, rules)?);
-            CreateTableBody::AsQuery { query }
-        } else if keyword::Partition::peek(input, rules) {
-            // PARTITION OF parent FOR VALUES IN (...)
-            PhantomData::<keyword::Partition>::parse(input, rules)?;
-            R::consume_ignored(input);
-            PhantomData::<keyword::Of>::parse(input, rules)?;
-            R::consume_ignored(input);
-            let parent = literal::Ident::parse(input, rules)?;
-            R::consume_ignored(input);
-            let for_values = ForValuesInClause::parse(input, rules)?;
-            R::consume_ignored(input);
-            let partition_by = Option::<PartitionByClause>::parse(input, rules)?;
-            CreateTableBody::PartitionOf {
-                parent,
-                for_values,
-                partition_by,
-            }
-        } else {
-            // (columns) [INHERITS (...)] [PARTITION BY ...]
-            let columns = Surrounded::parse(input, rules)?;
-            R::consume_ignored(input);
-            // Optional INHERITS (parent, ...)
-            let inherits = if keyword::Inherits::peek(input, rules) {
-                PhantomData::<keyword::Inherits>::parse(input, rules)?;
-                R::consume_ignored(input);
-                Some(Surrounded::parse(input, rules)?)
-            } else {
-                None
-            };
-            R::consume_ignored(input);
-            let partition_by = Option::<PartitionByClause>::parse(input, rules)?;
-            CreateTableBody::Columns {
-                columns,
-                inherits,
-                partition_by,
-            }
-        };
-
-        Ok(CreateTableStmt {
-            _create,
-            temp,
-            _table,
-            name,
-            body,
-        })
     }
 }
 

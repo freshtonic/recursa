@@ -3,6 +3,8 @@
 /// Handles atoms, prefix (NOT, unary minus), infix (AND, OR, comparisons,
 /// arithmetic), and postfix operators (::type cast, IS [NOT] TRUE/FALSE/UNKNOWN/NULL,
 /// IN (list)).
+use std::marker::PhantomData;
+
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{Input, Parse, ParseError, ParseRules, Visit};
@@ -323,50 +325,33 @@ pub struct ExistsExpr {
     pub subquery: Surrounded<punct::LParen, Box<crate::ast::values::CompoundQuery>, punct::RParen>,
 }
 
-/// ARRAY constructor: `ARRAY[expr, ...]` or `ARRAY(subquery)`
-///
-/// Manual Parse impl needed because ARRAY[] uses brackets and ARRAY() uses parens.
-/// To eliminate this manual impl, recursa would need bracket-delimited support.
-#[derive(Visit, Debug, Clone)]
-pub enum ArrayExpr {
-    Bracket {
-        lbracket: punct::LBracket,
-        elements: Seq<Expr, punct::Comma>,
-        rbracket: punct::RBracket,
-    },
-    Subquery(Surrounded<punct::LParen, Box<crate::ast::values::CompoundQuery>, punct::RParen>),
+/// ARRAY bracket constructor: `ARRAY[expr, ...]`
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct ArrayBracket {
+    pub _array: PhantomData<keyword::Array>,
+    pub lbracket: punct::LBracket,
+    pub elements: Seq<Expr, punct::Comma>,
+    pub rbracket: punct::RBracket,
 }
 
-impl<'input> Parse<'input> for ArrayExpr {
-    const IS_TERMINAL: bool = false;
+/// ARRAY subquery constructor: `ARRAY(subquery)`
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct ArraySubquery {
+    pub _array: PhantomData<keyword::Array>,
+    pub subquery: Surrounded<punct::LParen, Box<crate::ast::values::CompoundQuery>, punct::RParen>,
+}
 
-    fn first_pattern() -> &'static str {
-        keyword::Array::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        keyword::Array::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        keyword::Array::parse(input, rules)?;
-        R::consume_ignored(input);
-        if punct::LBracket::peek(input, rules) {
-            let lbracket = punct::LBracket::parse(input, rules)?;
-            R::consume_ignored(input);
-            let elements = Seq::<Expr, punct::Comma>::parse(input, rules)?;
-            R::consume_ignored(input);
-            let rbracket = punct::RBracket::parse(input, rules)?;
-            Ok(ArrayExpr::Bracket {
-                lbracket,
-                elements,
-                rbracket,
-            })
-        } else {
-            let subquery = Surrounded::parse(input, rules)?;
-            Ok(ArrayExpr::Subquery(subquery))
-        }
-    }
+/// ARRAY constructor: `ARRAY[expr, ...]` or `ARRAY(subquery)`
+///
+/// Variant ordering: Bracket (`ARRAY[`) has a longer first_pattern than
+/// Subquery (`ARRAY(`) because `[` is a different token than `(`.
+#[derive(Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum ArrayExpr {
+    Bracket(ArrayBracket),
+    Subquery(ArraySubquery),
 }
 
 /// ROW constructor: `ROW(expr, ...)`

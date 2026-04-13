@@ -4,73 +4,41 @@
 use std::marker::PhantomData;
 
 use recursa::seq::Seq;
-use recursa::{Input, Parse, ParseError, ParseRules, Visit};
+use recursa::{Parse, Visit};
 
 use crate::ast::expr::Expr;
 use crate::ast::select::{FromClause, WhereClause};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
-/// A single SET assignment: `col = expr` or `(col, ...) = (expr, ...)`
-///
-/// Manual Parse impl needed because the tuple form `(col, ...) = (expr, ...)`
-/// vs single form `col = expr` requires lookahead.
-/// To eliminate this, recursa would need look-ahead enum disambiguation for
-/// non-keyword-led variants.
-#[derive(Debug, Clone, Visit)]
-pub enum SetAssignment {
-    Single {
-        column: literal::AliasName,
-        value: Expr,
-    },
-    Tuple {
-        columns: Vec<literal::AliasName>,
-        values: Expr,
-    },
+/// Single SET assignment: `col = expr`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SingleAssignment {
+    pub column: literal::AliasName,
+    pub _eq: punct::Eq,
+    pub value: Expr,
 }
 
-impl<'input> Parse<'input> for SetAssignment {
-    const IS_TERMINAL: bool = false;
+/// Tuple SET assignment: `(col, ...) = expr`
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TupleAssignment {
+    pub columns:
+        recursa::surrounded::Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>,
+    pub _eq: punct::Eq,
+    pub values: Expr,
+}
 
-    fn first_pattern() -> &'static str {
-        literal::AliasName::first_pattern()
-    }
-
-    fn peek<R: ParseRules>(input: &Input<'input>, rules: &R) -> bool {
-        literal::AliasName::peek(input, rules) || punct::LParen::peek(input, rules)
-    }
-
-    fn parse<R: ParseRules>(input: &mut Input<'input>, rules: &R) -> Result<Self, ParseError> {
-        if punct::LParen::peek(input, rules) {
-            // Tuple form: (col, ...) = expr
-            punct::LParen::parse(input, rules)?;
-            R::consume_ignored(input);
-            let mut columns = Vec::new();
-            loop {
-                columns.push(literal::AliasName::parse(input, rules)?);
-                R::consume_ignored(input);
-                if punct::Comma::peek(input, rules) {
-                    punct::Comma::parse(input, rules)?;
-                    R::consume_ignored(input);
-                } else {
-                    break;
-                }
-            }
-            punct::RParen::parse(input, rules)?;
-            R::consume_ignored(input);
-            punct::Eq::parse(input, rules)?;
-            R::consume_ignored(input);
-            let values = Expr::parse(input, rules)?;
-            Ok(SetAssignment::Tuple { columns, values })
-        } else {
-            let column = literal::AliasName::parse(input, rules)?;
-            R::consume_ignored(input);
-            punct::Eq::parse(input, rules)?;
-            R::consume_ignored(input);
-            let value = Expr::parse(input, rules)?;
-            Ok(SetAssignment::Single { column, value })
-        }
-    }
+/// A single SET assignment: `col = expr` or `(col, ...) = (expr, ...)`
+///
+/// Variant ordering: Tuple starts with `(` which is longer than a bare
+/// identifier, so longest-match-wins picks it when parens are present.
+#[derive(Debug, Clone, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum SetAssignment {
+    Tuple(TupleAssignment),
+    Single(SingleAssignment),
 }
 
 /// RETURNING clause: `RETURNING expr, ...`

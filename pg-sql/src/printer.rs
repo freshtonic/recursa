@@ -333,13 +333,9 @@ fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
     output.push_str("TABLE ");
     output.push_str(&stmt.name.0);
     match &stmt.body {
-        CreateTableBody::Columns {
-            columns,
-            inherits,
-            partition_by,
-        } => {
+        CreateTableBody::Columns(b) => {
             output.push_str(" (");
-            for (i, col) in columns.inner.iter().enumerate() {
+            for (i, col) in b.columns.inner.iter().enumerate() {
                 if i > 0 {
                     output.push_str(", ");
                 }
@@ -377,9 +373,9 @@ fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
                 }
             }
             output.push(')');
-            if let Some(inh) = inherits {
+            if let Some(inh) = &b.inherits {
                 output.push_str(" INHERITS (");
-                for (i, parent) in inh.inner.iter().enumerate() {
+                for (i, parent) in inh.parents.inner.iter().enumerate() {
                     if i > 0 {
                         output.push_str(", ");
                     }
@@ -387,30 +383,26 @@ fn print_create_table(output: &mut String, stmt: &CreateTableStmt) {
                 }
                 output.push(')');
             }
-            if let Some(pb) = partition_by {
+            if let Some(pb) = &b.partition_by {
                 print_partition_by(output, pb);
             }
         }
-        CreateTableBody::AsQuery { query } => {
+        CreateTableBody::AsQuery(b) => {
             output.push_str(" AS ");
-            print_statement_to(output, query);
+            print_statement_to(output, &b.query);
         }
-        CreateTableBody::PartitionOf {
-            parent,
-            for_values,
-            partition_by,
-        } => {
+        CreateTableBody::PartitionOf(b) => {
             output.push_str(" PARTITION OF ");
-            output.push_str(&parent.0);
+            output.push_str(&b.parent.0);
             output.push_str(" FOR VALUES IN (");
-            for (i, val) in for_values.values.inner.iter().enumerate() {
+            for (i, val) in b.for_values.values.inner.iter().enumerate() {
                 if i > 0 {
                     output.push_str(", ");
                 }
                 print_expr(output, val);
             }
             output.push(')');
-            if let Some(pb) = partition_by {
+            if let Some(pb) = &b.partition_by {
                 print_partition_by(output, pb);
             }
         }
@@ -493,21 +485,21 @@ fn print_insert(output: &mut String, stmt: &InsertStmt) {
                         output.push_str(", ");
                     }
                     match asgn {
-                        crate::ast::update::SetAssignment::Single { column, value } => {
-                            output.push_str(&column.0);
+                        crate::ast::update::SetAssignment::Single(a) => {
+                            output.push_str(&a.column.0);
                             output.push_str(" = ");
-                            print_expr(output, value);
+                            print_expr(output, &a.value);
                         }
-                        crate::ast::update::SetAssignment::Tuple { columns, values } => {
+                        crate::ast::update::SetAssignment::Tuple(a) => {
                             output.push('(');
-                            for (j, col) in columns.iter().enumerate() {
+                            for (j, col) in a.columns.inner.iter().enumerate() {
                                 if j > 0 {
                                     output.push_str(", ");
                                 }
                                 output.push_str(&col.0);
                             }
                             output.push_str(") = ");
-                            print_expr(output, values);
+                            print_expr(output, &a.values);
                         }
                     }
                 }
@@ -920,9 +912,9 @@ fn print_expr(output: &mut String, expr: &Expr) {
         Expr::Array(arr) => {
             output.push_str("ARRAY");
             match arr {
-                ArrayExpr::Bracket { elements, .. } => {
+                ArrayExpr::Bracket(b) => {
                     output.push('[');
-                    for (i, elem) in elements.iter().enumerate() {
+                    for (i, elem) in b.elements.iter().enumerate() {
                         if i > 0 {
                             output.push_str(", ");
                         }
@@ -932,7 +924,7 @@ fn print_expr(output: &mut String, expr: &Expr) {
                 }
                 ArrayExpr::Subquery(sub) => {
                     output.push('(');
-                    print_compound_query(output, &sub.inner);
+                    print_compound_query(output, &sub.subquery.inner);
                     output.push(')');
                 }
             }
@@ -1166,21 +1158,21 @@ fn print_update(output: &mut String, stmt: &UpdateStmt) {
             output.push_str(", ");
         }
         match asgn {
-            crate::ast::update::SetAssignment::Single { column, value } => {
-                output.push_str(&column.0);
+            crate::ast::update::SetAssignment::Single(a) => {
+                output.push_str(&a.column.0);
                 output.push_str(" = ");
-                print_expr(output, value);
+                print_expr(output, &a.value);
             }
-            crate::ast::update::SetAssignment::Tuple { columns, values } => {
+            crate::ast::update::SetAssignment::Tuple(a) => {
                 output.push('(');
-                for (j, col) in columns.iter().enumerate() {
+                for (j, col) in a.columns.inner.iter().enumerate() {
                     if j > 0 {
                         output.push_str(", ");
                     }
                     output.push_str(&col.0);
                 }
                 output.push_str(") = ");
-                print_expr(output, values);
+                print_expr(output, &a.values);
             }
         }
     }
@@ -1226,21 +1218,21 @@ fn print_merge(output: &mut String, stmt: &MergeStmt) {
                         output.push_str(", ");
                     }
                     match asgn {
-                        crate::ast::update::SetAssignment::Single { column, value } => {
-                            output.push_str(&column.0);
+                        crate::ast::update::SetAssignment::Single(a) => {
+                            output.push_str(&a.column.0);
                             output.push_str(" = ");
-                            print_expr(output, value);
+                            print_expr(output, &a.value);
                         }
-                        crate::ast::update::SetAssignment::Tuple { columns, values } => {
+                        crate::ast::update::SetAssignment::Tuple(a) => {
                             output.push('(');
-                            for (j, col) in columns.iter().enumerate() {
+                            for (j, col) in a.columns.inner.iter().enumerate() {
                                 if j > 0 {
                                     output.push_str(", ");
                                 }
                                 output.push_str(&col.0);
                             }
                             output.push_str(") = ");
-                            print_expr(output, values);
+                            print_expr(output, &a.values);
                         }
                     }
                 }
