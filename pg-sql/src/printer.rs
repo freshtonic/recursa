@@ -671,7 +671,7 @@ fn print_drop_index(output: &mut String, stmt: &DropIndexStmt) {
 
 fn print_create_function(output: &mut String, stmt: &CreateFunctionStmt) {
     output.push_str("CREATE ");
-    if stmt.or_replace {
+    if stmt.or_replace.is_some() {
         output.push_str("OR REPLACE ");
     }
     output.push_str("FUNCTION ");
@@ -1277,13 +1277,13 @@ fn print_merge(output: &mut String, stmt: &MergeStmt) {
 
 fn print_create_view(output: &mut String, stmt: &CreateViewStmt) {
     output.push_str("CREATE ");
-    if stmt.or_replace {
+    if stmt.or_replace.is_some() {
         output.push_str("OR REPLACE ");
     }
-    if stmt.temp {
+    if stmt.temp.is_some() {
         output.push_str("TEMPORARY ");
     }
-    if stmt.recursive {
+    if stmt.recursive.is_some() {
         output.push_str("RECURSIVE ");
     }
     output.push_str("VIEW ");
@@ -1306,7 +1306,7 @@ fn print_create_view(output: &mut String, stmt: &CreateViewStmt) {
 
 fn print_drop_view(output: &mut String, stmt: &DropViewStmt) {
     output.push_str("DROP VIEW ");
-    if stmt.if_exists {
+    if stmt.if_exists.is_some() {
         output.push_str("IF EXISTS ");
     }
     output.push_str(&stmt.name.0);

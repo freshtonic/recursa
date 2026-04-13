@@ -89,13 +89,13 @@ fn generate_peek_body(field_types: &[&Type], rules_type: &Type) -> TokenStream {
 
 /// Generate the body of `first_pattern()` for a struct.
 ///
-/// Chains field patterns while fields are terminal. When a field is `Option<T>`,
-/// includes `T`'s pattern as an optional regex group `(?:sep pattern)?` and
-/// continues chaining. This allows patterns to reach through optional keyword
-/// prefixes to the distinguishing keyword.
+/// Builds a single pattern string by chaining field patterns. Required terminal
+/// fields are separated by the ignore pattern. `Option<T>` fields are included
+/// as optional regex groups `(?:sep pattern)?` and the chain continues through
+/// them to reach subsequent required fields.
 ///
 /// Example: `{ _create: PhantomData<Create>, _temp: Option<PhantomData<Temp>>, _table: PhantomData<Table> }`
-/// produces: `CREATE(?:\s+TEMP\b)?(?:\s+TABLE\b)`
+/// produces: `CREATE\b(?:(?:\s+)TEMP\b)?(?:\s+)TABLE\b`
 fn generate_first_pattern_body(field_types: &[&Type]) -> TokenStream {
     if field_types.is_empty() {
         return quote! {};
@@ -104,15 +104,17 @@ fn generate_first_pattern_body(field_types: &[&Type]) -> TokenStream {
     let first_ty = &field_types[0];
     let continuation = generate_first_pattern_chain(&field_types[1..]);
 
+    // Build pattern as a single string, not joined parts
     quote! {
-        parts.push(<#first_ty as ::recursa_core::Parse>::first_pattern().to_string());
+        let mut pattern = <#first_ty as ::recursa_core::Parse>::first_pattern().to_string();
         if <#first_ty as ::recursa_core::Parse>::IS_TERMINAL {
             #continuation
         }
+        parts.push(pattern);
     }
 }
 
-/// Recursive helper: generate the chain for remaining fields after the first.
+/// Recursive helper: append to `pattern` string for remaining fields.
 fn generate_first_pattern_chain(field_types: &[&Type]) -> TokenStream {
     if field_types.is_empty() {
         return quote! {};
@@ -124,26 +126,26 @@ fn generate_first_pattern_chain(field_types: &[&Type]) -> TokenStream {
     if is_option_type(ty) {
         if let Some(inner) = option_inner_type(ty) {
             let continuation = generate_first_pattern_chain(rest);
+            // Include the optional field's pattern as a non-capturing optional group,
+            // then always continue to the next field (optional fields don't block the chain).
             quote! {
                 {
                     let inner_pat = <#inner as ::recursa_core::Parse>::first_pattern();
                     if !inner_pat.is_empty() {
-                        parts.push(::std::format!("(?:{}{})?", sep, inner_pat));
+                        pattern.push_str(&::std::format!("(?:{}{})?", sep, inner_pat));
                     }
                 }
-                if <#inner as ::recursa_core::Parse>::IS_TERMINAL {
-                    #continuation
-                }
+                #continuation
             }
         } else {
-            // Can't extract inner type — stop
             quote! {}
         }
     } else {
-        // Required field: include if terminal, then stop
+        // Required field: append with separator if terminal, then stop
         quote! {
             if <#ty as ::recursa_core::Parse>::IS_TERMINAL {
-                parts.push(<#ty as ::recursa_core::Parse>::first_pattern().to_string());
+                pattern.push_str(&sep);
+                pattern.push_str(<#ty as ::recursa_core::Parse>::first_pattern());
             }
         }
     }
