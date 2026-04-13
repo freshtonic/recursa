@@ -24,8 +24,11 @@ pub struct SingleAssignment {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TupleAssignment {
-    pub columns:
-        recursa::surrounded::Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>,
+    pub columns: recursa::surrounded::Surrounded<
+        punct::LParen,
+        Seq<literal::AliasName, punct::Comma>,
+        punct::RParen,
+    >,
     pub _eq: punct::Eq,
     pub values: Expr,
 }

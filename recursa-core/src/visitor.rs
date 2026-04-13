@@ -165,5 +165,3 @@ impl Visit for String {
         visitor.total_exit(self)
     }
 }
-
-

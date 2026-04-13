@@ -90,12 +90,8 @@ pub fn derive_parse(input: DeriveInput) -> syn::Result<TokenStream> {
                     &attrs.postcondition,
                 )
             }
-            Fields::Named(fields) => {
-                derive_named_struct(name, &input.generics, &attrs, fields)
-            }
-            Fields::Unnamed(fields) => {
-                derive_tuple_struct(name, &input.generics, &attrs, fields)
-            }
+            Fields::Named(fields) => derive_named_struct(name, &input.generics, &attrs, fields),
+            Fields::Unnamed(fields) => derive_tuple_struct(name, &input.generics, &attrs, fields),
         },
         Data::Enum(data) => {
             if attrs.pratt {
@@ -370,12 +366,15 @@ fn derive_tuple_struct(
         .map(|i| syn::Ident::new(&format!("__f{i}"), proc_macro2::Span::call_site()))
         .collect();
 
-    let parse_fields = field_bindings.iter().zip(field_types.iter()).map(|(b, ty)| {
-        quote! {
-            <#rules as ::recursa_core::ParseRules>::consume_ignored(&mut fork);
-            let #b = <#ty as ::recursa_core::Parse>::parse::<#rules>(&mut fork)?;
-        }
-    });
+    let parse_fields = field_bindings
+        .iter()
+        .zip(field_types.iter())
+        .map(|(b, ty)| {
+            quote! {
+                <#rules as ::recursa_core::ParseRules>::consume_ignored(&mut fork);
+                let #b = <#ty as ::recursa_core::Parse>::parse::<#rules>(&mut fork)?;
+            }
+        });
 
     Ok(quote! {
         impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
@@ -702,20 +701,22 @@ fn derive_pratt_enum(
         }
     });
 
-    let infix_arms = infix_variants.iter().map(|(vname, op_ty, bp, right_assoc)| {
-        let right_bp: u32 = if *right_assoc { *bp } else { bp + 1 };
-        quote! {
-            {
-                <#rules as ::recursa_core::ParseRules>::consume_ignored(input);
-                if <#op_ty as ::recursa_core::Parse>::peek::<#rules>(input) && #bp >= min_bp {
-                    let op = <#op_ty as ::recursa_core::Parse>::parse::<#rules>(input)?;
-                    let rhs = parse_expr(input, #right_bp)?;
-                    lhs = #name::#vname(Box::new(lhs), op, Box::new(rhs));
-                    continue;
+    let infix_arms = infix_variants
+        .iter()
+        .map(|(vname, op_ty, bp, right_assoc)| {
+            let right_bp: u32 = if *right_assoc { *bp } else { bp + 1 };
+            quote! {
+                {
+                    <#rules as ::recursa_core::ParseRules>::consume_ignored(input);
+                    if <#op_ty as ::recursa_core::Parse>::peek::<#rules>(input) && #bp >= min_bp {
+                        let op = <#op_ty as ::recursa_core::Parse>::parse::<#rules>(input)?;
+                        let rhs = parse_expr(input, #right_bp)?;
+                        lhs = #name::#vname(Box::new(lhs), op, Box::new(rhs));
+                        continue;
+                    }
                 }
             }
-        }
-    });
+        });
 
     Ok(quote! {
         const _: () = {

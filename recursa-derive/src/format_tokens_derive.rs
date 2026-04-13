@@ -105,14 +105,22 @@ fn parse_field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
                         let value: Lit = content.parse()?;
                         let s = match &value {
                             Lit::Str(s) => s.value(),
-                            _ => return Err(syn::Error::new_spanned(value, "expected string literal")),
+                            _ => {
+                                return Err(syn::Error::new_spanned(
+                                    value,
+                                    "expected string literal",
+                                ));
+                            }
                         };
                         if key == "flat" {
                             flat = Some(s);
                         } else if key == "broken" {
                             broken = Some(s);
                         } else {
-                            return Err(syn::Error::new_spanned(key, "expected `flat` or `broken`"));
+                            return Err(syn::Error::new_spanned(
+                                key,
+                                "expected `flat` or `broken`",
+                            ));
                         }
                         let _ = content.parse::<syn::Token![,]>();
                     }
@@ -207,11 +215,15 @@ fn derive_enum(data: &syn::DataEnum) -> syn::Result<TokenStream> {
             match &variant.fields {
                 Fields::Unnamed(fields) => {
                     let bindings: Vec<_> = (0..fields.unnamed.len())
-                        .map(|i| syn::Ident::new(&format!("__f{i}"), proc_macro2::Span::call_site()))
+                        .map(|i| {
+                            syn::Ident::new(&format!("__f{i}"), proc_macro2::Span::call_site())
+                        })
                         .collect();
                     let calls: Vec<_> = bindings
                         .iter()
-                        .map(|b| quote! { ::recursa_core::FormatTokens::format_tokens(#b, tokens); })
+                        .map(
+                            |b| quote! { ::recursa_core::FormatTokens::format_tokens(#b, tokens); },
+                        )
                         .collect();
                     quote! {
                         Self::#vname(#(#bindings),*) => { #(#calls)* }
@@ -221,7 +233,9 @@ fn derive_enum(data: &syn::DataEnum) -> syn::Result<TokenStream> {
                     let names: Vec<_> = fields.named.iter().map(|f| &f.ident).collect();
                     let calls: Vec<_> = names
                         .iter()
-                        .map(|n| quote! { ::recursa_core::FormatTokens::format_tokens(#n, tokens); })
+                        .map(
+                            |n| quote! { ::recursa_core::FormatTokens::format_tokens(#n, tokens); },
+                        )
                         .collect();
                     quote! {
                         Self::#vname { #(#names),* } => { #(#calls)* }
@@ -248,10 +262,7 @@ fn emit_field(access: TokenStream, attrs: &FieldAttrs, is_option: bool) -> Token
     // attributed emission in an `if let Some` check so breaks/indents
     // are not emitted when the Option is None.
     if is_option && has_attrs {
-        let inner_emit = emit_field_inner(
-            quote! { *__inner },
-            attrs,
-        );
+        let inner_emit = emit_field_inner(quote! { *__inner }, attrs);
         quote! {
             if let ::std::option::Option::Some(__inner) = &#access {
                 #inner_emit

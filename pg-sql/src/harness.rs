@@ -130,7 +130,9 @@ pub(crate) fn execute_via_psql(sql: &str, psql_uri: &str) -> Result<String, Stri
         let _ = stdin.write_all(sql_owned.as_bytes());
     });
 
-    let output = child.wait_with_output().map_err(|e| format!("psql failed: {e}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("psql failed: {e}"))?;
     let _ = writer.join();
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -508,7 +510,12 @@ mod tests {
             let (_c, uri) = start_postgres();
             run_regression_test(
                 "aggregates",
-                &["test_setup", "create_index", "create_misc", "create_aggregate"],
+                &[
+                    "test_setup",
+                    "create_index",
+                    "create_misc",
+                    "create_aggregate",
+                ],
                 &uri,
             )
             .unwrap();

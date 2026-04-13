@@ -19,8 +19,7 @@ fn parse_total_visitor_attrs(input: &DeriveInput) -> syn::Result<TotalVisitorAtt
                     let _eq: syn::Token![=] = meta.input.parse()?;
                     let content;
                     syn::bracketed!(content in meta.input);
-                    let types =
-                        content.parse_terminated(Path::parse_mod_style, syn::Token![,])?;
+                    let types = content.parse_terminated(Path::parse_mod_style, syn::Token![,])?;
                     dispatch = types.into_iter().collect();
                     Ok(())
                 } else if meta.path.is_ident("error") {

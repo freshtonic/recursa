@@ -45,7 +45,9 @@ pub const fn strip_word_boundary(s: &str) -> &str {
     if len >= 2 && bytes[len - 2] == b'\\' && bytes[len - 1] == b'b' {
         // SAFETY: removing valid ASCII suffix from valid UTF-8 string.
         // We use from_raw_parts to avoid the const-indexing limitation.
-        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes.as_ptr(), len - 2)) }
+        unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes.as_ptr(), len - 2))
+        }
     } else {
         s
     }
@@ -332,9 +334,15 @@ mod tests {
             Token::String("a_very_long_column_name, another_long_column_name, yet_another_really_long_column_name_that_pushes_over".into()),
             Token::End,
         ];
-        let engine = PrintEngine::new(FormatStyle { max_width: 40, ..Default::default() });
+        let engine = PrintEngine::new(FormatStyle {
+            max_width: 40,
+            ..Default::default()
+        });
         let result = engine.print(&tokens);
-        assert!(result.contains('\n'), "expected line break but got: {result}");
+        assert!(
+            result.contains('\n'),
+            "expected line break but got: {result}"
+        );
     }
 
     #[test]

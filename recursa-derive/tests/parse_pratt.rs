@@ -174,7 +174,6 @@ fn pratt_error_on_empty() {
     assert!(result.is_err());
 }
 
-
 #[test]
 fn pratt_postfix_simple() {
     let mut input = Input::new("42?");

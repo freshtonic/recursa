@@ -817,13 +817,19 @@ mod tests {
 #[cfg(test)]
 mod ident_enum_tests {
     use super::literal::*;
-    use recursa::{Input, Parse};
     use crate::rules::SqlRules;
+    use recursa::{Input, Parse};
 
     #[test]
     fn ident_peek_rejects_from_keyword() {
         let input = Input::new("FROM");
-        eprintln!("Ident::peek(FROM, SqlRules) = {}", Ident::peek::<SqlRules>(&input));
-        assert!(!Ident::peek::<SqlRules>(&input), "Ident should not peek true for FROM");
+        eprintln!(
+            "Ident::peek(FROM, SqlRules) = {}",
+            Ident::peek::<SqlRules>(&input)
+        );
+        assert!(
+            !Ident::peek::<SqlRules>(&input),
+            "Ident should not peek true for FROM"
+        );
     }
 }
