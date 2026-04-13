@@ -945,7 +945,7 @@ fn print_expr(output: &mut String, expr: &Expr) {
 fn print_func_call(output: &mut String, func_call: &FuncCall) {
     output.push_str(&func_call.name.0);
     output.push('(');
-    if func_call.star_arg {
+    if func_call.star_arg.is_some() {
         output.push('*');
     } else {
         if func_call.distinct.is_some() {
