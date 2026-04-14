@@ -1,5 +1,5 @@
 use recursa_diagram::{
-    layout::{Node, NonTerminal, Terminal},
+    layout::{Node, NonTerminal, Sequence, Terminal},
     render,
 };
 
@@ -27,4 +27,16 @@ fn non_terminal_svg_with_href_wraps_in_anchor() {
     )));
     assert!(svg.contains(r#"<a xlink:href="Expr.html""#) || svg.contains(r#"<a href="Expr.html""#));
     assert!(svg.contains("Expr"));
+}
+
+#[test]
+fn sequence_renders_children_in_order() {
+    let seq = Node::Sequence(Sequence::new(vec![
+        Node::Terminal(Terminal::new("SELECT")),
+        Node::NonTerminal(NonTerminal::new("Column", None)),
+    ]));
+    let svg = render(&seq);
+    let i_select = svg.find("SELECT").expect("SELECT present");
+    let i_column = svg.find("Column").expect("Column present");
+    assert!(i_select < i_column, "SELECT should appear before Column");
 }

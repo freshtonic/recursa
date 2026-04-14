@@ -1,7 +1,8 @@
 //! SVG serialization for railroad layout trees.
 
 use crate::layout::{
-    BASELINE_OFFSET, BOX_HEIGHT, Choice, Node, NonTerminal, OneOrMore, Optional, Sequence, Terminal,
+    BASELINE_OFFSET, BOX_HEIGHT, Choice, HORIZONTAL_SPACER, Node, NonTerminal, OneOrMore, Optional,
+    Sequence, Terminal,
 };
 
 /// Outer padding around the rendered diagram, in SVG user units.
@@ -79,8 +80,20 @@ fn render_non_terminal(nt: &NonTerminal, x: i32, y: i32, out: &mut String) {
         out.push_str("</a>");
     }
 }
-fn render_sequence(_: &Sequence, _: i32, _: i32, _: &mut String) {
-    todo!("render_sequence not yet implemented");
+fn render_sequence(s: &Sequence, mut x: i32, y: i32, out: &mut String) {
+    let spacer = HORIZONTAL_SPACER as i32;
+    for (i, child) in s.children.iter().enumerate() {
+        if i > 0 {
+            // Connector path between previous child's exit and this child's entry,
+            // drawn at the shared baseline `y`.
+            out.push_str(&format!(
+                r#"<path d="M{x1} {y} h{spacer}"/>"#,
+                x1 = x - spacer,
+            ));
+        }
+        render_node(child, x, y, out);
+        x += child.width() as i32 + spacer;
+    }
 }
 fn render_choice(_: &Choice, _: i32, _: i32, _: &mut String) {
     todo!("render_choice not yet implemented");
