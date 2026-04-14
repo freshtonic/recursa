@@ -174,7 +174,11 @@ pub struct Choice {
 impl Choice {
     pub fn new(default_idx: usize, children: Vec<Node>) -> Self {
         assert!(!children.is_empty(), "Choice must have at least one child");
-        assert!(default_idx < children.len());
+        assert!(
+            default_idx < children.len(),
+            "Choice default_idx {default_idx} out of bounds (len = {})",
+            children.len()
+        );
         let width =
             children.iter().map(|c| c.width()).max().unwrap() + CHOICE_RAIL_WIDTH;
         let height: u32 = children.iter().map(|c| c.height()).sum::<u32>()
