@@ -27,6 +27,87 @@
 
 ---
 
+## Task 0: Relax `'static` in the visitor system (prerequisite)
+
+**Why:** `TotalVisitor::total_enter<N: 'static>` uses `TypeId::of::<N>()` for dispatch, which requires `N: 'static`. Any AST type containing `Cow<'input, str>` is not `'static`, so the generated `Visit for Expr<'input>` would fail to compile. Replace `TypeId` dispatch with `type_name` dispatch and push `'static` bounds from traits to individual methods that genuinely need them.
+
+**Blast radius:** `recursa-core/src/visitor.rs`, `recursa-derive/src/total_visitor_derive.rs`, `tests/visitor.rs`. pg-sql has no `TotalVisitor` impls, so it's unaffected until lifetime propagation begins.
+
+### Task 0a: Relax `Visit` / `AsNodeKey` / `TotalVisitor` trait bounds
+
+**Files:**
+- Modify: `recursa-core/src/visitor.rs`
+
+**Changes:**
+1. `pub trait AsNodeKey: 'static` → `pub trait AsNodeKey`. Move the `'static` bound onto the `as_node_key` method via `where Self: Sized + 'static`.
+2. `pub trait Visit: 'static + Sized + AsNodeKey` → `pub trait Visit: Sized + AsNodeKey`.
+3. `downcast_ref` / `is` — add `where Self: 'static, Target: 'static` bounds.
+4. `TotalVisitor::total_enter<N: 'static>` / `total_exit<N: 'static>` → drop the `N: 'static` bound.
+5. `NodeKey::new<N: 'static>` stays `'static`.
+6. Blanket impls for `Box<T>`, `Option<T>`, `Vec<T>` — adjust bounds as needed so they still compile under the relaxed traits.
+7. `PhantomData<T>` impl — keep its `T: 'static` bound.
+8. Run `cargo check -p recursa-core`.
+9. Commit: `refactor(recursa-core): relax 'static bounds on Visit traits`
+
+### Task 0b: Update `total_visitor_derive` to use `type_name` dispatch
+
+**Files:**
+- Modify: `recursa-derive/src/total_visitor_derive.rs:58-101`
+
+**Changes:**
+1. Replace both dispatch arms' `TypeId::of::<N>() == TypeId::of::<#ty>()` with `::std::any::type_name::<N>() == ::std::any::type_name::<#ty>()`.
+2. Add a doc comment on the generated `total_enter` explaining the trade-off:
+   ```rust
+   // Dispatch via type_name rather than TypeId: TypeId requires N: 'static,
+   // which rules out AST types carrying a borrowed 'input lifetime.
+   // type_name has no 'static bound and, while documented as diagnostic-only,
+   // is de facto unique per type in stable Rust. Accepted trade-off.
+   ```
+3. Remove `N: 'static` from the emitted `total_enter<N: 'static>` / `total_exit<N: 'static>` signatures.
+4. Run `cargo check -p recursa-derive`.
+5. Commit: `refactor(recursa-derive): dispatch TotalVisitor by type_name`
+
+### Task 0c: `Visit` leaf impl for `Cow<'_, str>` as no-op
+
+**Files:**
+- Modify: `recursa-core/src/visitor.rs` (the existing `String` leaf impl around line 156)
+
+**Changes:**
+1. Replace the `String` leaf impl with:
+   ```rust
+   // -- Leaf Visit impl for Cow<str> --
+   // No-op traversal: borrowed string leaves don't participate in visitor
+   // dispatch (they can't be 'static and so can't be TypeId targets).
+   impl<'a> AsNodeKey for ::std::borrow::Cow<'a, str> {}
+   impl<'a> Visit for ::std::borrow::Cow<'a, str> {
+       fn visit<V: TotalVisitor>(&self, _visitor: &mut V)
+           -> ::std::ops::ControlFlow<Break<V::Error>>
+       {
+           ::std::ops::ControlFlow::Continue(())
+       }
+   }
+   ```
+2. Run `cargo check -p recursa-core`.
+3. Commit: `refactor(recursa-core): Visit leaf impl for Cow<str> as no-op`
+
+### Task 0d: Fix `tests/visitor.rs` if broken
+
+**Files:**
+- Inspect: `tests/visitor.rs`
+
+**Steps:**
+1. Run `cargo test -p recursa --test visitor 2>&1 | tail -30` (adjust if the test lives in a different package).
+2. If `downcast_ref::<Ident>` or similar breaks because `Ident` is now `Ident<'input>`, fix the test.
+3. Commit only if a fix was needed: `test(recursa): adjust visitor test after Visit relaxation`
+
+### Task 0 exit criteria
+
+- `cargo check -p recursa-core` and `cargo check -p recursa-derive` clean.
+- `cargo test -p recursa-core --tests` passes.
+- Commits: `0a → 0b → 0c → [0d]`.
+
+---
+
 ## Task 1: Change `recursa-derive` scanner-tuple codegen to emit `Cow::Borrowed`
 
 **Files:**
