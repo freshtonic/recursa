@@ -46,6 +46,59 @@ fn parse_with_sqlparser(sql: &str) -> bool {
     SqlParser::parse_sql(&PostgreSqlDialect {}, sql).is_ok()
 }
 
+/// (shape_name, list of (size, filename)) — must match files produced by
+/// `src/bin/gen_stress.rs`. Keep in sync when adding shapes.
+fn stress_shapes() -> Vec<(&'static str, Vec<(usize, String)>)> {
+    vec![
+        ("insert_values", vec![
+            (100, "insert_values_100.sql".into()),
+            (1_000, "insert_values_1000.sql".into()),
+            (10_000, "insert_values_10000.sql".into()),
+        ]),
+        ("bool_chain", vec![
+            (10, "bool_chain_10.sql".into()),
+            (100, "bool_chain_100.sql".into()),
+            (1_000, "bool_chain_1000.sql".into()),
+        ]),
+        ("select_list", vec![
+            (100, "select_list_100.sql".into()),
+            (1_000, "select_list_1000.sql".into()),
+            (10_000, "select_list_10000.sql".into()),
+        ]),
+        ("nested_subquery", vec![
+            (10, "nested_subquery_10.sql".into()),
+            (50, "nested_subquery_50.sql".into()),
+            (100, "nested_subquery_100.sql".into()),
+        ]),
+        ("in_list", vec![
+            (100, "in_list_100.sql".into()),
+            (1_000, "in_list_1000.sql".into()),
+            (10_000, "in_list_10000.sql".into()),
+        ]),
+    ]
+}
+
+fn bench_stress_shapes(c: &mut Criterion) {
+    let stress_dir = fixtures_root().join("stress");
+
+    for (shape, sizes) in stress_shapes() {
+        let mut group = c.benchmark_group(format!("stress/{shape}"));
+        for (n, file) in sizes {
+            let sql = fs::read_to_string(stress_dir.join(&file))
+                .unwrap_or_else(|e| panic!("read {file}: {e}"));
+            group.throughput(Throughput::Bytes(sql.len() as u64));
+
+            group.bench_with_input(BenchmarkId::new("pg-sql", n), &sql, |b, sql| {
+                b.iter(|| criterion::black_box(parse_with_pg_sql(sql)));
+            });
+            group.bench_with_input(BenchmarkId::new("sqlparser", n), &sql, |b, sql| {
+                b.iter(|| criterion::black_box(parse_with_sqlparser(sql)));
+            });
+        }
+        group.finish();
+    }
+}
+
 fn bench_corpus_full(c: &mut Criterion) {
     let corpus = load_sql_dir(&fixtures_root().join("sql"));
     let total_bytes: u64 = corpus.iter().map(|(_, s)| s.len() as u64).sum();
@@ -116,5 +169,10 @@ fn bench_corpus_head_to_head(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_corpus_full, bench_corpus_head_to_head);
+criterion_group!(
+    benches,
+    bench_corpus_full,
+    bench_corpus_head_to_head,
+    bench_stress_shapes
+);
 criterion_main!(benches);
