@@ -1,4 +1,5 @@
 pub mod analyze;
+pub mod common;
 pub mod create_function;
 pub mod create_index;
 pub mod create_table;
@@ -34,7 +35,7 @@ use self::{
     insert::InsertStmt,
     merge::MergeStmt,
     select::SelectStmt,
-    set_reset::{ResetStmt, SetStmt},
+    set_reset::{ResetStmt, SetRoleStmt, SetSessionAuthStmt, SetStmt, SetTimeZoneStmt},
     simple_stmts::*,
     update::UpdateStmt,
     values::{CompoundQuery, TableStmt},
@@ -183,6 +184,11 @@ pub enum Statement {
     Close(CloseStmt),
     Move(MoveStmt),
     // Configuration
+    // Multi-keyword SET variants must come before plain Set so
+    // longest-match-wins picks the more specific form.
+    SetSessionAuth(SetSessionAuthStmt),
+    SetTimeZone(SetTimeZoneStmt),
+    SetRole(SetRoleStmt),
     Set(SetStmt),
     Reset(ResetStmt),
     Analyze(AnalyzeStmt),

@@ -8,6 +8,7 @@ use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
+use crate::ast::common::{DropBehavior, QualifiedName};
 use crate::ast::create_table::TempKw;
 use crate::ast::values::CompoundQuery;
 use crate::rules::SqlRules;
@@ -45,14 +46,19 @@ pub struct CreateViewStmt {
     pub query: CompoundQuery,
 }
 
-/// DROP VIEW statement: `DROP VIEW [IF EXISTS] name`
+/// DROP VIEW statement:
+///
+/// ```sql
+/// DROP VIEW [IF EXISTS] name [, name ...] [CASCADE | RESTRICT]
+/// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropViewStmt {
     pub _drop: PhantomData<keyword::Drop>,
     pub _view: PhantomData<keyword::View>,
     pub if_exists: Option<IfExistsKw>,
-    pub name: literal::Ident,
+    pub names: Seq<QualifiedName, punct::Comma>,
+    pub behavior: Option<DropBehavior>,
 }
 
 #[cfg(test)]
@@ -108,8 +114,18 @@ mod tests {
     fn parse_drop_view() {
         let mut input = Input::new("DROP VIEW v");
         let stmt = DropViewStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.name.text(), "v");
+        assert_eq!(stmt.names.len(), 1);
         assert!(stmt.if_exists.is_none());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_drop_view_if_exists_multi_cascade() {
+        let mut input = Input::new("DROP VIEW IF EXISTS a, b CASCADE");
+        let stmt = DropViewStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.if_exists.is_some());
+        assert_eq!(stmt.names.len(), 2);
+        assert!(stmt.behavior.is_some());
         assert!(input.is_empty());
     }
 }

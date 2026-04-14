@@ -1,11 +1,11 @@
 /// SELECT statement AST.
 use std::marker::PhantomData;
 
-use recursa::seq::{OptionalTrailing, Seq};
+use recursa::seq::{NoTrailing, NonEmpty, OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
-use crate::ast::delete::TableAlias as IdentAlias;
+use crate::ast::common::QualifiedName;
 use crate::ast::expr::{Expr, FuncCall};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
@@ -60,7 +60,7 @@ pub struct FromClause {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InheritedTable {
-    pub name: literal::Ident,
+    pub name: QualifiedName,
     pub _star: punct::Star,
     pub alias: Option<literal::Ident>,
 }
@@ -104,8 +104,44 @@ pub struct LateralRef {
 #[parse(rules = SqlRules)]
 pub struct PlainTable {
     pub only: Option<PhantomData<keyword::Only>>,
+    pub name: QualifiedName,
+    pub alias: Option<PlainTableAlias>,
+}
+
+/// Alias of a plain table reference in FROM: `[AS] name [(col, col, ...)]`.
+///
+/// Unlike `TableAlias` (which is used for subqueries, function tables, etc.,
+/// where an alias is mandatory), this one uses `literal::Ident` for the bare
+/// form so that SQL keywords like `WHERE`, `ORDER`, `GROUP` are not swallowed
+/// as the alias name when the alias is absent. The `WithAs` variant can still
+/// use `literal::AliasName` because the `AS` keyword disambiguates.
+///
+/// Variant ordering: `WithAs` (starts with `AS`) must be listed before `Bare`
+/// so longest-match-wins picks it when `AS` is present.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum PlainTableAlias {
+    WithAs(PlainTableAliasWithAs),
+    Bare(PlainTableAliasBare),
+}
+
+/// `AS name [(col, ...)]` form.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct PlainTableAliasWithAs {
+    pub _as: PhantomData<keyword::As>,
+    pub name: literal::AliasName,
+    pub columns:
+        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+}
+
+/// Bare `name [(col, ...)]` form. Uses `literal::Ident` to reject keywords.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct PlainTableAliasBare {
     pub name: literal::Ident,
-    pub alias: Option<IdentAlias>,
+    pub columns:
+        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
 }
 
 /// Function call used as table reference with optional alias.
@@ -297,6 +333,27 @@ pub struct HavingClause {
     pub condition: Expr,
 }
 
+/// A single named window definition: `name AS (inline_window_spec)`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct WindowDef {
+    pub name: literal::Ident,
+    pub _as: PhantomData<keyword::As>,
+    pub spec: Surrounded<
+        punct::LParen,
+        crate::ast::expr::InlineWindowSpec,
+        punct::RParen,
+    >,
+}
+
+/// `WINDOW name AS (...)[, name AS (...), ...]` clause in SELECT.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct WindowClause {
+    pub _window: PhantomData<keyword::Window>,
+    pub defs: Seq<WindowDef, punct::Comma, NoTrailing, NonEmpty>,
+}
+
 /// SELECT statement.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
@@ -314,6 +371,8 @@ pub struct SelectStmt {
     pub group_by: Option<GroupByClause>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub having: Option<HavingClause>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
+    pub window: Option<WindowClause>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub order_by: Option<OrderByClause>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
@@ -470,6 +529,65 @@ mod tests {
     #[test]
     fn parse_select_from_only_with_alias() {
         let mut input = Input::new("SELECT f1 FROM ONLY t AS x");
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.from_clause.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_from_qualified_name() {
+        let mut input = Input::new("SELECT * FROM myschema.mytable");
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.from_clause.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_window_clause_standalone() {
+        use super::WindowClause;
+        let mut input = Input::new("WINDOW w AS (PARTITION BY y ORDER BY z)");
+        let wc = WindowClause::parse::<SqlRules>(&mut input).unwrap();
+        assert_eq!(wc.defs.len(), 1);
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_window_clause() {
+        let mut input = Input::new(
+            "SELECT sum(x) OVER w FROM t WINDOW w AS (PARTITION BY y ORDER BY z)",
+        );
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.window.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_frame_rows_between() {
+        let mut input = Input::new(
+            "SELECT sum(x) OVER (ORDER BY y ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+        );
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_over_named() {
+        let mut input = Input::new("SELECT sum(x) OVER w FROM t");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_from_alias_with_column_list() {
+        let mut input = Input::new("SELECT * FROM tbl AS t (a, b, c)");
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.from_clause.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_from_qualified_name_with_alias() {
+        let mut input = Input::new("SELECT * FROM s.t AS x");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.from_clause.is_some());
         assert!(input.is_empty());

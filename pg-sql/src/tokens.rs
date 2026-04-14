@@ -264,6 +264,30 @@ pub mod keyword {
         Hash        => r"HASH\b",
         Spgist      => r"SPGIST\b",
         Brin        => r"BRIN\b",
+        // SET / RESET extension keywords. Deliberately NOT added to
+        // SQL_KEYWORDS so they remain usable as ordinary identifiers
+        // (e.g., column names `session`, `time`, etc.). They are only
+        // recognized as keywords in positions where the grammar
+        // explicitly looks for them.
+        Session     => r"SESSION\b",
+        Authorization => r"AUTHORIZATION\b",
+        Time        => r"TIME\b",
+        Zone        => r"ZONE\b",
+        None        => r"NONE\b",
+        // Window function keywords (frame clauses, named windows). Not in
+        // SQL_KEYWORDS for the same reason: they can still appear as
+        // identifiers outside window grammar contexts.
+        Window      => r"WINDOW\b",
+        Rows        => r"ROWS\b",
+        RangeKw     => r"RANGE\b",
+        Groups      => r"GROUPS\b",
+        Unbounded   => r"UNBOUNDED\b",
+        Preceding   => r"PRECEDING\b",
+        Following   => r"FOLLOWING\b",
+        CurrentKw   => r"CURRENT\b",
+        Excludew    => r"EXCLUDE\b",
+        Others      => r"OTHERS\b",
+        Ties        => r"TIES\b",
     }
 }
 
@@ -527,6 +551,18 @@ pub mod literal {
         "HASH",
         "SPGIST",
         "BRIN",
+        // Window function keywords (Bundle 6).
+        "WINDOW",
+        "ROWS",
+        "RANGE",
+        "GROUPS",
+        "UNBOUNDED",
+        "PRECEDING",
+        "FOLLOWING",
+        "CURRENT",
+        "EXCLUDE",
+        "OTHERS",
+        "TIES",
     ];
 
     fn is_keyword(s: &str) -> bool {

@@ -127,15 +127,39 @@ pub struct QualifiedWildcard {
 #[parse(rules = SqlRules)]
 pub struct DistinctKw(pub keyword::Distinct);
 
-/// Window specification: `OVER (...)` or `OVER ()`.
+/// Window specification: `OVER window_name` or `OVER (inline_spec)`.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowSpec {
     pub _over: keyword::Over,
-    pub _lparen: punct::LParen,
+    pub body: WindowSpecBody,
+}
+
+/// Body of an OVER clause.
+///
+/// Variant ordering: Inline (starts with `(`) before Named (starts with an
+/// identifier). They start with different tokens so peek disambiguation is
+/// trivial.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum WindowSpecBody {
+    Inline(Surrounded<punct::LParen, InlineWindowSpec, punct::RParen>),
+    Named(literal::Ident),
+}
+
+/// Interior of an inline window spec (between the parens).
+///
+/// The optional `ref_name` is an existing-window reference (e.g.
+/// `WINDOW w2 AS (w1 ORDER BY x)`). It relies on `Option<literal::Ident>`
+/// peek-disambiguating cleanly against `PARTITION`/`ORDER`/`ROWS`/etc.
+/// because keywords are rejected by `literal::Ident`.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct InlineWindowSpec {
+    pub ref_name: Option<literal::Ident>,
     pub partition_by: Option<WindowPartitionBy>,
     pub order_by: Option<crate::ast::select::OrderByClause>,
-    pub _rparen: punct::RParen,
+    pub frame: Option<WindowFrameClause>,
 }
 
 /// PARTITION BY in window: `PARTITION BY expr, ...`
@@ -145,6 +169,123 @@ pub struct WindowPartitionBy {
     pub _partition: keyword::Partition,
     pub _by: keyword::By,
     pub exprs: Seq<Expr, punct::Comma>,
+}
+
+/// Frame unit: `ROWS | RANGE | GROUPS`.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum WindowFrameUnit {
+    Rows(keyword::Rows),
+    Range(keyword::RangeKw),
+    Groups(keyword::Groups),
+}
+
+/// `WINDOW` frame clause: `unit BETWEEN start AND end [EXCLUDE ...]`
+/// or `unit start`.
+///
+/// Variant ordering: `Between` (starts with `unit BETWEEN`) before `Single`
+/// (starts with `unit <bound>`). Longest-match-wins.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum WindowFrameClause {
+    Between(WindowFrameBetween),
+    Single(WindowFrameSingle),
+}
+
+/// `unit BETWEEN start AND end [EXCLUDE ...]`
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct WindowFrameBetween {
+    pub unit: WindowFrameUnit,
+    pub _between: keyword::Between,
+    pub start: WindowFrameBound,
+    pub _and: keyword::And,
+    pub end: WindowFrameBound,
+    pub exclude: Option<WindowFrameExclude>,
+}
+
+/// `unit start [EXCLUDE ...]`
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct WindowFrameSingle {
+    pub unit: WindowFrameUnit,
+    pub bound: WindowFrameBound,
+    pub exclude: Option<WindowFrameExclude>,
+}
+
+/// A single frame bound.
+///
+/// Variant ordering: two-token forms first (`UNBOUNDED PRECEDING`,
+/// `CURRENT ROW`, `UNBOUNDED FOLLOWING`), then the expr-prefixed forms
+/// (`expr PRECEDING` / `expr FOLLOWING`). The expr forms start with an
+/// expression and can't be confused with keyword-prefixed forms.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum WindowFrameBound {
+    UnboundedPreceding(UnboundedPreceding),
+    UnboundedFollowing(UnboundedFollowing),
+    CurrentRow(CurrentRow),
+    ExprPreceding(ExprPreceding),
+    ExprFollowing(ExprFollowing),
+}
+
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct UnboundedPreceding {
+    pub _unbounded: keyword::Unbounded,
+    pub _preceding: keyword::Preceding,
+}
+
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct UnboundedFollowing {
+    pub _unbounded: keyword::Unbounded,
+    pub _following: keyword::Following,
+}
+
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct CurrentRow {
+    pub _current: keyword::CurrentKw,
+    pub _row: keyword::Row,
+}
+
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct ExprPreceding {
+    pub expr: Box<Expr>,
+    pub _preceding: keyword::Preceding,
+}
+
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct ExprFollowing {
+    pub expr: Box<Expr>,
+    pub _following: keyword::Following,
+}
+
+/// `EXCLUDE { CURRENT ROW | GROUP | TIES | NO OTHERS }` frame exclusion.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct WindowFrameExclude {
+    pub _exclude: keyword::Excludew,
+    pub target: WindowFrameExcludeTarget,
+}
+
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum WindowFrameExcludeTarget {
+    CurrentRow(CurrentRow),
+    Group(keyword::Group),
+    Ties(keyword::Ties),
+    NoOthers(NoOthers),
+}
+
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct NoOthers {
+    pub _no: keyword::No,
+    pub _others: keyword::Others,
 }
 
 /// Function call: `name(arg1, arg2, ...)`

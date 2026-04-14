@@ -5,6 +5,8 @@ use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
+pub use crate::ast::common::{CascadeKw, DropBehavior, RestrictKw};
+
 use crate::ast::create_view::IfExistsKw;
 use crate::ast::expr::Expr;
 use crate::ast::select::{NullsOrder, SortDir, WhereClause};
@@ -18,24 +20,6 @@ pub struct IfNotExistsKw {
     pub _if: PhantomData<keyword::If>,
     pub _not: PhantomData<keyword::Not>,
     pub _exists: PhantomData<keyword::Exists>,
-}
-
-/// `CASCADE` drop behavior.
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct CascadeKw(pub PhantomData<keyword::Cascade>);
-
-/// `RESTRICT` drop behavior.
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct RestrictKw(pub PhantomData<keyword::Restrict>);
-
-/// `CASCADE | RESTRICT` drop behavior.
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub enum DropBehavior {
-    Cascade(CascadeKw),
-    Restrict(RestrictKw),
 }
 
 /// Index access method: `USING method_name`.

@@ -331,6 +331,7 @@ pub struct ColumnsBody {
         Surrounded<punct::LParen, Seq<ColumnOrConstraint, punct::Comma>, punct::RParen>,
     pub inherits: Option<InheritsClause>,
     pub partition_by: Option<PartitionByClause>,
+    pub with_storage: Option<crate::ast::create_index::WithStorage>,
 }
 
 /// Partition-of table body: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
@@ -342,6 +343,7 @@ pub struct PartitionOfBody {
     pub parent: literal::Ident,
     pub for_values: ForValuesInClause,
     pub partition_by: Option<PartitionByClause>,
+    pub with_storage: Option<crate::ast::create_index::WithStorage>,
 }
 
 /// AS-query table body: `AS SELECT ...`
@@ -535,6 +537,13 @@ mod tests {
     #[test]
     fn parse_table_check_no_inherit() {
         let mut input = Input::new("CREATE TABLE t (a int, CHECK (a > 0) NO INHERIT)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_with_storage_params() {
+        let mut input = Input::new("CREATE TABLE t (a int) WITH (fillfactor = 70)");
         let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
