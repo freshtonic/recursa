@@ -90,6 +90,21 @@ pub struct NonTerminal {
     pub down: u32,
 }
 
+impl NonTerminal {
+    pub fn new(text: impl Into<String>, href: Option<String>) -> Self {
+        let text = text.into();
+        let width = (text.chars().count() as u32) * 8 + 40;
+        Self {
+            text,
+            href,
+            width,
+            height: 22,
+            up: 11,
+            down: 11,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Sequence {
     pub children: Vec<Node>,
