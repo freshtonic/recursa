@@ -230,32 +230,40 @@ fn type_label(ty: &Type) -> String {
     quote!(#ty).to_string()
 }
 
-// Best-effort relative href for a type-path reference. We strip a leading
-// `crate::` segment and emit the remaining path with `/` separators followed by
-// `.html`. For a same-module bare reference like `Foo` this yields `Foo.html`,
-// which rustdoc resolves against the current page. For a qualified path like
-// `crate::ast::Thing` this yields `ast/Thing.html`, which is correct when the
-// diagram is rendered inside a doc page at the crate root but wrong when the
-// caller lives in a nested module — proc macros lack the module context to do
-// better. Phase 5's smoke test will reveal whether rustdoc accepts these
-// links; if not, we'll need a configurable path-prefix attribute.
+// Best-effort relative href for a type-path reference. We strip a single
+// leading `crate::` segment and emit the remaining path with `/` separators
+// followed by `.html`. For a same-module bare reference like `Foo` this yields
+// `Foo.html`, which rustdoc resolves against the current page. For a qualified
+// path like `crate::ast::Thing` this yields `ast/Thing.html`, which is correct
+// when the diagram is rendered inside a doc page at the crate root but wrong
+// when the caller lives in a nested module — proc macros lack the module
+// context to do better. Phase 5's smoke test will reveal whether rustdoc
+// accepts these links; if not, we'll need a configurable path-prefix attribute.
 //
-// Returns `None` for non-path types (references, tuples, slices, etc.) since
-// those have no obvious href target.
+// Returns `None` for:
+// - non-path types (references, tuples, slices, etc.)
+// - absolute paths (`::std::vec::Vec`) — would link out of the current crate
+// - paths starting with `super::` or `self::` — rustdoc has no such directories
+//   and we can't resolve them without the calling module's context
 fn type_href(ty: &Type) -> Option<String> {
     let Type::Path(p) = ty else {
         return None;
     };
-    if p.path.segments.is_empty() {
+    if p.path.leading_colon.is_some() || p.path.segments.is_empty() {
         return None;
     }
-    let segments: Vec<String> = p
+    let mut segments: Vec<String> = p
         .path
         .segments
         .iter()
         .map(|s| s.ident.to_string())
-        .skip_while(|s| s == "crate")
         .collect();
+    if matches!(segments.first().map(String::as_str), Some("super" | "self")) {
+        return None;
+    }
+    if segments.first().map(String::as_str) == Some("crate") {
+        segments.remove(0);
+    }
     if segments.is_empty() {
         return None;
     }
@@ -525,6 +533,32 @@ mod tests {
     }
 
     #[test]
+    fn super_and_self_paths_return_none() {
+        // rustdoc has no `super` or `self` directories; better to omit the
+        // link than emit a guaranteed 404.
+        assert_eq!(type_href(&parse_type(quote!(super::Foo))), None);
+        assert_eq!(type_href(&parse_type(quote!(self::Foo))), None);
+        assert_eq!(type_href(&parse_type(quote!(super::ast::Foo))), None);
+    }
+
+    #[test]
+    fn absolute_paths_return_none() {
+        // `::std::vec::Vec` would link out of the current crate; omit.
+        assert_eq!(type_href(&parse_type(quote!(::std::vec::Vec))), None);
+        assert_eq!(type_href(&parse_type(quote!(::core::option::Option))), None);
+    }
+
+    #[test]
+    fn double_crate_strips_only_one() {
+        // Pathological — `skip_while` would have stripped both. Single strip
+        // matches the comment on type_href.
+        assert_eq!(
+            type_href(&parse_type(quote!(crate::crate_::Foo))).as_deref(),
+            Some("crate_/Foo.html")
+        );
+    }
+
+    #[test]
     fn field_label_overrides_type_name() {
         let node = node_for(quote! {
             pub struct S {
@@ -534,10 +568,57 @@ mod tests {
         });
         match node {
             Node::Sequence(seq) => match &seq.children[0] {
-                Node::NonTerminal(nt) => assert_eq!(nt.text, "SELECT"),
+                Node::NonTerminal(nt) => {
+                    assert_eq!(nt.text, "SELECT");
+                    // A label short-circuits recognize entirely, so no href
+                    // should be derived from the underlying type. Pinning this
+                    // distinguishes the label path from incidental NonTerminal
+                    // construction with a coincidentally-matching text.
+                    assert!(nt.href.is_none(), "label should suppress href");
+                }
                 other => panic!("expected NonTerminal, got {other:?}"),
             },
             other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn split_attribute_label_skip_conflict_is_rejected() {
+        // The conflict check fires after both attributes have been folded
+        // into the same FieldAttrs. Verify it works when label and skip
+        // arrive in separate `#[railroad(...)]` attrs, not just the same one.
+        let item: TokenStream = quote! {
+            pub struct S {
+                #[railroad(skip)]
+                #[railroad(label = "X")]
+                f: Foo,
+            }
+        };
+        let err = expand(quote! {}, item).expect_err("expected conflict error");
+        assert!(
+            err.to_string().contains("mutually exclusive"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn multi_field_tuple_variant_falls_back_to_variant_name() {
+        // Non-conforming per CLAUDE.md (variants must be single-field tuples)
+        // but the macro defends against it with a NonTerminal fallback.
+        let node = node_for(quote! {
+            pub enum E {
+                Pair(Foo, Bar),
+            }
+        });
+        match node {
+            Node::Choice(ch) => match &ch.children[0] {
+                Node::NonTerminal(nt) => {
+                    assert_eq!(nt.text, "Pair");
+                    assert!(nt.href.is_none());
+                }
+                other => panic!("expected NonTerminal, got {other:?}"),
+            },
+            other => panic!("expected Choice, got {other:?}"),
         }
     }
 }
