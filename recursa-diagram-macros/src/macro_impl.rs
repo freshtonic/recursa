@@ -7,7 +7,7 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use recursa_diagram_core::layout::{NonTerminal, OneOrMore, Optional, Sequence, Terminal};
+use recursa_diagram_core::layout::{Choice, NonTerminal, OneOrMore, Optional, Sequence, Terminal};
 use recursa_diagram_core::{layout::Node, render};
 use syn::parse::Parser;
 use syn::{
@@ -77,10 +77,30 @@ fn build_node(input: &DeriveInput, attrs: &TypeAttrs) -> syn::Result<Node> {
             ))),
             _ => build_from_fields(&s.fields),
         },
-        Data::Enum(_) => Ok(Node::NonTerminal(NonTerminal::new(
-            input.ident.to_string(),
-            None,
-        ))),
+        Data::Enum(e) => {
+            if e.variants.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "empty enum has nothing to render",
+                ));
+            }
+            // Per CLAUDE.md, recursa enum variants are single-field tuple
+            // variants wrapping a `Parse`-implementing type. We recognise that
+            // shape by recursing into the inner type. Anything else (unit,
+            // multi-field tuple, named) is non-conforming, but we still produce
+            // a defensive `NonTerminal(VariantIdent)` rather than failing.
+            let children: Vec<Node> = e
+                .variants
+                .iter()
+                .map(|v| match &v.fields {
+                    Fields::Unnamed(u) if u.unnamed.len() == 1 => recognize(&u.unnamed[0].ty),
+                    _ => Node::NonTerminal(NonTerminal::new(v.ident.to_string(), None)),
+                })
+                .collect();
+            // Default to the first declared variant; we have no semantic
+            // information to choose otherwise.
+            Ok(Node::Choice(Choice::new(0, children)))
+        }
         Data::Union(_) => Err(syn::Error::new_spanned(input, "unions are not supported")),
     }
 }
@@ -360,6 +380,67 @@ mod tests {
             },
             other => panic!("expected Sequence, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn enum_renders_as_choice() {
+        let node = node_for(quote! {
+            pub enum Stmt {
+                Select(SelectStmt),
+                Insert(InsertStmt),
+                Update(UpdateStmt),
+            }
+        });
+        match node {
+            Node::Choice(ch) => {
+                assert_eq!(ch.children.len(), 3);
+                assert_eq!(ch.default_idx, 0);
+            }
+            other => panic!("expected Choice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_variant_unwraps_inner_type() {
+        let node = node_for(quote! {
+            pub enum E {
+                Wrapped(Box<Foo>),
+            }
+        });
+        match node {
+            Node::Choice(ch) => match &ch.children[0] {
+                Node::NonTerminal(nt) => assert_eq!(nt.text, "Foo"),
+                other => panic!("expected NonTerminal Foo, got {other:?}"),
+            },
+            other => panic!("expected Choice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unit_variant_falls_back_to_variant_name() {
+        let node = node_for(quote! {
+            pub enum E { Bare }
+        });
+        match node {
+            Node::Choice(ch) => match &ch.children[0] {
+                Node::NonTerminal(nt) => {
+                    assert_eq!(nt.text, "Bare");
+                    assert!(nt.href.is_none());
+                }
+                other => panic!("expected NonTerminal, got {other:?}"),
+            },
+            other => panic!("expected Choice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_enum_is_rejected() {
+        let input: DeriveInput = parse2(quote! { pub enum Empty {} }).unwrap();
+        let err = build_node(&input, &TypeAttrs::default()).expect_err("expected empty-enum error");
+        assert!(
+            err.to_string().contains("empty enum"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
