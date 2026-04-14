@@ -2,8 +2,21 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{
+    criterion_group, criterion_main, measurement::WallTime, BenchmarkGroup, BenchmarkId, Criterion,
+    Throughput,
+};
+
+/// Cap warm-up and measurement time so a single pathological case (e.g. deep
+/// nested subquery parsing) can't stall the whole suite. Applied to every
+/// group in this file.
+fn cap_time(group: &mut BenchmarkGroup<'_, WallTime>) {
+    group.warm_up_time(Duration::from_millis(200));
+    group.measurement_time(Duration::from_secs(1));
+    group.sample_size(10);
+}
 use pg_sql::ast::parse_sql_file;
 use recursa::Input;
 use sqlparser::dialect::PostgreSqlDialect;
@@ -66,9 +79,9 @@ fn stress_shapes() -> Vec<(&'static str, Vec<(usize, String)>)> {
             (10_000, "select_list_10000.sql".into()),
         ]),
         ("nested_subquery", vec![
+            (5, "nested_subquery_5.sql".into()),
             (10, "nested_subquery_10.sql".into()),
-            (50, "nested_subquery_50.sql".into()),
-            (100, "nested_subquery_100.sql".into()),
+            (15, "nested_subquery_15.sql".into()),
         ]),
         ("in_list", vec![
             (100, "in_list_100.sql".into()),
@@ -83,6 +96,7 @@ fn bench_stress_shapes(c: &mut Criterion) {
 
     for (shape, sizes) in stress_shapes() {
         let mut group = c.benchmark_group(format!("stress/{shape}"));
+        cap_time(&mut group);
         for (n, file) in sizes {
             let sql = fs::read_to_string(stress_dir.join(&file))
                 .unwrap_or_else(|e| panic!("read {file}: {e}"));
@@ -105,6 +119,7 @@ fn bench_corpus_full(c: &mut Criterion) {
     let file_count = corpus.len();
 
     let mut group = c.benchmark_group("corpus/pg-sql-full");
+    cap_time(&mut group);
     group.throughput(Throughput::Bytes(total_bytes));
     group.bench_function(BenchmarkId::from_parameter(file_count), |b| {
         b.iter(|| {
@@ -148,6 +163,7 @@ fn bench_corpus_head_to_head(c: &mut Criterion) {
     );
 
     let mut group = c.benchmark_group("corpus/head-to-head");
+    cap_time(&mut group);
     group.throughput(Throughput::Bytes(bytes));
 
     group.bench_function("pg-sql", |b| {

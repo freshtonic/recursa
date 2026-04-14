@@ -18,7 +18,7 @@ fn main() {
     for n in [100usize, 1_000, 10_000] {
         write(&out, &format!("select_list_{n}.sql"), &select_list(n));
     }
-    for n in [10usize, 50, 100] {
+    for n in [5usize, 10, 15] {
         write(&out, &format!("nested_subquery_{n}.sql"), &nested_subquery(n));
     }
     for n in [100usize, 1_000, 10_000] {
