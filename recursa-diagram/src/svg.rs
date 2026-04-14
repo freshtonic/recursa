@@ -37,6 +37,16 @@ pub fn render(root: &Node) -> String {
     out
 }
 
+/// Horizontally centre a child of width `child_w` within a composite of width
+/// `total_w`, leaving `CHOICE_RAIL_WIDTH` total for entry+exit rails.
+///
+/// Integer division rounds toward zero, so when the residual width is odd the
+/// child sits 1px left of true geometric centre. Invisible for 12px monospace.
+fn centered_child_x(x: i32, total_w: i32, child_w: i32) -> i32 {
+    let rail = CHOICE_RAIL_WIDTH as i32 / 2;
+    x + rail + (total_w - CHOICE_RAIL_WIDTH as i32 - child_w) / 2
+}
+
 fn render_node(node: &Node, x: i32, y: i32, out: &mut String) {
     match node {
         Node::Terminal(t) => render_terminal(t, x, y, out),
@@ -138,21 +148,27 @@ fn render_choice(c: &Choice, x: i32, y: i32, out: &mut String) {
     for (i, child) in c.children.iter().enumerate() {
         let child_y = y + branch_ys[i];
         let child_w = child.width() as i32;
-        let child_x = x + rail + (total_w - CHOICE_RAIL_WIDTH as i32 - child_w) / 2;
-
-        // Entry rail: from (x, y) curving to (child_x, child_y).
-        out.push_str(&format!(
-            r#"<path d="M{x} {y} Q{cx} {y} {cx} {child_y} L{child_x} {child_y}"/>"#,
-            cx = x + rail,
-        ));
-        render_node(child, child_x, child_y, out);
-        // Exit rail: from (child_x + child_w, child_y) back to (x + total_w, y).
+        let child_x = centered_child_x(x, total_w, child_w);
         let exit_x = child_x + child_w;
         let end_x = x + total_w;
-        out.push_str(&format!(
-            r#"<path d="M{exit_x} {child_y} L{rx} {child_y} Q{end_x} {child_y} {end_x} {y}"/>"#,
-            rx = end_x - rail,
-        ));
+
+        if child_y == y {
+            // Default branch: straight line through baseline, no degenerate curves.
+            out.push_str(&format!(r#"<path d="M{x} {y} L{child_x} {y}"/>"#));
+            render_node(child, child_x, y, out);
+            out.push_str(&format!(r#"<path d="M{exit_x} {y} L{end_x} {y}"/>"#));
+        } else {
+            // Off-baseline branch: quadratic entry + straight + quadratic exit.
+            out.push_str(&format!(
+                r#"<path d="M{x} {y} Q{cx} {y} {cx} {child_y} L{child_x} {child_y}"/>"#,
+                cx = x + rail,
+            ));
+            render_node(child, child_x, child_y, out);
+            out.push_str(&format!(
+                r#"<path d="M{exit_x} {child_y} L{rx} {child_y} Q{end_x} {child_y} {end_x} {y}"/>"#,
+                rx = end_x - rail,
+            ));
+        }
     }
 }
 
@@ -167,7 +183,7 @@ fn render_optional(o: &Optional, x: i32, y: i32, out: &mut String) {
 
     let child = &*o.child;
     let child_w = child.width() as i32;
-    let child_x = x + rail + (total_w - CHOICE_RAIL_WIDTH as i32 - child_w) / 2;
+    let child_x = centered_child_x(x, total_w, child_w);
 
     // Straight-through: entry stub, child, exit stub, all at baseline y.
     out.push_str(&format!(r#"<path d="M{x} {y} L{child_x} {y}"/>"#,));
@@ -187,12 +203,11 @@ fn render_optional(o: &Optional, x: i32, y: i32, out: &mut String) {
 // the separator (if present) or an implicit return rail is drawn below, with
 // loop-back paths on each side.
 fn render_one_or_more(o: &OneOrMore, x: i32, y: i32, out: &mut String) {
-    let rail = CHOICE_RAIL_WIDTH as i32 / 2;
     let total_w = o.width as i32;
 
     let child = &*o.child;
     let child_w = child.width() as i32;
-    let child_x = x + rail + (total_w - CHOICE_RAIL_WIDTH as i32 - child_w) / 2;
+    let child_x = centered_child_x(x, total_w, child_w);
 
     // Straight-through path at baseline (entry stub + exit stub).
     out.push_str(&format!(r#"<path d="M{x} {y} L{child_x} {y}"/>"#,));
@@ -205,7 +220,7 @@ fn render_one_or_more(o: &OneOrMore, x: i32, y: i32, out: &mut String) {
     // connecting child exit -> row -> child entry.
     if let Some(sep) = o.separator.as_deref() {
         let sep_w = sep.width() as i32;
-        let sep_x = x + rail + (total_w - CHOICE_RAIL_WIDTH as i32 - sep_w) / 2;
+        let sep_x = centered_child_x(x, total_w, sep_w);
         let sep_y = y + child.down() as i32 + VERTICAL_GAP as i32 + sep.up() as i32;
         // Rails: down from exit to sep row, across sep, back up to entry.
         out.push_str(&format!(

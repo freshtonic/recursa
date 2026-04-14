@@ -6,6 +6,10 @@ use recursa_diagram::{
 /// Cheap well-formedness check: every `<tag>` opens must be balanced by a
 /// matching `</tag>` or self-close `/>`. This catches accidental unbalanced
 /// markup in the first-pass renderers without pulling in a full XML parser.
+///
+/// **Limitation:** counts-based — does NOT detect tag-name mismatches like
+/// `<a></b>`. Use for smoke-testing emission quantity only; rely on the
+/// snapshot fixture for structural correctness.
 fn assert_balanced_tags(svg: &str) {
     // Strip XML comments `<!-- ... -->` so they don't confuse the counter.
     let mut stripped = String::with_capacity(svg.len());
@@ -36,10 +40,14 @@ fn assert_balanced_tags(svg: &str) {
 
 /// Extract the `y="..."` attribute of the `<rect>` that immediately precedes
 /// the given label text. Returns the integer y value of the rect's top edge.
+///
+/// Searches for `>{label}<` so href attributes like `href="Foo.html"` don't
+/// match before the actual `<text>Foo</text>` element.
 fn rect_y_before_label(svg: &str, label: &str) -> i32 {
+    let needle = format!(">{label}<");
     let label_pos = svg
-        .find(label)
-        .unwrap_or_else(|| panic!("label {label} not found"));
+        .find(&needle)
+        .unwrap_or_else(|| panic!("label {label} not found (as >{label}<)"));
     let prefix = &svg[..label_pos];
     let rect_pos = prefix.rfind("<rect").expect("rect before label");
     let rect_rest = &svg[rect_pos..];
