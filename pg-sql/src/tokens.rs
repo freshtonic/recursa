@@ -162,6 +162,12 @@ pub mod keyword {
         Collate     => r"COLLATE\b",
         // UNLOGGED table
         Unlogged    => r"UNLOGGED\b",
+        // DATABASE object
+        Database    => r"DATABASE\b",
+        // ALTER DEFAULT PRIVILEGES
+        Privileges  => r"PRIVILEGES\b",
+        // CHECKPOINT statement
+        Checkpoint  => r"CHECKPOINT\b",
         // Hash partition modulus / remainder
         Modulus     => r"MODULUS\b",
         Remainder   => r"REMAINDER\b",
@@ -435,6 +441,14 @@ pub mod punct {
         Lt        => "<",          "<",
         Gt        => ">",          ">",
         ColonColon => "::",        "::",
+        // Psql meta-commands that can terminate a SQL statement in place of `;`.
+        // Must be listed before plain BackSlash so longest-match-wins picks the
+        // specific directive over the bare backslash.
+        PsqlCrosstabview => r"\\crosstabview\b", "\\crosstabview",
+        PsqlGexec  => r"\\gexec\b", "\\gexec",
+        PsqlGset   => r"\\gset\b",  "\\gset",
+        PsqlGx     => r"\\gx\b",    "\\gx",
+        PsqlG      => r"\\g\b",     "\\g",
         BackSlash  => r"\\",       "\\",
         Plus       => r"\+",       "+",
         // 3-char `-|-` before 2-char `->>`/`->` before single-char `-`.
@@ -445,6 +459,9 @@ pub mod punct {
         PipeGtGt       => r"\|>>", "|>>",
         PipeAmpGt      => r"\|&>", "|&>",
         Concat     => r"\|\|",     "||",
+        // Single-char `|` (bitwise OR). Must be declared after `||` and
+        // other `|`-prefixed operators so longest-match picks the longer form.
+        Pipe       => r"\|",       "|",
         Slash      => "/",         "/",
         Percent    => "%",         "%",
         LBracket   => r"\[",       "[",
@@ -452,6 +469,9 @@ pub mod punct {
         // JSON/JSONB operators. Longer before shorter (longest-match-wins).
         HashArrowArrow => r"#>>",      "#>>",
         HashArrow      => r"#>",       "#>",
+        // Single-char `#` (bitwise XOR). Must come after all longer `#`-prefixed
+        // tokens so longest-match-wins.
+        Pound          => r"\#",       "#",
         ArrowArrow     => r"->>",      "->>",
         Arrow          => r"->",       "->",
         QuestionPipe   => r"\?\|",     "?|",
@@ -470,10 +490,15 @@ pub mod punct {
         AmpAmp         => r"&&",       "&&",
         AmpLt          => r"&<",       "&<",
         AmpGt          => r"&>",       "&>",
+        // Single-char `&` (bitwise AND). Must follow all longer `&`-prefixed
+        // operators so longest-match-wins.
+        Amp            => r"&",        "&",
         // POSIX regex match operators. Longest-first.
         BangTildeStar  => r"!~\*",     "!~*",
         TildeStar      => r"~\*",      "~*",
         BangTilde      => r"!~",       "!~",
+        // Geometric "same as" operator. Must precede bare `~`.
+        TildeEq        => r"~=",       "~=",
         Tilde          => r"~",        "~",
     }
 }
@@ -547,6 +572,7 @@ pub mod literal {
         // grammar explicitly looks for them.
         "ASC",
         "DESC",
+        "NULLS",
         "UNIQUE",
         "USING",
         "OFFSET",

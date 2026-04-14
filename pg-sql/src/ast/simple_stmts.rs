@@ -485,22 +485,42 @@ pub struct ListenStmt {
     pub tail: Option<RawStatement>,
 }
 
+/// Target of an UNLISTEN statement: a channel name or `*` (all channels).
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum UnlistenTarget {
+    /// `*` — unlisten from every channel.
+    All(punct::Star),
+    /// A specific channel name.
+    Channel(literal::Ident),
+}
+
 /// UNLISTEN channel | *
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnlistenStmt {
     pub _unlisten: PhantomData<keyword::Unlisten>,
-    pub tail: Option<RawStatement>,
+    pub target: UnlistenTarget,
 }
 
 // --- DO ---
 
-/// DO [LANGUAGE lang] code
+/// `DO [LANGUAGE lang] $$ ... $$` anonymous code block.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoStmt {
     pub _do: PhantomData<keyword::DoBlock>,
-    pub tail: Option<RawStatement>,
+    pub language: Option<DoLanguage>,
+    pub body: literal::DollarStringLit,
+    pub trailing_language: Option<DoLanguage>,
+}
+
+/// `LANGUAGE lang` clause on a `DO` block (may appear before or after body).
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DoLanguage {
+    pub _language: PhantomData<keyword::Language>,
+    pub name: literal::Ident,
 }
 
 // --- DISCARD ---
@@ -564,6 +584,23 @@ pub struct VacuumStmt {
 pub struct AlterTableStmt {
     pub _alter: PhantomData<keyword::Alter>,
     pub _table: PhantomData<keyword::Table>,
+    pub tail: Option<RawStatement>,
+}
+
+/// `CHECKPOINT` — force a transaction log checkpoint.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CheckpointStmt {
+    pub _checkpoint: PhantomData<keyword::Checkpoint>,
+}
+
+/// `ALTER DEFAULT PRIVILEGES [FOR ROLE ...] [IN SCHEMA ...] { GRANT | REVOKE } ...`
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterDefaultPrivilegesStmt {
+    pub _alter: PhantomData<keyword::Alter>,
+    pub _default: PhantomData<keyword::Default>,
+    pub _privileges: PhantomData<keyword::Privileges>,
     pub tail: Option<RawStatement>,
 }
 
@@ -651,6 +688,7 @@ create_drop_stmts! {
     Conversion, CreateConversionStmt, DropConversionStmt, Conversion;
     Server, CreateServerStmt, DropServerStmt, Server;
     Language, CreateLanguageStmt, DropLanguageStmt, Language;
+    Database, CreateDatabaseStmt, DropDatabaseStmt, Database;
 }
 
 macro_rules! alter_stmts {
@@ -689,6 +727,7 @@ alter_stmts! {
     View, AlterViewStmt, View;
     Function, AlterFunctionStmt, Function;
     Language, AlterLanguageStmt, Language;
+    Database, AlterDatabaseStmt, Database;
 }
 
 // Special multi-keyword DDL types

@@ -474,6 +474,7 @@ pub struct CreateTableStmt {
     pub temp: Option<TempKw>,
     pub unlogged: Option<PhantomData<keyword::Unlogged>>,
     pub _table: PhantomData<keyword::Table>,
+    pub if_not_exists: Option<crate::ast::create_index::IfNotExistsKw>,
     pub name: literal::Ident,
     pub body: CreateTableBody,
 }

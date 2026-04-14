@@ -28,9 +28,37 @@ pub enum SetValue {
     True(keyword::True),
     Default(keyword::Default),
     StringLit(literal::StringLit),
+    SignedNumeric(SignedNumericLit),
     NumericLit(literal::NumericLit),
     IntegerLit(literal::IntegerLit),
     Ident(literal::Ident),
+}
+
+/// A numeric literal with an optional leading sign: `-1`, `+1.5`, `2`.
+///
+/// Used in positions like `SET extra_float_digits = -1` where a full `Expr`
+/// is overkill and would admit keywords that shouldn't be legal values.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SignedNumericLit {
+    pub sign: NumericSign,
+    pub value: UnsignedNumericLit,
+}
+
+/// Leading `-` or `+` sign of a signed numeric literal.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum NumericSign {
+    Neg(punct::Minus),
+    Pos(punct::Plus),
+}
+
+/// Either a numeric (with decimal point / exponent) or an integer literal.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum UnsignedNumericLit {
+    Numeric(literal::NumericLit),
+    Integer(literal::IntegerLit),
 }
 
 /// The separator between param and value: TO or =.

@@ -98,6 +98,7 @@ pub enum Statement {
     CreateConversion(CreateConversionStmt),
     CreateServer(CreateServerStmt),
     CreateLanguage(CreateLanguageStmt),
+    CreateDatabase(CreateDatabaseStmt),
     CreateTable(CreateTableStmt),
     // DROP variants
     DropFunction(DropFunctionStmt),
@@ -131,8 +132,10 @@ pub enum Statement {
     DropConversion(DropConversionStmt),
     DropServer(DropServerStmt),
     DropLanguage(DropLanguageStmt),
+    DropDatabase(DropDatabaseStmt),
     DropTable(DropTableStmt),
     // ALTER variants: multi-keyword before single-keyword
+    AlterDefaultPrivileges(AlterDefaultPrivilegesStmt),
     AlterForeign(AlterForeignStmt),
     AlterEventTrigger(AlterEventTriggerStmt),
     AlterMaterializedView(AlterMaterializedViewStmt),
@@ -156,6 +159,7 @@ pub enum Statement {
     AlterConversion(AlterConversionStmt),
     AlterServer(AlterServerStmt),
     AlterLanguage(AlterLanguageStmt),
+    AlterDatabase(AlterDatabaseStmt),
     AlterIndex(AlterIndexStmt),
     AlterView(AlterViewStmt),
     AlterFunction(AlterFunctionStmt),
@@ -190,6 +194,7 @@ pub enum Statement {
     Reindex(ReindexStmt),
     Refresh(RefreshStmt),
     Cluster(ClusterStmt),
+    Checkpoint(CheckpointStmt),
     Vacuum(VacuumStmt),
     Lock(LockStmt),
     Notify(NotifyStmt),
@@ -325,12 +330,43 @@ impl<'input> Parse<'input> for RawStatement {
     }
 }
 
-/// A SQL statement followed by a semicolon.
+/// A psql meta-command that terminates a SQL statement in place of `;`.
+///
+/// Psql accepts `\gset`, `\gexec`, `\g`, `\gx`, and `\crosstabview` as
+/// statement terminators: e.g. `SELECT oid FROM pg_database \gset` sends the
+/// query and binds the results to psql variables, ending the statement just
+/// like `;` would.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[parse(rules = SqlRules)]
+pub enum PsqlTerminator {
+    /// `\crosstabview` — listed first as the longest-prefix variant.
+    Crosstabview(punct::PsqlCrosstabview),
+    /// `\gexec`
+    Gexec(punct::PsqlGexec),
+    /// `\gset`
+    Gset(punct::PsqlGset),
+    /// `\gx`
+    Gx(punct::PsqlGx),
+    /// `\g`
+    G(punct::PsqlG),
+}
+
+/// The terminator of a SQL statement: a semicolon or a psql meta-command.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[parse(rules = SqlRules)]
+pub enum StatementTerminator {
+    /// A psql meta-command like `\gset`.
+    Psql(PsqlTerminator),
+    /// A plain semicolon.
+    Semi(punct::Semi),
+}
+
+/// A SQL statement followed by a terminator (`;` or a psql meta-command).
 #[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TerminatedStatement {
     pub stmt: Statement,
-    pub semi: punct::Semi,
+    pub terminator: StatementTerminator,
 }
 
 /// A psql directive: backslash followed by the rest of the line.
@@ -449,7 +485,7 @@ pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<FileItem>, ParseError
                     items.push(FileItem::Command(PsqlCommand::Statement(
                         TerminatedStatement {
                             stmt: Statement::Raw(raw),
-                            semi,
+                            terminator: StatementTerminator::Semi(semi),
                         },
                     )));
                 }

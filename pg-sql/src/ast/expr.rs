@@ -891,6 +891,16 @@ pub enum Expr {
     Not(keyword::Not, Box<Expr>),
     #[parse(prefix, bp = 12)]
     Neg(punct::Minus, Box<Expr>),
+    /// Unary geometric "center point": `@@ expr`. Postgres uses `@@` as
+    /// a prefix operator on box / polygon / etc. (in addition to the
+    /// text-search infix form).
+    #[parse(prefix, bp = 12)]
+    GeomCenter(punct::AtAt, Box<Expr>),
+    /// Bitwise NOT: `~ expr` (e.g. inet / bit / int bitwise complement).
+    /// Must come before any infix `~` variant so the prefix form wins when
+    /// `~` appears at the start of an operand.
+    #[parse(prefix, bp = 12)]
+    BitNot(punct::Tilde, Box<Expr>),
 
     // --- Postfix ---
     /// Postgres-style cast: `expr::type`
@@ -933,6 +943,10 @@ pub enum Expr {
     /// `expr !~ pattern` — POSIX negated regex match.
     #[parse(infix, bp = 5)]
     RegexNotMatch(Box<Expr>, punct::BangTilde, Box<Expr>),
+    /// `expr ~= expr` — geometric "same as" operator. Declared before `RegexMatch`
+    /// so the longer `~=` wins longest-match.
+    #[parse(infix, bp = 5)]
+    GeomSame(Box<Expr>, punct::TildeEq, Box<Expr>),
     /// `expr ~ pattern` — POSIX regex match.
     #[parse(infix, bp = 5)]
     RegexMatch(Box<Expr>, punct::Tilde, Box<Expr>),
@@ -1084,6 +1098,16 @@ pub enum Expr {
     /// String concatenation: `expr || expr`
     #[parse(infix, bp = 10)]
     Concat(Box<Expr>, punct::Concat, Box<Expr>),
+    /// Bitwise OR: `expr | expr`. Must come after `Concat` (`||`) so the
+    /// longer token matches first at the punctuation level.
+    #[parse(infix, bp = 10)]
+    BitOr(Box<Expr>, punct::Pipe, Box<Expr>),
+    /// Bitwise AND: `expr & expr`.
+    #[parse(infix, bp = 10)]
+    BitAnd(Box<Expr>, punct::Amp, Box<Expr>),
+    /// Bitwise XOR: `expr # expr` (Postgres bit-string / integer operator).
+    #[parse(infix, bp = 10)]
+    BitXor(Box<Expr>, punct::Pound, Box<Expr>),
     #[parse(infix, bp = 10)]
     Add(Box<Expr>, punct::Plus, Box<Expr>),
     #[parse(infix, bp = 10)]
