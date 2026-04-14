@@ -192,6 +192,19 @@ fn recognize(ty: &Type) -> Node {
             "Box" | "Rc" | "Arc" if args.len() == 1 => {
                 return recognize(&args[0]);
             }
+            // `PhantomData<T>` is the convention pg-sql uses for keyword
+            // markers: a parsed-and-discarded token that carries no runtime
+            // data. Render it as a literal terminal box. We uppercase the
+            // type's last-segment ident because keyword types use TitleCase
+            // identifiers (e.g. `keyword::Drop`) whereas the SQL keyword
+            // they represent is uppercase (`DROP`). The convention is
+            // codebase-specific; if a non-keyword `PhantomData<T>` ever
+            // appears its terminal label will still be readable, just
+            // shoutier than expected.
+            "PhantomData" if args.len() == 1 => {
+                let label = type_label(&args[0]).to_uppercase();
+                return Node::Terminal(Terminal::new(label));
+            }
             _ => {}
         }
     }
@@ -410,6 +423,23 @@ mod tests {
             Node::Sequence(seq) => match &seq.children[0] {
                 Node::NonTerminal(nt) => assert_eq!(nt.text, "Foo"),
                 other => panic!("expected unwrapped Foo, got {other:?}"),
+            },
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phantom_data_renders_as_uppercased_terminal() {
+        // PhantomData<T> in pg-sql means "T is a keyword marker". Render it
+        // as a literal terminal with the ident uppercased so `DROP`/`TABLE`
+        // appear as terminals instead of opaque PhantomData boxes.
+        let node = node_for(quote! {
+            pub struct S { _drop: PhantomData<keyword::Drop> }
+        });
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::Terminal(t) => assert_eq!(t.text, "DROP"),
+                other => panic!("expected Terminal, got {other:?}"),
             },
             other => panic!("expected Sequence, got {other:?}"),
         }
