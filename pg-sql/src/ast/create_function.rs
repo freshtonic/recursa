@@ -1,7 +1,7 @@
 /// CREATE FUNCTION / DROP FUNCTION statement AST.
 use std::marker::PhantomData;
 
-use recursa::seq::Seq;
+use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
@@ -25,28 +25,17 @@ pub enum ReturnType {
     Plain(TypeName),
 }
 
-/// RETURNS clause: `RETURNS type`.
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ReturnsClause {
-    pub _returns: PhantomData<keyword::Returns>,
-    pub return_type: ReturnType,
-}
-
 /// LANGUAGE clause: `LANGUAGE name`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct LanguageClause {
+pub struct LanguageOption {
     pub _language: PhantomData<keyword::Language>,
     pub name: literal::AliasName,
 }
 
-/// IMMUTABLE attribute.
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ImmutableAttr(pub PhantomData<keyword::Immutable>);
-
 /// Function body: either single-quoted string or dollar-quoted string.
+///
+/// Variant ordering: dollar-quoted before single-quoted (different first chars).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncBody {
@@ -55,7 +44,7 @@ pub enum FuncBody {
 }
 
 /// Function return type name -- extends TypeName with additional types
-/// that are valid as function return types (e.g., `trigger`, `void`).
+/// that are valid as function return types (e.g., `trigger`).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncReturnTypeName {
@@ -71,7 +60,7 @@ pub struct FuncReturnsClause {
     pub return_type: FuncReturnType,
 }
 
-/// Function return type: SETOF type, VOID, or plain type.
+/// Function return type: SETOF type, or plain type.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncReturnType {
@@ -87,7 +76,96 @@ pub struct FuncSetofReturn {
     pub type_name: FuncReturnTypeName,
 }
 
+// --- Function parameters ---
+
+/// `name type` -- a named function parameter.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NamedFuncParam {
+    pub name: literal::Ident,
+    pub type_name: TypeName,
+}
+
+/// A single function parameter: either `name type` or just `type`.
+///
+/// Variant ordering: `Named` (`ident type`) is longer than `Unnamed`
+/// (`type`); list it first so longest-match-wins picks it when both
+/// could parse.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum FuncParam {
+    Named(NamedFuncParam),
+    Unnamed(TypeName),
+}
+
+// --- Function options (unordered list) ---
+
+/// `IMMUTABLE` / `STABLE` / `VOLATILE` volatility.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum VolatilityOption {
+    Immutable(keyword::Immutable),
+    Stable(keyword::Stable),
+    Volatile(keyword::Volatile),
+}
+
+/// `CALLED ON NULL INPUT`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CalledOnNullInput {
+    pub _called: PhantomData<keyword::Called>,
+    pub _on: PhantomData<keyword::On>,
+    pub _null: PhantomData<keyword::Null>,
+    pub _input: PhantomData<keyword::Input>,
+}
+
+/// `RETURNS NULL ON NULL INPUT`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ReturnsNullOnNullInput {
+    pub _returns: PhantomData<keyword::Returns>,
+    pub _null: PhantomData<keyword::Null>,
+    pub _on: PhantomData<keyword::On>,
+    pub _null2: PhantomData<keyword::Null>,
+    pub _input: PhantomData<keyword::Input>,
+}
+
+/// `STRICT` / `CALLED ON NULL INPUT` / `RETURNS NULL ON NULL INPUT`.
+///
+/// Variant ordering: longer (multi-keyword) forms before `Strict`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum StrictnessOption {
+    CalledOnNullInput(CalledOnNullInput),
+    ReturnsNullOnNullInput(ReturnsNullOnNullInput),
+    Strict(keyword::Strict),
+}
+
+/// `AS body` clause.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AsOption {
+    pub _as: PhantomData<keyword::As>,
+    pub body: FuncBody,
+}
+
+/// A single function option clause.
+///
+/// Variant ordering: multi-token options listed before single-keyword
+/// options, and `StrictnessOption` (which itself has multi-keyword variants)
+/// listed before plain `VolatilityOption`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum FuncOption {
+    Strictness(StrictnessOption),
+    Volatility(VolatilityOption),
+    Language(LanguageOption),
+    As(AsOption),
+}
+
 /// CREATE [OR REPLACE] FUNCTION statement.
+///
+/// Function options after the signature/RETURNS may appear in any order.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateFunctionStmt {
@@ -95,12 +173,9 @@ pub struct CreateFunctionStmt {
     pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
     pub _function: PhantomData<keyword::Function>,
     pub name: literal::Ident,
-    pub args: Surrounded<punct::LParen, Seq<TypeName, punct::Comma>, punct::RParen>,
-    pub returns: FuncReturnsClause,
-    pub _as: PhantomData<keyword::As>,
-    pub body: FuncBody,
-    pub language: LanguageClause,
-    pub immutable: Option<ImmutableAttr>,
+    pub args: Surrounded<punct::LParen, Seq<FuncParam, punct::Comma>, punct::RParen>,
+    pub returns: Option<FuncReturnsClause>,
+    pub options: Seq<FuncOption, (), OptionalTrailing>,
 }
 
 /// DROP FUNCTION statement: `DROP FUNCTION name(args)`.
@@ -110,7 +185,7 @@ pub struct DropFunctionStmt {
     pub _drop: PhantomData<keyword::Drop>,
     pub _function: PhantomData<keyword::Function>,
     pub name: literal::Ident,
-    pub args: Surrounded<punct::LParen, Seq<TypeName, punct::Comma>, punct::RParen>,
+    pub args: Surrounded<punct::LParen, Seq<FuncParam, punct::Comma>, punct::RParen>,
 }
 
 #[cfg(test)]
@@ -121,21 +196,72 @@ mod tests {
     use crate::rules::SqlRules;
 
     #[test]
-    fn parse_create_function() {
+    fn parse_create_function_basic() {
         let mut input = Input::new(
             "create function sillysrf(int) returns setof int as 'values (1),(10),(2),($1)' language sql immutable",
         );
         let stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "sillysrf");
-        assert!(stmt.immutable.is_some());
         assert!(input.is_empty());
     }
 
     #[test]
-    fn parse_drop_function() {
+    fn parse_drop_function_basic() {
         let mut input = Input::new("drop function sillysrf(int)");
         let stmt = DropFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "sillysrf");
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_named_param() {
+        let mut input = Input::new(
+            "create function polyf(x anyelement) returns anyelement as $$ select x + 1 $$ language sql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_drop_function_named_param() {
+        let mut input = Input::new("drop function polyf(x anyelement)");
+        let _stmt = DropFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_returns_trigger() {
+        let mut input = Input::new(
+            "create function f() returns trigger language plpgsql as $$ begin end $$",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_strict_immutable() {
+        let mut input = Input::new(
+            "create function f() returns int immutable strict language sql as 'SELECT 1'",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_options_reordered() {
+        let mut input = Input::new(
+            "create function f() returns int language sql strict as 'SELECT 1'",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_multi_named_params() {
+        let mut input = Input::new(
+            "create function tg_hub_adjustslots(hname bpchar, oldn integer, newn integer) returns integer as ' begin return 1; end ' language plpgsql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 }

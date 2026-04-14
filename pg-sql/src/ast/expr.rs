@@ -5,12 +5,20 @@
 /// IN (list)).
 use std::marker::PhantomData;
 
-use recursa::seq::Seq;
+use recursa::seq::{NonEmpty, OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+
+/// One or more adjacent string literals, concatenated by Postgres into a
+/// single value: `'first' ' - next' 'third'`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct StringLitSeq {
+    pub parts: Seq<literal::StringLit, (), OptionalTrailing, NonEmpty>,
+}
 
 /// Content inside IN parentheses: either a subquery or expression list.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -716,9 +724,10 @@ pub enum Expr {
     /// Integer literal: `42`
     #[parse(atom)]
     IntegerLit(literal::IntegerLit),
-    /// String literal: `'hello'`
+    /// String literal sequence: `'hello'` or `'first' 'second' ...` —
+    /// Postgres concatenates adjacent string literals into one.
     #[parse(atom)]
-    StringLit(literal::StringLit),
+    StringLit(StringLitSeq),
     /// Boolean true
     #[parse(atom)]
     BoolTrue(keyword::True),
@@ -761,6 +770,27 @@ mod tests {
         let mut input = Input::new("'hello'");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::StringLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_adjacent_string_literals() {
+        let mut input = Input::new("'a' 'b'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        if let Expr::StringLit(seq) = &expr {
+            assert_eq!(seq.parts.len(), 2);
+        } else {
+            panic!("expected Expr::StringLit, got {:?}", expr);
+        }
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_three_adjacent_strings_with_alias() {
+        // SELECT 'first line' ' - next line' AS foo
+        use crate::ast::select::SelectStmt;
+        let mut input = Input::new("SELECT 'first line' ' - next line' AS foo");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

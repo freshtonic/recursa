@@ -158,12 +158,53 @@ pub struct PlainTableAliasBare {
         Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
 }
 
-/// Function call used as table reference with optional alias.
+/// `WITH ORDINALITY` suffix on a function table.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct WithOrdinality {
+    pub _with: PhantomData<keyword::With>,
+    pub _ordinality: PhantomData<keyword::Ordinality>,
+}
+
+/// A column definition inside a function-table column-def-list:
+/// `name type` (e.g., `a int`).
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ColumnDef {
+    pub name: literal::AliasName,
+    pub type_name: crate::ast::expr::TypeName,
+}
+
+/// `[AS] alias (col type, ...)` or just `(col type, ...)` -- the
+/// column definition list form for table-returning functions.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ColumnDefList {
+    pub _as: Option<PhantomData<keyword::As>>,
+    pub name: Option<literal::AliasName>,
+    pub columns: Surrounded<punct::LParen, Seq<ColumnDef, punct::Comma>, punct::RParen>,
+}
+
+/// Alias of a function table reference: either a regular `TableAlias`
+/// or a column-definition list form.
+///
+/// Variant ordering: `ColumnDefList` is more specific (its inner uses
+/// `name type` pairs requiring at least one type token after each name)
+/// so list it first.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum FuncTableAlias {
+    ColumnDefList(ColumnDefList),
+    Plain(TableAlias),
+}
+
+/// Function call used as table reference with optional WITH ORDINALITY and alias.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncTableRef {
     pub func: FuncCall,
-    pub alias: Option<TableAlias>,
+    pub ordinality: Option<WithOrdinality>,
+    pub alias: Option<FuncTableAlias>,
 }
 
 /// A single table reference (no joins). Used as building block for JoinTableRef.
@@ -178,7 +219,7 @@ pub struct FuncTableRef {
 #[parse(rules = SqlRules)]
 pub enum SimpleTableRef {
     Lateral(LateralRef),
-    Func(FuncTableRef),
+    Func(Box<FuncTableRef>),
     // Subquery must come before ParenJoin: both start with `(`, but a
     // subquery body begins with a keyword (`SELECT`/`VALUES`/`TABLE`/`WITH`)
     // while a parenthesized join tree begins with an identifier. The parser
@@ -217,12 +258,32 @@ pub struct JoinOn {
     pub condition: Box<Expr>,
 }
 
-/// USING clause for JOIN: `USING (col, ...)`
+/// `AS alias` form of a JOIN USING alias.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct JoinUsingAliasWithAs {
+    pub _as: PhantomData<keyword::As>,
+    pub name: literal::AliasName,
+}
+
+/// `[AS] alias` suffix on a JOIN ... USING column list.
+///
+/// Variant ordering: `WithAs` (`AS name`) is longer than `Bare`
+/// (`ident`); list it first.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum JoinUsingAlias {
+    WithAs(JoinUsingAliasWithAs),
+    Bare(literal::Ident),
+}
+
+/// USING clause for JOIN: `USING (col, ...) [[AS] alias]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinUsing {
     pub _using: PhantomData<keyword::Using>,
     pub columns: Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>,
+    pub alias: Option<JoinUsingAlias>,
 }
 
 /// A single join suffix: `[LEFT|RIGHT|FULL|INNER|CROSS] JOIN table [ON expr | USING (...)]`
@@ -633,6 +694,45 @@ mod tests {
         let mut input = Input::new("SELECT * FROM s.t AS x");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.from_clause.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_join_using_alias() {
+        let mut input = Input::new("SELECT * FROM a JOIN b USING (i) AS x");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_join_using_alias_where() {
+        let mut input = Input::new("SELECT * FROM a JOIN b USING (i) AS x WHERE x.i = 1");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_func_with_ordinality() {
+        let mut input =
+            Input::new("SELECT * FROM rngfunct(1) WITH ORDINALITY AS z(a, b, ord)");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_func_column_def_list() {
+        let mut input = Input::new(
+            "SELECT * FROM test_ret_set_rec_dyn(1500) AS (a int, b int, c int)",
+        );
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_func_with_ordinality_unnest() {
+        let mut input =
+            Input::new("SELECT * FROM unnest(array['a','b']) WITH ORDINALITY AS z(a, ord)");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

@@ -314,6 +314,18 @@ pub mod keyword {
         Excludew    => r"EXCLUDE\b",
         Others      => r"OTHERS\b",
         Ties        => r"TIES\b",
+        // MERGE: BY SOURCE / BY TARGET qualifiers. Not in SQL_KEYWORDS;
+        // these are recognized contextually in MERGE WHEN clauses only.
+        Source      => r"SOURCE\b",
+        Target      => r"TARGET\b",
+        // CREATE FUNCTION option keywords. Not in SQL_KEYWORDS so they remain
+        // usable as identifiers (column names, etc.) outside function options.
+        Strict      => r"STRICT\b",
+        Stable      => r"STABLE\b",
+        Volatile    => r"VOLATILE\b",
+        Called      => r"CALLED\b",
+        Input       => r"INPUT\b",
+        Ordinality  => r"ORDINALITY\b",
     }
 }
 
