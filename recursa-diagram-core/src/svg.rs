@@ -2,7 +2,7 @@
 
 use crate::layout::{
     BASELINE_OFFSET, BOX_HEIGHT, CHOICE_RAIL_WIDTH, Choice, HORIZONTAL_SPACER, Node, NonTerminal,
-    OneOrMore, Optional, Sequence, Terminal, VERTICAL_GAP,
+    OneOrMore, Optional, Sequence, Terminal, VERTICAL_GAP, WRAP_ROW_GAP,
 };
 
 /// Outer padding around the rendered diagram, in SVG user units.
@@ -102,12 +102,22 @@ fn render_non_terminal(nt: &NonTerminal, x: i32, y: i32, out: &mut String) {
     }
 }
 
-fn render_sequence(s: &Sequence, mut x: i32, y: i32, out: &mut String) {
+fn render_sequence(s: &Sequence, x: i32, y: i32, out: &mut String) {
+    if s.rows.is_empty() {
+        render_sequence_row(&s.children, x, y, out);
+        return;
+    }
+    render_wrapped_sequence(s, x, y, out);
+}
+
+/// Render a single horizontal row of children starting at `(x, y)`. Emits
+/// inline connector stubs between adjacent siblings. Used both for the
+/// non-wrapped path and for each row of a wrapped `Sequence`.
+fn render_sequence_row(children: &[Node], start_x: i32, y: i32, out: &mut String) {
     let spacer = HORIZONTAL_SPACER as i32;
-    for (i, child) in s.children.iter().enumerate() {
+    let mut x = start_x;
+    for (i, child) in children.iter().enumerate() {
         if i > 0 {
-            // Connector path between previous child's exit and this child's entry,
-            // drawn at the shared baseline `y`.
             out.push_str(&format!(
                 r#"<path d="M{x1} {y} h{spacer}"/>"#,
                 x1 = x - spacer,
@@ -115,6 +125,68 @@ fn render_sequence(s: &Sequence, mut x: i32, y: i32, out: &mut String) {
         }
         render_node(child, x, y, out);
         x += child.width() as i32 + spacer;
+    }
+}
+
+/// Render a multi-row wrapped `Sequence`. Each row is drawn with its own
+/// independent baseline computed from the row's children. Rows are joined by
+/// orthogonal wrap connectors: from the exit of the last child in row N to
+/// the right margin, down to row N+1's baseline, then left to the first
+/// child's entry.
+fn render_wrapped_sequence(s: &Sequence, x: i32, y: i32, out: &mut String) {
+    // Slice children into rows.
+    let mut row_slices: Vec<&[Node]> = Vec::with_capacity(s.rows.len() + 1);
+    let mut prev = 0usize;
+    for &brk in &s.rows {
+        row_slices.push(&s.children[prev..brk]);
+        prev = brk;
+    }
+    row_slices.push(&s.children[prev..]);
+
+    // Per-row up/down so we can compute each row's baseline y.
+    let row_up: Vec<i32> = row_slices
+        .iter()
+        .map(|r| r.iter().map(|c| c.up()).max().unwrap_or(BASELINE_OFFSET) as i32)
+        .collect();
+    let row_down: Vec<i32> = row_slices
+        .iter()
+        .map(|r| r.iter().map(|c| c.down()).max().unwrap_or(BASELINE_OFFSET) as i32)
+        .collect();
+
+    // Row 0's baseline coincides with the caller's `y`. Subsequent rows sit
+    // below by (prev_row.down + WRAP_ROW_GAP + this_row.up).
+    let mut row_y: Vec<i32> = Vec::with_capacity(row_slices.len());
+    row_y.push(y);
+    for i in 1..row_slices.len() {
+        let next_y = row_y[i - 1] + row_down[i - 1] + WRAP_ROW_GAP as i32 + row_up[i];
+        row_y.push(next_y);
+    }
+
+    // Total drawn width (of the rect containing rows, excluding the back-rail
+    // margin allocated in CHOICE_RAIL_WIDTH): max of row widths. We use the
+    // Sequence's own `width` minus CHOICE_RAIL_WIDTH, which equals that max.
+    let inner_w = s.width as i32 - CHOICE_RAIL_WIDTH as i32;
+    let back_rail_x = x + inner_w + (CHOICE_RAIL_WIDTH as i32 / 2);
+
+    // Render each row and its outbound wrap connector.
+    let spacer = HORIZONTAL_SPACER as i32;
+    for (i, row) in row_slices.iter().enumerate() {
+        let ry = row_y[i];
+        // Align rows to the left edge `x` (no centering; keeps left rail
+        // vertical and connector geometry straightforward).
+        render_sequence_row(row, x, ry, out);
+
+        if i + 1 < row_slices.len() {
+            // Exit x of this row = start_x + sum(child widths) + spacers.
+            let row_w: i32 = row.iter().map(|c| c.width() as i32).sum::<i32>()
+                + spacer * (row.len() as i32 - 1).max(0);
+            let exit_x = x + row_w;
+            let next_ry = row_y[i + 1];
+            // Orthogonal wrap rail: right, down, left.
+            out.push_str(&format!(
+                r#"<path d="M{exit_x} {ry} L{back_rail_x} {ry} L{back_rail_x} {next_ry} L{x} {next_ry}"/>"#,
+            ));
+        }
     }
 }
 // First-pass Choice renderer. The default branch is drawn on the enclosing

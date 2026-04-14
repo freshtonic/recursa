@@ -142,6 +142,95 @@ fn nested_optional_one_or_more_pins_geometry() {
 }
 
 #[test]
+fn wrapped_sequence_fits_on_one_row_matches_unwrapped() {
+    // Three small terminals well below a generous threshold. Geometry should
+    // exactly match a single-row Sequence::new and rows must be empty.
+    let children = || {
+        vec![
+            Node::Terminal(Terminal::new("A")),
+            Node::Terminal(Terminal::new("B")),
+            Node::Terminal(Terminal::new("C")),
+        ]
+    };
+    let unwrapped = Sequence::new(children());
+    let wrapped = Sequence::wrapped(children(), 10_000);
+    assert!(wrapped.rows.is_empty(), "rows should be empty when fitting");
+    assert_eq!(wrapped.width, unwrapped.width);
+    assert_eq!(wrapped.height, unwrapped.height);
+    assert_eq!(wrapped.up, unwrapped.up);
+    assert_eq!(wrapped.down, unwrapped.down);
+    assert_baseline_invariant(&Node::Sequence(wrapped));
+}
+
+#[test]
+fn wrapped_sequence_zero_max_width_is_single_row() {
+    // max_width = 0 is the "wrap disabled" sentinel; must behave like Sequence::new.
+    let children = vec![
+        Node::Terminal(Terminal::new("A")),
+        Node::Terminal(Terminal::new("B")),
+    ];
+    let wrapped = Sequence::wrapped(children, 0);
+    assert!(wrapped.rows.is_empty());
+}
+
+#[test]
+fn wrapped_sequence_splits_at_threshold() {
+    // Each Terminal("XXXX") is width 4*8 + 40 = 72. Five children plus spacers
+    // would be 5*72 + 4*10 = 400. With max_width = 160 we should get multiple
+    // rows (two children per row: 72+72+10=154 fits, adding a third would
+    // exceed 160).
+    let children: Vec<Node> = (0..5)
+        .map(|_| Node::Terminal(Terminal::new("XXXX")))
+        .collect();
+    let wrapped = Sequence::wrapped(children, 160);
+    assert!(
+        !wrapped.rows.is_empty(),
+        "expected wrap, got single row: {wrapped:?}"
+    );
+    // Row breaks at indices 2 and 4 => rows [0..2], [2..4], [4..5].
+    assert_eq!(wrapped.rows, vec![2, 4]);
+}
+
+#[test]
+fn wrapped_sequence_baseline_invariant() {
+    let children: Vec<Node> = (0..5)
+        .map(|_| Node::Terminal(Terminal::new("XXXX")))
+        .collect();
+    let wrapped = Sequence::wrapped(children, 160);
+    let n = Node::Sequence(wrapped);
+    assert_baseline_invariant(&n);
+    // Height must reflect multiple rows.
+    assert!(
+        n.height() > 22,
+        "expected multi-row height, got {}",
+        n.height()
+    );
+}
+
+#[test]
+fn wrapped_sequence_pathological_single_oversized_child() {
+    // A single child wider than max_width still gets a row of its own.
+    let child = Node::Terminal(Terminal::new("SUPER_DUPER_LONG_TERMINAL_NAME"));
+    let cw = child.width();
+    assert!(cw > 50);
+    let wrapped = Sequence::wrapped(vec![child], 50);
+    // Single child, single row => no row breaks needed.
+    assert!(wrapped.rows.is_empty());
+}
+
+#[test]
+fn wrapped_sequence_pathological_oversized_child_among_others() {
+    // Pathological: middle child is wider than max_width. It must get its own
+    // row even though it doesn't fit.
+    let a = Node::Terminal(Terminal::new("A"));
+    let big = Node::Terminal(Terminal::new("SUPER_DUPER_LONG_TERMINAL_NAME"));
+    let c = Node::Terminal(Terminal::new("C"));
+    let wrapped = Sequence::wrapped(vec![a, big, c], 60);
+    // Expect rows [A], [big], [C] → breaks at 1 and 2.
+    assert_eq!(wrapped.rows, vec![1, 2]);
+}
+
+#[test]
 fn choice_with_nonzero_default_idx_pins_up_down() {
     let a = Node::Terminal(Terminal::new("A")); // height 22, up/down 11
     let b = Node::Terminal(Terminal::new("B")); // height 22, up/down 11

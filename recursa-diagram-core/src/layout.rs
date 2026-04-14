@@ -15,6 +15,10 @@ pub(crate) const CHOICE_RAIL_WIDTH: u32 = 20;
 pub(crate) const VERTICAL_GAP: u32 = 10;
 /// Vertical space reserved for the back-edge when `OneOrMore` has no separator.
 pub(crate) const RETURN_RAIL_HEIGHT: u32 = 10;
+/// Vertical space between adjacent rows of a multi-row (wrapped) `Sequence`.
+/// Double `VERTICAL_GAP` so the orthogonal wrap connector has room to breathe
+/// between the two baselines it joins.
+pub(crate) const WRAP_ROW_GAP: u32 = VERTICAL_GAP * 2;
 
 #[derive(Clone, Debug)]
 pub enum Node {
@@ -123,10 +127,26 @@ impl NonTerminal {
 #[derive(Clone, Debug)]
 pub struct Sequence {
     pub children: Vec<Node>,
+    /// Row-break indices for multi-row (wrapped) layout. Empty means the
+    /// sequence is a single row. Each entry is the child index where the next
+    /// row begins, so `children = [A,B,C,D,E]` with `rows = [2, 4]` means
+    /// rows `[A,B]`, `[C,D]`, `[E]`.
+    pub rows: Vec<usize>,
     pub width: u32,
     pub height: u32,
     pub up: u32,
     pub down: u32,
+}
+
+/// Width of a contiguous slice of children laid out on one row: sum of child
+/// widths plus `HORIZONTAL_SPACER` between adjacent children. Returns 0 for
+/// an empty slice.
+fn row_width(children: &[Node]) -> u32 {
+    if children.is_empty() {
+        return 0;
+    }
+    let sum: u32 = children.iter().map(|c| c.width()).sum();
+    sum + HORIZONTAL_SPACER * (children.len() as u32 - 1)
 }
 
 impl Sequence {
@@ -134,8 +154,7 @@ impl Sequence {
         let width = if children.is_empty() {
             CHOICE_RAIL_WIDTH
         } else {
-            let child_sum: u32 = children.iter().map(|c| c.width()).sum();
-            child_sum + HORIZONTAL_SPACER * (children.len() as u32 - 1)
+            row_width(&children)
         };
         let height = children
             .iter()
@@ -155,6 +174,87 @@ impl Sequence {
             .unwrap_or(BASELINE_OFFSET);
         Self {
             children,
+            rows: Vec::new(),
+            width,
+            height,
+            up,
+            down,
+        }
+    }
+
+    /// Construct a `Sequence` that greedily wraps its children into multiple
+    /// rows so that no single row exceeds `max_width` (sum of child widths
+    /// plus inter-child spacers).
+    ///
+    /// - `max_width == 0` disables wrapping; the result is identical to
+    ///   [`Sequence::new`].
+    /// - If all children already fit on one row, behaves identically to
+    ///   [`Sequence::new`] and leaves `rows` empty.
+    /// - A single child wider than `max_width` occupies its own row. The
+    ///   overall `width` of such a `Sequence` may exceed `max_width`.
+    pub fn wrapped(children: Vec<Node>, max_width: u32) -> Self {
+        // Disabled, empty, or already fits: single-row fallback.
+        if max_width == 0 || children.is_empty() || row_width(&children) <= max_width {
+            return Self::new(children);
+        }
+
+        // Greedy packing: start a new row whenever adding the next child would
+        // push the current row width past `max_width`. An oversized single
+        // child gets its own row (the branch below starts a new row for it
+        // and then the next iteration starts another).
+        let mut rows: Vec<usize> = Vec::new();
+        let mut row_start = 0usize;
+        let mut i = 0usize;
+        while i < children.len() {
+            // Try to extend the current row by one more child.
+            let candidate = &children[row_start..=i];
+            let w = row_width(candidate);
+            if w <= max_width || i == row_start {
+                // Fits, or the row is still empty (pathological oversized
+                // child must still be admitted to avoid infinite loop).
+                i += 1;
+            } else {
+                // Doesn't fit: close current row at i (exclusive), start a new
+                // row beginning at i. `i` is not advanced so the child is
+                // retried on the next row.
+                rows.push(i);
+                row_start = i;
+            }
+        }
+
+        // Per-row geometry.
+        let num_rows = rows.len() + 1;
+        let mut row_slices: Vec<&[Node]> = Vec::with_capacity(num_rows);
+        let mut prev = 0usize;
+        for &brk in &rows {
+            row_slices.push(&children[prev..brk]);
+            prev = brk;
+        }
+        row_slices.push(&children[prev..]);
+
+        let max_row_w = row_slices.iter().map(|r| row_width(r)).max().unwrap_or(0);
+        // Add CHOICE_RAIL_WIDTH so the wrap back-rail has margin on each side.
+        let width = max_row_w + CHOICE_RAIL_WIDTH;
+
+        let row_up: Vec<u32> = row_slices
+            .iter()
+            .map(|r| r.iter().map(|c| c.up()).max().unwrap_or(BASELINE_OFFSET))
+            .collect();
+        let row_down: Vec<u32> = row_slices
+            .iter()
+            .map(|r| r.iter().map(|c| c.down()).max().unwrap_or(BASELINE_OFFSET))
+            .collect();
+        let strips_sum: u32 = row_up.iter().zip(&row_down).map(|(u, d)| u + d).sum();
+        let height = strips_sum + WRAP_ROW_GAP * (num_rows as u32 - 1);
+
+        // Root baseline sits at the baseline of row 0, measured from the top
+        // of the drawn area.
+        let up = row_up[0];
+        let down = height - up;
+
+        Self {
+            children,
+            rows,
             width,
             height,
             up,

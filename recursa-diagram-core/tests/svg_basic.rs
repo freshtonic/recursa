@@ -233,6 +233,56 @@ fn one_or_more_with_separator_places_sep_below_child() {
 }
 
 #[test]
+fn wrapped_sequence_children_appear_in_different_rows() {
+    // Five wide-ish terminals with a tight max_width forces a wrap.
+    // Terminal("XXXX") width = 4*8 + 40 = 72. Two per row at max_width=160.
+    let children: Vec<Node> = (0..5)
+        .map(|i| Node::Terminal(Terminal::new(format!("X{i}"))))
+        .collect();
+    let seq = Node::Sequence(Sequence::wrapped(children, 160));
+    let svg = render(&seq);
+    assert_balanced_tags(&svg);
+
+    // Children in the same row share a y; a later row has a larger y.
+    let y0 = rect_y_before_label(&svg, "X0");
+    let y1 = rect_y_before_label(&svg, "X1");
+    let y2 = rect_y_before_label(&svg, "X2");
+    let y4 = rect_y_before_label(&svg, "X4");
+    assert_eq!(y0, y1, "X0 and X1 should share a row");
+    assert!(
+        y2 > y0,
+        "row 2 child X2 should sit below row 1 (y2={y2} y0={y0})"
+    );
+    assert!(
+        y4 > y2,
+        "row 3 child X4 should sit below row 2 (y4={y4} y2={y2})"
+    );
+}
+
+#[test]
+fn wrapped_sequence_emits_wrap_connector_between_rows() {
+    // Same shape as above; ensure we emit at least one extra <path> that is
+    // not just the inline connector between row-sibling children.
+    //
+    // A non-wrapped 5-child sequence emits 4 inline connector paths (one
+    // between each adjacent pair on the same row). A wrapped sequence on
+    // three rows emits: 1 (row0: X0-X1) + 1 (row1: X2-X3) + 0 (row2: X4 alone)
+    // = 2 inline connectors, plus 2 wrap connectors (row0->row1, row1->row2),
+    // plus entry/exit stubs. Assert strictly more paths than the inline-only
+    // count.
+    let children: Vec<Node> = (0..5)
+        .map(|i| Node::Terminal(Terminal::new(format!("X{i}"))))
+        .collect();
+    let seq = Node::Sequence(Sequence::wrapped(children, 160));
+    let svg = render(&seq);
+    let path_count = svg.matches("<path").count();
+    assert!(
+        path_count >= 4,
+        "expected wrap connector paths in addition to row connectors, got {path_count}: {svg}"
+    );
+}
+
+#[test]
 fn empty_sequence_renders_valid_wrapper() {
     // Empty sequence: body width = CHOICE_RAIL_WIDTH (20, entry+exit stubs),
     // body height = BOX_HEIGHT (22), up = down = BASELINE_OFFSET (11).
