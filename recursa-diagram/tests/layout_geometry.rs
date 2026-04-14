@@ -1,4 +1,4 @@
-use recursa_diagram::layout::{Node, NonTerminal, Terminal};
+use recursa_diagram::layout::{Node, NonTerminal, Sequence, Terminal};
 
 #[test]
 fn terminal_geometry_pins_constants() {
@@ -22,4 +22,22 @@ fn non_terminal_width_scales_with_text() {
 fn non_terminal_preserves_href() {
     let nt = NonTerminal::new("Expr", Some("Expr.html".into()));
     assert_eq!(nt.href.as_deref(), Some("Expr.html"));
+}
+
+#[test]
+fn sequence_width_sums_children_plus_spacing() {
+    let a = Node::Terminal(Terminal::new("A"));
+    let b = Node::Terminal(Terminal::new("B"));
+    let wa = a.width();
+    let wb = b.width();
+    let seq = Node::Sequence(Sequence::new(vec![a, b]));
+    // 10 px spacer between adjacent children.
+    assert_eq!(seq.width(), wa + wb + 10);
+}
+
+#[test]
+fn empty_sequence_has_zero_body_width() {
+    let seq = Node::Sequence(Sequence::new(vec![]));
+    // Entry/exit stubs: 20 px total.
+    assert_eq!(seq.width(), 20);
 }
