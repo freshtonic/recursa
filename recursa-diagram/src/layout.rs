@@ -13,6 +13,8 @@ pub(crate) const CHOICE_RAIL_WIDTH: u32 = 20;
 /// Vertical gap between stacked branches in `Choice` and between the
 /// child/separator rows of `Optional`/`OneOrMore`.
 pub(crate) const VERTICAL_GAP: u32 = 10;
+/// Vertical space reserved for the back-edge when `OneOrMore` has no separator.
+pub(crate) const RETURN_RAIL_HEIGHT: u32 = 10;
 
 #[derive(Clone, Debug)]
 pub enum Node {
@@ -179,8 +181,7 @@ impl Choice {
             "Choice default_idx {default_idx} out of bounds (len = {})",
             children.len()
         );
-        let width =
-            children.iter().map(|c| c.width()).max().unwrap() + CHOICE_RAIL_WIDTH;
+        let width = children.iter().map(|c| c.width()).max().unwrap() + CHOICE_RAIL_WIDTH;
         let height: u32 = children.iter().map(|c| c.height()).sum::<u32>()
             + VERTICAL_GAP * (children.len() as u32 - 1);
         // TODO(phase-3): verify up/down against rendered svg
@@ -221,7 +222,7 @@ pub struct Optional {
 impl Optional {
     pub fn new(child: Node) -> Self {
         let width = child.width() + CHOICE_RAIL_WIDTH;
-        let height = child.height() + CHOICE_RAIL_WIDTH;
+        let height = child.height() + BOX_HEIGHT + VERTICAL_GAP;
         // TODO(phase-3): verify up/down against rendered svg
         // The skip rail sits above the child, adding a full box height + gap to `up`.
         let up = child.up() + BOX_HEIGHT + VERTICAL_GAP;
@@ -250,10 +251,7 @@ impl OneOrMore {
     pub fn new(child: Node, separator: Option<Node>) -> Self {
         let sep_w = separator.as_ref().map(|s| s.width()).unwrap_or(0);
         let width = child.width().max(sep_w) + CHOICE_RAIL_WIDTH;
-        let sep_h = separator
-            .as_ref()
-            .map(|s| s.height())
-            .unwrap_or(VERTICAL_GAP);
+        let sep_h = separator.as_ref().map_or(RETURN_RAIL_HEIGHT, Node::height);
         let height = child.height() + sep_h + VERTICAL_GAP;
         // TODO(phase-3): verify up/down against rendered svg
         // The child sits on the baseline; the separator (or implicit return rail)
