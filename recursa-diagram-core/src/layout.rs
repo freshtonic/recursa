@@ -20,6 +20,11 @@ pub(crate) const RETURN_RAIL_HEIGHT: u32 = 10;
 /// between the two baselines it joins.
 pub(crate) const WRAP_ROW_GAP: u32 = VERTICAL_GAP * 2;
 
+/// Railroad layout node. Geometry (`width`, `height`, `up`, `down`) is
+/// computed once at construction time by the variant constructors and
+/// read repeatedly during SVG rendering. The `up + down == height`
+/// baseline invariant holds for every variant; see the tests in
+/// `recursa-diagram-core/tests/layout_geometry.rs`.
 #[derive(Clone, Debug)]
 pub enum Node {
     Terminal(Terminal),
@@ -86,6 +91,9 @@ pub struct Terminal {
 }
 
 impl Terminal {
+    /// Construct a `Terminal` node whose width is derived from the text length
+    /// using the monospace-font geometry constants (`CHAR_WIDTH`,
+    /// `HORIZONTAL_PADDING`, `BOX_HEIGHT`). Render as a rounded-rect box.
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
         let width = text.chars().count() as u32 * CHAR_WIDTH + 2 * HORIZONTAL_PADDING;
@@ -110,6 +118,10 @@ pub struct NonTerminal {
 }
 
 impl NonTerminal {
+    /// Construct a `NonTerminal` node with the given text and an optional
+    /// href. When `href` is `Some`, the rendered SVG wraps the box in an
+    /// `<a href="...">` anchor. Width geometry matches `Terminal`. Rendered
+    /// as a square-cornered rect.
     pub fn new(text: impl Into<String>, href: Option<String>) -> Self {
         let text = text.into();
         let width = text.chars().count() as u32 * CHAR_WIDTH + 2 * HORIZONTAL_PADDING;
@@ -150,6 +162,10 @@ fn row_width(children: &[Node]) -> u32 {
 }
 
 impl Sequence {
+    /// Construct a single-row `Sequence` laying children out left-to-right
+    /// with a `HORIZONTAL_SPACER` stub between adjacent children. Use
+    /// [`Sequence::wrapped`] if the row might need to break across multiple
+    /// rows at a width threshold.
     pub fn new(children: Vec<Node>) -> Self {
         let width = if children.is_empty() {
             CHOICE_RAIL_WIDTH
@@ -273,6 +289,13 @@ pub struct Choice {
 }
 
 impl Choice {
+    /// Construct a `Choice` node representing an alternation of branches.
+    /// The branch at `default_idx` sits on the enclosing baseline; other
+    /// branches stack above/below it with quadratic entry/exit rails.
+    ///
+    /// # Panics
+    /// - If `children` is empty (a Choice must have at least one branch).
+    /// - If `default_idx >= children.len()`.
     pub fn new(default_idx: usize, children: Vec<Node>) -> Self {
         assert!(!children.is_empty(), "Choice must have at least one child");
         assert!(
@@ -318,6 +341,8 @@ pub struct Optional {
 }
 
 impl Optional {
+    /// Construct an `Optional` node (zero-or-one). The child sits on the
+    /// enclosing baseline; a skip rail arcs above it bypassing the child.
     pub fn new(child: Node) -> Self {
         let width = child.width() + CHOICE_RAIL_WIDTH;
         let height = child.height() + BOX_HEIGHT + VERTICAL_GAP;
@@ -345,6 +370,11 @@ pub struct OneOrMore {
 }
 
 impl OneOrMore {
+    /// Construct a `OneOrMore` node (one-or-more repetition). The child
+    /// sits on the baseline; a loop-back rail goes underneath, optionally
+    /// drawing a separator on the back-edge when `separator` is `Some`.
+    /// For zero-or-more semantics wrap this in [`Optional`], or use the
+    /// [`zero_or_more`] helper.
     pub fn new(child: Node, separator: Option<Node>) -> Self {
         let sep_w = separator.as_ref().map(|s| s.width()).unwrap_or(0);
         let width = child.width().max(sep_w) + CHOICE_RAIL_WIDTH;

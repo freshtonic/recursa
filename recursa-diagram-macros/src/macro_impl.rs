@@ -20,6 +20,14 @@ use syn::{
 /// exceeds this, the sequence is broken into multiple rows joined by wrap
 /// connectors. Chosen so that typical rustdoc pages do not require horizontal
 /// scrolling while still giving each row enough space for ~10-15 clauses.
+///
+/// **Soft cap, not a hard limit.** A single child wider than this value
+/// gets its own row (the greedy packer admits it to avoid an infinite loop),
+/// so the final rendered width can exceed `DEFAULT_MAX_WIDTH` by up to the
+/// width of the widest single child plus `CHOICE_RAIL_WIDTH` of back-rail
+/// margin. Observed in practice: `SelectStmt` wraps to 1226px. If tighter
+/// bounds become necessary, either shrink the cap or add a `#[railroad(...)]`
+/// attribute to override it per-type.
 const DEFAULT_MAX_WIDTH: u32 = 1200;
 
 pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {

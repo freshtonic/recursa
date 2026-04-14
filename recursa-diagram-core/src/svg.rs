@@ -12,6 +12,11 @@ pub(crate) const SVG_OUTER_PADDING: u32 = 10;
 /// tuned for the 12px monospace font used in the <style> block below.
 const TEXT_BASELINE_NUDGE: i32 = 4;
 
+/// Serialize a layout tree rooted at `root` into a self-contained SVG
+/// document. The output uses `currentColor` for strokes and text so the
+/// diagram adapts to the enclosing page's light/dark theme, and embeds
+/// an inline `<style>` block. Dimensions derive from the root node's
+/// geometry plus `SVG_OUTER_PADDING` on each side.
 pub fn render(root: &Node) -> String {
     let mut out = String::new();
     let pad = SVG_OUTER_PADDING;
@@ -83,6 +88,15 @@ fn escape(s: &str) -> String {
 }
 
 // Non-terminals render as square boxes (vs. terminals' rounded ends).
+//
+// The `<a>` wrapping is emitted whenever `nt.href` is `Some`. The `#[railroad]`
+// proc macro currently always passes `None` because proc macros lack the
+// calling module's context to compute correct rustdoc-relative paths (Phase 5
+// revealed most guesses produced 404s). The anchor emission is still reachable
+// via `recursa-diagram-core`'s public API if downstream callers construct
+// NonTerminals with known-good hrefs directly — e.g. the snapshot test fixture
+// does exactly this. Keep the branch; it's the documented extension point for
+// href support when/if the macro gains a configurable root.
 fn render_non_terminal(nt: &NonTerminal, x: i32, y: i32, out: &mut String) {
     if let Some(href) = &nt.href {
         out.push_str(&format!(r#"<a href="{h}">"#, h = escape(href)));
