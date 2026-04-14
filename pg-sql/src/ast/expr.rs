@@ -562,6 +562,12 @@ pub enum Expr {
     /// JSON all-keys-exist: `expr ?& keys`
     #[parse(infix, bp = 10)]
     JsonAllKeys(Box<Expr>, punct::QuestionAmp, Box<Expr>),
+    /// Geometric intersect: `a ?# b`. Must precede `JsonKey` (`?`).
+    #[parse(infix, bp = 5)]
+    Intersect(Box<Expr>, punct::QuestionHash, Box<Expr>),
+    /// Geometric horizontal: `a ?- b`. Must precede `JsonKey` (`?`).
+    #[parse(infix, bp = 5)]
+    Horizontal(Box<Expr>, punct::QuestionDash, Box<Expr>),
     /// JSON key-exists: `expr ? key`
     #[parse(infix, bp = 10)]
     JsonKey(Box<Expr>, punct::Question, Box<Expr>),
@@ -571,6 +577,65 @@ pub enum Expr {
     /// JSONB contained-by: `expr <@ expr`
     #[parse(infix, bp = 10)]
     JsonContainedBy(Box<Expr>, punct::LtAt, Box<Expr>),
+
+    // --- Postgres text-search / jsonpath / range / geometric 3-char operators ---
+    //
+    // These must come BEFORE any variant whose infix token is a 2-char prefix
+    // (e.g. `<<|` before `<<`, `&<|` before `&<`, `?#` before JsonKey `?`).
+    // The scanner is longest-match at the token level, but Pratt operator
+    // dispatch chooses variants in declaration order — so a shorter-prefix
+    // variant declared first would swallow the `&<` / `<<` / `?` and leave
+    // the trailing `|` / `#` dangling.
+    /// Text-search / jsonb path match: `expr @@@ expr`.
+    #[parse(infix, bp = 5)]
+    TsMatch3(Box<Expr>, punct::AtAtAt, Box<Expr>),
+    /// Geometric strictly-below: `a <<| b`. Before `StrictlyLeft` (`<<`).
+    #[parse(infix, bp = 5)]
+    StrictlyBelow(Box<Expr>, punct::LtLtPipe, Box<Expr>),
+    /// Inet is-subset-or-equal: `a <<= b`. Before `StrictlyLeft` (`<<`).
+    #[parse(infix, bp = 5)]
+    SubsetEq(Box<Expr>, punct::LtLtEq, Box<Expr>),
+    /// Distance: `a <-> b`. Before any `<` variant.
+    #[parse(infix, bp = 10)]
+    Distance(Box<Expr>, punct::LtMinusGt, Box<Expr>),
+    /// Inet is-superset-or-equal: `a >>= b`. Before `StrictlyRight` (`>>`).
+    #[parse(infix, bp = 5)]
+    SupersetEq(Box<Expr>, punct::GtGtEq, Box<Expr>),
+    /// Range adjacent: `a -|- b`. Before `Sub` (`-`).
+    #[parse(infix, bp = 5)]
+    Adjacent(Box<Expr>, punct::MinusPipeMinus, Box<Expr>),
+    /// Geometric strictly-above: `a |>> b`. Before `Concat` (`||`).
+    #[parse(infix, bp = 5)]
+    StrictlyAbove(Box<Expr>, punct::PipeGtGt, Box<Expr>),
+    /// Geometric no-extend-below: `a |&> b`. Before `Concat` (`||`).
+    #[parse(infix, bp = 5)]
+    NoExtendBelow(Box<Expr>, punct::PipeAmpGt, Box<Expr>),
+    /// Geometric no-extend-above: `a &<| b`. Before `NoExtendRight` (`&<`).
+    #[parse(infix, bp = 5)]
+    NoExtendAbove(Box<Expr>, punct::AmpLtPipe, Box<Expr>),
+
+    // --- 2-char operators ---
+    /// Text-search / jsonb path match: `expr @@ expr`.
+    #[parse(infix, bp = 5)]
+    TsMatch(Box<Expr>, punct::AtAt, Box<Expr>),
+    /// Jsonpath exists: `expr @? path`.
+    #[parse(infix, bp = 5)]
+    JsonPathExists(Box<Expr>, punct::AtQuestion, Box<Expr>),
+    /// Range / array overlap: `a && b`.
+    #[parse(infix, bp = 10)]
+    Overlap(Box<Expr>, punct::AmpAmp, Box<Expr>),
+    /// Range does-not-extend-right: `a &< b`.
+    #[parse(infix, bp = 5)]
+    NoExtendRight(Box<Expr>, punct::AmpLt, Box<Expr>),
+    /// Range does-not-extend-left: `a &> b`.
+    #[parse(infix, bp = 5)]
+    NoExtendLeft(Box<Expr>, punct::AmpGt, Box<Expr>),
+    /// Range strictly-left-of: `a << b`.
+    #[parse(infix, bp = 5)]
+    StrictlyLeft(Box<Expr>, punct::LtLt, Box<Expr>),
+    /// Range strictly-right-of: `a >> b`.
+    #[parse(infix, bp = 5)]
+    StrictlyRight(Box<Expr>, punct::GtGt, Box<Expr>),
 
     #[parse(infix, bp = 1)]
     Or(Box<Expr>, keyword::Or, Box<Expr>),
@@ -1152,6 +1217,152 @@ mod tests {
         let mut input = Input::new("a ?& b");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::JsonAllKeys(..)));
+        assert!(input.is_empty());
+    }
+
+    // --- Postgres text-search / range / geometric operators ---
+
+    #[test]
+    fn parse_ts_match() {
+        let mut input = Input::new("a @@ 'foo|bar'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::TsMatch(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_ts_match3() {
+        let mut input = Input::new("a @@@ b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::TsMatch3(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_json_path_exists() {
+        let mut input = Input::new("j @? '$.a'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::JsonPathExists(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_overlap() {
+        let mut input = Input::new("r && s");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Overlap(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_strictly_left() {
+        let mut input = Input::new("a << b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::StrictlyLeft(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_strictly_right() {
+        let mut input = Input::new("a >> b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::StrictlyRight(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_subset_eq() {
+        let mut input = Input::new("a <<= b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::SubsetEq(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_superset_eq() {
+        let mut input = Input::new("a >>= b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::SupersetEq(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_adjacent() {
+        let mut input = Input::new("a -|- b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Adjacent(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_distance() {
+        let mut input = Input::new("p1 <-> p2");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Distance(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_no_extend_right() {
+        let mut input = Input::new("a &< b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::NoExtendRight(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_no_extend_left() {
+        let mut input = Input::new("a &> b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::NoExtendLeft(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_strictly_above() {
+        let mut input = Input::new("a |>> b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::StrictlyAbove(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_strictly_below() {
+        let mut input = Input::new("a <<| b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::StrictlyBelow(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_no_extend_above() {
+        let mut input = Input::new("a &<| b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::NoExtendAbove(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_no_extend_below() {
+        let mut input = Input::new("a |&> b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::NoExtendBelow(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_intersect() {
+        let mut input = Input::new("a ?# b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Intersect(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_horizontal() {
+        let mut input = Input::new("a ?- b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Horizontal(..)));
         assert!(input.is_empty());
     }
 

@@ -536,6 +536,7 @@ macro_rules! create_drop_stmts {
 }
 
 create_drop_stmts! {
+    Group, CreateGroupStmt, DropGroupStmt, Group;
     Role, CreateRoleStmt, DropRoleStmt, Role;
     User, CreateUserStmt, DropUserStmt, User;
     Schema, CreateSchemaStmt, DropSchemaStmt, Schema;
@@ -570,6 +571,7 @@ macro_rules! alter_stmts {
 }
 
 alter_stmts! {
+    Group, AlterGroupStmt, Group;
     Role, AlterRoleStmt, Role;
     User, AlterUserStmt, User;
     Schema, AlterSchemaStmt, Schema;
@@ -707,6 +709,41 @@ mod tests {
 
     use super::*;
     use crate::rules::SqlRules;
+
+    #[test]
+    fn parse_create_group() {
+        let mut input = Input::new("CREATE GROUP g1");
+        let _stmt = CreateGroupStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_group_with_users() {
+        let mut input = Input::new("CREATE GROUP g1 WITH USER u1, u2");
+        let _stmt = CreateGroupStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_group_add_user() {
+        let mut input = Input::new("ALTER GROUP g1 ADD USER u1");
+        let _stmt = AlterGroupStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_group_drop_user() {
+        let mut input = Input::new("ALTER GROUP g1 DROP USER u1");
+        let _stmt = AlterGroupStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_drop_group() {
+        let mut input = Input::new("DROP GROUP g1");
+        let _stmt = DropGroupStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
 
     #[test]
     fn parse_end_stmt() {

@@ -85,6 +85,20 @@ pub struct SubqueryRef {
     pub alias: TableAlias,
 }
 
+/// Parenthesized join tree in FROM: `(t1 CROSS JOIN t2) AS alias`.
+///
+/// Distinguished from `SubqueryRef` by what the `(` contains: a subquery
+/// starts with `SELECT` / `VALUES` / `TABLE` / `WITH` (all keywords),
+/// whereas a parenthesized join tree starts with a table name (ident).
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ParenJoinRef {
+    pub _lparen: punct::LParen,
+    pub table: Box<TableRef>,
+    pub _rparen: punct::RParen,
+    pub alias: Option<TableAlias>,
+}
+
 /// LATERAL subquery in FROM: `LATERAL (VALUES(...)) v`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
@@ -165,7 +179,13 @@ pub struct FuncTableRef {
 pub enum SimpleTableRef {
     Lateral(LateralRef),
     Func(FuncTableRef),
+    // Subquery must come before ParenJoin: both start with `(`, but a
+    // subquery body begins with a keyword (`SELECT`/`VALUES`/`TABLE`/`WITH`)
+    // while a parenthesized join tree begins with an identifier. The parser
+    // forks and tries in declaration order, so try the more restrictive
+    // (keyword-leading) form first.
     Subquery(SubqueryRef),
+    ParenJoin(ParenJoinRef),
     Inherited(InheritedTable),
     Table(PlainTable),
 }
@@ -415,6 +435,29 @@ mod tests {
         let mut input = Input::new("SELECT 1 AS one");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.items.len(), 1);
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_paren_join_cross() {
+        let mut input = Input::new("SELECT * FROM (a CROSS JOIN b) AS tx");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_paren_join_using() {
+        let mut input = Input::new("SELECT * FROM (a JOIN b USING (i)) AS x");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_paren_join_with_col_aliases() {
+        let mut input = Input::new(
+            "SELECT * FROM (a t1 (x, y) CROSS JOIN b t2 (p, q)) AS tx (a, b, c, d)",
+        );
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
