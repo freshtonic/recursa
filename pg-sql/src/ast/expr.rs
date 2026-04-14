@@ -321,7 +321,25 @@ pub struct VariadicArg {
     pub value: Box<Expr>,
 }
 
-/// Function call: `name([*] [DISTINCT] args [ORDER BY ...]) [OVER (...)]`
+/// `WITHIN GROUP (ORDER BY ...)` clause for ordered-set aggregate functions.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct WithinGroupClause {
+    pub _within: PhantomData<keyword::Within>,
+    pub _group: PhantomData<keyword::Group>,
+    pub order_by:
+        Surrounded<punct::LParen, Box<crate::ast::select::OrderByClause>, punct::RParen>,
+}
+
+/// `FILTER (WHERE condition)` clause for filtered aggregates.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct FilterClause {
+    pub _filter: PhantomData<keyword::Filter>,
+    pub body: Surrounded<punct::LParen, Box<crate::ast::select::WhereClause>, punct::RParen>,
+}
+
+/// Function call: `name([*] [DISTINCT] args [ORDER BY ...]) [WITHIN GROUP (...)] [FILTER (...)] [OVER (...)]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncCall {
@@ -332,6 +350,8 @@ pub struct FuncCall {
     pub args: Seq<FuncArg, punct::Comma>,
     pub order_by: Option<Box<crate::ast::select::OrderByClause>>,
     pub rparen: punct::RParen,
+    pub within_group: Option<WithinGroupClause>,
+    pub filter: Option<FilterClause>,
     pub window: Option<WindowSpec>,
 }
 
@@ -575,6 +595,139 @@ pub struct XmlPiInner {
 pub struct XmlPiContentTail {
     pub _comma: punct::Comma,
     pub expr: Box<Expr>,
+}
+
+// --- SQL-standard string function atoms ---
+//
+// TRIM/SUBSTRING/POSITION/OVERLAY use special syntax with FROM/IN/PLACING/FOR
+// separators inside parens that don't fit a comma-separated FuncCall.
+
+/// Trim direction: `LEADING | TRAILING | BOTH`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum TrimDir {
+    Leading(keyword::Leading),
+    Trailing(keyword::Trailing),
+    Both(keyword::BothKw),
+}
+
+/// `[chars] FROM source`: the optional chars-to-trim before `FROM`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TrimChars {
+    pub chars: Box<Expr>,
+}
+
+/// Inside of `TRIM(...)`. Forms:
+///   `[LEADING|TRAILING|BOTH] [chars] FROM source`
+///   (a fully-positional `TRIM(src, chars)` form is left to ordinary FuncCall).
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TrimInner {
+    pub dir: Option<TrimDir>,
+    pub chars: Option<TrimChars>,
+    pub _from: PhantomData<keyword::From>,
+    pub source: Box<Expr>,
+}
+
+/// `TRIM([LEADING|TRAILING|BOTH] [chars] FROM source)`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TrimCall {
+    pub _kw: PhantomData<keyword::TrimKw>,
+    pub inner: Surrounded<punct::LParen, TrimInner, punct::RParen>,
+}
+
+/// `FOR len` suffix in `SUBSTRING(... FROM ... FOR ...)` / `OVERLAY(...)`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ForCount {
+    pub _for: PhantomData<keyword::For>,
+    pub count: Box<Expr>,
+}
+
+/// `FROM start [FOR len]` form for SUBSTRING.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SubstringFromFor {
+    pub _from: PhantomData<keyword::From>,
+    pub start: Box<Expr>,
+    pub for_count: Option<ForCount>,
+}
+
+/// `SIMILAR pattern ESCAPE escape` form for SUBSTRING.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SubstringSimilar {
+    pub _similar: PhantomData<keyword::Similar>,
+    pub pattern: Box<Expr>,
+    pub _escape: PhantomData<keyword::EscapeKw>,
+    pub escape: Box<Expr>,
+}
+
+/// Tail of a SUBSTRING call after the source expression.
+///
+/// Variant ordering: `Similar` (`SIMILAR`) before `FromFor` (`FROM`) — distinct
+/// first tokens, so order is not strictly required, but listed by length.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum SubstringTail {
+    Similar(SubstringSimilar),
+    FromFor(SubstringFromFor),
+}
+
+/// Inner of `SUBSTRING(...)`: `source` followed by FROM/SIMILAR tail.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SubstringInner {
+    pub source: Box<Expr>,
+    pub tail: SubstringTail,
+}
+
+/// `SUBSTRING(source FROM start [FOR len])` /
+/// `SUBSTRING(source SIMILAR pattern ESCAPE escape)`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SubstringCall {
+    pub _kw: PhantomData<keyword::SubstringKw>,
+    pub inner: Surrounded<punct::LParen, SubstringInner, punct::RParen>,
+}
+
+/// Inner of `POSITION(needle IN haystack)`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct PositionInner {
+    pub needle: Box<Expr>,
+    pub _in: PhantomData<keyword::In>,
+    pub haystack: Box<Expr>,
+}
+
+/// `POSITION(needle IN haystack)`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct PositionCall {
+    pub _kw: PhantomData<keyword::PositionKw>,
+    pub inner: Surrounded<punct::LParen, PositionInner, punct::RParen>,
+}
+
+/// Inner of `OVERLAY(source PLACING new FROM start [FOR len])`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct OverlayInner {
+    pub source: Box<Expr>,
+    pub _placing: PhantomData<keyword::Placing>,
+    pub new: Box<Expr>,
+    pub _from: PhantomData<keyword::From>,
+    pub start: Box<Expr>,
+    pub for_count: Option<ForCount>,
+}
+
+/// `OVERLAY(source PLACING new FROM start [FOR len])`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct OverlayCall {
+    pub _kw: PhantomData<keyword::OverlayKw>,
+    pub inner: Surrounded<punct::LParen, OverlayInner, punct::RParen>,
 }
 
 /// `UESCAPE 'c'` suffix that may follow a `U&'...'` literal.
@@ -855,6 +1008,19 @@ pub enum Expr {
     /// `xmlpi(NAME ident [, content])`. Before `Func`.
     #[parse(atom)]
     XmlPi(XmlPi),
+    /// `TRIM([LEADING|TRAILING|BOTH] [chars] FROM source)`. Before `Func`
+    /// since `trim` is also a valid function-call identifier.
+    #[parse(atom)]
+    Trim(TrimCall),
+    /// `SUBSTRING(source FROM ... | SIMILAR ...)`. Before `Func`.
+    #[parse(atom)]
+    Substring(SubstringCall),
+    /// `POSITION(needle IN haystack)`. Before `Func`.
+    #[parse(atom)]
+    Position(PositionCall),
+    /// `OVERLAY(source PLACING new FROM start [FOR len])`. Before `Func`.
+    #[parse(atom)]
+    Overlay(OverlayCall),
     /// Function call: `func(args)` -- must come before ColumnRef
     #[parse(atom)]
     Func(FuncCall),
@@ -892,6 +1058,9 @@ pub enum Expr {
     /// Unqualified column reference: `f1` or `"Foo"`
     #[parse(atom)]
     ColumnRef(literal::Ident),
+    /// psql client variable substitution: `:foo`, `:'foo'`, `:"foo"`.
+    #[parse(atom)]
+    PsqlVar(literal::PsqlVar),
     /// Bare wildcard: `*`
     #[parse(atom)]
     Star(punct::Star),
@@ -1065,6 +1234,120 @@ mod tests {
         let mut input = Input::new("jsonb_agg(q ORDER BY x, y)");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::Func(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_psql_var() {
+        let mut input = Input::new(":foo_oid");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_psql_var_in_func_call() {
+        let mut input = Input::new("pg_stat_get_function_calls(:func_oid)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_trim_both_from() {
+        let mut input = Input::new("TRIM(BOTH FROM '  hi  ')");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_trim_leading_from() {
+        let mut input = Input::new("TRIM(LEADING FROM '  hi  ')");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_trim_trailing_from() {
+        let mut input = Input::new("TRIM(TRAILING FROM '  hi  ')");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_trim_both_chars_from() {
+        let mut input = Input::new("TRIM(BOTH 'x' FROM 'xxhixx')");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_substring_from() {
+        let mut input = Input::new("SUBSTRING('1234567890' FROM 3)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_substring_from_for() {
+        let mut input = Input::new("SUBSTRING('1234567890' FROM 4 FOR 3)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_substring_similar_escape() {
+        let mut input = Input::new("SUBSTRING('abcdefg' SIMILAR 'a#\"%#\"g' ESCAPE '#')");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_position_in() {
+        let mut input = Input::new("POSITION('4' IN '1234567890')");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_overlay_placing_from() {
+        let mut input = Input::new("OVERLAY('abcdef' PLACING '45' FROM 4)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_overlay_placing_from_for() {
+        let mut input = Input::new("OVERLAY('abcdef' PLACING '45' FROM 4 FOR 2)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_func_call_within_group() {
+        let mut input = Input::new("percentile_disc(0.5) WITHIN GROUP (ORDER BY v)");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Func(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_func_call_within_group_multi() {
+        let mut input = Input::new("rank(1, 2) WITHIN GROUP (ORDER BY a, b)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_func_call_filter() {
+        let mut input = Input::new("sum(x) FILTER (WHERE y > 0)");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Func(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_func_call_filter_over() {
+        let mut input = Input::new("sum(x) FILTER (WHERE y > 0) OVER (PARTITION BY z)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

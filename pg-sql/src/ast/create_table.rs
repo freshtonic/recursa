@@ -50,6 +50,7 @@ pub struct NoActionKw {
 pub struct SetNullKw {
     pub _set: PhantomData<keyword::Set>,
     pub _null: PhantomData<keyword::Null>,
+    pub cols: Option<Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>>,
 }
 
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -57,6 +58,7 @@ pub struct SetNullKw {
 pub struct SetDefaultKw {
     pub _set: PhantomData<keyword::Set>,
     pub _default: PhantomData<keyword::Default>,
+    pub cols: Option<Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>>,
 }
 
 /// `ON DELETE <action>`.
@@ -546,6 +548,24 @@ mod tests {
     fn parse_table_foreign_key() {
         let mut input = Input::new(
             "CREATE TABLE t (a int, FOREIGN KEY (a) REFERENCES other(id) ON DELETE SET NULL)",
+        );
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_table_foreign_key_set_null_columns() {
+        let mut input = Input::new(
+            "CREATE TABLE t (a int, b int, FOREIGN KEY (a, b) REFERENCES p ON DELETE SET NULL (b))",
+        );
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_table_foreign_key_set_default_columns() {
+        let mut input = Input::new(
+            "CREATE TABLE t (a int, FOREIGN KEY (a) REFERENCES p ON UPDATE SET DEFAULT (a))",
         );
         let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());

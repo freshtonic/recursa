@@ -352,6 +352,19 @@ pub mod keyword {
         // Aggregate WITHIN GROUP / FILTER (Bundle 8)
         Within      => r"WITHIN\b",
         Filter      => r"FILTER\b",
+        // SQL-standard string functions: TRIM/SUBSTRING/POSITION/OVERLAY.
+        // Not in SQL_KEYWORDS — recognized only inside their dedicated
+        // function-call atoms.
+        TrimKw      => r"TRIM\b",
+        SubstringKw => r"SUBSTRING\b",
+        PositionKw  => r"POSITION\b",
+        OverlayKw   => r"OVERLAY\b",
+        Leading     => r"LEADING\b",
+        Trailing    => r"TRAILING\b",
+        BothKw      => r"BOTH\b",
+        Similar     => r"SIMILAR\b",
+        EscapeKw    => r"ESCAPE\b",
+        Placing     => r"PLACING\b",
     }
 }
 
@@ -442,6 +455,10 @@ pub mod literal {
         // literal when an exponent is present.
         NumericLit => r"(?:[0-9]+\.[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+",
         IntegerLit => r"[0-9]+",
+        // psql client variable substitution: `:foo` or `:'foo'` or `:"foo"`.
+        // Treated as an opaque expression atom so SELECTs that reference
+        // psql-set variables parse structurally.
+        PsqlVar => r#":(?:[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")"#,
     }
 
     // --- Identifier ---
