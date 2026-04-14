@@ -7,12 +7,12 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use recursa_diagram_core::layout::{NonTerminal, Sequence, Terminal};
+use recursa_diagram_core::layout::{NonTerminal, OneOrMore, Optional, Sequence, Terminal};
 use recursa_diagram_core::{layout::Node, render};
 use syn::parse::Parser;
 use syn::{
-    Attribute, Data, DeriveInput, Expr, ExprLit, Fields, Lit, LitStr, MetaNameValue, Type, parse2,
-    punctuated::Punctuated, token::Comma,
+    Attribute, Data, DeriveInput, Expr, ExprLit, Fields, GenericArgument, Ident, Lit, LitStr,
+    MetaNameValue, PathArguments, Type, parse2, punctuated::Punctuated, token::Comma,
 };
 
 pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
@@ -127,9 +127,57 @@ fn node_for_field_type(ty: &Type, field_attrs: &FieldAttrs) -> Node {
     if let Some(label) = &field_attrs.label {
         return Node::NonTerminal(NonTerminal::new(label, None));
     }
+    recognize(ty)
+}
+
+fn recognize(ty: &Type) -> Node {
+    if let Some((ident, args)) = outer_generic(ty) {
+        match ident.to_string().as_str() {
+            "Option" if args.len() == 1 => {
+                return Node::Optional(Optional::new(recognize(&args[0])));
+            }
+            "Seq" if args.len() == 2 => {
+                let child = recognize(&args[0]);
+                let sep = recognize(&args[1]);
+                return Node::OneOrMore(OneOrMore::new(child, Some(sep)));
+            }
+            "Surrounded" if args.len() == 3 => {
+                return Node::Sequence(Sequence::new(vec![
+                    recognize(&args[0]),
+                    recognize(&args[1]),
+                    recognize(&args[2]),
+                ]));
+            }
+            "Box" | "Rc" | "Arc" if args.len() == 1 => {
+                return recognize(&args[0]);
+            }
+            _ => {}
+        }
+    }
     let name = type_label(ty);
     let href = type_href(ty);
     Node::NonTerminal(NonTerminal::new(name, href))
+}
+
+fn outer_generic(ty: &Type) -> Option<(&Ident, Vec<Type>)> {
+    if let Type::Path(p) = ty
+        && let Some(seg) = p.path.segments.last()
+        && let PathArguments::AngleBracketed(ab) = &seg.arguments
+    {
+        let args: Vec<_> = ab
+            .args
+            .iter()
+            .filter_map(|a| {
+                if let GenericArgument::Type(t) = a {
+                    Some(t.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        return Some((&seg.ident, args));
+    }
+    None
 }
 
 fn type_label(ty: &Type) -> String {
@@ -187,6 +235,51 @@ mod tests {
         match node {
             Node::Sequence(seq) => assert!(seq.children.is_empty()),
             other => panic!("expected empty Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn option_renders_as_optional() {
+        let node = node_for(quote! { pub struct S { x: Option<Foo> } });
+        match node {
+            Node::Sequence(seq) => {
+                assert_eq!(seq.children.len(), 1);
+                assert!(matches!(seq.children[0], Node::Optional(_)));
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seq_renders_as_one_or_more() {
+        let node = node_for(quote! { pub struct S { xs: Seq<Foo, Comma> } });
+        match node {
+            Node::Sequence(seq) => assert!(matches!(seq.children[0], Node::OneOrMore(_))),
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn surrounded_renders_as_sequence_of_three() {
+        let node = node_for(quote! { pub struct S { g: Surrounded<LParen, Foo, RParen> } });
+        match node {
+            Node::Sequence(outer) => match &outer.children[0] {
+                Node::Sequence(inner) => assert_eq!(inner.children.len(), 3),
+                other => panic!("expected inner Sequence, got {other:?}"),
+            },
+            other => panic!("expected outer Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn box_is_transparent() {
+        let node = node_for(quote! { pub struct S { b: Box<Foo> } });
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::NonTerminal(nt) => assert_eq!(nt.text, "Foo"),
+                other => panic!("expected unwrapped Foo, got {other:?}"),
+            },
+            other => panic!("expected Sequence, got {other:?}"),
         }
     }
 
