@@ -61,8 +61,23 @@ fn escape(s: &str) -> String {
 }
 
 // Stubs for the other variants — real impls come in later tasks.
-fn render_non_terminal(_: &NonTerminal, _: i32, _: i32, _: &mut String) {
-    todo!("render_non_terminal not yet implemented");
+fn render_non_terminal(nt: &NonTerminal, x: i32, y: i32, out: &mut String) {
+    if let Some(href) = &nt.href {
+        out.push_str(&format!(r#"<a href="{h}">"#, h = escape(href)));
+    }
+    let w = nt.width as i32;
+    let h = BOX_HEIGHT as i32;
+    let half = BASELINE_OFFSET as i32;
+    out.push_str(&format!(
+        r##"<rect x="{x}" y="{ry}" width="{w}" height="{h}"/><text x="{tx}" y="{ty}" text-anchor="middle">{text}</text>"##,
+        ry = y - half,
+        tx = x + w / 2,
+        ty = y + 4,
+        text = escape(&nt.text),
+    ));
+    if nt.href.is_some() {
+        out.push_str("</a>");
+    }
 }
 fn render_sequence(_: &Sequence, _: i32, _: i32, _: &mut String) {
     todo!("render_sequence not yet implemented");
