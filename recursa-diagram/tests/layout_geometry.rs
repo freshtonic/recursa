@@ -1,4 +1,4 @@
-use recursa_diagram::layout::{Node, NonTerminal, Sequence, Terminal};
+use recursa_diagram::layout::{Choice, Node, NonTerminal, Sequence, Terminal};
 
 #[test]
 fn terminal_geometry_pins_constants() {
@@ -40,4 +40,25 @@ fn empty_sequence_has_zero_body_width() {
     let seq = Node::Sequence(Sequence::new(vec![]));
     // Entry/exit stubs: 20 px total.
     assert_eq!(seq.width(), 20);
+}
+
+#[test]
+fn choice_width_is_max_child_plus_rails() {
+    let a = Node::Terminal(Terminal::new("A"));
+    let b = Node::Terminal(Terminal::new("LONGER_OPTION"));
+    let wb = b.width();
+    let ch = Node::Choice(Choice::new(0, vec![a, b]));
+    // 20 px for entry/exit rails.
+    assert_eq!(ch.width(), wb + 20);
+}
+
+#[test]
+fn choice_height_sums_children_plus_vertical_gap() {
+    let a = Node::Terminal(Terminal::new("A"));
+    let b = Node::Terminal(Terminal::new("B"));
+    let ha = a.height();
+    let hb = b.height();
+    let ch = Node::Choice(Choice::new(0, vec![a, b]));
+    // 10 px vertical gap between branches.
+    assert_eq!(ch.height(), ha + hb + 10);
 }

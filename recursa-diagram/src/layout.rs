@@ -10,6 +10,9 @@ pub(crate) const HORIZONTAL_SPACER: u32 = 10;
 /// Combined width of the entry + exit rails wrapping `Choice`/`Optional`/`OneOrMore`.
 /// Also used as the body width of an empty `Sequence`.
 pub(crate) const CHOICE_RAIL_WIDTH: u32 = 20;
+/// Vertical gap between stacked branches in `Choice` and between the
+/// child/separator rows of `Optional`/`OneOrMore`.
+pub(crate) const VERTICAL_GAP: u32 = 10;
 
 #[derive(Clone, Debug)]
 pub enum Node {
@@ -27,7 +30,7 @@ impl Node {
             Node::Terminal(n) => n.width,
             Node::NonTerminal(n) => n.width,
             Node::Sequence(n) => n.width,
-            Node::Choice(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Choice(n) => n.width,
             Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
             Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
         }
@@ -38,7 +41,7 @@ impl Node {
             Node::Terminal(n) => n.height,
             Node::NonTerminal(n) => n.height,
             Node::Sequence(n) => n.height,
-            Node::Choice(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Choice(n) => n.height,
             Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
             Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
         }
@@ -49,7 +52,7 @@ impl Node {
             Node::Terminal(n) => n.up,
             Node::NonTerminal(n) => n.up,
             Node::Sequence(n) => n.up,
-            Node::Choice(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Choice(n) => n.up,
             Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
             Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
         }
@@ -60,7 +63,7 @@ impl Node {
             Node::Terminal(n) => n.down,
             Node::NonTerminal(n) => n.down,
             Node::Sequence(n) => n.down,
-            Node::Choice(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Choice(n) => n.down,
             Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
             Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
         }
@@ -166,6 +169,40 @@ pub struct Choice {
     pub height: u32,
     pub up: u32,
     pub down: u32,
+}
+
+impl Choice {
+    pub fn new(default_idx: usize, children: Vec<Node>) -> Self {
+        assert!(!children.is_empty(), "Choice must have at least one child");
+        assert!(default_idx < children.len());
+        let width =
+            children.iter().map(|c| c.width()).max().unwrap() + CHOICE_RAIL_WIDTH;
+        let height: u32 = children.iter().map(|c| c.height()).sum::<u32>()
+            + VERTICAL_GAP * (children.len() as u32 - 1);
+        // TODO(phase-3): verify up/down against rendered svg
+        // The default branch sits on the baseline; branches above contribute
+        // to `up`, branches below to `down`.
+        let default_up = children[default_idx].up();
+        let default_down = children[default_idx].down();
+        let above: u32 = children[..default_idx]
+            .iter()
+            .map(|c| c.height() + VERTICAL_GAP)
+            .sum();
+        let below: u32 = children[default_idx + 1..]
+            .iter()
+            .map(|c| c.height() + VERTICAL_GAP)
+            .sum();
+        let up = default_up + above;
+        let down = default_down + below;
+        Self {
+            default_idx,
+            children,
+            width,
+            height,
+            up,
+            down,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
