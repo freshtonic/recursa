@@ -431,6 +431,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_create_table_array_column_types() {
+        let mut input = Input::new(
+            "CREATE TABLE t (a int2[], b int4[][][], c varchar(5)[], d text[])",
+        );
+        let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert_eq!(stmt.items().unwrap().len(), 4);
+        assert!(input.is_empty());
+    }
+
+    #[test]
     fn parse_create_table_boolean_type() {
         let mut input = Input::new("CREATE TABLE t (f1 boolean)");
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();

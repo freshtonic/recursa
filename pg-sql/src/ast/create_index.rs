@@ -10,6 +10,7 @@ pub use crate::ast::common::{CascadeKw, DropBehavior, RestrictKw};
 use crate::ast::create_view::IfExistsKw;
 use crate::ast::expr::Expr;
 use crate::ast::select::{NullsOrder, SortDir, WhereClause};
+use crate::ast::set_reset::SetValue;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
@@ -64,11 +65,15 @@ pub struct StorageParam {
 }
 
 /// `= value` suffix for a storage parameter.
+///
+/// The value is a permissive SetValue (keywords like `off`, `on`, string/numeric
+/// literals, identifiers) rather than a full `Expr` — storage param values are
+/// simple literals and `Expr::ColumnRef` rejects keywords like `off`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StorageParamValue {
     pub _eq: punct::Eq,
-    pub value: Expr,
+    pub value: SetValue,
 }
 
 /// `WITH (name = value, ...)` storage parameters clause.
@@ -268,6 +273,24 @@ mod tests {
         let mut input = Input::new("CREATE INDEX i ON t (a) WITH (fillfactor = 70)");
         let stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.with_storage.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_with_storage_keyword_value_off() {
+        use crate::ast::create_table::CreateTableStmt;
+        let mut input = Input::new(
+            "CREATE TABLE target (tid integer, balance integer) WITH (autovacuum_enabled=off)",
+        );
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_with_storage_string_value() {
+        use crate::ast::create_table::CreateTableStmt;
+        let mut input = Input::new("CREATE TABLE t (a int) WITH (foo = 'bar')");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

@@ -295,7 +295,25 @@ pub struct NoOthers {
 /// `Ident + LParen` pattern is what disambiguates `FuncCall` from a plain
 /// `Ident` in `TableRef` enum lookahead.
 ///
-/// Function call: `name([*] [DISTINCT] args) [OVER (...)]`
+/// Function argument: optionally prefixed with `VARIADIC`.
+///
+/// Variant ordering: `Variadic` before `Plain` since `VARIADIC` keyword is
+/// longer than starting an expression.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum FuncArg {
+    Variadic(VariadicArg),
+    Plain(Box<Expr>),
+}
+
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct VariadicArg {
+    pub _variadic: keyword::Variadic,
+    pub value: Box<Expr>,
+}
+
+/// Function call: `name([*] [DISTINCT] args [ORDER BY ...]) [OVER (...)]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncCall {
@@ -303,7 +321,8 @@ pub struct FuncCall {
     pub lparen: punct::LParen,
     pub star_arg: Option<punct::Star>,
     pub distinct: Option<DistinctKw>,
-    pub args: Seq<Expr, punct::Comma>,
+    pub args: Seq<FuncArg, punct::Comma>,
+    pub order_by: Option<Box<crate::ast::select::OrderByClause>>,
     pub rparen: punct::RParen,
     pub window: Option<WindowSpec>,
 }
@@ -366,13 +385,14 @@ pub struct RowExpr {
     pub values: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
 }
 
-/// Cast type with optional precision/array suffix: `numeric(10,0)`, `integer[]`
+/// Cast type with optional precision and zero-or-more array suffixes:
+/// `numeric(10,0)`, `integer[]`, `int4[][][]`.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CastType {
     pub base: TypeName,
     pub precision: Option<TypePrecision>,
-    pub array_suffix: Option<ArrayTypeSuffix>,
+    pub array_suffixes: Vec<ArrayTypeSuffix>,
 }
 
 /// NOT IN list: `expr NOT IN (val, ...)` suffix.
@@ -389,6 +409,48 @@ pub struct NotInSuffix {
 #[parse(rules = SqlRules)]
 pub struct TypeCastFunc {
     pub type_name: TypeName,
+    pub value: literal::StringLit,
+}
+
+/// `WITH TIME ZONE` or `WITHOUT TIME ZONE` suffix for `TIMESTAMP`/`TIME`.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum TimeZoneQualifier {
+    With(WithTimeZone),
+    Without(WithoutTimeZone),
+}
+
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct WithTimeZone {
+    pub _with: keyword::With,
+    pub _time: keyword::Time,
+    pub _zone: keyword::Zone,
+}
+
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct WithoutTimeZone {
+    pub _without: keyword::Without,
+    pub _time: keyword::Time,
+    pub _zone: keyword::Zone,
+}
+
+/// `TIMESTAMP [WITH|WITHOUT TIME ZONE] 'string'`.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct TimestampLit {
+    pub _timestamp: keyword::Timestamp,
+    pub tz: Option<TimeZoneQualifier>,
+    pub value: literal::StringLit,
+}
+
+/// `TIME [WITH|WITHOUT TIME ZONE] 'string'`.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct TimeLit {
+    pub _time: keyword::Time,
+    pub tz: Option<TimeZoneQualifier>,
     pub value: literal::StringLit,
 }
 
@@ -501,6 +563,18 @@ pub enum Expr {
     /// ROW constructor: `ROW(...)`
     #[parse(atom)]
     RowExpr(RowExpr),
+    /// Escape string literal: `E'foo\n'`. Must come before `CastFunc` and
+    /// `StringLit` — `CastFunc` is `TypeName StringLit` and would match `e`
+    /// as a type name followed by the string literal.
+    #[parse(atom)]
+    EscapeStringLit(literal::EscapeStringLit),
+    /// `TIMESTAMP [WITH|WITHOUT TIME ZONE] 'string'`. Must come before `CastFunc`
+    /// since `timestamp` is also an identifier.
+    #[parse(atom)]
+    TimestampLit(TimestampLit),
+    /// `TIME [WITH|WITHOUT TIME ZONE] 'string'`. Must come before `CastFunc`.
+    #[parse(atom)]
+    TimeLit(TimeLit),
     /// Function-style type cast: `bool 't'` -- must come before ColumnRef
     /// since type keywords like `bool` overlap with identifiers
     #[parse(atom)]
@@ -565,6 +639,77 @@ mod tests {
         let mut input = Input::new("'hello'");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::StringLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_escape_string_literal() {
+        let mut input = Input::new(r"E'r_\_view%'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::EscapeStringLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_func_call_order_by() {
+        let mut input = Input::new("jsonb_agg(q ORDER BY x, y)");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Func(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_func_call_order_by_nulls_first() {
+        let mut input = Input::new("jsonb_agg(q ORDER BY x NULLS FIRST, y)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_func_call_variadic() {
+        let mut input = Input::new("jsonb_build_array(VARIADIC a)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_timestamp_with_tz_literal() {
+        let mut input = Input::new("timestamp with time zone '2001-12-27 04:05:06+08'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::TimestampLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_time_literal() {
+        let mut input = Input::new("time '12:34'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::TimeLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_date_literal_as_castfunc() {
+        let mut input = Input::new("date '2024-01-01'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        // `date` is an Ident-based TypeName, so this parses as CastFunc.
+        assert!(matches!(expr, Expr::CastFunc(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_interval_literal_as_castfunc() {
+        let mut input = Input::new("interval '1 hour'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::CastFunc(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_escape_string_literal_lowercase_e() {
+        let mut input = Input::new("e'foo'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::EscapeStringLit(_)));
         assert!(input.is_empty());
     }
 

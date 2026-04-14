@@ -194,7 +194,7 @@ pub enum JoinCondition {
 #[parse(rules = SqlRules)]
 pub struct JoinOn {
     pub _on: PhantomData<keyword::On>,
-    pub condition: Expr,
+    pub condition: Box<Expr>,
 }
 
 /// USING clause for JOIN: `USING (col, ...)`

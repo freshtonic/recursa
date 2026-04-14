@@ -35,7 +35,7 @@ use self::{
     insert::InsertStmt,
     merge::MergeStmt,
     select::SelectStmt,
-    set_reset::{ResetStmt, SetRoleStmt, SetSessionAuthStmt, SetStmt, SetTimeZoneStmt},
+    set_reset::{ResetStmt, SetRoleStmt, SetSessionAuthStmt, SetStmt, SetTimeZoneStmt, ShowStmt},
     simple_stmts::*,
     update::UpdateStmt,
     values::{CompoundQuery, TableStmt},
@@ -153,8 +153,11 @@ pub enum Statement {
     Rollback(RollbackStmt),
     Savepoint(SavepointStmt),
     Release(ReleaseStmt),
+    StartTransaction(StartTransactionStmt),
     Begin(BeginStmt),
     Commit(CommitStmt),
+    End(EndStmt),
+    Abort(AbortStmt),
     // PREPARE / EXECUTE / DEALLOCATE
     Deallocate(DeallocateStmt),
     Prepare(PrepareStmt),
@@ -186,11 +189,14 @@ pub enum Statement {
     // Configuration
     // Multi-keyword SET variants must come before plain Set so
     // longest-match-wins picks the more specific form.
+    SetConstraints(SetConstraintsStmt),
+    SetTransaction(SetTransactionStmt),
     SetSessionAuth(SetSessionAuthStmt),
     SetTimeZone(SetTimeZoneStmt),
     SetRole(SetRoleStmt),
     Set(SetStmt),
     Reset(ResetStmt),
+    Show(ShowStmt),
     Analyze(AnalyzeStmt),
     // Query
     Values(CompoundQuery),

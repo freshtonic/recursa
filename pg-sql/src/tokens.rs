@@ -269,6 +269,24 @@ pub mod keyword {
         // (e.g., column names `session`, `time`, etc.). They are only
         // recognized as keywords in positions where the grammar
         // explicitly looks for them.
+        Show        => r"SHOW\b",
+        Transaction => r"TRANSACTION\b",
+        Isolation   => r"ISOLATION\b",
+        Level       => r"LEVEL\b",
+        Serializable => r"SERIALIZABLE\b",
+        Repeatable   => r"REPEATABLE\b",
+        ReadKw       => r"READ\b",
+        WriteKw      => r"WRITE\b",
+        Committed    => r"COMMITTED\b",
+        Uncommitted  => r"UNCOMMITTED\b",
+        Constraints  => r"CONSTRAINTS\b",
+        Start        => r"START\b",
+        Work         => r"WORK\b",
+        Abort        => r"ABORT\b",
+        Characteristics => r"CHARACTERISTICS\b",
+        Variadic     => r"VARIADIC\b",
+        Without      => r"WITHOUT\b",
+        Timestamp    => r"TIMESTAMP\b",
         Session     => r"SESSION\b",
         Authorization => r"AUTHORIZATION\b",
         Time        => r"TIME\b",
@@ -337,6 +355,7 @@ pub mod literal {
     recursa::literals! {
         DollarStringLit => r#"\$[a-zA-Z_]*\$[\s\S]*?\$[a-zA-Z_]*\$"#,
         QuotedIdent => r#""[^"]*(?:""[^"]*)*""#,
+        EscapeStringLit => r"(?i:E)'(?:[^'\\]|\\.|'')*'",
         StringLit  => r"'[^']*(?:''[^']*)*'",
         NumericLit => r"[0-9]+\.[0-9]+",
         IntegerLit => r"[0-9]+",

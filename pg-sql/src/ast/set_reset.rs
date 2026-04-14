@@ -177,12 +177,61 @@ pub struct ResetStmt {
     pub target: ResetTarget,
 }
 
+// --- SHOW ---
+
+/// `SESSION AUTHORIZATION` target for `SHOW`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ShowSessionAuth {
+    pub _session: PhantomData<keyword::Session>,
+    pub _authorization: PhantomData<keyword::Authorization>,
+}
+
+/// `TIME ZONE` target for `SHOW`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ShowTimeZone {
+    pub _time: PhantomData<keyword::Time>,
+    pub _zone: PhantomData<keyword::Zone>,
+}
+
+/// `TRANSACTION ISOLATION LEVEL` target for `SHOW`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ShowTransactionIsolationLevel {
+    pub _transaction: PhantomData<keyword::Transaction>,
+    pub _isolation: PhantomData<keyword::Isolation>,
+    pub _level: PhantomData<keyword::Level>,
+}
+
+/// Target of a SHOW statement.
+///
+/// Variant ordering: multi-token targets before single-token `Param`
+/// fallback so the specific forms are matched first.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ShowTarget {
+    TransactionIsolationLevel(ShowTransactionIsolationLevel),
+    SessionAuthorization(ShowSessionAuth),
+    TimeZone(ShowTimeZone),
+    All(keyword::All),
+    Param(literal::AliasName),
+}
+
+/// SHOW statement: `SHOW { name | ALL | TIME ZONE | SESSION AUTHORIZATION | TRANSACTION ISOLATION LEVEL }`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ShowStmt {
+    pub _show: PhantomData<keyword::Show>,
+    pub target: ShowTarget,
+}
+
 #[cfg(test)]
 mod tests {
     use recursa::{Input, Parse};
 
     use crate::ast::set_reset::{
-        ResetStmt, SetRoleStmt, SetSessionAuthStmt, SetStmt, SetTimeZoneStmt,
+        ResetStmt, SetRoleStmt, SetSessionAuthStmt, SetStmt, SetTimeZoneStmt, ShowStmt,
     };
     use crate::rules::SqlRules;
 
@@ -330,6 +379,41 @@ mod tests {
     fn parse_set_time_zone_default() {
         let mut input = Input::new("SET TIME ZONE DEFAULT");
         let _stmt = SetTimeZoneStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_show_param() {
+        let mut input = Input::new("SHOW TimeZone");
+        let _stmt = ShowStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_show_ident() {
+        let mut input = Input::new("SHOW transaction_read_only");
+        let _stmt = ShowStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_show_all() {
+        let mut input = Input::new("SHOW ALL");
+        let _stmt = ShowStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_show_time_zone() {
+        let mut input = Input::new("SHOW TIME ZONE");
+        let _stmt = ShowStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_show_transaction_isolation_level() {
+        let mut input = Input::new("SHOW TRANSACTION ISOLATION LEVEL");
+        let _stmt = ShowStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
