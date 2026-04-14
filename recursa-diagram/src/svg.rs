@@ -8,13 +8,21 @@ use crate::layout::{
 /// Outer padding around the rendered diagram, in SVG user units.
 pub(crate) const SVG_OUTER_PADDING: u32 = 10;
 
+/// Vertical nudge from the box midline to the font's visual baseline,
+/// tuned for the 12px monospace font used in the <style> block below.
+const TEXT_BASELINE_NUDGE: i32 = 4;
+
 pub fn render(root: &Node) -> String {
     let mut out = String::new();
     let pad = SVG_OUTER_PADDING;
     let total_w = root.width() + pad * 2;
     let total_h = root.height() + pad * 2;
 
-    // TODO(phase-5): verify rustdoc preserves <style> or move to inline attrs
+    // TODO(phase-5): rustdoc runs ammonia on doc HTML; its default allowlist
+    // excludes svg/rect/path/text/g/style and <a> inside <svg>. We will likely
+    // need to either embed via <img src="data:image/svg+xml;..."/>, reference
+    // an external .svg file written next to the generated docs, or extend the
+    // ammonia allowlist via a crate attribute. Verify empirically in Phase 5.
     out.push_str(&format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><!-- railroad --><style>.railroad rect{{fill:#fff;stroke:#333;stroke-width:1}} .railroad text{{font-family:monospace;font-size:12px;fill:#000}} .railroad path{{stroke:#333;stroke-width:1;fill:none}}</style><g class="railroad">"#,
         w = total_w,
@@ -40,6 +48,7 @@ fn render_node(node: &Node, x: i32, y: i32, out: &mut String) {
     }
 }
 
+// Terminals render as rounded rects (vs. non-terminals' square boxes).
 fn render_terminal(t: &Terminal, x: i32, y: i32, out: &mut String) {
     let w = t.width as i32;
     let h = BOX_HEIGHT as i32;
@@ -48,7 +57,7 @@ fn render_terminal(t: &Terminal, x: i32, y: i32, out: &mut String) {
         r##"<rect x="{x}" y="{ry}" width="{w}" height="{h}" rx="{half}" ry="{half}"/><text x="{tx}" y="{ty}" text-anchor="middle">{text}</text>"##,
         ry = y - half,
         tx = x + w / 2,
-        ty = y + 4,
+        ty = y + TEXT_BASELINE_NUDGE,
         text = escape(&t.text),
     ));
 }
@@ -61,7 +70,7 @@ fn escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-// Stubs for the other variants — real impls come in later tasks.
+// Non-terminals render as square boxes (vs. terminals' rounded ends).
 fn render_non_terminal(nt: &NonTerminal, x: i32, y: i32, out: &mut String) {
     if let Some(href) = &nt.href {
         out.push_str(&format!(r#"<a href="{h}">"#, h = escape(href)));
@@ -73,13 +82,14 @@ fn render_non_terminal(nt: &NonTerminal, x: i32, y: i32, out: &mut String) {
         r##"<rect x="{x}" y="{ry}" width="{w}" height="{h}"/><text x="{tx}" y="{ty}" text-anchor="middle">{text}</text>"##,
         ry = y - half,
         tx = x + w / 2,
-        ty = y + 4,
+        ty = y + TEXT_BASELINE_NUDGE,
         text = escape(&nt.text),
     ));
     if nt.href.is_some() {
         out.push_str("</a>");
     }
 }
+
 fn render_sequence(s: &Sequence, mut x: i32, y: i32, out: &mut String) {
     let spacer = HORIZONTAL_SPACER as i32;
     for (i, child) in s.children.iter().enumerate() {
@@ -95,12 +105,15 @@ fn render_sequence(s: &Sequence, mut x: i32, y: i32, out: &mut String) {
         x += child.width() as i32 + spacer;
     }
 }
+// Stubs for the remaining variants — real impls come in later tasks.
 fn render_choice(_: &Choice, _: i32, _: i32, _: &mut String) {
     todo!("render_choice not yet implemented");
 }
+
 fn render_optional(_: &Optional, _: i32, _: i32, _: &mut String) {
     todo!("render_optional not yet implemented");
 }
+
 fn render_one_or_more(_: &OneOrMore, _: i32, _: i32, _: &mut String) {
     todo!("render_one_or_more not yet implemented");
 }
