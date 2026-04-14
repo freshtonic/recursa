@@ -141,15 +141,25 @@ pub struct ReferencesConstraint {
     pub on_update: Option<OnUpdateAction>,
     pub deferrable: Option<DeferrableKind>,
     pub initially: Option<InitiallyClause>,
+    pub not_valid: Option<NotValidKw>,
 }
 
-/// `CHECK (expr) [NO INHERIT]`
+/// `NOT VALID` suffix on a CHECK or FOREIGN KEY constraint.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NotValidKw {
+    pub _not: PhantomData<keyword::Not>,
+    pub _valid: PhantomData<keyword::ValidKw>,
+}
+
+/// `CHECK (expr) [NO INHERIT] [NOT VALID]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CheckConstraint {
     pub _check: PhantomData<keyword::Check>,
     pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr, punct::RParen>,
     pub no_inherit: Option<NoInheritKw>,
+    pub not_valid: Option<NotValidKw>,
 }
 
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -316,16 +326,69 @@ pub struct TableConstraint {
     pub kind: TableConstraintKind,
 }
 
-/// One item in a CREATE TABLE column list: either a column definition or
-/// a table-level constraint.
+/// A single `INCLUDING` / `EXCLUDING` option on a `LIKE` source table clause.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum LikeOptionKind {
+    All(keyword::All),
+    Defaults(keyword::DefaultsKw),
+    Constraints(keyword::Constraints),
+    Indexes(keyword::IndexesKw),
+    Storage(keyword::StorageKw),
+    Comments(keyword::CommentsKw),
+    Statistics(keyword::Statistics),
+    Generated(keyword::Generated),
+    Identity(keyword::Identity),
+}
+
+/// `INCLUDING what`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IncludingOption {
+    pub _including: PhantomData<keyword::IncludingKw>,
+    pub what: LikeOptionKind,
+}
+
+/// `EXCLUDING what`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ExcludingOption {
+    pub _excluding: PhantomData<keyword::ExcludingKw>,
+    pub what: LikeOptionKind,
+}
+
+/// One option on a `LIKE table` clause.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum LikeOption {
+    Including(IncludingOption),
+    Excluding(ExcludingOption),
+}
+
+/// `LIKE source_table [INCLUDING/EXCLUDING option ...]` clause in a column
+/// list body. Copies column definitions (and optionally other properties)
+/// from an existing table.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct LikeClause {
+    pub _like: PhantomData<keyword::Like>,
+    pub source: crate::ast::common::QualifiedName,
+    pub options: Vec<LikeOption>,
+}
+
+/// One item in a CREATE TABLE column list: a `LIKE table` clause, a
+/// table-level constraint, or a column definition.
 ///
-/// Variant ordering: `Constraint` must come first because its leading
+/// Variant ordering: the `Like` variant starts with the `LIKE` keyword and
+/// must come first (its leading token is otherwise an infix operator in
+/// expressions, so it can't collide with `Column` which starts with an
+/// ident). `Constraint` must come before `Column` because its leading
 /// tokens (`CONSTRAINT`, `PRIMARY`, `UNIQUE`, `FOREIGN`, `CHECK`) are
-/// keywords, while a `Column` starts with an identifier — peek
-/// disambiguates cleanly, but declaration order prefers the longer match.
+/// keywords, while a `Column` starts with an identifier.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ColumnOrConstraint {
+    Like(LikeClause),
     Constraint(TableConstraint),
     Column(ColumnDef),
 }
@@ -423,7 +486,7 @@ impl CreateTableStmt {
             s.iter()
                 .filter_map(|item| match item {
                     ColumnOrConstraint::Column(c) => Some(c),
-                    ColumnOrConstraint::Constraint(_) => None,
+                    ColumnOrConstraint::Constraint(_) | ColumnOrConstraint::Like(_) => None,
                 })
                 .collect()
         })
@@ -590,6 +653,50 @@ mod tests {
     #[test]
     fn parse_table_check_no_inherit() {
         let mut input = Input::new("CREATE TABLE t (a int, CHECK (a > 0) NO INHERIT)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_like_bare() {
+        let mut input = Input::new("CREATE TABLE foo (LIKE bar)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_like_including_all() {
+        let mut input = Input::new("CREATE TABLE foo (LIKE bar INCLUDING ALL)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_like_including_excluding() {
+        let mut input =
+            Input::new("CREATE TABLE foo (LIKE bar INCLUDING DEFAULTS EXCLUDING CONSTRAINTS)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_like_mixed_with_columns() {
+        let mut input =
+            Input::new("CREATE TABLE foo (a int, LIKE bar INCLUDING ALL, b text)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_table_check_no_inherit_not_valid() {
+        let mut input = Input::new("CREATE TABLE t (d date, CHECK (false) NO INHERIT NOT VALID)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_table_check_not_valid() {
+        let mut input = Input::new("CREATE TABLE t (a int, CHECK (a > 0) NOT VALID)");
         let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }

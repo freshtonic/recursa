@@ -1,12 +1,14 @@
 /// CREATE TABLESPACE / DROP TABLESPACE statement AST.
 use std::marker::PhantomData;
 
+use recursa::seq::Seq;
+use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
-use crate::ast::create_index::WithStorage;
+use crate::ast::create_index::{StorageParam, WithStorage};
 use crate::ast::create_view::IfExistsKw;
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal};
+use crate::tokens::{keyword, literal, punct};
 
 /// `OWNER role` optional clause.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -34,6 +36,64 @@ pub struct CreateTablespaceStmt {
     pub owner: Option<OwnerClause>,
     pub location: LocationClause,
     pub with_options: Option<WithStorage>,
+}
+
+/// `RENAME TO new_name` action on ALTER TABLESPACE.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterTablespaceRename {
+    pub _rename: PhantomData<keyword::RenameKw>,
+    pub _to: PhantomData<keyword::To>,
+    pub new_name: literal::Ident,
+}
+
+/// `OWNER TO new_owner` action on ALTER TABLESPACE.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterTablespaceOwner {
+    pub _owner: PhantomData<keyword::Owner>,
+    pub _to: PhantomData<keyword::To>,
+    pub new_owner: literal::Ident,
+}
+
+/// `SET (param = value, ...)` action on ALTER TABLESPACE.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterTablespaceSetAction {
+    pub _set: PhantomData<keyword::Set>,
+    pub params: Surrounded<punct::LParen, Seq<StorageParam, punct::Comma>, punct::RParen>,
+}
+
+/// `RESET (param [, ...])` action on ALTER TABLESPACE.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterTablespaceResetAction {
+    pub _reset: PhantomData<keyword::Reset>,
+    pub params: Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>,
+}
+
+/// One of the supported ALTER TABLESPACE actions.
+///
+/// Variant ordering: all variants start with distinct keywords (SET, RESET,
+/// RENAME, OWNER), so order is for clarity only.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum AlterTablespaceAction {
+    Set(AlterTablespaceSetAction),
+    Reset(AlterTablespaceResetAction),
+    Rename(AlterTablespaceRename),
+    Owner(AlterTablespaceOwner),
+}
+
+/// `ALTER TABLESPACE name { RENAME TO new_name | OWNER TO new_owner
+///                         | SET (params) | RESET (params) }`
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterTablespaceStmt {
+    pub _alter: PhantomData<keyword::Alter>,
+    pub _tablespace: PhantomData<keyword::Tablespace>,
+    pub name: literal::Ident,
+    pub action: AlterTablespaceAction,
 }
 
 /// `DROP TABLESPACE [IF EXISTS] name`
@@ -85,6 +145,35 @@ mod tests {
     fn parse_drop_tablespace_if_exists() {
         let mut input = Input::new("DROP TABLESPACE IF EXISTS ts1");
         let _stmt = DropTablespaceStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_tablespace_set() {
+        let mut input = Input::new("ALTER TABLESPACE ts SET (random_page_cost = 1.0)");
+        let _stmt = AlterTablespaceStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_tablespace_reset() {
+        let mut input =
+            Input::new("ALTER TABLESPACE ts RESET (random_page_cost, effective_io_concurrency)");
+        let _stmt = AlterTablespaceStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_tablespace_rename() {
+        let mut input = Input::new("ALTER TABLESPACE ts RENAME TO ts2");
+        let _stmt = AlterTablespaceStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_tablespace_owner() {
+        let mut input = Input::new("ALTER TABLESPACE ts OWNER TO foo");
+        let _stmt = AlterTablespaceStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 }

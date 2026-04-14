@@ -96,7 +96,7 @@ pub struct ParenJoinRef {
     pub _lparen: punct::LParen,
     pub table: Box<TableRef>,
     pub _rparen: punct::RParen,
-    pub alias: Option<TableAlias>,
+    pub alias: Option<PlainTableAlias>,
 }
 
 /// LATERAL subquery in FROM: `LATERAL (VALUES(...)) v`
@@ -404,13 +404,53 @@ pub struct ForUpdateClause {
     pub _update: PhantomData<keyword::Update>,
 }
 
-/// GROUP BY clause: `GROUP BY expr, ...`
+/// GROUP BY clause: `GROUP BY item, ...` where each item is an expression
+/// or one of the grouping primitives (GROUPING SETS, ROLLUP, CUBE).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GroupByClause {
     pub _group: PhantomData<keyword::Group>,
     pub _by: PhantomData<keyword::By>,
-    pub exprs: Seq<Expr, punct::Comma>,
+    pub items: Seq<GroupByItem, punct::Comma>,
+}
+
+/// `GROUPING SETS ( item, ... )`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct GroupingSetsItem {
+    pub _grouping: PhantomData<keyword::GroupingKw>,
+    pub _sets: PhantomData<keyword::SetsKw>,
+    pub groups: Surrounded<punct::LParen, Seq<Box<GroupByItem>, punct::Comma>, punct::RParen>,
+}
+
+/// `ROLLUP ( item, ... )`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct RollupItem {
+    pub _rollup: PhantomData<keyword::RollupKw>,
+    pub items: Surrounded<punct::LParen, Seq<Box<GroupByItem>, punct::Comma>, punct::RParen>,
+}
+
+/// `CUBE ( item, ... )`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CubeItem {
+    pub _cube: PhantomData<keyword::CubeKw>,
+    pub items: Surrounded<punct::LParen, Seq<Box<GroupByItem>, punct::Comma>, punct::RParen>,
+}
+
+/// A single element in a GROUP BY clause.
+///
+/// Variant ordering: two-keyword primitives first (`GROUPING SETS`), then
+/// single-keyword primitives (`ROLLUP`, `CUBE`), then the catch-all `Expr`
+/// which also handles `(a, b)` row-style groupings.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum GroupByItem {
+    GroupingSets(GroupingSetsItem),
+    Rollup(RollupItem),
+    Cube(CubeItem),
+    Expr(Expr),
 }
 
 /// HAVING clause: `HAVING expr`
@@ -775,6 +815,70 @@ mod tests {
     fn parse_select_right_outer_join_on() {
         let mut input = Input::new("SELECT * FROM a RIGHT OUTER JOIN b ON a.i = b.i");
         let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_paren_join_simple() {
+        let mut input =
+            Input::new("SELECT * FROM a LEFT JOIN (b JOIN c ON b.x = c.x) ON a.y = b.y");
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_paren_join_with_subquery_inside() {
+        let mut input = Input::new(
+            "SELECT * FROM a LEFT JOIN (b JOIN (SELECT 1 AS x) s ON b.x = s.x) ON a.y = b.y",
+        );
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_paren_join_leading_subquery() {
+        let mut input = Input::new(
+            "SELECT * FROM a LEFT JOIN ((SELECT * FROM b) s LEFT JOIN c ON s.x = c.x) ON a.y = s.y",
+        );
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_group_by_grouping_sets_simple() {
+        let mut input =
+            Input::new("SELECT sum(c) FROM t GROUP BY GROUPING SETS ((), (a), (a,b))");
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.group_by.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_group_by_rollup() {
+        let mut input = Input::new("SELECT sum(c) FROM t GROUP BY ROLLUP (a, b)");
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_group_by_cube() {
+        let mut input = Input::new("SELECT sum(c) FROM t GROUP BY CUBE (a, b)");
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_group_by_grouping_sets_nested() {
+        let mut input =
+            Input::new("SELECT sum(c) FROM t GROUP BY GROUPING SETS (ROLLUP(a), CUBE(b))");
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_group_by_mixed_primitives() {
+        let mut input = Input::new("SELECT sum(c) FROM t GROUP BY a, ROLLUP(b), CUBE(c)");
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

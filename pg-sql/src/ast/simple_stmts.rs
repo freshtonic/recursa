@@ -7,8 +7,10 @@
 use std::marker::PhantomData;
 
 use recursa::seq::Seq;
+use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
+use crate::ast::expr::Expr;
 use crate::ast::RawStatement;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
@@ -352,11 +354,32 @@ pub struct MoveStmt {
 
 // --- REINDEX ---
 
+/// A single option inside a VACUUM/REINDEX `( ... )` list: `name [value]`.
+///
+/// The option name may be any SQL word (including keywords like `FULL`,
+/// `FREEZE`, `PARALLEL`) so it uses `AliasName`. The value is any expression,
+/// which covers integers, floats, identifiers, boolean literals, and signed
+/// numbers (`-1`).
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct VacuumOption {
+    pub name: literal::AliasName,
+    pub value: Option<Expr>,
+}
+
+/// Parenthesized options list: `( opt [= val] [, ...] )`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct VacuumOptions {
+    pub list: Surrounded<punct::LParen, Seq<VacuumOption, punct::Comma>, punct::RParen>,
+}
+
 /// REINDEX [( options )] { INDEX | TABLE | SCHEMA | DATABASE | SYSTEM } name
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReindexStmt {
     pub _reindex: PhantomData<keyword::Reindex>,
+    pub options: Option<VacuumOptions>,
     pub tail: Option<RawStatement>,
 }
 
@@ -457,6 +480,7 @@ pub struct ClusterStmt {
 #[parse(rules = SqlRules)]
 pub struct VacuumStmt {
     pub _vacuum: PhantomData<keyword::Vacuumw>,
+    pub options: Option<VacuumOptions>,
     pub tail: Option<RawStatement>,
 }
 
@@ -806,6 +830,42 @@ mod tests {
     fn parse_begin_isolation() {
         let mut input = Input::new("BEGIN ISOLATION LEVEL SERIALIZABLE");
         let _stmt = BeginStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_vacuum_full() {
+        let mut input = Input::new("VACUUM (FULL) tbl");
+        let stmt = VacuumStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.options.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_vacuum_full_freeze() {
+        let mut input = Input::new("VACUUM (FULL, FREEZE) tbl");
+        let _stmt = VacuumStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_vacuum_parallel_value() {
+        let mut input = Input::new("VACUUM (PARALLEL 2) tbl");
+        let _stmt = VacuumStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_reindex_tablespace_table() {
+        let mut input = Input::new("REINDEX (TABLESPACE ts) TABLE tbl");
+        let _stmt = ReindexStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_reindex_verbose_index() {
+        let mut input = Input::new("REINDEX (VERBOSE) INDEX i");
+        let _stmt = ReindexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 }

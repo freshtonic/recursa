@@ -482,6 +482,101 @@ pub struct TimeLit {
     pub value: literal::StringLit,
 }
 
+/// `YEAR TO MONTH` qualifier.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct YearToMonth {
+    pub _year: keyword::YearKw,
+    pub _to: keyword::To,
+    pub _month: keyword::MonthKw,
+}
+
+/// `DAY TO HOUR` qualifier.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct DayToHour {
+    pub _day: keyword::DayKw,
+    pub _to: keyword::To,
+    pub _hour: keyword::HourKw,
+}
+
+/// `DAY TO MINUTE` qualifier.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct DayToMinute {
+    pub _day: keyword::DayKw,
+    pub _to: keyword::To,
+    pub _minute: keyword::MinuteKw,
+}
+
+/// `DAY TO SECOND` qualifier.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct DayToSecond {
+    pub _day: keyword::DayKw,
+    pub _to: keyword::To,
+    pub _second: keyword::SecondKw,
+}
+
+/// `HOUR TO MINUTE` qualifier.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct HourToMinute {
+    pub _hour: keyword::HourKw,
+    pub _to: keyword::To,
+    pub _minute: keyword::MinuteKw,
+}
+
+/// `HOUR TO SECOND` qualifier.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct HourToSecond {
+    pub _hour: keyword::HourKw,
+    pub _to: keyword::To,
+    pub _second: keyword::SecondKw,
+}
+
+/// `MINUTE TO SECOND` qualifier.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct MinuteToSecond {
+    pub _minute: keyword::MinuteKw,
+    pub _to: keyword::To,
+    pub _second: keyword::SecondKw,
+}
+
+/// Optional qualifier after `INTERVAL 'str'`.
+///
+/// Variant ordering: multi-keyword `X TO Y` forms must come before the
+/// single-keyword forms so longest-match-wins picks the fuller qualifier
+/// when available.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum IntervalQualifier {
+    YearToMonth(YearToMonth),
+    DayToHour(DayToHour),
+    DayToMinute(DayToMinute),
+    DayToSecond(DayToSecond),
+    HourToMinute(HourToMinute),
+    HourToSecond(HourToSecond),
+    MinuteToSecond(MinuteToSecond),
+    Year(keyword::YearKw),
+    Month(keyword::MonthKw),
+    Day(keyword::DayKw),
+    Hour(keyword::HourKw),
+    Minute(keyword::MinuteKw),
+    Second(keyword::SecondKw),
+}
+
+/// `INTERVAL 'str' [qualifier]`.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct IntervalLit {
+    pub _interval: keyword::IntervalKw,
+    pub value: literal::StringLit,
+    pub qualifier: Option<IntervalQualifier>,
+}
+
 // --- XML function atoms ---
 //
 // Postgres `xmlelement` / `xmlattributes` / `xmlforest` use special syntax
@@ -991,6 +1086,10 @@ pub enum Expr {
     /// `TIME [WITH|WITHOUT TIME ZONE] 'string'`. Must come before `CastFunc`.
     #[parse(atom)]
     TimeLit(TimeLit),
+    /// `INTERVAL 'string' [qualifier]`. Must come before `CastFunc` since
+    /// `interval` would otherwise parse as an ident-based TypeName.
+    #[parse(atom)]
+    IntervalLit(IntervalLit),
     /// Function-style type cast: `bool 't'` -- must come before ColumnRef
     /// since type keywords like `bool` overlap with identifiers
     #[parse(atom)]
@@ -1391,10 +1490,42 @@ mod tests {
     }
 
     #[test]
-    fn parse_interval_literal_as_castfunc() {
+    fn parse_interval_literal_bare() {
         let mut input = Input::new("interval '1 hour'");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
-        assert!(matches!(expr, Expr::CastFunc(_)));
+        assert!(matches!(expr, Expr::IntervalLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_interval_literal_year() {
+        let mut input = Input::new("INTERVAL '1' YEAR");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::IntervalLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_interval_literal_year_to_month() {
+        let mut input = Input::new("INTERVAL '1-2' YEAR TO MONTH");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::IntervalLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_interval_literal_day_to_hour() {
+        let mut input = Input::new("INTERVAL '1 2:03' DAY TO HOUR");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::IntervalLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_interval_literal_hour_to_second() {
+        let mut input = Input::new("INTERVAL '1' HOUR TO SECOND");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::IntervalLit(_)));
         assert!(input.is_empty());
     }
 

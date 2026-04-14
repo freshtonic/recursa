@@ -365,6 +365,32 @@ pub mod keyword {
         Similar     => r"SIMILAR\b",
         EscapeKw    => r"ESCAPE\b",
         Placing     => r"PLACING\b",
+        // GROUP BY grouping primitives (Bundle: grouping sets)
+        GroupingKw  => r"GROUPING\b",
+        SetsKw      => r"SETS\b",
+        RollupKw    => r"ROLLUP\b",
+        CubeKw      => r"CUBE\b",
+        // INTERVAL literal qualifier keywords
+        IntervalKw  => r"INTERVAL\b",
+        YearKw      => r"YEAR\b",
+        MonthKw     => r"MONTH\b",
+        DayKw       => r"DAY\b",
+        HourKw      => r"HOUR\b",
+        MinuteKw    => r"MINUTE\b",
+        SecondKw    => r"SECOND\b",
+        // CREATE TABLE (LIKE ...) options
+        IncludingKw => r"INCLUDING\b",
+        ExcludingKw => r"EXCLUDING\b",
+        DefaultsKw  => r"DEFAULTS\b",
+        IndexesKw   => r"INDEXES\b",
+        StorageKw   => r"STORAGE\b",
+        CommentsKw  => r"COMMENTS\b",
+        // CHECK / FK constraint suffix
+        ValidKw     => r"VALID\b",
+        // VACUUM / REINDEX option values
+        ParallelKw  => r"PARALLEL\b",
+        // ALTER ... RENAME TO
+        RenameKw    => r"RENAME\b",
     }
 }
 
