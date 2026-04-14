@@ -324,14 +324,84 @@ pub struct DeclareStmt {
     pub tail: Option<RawStatement>,
 }
 
+/// `FROM` or `IN` cursor-source keyword in FETCH/MOVE.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum FetchSource {
+    From(keyword::From),
+    In(keyword::In),
+}
+
+/// `ABSOLUTE n` form.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct FetchAbsolute {
+    pub _absolute: PhantomData<keyword::Absolute>,
+    pub count: literal::IntegerLit,
+}
+
+/// `RELATIVE n` form.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct FetchRelative {
+    pub _relative: PhantomData<keyword::Relative>,
+    pub count: literal::IntegerLit,
+}
+
+/// `FORWARD [n|ALL]` form.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct FetchForward {
+    pub _forward: PhantomData<keyword::Forward>,
+    pub count: Option<FetchCountOrAll>,
+}
+
+/// `BACKWARD [n|ALL]` form.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct FetchBackward {
+    pub _backward: PhantomData<keyword::Backward>,
+    pub count: Option<FetchCountOrAll>,
+}
+
+/// A count or `ALL` marker following `FORWARD`/`BACKWARD`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum FetchCountOrAll {
+    All(keyword::All),
+    Count(literal::IntegerLit),
+}
+
+/// FETCH/MOVE direction clause.
+///
+/// Variant ordering: multi-token forms (`ABSOLUTE n`, `RELATIVE n`,
+/// `FORWARD [...]`, `BACKWARD [...]`) before single-keyword directions.
+/// `Count` (bare integer) listed last since it has no keyword prefix.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum FetchDirection {
+    Absolute(FetchAbsolute),
+    Relative(FetchRelative),
+    Forward(FetchForward),
+    Backward(FetchBackward),
+    Next(keyword::Next),
+    Prior(keyword::Prior),
+    First(keyword::First),
+    Last(keyword::Last),
+    All(keyword::All),
+    Count(literal::IntegerLit),
+}
+
 /// ```sql
-/// FETCH [direction] [FROM | IN] cursor
+/// FETCH [direction] [FROM|IN] cursor_name
 /// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchStmt {
     pub _fetch: PhantomData<keyword::Fetch>,
-    pub tail: Option<RawStatement>,
+    pub direction: Option<FetchDirection>,
+    pub source: Option<FetchSource>,
+    pub cursor: literal::AliasName,
 }
 
 /// CLOSE cursor | ALL
@@ -343,13 +413,15 @@ pub struct CloseStmt {
 }
 
 /// ```sql
-/// MOVE [direction] [FROM | IN] cursor
+/// MOVE [direction] [FROM|IN] cursor_name
 /// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MoveStmt {
     pub _move: PhantomData<keyword::Move>,
-    pub tail: Option<RawStatement>,
+    pub direction: Option<FetchDirection>,
+    pub source: Option<FetchSource>,
+    pub cursor: literal::AliasName,
 }
 
 // --- REINDEX ---
@@ -578,6 +650,7 @@ create_drop_stmts! {
     Subscription, CreateSubscriptionStmt, DropSubscriptionStmt, Subscription;
     Conversion, CreateConversionStmt, DropConversionStmt, Conversion;
     Server, CreateServerStmt, DropServerStmt, Server;
+    Language, CreateLanguageStmt, DropLanguageStmt, Language;
 }
 
 macro_rules! alter_stmts {
@@ -615,6 +688,7 @@ alter_stmts! {
     Index, AlterIndexStmt, Index;
     View, AlterViewStmt, View;
     Function, AlterFunctionStmt, Function;
+    Language, AlterLanguageStmt, Language;
 }
 
 // Special multi-keyword DDL types
@@ -759,6 +833,27 @@ mod tests {
     fn parse_alter_group_drop_user() {
         let mut input = Input::new("ALTER GROUP g1 DROP USER u1");
         let _stmt = AlterGroupStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_language() {
+        let mut input = Input::new("CREATE LANGUAGE plpgsql HANDLER plpgsql_call_handler");
+        let _stmt = CreateLanguageStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_language_owner() {
+        let mut input = Input::new("ALTER LANGUAGE plpgsql OWNER TO foo");
+        let _stmt = AlterLanguageStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_drop_language() {
+        let mut input = Input::new("DROP LANGUAGE plpgsql");
+        let _stmt = DropLanguageStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

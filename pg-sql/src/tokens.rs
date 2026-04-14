@@ -359,6 +359,7 @@ pub mod keyword {
         SubstringKw => r"SUBSTRING\b",
         PositionKw  => r"POSITION\b",
         OverlayKw   => r"OVERLAY\b",
+        ExtractKw   => r"EXTRACT\b",
         Leading     => r"LEADING\b",
         Trailing    => r"TRAILING\b",
         BothKw      => r"BOTH\b",
@@ -391,6 +392,19 @@ pub mod keyword {
         ParallelKw  => r"PARALLEL\b",
         // ALTER ... RENAME TO
         RenameKw    => r"RENAME\b",
+        // CREATE/ALTER/DROP LANGUAGE option keywords
+        Trusted     => r"TRUSTED\b",
+        Procedural  => r"PROCEDURAL\b",
+        Handler     => r"HANDLER\b",
+        Validator   => r"VALIDATOR\b",
+        InlineKw    => r"INLINE\b",
+        // FETCH / MOVE direction keywords
+        Next        => r"NEXT\b",
+        Prior       => r"PRIOR\b",
+        Forward     => r"FORWARD\b",
+        Backward    => r"BACKWARD\b",
+        Absolute    => r"ABSOLUTE\b",
+        Relative    => r"RELATIVE\b",
     }
 }
 
@@ -404,6 +418,7 @@ pub mod punct {
         Star      => r"\*",        "*",
         Dot       => r"\.",        ".",
         Eq        => "=",          "=",
+        FatArrow  => r"=>",        "=>",
         BangEq    => "!=",         "!=",
         Neq       => "<>",         "<>",
         // 3-char `<`-prefixed operators must come before 2-char `<=`/`<>`/`<<`

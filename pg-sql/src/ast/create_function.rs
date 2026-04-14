@@ -5,7 +5,7 @@ use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
-use crate::ast::expr::TypeName;
+use crate::ast::expr::{CastType, Expr, TypeName};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
@@ -44,12 +44,13 @@ pub enum FuncBody {
 }
 
 /// Function return type name -- extends TypeName with additional types
-/// that are valid as function return types (e.g., `trigger`).
+/// that are valid as function return types (e.g., `trigger`), and allows
+/// array suffixes via `CastType`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncReturnTypeName {
     Trigger(keyword::Trigger),
-    Base(TypeName),
+    Base(CastType),
 }
 
 /// RETURNS clause for functions: `RETURNS [SETOF] type`.
@@ -88,22 +89,39 @@ pub enum ArgMode {
     Variadic(keyword::Variadic),
 }
 
-/// `[mode] name type` -- a named function parameter, optionally prefixed
-/// with an argument mode (`IN`/`OUT`/`INOUT`/`VARIADIC`).
+/// `[mode] name type [default]` -- a named function parameter.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NamedFuncParam {
     pub mode: Option<ArgMode>,
     pub name: literal::Ident,
-    pub type_name: TypeName,
+    pub type_name: CastType,
+    pub default: Option<ParamDefault>,
 }
 
-/// `[mode] type` -- an unnamed function parameter with optional mode.
+/// `[mode] type [default]` -- an unnamed function parameter.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnnamedFuncParam {
     pub mode: Option<ArgMode>,
-    pub type_name: TypeName,
+    pub type_name: CastType,
+    pub default: Option<ParamDefault>,
+}
+
+/// Default value separator: `DEFAULT` or `=`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ParamDefaultSep {
+    Default(keyword::Default),
+    Eq(punct::Eq),
+}
+
+/// `DEFAULT expr` or `= expr` trailing default on a function parameter.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ParamDefault {
+    pub sep: ParamDefaultSep,
+    pub value: Expr,
 }
 
 /// A single function parameter: either `[mode] name type` or `[mode] type`.
@@ -307,6 +325,60 @@ mod tests {
     fn parse_create_function_polymorphic_out() {
         let mut input = Input::new(
             "create function poly(a anyelement, b anyarray, OUT x anyarray) as $$ begin end $$ language plpgsql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_param_eq_default() {
+        let mut input = Input::new(
+            "create function f(a int = 1, b int = 2) returns int as $$ select 1 $$ language sql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_param_default_keyword() {
+        let mut input = Input::new(
+            "create function f(a int default 1) returns int as $$ select 1 $$ language sql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_unnamed_default() {
+        let mut input = Input::new(
+            "create function dfunc(a int = 1, int = 2) returns int as $$ select 1 $$ language sql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_array_arg() {
+        let mut input = Input::new(
+            "CREATE FUNCTION stfnp(int[]) RETURNS int[] AS 'select $1' LANGUAGE SQL",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_array_arg_multi() {
+        let mut input = Input::new(
+            "CREATE FUNCTION f(int[], text[]) RETURNS int[] AS 'select $1' LANGUAGE SQL",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_nested_array() {
+        let mut input = Input::new(
+            "CREATE FUNCTION f(x int[][]) RETURNS int[][] AS 'select x' LANGUAGE SQL",
         );
         let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());

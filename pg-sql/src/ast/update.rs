@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 use recursa::seq::Seq;
 use recursa::{FormatTokens, Parse, Visit};
 
+use crate::ast::common::QualifiedName;
 use crate::ast::expr::Expr;
 use crate::ast::select::{FromClause, WhereClause};
 use crate::rules::SqlRules;
@@ -68,7 +69,7 @@ pub struct ReturningClause {
 #[format_tokens(group(consistent))]
 pub struct UpdateStmt {
     pub _update: PhantomData<keyword::Update>,
-    pub table_name: literal::Ident,
+    pub table_name: QualifiedName,
     pub alias: Option<literal::Ident>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub _set: PhantomData<keyword::Set>,
@@ -91,10 +92,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_update_qualified_table() {
+        let mut input = Input::new("UPDATE pg_catalog.pg_class SET relname = '123'");
+        let stmt = UpdateStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert_eq!(stmt.table_name.object(), "pg_class");
+        assert!(input.is_empty());
+    }
+
+    #[test]
     fn parse_update_simple() {
         let mut input = Input::new("UPDATE y SET a = a + 1");
         let stmt = UpdateStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.table_name.text(), "y");
+        assert_eq!(stmt.table_name.object(), "y");
         assert!(input.is_empty());
     }
 

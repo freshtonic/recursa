@@ -128,8 +128,20 @@ pub enum InitiallyMode {
     Immediate(PhantomData<keyword::Immediate>),
 }
 
+/// `ON DELETE ...` or `ON UPDATE ...` trailing action on a REFERENCES
+/// constraint. Modeled as an enum so both orders of the two clauses
+/// are accepted via a `Vec<OnAction>`.
+///
+/// Variant ordering: both start with `ON`; they diverge at the next keyword.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum OnAction {
+    OnDelete(OnDeleteAction),
+    OnUpdate(OnUpdateAction),
+}
+
 /// REFERENCES constraint:
-/// `REFERENCES table [(col, ...)] [MATCH ...] [ON DELETE ...] [ON UPDATE ...] [DEFERRABLE | NOT DEFERRABLE] [INITIALLY ...]`
+/// `REFERENCES table [(col, ...)] [MATCH ...] [ON DELETE|UPDATE ...]* [DEFERRABLE | NOT DEFERRABLE] [INITIALLY ...]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReferencesConstraint {
@@ -137,8 +149,7 @@ pub struct ReferencesConstraint {
     pub table: literal::AliasName,
     pub columns: Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
     pub match_clause: Option<MatchClause>,
-    pub on_delete: Option<OnDeleteAction>,
-    pub on_update: Option<OnUpdateAction>,
+    pub actions: Vec<OnAction>,
     pub deferrable: Option<DeferrableKind>,
     pub initially: Option<InitiallyClause>,
     pub not_valid: Option<NotValidKw>,

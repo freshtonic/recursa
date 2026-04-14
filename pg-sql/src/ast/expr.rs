@@ -310,6 +310,7 @@ pub struct NoOthers {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncArg {
+    Named(NamedFuncArg),
     Variadic(VariadicArg),
     Plain(Box<Expr>),
 }
@@ -318,6 +319,15 @@ pub enum FuncArg {
 #[parse(rules = SqlRules)]
 pub struct VariadicArg {
     pub _variadic: keyword::Variadic,
+    pub value: Box<Expr>,
+}
+
+/// Named function argument: `name => value` (Postgres).
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NamedFuncArg {
+    pub name: literal::AliasName,
+    pub _arrow: punct::FatArrow,
     pub value: Box<Expr>,
 }
 
@@ -825,6 +835,35 @@ pub struct OverlayCall {
     pub inner: Surrounded<punct::LParen, OverlayInner, punct::RParen>,
 }
 
+/// Field argument of `EXTRACT(field FROM source)`.
+///
+/// Variant ordering: `StringLit` before `Ident` — string literal has a
+/// distinct first token (`'`) so order is not strictly required; listed
+/// first to match the Postgres docs ordering.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ExtractField {
+    StringLit(StringLitSeq),
+    Ident(literal::AliasName),
+}
+
+/// Inner of `EXTRACT(field FROM source)`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ExtractInner {
+    pub field: ExtractField,
+    pub _from: PhantomData<keyword::From>,
+    pub source: Box<Expr>,
+}
+
+/// `EXTRACT(field FROM source)` — Postgres-specific function syntax.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ExtractCall {
+    pub _kw: PhantomData<keyword::ExtractKw>,
+    pub inner: Surrounded<punct::LParen, ExtractInner, punct::RParen>,
+}
+
 /// `UESCAPE 'c'` suffix that may follow a `U&'...'` literal.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
@@ -1120,6 +1159,9 @@ pub enum Expr {
     /// `OVERLAY(source PLACING new FROM start [FOR len])`. Before `Func`.
     #[parse(atom)]
     Overlay(OverlayCall),
+    /// `EXTRACT(field FROM source)`. Before `Func`.
+    #[parse(atom)]
+    Extract(ExtractCall),
     /// Function call: `func(args)` -- must come before ColumnRef
     #[parse(atom)]
     Func(FuncCall),
@@ -1416,6 +1458,56 @@ mod tests {
     #[test]
     fn parse_overlay_placing_from_for() {
         let mut input = Input::new("OVERLAY('abcdef' PLACING '45' FROM 4 FOR 2)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_extract_epoch_from_date() {
+        let mut input = Input::new("EXTRACT(EPOCH FROM DATE '1970-01-01')");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Extract(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_extract_century_from_ident() {
+        let mut input = Input::new("EXTRACT(CENTURY FROM d)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_extract_string_field() {
+        let mut input = Input::new("EXTRACT('year' FROM t)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_func_named_arg_mixed() {
+        let mut input = Input::new("f(a, b => 1, c)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_jsonb_path_query_silent() {
+        let mut input = Input::new("jsonb_path_query('[1]', 'strict $[1]', silent => true)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_func_all_named_args() {
+        let mut input = Input::new("f(silent => false, verbose => true)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_extract_year_from_now() {
+        let mut input = Input::new("EXTRACT(year FROM now())");
         let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }

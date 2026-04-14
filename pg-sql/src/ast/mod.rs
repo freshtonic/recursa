@@ -97,6 +97,7 @@ pub enum Statement {
     CreateSubscription(CreateSubscriptionStmt),
     CreateConversion(CreateConversionStmt),
     CreateServer(CreateServerStmt),
+    CreateLanguage(CreateLanguageStmt),
     CreateTable(CreateTableStmt),
     // DROP variants
     DropFunction(DropFunctionStmt),
@@ -129,6 +130,7 @@ pub enum Statement {
     DropSubscription(DropSubscriptionStmt),
     DropConversion(DropConversionStmt),
     DropServer(DropServerStmt),
+    DropLanguage(DropLanguageStmt),
     DropTable(DropTableStmt),
     // ALTER variants: multi-keyword before single-keyword
     AlterForeign(AlterForeignStmt),
@@ -153,6 +155,7 @@ pub enum Statement {
     AlterSubscription(AlterSubscriptionStmt),
     AlterConversion(AlterConversionStmt),
     AlterServer(AlterServerStmt),
+    AlterLanguage(AlterLanguageStmt),
     AlterIndex(AlterIndexStmt),
     AlterView(AlterViewStmt),
     AlterFunction(AlterFunctionStmt),

@@ -8,6 +8,7 @@ use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
+use crate::ast::common::QualifiedName;
 use crate::ast::expr::Expr;
 use crate::ast::select::WhereClause;
 use crate::ast::update::{ReturningClause, SetAssignment};
@@ -91,7 +92,7 @@ pub struct OnConflictClause {
 pub struct InsertStmt {
     pub _insert: PhantomData<keyword::Insert>,
     pub _into: PhantomData<keyword::Into>,
-    pub table_name: literal::Ident,
+    pub table_name: QualifiedName,
     pub columns: Option<ColumnList>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub source: InsertSource,
@@ -115,10 +116,18 @@ mod tests {
     use crate::rules::SqlRules;
 
     #[test]
+    fn parse_insert_qualified_table() {
+        let mut input = Input::new("INSERT INTO pg_catalog.foo VALUES (1)");
+        let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert_eq!(stmt.table_name.object(), "foo");
+        assert!(input.is_empty());
+    }
+
+    #[test]
     fn parse_insert_with_columns() {
         let mut input = Input::new("INSERT INTO BOOLTBL1 (f1) VALUES (bool 't')");
         let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.table_name.text(), "BOOLTBL1");
+        assert_eq!(stmt.table_name.object(), "BOOLTBL1");
         assert!(stmt.columns.is_some());
         assert_eq!(stmt.columns.as_ref().unwrap().inner.len(), 1);
         assert!(input.is_empty());
