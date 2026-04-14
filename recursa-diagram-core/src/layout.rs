@@ -161,7 +161,6 @@ impl Sequence {
             .map(|c| c.height())
             .max()
             .unwrap_or(BOX_HEIGHT);
-        // TODO(phase-3): verify up/down against rendered svg
         let up = children
             .iter()
             .map(|c| c.up())
@@ -284,7 +283,6 @@ impl Choice {
         let width = children.iter().map(|c| c.width()).max().unwrap() + CHOICE_RAIL_WIDTH;
         let height: u32 = children.iter().map(|c| c.height()).sum::<u32>()
             + VERTICAL_GAP * (children.len() as u32 - 1);
-        // TODO(phase-3): verify up/down against rendered svg
         // The default branch sits on the baseline; branches above contribute
         // to `up`, branches below to `down`.
         let default_up = children[default_idx].up();
@@ -323,7 +321,6 @@ impl Optional {
     pub fn new(child: Node) -> Self {
         let width = child.width() + CHOICE_RAIL_WIDTH;
         let height = child.height() + BOX_HEIGHT + VERTICAL_GAP;
-        // TODO(phase-3): verify up/down against rendered svg
         // The skip rail sits above the child, adding a full box height + gap to `up`.
         let up = child.up() + BOX_HEIGHT + VERTICAL_GAP;
         let down = child.down();
@@ -353,7 +350,6 @@ impl OneOrMore {
         let width = child.width().max(sep_w) + CHOICE_RAIL_WIDTH;
         let sep_h = separator.as_ref().map_or(RETURN_RAIL_HEIGHT, Node::height);
         let height = child.height() + sep_h + VERTICAL_GAP;
-        // TODO(phase-3): verify up/down against rendered svg
         // The child sits on the baseline; the separator (or implicit return rail)
         // sits below it, adding to `down`.
         let up = child.up();

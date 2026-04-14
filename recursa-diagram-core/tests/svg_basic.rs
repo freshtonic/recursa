@@ -300,3 +300,13 @@ fn empty_sequence_renders_valid_wrapper() {
         "empty sequence should emit no connectors: {svg}"
     );
 }
+
+#[test]
+fn empty_wrapped_sequence_matches_empty_new_sequence() {
+    // Documents the empty-input contract: Sequence::wrapped(vec![], _)
+    // short-circuits to Sequence::new(vec![]) and must produce byte-for-byte
+    // identical output.
+    let from_new = render(&Node::Sequence(Sequence::new(vec![])));
+    let from_wrapped = render(&Node::Sequence(Sequence::wrapped(vec![], 1200)));
+    assert_eq!(from_wrapped, from_new);
+}

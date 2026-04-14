@@ -192,30 +192,50 @@ fn wrapped_sequence_splits_at_threshold() {
 }
 
 #[test]
-fn wrapped_sequence_baseline_invariant() {
+fn wrapped_sequence_pins_multi_row_geometry() {
+    // Five "XXXX" terminals (width = 4*8+40 = 72 each) with max_width 160.
+    // Greedy packing: [0,1] → 72+10+72=154 fits; adding [2] → 236 > 160, break.
+    // Same for [2,3]. Row 3 gets [4] alone. rows = [2, 4], row widths [154,154,72].
+    //
+    // width  = max_row_w + CHOICE_RAIL_WIDTH = 154 + 20 = 174
+    // strips = 3 * (11 + 11) = 66
+    // gaps   = 2 * WRAP_ROW_GAP(20) = 40
+    // height = 66 + 40 = 106
+    // up     = row_0.up = 11
+    // down   = height - up = 95
+    //
+    // Pin exact integers so a future refactor of the wrap formula can't
+    // slip past an invariant-only check.
     let children: Vec<Node> = (0..5)
         .map(|_| Node::Terminal(Terminal::new("XXXX")))
         .collect();
     let wrapped = Sequence::wrapped(children, 160);
-    let n = Node::Sequence(wrapped);
-    assert_baseline_invariant(&n);
-    // Height must reflect multiple rows.
-    assert!(
-        n.height() > 22,
-        "expected multi-row height, got {}",
-        n.height()
-    );
+    assert_eq!(wrapped.rows, vec![2, 4]);
+    assert_eq!(wrapped.width, 174);
+    assert_eq!(wrapped.height, 106);
+    assert_eq!(wrapped.up, 11);
+    assert_eq!(wrapped.down, 95);
+    assert_baseline_invariant(&Node::Sequence(wrapped));
 }
 
 #[test]
 fn wrapped_sequence_pathological_single_oversized_child() {
     // A single child wider than max_width still gets a row of its own.
+    // Pin the width to the **loop path** result (cw + CHOICE_RAIL_WIDTH)
+    // rather than the short-circuit `Sequence::new(vec![child])` result (cw)
+    // so we verify the loop actually ran and admitted the oversized child,
+    // not that we got the right `rows.is_empty()` answer for the wrong reason.
     let child = Node::Terminal(Terminal::new("SUPER_DUPER_LONG_TERMINAL_NAME"));
     let cw = child.width();
     assert!(cw > 50);
     let wrapped = Sequence::wrapped(vec![child], 50);
-    // Single child, single row => no row breaks needed.
     assert!(wrapped.rows.is_empty());
+    assert_eq!(
+        wrapped.width,
+        cw + 20,
+        "expected loop-path width (cw + CHOICE_RAIL_WIDTH), got {}",
+        wrapped.width
+    );
 }
 
 #[test]
