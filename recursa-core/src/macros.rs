@@ -87,22 +87,22 @@ macro_rules! literals {
             #[derive(::recursa_derive::Parse, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             #[parse(pattern = $pattern)]
             #[visit(terminal)]
-            pub struct $name(pub String);
+            pub struct $name<'input>(pub ::std::borrow::Cow<'input, str>);
 
-            impl $crate::fmt::FormatTokens for $name {
+            impl<'input> $crate::fmt::FormatTokens for $name<'input> {
                 fn format_tokens(&self, tokens: &mut Vec<$crate::fmt::Token>) {
-                    tokens.push($crate::fmt::Token::String(self.0.clone()));
+                    tokens.push($crate::fmt::Token::String(self.0.as_ref().to_string()));
                 }
             }
         )*
 
         #[derive(::recursa_derive::Parse, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[visit(terminal)]
-        pub enum Literal {
-            $($name($name)),*
+        pub enum Literal<'input> {
+            $($name($name<'input>)),*
         }
 
-        impl $crate::fmt::FormatTokens for Literal {
+        impl<'input> $crate::fmt::FormatTokens for Literal<'input> {
             fn format_tokens(&self, tokens: &mut Vec<$crate::fmt::Token>) {
                 match self {
                     $(Literal::$name(inner) => inner.format_tokens(tokens),)*
