@@ -9,8 +9,10 @@ use crate::ast::create_function::{FuncOption, FuncParam};
 use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// CREATE [OR REPLACE] PROCEDURE name ( [ parameters ] ) options...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateProcedureStmt {
@@ -23,6 +25,7 @@ pub struct CreateProcedureStmt {
 }
 
 /// DROP PROCEDURE name [(args)]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropProcedureStmt {
@@ -33,6 +36,7 @@ pub struct DropProcedureStmt {
 }
 
 /// CALL name ( [ argument ] [, ...] )
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CallStmt {

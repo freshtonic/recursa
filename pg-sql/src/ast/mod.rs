@@ -338,6 +338,7 @@ impl<'input> Parse<'input> for RawStatement {
 /// statement terminators: e.g. `SELECT oid FROM pg_database \gset` sends the
 /// query and binds the results to psql variables, ending the statement just
 /// like `;` would.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[parse(rules = SqlRules)]
 pub enum PsqlTerminator {
@@ -354,6 +355,7 @@ pub enum PsqlTerminator {
 }
 
 /// The terminator of a SQL statement: a semicolon or a psql meta-command.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[parse(rules = SqlRules)]
 pub enum StatementTerminator {
@@ -364,6 +366,7 @@ pub enum StatementTerminator {
 }
 
 /// A SQL statement followed by a terminator (`;` or a psql meta-command).
+#[railroad]
 #[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TerminatedStatement {
@@ -372,6 +375,7 @@ pub struct TerminatedStatement {
 }
 
 /// A psql directive: backslash followed by the rest of the line.
+#[railroad]
 #[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PsqlDirective {
@@ -380,6 +384,7 @@ pub struct PsqlDirective {
 }
 
 /// A command in a psql input file: either a SQL statement or a psql directive.
+#[railroad]
 #[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[allow(clippy::large_enum_variant)]

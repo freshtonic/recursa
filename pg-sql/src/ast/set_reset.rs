@@ -6,8 +6,10 @@ use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// Scope of a SET statement: `SESSION` or `LOCAL`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetScope {
@@ -19,6 +21,7 @@ pub enum SetScope {
 ///
 /// Variant ordering: NumericLit before IntegerLit so `77.7` is consumed as a
 /// numeric literal (longest-match-wins).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetValue {
@@ -38,6 +41,7 @@ pub enum SetValue {
 ///
 /// Used in positions like `SET extra_float_digits = -1` where a full `Expr`
 /// is overkill and would admit keywords that shouldn't be legal values.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SignedNumericLit {
@@ -46,6 +50,7 @@ pub struct SignedNumericLit {
 }
 
 /// Leading `-` or `+` sign of a signed numeric literal.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum NumericSign {
@@ -54,6 +59,7 @@ pub enum NumericSign {
 }
 
 /// Either a numeric (with decimal point / exponent) or an integer literal.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum UnsignedNumericLit {
@@ -62,6 +68,7 @@ pub enum UnsignedNumericLit {
 }
 
 /// The separator between param and value: TO or =.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetSep {
@@ -70,6 +77,7 @@ pub enum SetSep {
 }
 
 /// Plain SET statement: `SET [SESSION|LOCAL] param TO|= value [, value ...]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetStmt {
@@ -81,6 +89,7 @@ pub struct SetStmt {
 }
 
 /// Role target in `SET ROLE`: role name, `NONE`, or `DEFAULT`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetRoleTarget {
@@ -91,6 +100,7 @@ pub enum SetRoleTarget {
 }
 
 /// `SET [SESSION|LOCAL] ROLE { rolename | NONE | DEFAULT }`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetRoleStmt {
@@ -101,6 +111,7 @@ pub struct SetRoleStmt {
 }
 
 /// Role target in `SET SESSION AUTHORIZATION`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetSessionAuthTarget {
@@ -110,6 +121,7 @@ pub enum SetSessionAuthTarget {
 }
 
 /// `SET [SESSION|LOCAL] SESSION AUTHORIZATION { rolename | DEFAULT }`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetSessionAuthStmt {
@@ -125,6 +137,7 @@ pub struct SetSessionAuthStmt {
 /// A signed numeric literal: `[-]numeric | [-]integer`.
 ///
 /// Variant ordering: Numeric before Integer (longest-match-wins for `7.5`).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SignedNumber {
@@ -132,6 +145,7 @@ pub enum SignedNumber {
     Integer(SignedInteger),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SignedNumeric {
@@ -139,6 +153,7 @@ pub struct SignedNumeric {
     pub value: literal::NumericLit,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SignedInteger {
@@ -150,6 +165,7 @@ pub struct SignedInteger {
 ///
 /// Variant ordering: `LOCAL` and `DEFAULT` (keywords) before `Number` and
 /// `String`. INTERVAL form is deliberately skipped.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetTimeZoneTarget {
@@ -160,6 +176,7 @@ pub enum SetTimeZoneTarget {
 }
 
 /// `SET [SESSION|LOCAL] TIME ZONE { signed_number | string | LOCAL | DEFAULT }`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetTimeZoneStmt {
@@ -173,6 +190,7 @@ pub struct SetTimeZoneStmt {
 /// Target of a RESET statement.
 ///
 /// Variant ordering: multi-token variants before single-token variants.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ResetTarget {
@@ -183,6 +201,7 @@ pub enum ResetTarget {
     Ident(literal::AliasName),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ResetSessionAuth {
@@ -190,6 +209,7 @@ pub struct ResetSessionAuth {
     pub _authorization: PhantomData<keyword::Authorization>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ResetTimeZone {
@@ -198,6 +218,7 @@ pub struct ResetTimeZone {
 }
 
 /// RESET statement: `RESET { param | ALL | ROLE | SESSION AUTHORIZATION | TIME ZONE }`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ResetStmt {
@@ -208,6 +229,7 @@ pub struct ResetStmt {
 // --- SHOW ---
 
 /// `SESSION AUTHORIZATION` target for `SHOW`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ShowSessionAuth {
@@ -216,6 +238,7 @@ pub struct ShowSessionAuth {
 }
 
 /// `TIME ZONE` target for `SHOW`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ShowTimeZone {
@@ -224,6 +247,7 @@ pub struct ShowTimeZone {
 }
 
 /// `TRANSACTION ISOLATION LEVEL` target for `SHOW`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ShowTransactionIsolationLevel {
@@ -236,6 +260,7 @@ pub struct ShowTransactionIsolationLevel {
 ///
 /// Variant ordering: multi-token targets before single-token `Param`
 /// fallback so the specific forms are matched first.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ShowTarget {
@@ -247,6 +272,7 @@ pub enum ShowTarget {
 }
 
 /// SHOW statement: `SHOW { name | ALL | TIME ZONE | SESSION AUTHORIZATION | TRANSACTION ISOLATION LEVEL }`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ShowStmt {

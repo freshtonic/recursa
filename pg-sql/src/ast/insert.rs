@@ -17,6 +17,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// DEFAULT VALUES variant.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DefaultValues {
@@ -25,6 +26,7 @@ pub struct DefaultValues {
 }
 
 /// Multiple value rows: `VALUES (row1), (row2), ...`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertValueRows {
@@ -36,6 +38,7 @@ pub struct InsertValueRows {
 ///
 /// Variant ordering: Default (`DEFAULT VALUES`) is longer than Rows (`VALUES`),
 /// so longest-match-wins picks it when DEFAULT is present.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InsertSource {
@@ -45,6 +48,7 @@ pub enum InsertSource {
 }
 
 /// DO UPDATE SET ... [WHERE ...] action.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoUpdateAction {
@@ -56,6 +60,7 @@ pub struct DoUpdateAction {
 }
 
 /// DO NOTHING action.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoNothingAction {
@@ -68,6 +73,7 @@ pub struct DoNothingAction {
 /// Variant ordering: DoUpdate (`DO UPDATE SET`) is longer than
 /// DoNothing (`DO NOTHING`), but both start with `DO` and diverge
 /// at the next keyword, so the regex disambiguates.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ConflictAction {
@@ -76,6 +82,7 @@ pub enum ConflictAction {
 }
 
 /// ON CONFLICT clause: `ON CONFLICT [(col, ...)] DO UPDATE SET ... | DO NOTHING`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnConflictClause {

@@ -11,8 +11,10 @@ use recursa::{FormatTokens, Parse, Visit};
 use crate::ast::expr::{Expr, TypeName};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// PARTITION BY LIST (col) clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PartitionByClause {
@@ -26,6 +28,7 @@ pub struct PartitionByClause {
 
 /// FOR VALUES IN (val, ...) clause — legacy name kept for backward compat
 /// with partition.rs own tests; the general form lives in `ForValuesClause`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForValuesInClause {
@@ -36,6 +39,7 @@ pub struct ForValuesInClause {
 }
 
 /// `FROM (...) TO (...)` range partition spec.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FromToSpec {
@@ -46,6 +50,7 @@ pub struct FromToSpec {
 }
 
 /// `IN (val, ...)` list partition spec.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InListSpec {
@@ -54,6 +59,7 @@ pub struct InListSpec {
 }
 
 /// `MODULUS n` entry.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ModulusEntry {
@@ -62,6 +68,7 @@ pub struct ModulusEntry {
 }
 
 /// `REMAINDER n` entry.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RemainderEntry {
@@ -70,6 +77,7 @@ pub struct RemainderEntry {
 }
 
 /// One item in `WITH (...)` for hash partitioning: MODULUS n or REMAINDER n.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum HashPartItem {
@@ -78,6 +86,7 @@ pub enum HashPartItem {
 }
 
 /// `WITH (MODULUS n, REMAINDER m)` hash partition spec.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithModulusSpec {
@@ -88,6 +97,7 @@ pub struct WithModulusSpec {
 /// Body after `FOR VALUES` in a PARTITION OF clause. Variant ordering:
 /// `From` starts with `FROM`, `In` starts with `IN`, `With` starts with `WITH` —
 /// all distinct keywords, so peek disambiguation is trivial.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ForValuesSpec {
@@ -97,6 +107,7 @@ pub enum ForValuesSpec {
 }
 
 /// Full `FOR VALUES ...` clause in a `PARTITION OF ...` body.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForValuesClause {
@@ -106,6 +117,7 @@ pub struct ForValuesClause {
 }
 
 /// Column definition in partition table: `name type`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PartitionColumnDef {
@@ -114,6 +126,7 @@ pub struct PartitionColumnDef {
 }
 
 /// CREATE TABLE with PARTITION BY: `CREATE TABLE name (cols) PARTITION BY strategy (cols)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreatePartitionedTableStmt {
@@ -125,6 +138,7 @@ pub struct CreatePartitionedTableStmt {
 }
 
 /// CREATE TABLE ... PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...].
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreatePartitionOfStmt {

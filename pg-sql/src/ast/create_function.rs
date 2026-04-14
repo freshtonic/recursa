@@ -8,8 +8,10 @@ use recursa::{FormatTokens, Parse, Visit};
 use crate::ast::expr::{CastType, Expr, TypeName};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// SETOF type: `SETOF typename`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetofReturn {
@@ -18,6 +20,7 @@ pub struct SetofReturn {
 }
 
 /// Function return type: `SETOF type` or plain `type`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ReturnType {
@@ -26,6 +29,7 @@ pub enum ReturnType {
 }
 
 /// LANGUAGE clause: `LANGUAGE name`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LanguageOption {
@@ -36,6 +40,7 @@ pub struct LanguageOption {
 /// Function body: either single-quoted string or dollar-quoted string.
 ///
 /// Variant ordering: dollar-quoted before single-quoted (different first chars).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncBody {
@@ -46,6 +51,7 @@ pub enum FuncBody {
 /// Function return type name -- extends TypeName with additional types
 /// that are valid as function return types (e.g., `trigger`), and allows
 /// array suffixes via `CastType`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncReturnTypeName {
@@ -54,6 +60,7 @@ pub enum FuncReturnTypeName {
 }
 
 /// RETURNS clause for functions: `RETURNS [SETOF] type`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncReturnsClause {
@@ -62,6 +69,7 @@ pub struct FuncReturnsClause {
 }
 
 /// Function return type: SETOF type, or plain type.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncReturnType {
@@ -70,6 +78,7 @@ pub enum FuncReturnType {
 }
 
 /// SETOF type for function returns.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncSetofReturn {
@@ -80,6 +89,7 @@ pub struct FuncSetofReturn {
 // --- Function parameters ---
 
 /// Argument mode prefix: `IN | OUT | INOUT | VARIADIC`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ArgMode {
@@ -90,6 +100,7 @@ pub enum ArgMode {
 }
 
 /// `[mode] name type [default]` -- a named function parameter.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NamedFuncParam {
@@ -100,6 +111,7 @@ pub struct NamedFuncParam {
 }
 
 /// `[mode] type [default]` -- an unnamed function parameter.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnnamedFuncParam {
@@ -109,6 +121,7 @@ pub struct UnnamedFuncParam {
 }
 
 /// Default value separator: `DEFAULT` or `=`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ParamDefaultSep {
@@ -117,6 +130,7 @@ pub enum ParamDefaultSep {
 }
 
 /// `DEFAULT expr` or `= expr` trailing default on a function parameter.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ParamDefault {
@@ -129,6 +143,7 @@ pub struct ParamDefault {
 /// Variant ordering: `Named` (`[mode] ident type`) is longer than `Unnamed`
 /// (`[mode] type`); list it first so longest-match-wins picks it when both
 /// could parse.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncParam {
@@ -139,6 +154,7 @@ pub enum FuncParam {
 // --- Function options (unordered list) ---
 
 /// `IMMUTABLE` / `STABLE` / `VOLATILE` volatility.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum VolatilityOption {
@@ -149,6 +165,7 @@ pub enum VolatilityOption {
 
 /// `PARALLEL SAFE` / `PARALLEL RESTRICTED` / `PARALLEL UNSAFE` parallelism
 /// declaration.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ParallelMode {
@@ -158,6 +175,7 @@ pub enum ParallelMode {
 }
 
 /// `PARALLEL { SAFE | RESTRICTED | UNSAFE }` function option.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ParallelOption {
@@ -167,6 +185,7 @@ pub struct ParallelOption {
 
 /// Separator between a SET config parameter name and its value — either
 /// `=` or `TO`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetAssignSep {
@@ -176,6 +195,7 @@ pub enum SetAssignSep {
 
 /// `SET config_param { = | TO } value` function option — per-function GUC
 /// override applied when the function runs.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetFuncOption {
@@ -186,6 +206,7 @@ pub struct SetFuncOption {
 }
 
 /// `CALLED ON NULL INPUT`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CalledOnNullInput {
@@ -196,6 +217,7 @@ pub struct CalledOnNullInput {
 }
 
 /// `RETURNS NULL ON NULL INPUT`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReturnsNullOnNullInput {
@@ -209,6 +231,7 @@ pub struct ReturnsNullOnNullInput {
 /// `STRICT` / `CALLED ON NULL INPUT` / `RETURNS NULL ON NULL INPUT`.
 ///
 /// Variant ordering: longer (multi-keyword) forms before `Strict`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum StrictnessOption {
@@ -218,6 +241,7 @@ pub enum StrictnessOption {
 }
 
 /// `AS body` clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsOption {
@@ -230,6 +254,7 @@ pub struct AsOption {
 /// Variant ordering: multi-token options listed before single-keyword
 /// options, and `StrictnessOption` (which itself has multi-keyword variants)
 /// listed before plain `VolatilityOption`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncOption {
@@ -244,6 +269,7 @@ pub enum FuncOption {
 /// CREATE [OR REPLACE] FUNCTION statement.
 ///
 /// Function options after the signature/RETURNS may appear in any order.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateFunctionStmt {
@@ -258,6 +284,7 @@ pub struct CreateFunctionStmt {
 
 /// A single entry in a `DROP FUNCTION` target list: optional qualified name
 /// plus an optional parenthesized signature.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropFunctionTarget {
@@ -269,6 +296,7 @@ pub struct DropFunctionTarget {
 ///
 /// The argument list on each target is optional: when the function name is
 /// unambiguous in the current schema, Postgres allows omitting the signature.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropFunctionStmt {

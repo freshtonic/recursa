@@ -14,6 +14,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// `[idx]` subscript suffix for a target column in UPDATE SET.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubscriptSuffix {
@@ -23,6 +24,7 @@ pub struct SubscriptSuffix {
 }
 
 /// Single SET assignment: `col[idx] = expr` or `col = expr`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SingleAssignment {
@@ -33,6 +35,7 @@ pub struct SingleAssignment {
 }
 
 /// Tuple SET assignment: `(col, ...) = expr`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TupleAssignment {
@@ -49,6 +52,7 @@ pub struct TupleAssignment {
 ///
 /// Variant ordering: Tuple starts with `(` which is longer than a bare
 /// identifier, so longest-match-wins picks it when parens are present.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetAssignment {
@@ -57,6 +61,7 @@ pub enum SetAssignment {
 }
 
 /// RETURNING clause: `RETURNING expr, ...`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReturningClause {

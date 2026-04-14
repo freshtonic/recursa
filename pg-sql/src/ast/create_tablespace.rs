@@ -9,8 +9,10 @@ use crate::ast::create_index::{StorageParam, WithStorage};
 use crate::ast::create_view::IfExistsKw;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// `OWNER role` optional clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OwnerClause {
@@ -19,6 +21,7 @@ pub struct OwnerClause {
 }
 
 /// `LOCATION 'path'` clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LocationClause {
@@ -27,6 +30,7 @@ pub struct LocationClause {
 }
 
 /// `CREATE TABLESPACE name [OWNER role] LOCATION 'path' [WITH (params)]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTablespaceStmt {
@@ -39,6 +43,7 @@ pub struct CreateTablespaceStmt {
 }
 
 /// `RENAME TO new_name` action on ALTER TABLESPACE.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTablespaceRename {
@@ -48,6 +53,7 @@ pub struct AlterTablespaceRename {
 }
 
 /// `OWNER TO new_owner` action on ALTER TABLESPACE.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTablespaceOwner {
@@ -57,6 +63,7 @@ pub struct AlterTablespaceOwner {
 }
 
 /// `SET (param = value, ...)` action on ALTER TABLESPACE.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTablespaceSetAction {
@@ -65,6 +72,7 @@ pub struct AlterTablespaceSetAction {
 }
 
 /// `RESET (param [, ...])` action on ALTER TABLESPACE.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTablespaceResetAction {
@@ -76,6 +84,7 @@ pub struct AlterTablespaceResetAction {
 ///
 /// Variant ordering: all variants start with distinct keywords (SET, RESET,
 /// RENAME, OWNER), so order is for clarity only.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum AlterTablespaceAction {
@@ -87,6 +96,7 @@ pub enum AlterTablespaceAction {
 
 /// `ALTER TABLESPACE name { RENAME TO new_name | OWNER TO new_owner
 ///                         | SET (params) | RESET (params) }`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTablespaceStmt {
@@ -97,6 +107,7 @@ pub struct AlterTablespaceStmt {
 }
 
 /// `DROP TABLESPACE [IF EXISTS] name`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropTablespaceStmt {

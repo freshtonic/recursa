@@ -7,8 +7,10 @@ use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// An explain option value: ON, OFF, or identifier.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ExplainOptValue {
@@ -18,6 +20,7 @@ pub enum ExplainOptValue {
 }
 
 /// A single explain option: `name value` (e.g., `costs off`).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExplainOption {
@@ -30,6 +33,7 @@ pub type ExplainOptions =
     Surrounded<punct::LParen, Seq<ExplainOption, punct::Comma>, punct::RParen>;
 
 /// EXPLAIN statement: `EXPLAIN [(options)] statement`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExplainStmt {

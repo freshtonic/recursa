@@ -11,6 +11,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// PRIMARY KEY column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PrimaryKeyConstraint {
@@ -21,11 +22,13 @@ pub struct PrimaryKeyConstraint {
 }
 
 /// NOT NULL column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotNullConstraint(PhantomData<keyword::Not>, PhantomData<keyword::Null>);
 
 /// UNIQUE column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UniqueConstraint {
@@ -37,6 +40,7 @@ pub struct UniqueConstraint {
 }
 
 /// `NULLS DISTINCT` or `NULLS NOT DISTINCT` for UNIQUE constraints.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NullsDistinctQualifier {
@@ -49,6 +53,7 @@ pub struct NullsDistinctQualifier {
 ///
 /// Variant ordering: multi-word variants (`NO ACTION`, `SET NULL`, `SET DEFAULT`)
 /// come before single-word ones to satisfy longest-match.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ReferentialAction {
@@ -59,6 +64,7 @@ pub enum ReferentialAction {
     Restrict(PhantomData<keyword::Restrict>),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NoActionKw {
@@ -66,6 +72,7 @@ pub struct NoActionKw {
     pub _action: PhantomData<keyword::Action>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetNullKw {
@@ -74,6 +81,7 @@ pub struct SetNullKw {
     pub cols: Option<Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetDefaultKw {
@@ -83,6 +91,7 @@ pub struct SetDefaultKw {
 }
 
 /// `ON DELETE <action>`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnDeleteAction {
@@ -92,6 +101,7 @@ pub struct OnDeleteAction {
 }
 
 /// `ON UPDATE <action>`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnUpdateAction {
@@ -101,6 +111,7 @@ pub struct OnUpdateAction {
 }
 
 /// Match type for a foreign key: `MATCH FULL | PARTIAL | SIMPLE`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum MatchKind {
@@ -110,6 +121,7 @@ pub enum MatchKind {
 }
 
 /// `MATCH FULL | MATCH PARTIAL | MATCH SIMPLE`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MatchClause {
@@ -120,6 +132,7 @@ pub struct MatchClause {
 /// `DEFERRABLE | NOT DEFERRABLE`.
 ///
 /// Variant ordering: `NotDeferrable` (two keywords) before `Deferrable`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum DeferrableKind {
@@ -127,6 +140,7 @@ pub enum DeferrableKind {
     Deferrable(PhantomData<keyword::Deferrable>),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotDeferrableKw {
@@ -135,6 +149,7 @@ pub struct NotDeferrableKw {
 }
 
 /// `INITIALLY DEFERRED | INITIALLY IMMEDIATE`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InitiallyClause {
@@ -142,6 +157,7 @@ pub struct InitiallyClause {
     pub mode: InitiallyMode,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InitiallyMode {
@@ -154,6 +170,7 @@ pub enum InitiallyMode {
 /// are accepted via a `Vec<OnAction>`.
 ///
 /// Variant ordering: both start with `ON`; they diverge at the next keyword.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum OnAction {
@@ -163,6 +180,7 @@ pub enum OnAction {
 
 /// REFERENCES constraint:
 /// `REFERENCES table [(col, ...)] [MATCH ...] [ON DELETE|UPDATE ...]* [DEFERRABLE | NOT DEFERRABLE] [INITIALLY ...]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReferencesConstraint {
@@ -177,6 +195,7 @@ pub struct ReferencesConstraint {
 }
 
 /// `NOT VALID` suffix on a CHECK or FOREIGN KEY constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotValidKw {
@@ -185,6 +204,7 @@ pub struct NotValidKw {
 }
 
 /// `CHECK (expr) [NO INHERIT] [NOT VALID]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CheckConstraint {
@@ -194,6 +214,7 @@ pub struct CheckConstraint {
     pub not_valid: Option<NotValidKw>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NoInheritKw {
@@ -202,6 +223,7 @@ pub struct NoInheritKw {
 }
 
 /// GENERATED ALWAYS AS IDENTITY column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GeneratedIdentityConstraint(
@@ -212,6 +234,7 @@ pub struct GeneratedIdentityConstraint(
 );
 
 /// `GENERATED ALWAYS AS (expr) STORED` column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GeneratedStoredConstraint {
@@ -223,6 +246,7 @@ pub struct GeneratedStoredConstraint {
 }
 
 /// DEFAULT expr column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DefaultConstraint {
@@ -237,6 +261,7 @@ pub struct DefaultConstraint {
 /// - PrimaryKey (`PRIMARY KEY`) before others (unique keyword)
 /// - NotNull (`NOT NULL`) before others
 /// - References, Unique, Default, Check all start with distinct keywords
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ColumnConstraintKind {
@@ -252,6 +277,7 @@ pub enum ColumnConstraintKind {
 
 /// Optional `CONSTRAINT name` prefix shared by column-level and
 /// table-level constraints.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ConstraintNamePrefix {
@@ -260,6 +286,7 @@ pub struct ConstraintNamePrefix {
 }
 
 /// A column constraint with its optional `CONSTRAINT name` prefix.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnConstraint {
@@ -268,6 +295,7 @@ pub struct ColumnConstraint {
 }
 
 /// `COLLATE "name"` clause used after a column's type.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CollateClause {
@@ -276,6 +304,7 @@ pub struct CollateClause {
 }
 
 /// A column definition: `name type [COLLATE "..."] [constraints...]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnDef {
@@ -297,6 +326,7 @@ impl ColumnDef {
 // --- Table-level constraints ---
 
 /// Optional trailing deferrable/initially pair shared by PK/UNIQUE/FK.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ConstraintAttrs {
@@ -305,6 +335,7 @@ pub struct ConstraintAttrs {
 }
 
 /// `PRIMARY KEY (col, ...)`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TablePrimaryKey {
@@ -315,6 +346,7 @@ pub struct TablePrimaryKey {
 }
 
 /// `UNIQUE (col, ...)`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableUnique {
@@ -324,6 +356,7 @@ pub struct TableUnique {
 }
 
 /// `FOREIGN KEY (col, ...) REFERENCES table [(col, ...)] [MATCH ...] [ON ...] [DEFERRABLE ...] [INITIALLY ...]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableForeignKey {
@@ -341,6 +374,7 @@ pub type TableCheck = CheckConstraint;
 /// Variant ordering: `PRIMARY KEY` (PRIMARY), `FOREIGN KEY` (FOREIGN),
 /// `UNIQUE`, `CHECK` — all start with distinct unique keywords so order
 /// is not strictly required for disambiguation.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TableConstraintKind {
@@ -351,6 +385,7 @@ pub enum TableConstraintKind {
 }
 
 /// A table-level constraint with optional `CONSTRAINT name` prefix.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableConstraint {
@@ -359,6 +394,7 @@ pub struct TableConstraint {
 }
 
 /// A single `INCLUDING` / `EXCLUDING` option on a `LIKE` source table clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum LikeOptionKind {
@@ -374,6 +410,7 @@ pub enum LikeOptionKind {
 }
 
 /// `INCLUDING what`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IncludingOption {
@@ -382,6 +419,7 @@ pub struct IncludingOption {
 }
 
 /// `EXCLUDING what`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExcludingOption {
@@ -390,6 +428,7 @@ pub struct ExcludingOption {
 }
 
 /// One option on a `LIKE table` clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum LikeOption {
@@ -400,6 +439,7 @@ pub enum LikeOption {
 /// `LIKE source_table [INCLUDING/EXCLUDING option ...]` clause in a column
 /// list body. Copies column definitions (and optionally other properties)
 /// from an existing table.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LikeClause {
@@ -417,6 +457,7 @@ pub struct LikeClause {
 /// ident). `Constraint` must come before `Column` because its leading
 /// tokens (`CONSTRAINT`, `PRIMARY`, `UNIQUE`, `FOREIGN`, `CHECK`) are
 /// keywords, while a `Column` starts with an identifier.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ColumnOrConstraint {
@@ -426,6 +467,7 @@ pub enum ColumnOrConstraint {
 }
 
 /// Optional TEMP or TEMPORARY keyword.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TempKw {
@@ -434,6 +476,7 @@ pub enum TempKw {
 }
 
 /// INHERITS clause: `INHERITS (parent, ...)`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InheritsClause {
@@ -442,6 +485,7 @@ pub struct InheritsClause {
 }
 
 /// Column-based table body: `(cols_and_constraints) [INHERITS (...)] [PARTITION BY ...]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnsBody {
@@ -453,6 +497,7 @@ pub struct ColumnsBody {
 }
 
 /// Partition-of table body: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PartitionOfBody {
@@ -466,6 +511,7 @@ pub struct PartitionOfBody {
 }
 
 /// AS-query table body: `AS SELECT ...`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsQueryBody {
@@ -477,6 +523,7 @@ pub struct AsQueryBody {
 ///
 /// Variant ordering: AsQuery (`AS`) and PartitionOf (`PARTITION`) start with
 /// keywords; Columns starts with `(`. Longest-match-wins disambiguates.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum CreateTableBody {

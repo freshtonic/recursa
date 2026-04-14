@@ -14,12 +14,14 @@ use crate::ast::expr::Expr;
 use crate::ast::RawStatement;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 // --- Transaction control ---
 
 /// Isolation level following `ISOLATION LEVEL`.
 ///
 /// Variant ordering: multi-word forms before single-word `Serializable`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum IsolationLevelKind {
@@ -29,6 +31,7 @@ pub enum IsolationLevelKind {
     Serializable(keyword::Serializable),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RepeatableReadLevel {
@@ -36,6 +39,7 @@ pub struct RepeatableReadLevel {
     pub _read: PhantomData<keyword::ReadKw>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadCommittedLevel {
@@ -43,6 +47,7 @@ pub struct ReadCommittedLevel {
     pub _committed: PhantomData<keyword::Committed>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadUncommittedLevel {
@@ -51,6 +56,7 @@ pub struct ReadUncommittedLevel {
 }
 
 /// `ISOLATION LEVEL <level>` transaction mode.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsolationLevelMode {
@@ -60,6 +66,7 @@ pub struct IsolationLevelMode {
 }
 
 /// `READ ONLY` or `READ WRITE` transaction mode.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadOnlyMode {
@@ -67,6 +74,7 @@ pub struct ReadOnlyMode {
     pub _only: PhantomData<keyword::Only>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadWriteMode {
@@ -75,6 +83,7 @@ pub struct ReadWriteMode {
 }
 
 /// `[NOT] DEFERRABLE` transaction mode.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotDeferrableMode {
@@ -86,6 +95,7 @@ pub struct NotDeferrableMode {
 ///
 /// Variant ordering: multi-word before single, and `NotDeferrable` (NOT
 /// DEFERRABLE) before bare `Deferrable`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TransactionMode {
@@ -97,6 +107,7 @@ pub enum TransactionMode {
 }
 
 /// Optional `WORK | TRANSACTION` suffix.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum WorkOrTransaction {
@@ -105,6 +116,7 @@ pub enum WorkOrTransaction {
 }
 
 /// BEGIN [WORK | TRANSACTION] [transaction_mode [, ...]]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct BeginStmt {
@@ -114,6 +126,7 @@ pub struct BeginStmt {
 }
 
 /// END [WORK | TRANSACTION] — alias for COMMIT.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct EndStmt {
@@ -122,6 +135,7 @@ pub struct EndStmt {
 }
 
 /// ABORT [WORK | TRANSACTION] — alias for ROLLBACK.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AbortStmt {
@@ -130,6 +144,7 @@ pub struct AbortStmt {
 }
 
 /// START TRANSACTION [transaction_mode [, ...]]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StartTransactionStmt {
@@ -140,6 +155,7 @@ pub struct StartTransactionStmt {
 
 /// SET TRANSACTION transaction_mode [, ...]
 /// SET SESSION CHARACTERISTICS AS TRANSACTION transaction_mode [, ...]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetTransactionStmt {
@@ -148,6 +164,7 @@ pub struct SetTransactionStmt {
     pub modes: Seq<TransactionMode, punct::Comma>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetTransactionTarget {
@@ -155,6 +172,7 @@ pub enum SetTransactionTarget {
     Transaction(keyword::Transaction),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetSessionCharacteristics {
@@ -165,6 +183,7 @@ pub struct SetSessionCharacteristics {
 }
 
 /// `SET CONSTRAINTS { ALL | name [, …] } { DEFERRED | IMMEDIATE }`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetConstraintsStmt {
@@ -174,6 +193,7 @@ pub struct SetConstraintsStmt {
     pub mode: DeferredMode,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetConstraintsTarget {
@@ -181,6 +201,7 @@ pub enum SetConstraintsTarget {
     Names(Seq<literal::Ident, punct::Comma>),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum DeferredMode {
@@ -189,6 +210,7 @@ pub enum DeferredMode {
 }
 
 /// COMMIT [WORK | TRANSACTION]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CommitStmt {
@@ -199,6 +221,7 @@ pub struct CommitStmt {
 /// ```sql
 /// ROLLBACK [WORK | TRANSACTION] [TO [SAVEPOINT] name]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RollbackStmt {
@@ -207,6 +230,7 @@ pub struct RollbackStmt {
 }
 
 /// SAVEPOINT name
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SavepointStmt {
@@ -217,6 +241,7 @@ pub struct SavepointStmt {
 /// ```sql
 /// RELEASE [SAVEPOINT] name
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReleaseStmt {
@@ -227,6 +252,7 @@ pub struct ReleaseStmt {
 // --- PREPARE / EXECUTE / DEALLOCATE ---
 
 /// PREPARE name [(types)] AS statement
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PrepareStmt {
@@ -235,6 +261,7 @@ pub struct PrepareStmt {
 }
 
 /// EXECUTE name [(params)]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExecuteStmt {
@@ -245,6 +272,7 @@ pub struct ExecuteStmt {
 /// ```sql
 /// DEALLOCATE [PREPARE] name | ALL
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeallocateStmt {
@@ -255,6 +283,7 @@ pub struct DeallocateStmt {
 // --- GRANT / REVOKE ---
 
 /// GRANT privileges ON object TO role [WITH GRANT OPTION]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GrantStmt {
@@ -263,6 +292,7 @@ pub struct GrantStmt {
 }
 
 /// REVOKE privileges ON object FROM role
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RevokeStmt {
@@ -273,6 +303,7 @@ pub struct RevokeStmt {
 // --- COPY ---
 
 /// COPY table [(columns)] FROM/TO target [WITH options]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CopyStmt {
@@ -285,6 +316,7 @@ pub struct CopyStmt {
 /// ```sql
 /// TRUNCATE [TABLE] name [, ...] [CASCADE | RESTRICT]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TruncateStmt {
@@ -295,6 +327,7 @@ pub struct TruncateStmt {
 // --- COMMENT ---
 
 /// COMMENT ON object IS 'text' | NULL
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CommentStmt {
@@ -307,6 +340,7 @@ pub struct CommentStmt {
 /// ```sql
 /// LOCK [TABLE] name [, ...] [IN mode MODE] [NOWAIT]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LockStmt {
@@ -317,6 +351,7 @@ pub struct LockStmt {
 // --- Cursor operations ---
 
 /// DECLARE name CURSOR FOR query
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeclareStmt {
@@ -325,6 +360,7 @@ pub struct DeclareStmt {
 }
 
 /// `FROM` or `IN` cursor-source keyword in FETCH/MOVE.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FetchSource {
@@ -333,6 +369,7 @@ pub enum FetchSource {
 }
 
 /// `ABSOLUTE n` form.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchAbsolute {
@@ -341,6 +378,7 @@ pub struct FetchAbsolute {
 }
 
 /// `RELATIVE n` form.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchRelative {
@@ -349,6 +387,7 @@ pub struct FetchRelative {
 }
 
 /// `FORWARD [n|ALL]` form.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchForward {
@@ -357,6 +396,7 @@ pub struct FetchForward {
 }
 
 /// `BACKWARD [n|ALL]` form.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchBackward {
@@ -365,6 +405,7 @@ pub struct FetchBackward {
 }
 
 /// A count or `ALL` marker following `FORWARD`/`BACKWARD`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FetchCountOrAll {
@@ -377,6 +418,7 @@ pub enum FetchCountOrAll {
 /// Variant ordering: multi-token forms (`ABSOLUTE n`, `RELATIVE n`,
 /// `FORWARD [...]`, `BACKWARD [...]`) before single-keyword directions.
 /// `Count` (bare integer) listed last since it has no keyword prefix.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FetchDirection {
@@ -395,6 +437,7 @@ pub enum FetchDirection {
 /// ```sql
 /// FETCH [direction] [FROM|IN] cursor_name
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchStmt {
@@ -405,6 +448,7 @@ pub struct FetchStmt {
 }
 
 /// CLOSE cursor | ALL
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CloseStmt {
@@ -415,6 +459,7 @@ pub struct CloseStmt {
 /// ```sql
 /// MOVE [direction] [FROM|IN] cursor_name
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MoveStmt {
@@ -432,6 +477,7 @@ pub struct MoveStmt {
 /// `FREEZE`, `PARALLEL`) so it uses `AliasName`. The value is any expression,
 /// which covers integers, floats, identifiers, boolean literals, and signed
 /// numbers (`-1`).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct VacuumOption {
@@ -440,6 +486,7 @@ pub struct VacuumOption {
 }
 
 /// Parenthesized options list: `( opt [= val] [, ...] )`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct VacuumOptions {
@@ -447,6 +494,7 @@ pub struct VacuumOptions {
 }
 
 /// REINDEX [( options )] { INDEX | TABLE | SCHEMA | DATABASE | SYSTEM } name
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReindexStmt {
@@ -460,6 +508,7 @@ pub struct ReindexStmt {
 /// ```sql
 /// REFRESH MATERIALIZED VIEW [CONCURRENTLY] name [WITH [NO] DATA]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RefreshStmt {
@@ -470,6 +519,7 @@ pub struct RefreshStmt {
 // --- NOTIFY / LISTEN / UNLISTEN ---
 
 /// NOTIFY channel [, payload]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotifyStmt {
@@ -478,6 +528,7 @@ pub struct NotifyStmt {
 }
 
 /// LISTEN channel
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ListenStmt {
@@ -486,6 +537,7 @@ pub struct ListenStmt {
 }
 
 /// Target of an UNLISTEN statement: a channel name or `*` (all channels).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum UnlistenTarget {
@@ -496,6 +548,7 @@ pub enum UnlistenTarget {
 }
 
 /// UNLISTEN channel | *
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnlistenStmt {
@@ -506,6 +559,7 @@ pub struct UnlistenStmt {
 // --- DO ---
 
 /// `DO [LANGUAGE lang] $$ ... $$` anonymous code block.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoStmt {
@@ -516,6 +570,7 @@ pub struct DoStmt {
 }
 
 /// `LANGUAGE lang` clause on a `DO` block (may appear before or after body).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoLanguage {
@@ -526,6 +581,7 @@ pub struct DoLanguage {
 // --- DISCARD ---
 
 /// DISCARD ALL | PLANS | SEQUENCES | TEMP
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DiscardStmt {
@@ -536,6 +592,7 @@ pub struct DiscardStmt {
 // --- REASSIGN ---
 
 /// REASSIGN OWNED BY role TO role
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReassignStmt {
@@ -546,6 +603,7 @@ pub struct ReassignStmt {
 // --- SECURITY LABEL ---
 
 /// SECURITY LABEL [FOR provider] ON object IS 'label' | NULL
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SecurityLabelStmt {
@@ -558,6 +616,7 @@ pub struct SecurityLabelStmt {
 /// ```sql
 /// CLUSTER [VERBOSE] [table [USING index]]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ClusterStmt {
@@ -568,6 +627,7 @@ pub struct ClusterStmt {
 // --- VACUUM ---
 
 /// VACUUM [(options)] [table [(columns)]]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct VacuumStmt {
@@ -579,6 +639,7 @@ pub struct VacuumStmt {
 // --- ALTER TABLE ---
 
 /// ALTER TABLE ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTableStmt {
@@ -588,6 +649,7 @@ pub struct AlterTableStmt {
 }
 
 /// `CHECKPOINT` — force a transaction log checkpoint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CheckpointStmt {
@@ -595,6 +657,7 @@ pub struct CheckpointStmt {
 }
 
 /// `ALTER DEFAULT PRIVILEGES [FOR ROLE ...] [IN SCHEMA ...] { GRANT | REVOKE } ...`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterDefaultPrivilegesStmt {
@@ -608,6 +671,7 @@ pub struct AlterDefaultPrivilegesStmt {
 // These capture the leading keywords for disambiguation, with raw tail.
 
 /// CREATE TRIGGER ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTriggerStmt {
@@ -617,6 +681,7 @@ pub struct CreateTriggerStmt {
 }
 
 /// DROP TRIGGER ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropTriggerStmt {
@@ -626,6 +691,7 @@ pub struct DropTriggerStmt {
 }
 
 /// CREATE [OR REPLACE] RULE ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateRuleStmt {
@@ -636,6 +702,7 @@ pub struct CreateRuleStmt {
 }
 
 /// DROP RULE ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropRuleStmt {
@@ -650,6 +717,7 @@ pub struct DropRuleStmt {
 ///
 /// Variant ordering: `Temporary` (longer) before `Temp` so the longer keyword
 /// wins longest-match disambiguation.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TempModifier {
@@ -663,6 +731,7 @@ pub enum TempModifier {
 macro_rules! create_drop_stmts {
     ($($name:ident, $create_name:ident, $drop_name:ident, $kw:ident);* $(;)?) => {
         $(
+            #[railroad]
             #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
             #[parse(rules = SqlRules)]
             pub struct $create_name {
@@ -675,6 +744,7 @@ macro_rules! create_drop_stmts {
                 pub tail: Option<RawStatement>,
             }
 
+            #[railroad]
             #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
             #[parse(rules = SqlRules)]
             pub struct $drop_name {
@@ -712,6 +782,7 @@ create_drop_stmts! {
 macro_rules! alter_stmts {
     ($($name:ident, $alter_name:ident, $kw:ident);* $(;)?) => {
         $(
+            #[railroad]
             #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
             #[parse(rules = SqlRules)]
             pub struct $alter_name {
@@ -751,6 +822,7 @@ alter_stmts! {
 // Special multi-keyword DDL types
 
 /// CREATE FOREIGN TABLE / DATA WRAPPER
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterForeignStmt {
@@ -760,6 +832,7 @@ pub struct AlterForeignStmt {
 }
 
 /// CREATE EVENT TRIGGER
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateEventTriggerStmt {
@@ -769,6 +842,7 @@ pub struct CreateEventTriggerStmt {
 }
 
 /// DROP EVENT TRIGGER
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropEventTriggerStmt {
@@ -778,6 +852,7 @@ pub struct DropEventTriggerStmt {
 }
 
 /// ALTER EVENT TRIGGER
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterEventTriggerStmt {
@@ -787,6 +862,7 @@ pub struct AlterEventTriggerStmt {
 }
 
 /// DROP OWNED BY
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropOwnedStmt {
@@ -796,6 +872,7 @@ pub struct DropOwnedStmt {
 }
 
 /// CREATE ACCESS METHOD
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateAccessMethodStmt {
@@ -805,6 +882,7 @@ pub struct CreateAccessMethodStmt {
 }
 
 /// DROP ACCESS METHOD
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropAccessMethodStmt {
@@ -814,6 +892,7 @@ pub struct DropAccessMethodStmt {
 }
 
 /// CREATE MATERIALIZED VIEW
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateMaterializedViewStmt {
@@ -823,6 +902,7 @@ pub struct CreateMaterializedViewStmt {
 }
 
 /// DROP MATERIALIZED VIEW
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropMaterializedViewStmt {
@@ -832,6 +912,7 @@ pub struct DropMaterializedViewStmt {
 }
 
 /// ALTER MATERIALIZED VIEW
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterMaterializedViewStmt {
@@ -841,6 +922,7 @@ pub struct AlterMaterializedViewStmt {
 }
 
 /// CREATE FOREIGN ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateForeignStmt {
@@ -850,6 +932,7 @@ pub struct CreateForeignStmt {
 }
 
 /// DROP FOREIGN ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropForeignStmt {

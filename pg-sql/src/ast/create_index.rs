@@ -16,6 +16,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// `IF NOT EXISTS` keyword sequence.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IfNotExistsKw {
@@ -29,6 +30,7 @@ pub struct IfNotExistsKw {
 /// The method name can be an identifier or one of the built-in method
 /// keywords (`btree`, `gin`, ...). We accept `literal::AliasName` so both
 /// identifiers and keywords are allowed in this position.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UsingMethod {
@@ -37,6 +39,7 @@ pub struct UsingMethod {
 }
 
 /// A single opclass option: `name = value`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OpclassOption {
@@ -50,6 +53,7 @@ pub type OpclassOptions =
     Surrounded<punct::LParen, Seq<OpclassOption, punct::Comma>, punct::RParen>;
 
 /// Opclass name plus optional options: `int4_ops [(opt = val, ...)]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OpclassSpec {
@@ -58,6 +62,7 @@ pub struct OpclassSpec {
 }
 
 /// A storage parameter entry: `name [= value]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StorageParam {
@@ -70,6 +75,7 @@ pub struct StorageParam {
 /// The value is a permissive SetValue (keywords like `off`, `on`, string/numeric
 /// literals, identifiers) rather than a full `Expr` — storage param values are
 /// simple literals and `Expr::ColumnRef` rejects keywords like `off`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StorageParamValue {
@@ -78,6 +84,7 @@ pub struct StorageParamValue {
 }
 
 /// `WITH (name = value, ...)` storage parameters clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithStorage {
@@ -86,6 +93,7 @@ pub struct WithStorage {
 }
 
 /// `INCLUDE (col, ...)` covering-index clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IncludeClause {
@@ -100,6 +108,7 @@ pub struct IncludeClause {
 /// - `Expr` (`(`) starts with a different token than the others.
 /// - `Func` (`ident(`) must come before `Col` (`ident`) so longest-match
 ///   prefers the function call form.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum IndexTarget {
@@ -109,6 +118,7 @@ pub enum IndexTarget {
 }
 
 /// `COLLATE "name"` on an index element.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IndexCollate {
@@ -118,6 +128,7 @@ pub struct IndexCollate {
 
 /// An index element:
 /// `column_or_expr [COLLATE "name"] [opclass [(options)]] [ASC|DESC] [NULLS FIRST|LAST]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IndexElem {
@@ -166,6 +177,7 @@ pub struct CreateIndexStmt {
 /// ```sql
 /// DROP INDEX [CONCURRENTLY] [IF EXISTS] name [, name ...] [CASCADE | RESTRICT]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropIndexStmt {

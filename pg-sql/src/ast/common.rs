@@ -6,18 +6,22 @@ use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// `CASCADE` drop behavior.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CascadeKw(pub PhantomData<keyword::Cascade>);
 
 /// `RESTRICT` drop behavior.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RestrictKw(pub PhantomData<keyword::Restrict>);
 
 /// `CASCADE | RESTRICT` drop behavior.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum DropBehavior {
@@ -31,6 +35,7 @@ pub enum DropBehavior {
 /// Must NOT collide with `Expr::QualRef` at the Pratt level because
 /// `QualifiedName` is only used in non-expression positions (FROM targets,
 /// DROP targets, ALTER targets, etc.).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedName {

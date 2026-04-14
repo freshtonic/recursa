@@ -19,8 +19,10 @@ use crate::ast::select::{PlainTable, TableRef};
 use crate::ast::update::{ReturningClause, SetAssignment};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// `AND cond` qualifier on a WHEN clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AndCondition {
@@ -29,6 +31,7 @@ pub struct AndCondition {
 }
 
 /// `BY SOURCE` qualifier on `WHEN NOT MATCHED`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct BySource {
@@ -37,6 +40,7 @@ pub struct BySource {
 }
 
 /// `BY TARGET` qualifier on `WHEN NOT MATCHED`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ByTarget {
@@ -45,6 +49,7 @@ pub struct ByTarget {
 }
 
 /// `BY SOURCE` or `BY TARGET`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum NotMatchedBy {
@@ -53,6 +58,7 @@ pub enum NotMatchedBy {
 }
 
 /// `UPDATE SET col = expr, ...` action body (the part after THEN).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UpdateAction {
@@ -62,6 +68,7 @@ pub struct UpdateAction {
 }
 
 /// `DELETE` action body.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeleteAction {
@@ -69,6 +76,7 @@ pub struct DeleteAction {
 }
 
 /// `DO NOTHING` action body.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoNothingAction {
@@ -81,6 +89,7 @@ pub struct DoNothingAction {
 /// Variant ordering: `DoNothing` (`DO NOTHING`) and `Update` (`UPDATE`) and
 /// `Delete` (`DELETE`) all start with distinct keywords, so order is by
 /// declaration only.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum MatchedAction {
@@ -90,6 +99,7 @@ pub enum MatchedAction {
 }
 
 /// `DEFAULT VALUES` form of an INSERT body.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertDefaultValues {
@@ -101,6 +111,7 @@ pub struct InsertDefaultValues {
 pub type ValueRow = Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>;
 
 /// `VALUES (row), (row), ...` body.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertValuesBody {
@@ -112,6 +123,7 @@ pub struct InsertValuesBody {
 ///
 /// Variant ordering: `Default` (`DEFAULT VALUES`) is matched before
 /// `Values` (`VALUES`) since they begin with different keywords.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InsertBody {
@@ -120,6 +132,7 @@ pub enum InsertBody {
 }
 
 /// Optional `INTO target_name` after `INSERT`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertInto {
@@ -128,6 +141,7 @@ pub struct InsertInto {
 }
 
 /// `INSERT [INTO target] [(cols)] { VALUES ... | DEFAULT VALUES }`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertAction {
@@ -139,6 +153,7 @@ pub struct InsertAction {
 }
 
 /// Action allowed after `WHEN NOT MATCHED ... THEN`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum NotMatchedAction {
@@ -147,6 +162,7 @@ pub enum NotMatchedAction {
 }
 
 /// `WHEN NOT MATCHED [BY {SOURCE|TARGET}] [AND cond] THEN action`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhenNotMatched {
@@ -160,6 +176,7 @@ pub struct WhenNotMatched {
 }
 
 /// `WHEN MATCHED [AND cond] THEN action`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhenMatched {
@@ -174,6 +191,7 @@ pub struct WhenMatched {
 ///
 /// Variant ordering: `NotMatched` (`WHEN NOT MATCHED`) is longer than
 /// `Matched` (`WHEN MATCHED`); list it first.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum WhenClause {
@@ -182,6 +200,7 @@ pub enum WhenClause {
 }
 
 /// MERGE statement.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MergeStmt {

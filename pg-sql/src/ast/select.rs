@@ -12,6 +12,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// A single item in the SELECT list: `expr [AS alias]` or `expr alias`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SelectItem {
@@ -21,6 +22,7 @@ pub struct SelectItem {
 
 /// Alias with explicit AS keyword: `AS name`.
 /// Uses AliasName so keywords are accepted (e.g., `SELECT 1 AS true`).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsAlias {
@@ -32,6 +34,7 @@ pub struct AsAlias {
 ///
 /// Variant ordering: WithAs (`AS name`) has a longer first_pattern than
 /// Bare (`ident`), so longest-match-wins picks it when AS is present.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum Alias {
@@ -50,6 +53,7 @@ impl Alias {
 }
 
 /// FROM clause: `FROM table [, table ...]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FromClause {
@@ -58,6 +62,7 @@ pub struct FromClause {
 }
 
 /// Table name with inheritance marker and optional alias: `person* p`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InheritedTable {
@@ -67,6 +72,7 @@ pub struct InheritedTable {
 }
 
 /// Table alias: `AS name [(col1, col2)]` or bare `name [(col1, col2)]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableAlias {
@@ -77,6 +83,7 @@ pub struct TableAlias {
 }
 
 /// Subquery in FROM: `(SELECT ...) AS alias`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubqueryRef {
@@ -91,6 +98,7 @@ pub struct SubqueryRef {
 /// Distinguished from `SubqueryRef` by what the `(` contains: a subquery
 /// starts with `SELECT` / `VALUES` / `TABLE` / `WITH` (all keywords),
 /// whereas a parenthesized join tree starts with a table name (ident).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ParenJoinRef {
@@ -101,6 +109,7 @@ pub struct ParenJoinRef {
 }
 
 /// LATERAL subquery in FROM: `LATERAL (VALUES(...)) v`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LateralRef {
@@ -115,6 +124,7 @@ pub struct LateralRef {
 ///
 /// `ONLY` means do not recurse into inheritance children (the opposite
 /// of the `table *` `InheritedTable` form).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PlainTable {
@@ -133,6 +143,7 @@ pub struct PlainTable {
 ///
 /// Variant ordering: `WithAs` (starts with `AS`) must be listed before `Bare`
 /// so longest-match-wins picks it when `AS` is present.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum PlainTableAlias {
@@ -141,6 +152,7 @@ pub enum PlainTableAlias {
 }
 
 /// `AS name [(col, ...)]` form.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PlainTableAliasWithAs {
@@ -151,6 +163,7 @@ pub struct PlainTableAliasWithAs {
 }
 
 /// Bare `name [(col, ...)]` form. Uses `literal::Ident` to reject keywords.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PlainTableAliasBare {
@@ -160,6 +173,7 @@ pub struct PlainTableAliasBare {
 }
 
 /// `WITH ORDINALITY` suffix on a function table.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithOrdinality {
@@ -169,6 +183,7 @@ pub struct WithOrdinality {
 
 /// A column definition inside a function-table column-def-list:
 /// `name type` (e.g., `a int`).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnDef {
@@ -178,6 +193,7 @@ pub struct ColumnDef {
 
 /// `[AS] alias (col type, ...)` or just `(col type, ...)` -- the
 /// column definition list form for table-returning functions.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnDefList {
@@ -192,6 +208,7 @@ pub struct ColumnDefList {
 /// Variant ordering: `ColumnDefList` is more specific (its inner uses
 /// `name type` pairs requiring at least one type token after each name)
 /// so list it first.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncTableAlias {
@@ -200,6 +217,7 @@ pub enum FuncTableAlias {
 }
 
 /// Function call used as table reference with optional WITH ORDINALITY and alias.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncTableRef {
@@ -216,6 +234,7 @@ pub struct FuncTableRef {
 /// - Func before Inherited/Table: FuncCall's `ident(` pattern is longer
 ///   than bare ident.
 /// - Inherited before Table: `person*` matches longer than `person`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SimpleTableRef {
@@ -245,6 +264,7 @@ pub enum JoinType {
 }
 
 /// JOIN condition: ON expr or USING (col, ...)
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum JoinCondition {
@@ -253,6 +273,7 @@ pub enum JoinCondition {
 }
 
 /// ON condition for JOIN
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinOn {
@@ -261,6 +282,7 @@ pub struct JoinOn {
 }
 
 /// `AS alias` form of a JOIN USING alias.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinUsingAliasWithAs {
@@ -272,6 +294,7 @@ pub struct JoinUsingAliasWithAs {
 ///
 /// Variant ordering: `WithAs` (`AS name`) is longer than `Bare`
 /// (`ident`); list it first.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum JoinUsingAlias {
@@ -280,6 +303,7 @@ pub enum JoinUsingAlias {
 }
 
 /// USING clause for JOIN: `USING (col, ...) [[AS] alias]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinUsing {
@@ -294,6 +318,7 @@ pub struct JoinUsing {
 /// `OUTER` is allowed (and traditionally written) after `LEFT`/`RIGHT`/`FULL`.
 /// Postgres accepts but does not require it; the grammar accepts it after any
 /// join type for simplicity.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinSuffix {
@@ -306,6 +331,7 @@ pub struct JoinSuffix {
 }
 
 /// A table reference that may have zero or more JOIN suffixes.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableRef {
@@ -314,6 +340,7 @@ pub struct TableRef {
 }
 
 /// WHERE clause: `WHERE expr`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhereClause {
@@ -322,6 +349,7 @@ pub struct WhereClause {
 }
 
 /// USING operator in ORDER BY: `USING > | USING <`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum UsingOp {
@@ -330,6 +358,7 @@ pub enum UsingOp {
 }
 
 /// USING clause in ORDER BY: `USING op`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UsingClause {
@@ -347,6 +376,7 @@ pub enum SortDir {
 }
 
 /// NULLS FIRST or NULLS LAST.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum NullsOrder {
@@ -355,16 +385,19 @@ pub enum NullsOrder {
 }
 
 /// NULLS FIRST
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NullsFirst(PhantomData<keyword::Nulls>, PhantomData<keyword::First>);
 
 /// NULLS LAST
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NullsLast(PhantomData<keyword::Nulls>, PhantomData<keyword::Last>);
 
 /// A single ORDER BY item: `expr [ASC|DESC] [USING op] [NULLS FIRST|LAST]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrderByItem {
@@ -375,6 +408,7 @@ pub struct OrderByItem {
 }
 
 /// ORDER BY clause: `ORDER BY item [, item ...]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrderByClause {
@@ -384,6 +418,7 @@ pub struct OrderByClause {
 }
 
 /// OFFSET clause: `OFFSET expr`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OffsetClause {
@@ -392,6 +427,7 @@ pub struct OffsetClause {
 }
 
 /// LIMIT clause: `LIMIT expr`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LimitClause {
@@ -400,6 +436,7 @@ pub struct LimitClause {
 }
 
 /// FOR UPDATE clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForUpdateClause {
@@ -409,6 +446,7 @@ pub struct ForUpdateClause {
 
 /// GROUP BY clause: `GROUP BY item, ...` where each item is an expression
 /// or one of the grouping primitives (GROUPING SETS, ROLLUP, CUBE).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GroupByClause {
@@ -418,6 +456,7 @@ pub struct GroupByClause {
 }
 
 /// `GROUPING SETS ( item, ... )`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GroupingSetsItem {
@@ -427,6 +466,7 @@ pub struct GroupingSetsItem {
 }
 
 /// `ROLLUP ( item, ... )`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RollupItem {
@@ -435,6 +475,7 @@ pub struct RollupItem {
 }
 
 /// `CUBE ( item, ... )`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CubeItem {
@@ -447,6 +488,7 @@ pub struct CubeItem {
 /// Variant ordering: two-keyword primitives first (`GROUPING SETS`), then
 /// single-keyword primitives (`ROLLUP`, `CUBE`), then the catch-all `Expr`
 /// which also handles `(a, b)` row-style groupings.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum GroupByItem {
@@ -457,6 +499,7 @@ pub enum GroupByItem {
 }
 
 /// HAVING clause: `HAVING expr`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct HavingClause {
@@ -465,6 +508,7 @@ pub struct HavingClause {
 }
 
 /// A single named window definition: `name AS (inline_window_spec)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WindowDef {
@@ -478,6 +522,7 @@ pub struct WindowDef {
 }
 
 /// `WINDOW name AS (...)[, name AS (...), ...]` clause in SELECT.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WindowClause {
@@ -518,6 +563,7 @@ pub struct SelectStmt {
 /// A SELECT body that can appear in subqueries -- WITH, SELECT, or VALUES.
 /// WithBody must come before Select so `WITH ... SELECT` matches before bare `SELECT`.
 /// SelectStmt must come before ValuesStmt so `SELECT` keyword wins over ambiguity.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SelectBody {
@@ -528,6 +574,7 @@ pub enum SelectBody {
 
 /// VALUES body: `VALUES (expr, ...), (expr, ...)`
 /// Can appear standalone or inside subqueries.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ValuesBody {

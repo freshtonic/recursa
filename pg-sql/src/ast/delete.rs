@@ -11,6 +11,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal};
 
 /// Table alias with explicit AS keyword: `AS alias`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsAlias {
@@ -22,6 +23,7 @@ pub struct AsAlias {
 ///
 /// Variant ordering: WithAs (`AS ident`) has a longer first_pattern than
 /// Bare (`ident`), so longest-match-wins picks it when AS is present.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TableAlias {
@@ -40,6 +42,7 @@ impl TableAlias {
 }
 
 /// `USING table, ...` clause in DELETE statements.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeleteUsingClause {

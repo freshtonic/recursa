@@ -15,6 +15,7 @@ use crate::tokens::{keyword, literal, punct};
 
 /// One or more adjacent string literals, concatenated by Postgres into a
 /// single value: `'first' ' - next' 'third'`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StringLitSeq {
@@ -22,6 +23,7 @@ pub struct StringLitSeq {
 }
 
 /// Content inside IN parentheses: either a subquery or expression list.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InContent {
@@ -37,11 +39,13 @@ pub type TypePrecision =
     Surrounded<punct::LParen, Seq<literal::IntegerLit, punct::Comma>, punct::RParen>;
 
 /// Array type suffix: `[]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ArrayTypeSuffix(pub punct::LBracket, pub punct::RBracket);
 
 /// Type name for casts.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TypeName {
@@ -60,6 +64,7 @@ pub enum TypeName {
 }
 
 /// `DOUBLE PRECISION` type (8-byte float).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoublePrecisionType {
@@ -71,34 +76,42 @@ pub struct DoublePrecisionType {
 // NOT variants listed before non-NOT variants so the longer pattern wins via
 // longest-match lookahead (e.g., "NOT TRUE" matches before "TRUE").
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotTrue(pub keyword::Not, pub keyword::True);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotFalse(pub keyword::Not, pub keyword::False);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotUnknown(pub keyword::Not, pub keyword::Unknown);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotNull(pub keyword::Not, pub keyword::Null);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsTrue(pub keyword::True);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsFalse(pub keyword::False);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsUnknown(pub keyword::Unknown);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNull(pub keyword::Null);
@@ -107,6 +120,7 @@ pub struct IsNull(pub keyword::Null);
 ///
 /// NOT variants are listed first so the combined peek regex disambiguates
 /// via longest match (e.g., `NOT TRUE` is longer than `TRUE`).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum BoolTestKind {
@@ -125,6 +139,7 @@ pub enum BoolTestKind {
 /// Qualified column reference: `table.column`
 ///
 /// Uses AliasName for the table part to allow keywords like EXCLUDED, NEW, OLD.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedRef {
@@ -134,6 +149,7 @@ pub struct QualifiedRef {
 }
 
 /// Qualified wildcard: `table.*`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedWildcard {
@@ -143,11 +159,13 @@ pub struct QualifiedWildcard {
 }
 
 /// Optional DISTINCT keyword in function calls: `count(DISTINCT x)`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct DistinctKw(pub keyword::Distinct);
 
 /// Window specification: `OVER window_name` or `OVER (inline_spec)`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowSpec {
@@ -160,6 +178,7 @@ pub struct WindowSpec {
 /// Variant ordering: Inline (starts with `(`) before Named (starts with an
 /// identifier). They start with different tokens so peek disambiguation is
 /// trivial.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowSpecBody {
@@ -173,6 +192,7 @@ pub enum WindowSpecBody {
 /// `WINDOW w2 AS (w1 ORDER BY x)`). It relies on `Option<literal::Ident>`
 /// peek-disambiguating cleanly against `PARTITION`/`ORDER`/`ROWS`/etc.
 /// because keywords are rejected by `literal::Ident`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct InlineWindowSpec {
@@ -183,6 +203,7 @@ pub struct InlineWindowSpec {
 }
 
 /// PARTITION BY in window: `PARTITION BY expr, ...`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowPartitionBy {
@@ -192,6 +213,7 @@ pub struct WindowPartitionBy {
 }
 
 /// Frame unit: `ROWS | RANGE | GROUPS`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowFrameUnit {
@@ -205,6 +227,7 @@ pub enum WindowFrameUnit {
 ///
 /// Variant ordering: `Between` (starts with `unit BETWEEN`) before `Single`
 /// (starts with `unit <bound>`). Longest-match-wins.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowFrameClause {
@@ -213,6 +236,7 @@ pub enum WindowFrameClause {
 }
 
 /// `unit BETWEEN start AND end [EXCLUDE ...]`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowFrameBetween {
@@ -225,6 +249,7 @@ pub struct WindowFrameBetween {
 }
 
 /// `unit start [EXCLUDE ...]`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowFrameSingle {
@@ -239,6 +264,7 @@ pub struct WindowFrameSingle {
 /// `CURRENT ROW`, `UNBOUNDED FOLLOWING`), then the expr-prefixed forms
 /// (`expr PRECEDING` / `expr FOLLOWING`). The expr forms start with an
 /// expression and can't be confused with keyword-prefixed forms.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowFrameBound {
@@ -249,6 +275,7 @@ pub enum WindowFrameBound {
     ExprFollowing(ExprFollowing),
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct UnboundedPreceding {
@@ -256,6 +283,7 @@ pub struct UnboundedPreceding {
     pub _preceding: keyword::Preceding,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct UnboundedFollowing {
@@ -263,6 +291,7 @@ pub struct UnboundedFollowing {
     pub _following: keyword::Following,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CurrentRow {
@@ -270,6 +299,7 @@ pub struct CurrentRow {
     pub _row: keyword::Row,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ExprPreceding {
@@ -277,6 +307,7 @@ pub struct ExprPreceding {
     pub _preceding: keyword::Preceding,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ExprFollowing {
@@ -285,6 +316,7 @@ pub struct ExprFollowing {
 }
 
 /// `EXCLUDE { CURRENT ROW | GROUP | TIES | NO OTHERS }` frame exclusion.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowFrameExclude {
@@ -292,6 +324,7 @@ pub struct WindowFrameExclude {
     pub target: WindowFrameExcludeTarget,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowFrameExcludeTarget {
@@ -301,6 +334,7 @@ pub enum WindowFrameExcludeTarget {
     NoOthers(NoOthers),
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct NoOthers {
@@ -319,6 +353,7 @@ pub struct NoOthers {
 ///
 /// Variant ordering: `Variadic` before `Plain` since `VARIADIC` keyword is
 /// longer than starting an expression.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncArg {
@@ -327,6 +362,7 @@ pub enum FuncArg {
     Plain(Box<Expr>),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct VariadicArg {
@@ -335,6 +371,7 @@ pub struct VariadicArg {
 }
 
 /// Named function argument: `name => value` (Postgres).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NamedFuncArg {
@@ -344,6 +381,7 @@ pub struct NamedFuncArg {
 }
 
 /// `WITHIN GROUP (ORDER BY ...)` clause for ordered-set aggregate functions.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithinGroupClause {
@@ -354,6 +392,7 @@ pub struct WithinGroupClause {
 }
 
 /// `FILTER (WHERE condition)` clause for filtered aggregates.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FilterClause {
@@ -362,6 +401,7 @@ pub struct FilterClause {
 }
 
 /// Function call: `name([*] [DISTINCT] args [ORDER BY ...]) [WITHIN GROUP (...)] [FILTER (...)] [OVER (...)]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncCall {
@@ -380,6 +420,7 @@ pub struct FuncCall {
 /// Content inside parentheses: either a subquery or a comma-separated expression list.
 /// Subquery (CompoundQuery) must come first so SELECT/VALUES/WITH keywords are matched
 /// before trying to parse as a regular expression.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ParenContent {
@@ -391,6 +432,7 @@ pub enum ParenContent {
 pub type ParenExpr = Surrounded<punct::LParen, ParenContent, punct::RParen>;
 
 /// EXISTS subquery: `EXISTS (SELECT ...)`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ExistsExpr {
@@ -399,6 +441,7 @@ pub struct ExistsExpr {
 }
 
 /// ARRAY bracket constructor: `ARRAY[expr, ...]`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ArrayBracket {
@@ -409,6 +452,7 @@ pub struct ArrayBracket {
 }
 
 /// ARRAY subquery constructor: `ARRAY(subquery)`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ArraySubquery {
@@ -420,6 +464,7 @@ pub struct ArraySubquery {
 ///
 /// Variant ordering: Bracket (`ARRAY[`) has a longer first_pattern than
 /// Subquery (`ARRAY(`) because `[` is a different token than `(`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum ArrayExpr {
@@ -428,6 +473,7 @@ pub enum ArrayExpr {
 }
 
 /// ROW constructor: `ROW(expr, ...)`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct RowExpr {
@@ -436,6 +482,7 @@ pub struct RowExpr {
 }
 
 /// `WHEN cond THEN result` arm of a CASE expression.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseWhenArm {
@@ -446,6 +493,7 @@ pub struct CaseWhenArm {
 }
 
 /// `ELSE result` clause of a CASE expression.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseElse {
@@ -454,6 +502,7 @@ pub struct CaseElse {
 }
 
 /// Searched CASE: `CASE WHEN cond THEN result [...] [ELSE result] END`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseSearched {
@@ -465,6 +514,7 @@ pub struct CaseSearched {
 }
 
 /// Simple CASE: `CASE operand WHEN val THEN result [...] [ELSE result] END`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseSimple {
@@ -478,6 +528,7 @@ pub struct CaseSimple {
 
 /// CASE expression: searched form (first, since `CASE WHEN` is a longer
 /// specific prefix than `CASE` followed by any expression) or simple form.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum CaseExpr {
@@ -487,6 +538,7 @@ pub enum CaseExpr {
 
 /// Cast type with optional precision and zero-or-more array suffixes:
 /// `numeric(10,0)`, `integer[]`, `int4[][][]`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CastType {
@@ -496,6 +548,7 @@ pub struct CastType {
 }
 
 /// NOT IN list: `expr NOT IN (val, ...)` suffix.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct NotInSuffix {
@@ -507,6 +560,7 @@ pub struct NotInSuffix {
 /// Payload for function-style type cast: either a string literal (common
 /// case `bool 'value'`) or a psql client variable substitution
 /// (`bigint :'txid_current'`).
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum TypeCastValue {
@@ -515,6 +569,7 @@ pub enum TypeCastValue {
 }
 
 /// Function-style type cast: `bool 'value'`, `text 'hello'`, `bigint :'var'`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TypeCastFunc {
@@ -523,6 +578,7 @@ pub struct TypeCastFunc {
 }
 
 /// `WITH TIME ZONE` or `WITHOUT TIME ZONE` suffix for `TIMESTAMP`/`TIME`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum TimeZoneQualifier {
@@ -530,6 +586,7 @@ pub enum TimeZoneQualifier {
     Without(WithoutTimeZone),
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WithTimeZone {
@@ -538,6 +595,7 @@ pub struct WithTimeZone {
     pub _zone: keyword::Zone,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WithoutTimeZone {
@@ -547,6 +605,7 @@ pub struct WithoutTimeZone {
 }
 
 /// `TIMESTAMP [WITH|WITHOUT TIME ZONE] 'string'`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TimestampLit {
@@ -556,6 +615,7 @@ pub struct TimestampLit {
 }
 
 /// `TIME [WITH|WITHOUT TIME ZONE] 'string'`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TimeLit {
@@ -565,6 +625,7 @@ pub struct TimeLit {
 }
 
 /// `YEAR TO MONTH` qualifier.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct YearToMonth {
@@ -574,6 +635,7 @@ pub struct YearToMonth {
 }
 
 /// `DAY TO HOUR` qualifier.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct DayToHour {
@@ -583,6 +645,7 @@ pub struct DayToHour {
 }
 
 /// `DAY TO MINUTE` qualifier.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct DayToMinute {
@@ -592,6 +655,7 @@ pub struct DayToMinute {
 }
 
 /// `DAY TO SECOND` qualifier.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct DayToSecond {
@@ -601,6 +665,7 @@ pub struct DayToSecond {
 }
 
 /// `HOUR TO MINUTE` qualifier.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct HourToMinute {
@@ -610,6 +675,7 @@ pub struct HourToMinute {
 }
 
 /// `HOUR TO SECOND` qualifier.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct HourToSecond {
@@ -619,6 +685,7 @@ pub struct HourToSecond {
 }
 
 /// `MINUTE TO SECOND` qualifier.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct MinuteToSecond {
@@ -632,6 +699,7 @@ pub struct MinuteToSecond {
 /// Variant ordering: multi-keyword `X TO Y` forms must come before the
 /// single-keyword forms so longest-match-wins picks the fuller qualifier
 /// when available.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum IntervalQualifier {
@@ -651,6 +719,7 @@ pub enum IntervalQualifier {
 }
 
 /// `INTERVAL 'str' [qualifier]`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct IntervalLit {
@@ -671,6 +740,7 @@ pub struct IntervalLit {
 // They are modeled here as dedicated atoms declared before `FuncCall`.
 
 /// A `name [AS alias]` argument to `xmlattributes` / `xmlforest`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlNamedArg {
@@ -679,6 +749,7 @@ pub struct XmlNamedArg {
 }
 
 /// `AS alias` suffix on an XML named argument.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlNamedArgAlias {
@@ -688,6 +759,7 @@ pub struct XmlNamedArgAlias {
 
 /// `xmlattributes(expr [AS alias], ...)` — used as a positional argument
 /// to `xmlelement`, but also can be parsed standalone.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlAttributes {
@@ -696,6 +768,7 @@ pub struct XmlAttributes {
 }
 
 /// Optional `, xmlattributes(...) [, content_exprs]` tail of `xmlelement`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElementAttrsTail {
@@ -705,6 +778,7 @@ pub struct XmlElementAttrsTail {
 }
 
 /// Optional `, content_exprs` tail of `xmlelement`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElementContentTail {
@@ -717,6 +791,7 @@ pub struct XmlElementContentTail {
 /// Variant ordering: the `WithAttrs` form starts with `, xmlattributes(`
 /// (longer match) and must be tried before `WithContent` which starts with
 /// just `,`. Both trail an `xmlelement(NAME ident` head.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum XmlElementTail {
@@ -725,6 +800,7 @@ pub enum XmlElementTail {
 }
 
 /// Inner contents of an `xmlelement(...)` call.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElementInner {
@@ -734,6 +810,7 @@ pub struct XmlElementInner {
 }
 
 /// `xmlelement(NAME ident [, xmlattributes(...)] [, content_exprs])`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElement {
@@ -742,6 +819,7 @@ pub struct XmlElement {
 }
 
 /// `xmlforest(expr [AS alias], ...)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlForest {
@@ -750,6 +828,7 @@ pub struct XmlForest {
 }
 
 /// `xmlpi(NAME ident [, content])`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlPi {
@@ -758,6 +837,7 @@ pub struct XmlPi {
 }
 
 /// Inner contents of an `xmlpi(...)` call.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlPiInner {
@@ -767,6 +847,7 @@ pub struct XmlPiInner {
 }
 
 /// Optional `, content_expr` tail of `xmlpi`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlPiContentTail {
@@ -780,6 +861,7 @@ pub struct XmlPiContentTail {
 // separators inside parens that don't fit a comma-separated FuncCall.
 
 /// Trim direction: `LEADING | TRAILING | BOTH`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TrimDir {
@@ -789,6 +871,7 @@ pub enum TrimDir {
 }
 
 /// `[chars] FROM source`: the optional chars-to-trim before `FROM`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TrimChars {
@@ -798,6 +881,7 @@ pub struct TrimChars {
 /// Inside of `TRIM(...)`. Forms:
 ///   `[LEADING|TRAILING|BOTH] [chars] FROM source`
 ///   (a fully-positional `TRIM(src, chars)` form is left to ordinary FuncCall).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TrimInner {
@@ -808,6 +892,7 @@ pub struct TrimInner {
 }
 
 /// `TRIM([LEADING|TRAILING|BOTH] [chars] FROM source)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TrimCall {
@@ -816,6 +901,7 @@ pub struct TrimCall {
 }
 
 /// `FOR len` suffix in `SUBSTRING(... FROM ... FOR ...)` / `OVERLAY(...)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForCount {
@@ -824,6 +910,7 @@ pub struct ForCount {
 }
 
 /// `FROM start [FOR len]` form for SUBSTRING.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringFromFor {
@@ -833,6 +920,7 @@ pub struct SubstringFromFor {
 }
 
 /// `SIMILAR pattern ESCAPE escape` form for SUBSTRING.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringSimilar {
@@ -846,6 +934,7 @@ pub struct SubstringSimilar {
 ///
 /// Variant ordering: `Similar` (`SIMILAR`) before `FromFor` (`FROM`) — distinct
 /// first tokens, so order is not strictly required, but listed by length.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SubstringTail {
@@ -854,6 +943,7 @@ pub enum SubstringTail {
 }
 
 /// Inner of `SUBSTRING(...)`: `source` followed by FROM/SIMILAR tail.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringInner {
@@ -863,6 +953,7 @@ pub struct SubstringInner {
 
 /// `SUBSTRING(source FROM start [FOR len])` /
 /// `SUBSTRING(source SIMILAR pattern ESCAPE escape)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringCall {
@@ -871,6 +962,7 @@ pub struct SubstringCall {
 }
 
 /// Inner of `POSITION(needle IN haystack)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PositionInner {
@@ -880,6 +972,7 @@ pub struct PositionInner {
 }
 
 /// `POSITION(needle IN haystack)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PositionCall {
@@ -888,6 +981,7 @@ pub struct PositionCall {
 }
 
 /// Inner of `OVERLAY(source PLACING new FROM start [FOR len])`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OverlayInner {
@@ -900,6 +994,7 @@ pub struct OverlayInner {
 }
 
 /// `OVERLAY(source PLACING new FROM start [FOR len])`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OverlayCall {
@@ -912,6 +1007,7 @@ pub struct OverlayCall {
 /// Variant ordering: `StringLit` before `Ident` — string literal has a
 /// distinct first token (`'`) so order is not strictly required; listed
 /// first to match the Postgres docs ordering.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ExtractField {
@@ -920,6 +1016,7 @@ pub enum ExtractField {
 }
 
 /// Inner of `EXTRACT(field FROM source)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExtractInner {
@@ -929,6 +1026,7 @@ pub struct ExtractInner {
 }
 
 /// `EXTRACT(field FROM source)` — Postgres-specific function syntax.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExtractCall {
@@ -937,6 +1035,7 @@ pub struct ExtractCall {
 }
 
 /// `UESCAPE 'c'` suffix that may follow a `U&'...'` literal.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UescapeSuffix {
@@ -945,6 +1044,7 @@ pub struct UescapeSuffix {
 }
 
 /// `U&'...'` unicode string literal with optional `UESCAPE 'c'` suffix.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnicodeStringLitWithEscape {
