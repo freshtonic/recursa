@@ -1,4 +1,6 @@
-use recursa_diagram::layout::{Choice, Node, NonTerminal, Sequence, Terminal};
+use recursa_diagram::layout::{
+    Choice, Node, NonTerminal, OneOrMore, Optional, Sequence, Terminal, zero_or_more,
+};
 
 #[test]
 fn terminal_geometry_pins_constants() {
@@ -61,4 +63,41 @@ fn choice_height_sums_children_plus_vertical_gap() {
     let ch = Node::Choice(Choice::new(0, vec![a, b]));
     // 10 px vertical gap between branches.
     assert_eq!(ch.height(), ha + hb + 10);
+}
+
+#[test]
+fn optional_adds_skip_branch() {
+    let child = Node::Terminal(Terminal::new("X"));
+    let cw = child.width();
+    let opt = Node::Optional(Optional::new(child));
+    // skip rail adds 20 px of rails; height grows by 20 px (skip line + gap).
+    assert_eq!(opt.width(), cw + 20);
+    assert!(opt.height() > 22);
+}
+
+#[test]
+fn one_or_more_with_separator() {
+    let child = Node::Terminal(Terminal::new("EXPR"));
+    let sep = Node::Terminal(Terminal::new(","));
+    let max_w = child.width().max(sep.width());
+    let oom = Node::OneOrMore(OneOrMore::new(child, Some(sep)));
+    assert_eq!(oom.width(), max_w + 20);
+}
+
+#[test]
+fn one_or_more_without_separator() {
+    let child = Node::Terminal(Terminal::new("EXPR"));
+    let cw = child.width();
+    let oom = Node::OneOrMore(OneOrMore::new(child, None));
+    assert_eq!(oom.width(), cw + 20);
+}
+
+#[test]
+fn zero_or_more_wraps_one_or_more_in_optional() {
+    let child = Node::Terminal(Terminal::new("EXPR"));
+    let cw = child.width();
+    let z = zero_or_more(child, None);
+    // OneOrMore adds 20 px of rails, Optional wraps it and adds another 20 px.
+    assert_eq!(z.width(), cw + 20 + 20);
+    assert!(matches!(z, Node::Optional(_)));
 }

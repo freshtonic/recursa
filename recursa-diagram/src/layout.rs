@@ -31,8 +31,8 @@ impl Node {
             Node::NonTerminal(n) => n.width,
             Node::Sequence(n) => n.width,
             Node::Choice(n) => n.width,
-            Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
-            Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Optional(n) => n.width,
+            Node::OneOrMore(n) => n.width,
         }
     }
 
@@ -42,8 +42,8 @@ impl Node {
             Node::NonTerminal(n) => n.height,
             Node::Sequence(n) => n.height,
             Node::Choice(n) => n.height,
-            Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
-            Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Optional(n) => n.height,
+            Node::OneOrMore(n) => n.height,
         }
     }
 
@@ -53,8 +53,8 @@ impl Node {
             Node::NonTerminal(n) => n.up,
             Node::Sequence(n) => n.up,
             Node::Choice(n) => n.up,
-            Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
-            Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Optional(n) => n.up,
+            Node::OneOrMore(n) => n.up,
         }
     }
 
@@ -64,8 +64,8 @@ impl Node {
             Node::NonTerminal(n) => n.down,
             Node::Sequence(n) => n.down,
             Node::Choice(n) => n.down,
-            Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
-            Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Optional(n) => n.down,
+            Node::OneOrMore(n) => n.down,
         }
     }
 }
@@ -214,6 +214,24 @@ pub struct Optional {
     pub down: u32,
 }
 
+impl Optional {
+    pub fn new(child: Node) -> Self {
+        let width = child.width() + CHOICE_RAIL_WIDTH;
+        let height = child.height() + CHOICE_RAIL_WIDTH;
+        // TODO(phase-3): verify up/down against rendered svg
+        // The skip rail sits above the child, adding a full box height + gap to `up`.
+        let up = child.up() + BOX_HEIGHT + VERTICAL_GAP;
+        let down = child.down();
+        Self {
+            child: Box::new(child),
+            width,
+            height,
+            up,
+            down,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct OneOrMore {
     pub child: Box<Node>,
@@ -222,4 +240,37 @@ pub struct OneOrMore {
     pub height: u32,
     pub up: u32,
     pub down: u32,
+}
+
+impl OneOrMore {
+    pub fn new(child: Node, separator: Option<Node>) -> Self {
+        let sep_w = separator.as_ref().map(|s| s.width()).unwrap_or(0);
+        let width = child.width().max(sep_w) + CHOICE_RAIL_WIDTH;
+        let sep_h = separator
+            .as_ref()
+            .map(|s| s.height())
+            .unwrap_or(VERTICAL_GAP);
+        let height = child.height() + sep_h + VERTICAL_GAP;
+        // TODO(phase-3): verify up/down against rendered svg
+        // The child sits on the baseline; the separator (or implicit return rail)
+        // sits below it, adding to `down`.
+        let up = child.up();
+        let down = child.down() + sep_h + VERTICAL_GAP;
+        Self {
+            child: Box::new(child),
+            separator: separator.map(Box::new),
+            width,
+            height,
+            up,
+            down,
+        }
+    }
+}
+
+/// Convenience constructor for a zero-or-more repetition.
+///
+/// Returns `Optional(OneOrMore(child, sep))` so call sites can express
+/// zero-or-more without manually nesting layout nodes.
+pub fn zero_or_more(child: Node, sep: Option<Node>) -> Node {
+    Node::Optional(Optional::new(Node::OneOrMore(OneOrMore::new(child, sep))))
 }
