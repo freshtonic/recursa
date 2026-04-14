@@ -15,6 +15,13 @@ use syn::{
     MetaNameValue, PathArguments, Type, parse2, punctuated::Punctuated, token::Comma,
 };
 
+/// Maximum single-row width (in SVG user units) for the top-level `Sequence`
+/// of a struct rendered via `#[railroad]`. When the natural single-row layout
+/// exceeds this, the sequence is broken into multiple rows joined by wrap
+/// connectors. Chosen so that typical rustdoc pages do not require horizontal
+/// scrolling while still giving each row enough space for ~10-15 clauses.
+const DEFAULT_MAX_WIDTH: u32 = 1200;
+
 pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
     let input: DeriveInput = parse2(item)?;
     let attrs = parse_type_attrs(attr)?;
@@ -75,7 +82,23 @@ fn build_node(input: &DeriveInput, attrs: &TypeAttrs) -> syn::Result<Node> {
                 input.ident.to_string(),
                 None,
             ))),
-            _ => build_from_fields(&s.fields),
+            _ => {
+                // Only the *top-level* Sequence wraps. Nested sequences inside
+                // Surrounded/OneOrMore/etc. continue to use `Sequence::new`,
+                // because wrapping them would produce visually confusing
+                // nested row structures. We rebuild a wrapped Sequence from
+                // the children of the flat Sequence returned by
+                // `build_from_fields`.
+                let inner = build_from_fields(&s.fields)?;
+                if let Node::Sequence(flat) = inner {
+                    Ok(Node::Sequence(Sequence::wrapped(
+                        flat.children,
+                        DEFAULT_MAX_WIDTH,
+                    )))
+                } else {
+                    Ok(inner)
+                }
+            }
         },
         Data::Enum(e) => {
             if e.variants.is_empty() {
@@ -622,6 +645,57 @@ mod tests {
             err.to_string().contains("mutually exclusive"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn wide_struct_top_level_sequence_is_wrapped() {
+        // Many narrow fields — enough width to blow past DEFAULT_MAX_WIDTH
+        // (1200). Each NonTerminal rendered from `TypeN` has width
+        // (name_len*8 + 40). Twenty fields easily exceed 1200 px.
+        let node = node_for(quote! {
+            pub struct Wide {
+                a: TypeAAAAAAAAAA,
+                b: TypeBBBBBBBBBB,
+                c: TypeCCCCCCCCCC,
+                d: TypeDDDDDDDDDD,
+                e: TypeEEEEEEEEEE,
+                f: TypeFFFFFFFFFF,
+                g: TypeGGGGGGGGGG,
+                h: TypeHHHHHHHHHH,
+                i: TypeIIIIIIIIII,
+                j: TypeJJJJJJJJJJ,
+                k: TypeKKKKKKKKKK,
+                l: TypeLLLLLLLLLL,
+                m: TypeMMMMMMMMMM,
+                n: TypeNNNNNNNNNN,
+                o: TypeOOOOOOOOOO,
+                p: TypePPPPPPPPPP,
+            }
+        });
+        match node {
+            Node::Sequence(seq) => assert!(
+                !seq.rows.is_empty(),
+                "expected wide struct to wrap; rows was empty. width={}",
+                seq.width
+            ),
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn narrow_struct_top_level_sequence_is_not_wrapped() {
+        // A narrow struct stays single-row.
+        let node = node_for(quote! {
+            pub struct Narrow { a: Foo, b: Bar }
+        });
+        match node {
+            Node::Sequence(seq) => assert!(
+                seq.rows.is_empty(),
+                "narrow struct should not wrap; rows={:?}",
+                seq.rows
+            ),
+            other => panic!("expected Sequence, got {other:?}"),
+        }
     }
 
     #[test]
