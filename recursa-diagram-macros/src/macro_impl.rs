@@ -31,7 +31,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     })
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct TypeAttrs {
     label: Option<String>,
 }
@@ -44,6 +44,9 @@ fn parse_type_attrs(attr: TokenStream) -> syn::Result<TypeAttrs> {
     let nvs = Punctuated::<MetaNameValue, Comma>::parse_terminated.parse2(attr)?;
     for nv in nvs {
         if nv.path.is_ident("label") {
+            if out.label.is_some() {
+                return Err(syn::Error::new_spanned(nv.path, "duplicate `label`"));
+            }
             if let Expr::Lit(ExprLit {
                 lit: Lit::Str(s), ..
             }) = nv.value
@@ -64,7 +67,16 @@ fn build_node(input: &DeriveInput, attrs: &TypeAttrs) -> syn::Result<Node> {
         return Ok(Node::Terminal(Terminal::new(label)));
     }
     match &input.data {
-        Data::Struct(s) => build_from_fields(&s.fields),
+        Data::Struct(s) => match &s.fields {
+            // Bare `#[railroad]` on `struct Foo;` has nothing structural to
+            // render, so fall back to a NonTerminal bearing the type name.
+            // This also gives the user a visible label in the rendered diagram.
+            Fields::Unit => Ok(Node::NonTerminal(NonTerminal::new(
+                input.ident.to_string(),
+                Some(format!("{}.html", input.ident)),
+            ))),
+            _ => build_from_fields(&s.fields),
+        },
         Data::Enum(_) => Ok(Node::NonTerminal(NonTerminal::new(
             input.ident.to_string(),
             None,
@@ -77,7 +89,7 @@ fn build_from_fields(fields: &Fields) -> syn::Result<Node> {
     let iter: Box<dyn Iterator<Item = &syn::Field>> = match fields {
         Fields::Named(n) => Box::new(n.named.iter()),
         Fields::Unnamed(u) => Box::new(u.unnamed.iter()),
-        Fields::Unit => return Ok(Node::Sequence(Sequence::new(vec![]))),
+        Fields::Unit => unreachable!("Fields::Unit handled in build_node"),
     };
     let mut children = Vec::new();
     for field in iter {
@@ -104,9 +116,15 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
         }
         a.parse_nested_meta(|meta| {
             if meta.path.is_ident("label") {
+                if out.label.is_some() {
+                    return Err(meta.error("duplicate `label`"));
+                }
                 let s: LitStr = meta.value()?.parse()?;
                 out.label = Some(s.value());
             } else if meta.path.is_ident("skip") {
+                if out.skip {
+                    return Err(meta.error("duplicate `skip`"));
+                }
                 out.skip = true;
             } else {
                 return Err(meta.error("unknown key"));
@@ -136,10 +154,13 @@ fn recognize(ty: &Type) -> Node {
             "Option" if args.len() == 1 => {
                 return Node::Optional(Optional::new(recognize(&args[0])));
             }
-            "Seq" if args.len() == 2 => {
+            "Seq" | "Punctuated" if args.len() == 2 => {
                 let child = recognize(&args[0]);
                 let sep = recognize(&args[1]);
                 return Node::OneOrMore(OneOrMore::new(child, Some(sep)));
+            }
+            "Vec" if args.len() == 1 => {
+                return Node::OneOrMore(OneOrMore::new(recognize(&args[0]), None));
             }
             "Surrounded" if args.len() == 3 => {
                 return Node::Sequence(Sequence::new(vec![
@@ -189,6 +210,9 @@ fn type_label(ty: &Type) -> String {
     quote!(#ty).to_string()
 }
 
+// TODO: hrefs are currently fabricated as `{TypeName}.html`, assuming the
+// diagram embeds in sibling rustdoc pages. Make this configurable when we
+// support embedding in mdBook or external docs.
 fn type_href(ty: &Type) -> Option<String> {
     Some(format!("{}.html", type_label(ty)))
 }
@@ -230,12 +254,67 @@ mod tests {
     }
 
     #[test]
-    fn unit_struct_renders_as_empty_sequence() {
+    fn unit_struct_falls_back_to_non_terminal_with_ident() {
         let node = node_for(quote! { pub struct Empty; });
         match node {
-            Node::Sequence(seq) => assert!(seq.children.is_empty()),
-            other => panic!("expected empty Sequence, got {other:?}"),
+            Node::NonTerminal(nt) => {
+                assert_eq!(nt.text, "Empty");
+                assert_eq!(nt.href.as_deref(), Some("Empty.html"));
+            }
+            other => panic!("expected NonTerminal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn vec_renders_as_one_or_more_without_separator() {
+        let node = node_for(quote! { pub struct S { xs: Vec<Foo> } });
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::OneOrMore(om) => assert!(om.separator.is_none()),
+                other => panic!("expected OneOrMore, got {other:?}"),
+            },
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn punctuated_renders_as_one_or_more_with_separator() {
+        let node = node_for(quote! { pub struct S { xs: Punctuated<Foo, Comma> } });
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::OneOrMore(om) => assert!(om.separator.is_some()),
+                other => panic!("expected OneOrMore, got {other:?}"),
+            },
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_type_label_is_rejected() {
+        let attr: TokenStream = quote! { label = "A", label = "B" };
+        let err = parse_type_attrs(attr).expect_err("expected duplicate-label error");
+        assert!(
+            err.to_string().contains("duplicate"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn duplicate_field_label_is_rejected() {
+        // We can't easily call parse_field_attrs through build_node because
+        // duplicate label will fail before any node is built; assert via the
+        // expand entry instead.
+        let item: TokenStream = quote! {
+            pub struct S {
+                #[railroad(label = "A", label = "B")]
+                f: Foo,
+            }
+        };
+        let err = expand(quote! {}, item).expect_err("expected duplicate-label error");
+        assert!(
+            err.to_string().contains("duplicate"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
