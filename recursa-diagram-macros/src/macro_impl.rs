@@ -230,11 +230,36 @@ fn type_label(ty: &Type) -> String {
     quote!(#ty).to_string()
 }
 
-// TODO: hrefs are currently fabricated as `{TypeName}.html`, assuming the
-// diagram embeds in sibling rustdoc pages. Make this configurable when we
-// support embedding in mdBook or external docs.
+// Best-effort relative href for a type-path reference. We strip a leading
+// `crate::` segment and emit the remaining path with `/` separators followed by
+// `.html`. For a same-module bare reference like `Foo` this yields `Foo.html`,
+// which rustdoc resolves against the current page. For a qualified path like
+// `crate::ast::Thing` this yields `ast/Thing.html`, which is correct when the
+// diagram is rendered inside a doc page at the crate root but wrong when the
+// caller lives in a nested module — proc macros lack the module context to do
+// better. Phase 5's smoke test will reveal whether rustdoc accepts these
+// links; if not, we'll need a configurable path-prefix attribute.
+//
+// Returns `None` for non-path types (references, tuples, slices, etc.) since
+// those have no obvious href target.
 fn type_href(ty: &Type) -> Option<String> {
-    Some(format!("{}.html", type_label(ty)))
+    let Type::Path(p) = ty else {
+        return None;
+    };
+    if p.path.segments.is_empty() {
+        return None;
+    }
+    let segments: Vec<String> = p
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .skip_while(|s| s == "crate")
+        .collect();
+    if segments.is_empty() {
+        return None;
+    }
+    Some(format!("{}.html", segments.join("/")))
 }
 
 fn strip_body(input: &DeriveInput) -> TokenStream {
@@ -457,6 +482,46 @@ mod tests {
             Node::Sequence(seq) => assert_eq!(seq.children.len(), 2),
             other => panic!("expected Sequence, got {other:?}"),
         }
+    }
+
+    fn parse_type(tokens: TokenStream) -> Type {
+        parse2(tokens).unwrap()
+    }
+
+    #[test]
+    fn single_segment_type_href() {
+        assert_eq!(
+            type_href(&parse_type(quote!(Foo))).as_deref(),
+            Some("Foo.html")
+        );
+    }
+
+    #[test]
+    fn crate_prefixed_type_href() {
+        assert_eq!(
+            type_href(&parse_type(quote!(crate::Foo))).as_deref(),
+            Some("Foo.html")
+        );
+    }
+
+    #[test]
+    fn qualified_path_becomes_relative_href() {
+        assert_eq!(
+            type_href(&parse_type(quote!(crate::ast::Thing))).as_deref(),
+            Some("ast/Thing.html")
+        );
+        assert_eq!(
+            type_href(&parse_type(quote!(crate::ast::other::Thing))).as_deref(),
+            Some("ast/other/Thing.html")
+        );
+    }
+
+    #[test]
+    fn non_path_type_returns_none() {
+        assert_eq!(type_href(&parse_type(quote!(&'a Foo))), None);
+        assert_eq!(type_href(&parse_type(quote!((Foo, Bar)))), None);
+        // Bare path still produces Some.
+        assert!(type_href(&parse_type(quote!(Foo))).is_some());
     }
 
     #[test]
