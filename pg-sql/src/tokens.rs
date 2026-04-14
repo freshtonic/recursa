@@ -326,6 +326,15 @@ pub mod keyword {
         Called      => r"CALLED\b",
         Input       => r"INPUT\b",
         Ordinality  => r"ORDINALITY\b",
+        // JOIN modifiers
+        Natural     => r"NATURAL\b",
+        Outer       => r"OUTER\b",
+        // XML function keywords (xmlelement / xmlattributes / xmlforest).
+        // These are recognized only inside the XML function-call atoms.
+        XmlElementKw    => r"XMLELEMENT\b",
+        XmlAttributesKw => r"XMLATTRIBUTES\b",
+        XmlForestKw     => r"XMLFOREST\b",
+        NameKw          => r"NAME\b",
     }
 }
 
@@ -407,7 +416,12 @@ pub mod literal {
         QuotedIdent => r#""[^"]*(?:""[^"]*)*""#,
         EscapeStringLit => r"(?i:E)'(?:[^'\\]|\\.|'')*'",
         StringLit  => r"'[^']*(?:''[^']*)*'",
-        NumericLit => r"[0-9]+\.[0-9]+",
+        // NumericLit must require a decimal point OR an exponent so it does
+        // not collide with bare integers (handled by IntegerLit). Forms:
+        //   123.45    .5    123.    1e10    1.5e-5    .5e10
+        // Declared before IntegerLit so longest-match-wins picks the longer
+        // literal when an exponent is present.
+        NumericLit => r"(?:[0-9]+\.[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+",
         IntegerLit => r"[0-9]+",
     }
 
@@ -449,8 +463,11 @@ pub mod literal {
         // Ordering / limit.
         "ORDER",
         "BY",
-        "PRIMARY",
-        "KEY",
+        // PRIMARY and KEY are contextual: they appear in `PRIMARY KEY`
+        // constraint positions but PostgreSQL allows them as ordinary column
+        // and identifier names elsewhere (e.g., `CREATE INDEX i ON t(key)`).
+        // Recognized as `keyword::Primary` / `keyword::Key` only where the
+        // grammar explicitly looks for them.
         "ASC",
         "DESC",
         "UNIQUE",
@@ -571,16 +588,46 @@ pub mod literal {
 
     // --- Alias name (any SQL word — identifier or keyword) ---
 
-    /// Matches any SQL word including keywords. Used for alias names where
-    /// SQL allows keywords (e.g., `SELECT 1 AS true`).
+    /// Bare-word alias name: any SQL word including keywords (`SELECT 1 AS true`).
     #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[parse(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
     #[visit(terminal)]
-    pub struct AliasName(pub String);
+    pub struct BareAliasName(pub String);
+
+    impl recursa::FormatTokens for BareAliasName {
+        fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
+            tokens.push(recursa::fmt::Token::String(self.0.clone()));
+        }
+    }
+
+    /// Alias name: bare word (including keywords) or double-quoted identifier
+    /// with arbitrary content (`"One hour"`).
+    ///
+    /// Variant ordering: `Quoted` (`"`) and `Bare` (letter) start with
+    /// different first chars, so order is for clarity, not disambiguation.
+    #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    #[visit(terminal)]
+    pub enum AliasName {
+        Quoted(QuotedIdent),
+        Bare(BareAliasName),
+    }
+
+    impl AliasName {
+        /// Raw text of the alias name (with quotes if quoted).
+        pub fn text(&self) -> &str {
+            match self {
+                AliasName::Quoted(q) => &q.0,
+                AliasName::Bare(b) => &b.0,
+            }
+        }
+    }
 
     impl recursa::FormatTokens for AliasName {
         fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
-            tokens.push(recursa::fmt::Token::String(self.0.clone()));
+            match self {
+                AliasName::Quoted(q) => q.format_tokens(tokens),
+                AliasName::Bare(b) => b.format_tokens(tokens),
+            }
         }
     }
 
@@ -735,6 +782,58 @@ mod tests {
         let mut input = Input::new("0");
         let lit = IntegerLit::parse::<NoRules>(&mut input).unwrap();
         assert_eq!(lit.0, "0");
+    }
+
+    // --- Numeric literal tests (decimals + exponent) ---
+
+    #[test]
+    fn numeric_literal_simple_decimal() {
+        let mut input = Input::new("4.5");
+        let lit = NumericLit::parse::<NoRules>(&mut input).unwrap();
+        assert_eq!(lit.0, "4.5");
+    }
+
+    #[test]
+    fn numeric_literal_leading_dot() {
+        let mut input = Input::new(".5");
+        let lit = NumericLit::parse::<NoRules>(&mut input).unwrap();
+        assert_eq!(lit.0, ".5");
+    }
+
+    #[test]
+    fn numeric_literal_exponent_int() {
+        let mut input = Input::new("2e3");
+        let lit = NumericLit::parse::<NoRules>(&mut input).unwrap();
+        assert_eq!(lit.0, "2e3");
+    }
+
+    #[test]
+    fn numeric_literal_decimal_with_exponent() {
+        let mut input = Input::new("4.5e10");
+        let lit = NumericLit::parse::<NoRules>(&mut input).unwrap();
+        assert_eq!(lit.0, "4.5e10");
+    }
+
+    #[test]
+    fn numeric_literal_negative_exponent() {
+        let mut input = Input::new("1.5e-5");
+        let lit = NumericLit::parse::<NoRules>(&mut input).unwrap();
+        assert_eq!(lit.0, "1.5e-5");
+    }
+
+    #[test]
+    fn numeric_literal_large_exponent() {
+        let mut input = Input::new("4.4e131071");
+        let lit = NumericLit::parse::<NoRules>(&mut input).unwrap();
+        assert_eq!(lit.0, "4.4e131071");
+    }
+
+    #[test]
+    fn integer_literal_does_not_match_decimal() {
+        // Bare integer still works
+        let mut input = Input::new("42");
+        let lit = IntegerLit::parse::<NoRules>(&mut input).unwrap();
+        assert_eq!(lit.0, "42");
     }
 
     // --- Identifier tests ---

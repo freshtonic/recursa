@@ -8,7 +8,7 @@ use recursa::{FormatTokens, Parse, Visit};
 pub use crate::ast::common::{CascadeKw, DropBehavior, RestrictKw};
 
 use crate::ast::create_view::IfExistsKw;
-use crate::ast::expr::Expr;
+use crate::ast::expr::{Expr, FuncCall};
 use crate::ast::select::{NullsOrder, SortDir, WhereClause};
 use crate::ast::set_reset::SetValue;
 use crate::rules::SqlRules;
@@ -92,25 +92,36 @@ pub struct IncludeClause {
     pub columns: Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>,
 }
 
-/// Index column target: a plain column identifier or a parenthesized expression.
+/// Index column target: a parenthesized expression, a bare function call
+/// (e.g., `lower(fruit)`), or a plain column identifier.
 ///
-/// Variant ordering: `Expr` (starts with `(`) must come before `Col`
-/// (starts with an identifier) — they start with different tokens so order
-/// is not strictly needed for disambiguation, but we keep `Expr` first for
-/// consistency.
+/// Variant ordering:
+/// - `Expr` (`(`) starts with a different token than the others.
+/// - `Func` (`ident(`) must come before `Col` (`ident`) so longest-match
+///   prefers the function call form.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum IndexTarget {
     Expr(Surrounded<punct::LParen, Box<Expr>, punct::RParen>),
+    Func(Box<FuncCall>),
     Col(literal::Ident),
 }
 
+/// `COLLATE "name"` on an index element.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IndexCollate {
+    pub _collate: PhantomData<keyword::Collate>,
+    pub name: literal::Ident,
+}
+
 /// An index element:
-/// `column_or_expr [opclass [(options)]] [ASC|DESC] [NULLS FIRST|LAST]`.
+/// `column_or_expr [COLLATE "name"] [opclass [(options)]] [ASC|DESC] [NULLS FIRST|LAST]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IndexElem {
     pub target: IndexTarget,
+    pub collate: Option<IndexCollate>,
     pub opclass: Option<OpclassSpec>,
     pub dir: Option<SortDir>,
     pub nulls: Option<NullsOrder>,
@@ -315,6 +326,42 @@ mod tests {
         assert!(stmt.include.is_some());
         assert!(stmt.with_storage.is_some());
         assert!(stmt.where_clause.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_index_opclass_on_second_col() {
+        let mut input = Input::new(
+            "create unique index op_index_key on insertconflicttest(key, fruit text_pattern_ops)",
+        );
+        let _stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_index_collate() {
+        let mut input = Input::new(
+            "create unique index collation_index_key on insertconflicttest(key, fruit collate \"C\")",
+        );
+        let _stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_index_collate_and_opclass() {
+        let mut input = Input::new(
+            "create unique index both_index_key on insertconflicttest(key, fruit collate \"C\" text_pattern_ops)",
+        );
+        let _stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_index_func_target_collate_opclass() {
+        let mut input = Input::new(
+            "create unique index both_index_expr_key on insertconflicttest(key, lower(fruit) collate \"C\" text_pattern_ops)",
+        );
+        let _stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

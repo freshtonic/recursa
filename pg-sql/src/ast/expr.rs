@@ -462,6 +462,96 @@ pub struct TimeLit {
     pub value: literal::StringLit,
 }
 
+// --- XML function atoms ---
+//
+// Postgres `xmlelement` / `xmlattributes` / `xmlforest` use special syntax
+// that does not fit a plain `FuncCall` (positional comma-separated exprs):
+//
+//   xmlelement(NAME ident [, xmlattributes(...)] [, content_exprs])
+//   xmlattributes(expr [AS alias] [, ...])
+//   xmlforest(expr [AS alias] [, ...])
+//
+// They are modeled here as dedicated atoms declared before `FuncCall`.
+
+/// A `name [AS alias]` argument to `xmlattributes` / `xmlforest`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct XmlNamedArg {
+    pub value: Box<Expr>,
+    pub alias: Option<XmlNamedArgAlias>,
+}
+
+/// `AS alias` suffix on an XML named argument.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct XmlNamedArgAlias {
+    pub _as: PhantomData<keyword::As>,
+    pub name: literal::AliasName,
+}
+
+/// `xmlattributes(expr [AS alias], ...)` — used as a positional argument
+/// to `xmlelement`, but also can be parsed standalone.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct XmlAttributes {
+    pub _kw: PhantomData<keyword::XmlAttributesKw>,
+    pub args: Surrounded<punct::LParen, Seq<XmlNamedArg, punct::Comma>, punct::RParen>,
+}
+
+/// Optional `, xmlattributes(...) [, content_exprs]` tail of `xmlelement`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct XmlElementAttrsTail {
+    pub _comma: punct::Comma,
+    pub attrs: XmlAttributes,
+    pub content: Option<XmlElementContentTail>,
+}
+
+/// Optional `, content_exprs` tail of `xmlelement`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct XmlElementContentTail {
+    pub _comma: punct::Comma,
+    pub exprs: Seq<Expr, punct::Comma>,
+}
+
+/// Body of `xmlelement(NAME ident [, xmlattributes(...)] [, content_exprs])`.
+///
+/// Variant ordering: the `WithAttrs` form starts with `, xmlattributes(`
+/// (longer match) and must be tried before `WithContent` which starts with
+/// just `,`. Both trail an `xmlelement(NAME ident` head.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum XmlElementTail {
+    WithAttrs(XmlElementAttrsTail),
+    WithContent(XmlElementContentTail),
+}
+
+/// Inner contents of an `xmlelement(...)` call.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct XmlElementInner {
+    pub _name: PhantomData<keyword::NameKw>,
+    pub element_name: literal::AliasName,
+    pub tail: Option<XmlElementTail>,
+}
+
+/// `xmlelement(NAME ident [, xmlattributes(...)] [, content_exprs])`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct XmlElement {
+    pub _kw: PhantomData<keyword::XmlElementKw>,
+    pub inner: Surrounded<punct::LParen, XmlElementInner, punct::RParen>,
+}
+
+/// `xmlforest(expr [AS alias], ...)`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct XmlForest {
+    pub _kw: PhantomData<keyword::XmlForestKw>,
+    pub args: Surrounded<punct::LParen, Seq<XmlNamedArg, punct::Comma>, punct::RParen>,
+}
+
 // --- Pratt expression enum ---
 
 /// SQL expression with Pratt-derived parsing.
@@ -706,6 +796,16 @@ pub enum Expr {
     /// since type keywords like `bool` overlap with identifiers
     #[parse(atom)]
     CastFunc(TypeCastFunc),
+    /// `xmlelement(NAME ident [, xmlattributes(...)] [, content])`. Must come
+    /// before `Func` so `xmlelement(` is matched as the special form.
+    #[parse(atom)]
+    XmlElement(XmlElement),
+    /// `xmlforest(expr [AS alias], ...)`. Before `Func` for the same reason.
+    #[parse(atom)]
+    XmlForest(XmlForest),
+    /// `xmlattributes(expr [AS alias], ...)`. Before `Func`.
+    #[parse(atom)]
+    XmlAttributes(XmlAttributes),
     /// Function call: `func(args)` -- must come before ColumnRef
     #[parse(atom)]
     Func(FuncCall),
@@ -786,12 +886,89 @@ mod tests {
     }
 
     #[test]
+    fn parse_three_part_string_concat() {
+        // 3-part adjacent string literal concatenation. Postgres concatenates
+        // these into a single value at parse time.
+        let mut input = Input::new("'first' 'second' 'third'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        if let Expr::StringLit(seq) = &expr {
+            assert_eq!(seq.parts.len(), 3);
+        } else {
+            panic!("expected StringLit, got {:?}", expr);
+        }
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_four_part_string_concat() {
+        let mut input = Input::new("'a' 'b' 'c' 'd'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        if let Expr::StringLit(seq) = &expr {
+            assert_eq!(seq.parts.len(), 4);
+        } else {
+            panic!("expected StringLit");
+        }
+    }
+
+    #[test]
+    fn parse_three_adjacent_strings_with_quoted_alias() {
+        use crate::ast::select::SelectStmt;
+        let mut input = Input::new(
+            "SELECT 'first line' ' - next line' ' - third line' AS \"Three lines to one\"",
+        );
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
     fn parse_three_adjacent_strings_with_alias() {
         // SELECT 'first line' ' - next line' AS foo
         use crate::ast::select::SelectStmt;
         let mut input = Input::new("SELECT 'first line' ' - next line' AS foo");
         let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_xmlelement_simple() {
+        let mut input = Input::new("xmlelement(name foo, 'content')");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::XmlElement(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_xmlelement_with_attributes() {
+        let mut input =
+            Input::new("xmlelement(name foo, xmlattributes(1 as a, 2 as b), 'content')");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::XmlElement(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_xmlforest() {
+        let mut input = Input::new("xmlforest(a, b AS bee, c)");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::XmlForest(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_exponent_numeric() {
+        use crate::ast::select::SelectStmt;
+        for sql in [
+            "SELECT 4.5e10",
+            "SELECT 4.4e131071",
+            "SELECT 1.5e-5",
+            "SELECT round(4.5e10, -5)",
+            "SELECT .5",
+            "SELECT 2e3",
+        ] {
+            let mut input = Input::new(sql);
+            let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+            assert!(input.is_empty(), "leftover for {sql}");
+        }
     }
 
     #[test]

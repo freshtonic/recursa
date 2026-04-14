@@ -239,7 +239,7 @@ mod tests {
     fn parse_set_to() {
         let mut input = Input::new("SET enable_seqscan TO off");
         let stmt = SetStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.param.0, "enable_seqscan");
+        assert_eq!(stmt.param.text(), "enable_seqscan");
         assert!(input.is_empty());
     }
 
@@ -247,7 +247,7 @@ mod tests {
     fn parse_set_eq() {
         let mut input = Input::new("SET enable_sort = false");
         let stmt = SetStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.param.0, "enable_sort");
+        assert_eq!(stmt.param.text(), "enable_sort");
         assert!(input.is_empty());
     }
 

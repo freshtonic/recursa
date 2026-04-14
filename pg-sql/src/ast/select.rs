@@ -42,7 +42,7 @@ impl Alias {
     /// Returns the alias name regardless of variant.
     pub fn name(&self) -> &str {
         match self {
-            Alias::WithAs(a) => &a.name.0,
+            Alias::WithAs(a) => a.name.text(),
             Alias::Bare(ident) => ident.text(),
         }
     }
@@ -286,11 +286,18 @@ pub struct JoinUsing {
     pub alias: Option<JoinUsingAlias>,
 }
 
-/// A single join suffix: `[LEFT|RIGHT|FULL|INNER|CROSS] JOIN table [ON expr | USING (...)]`
+/// A single join suffix:
+/// `[NATURAL] [LEFT|RIGHT|FULL|INNER|CROSS] [OUTER] JOIN table [ON expr | USING (...)]`.
+///
+/// `OUTER` is allowed (and traditionally written) after `LEFT`/`RIGHT`/`FULL`.
+/// Postgres accepts but does not require it; the grammar accepts it after any
+/// join type for simplicity.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinSuffix {
+    pub natural: Option<PhantomData<keyword::Natural>>,
     pub join_type: Option<JoinType>,
+    pub _outer: Option<PhantomData<keyword::Outer>>,
     pub _join: PhantomData<keyword::Join>,
     pub table: SimpleTableRef,
     pub condition: Option<JoinCondition>,
@@ -732,6 +739,41 @@ mod tests {
     fn parse_select_func_with_ordinality_unnest() {
         let mut input =
             Input::new("SELECT * FROM unnest(array['a','b']) WITH ORDINALITY AS z(a, ord)");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_natural_join() {
+        let mut input = Input::new("SELECT * FROM a NATURAL JOIN b");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_natural_left_join() {
+        let mut input = Input::new("SELECT * FROM a NATURAL LEFT JOIN b");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_left_outer_join_using() {
+        let mut input = Input::new("SELECT * FROM a LEFT OUTER JOIN b USING (i)");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_full_outer_join_using() {
+        let mut input = Input::new("SELECT * FROM a FULL OUTER JOIN b USING (i)");
+        let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_right_outer_join_on() {
+        let mut input = Input::new("SELECT * FROM a RIGHT OUTER JOIN b ON a.i = b.i");
         let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
