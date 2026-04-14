@@ -458,4 +458,21 @@ mod tests {
             other => panic!("expected Sequence, got {other:?}"),
         }
     }
+
+    #[test]
+    fn field_label_overrides_type_name() {
+        let node = node_for(quote! {
+            pub struct S {
+                #[railroad(label = "SELECT")]
+                kw: SelectKw,
+            }
+        });
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::NonTerminal(nt) => assert_eq!(nt.text, "SELECT"),
+                other => panic!("expected NonTerminal, got {other:?}"),
+            },
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
 }
