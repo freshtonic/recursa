@@ -11,11 +11,21 @@ use crate::ast::select::{FromClause, WhereClause};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
-/// Single SET assignment: `col = expr`
+/// `[idx]` subscript suffix for a target column in UPDATE SET.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SubscriptSuffix {
+    pub _lbracket: punct::LBracket,
+    pub index: Expr,
+    pub _rbracket: punct::RBracket,
+}
+
+/// Single SET assignment: `col[idx] = expr` or `col = expr`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SingleAssignment {
     pub column: literal::AliasName,
+    pub subscript: Option<Box<SubscriptSuffix>>,
     pub _eq: punct::Eq,
     pub value: Expr,
 }
@@ -105,6 +115,27 @@ mod tests {
         assert!(stmt.from_clause.is_some());
         assert!(stmt.where_clause.is_some());
         assert!(stmt.returning.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_update_subscript_assignment() {
+        let mut input = Input::new("UPDATE t SET e[0] = '1.1'");
+        let _stmt = UpdateStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_update_subscript_assignment_one() {
+        let mut input = Input::new("UPDATE t SET e[1] = '2.2'");
+        let _stmt = UpdateStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_update_plain_assignment_still_parses() {
+        let mut input = Input::new("UPDATE t SET col = 'x'");
+        let _stmt = UpdateStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

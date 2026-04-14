@@ -155,8 +155,16 @@ pub mod keyword {
         // SUM / COUNT / MAX / MIN etc -- just identifiers, but need to not block
         // BETWEEN
         Between     => r"BETWEEN\b",
-        // LIKE
+        // LIKE / ILIKE
         Like        => r"LIKE\b",
+        Ilike       => r"ILIKE\b",
+        // COLLATE
+        Collate     => r"COLLATE\b",
+        // UNLOGGED table
+        Unlogged    => r"UNLOGGED\b",
+        // Hash partition modulus / remainder
+        Modulus     => r"MODULUS\b",
+        Remainder   => r"REMAINDER\b",
         // CASE WHEN
         Case        => r"CASE\b",
         Else        => r"ELSE\b",
@@ -345,6 +353,11 @@ pub mod punct {
         AtGt           => r"@>",       "@>",
         LtAt           => r"<@",       "<@",
         Question       => r"\?",       "?",
+        // POSIX regex match operators. Longest-first.
+        BangTildeStar  => r"!~\*",     "!~*",
+        TildeStar      => r"~\*",      "~*",
+        BangTilde      => r"!~",       "!~",
+        Tilde          => r"~",        "~",
     }
 }
 
@@ -493,6 +506,11 @@ pub mod literal {
         "ANY",
         "BETWEEN",
         "LIKE",
+        "ILIKE",
+        "COLLATE",
+        "UNLOGGED",
+        "MODULUS",
+        "REMAINDER",
         "CASE",
         "ELSE",
         "END",

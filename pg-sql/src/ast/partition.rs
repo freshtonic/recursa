@@ -22,7 +22,8 @@ pub struct PartitionByClause {
     pub columns: Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>,
 }
 
-/// FOR VALUES IN (val, ...) clause.
+/// FOR VALUES IN (val, ...) clause — legacy name kept for backward compat
+/// with partition.rs own tests; the general form lives in `ForValuesClause`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForValuesInClause {
@@ -30,6 +31,76 @@ pub struct ForValuesInClause {
     pub _values: PhantomData<keyword::Values>,
     pub _in: PhantomData<keyword::In>,
     pub values: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
+}
+
+/// `FROM (...) TO (...)` range partition spec.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct FromToSpec {
+    pub _from: PhantomData<keyword::From>,
+    pub from_values: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
+    pub _to: PhantomData<keyword::To>,
+    pub to_values: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
+}
+
+/// `IN (val, ...)` list partition spec.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct InListSpec {
+    pub _in: PhantomData<keyword::In>,
+    pub values: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
+}
+
+/// `MODULUS n` entry.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ModulusEntry {
+    pub _modulus: PhantomData<keyword::Modulus>,
+    pub value: Expr,
+}
+
+/// `REMAINDER n` entry.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct RemainderEntry {
+    pub _remainder: PhantomData<keyword::Remainder>,
+    pub value: Expr,
+}
+
+/// One item in `WITH (...)` for hash partitioning: MODULUS n or REMAINDER n.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum HashPartItem {
+    Modulus(ModulusEntry),
+    Remainder(RemainderEntry),
+}
+
+/// `WITH (MODULUS n, REMAINDER m)` hash partition spec.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct WithModulusSpec {
+    pub _with: PhantomData<keyword::With>,
+    pub items: Surrounded<punct::LParen, Seq<HashPartItem, punct::Comma>, punct::RParen>,
+}
+
+/// Body after `FOR VALUES` in a PARTITION OF clause. Variant ordering:
+/// `From` starts with `FROM`, `In` starts with `IN`, `With` starts with `WITH` —
+/// all distinct keywords, so peek disambiguation is trivial.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ForValuesSpec {
+    From(FromToSpec),
+    In(InListSpec),
+    With(WithModulusSpec),
+}
+
+/// Full `FOR VALUES ...` clause in a `PARTITION OF ...` body.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ForValuesClause {
+    pub _for: PhantomData<keyword::For>,
+    pub _values: PhantomData<keyword::Values>,
+    pub spec: ForValuesSpec,
 }
 
 /// Column definition in partition table: `name type`.

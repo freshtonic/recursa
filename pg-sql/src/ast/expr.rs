@@ -473,12 +473,43 @@ pub enum Expr {
     /// Array subscript: `expr[idx]`
     #[parse(postfix, bp = 20)]
     Subscript(Box<Expr>, punct::LBracket, Box<Expr>, punct::RBracket),
+    /// `expr COLLATE "collation"` — collation specifier. Binds tighter than
+    /// comparisons (bp 5) but looser than `::` cast (bp 20).
+    #[parse(postfix, bp = 18)]
+    Collate(Box<Expr>, keyword::Collate, literal::Ident),
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
     BoolTest(Box<Expr>, keyword::Is, BoolTestKind),
     /// NOT IN list: `expr NOT IN (val, ...)`
     #[parse(postfix, bp = 6)]
     NotInExpr(Box<Expr>, NotInSuffix),
+    /// `expr NOT ILIKE pattern`. Declared before `NotLike` so the longer
+    /// `NOT ILIKE` is tried first (matters only if any rule shares a prefix;
+    /// here `NOT ILIKE` vs `NOT LIKE` differ on the second token).
+    #[parse(postfix, bp = 5, inner_bp = 6)]
+    NotIlike(Box<Expr>, keyword::Not, keyword::Ilike, Box<Expr>),
+    /// `expr NOT LIKE pattern`. Must come before the `Not` prefix atom so
+    /// longest-match-wins prefers the postfix form.
+    #[parse(postfix, bp = 5, inner_bp = 6)]
+    NotLike(Box<Expr>, keyword::Not, keyword::Like, Box<Expr>),
+    /// `expr ILIKE pattern`
+    #[parse(infix, bp = 5)]
+    Ilike(Box<Expr>, keyword::Ilike, Box<Expr>),
+    /// `expr LIKE pattern`
+    #[parse(infix, bp = 5)]
+    Like(Box<Expr>, keyword::Like, Box<Expr>),
+    /// `expr !~* pattern` — POSIX case-insensitive negated regex match.
+    #[parse(infix, bp = 5)]
+    RegexNotIMatch(Box<Expr>, punct::BangTildeStar, Box<Expr>),
+    /// `expr ~* pattern` — POSIX case-insensitive regex match.
+    #[parse(infix, bp = 5)]
+    RegexIMatch(Box<Expr>, punct::TildeStar, Box<Expr>),
+    /// `expr !~ pattern` — POSIX negated regex match.
+    #[parse(infix, bp = 5)]
+    RegexNotMatch(Box<Expr>, punct::BangTilde, Box<Expr>),
+    /// `expr ~ pattern` — POSIX regex match.
+    #[parse(infix, bp = 5)]
+    RegexMatch(Box<Expr>, punct::Tilde, Box<Expr>),
     /// IN list: `expr IN (val, ...)`
     #[parse(postfix, bp = 6)]
     InExpr(Box<Expr>, keyword::In, InList),
@@ -632,6 +663,9 @@ pub enum Expr {
     /// NULL
     #[parse(atom)]
     Null(keyword::Null),
+    /// `DEFAULT` — placeholder usable in INSERT/UPDATE value positions.
+    #[parse(atom)]
+    Default(keyword::Default),
     /// Unqualified column reference: `f1` or `"Foo"`
     #[parse(atom)]
     ColumnRef(literal::Ident),
@@ -1118,6 +1152,102 @@ mod tests {
         let mut input = Input::new("a ?& b");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::JsonAllKeys(..)));
+        assert!(input.is_empty());
+    }
+
+    // --- LIKE / ILIKE ---
+
+    #[test]
+    fn parse_like_expr() {
+        let mut input = Input::new("table_name LIKE 'foo%'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Like(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_like_escape_string() {
+        let mut input = Input::new(r"table_name LIKE E'r_\_view%'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Like(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_not_like_expr() {
+        let mut input = Input::new("table_name NOT LIKE 'bar%'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::NotLike(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_ilike_expr() {
+        let mut input = Input::new("name ILIKE '%FOO%'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Ilike(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_not_ilike_expr() {
+        let mut input = Input::new("name NOT ILIKE '%bar%'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::NotIlike(..)));
+        assert!(input.is_empty());
+    }
+
+    // --- Regex match operators ---
+
+    #[test]
+    fn parse_regex_match() {
+        let mut input = Input::new("relname ~ '^foo'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::RegexMatch(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_regex_not_match() {
+        let mut input = Input::new("name !~ 'bar'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::RegexNotMatch(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_regex_imatch() {
+        let mut input = Input::new("name ~* 'FOO'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::RegexIMatch(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_regex_not_imatch() {
+        let mut input = Input::new("name !~* '.*'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::RegexNotIMatch(..)));
+        assert!(input.is_empty());
+    }
+
+    // --- COLLATE postfix ---
+
+    #[test]
+    fn parse_collate_postfix() {
+        let mut input = Input::new("a COLLATE \"C\"");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Collate(..)));
+        assert!(input.is_empty());
+    }
+
+    // --- DEFAULT atom ---
+
+    #[test]
+    fn parse_default_atom() {
+        let mut input = Input::new("DEFAULT");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Default(_)));
         assert!(input.is_empty());
     }
 

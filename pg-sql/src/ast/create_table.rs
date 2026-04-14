@@ -5,7 +5,7 @@ use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
-use crate::ast::partition::{ForValuesInClause, PartitionByClause};
+use crate::ast::partition::{ForValuesClause, PartitionByClause};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
@@ -211,12 +211,21 @@ pub struct ColumnConstraint {
     pub kind: ColumnConstraintKind,
 }
 
-/// A column definition: `name type [constraints...]`.
+/// `COLLATE "name"` clause used after a column's type.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CollateClause {
+    pub _collate: PhantomData<keyword::Collate>,
+    pub name: literal::Ident,
+}
+
+/// A column definition: `name type [COLLATE "..."] [constraints...]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnDef {
     pub name: literal::Ident,
     pub type_name: crate::ast::expr::CastType,
+    pub collate: Option<CollateClause>,
     pub constraints: Seq<ColumnConstraint, (), OptionalTrailing>,
 }
 
@@ -341,7 +350,8 @@ pub struct PartitionOfBody {
     pub _partition: PhantomData<keyword::Partition>,
     pub _of: PhantomData<keyword::Of>,
     pub parent: literal::Ident,
-    pub for_values: ForValuesInClause,
+    pub for_values: Option<ForValuesClause>,
+    pub default: Option<PhantomData<keyword::Default>>,
     pub partition_by: Option<PartitionByClause>,
     pub with_storage: Option<crate::ast::create_index::WithStorage>,
 }
@@ -374,6 +384,7 @@ pub enum CreateTableBody {
 pub struct CreateTableStmt {
     pub _create: PhantomData<keyword::Create>,
     pub temp: Option<TempKw>,
+    pub unlogged: Option<PhantomData<keyword::Unlogged>>,
     pub _table: PhantomData<keyword::Table>,
     pub name: literal::Ident,
     pub body: CreateTableBody,
@@ -563,6 +574,60 @@ mod tests {
         let mut input = Input::new("CREATE TEMP TABLE nocols()");
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.items().unwrap().len(), 0);
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_unlogged_table() {
+        let mut input = Input::new("CREATE UNLOGGED TABLE t (a int)");
+        let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.unlogged.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_unlogged_table_qualified() {
+        let mut input = Input::new("CREATE UNLOGGED TABLE public.t (a int)");
+        // This uses unqualified Ident only; restrict to the unqualified form.
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input);
+    }
+
+    #[test]
+    fn parse_column_with_collate() {
+        let mut input = Input::new("CREATE TABLE foo (a text COLLATE \"C\")");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_partition_of_range_from_to() {
+        let mut input =
+            Input::new("CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (10)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_partition_of_list_in() {
+        let mut input =
+            Input::new("CREATE TABLE p2 PARTITION OF p FOR VALUES IN (1, 2, 3)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_partition_of_hash_with_modulus() {
+        let mut input = Input::new(
+            "CREATE TABLE p3 PARTITION OF p FOR VALUES WITH (MODULUS 4, REMAINDER 0)",
+        );
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_partition_of_default() {
+        let mut input = Input::new("CREATE TABLE p4 PARTITION OF p DEFAULT");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 }
