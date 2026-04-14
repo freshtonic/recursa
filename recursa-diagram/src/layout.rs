@@ -1,5 +1,10 @@
 //! Railroad diagram layout primitives. Port of the tabatkins algorithm.
 
+pub(crate) const CHAR_WIDTH: u32 = 8;
+pub(crate) const HORIZONTAL_PADDING: u32 = 20; // per side → +40 total
+pub(crate) const BOX_HEIGHT: u32 = 22;
+pub(crate) const BASELINE_OFFSET: u32 = BOX_HEIGHT / 2; // up = down = 11
+
 #[derive(Clone, Debug)]
 pub enum Node {
     Terminal(Terminal),
@@ -15,10 +20,10 @@ impl Node {
         match self {
             Node::Terminal(n) => n.width,
             Node::NonTerminal(n) => n.width,
-            Node::Sequence(n) => n.width,
-            Node::Choice(n) => n.width,
-            Node::Optional(n) => n.width,
-            Node::OneOrMore(n) => n.width,
+            Node::Sequence(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Choice(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
         }
     }
 
@@ -26,10 +31,10 @@ impl Node {
         match self {
             Node::Terminal(n) => n.height,
             Node::NonTerminal(n) => n.height,
-            Node::Sequence(n) => n.height,
-            Node::Choice(n) => n.height,
-            Node::Optional(n) => n.height,
-            Node::OneOrMore(n) => n.height,
+            Node::Sequence(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Choice(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
         }
     }
 
@@ -37,10 +42,10 @@ impl Node {
         match self {
             Node::Terminal(n) => n.up,
             Node::NonTerminal(n) => n.up,
-            Node::Sequence(n) => n.up,
-            Node::Choice(n) => n.up,
-            Node::Optional(n) => n.up,
-            Node::OneOrMore(n) => n.up,
+            Node::Sequence(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Choice(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
         }
     }
 
@@ -48,10 +53,10 @@ impl Node {
         match self {
             Node::Terminal(n) => n.down,
             Node::NonTerminal(n) => n.down,
-            Node::Sequence(n) => n.down,
-            Node::Choice(n) => n.down,
-            Node::Optional(n) => n.down,
-            Node::OneOrMore(n) => n.down,
+            Node::Sequence(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Choice(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::Optional(_) => unimplemented!("layout geometry not yet implemented"),
+            Node::OneOrMore(_) => unimplemented!("layout geometry not yet implemented"),
         }
     }
 }
@@ -68,14 +73,13 @@ pub struct Terminal {
 impl Terminal {
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
-        // Character width ~8 px + horizontal padding 20 px each side.
-        let width = (text.chars().count() as u32) * 8 + 40;
+        let width = text.chars().count() as u32 * CHAR_WIDTH + 2 * HORIZONTAL_PADDING;
         Self {
             text,
             width,
-            height: 22,
-            up: 11,
-            down: 11,
+            height: BOX_HEIGHT,
+            up: BASELINE_OFFSET,
+            down: BASELINE_OFFSET,
         }
     }
 }
@@ -93,14 +97,14 @@ pub struct NonTerminal {
 impl NonTerminal {
     pub fn new(text: impl Into<String>, href: Option<String>) -> Self {
         let text = text.into();
-        let width = (text.chars().count() as u32) * 8 + 40;
+        let width = text.chars().count() as u32 * CHAR_WIDTH + 2 * HORIZONTAL_PADDING;
         Self {
             text,
             href,
             width,
-            height: 22,
-            up: 11,
-            down: 11,
+            height: BOX_HEIGHT,
+            up: BASELINE_OFFSET,
+            down: BASELINE_OFFSET,
         }
     }
 }
