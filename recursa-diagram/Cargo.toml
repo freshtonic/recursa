@@ -6,9 +6,6 @@ description = "Railroad syntax diagrams for recursa-derived AST types"
 license = "MIT"
 repository = "https://github.com/freshtonic/recursa"
 
-[lib]
-proc-macro = true
-
 [dependencies]
 syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
