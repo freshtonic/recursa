@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
 pub use crate::ast::common::{CascadeKw, DropBehavior, RestrictKw};
 
@@ -138,6 +139,7 @@ pub struct IndexElem {
 /// ```
 ///
 /// The index name is optional (Postgres allows it to be omitted).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateIndexStmt {

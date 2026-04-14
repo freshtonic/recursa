@@ -21,6 +21,7 @@ pub mod values;
 pub mod with_clause;
 
 use recursa::{FormatTokens, Input, Parse, ParseError, ParseRules, Visit};
+use recursa_diagram::railroad;
 
 use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
@@ -60,6 +61,7 @@ use self::{
 /// - `Values` (CompoundQuery) starts with VALUES/TABLE/SELECT so it could
 ///   conflict. It must come after Explain but before bare Select to handle
 ///   `VALUES ... UNION ALL ...` and `TABLE tablename`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[allow(clippy::large_enum_variant)]

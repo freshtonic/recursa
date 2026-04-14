@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
 use crate::ast::common::QualifiedName;
 use crate::ast::expr::Expr;
@@ -86,6 +87,7 @@ pub struct OnConflictClause {
 }
 
 /// INSERT INTO statement with optional ON CONFLICT and RETURNING.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]

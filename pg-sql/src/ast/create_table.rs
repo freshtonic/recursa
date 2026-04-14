@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
 use crate::ast::partition::{ForValuesClause, PartitionByClause};
 use crate::rules::SqlRules;
@@ -487,6 +488,7 @@ pub enum CreateTableBody {
 /// ```sql
 /// CREATE [TEMP] TABLE statement.
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTableStmt {

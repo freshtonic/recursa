@@ -2,6 +2,7 @@
 use std::marker::PhantomData;
 
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
 use crate::ast::common::QualifiedName;
 use crate::ast::select::WhereClause;
@@ -47,6 +48,7 @@ pub struct DeleteUsingClause {
 }
 
 /// DELETE FROM statement: `DELETE FROM table [alias] [USING ...] [WHERE expr] [RETURNING ...]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]

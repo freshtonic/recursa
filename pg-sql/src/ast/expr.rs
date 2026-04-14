@@ -8,6 +8,7 @@ use std::marker::PhantomData;
 use recursa::seq::{NonEmpty, OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
@@ -954,6 +955,7 @@ pub struct UnicodeStringLitWithEscape {
 // --- Pratt expression enum ---
 
 /// SQL expression with Pratt-derived parsing.
+#[railroad]
 #[derive(FormatTokens, Parse, Debug, Clone, Visit)]
 #[parse(rules = SqlRules, pratt)]
 pub enum Expr {

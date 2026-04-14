@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use recursa::seq::{NoTrailing, NonEmpty, OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
 use crate::ast::common::QualifiedName;
 use crate::ast::expr::{Expr, FuncCall};
@@ -232,6 +233,7 @@ pub enum SimpleTableRef {
 }
 
 /// Join type: LEFT, RIGHT, FULL, INNER, CROSS, or plain JOIN.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum JoinType {
@@ -336,6 +338,7 @@ pub struct UsingClause {
 }
 
 /// Sort direction: ASC or DESC.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SortDir {
@@ -483,6 +486,7 @@ pub struct WindowClause {
 }
 
 /// SELECT statement.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
