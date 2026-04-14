@@ -18,13 +18,15 @@ pub fn render(root: &Node) -> String {
     let total_w = root.width() + pad * 2;
     let total_h = root.height() + pad * 2;
 
-    // TODO(phase-5): rustdoc runs ammonia on doc HTML; its default allowlist
-    // excludes svg/rect/path/text/g/style and <a> inside <svg>. We will likely
-    // need to either embed via <img src="data:image/svg+xml;..."/>, reference
-    // an external .svg file written next to the generated docs, or extend the
-    // ammonia allowlist via a crate attribute. Verify empirically in Phase 5.
+    // Verified in Phase 5 (Task 19) that rustdoc's ammonia sanitizer preserves
+    // <svg> and its standard children intact, so inline embedding works.
+    //
+    // Colors use `currentColor` so the diagram adapts to rustdoc's light and
+    // dark themes automatically (currentColor resolves to the inherited text
+    // colour of the enclosing doc page). Rect interiors are transparent so
+    // the page background shows through; only stroke and text are coloured.
     out.push_str(&format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><!-- railroad --><style>.railroad rect{{fill:#fff;stroke:#333;stroke-width:1}} .railroad text{{font-family:monospace;font-size:12px;fill:#000}} .railroad path{{stroke:#333;stroke-width:1;fill:none}}</style><g class="railroad">"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><!-- railroad --><style>.railroad rect{{fill:none;stroke:currentColor;stroke-width:1}} .railroad text{{font-family:monospace;font-size:12px;fill:currentColor}} .railroad path{{stroke:currentColor;stroke-width:1;fill:none}}</style><g class="railroad">"#,
         w = total_w,
         h = total_h,
     ));

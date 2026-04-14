@@ -73,7 +73,7 @@ fn build_node(input: &DeriveInput, attrs: &TypeAttrs) -> syn::Result<Node> {
             // This also gives the user a visible label in the rendered diagram.
             Fields::Unit => Ok(Node::NonTerminal(NonTerminal::new(
                 input.ident.to_string(),
-                Some(format!("{}.html", input.ident)),
+                None,
             ))),
             _ => build_from_fields(&s.fields),
         },
@@ -216,9 +216,13 @@ fn recognize(ty: &Type) -> Node {
             _ => {}
         }
     }
+    // Hrefs are intentionally omitted: proc macros lack the calling module's
+    // context, so any path we construct is a guess. Most guesses produced 404s
+    // in the Phase 5 sweep. Reintroduce hrefs when rustdoc intra-doc-link
+    // resolution is available from inside proc macros, or when we add a
+    // configurable `#[railroad(href_root = "...")]` attribute.
     let name = type_label(ty);
-    let href = type_href(ty);
-    Node::NonTerminal(NonTerminal::new(name, href))
+    Node::NonTerminal(NonTerminal::new(name, None))
 }
 
 /// Detect a type path whose second-to-last segment is `keyword`, e.g.
@@ -265,46 +269,6 @@ fn type_label(ty: &Type) -> String {
     quote!(#ty).to_string()
 }
 
-// Best-effort relative href for a type-path reference. We strip a single
-// leading `crate::` segment and emit the remaining path with `/` separators
-// followed by `.html`. For a same-module bare reference like `Foo` this yields
-// `Foo.html`, which rustdoc resolves against the current page. For a qualified
-// path like `crate::ast::Thing` this yields `ast/Thing.html`, which is correct
-// when the diagram is rendered inside a doc page at the crate root but wrong
-// when the caller lives in a nested module — proc macros lack the module
-// context to do better. Phase 5's smoke test will reveal whether rustdoc
-// accepts these links; if not, we'll need a configurable path-prefix attribute.
-//
-// Returns `None` for:
-// - non-path types (references, tuples, slices, etc.)
-// - absolute paths (`::std::vec::Vec`) — would link out of the current crate
-// - paths starting with `super::` or `self::` — rustdoc has no such directories
-//   and we can't resolve them without the calling module's context
-fn type_href(ty: &Type) -> Option<String> {
-    let Type::Path(p) = ty else {
-        return None;
-    };
-    if p.path.leading_colon.is_some() || p.path.segments.is_empty() {
-        return None;
-    }
-    let mut segments: Vec<String> = p
-        .path
-        .segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect();
-    if matches!(segments.first().map(String::as_str), Some("super" | "self")) {
-        return None;
-    }
-    if segments.first().map(String::as_str) == Some("crate") {
-        segments.remove(0);
-    }
-    if segments.is_empty() {
-        return None;
-    }
-    Some(format!("{}.html", segments.join("/")))
-}
-
 fn strip_body(input: &DeriveInput) -> TokenStream {
     let mut clone = input.clone();
     clone.attrs.retain(|a| !a.path().is_ident("railroad"));
@@ -347,7 +311,7 @@ mod tests {
         match node {
             Node::NonTerminal(nt) => {
                 assert_eq!(nt.text, "Empty");
-                assert_eq!(nt.href.as_deref(), Some("Empty.html"));
+                assert!(nt.href.is_none());
             }
             other => panic!("expected NonTerminal, got {other:?}"),
         }
@@ -601,70 +565,22 @@ mod tests {
         }
     }
 
-    fn parse_type(tokens: TokenStream) -> Type {
-        parse2(tokens).unwrap()
-    }
-
     #[test]
-    fn single_segment_type_href() {
-        assert_eq!(
-            type_href(&parse_type(quote!(Foo))).as_deref(),
-            Some("Foo.html")
-        );
-    }
-
-    #[test]
-    fn crate_prefixed_type_href() {
-        assert_eq!(
-            type_href(&parse_type(quote!(crate::Foo))).as_deref(),
-            Some("Foo.html")
-        );
-    }
-
-    #[test]
-    fn qualified_path_becomes_relative_href() {
-        assert_eq!(
-            type_href(&parse_type(quote!(crate::ast::Thing))).as_deref(),
-            Some("ast/Thing.html")
-        );
-        assert_eq!(
-            type_href(&parse_type(quote!(crate::ast::other::Thing))).as_deref(),
-            Some("ast/other/Thing.html")
-        );
-    }
-
-    #[test]
-    fn non_path_type_returns_none() {
-        assert_eq!(type_href(&parse_type(quote!(&'a Foo))), None);
-        assert_eq!(type_href(&parse_type(quote!((Foo, Bar)))), None);
-        // Bare path still produces Some.
-        assert!(type_href(&parse_type(quote!(Foo))).is_some());
-    }
-
-    #[test]
-    fn super_and_self_paths_return_none() {
-        // rustdoc has no `super` or `self` directories; better to omit the
-        // link than emit a guaranteed 404.
-        assert_eq!(type_href(&parse_type(quote!(super::Foo))), None);
-        assert_eq!(type_href(&parse_type(quote!(self::Foo))), None);
-        assert_eq!(type_href(&parse_type(quote!(super::ast::Foo))), None);
-    }
-
-    #[test]
-    fn absolute_paths_return_none() {
-        // `::std::vec::Vec` would link out of the current crate; omit.
-        assert_eq!(type_href(&parse_type(quote!(::std::vec::Vec))), None);
-        assert_eq!(type_href(&parse_type(quote!(::core::option::Option))), None);
-    }
-
-    #[test]
-    fn double_crate_strips_only_one() {
-        // Pathological — `skip_while` would have stripped both. Single strip
-        // matches the comment on type_href.
-        assert_eq!(
-            type_href(&parse_type(quote!(crate::crate_::Foo))).as_deref(),
-            Some("crate_/Foo.html")
-        );
+    fn fallthrough_type_has_no_href() {
+        // Hrefs were dropped because proc macros lack the calling-module
+        // context to resolve them correctly. Every NonTerminal produced by
+        // the fallthrough path should have href == None.
+        let node = node_for(quote! { pub struct S { x: crate::ast::Thing } });
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::NonTerminal(nt) => {
+                    assert_eq!(nt.text, "Thing");
+                    assert!(nt.href.is_none());
+                }
+                other => panic!("expected NonTerminal, got {other:?}"),
+            },
+            other => panic!("expected Sequence, got {other:?}"),
+        }
     }
 
     #[test]
@@ -679,11 +595,9 @@ mod tests {
             Node::Sequence(seq) => match &seq.children[0] {
                 Node::NonTerminal(nt) => {
                     assert_eq!(nt.text, "SELECT");
-                    // A label short-circuits recognize entirely, so no href
-                    // should be derived from the underlying type. Pinning this
-                    // distinguishes the label path from incidental NonTerminal
-                    // construction with a coincidentally-matching text.
-                    assert!(nt.href.is_none(), "label should suppress href");
+                    // Label passes through unchanged; href is always None now
+                    // (hrefs were dropped as part of the broken-link fix).
+                    assert!(nt.href.is_none());
                 }
                 other => panic!("expected NonTerminal, got {other:?}"),
             },
