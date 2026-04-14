@@ -1479,6 +1479,7 @@ dependencies = [
  "recursa",
  "recursa-core",
  "recursa-derive",
+ "recursa-diagram",
  "regex",
  "sqlparser",
  "testcontainers",
