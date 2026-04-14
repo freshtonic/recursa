@@ -16,3 +16,13 @@ regex = "1"
 [dev-dependencies]
 testcontainers = { version = "0.27", features = ["blocking"] }
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+sqlparser = "0.52"
+
+[[bin]]
+name = "gen-stress"
+path = "src/bin/gen_stress.rs"
+
+[[bench]]
+name = "parse"
+harness = false
