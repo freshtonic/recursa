@@ -1,4 +1,4 @@
-use recursa_diagram::layout::{
+use recursa_diagram_core::layout::{
     Choice, Node, NonTerminal, OneOrMore, Optional, Sequence, Terminal, zero_or_more,
 };
 

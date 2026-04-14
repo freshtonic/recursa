@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use recursa_diagram::{
+use recursa_diagram_core::{
     layout::{Choice, Node, NonTerminal, OneOrMore, Optional, Sequence, Terminal, zero_or_more},
     render,
 };

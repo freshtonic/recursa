@@ -1708,12 +1708,20 @@ dependencies = [
 name = "recursa-diagram"
 version = "0.1.0"
 dependencies = [
+ "recursa-diagram-core",
  "recursa-diagram-macros",
 ]
 
 [[package]]
+name = "recursa-diagram-core"
+version = "0.1.0"
+
+[[package]]
 name = "recursa-diagram-macros"
 version = "0.1.0"
+dependencies = [
+ "recursa-diagram-core",
+]
 
 [[package]]
 name = "redox_syscall"
