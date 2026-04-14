@@ -199,8 +199,12 @@ fn derive_scanner_tuple(
     if let Some(lifetime) = generics.lifetimes().next() {
         let lt = &lifetime.lifetime;
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-        let parse_body =
-            scanner_parse_body(pattern, &anchored, quote! { #name(matched) }, postcondition);
+        let parse_body = scanner_parse_body(
+            pattern,
+            &anchored,
+            quote! { #name(::std::borrow::Cow::Borrowed(matched)) },
+            postcondition,
+        );
 
         Ok(quote! {
             impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {
