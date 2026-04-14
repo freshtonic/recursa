@@ -4,3 +4,5 @@
 
 pub mod layout;
 mod svg;
+
+pub use svg::render;
