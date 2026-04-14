@@ -153,10 +153,10 @@ impl<T: 'static> Visit for std::marker::PhantomData<T> {
     }
 }
 
-// -- Leaf Visit impl for String --
+// -- Leaf Visit impl for Cow<str> --
 
-impl AsNodeKey for String {}
-impl Visit for String {
+impl AsNodeKey for ::std::borrow::Cow<'static, str> {}
+impl Visit for ::std::borrow::Cow<'static, str> {
     fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
         match visitor.total_enter(self) {
             ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
