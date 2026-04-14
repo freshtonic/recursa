@@ -169,6 +169,14 @@ fn node_for_field_type(ty: &Type, field_attrs: &FieldAttrs) -> Node {
 }
 
 fn recognize(ty: &Type) -> Node {
+    // Direct reference to a `keyword::*` type (no PhantomData wrapper). Common
+    // shape inside enum variants like `JoinType::Left(keyword::Left)`. We
+    // render these as terminals with the uppercased last-segment ident, same
+    // convention as the `PhantomData<keyword::T>` case below.
+    if is_keyword_path(ty) {
+        let label = type_label(ty).to_uppercase();
+        return Node::Terminal(Terminal::new(label));
+    }
     if let Some((ident, args)) = outer_generic(ty) {
         match ident.to_string().as_str() {
             "Option" if args.len() == 1 => {
@@ -211,6 +219,20 @@ fn recognize(ty: &Type) -> Node {
     let name = type_label(ty);
     let href = type_href(ty);
     Node::NonTerminal(NonTerminal::new(name, href))
+}
+
+/// Detect a type path whose second-to-last segment is `keyword`, e.g.
+/// `keyword::Left`, `pg_sql::keyword::Drop`, or `crate::keyword::Where`.
+/// Used by `recognize` to render keyword references as literal terminals.
+fn is_keyword_path(ty: &Type) -> bool {
+    let Type::Path(p) = ty else {
+        return false;
+    };
+    let segs = &p.path.segments;
+    if segs.len() < 2 {
+        return false;
+    }
+    segs[segs.len() - 2].ident == "keyword"
 }
 
 fn outer_generic(ty: &Type) -> Option<(&Ident, Vec<Type>)> {
@@ -423,6 +445,63 @@ mod tests {
             Node::Sequence(seq) => match &seq.children[0] {
                 Node::NonTerminal(nt) => assert_eq!(nt.text, "Foo"),
                 other => panic!("expected unwrapped Foo, got {other:?}"),
+            },
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn direct_keyword_path_renders_as_uppercased_terminal() {
+        // Common shape inside enum variants like `JoinType::Left(keyword::Left)`.
+        // No PhantomData wrapper — recognize must detect the `keyword::` prefix
+        // on the type path itself.
+        let node = node_for(quote! {
+            pub enum JoinType {
+                Left(keyword::Left),
+                Right(keyword::Right),
+            }
+        });
+        match node {
+            Node::Choice(ch) => {
+                assert_eq!(ch.children.len(), 2);
+                match &ch.children[0] {
+                    Node::Terminal(t) => assert_eq!(t.text, "LEFT"),
+                    other => panic!("expected Terminal, got {other:?}"),
+                }
+                match &ch.children[1] {
+                    Node::Terminal(t) => assert_eq!(t.text, "RIGHT"),
+                    other => panic!("expected Terminal, got {other:?}"),
+                }
+            }
+            other => panic!("expected Choice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keyword_path_in_struct_field_also_works() {
+        let node = node_for(quote! {
+            pub struct S { kw: keyword::Select }
+        });
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::Terminal(t) => assert_eq!(t.text, "SELECT"),
+                other => panic!("expected Terminal, got {other:?}"),
+            },
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_keyword_path_is_not_uppercased() {
+        // A type like `ast::expr::BinaryOp` should not be miscategorized as
+        // a keyword just because it has a multi-segment path.
+        let node = node_for(quote! {
+            pub struct S { op: ast::expr::BinaryOp }
+        });
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::NonTerminal(nt) => assert_eq!(nt.text, "BinaryOp"),
+                other => panic!("expected NonTerminal, got {other:?}"),
             },
             other => panic!("expected Sequence, got {other:?}"),
         }
