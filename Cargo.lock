@@ -1714,6 +1714,13 @@ dependencies = [
 name = "recursa-diagram"
 version = "0.1.0"
 dependencies = [
+ "recursa-diagram-macros",
+]
+
+[[package]]
+name = "recursa-diagram-macros"
+version = "0.1.0"
+dependencies = [
  "proc-macro2",
  "quote",
  "syn",

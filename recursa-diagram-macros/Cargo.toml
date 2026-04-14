@@ -1,0 +1,18 @@
+[package]
+name = "recursa-diagram-macros"
+version = "0.1.0"
+edition = "2024"
+description = "Proc-macro attribute for recursa-diagram railroad diagrams"
+license = "MIT"
+repository = "https://github.com/freshtonic/recursa"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+
+[dev-dependencies]
+trybuild = "1"
