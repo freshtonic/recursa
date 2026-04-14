@@ -1,8 +1,8 @@
 //! SVG serialization for railroad layout trees.
 
 use crate::layout::{
-    BASELINE_OFFSET, BOX_HEIGHT, Choice, HORIZONTAL_SPACER, Node, NonTerminal, OneOrMore, Optional,
-    Sequence, Terminal,
+    BASELINE_OFFSET, BOX_HEIGHT, CHOICE_RAIL_WIDTH, Choice, HORIZONTAL_SPACER, Node, NonTerminal,
+    OneOrMore, Optional, Sequence, Terminal, VERTICAL_GAP,
 };
 
 /// Outer padding around the rendered diagram, in SVG user units.
@@ -105,9 +105,55 @@ fn render_sequence(s: &Sequence, mut x: i32, y: i32, out: &mut String) {
         x += child.width() as i32 + spacer;
     }
 }
-// Stubs for the remaining variants — real impls come in later tasks.
-fn render_choice(_: &Choice, _: i32, _: i32, _: &mut String) {
-    todo!("render_choice not yet implemented");
+// First-pass Choice renderer. The default branch is drawn on the enclosing
+// baseline `y`; other branches are stacked above/below with simple quadratic
+// entry/exit rails. Visual polish (proper arcs) is deferred; see the design
+// doc Phase 3.
+fn render_choice(c: &Choice, x: i32, y: i32, out: &mut String) {
+    let rail = CHOICE_RAIL_WIDTH as i32 / 2;
+    let total_w = c.width as i32;
+
+    // Compute each branch's baseline relative to `y`. The default branch is at
+    // `y`; branches above accumulate negative offsets, branches below positive.
+    let mut branch_ys = vec![0i32; c.children.len()];
+    // Walk up from default.
+    let mut acc: i32 = 0;
+    for i in (0..c.default_idx).rev() {
+        // Distance from branch i's baseline to branch i+1's baseline:
+        // i.down + gap + (i+1).up.
+        let delta =
+            c.children[i].down() as i32 + VERTICAL_GAP as i32 + c.children[i + 1].up() as i32;
+        acc -= delta;
+        branch_ys[i] = acc;
+    }
+    // Walk down from default.
+    acc = 0;
+    for (i, slot) in branch_ys.iter_mut().enumerate().skip(c.default_idx + 1) {
+        let delta =
+            c.children[i - 1].down() as i32 + VERTICAL_GAP as i32 + c.children[i].up() as i32;
+        acc += delta;
+        *slot = acc;
+    }
+
+    for (i, child) in c.children.iter().enumerate() {
+        let child_y = y + branch_ys[i];
+        let child_w = child.width() as i32;
+        let child_x = x + rail + (total_w - CHOICE_RAIL_WIDTH as i32 - child_w) / 2;
+
+        // Entry rail: from (x, y) curving to (child_x, child_y).
+        out.push_str(&format!(
+            r#"<path d="M{x} {y} Q{cx} {y} {cx} {child_y} L{child_x} {child_y}"/>"#,
+            cx = x + rail,
+        ));
+        render_node(child, child_x, child_y, out);
+        // Exit rail: from (child_x + child_w, child_y) back to (x + total_w, y).
+        let exit_x = child_x + child_w;
+        let end_x = x + total_w;
+        out.push_str(&format!(
+            r#"<path d="M{exit_x} {child_y} L{rx} {child_y} Q{end_x} {child_y} {end_x} {y}"/>"#,
+            rx = end_x - rail,
+        ));
+    }
 }
 
 fn render_optional(_: &Optional, _: i32, _: i32, _: &mut String) {
