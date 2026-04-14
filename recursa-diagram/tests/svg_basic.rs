@@ -1,5 +1,5 @@
 use recursa_diagram::{
-    layout::{Choice, Node, NonTerminal, Sequence, Terminal},
+    layout::{Choice, Node, NonTerminal, OneOrMore, Optional, Sequence, Terminal},
     render,
 };
 
@@ -167,6 +167,61 @@ fn choice_emits_text_for_every_branch() {
     assert_balanced_tags(&svg);
     assert!(svg.contains("ONE"));
     assert!(svg.contains("TWO"));
+}
+
+#[test]
+fn optional_renders_child_on_baseline_with_skip_rail_above() {
+    let opt = Node::Optional(Optional::new(Node::Terminal(Terminal::new("MAYBE"))));
+    let svg = render(&opt);
+    assert_balanced_tags(&svg);
+    assert!(svg.contains("MAYBE"));
+
+    // The child's rect top is at (pad + root.up()) - 11. The skip rail path is
+    // emitted as a <path> element. At minimum we should see at least one path
+    // and the child's text on the main baseline row.
+    assert!(
+        svg.matches("<path").count() >= 1,
+        "expected skip-rail path(s): {svg}"
+    );
+
+    // Child rect y == pad + root.up() - 11. The main baseline equals
+    // pad + root.up(), i.e. 10 + (11 + 22 + 10) = 53, so rect top is 42.
+    let child_y = rect_y_before_label(&svg, "MAYBE");
+    assert_eq!(
+        child_y, 42,
+        "optional child should sit on main baseline, got rect y={child_y}: {svg}"
+    );
+}
+
+#[test]
+fn one_or_more_without_separator_has_loopback_path() {
+    let om = Node::OneOrMore(OneOrMore::new(Node::Terminal(Terminal::new("ITEM")), None));
+    let svg = render(&om);
+    assert_balanced_tags(&svg);
+    assert!(svg.contains("ITEM"));
+    assert!(
+        svg.matches("<path").count() >= 1,
+        "expected loop-back path: {svg}"
+    );
+}
+
+#[test]
+fn one_or_more_with_separator_places_sep_below_child() {
+    let om = Node::OneOrMore(OneOrMore::new(
+        Node::Terminal(Terminal::new("COL")),
+        Some(Node::Terminal(Terminal::new("COMMA"))),
+    ));
+    let svg = render(&om);
+    assert_balanced_tags(&svg);
+    assert!(svg.contains("COL"));
+    assert!(svg.contains("COMMA"));
+
+    let y_col = rect_y_before_label(&svg, "COL");
+    let y_comma = rect_y_before_label(&svg, "COMMA");
+    assert!(
+        y_comma > y_col,
+        "separator must render below child: y_col={y_col} y_comma={y_comma}"
+    );
 }
 
 #[test]

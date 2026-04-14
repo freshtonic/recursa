@@ -156,10 +156,71 @@ fn render_choice(c: &Choice, x: i32, y: i32, out: &mut String) {
     }
 }
 
-fn render_optional(_: &Optional, _: i32, _: i32, _: &mut String) {
-    todo!("render_optional not yet implemented");
+// First-pass Optional renderer. The child is drawn on the enclosing baseline;
+// a skip rail arcs above the child (by BOX_HEIGHT + VERTICAL_GAP, matching the
+// layout geometry) bypassing it.
+fn render_optional(o: &Optional, x: i32, y: i32, out: &mut String) {
+    let rail = CHOICE_RAIL_WIDTH as i32 / 2;
+    let total_w = o.width as i32;
+    let skip_dy = (BOX_HEIGHT + VERTICAL_GAP) as i32;
+    let skip_y = y - skip_dy;
+
+    let child = &*o.child;
+    let child_w = child.width() as i32;
+    let child_x = x + rail + (total_w - CHOICE_RAIL_WIDTH as i32 - child_w) / 2;
+
+    // Straight-through: entry stub, child, exit stub, all at baseline y.
+    out.push_str(&format!(r#"<path d="M{x} {y} L{child_x} {y}"/>"#,));
+    render_node(child, child_x, y, out);
+    let exit_x = child_x + child_w;
+    let end_x = x + total_w;
+    out.push_str(&format!(r#"<path d="M{exit_x} {y} L{end_x} {y}"/>"#,));
+    // Skip rail: from (x, y) up to skip_y, across, back down to (end_x, y).
+    out.push_str(&format!(
+        r#"<path d="M{x} {y} Q{rx} {y} {rx} {skip_y} L{lx} {skip_y} Q{end_x} {skip_y} {end_x} {y}"/>"#,
+        rx = x + rail,
+        lx = end_x - rail,
+    ));
 }
 
-fn render_one_or_more(_: &OneOrMore, _: i32, _: i32, _: &mut String) {
-    todo!("render_one_or_more not yet implemented");
+// First-pass OneOrMore renderer. The child is drawn on the enclosing baseline;
+// the separator (if present) or an implicit return rail is drawn below, with
+// loop-back paths on each side.
+fn render_one_or_more(o: &OneOrMore, x: i32, y: i32, out: &mut String) {
+    let rail = CHOICE_RAIL_WIDTH as i32 / 2;
+    let total_w = o.width as i32;
+
+    let child = &*o.child;
+    let child_w = child.width() as i32;
+    let child_x = x + rail + (total_w - CHOICE_RAIL_WIDTH as i32 - child_w) / 2;
+
+    // Straight-through path at baseline (entry stub + exit stub).
+    out.push_str(&format!(r#"<path d="M{x} {y} L{child_x} {y}"/>"#,));
+    render_node(child, child_x, y, out);
+    let exit_x = child_x + child_w;
+    let end_x = x + total_w;
+    out.push_str(&format!(r#"<path d="M{exit_x} {y} L{end_x} {y}"/>"#,));
+
+    // Loop-back row: separator (if any) rendered below the child, with rails
+    // connecting child exit -> row -> child entry.
+    if let Some(sep) = o.separator.as_deref() {
+        let sep_w = sep.width() as i32;
+        let sep_x = x + rail + (total_w - CHOICE_RAIL_WIDTH as i32 - sep_w) / 2;
+        let sep_y = y + child.down() as i32 + VERTICAL_GAP as i32 + sep.up() as i32;
+        // Rails: down from exit to sep row, across sep, back up to entry.
+        out.push_str(&format!(
+            r#"<path d="M{exit_x} {y} Q{end_x} {y} {end_x} {sep_y} L{sep_right} {sep_y}"/>"#,
+            sep_right = sep_x + sep_w,
+        ));
+        render_node(sep, sep_x, sep_y, out);
+        out.push_str(&format!(
+            r#"<path d="M{sep_x} {sep_y} L{x} {sep_y} Q{x} {y} {child_x} {y}"/>"#,
+        ));
+    } else {
+        // Implicit return rail: simple loop underneath.
+        let rail_y = y + child.down() as i32 + VERTICAL_GAP as i32;
+        out.push_str(&format!(
+            r#"<path d="M{exit_x} {y} Q{end_x} {y} {end_x} {rail_y} L{x} {rail_y} Q{x} {y} {child_x} {y}"/>"#,
+        ));
+    }
 }
