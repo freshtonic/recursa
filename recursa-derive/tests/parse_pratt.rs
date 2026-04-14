@@ -31,6 +31,14 @@ struct Caret;
 #[parse(pattern = r"\?")]
 struct Question;
 
+#[derive(Parse, Debug)]
+#[parse(pattern = r"@")]
+struct At;
+
+#[derive(Parse, Debug)]
+#[parse(pattern = r"~")]
+struct Tilde;
+
 struct WsRules;
 impl ParseRules for WsRules {
     const IGNORE: &'static str = r"\s+";
@@ -57,6 +65,25 @@ enum Expr<'input> {
 
     #[parse(postfix, bp = 20)]
     PostfixQuestion(Box<Expr<'input>>, Question),
+
+    // Infix `~` at a LOW bp (below the inner operands of the ternary postfix
+    // below). This exists to create the ambiguity test: without inner_bp,
+    // the inner Box<Self> parses would swallow `~`.
+    #[parse(infix, bp = 3)]
+    TildeInfix(Box<Expr<'input>>, Tilde, Box<Expr<'input>>),
+
+    // Ternary postfix: `lhs @ inner1 ~ inner2`. Inner Box<Self> fields must
+    // parse at min_bp = 4 (higher than TildeInfix) so the separator `~`
+    // terminates inner1 and is consumed by the postfix instead of being
+    // absorbed as an infix.
+    #[parse(postfix, bp = 20, inner_bp = 4)]
+    Ternary(
+        Box<Expr<'input>>,
+        At,
+        Box<Expr<'input>>,
+        Tilde,
+        Box<Expr<'input>>,
+    ),
 
     #[parse(atom)]
     Lit(IntLit<'input>),
@@ -209,6 +236,37 @@ fn pratt_postfix_with_infix() {
             assert!(matches!(*right, Expr::PostfixQuestion(_, _)));
         }
         other => panic!("expected Add at top level, got {other:?}"),
+    }
+}
+
+#[test]
+fn pratt_ternary_postfix_inner_bp_bounds_middle_operand() {
+    // `1 @ 2 ~ 3` must parse as Ternary(1, @, 2, ~, 3).
+    // Without `inner_bp`, the inner Box<Expr> at position 2 would parse as
+    // a TildeInfix(2, ~, 3), leaving no `~` for the postfix to consume.
+    let mut input = Input::new("1 @ 2 ~ 3");
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
+    match expr {
+        Expr::Ternary(a, _, b, _, c) => {
+            assert!(matches!(*a, Expr::Lit(_)));
+            assert!(matches!(*b, Expr::Lit(_)));
+            assert!(matches!(*c, Expr::Lit(_)));
+        }
+        other => panic!("expected Ternary, got {other:?}"),
+    }
+}
+
+#[test]
+fn pratt_ternary_postfix_inner_allows_higher_bp_infix() {
+    // `1 @ 2 + 3 ~ 4` should still allow Add (bp=5) inside the inner
+    // operand, since inner_bp=4 and 5 >= 4.
+    let mut input = Input::new("1 @ 2 + 3 ~ 4");
+    let expr = Expr::parse::<WsRules>(&mut input).unwrap();
+    match expr {
+        Expr::Ternary(_, _, mid, _, _) => {
+            assert!(matches!(*mid, Expr::Add(_, _, _)));
+        }
+        other => panic!("expected Ternary, got {other:?}"),
     }
 }
 

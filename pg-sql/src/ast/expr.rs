@@ -482,6 +482,29 @@ pub enum Expr {
     /// IN list: `expr IN (val, ...)`
     #[parse(postfix, bp = 6)]
     InExpr(Box<Expr>, keyword::In, InList),
+    /// `expr NOT BETWEEN low AND high`. Declared before `BetweenExpr` so
+    /// the longer `NOT BETWEEN` prefix wins disambiguation. `inner_bp = 3`
+    /// keeps the low/high operands from swallowing the literal `AND` that
+    /// separates them (the `AND` infix has `bp = 2`).
+    #[parse(postfix, bp = 6, inner_bp = 3)]
+    NotBetweenExpr(
+        Box<Expr>,
+        keyword::Not,
+        keyword::Between,
+        Box<Expr>,
+        keyword::And,
+        Box<Expr>,
+    ),
+    /// `expr BETWEEN low AND high`. See `NotBetweenExpr` for the
+    /// `inner_bp` rationale.
+    #[parse(postfix, bp = 6, inner_bp = 3)]
+    BetweenExpr(
+        Box<Expr>,
+        keyword::Between,
+        Box<Expr>,
+        keyword::And,
+        Box<Expr>,
+    ),
 
     // --- Infix ---
     // Multi-char operators before single-char to avoid partial matching.
@@ -893,6 +916,39 @@ mod tests {
         let mut input = Input::new("b IS NOT UNKNOWN");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::BoolTest(..)));
+    }
+
+    // --- Postfix: BETWEEN / NOT BETWEEN ---
+
+    #[test]
+    fn parse_between_expr() {
+        let mut input = Input::new("a BETWEEN 12 AND 17");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::BetweenExpr(..)));
+    }
+
+    #[test]
+    fn parse_not_between_expr() {
+        let mut input = Input::new("a NOT BETWEEN 1 AND 5");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::NotBetweenExpr(..)));
+    }
+
+    #[test]
+    fn parse_between_as_value() {
+        // BETWEEN yields a boolean value that can appear in a SELECT list.
+        let mut input = Input::new("x BETWEEN a AND b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::BetweenExpr(..)));
+    }
+
+    #[test]
+    fn between_does_not_break_and_parse() {
+        // A plain AND expression must still parse as And, not be confused
+        // with the BETWEEN postfix.
+        let mut input = Input::new("a AND b");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::And(..)));
     }
 
     // --- Precedence ---

@@ -239,6 +239,33 @@ fn derive_scanner_tuple(
 // Struct derives (sequence parse)
 // ---------------------------------------------------------------------------
 
+/// Returns `true` if `ty` is syntactically `Box<Name>` or `Box<Name<...>>`
+/// where `Name` matches the given enum identifier. Used by the Pratt
+/// postfix derive to recognize recursive self-fields that should be parsed
+/// through `parse_expr` with a caller-supplied `min_bp`.
+fn is_box_of_self(ty: &Type, name: &syn::Ident) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+    if segment.ident != "Box" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(Type::Path(inner))) = args.args.first() else {
+        return false;
+    };
+    inner
+        .path
+        .segments
+        .last()
+        .is_some_and(|s| s.ident == *name)
+}
+
 fn is_option_type(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty
         && let Some(segment) = type_path.path.segments.last()
@@ -605,7 +632,7 @@ fn derive_pratt_enum(
                 }
                 prefix_variants.push((vname.clone(), fields[0].ty.clone(), bp));
             }
-            PrattKind::Postfix { bp } => {
+            PrattKind::Postfix { bp, inner_bp } => {
                 if fields.len() < 2 {
                     return Err(syn::Error::new_spanned(
                         vname,
@@ -613,7 +640,7 @@ fn derive_pratt_enum(
                     ));
                 }
                 let all_field_types: Vec<_> = fields.iter().map(|f| f.ty.clone()).collect();
-                postfix_variants.push((vname.clone(), all_field_types, bp));
+                postfix_variants.push((vname.clone(), all_field_types, bp, inner_bp));
             }
             PrattKind::Infix { bp, right_assoc } => {
                 if fields.len() != 3 {
@@ -669,22 +696,45 @@ fn derive_pratt_enum(
         }
     });
 
-    let postfix_arms = postfix_variants.iter().map(|(vname, field_types, bp)| {
+    let postfix_arms = postfix_variants.iter().map(|(vname, field_types, bp, inner_bp)| {
         let op_ty = &field_types[1];
         let remaining_types = &field_types[2..];
 
+        // Build the sequence of field parses that runs inside a fork. Each
+        // parse uses `?` against the fork's IIFE result, so any failure
+        // falls through to the next postfix/infix arm rather than aborting
+        // `parse_expr`. This mirrors the atom try-in-order behavior and
+        // allows postfix variants with overlapping first-token peeks
+        // (e.g. `NOT IN` vs `NOT BETWEEN`) to disambiguate by trying each
+        // in declaration order.
         let mut field_parses = Vec::new();
         let mut field_idents = Vec::new();
         let op_ident = syn::Ident::new("__f1", proc_macro2::Span::call_site());
         field_parses.push(quote! {
-            let #op_ident = <#op_ty as ::recursa_core::Parse>::parse::<#rules>(input)?;
+            let #op_ident = <#op_ty as ::recursa_core::Parse>::parse::<#rules>(&mut fork)?;
         });
         field_idents.push(op_ident);
         for (i, ty) in remaining_types.iter().enumerate() {
             let ident = syn::Ident::new(&format!("__f{}", i + 2), proc_macro2::Span::call_site());
+            // If this field is `Box<Self>` and the variant specifies `inner_bp`,
+            // recurse via `parse_expr(&mut fork, inner_bp)` instead of the
+            // plain `Parse::parse`, which would re-enter at `min_bp = 0` and
+            // greedily consume infix operators that should belong to the
+            // outer postfix.
+            let parse_call = if let Some(ibp) = inner_bp
+                && is_box_of_self(ty, name)
+            {
+                quote! {
+                    let #ident = ::std::boxed::Box::new(parse_expr(&mut fork, #ibp)?);
+                }
+            } else {
+                quote! {
+                    let #ident = <#ty as ::recursa_core::Parse>::parse::<#rules>(&mut fork)?;
+                }
+            };
             field_parses.push(quote! {
-                <#rules as ::recursa_core::ParseRules>::consume_ignored(input);
-                let #ident = <#ty as ::recursa_core::Parse>::parse::<#rules>(input)?;
+                <#rules as ::recursa_core::ParseRules>::consume_ignored(&mut fork);
+                #parse_call
             });
             field_idents.push(ident);
         }
@@ -693,9 +743,16 @@ fn derive_pratt_enum(
             {
                 <#rules as ::recursa_core::ParseRules>::consume_ignored(input);
                 if <#op_ty as ::recursa_core::Parse>::peek::<#rules>(input) && #bp >= min_bp {
-                    #(#field_parses)*
-                    lhs = #name::#vname(Box::new(lhs), #(#all_idents),*);
-                    continue;
+                    let attempt: ::std::result::Result<_, ::recursa_core::ParseError> = (|| {
+                        let mut fork = input.fork();
+                        #(#field_parses)*
+                        ::std::result::Result::Ok((fork, #(#all_idents),*))
+                    })();
+                    if let ::std::result::Result::Ok((fork, #(#all_idents),*)) = attempt {
+                        input.commit(fork);
+                        lhs = #name::#vname(Box::new(lhs), #(#all_idents),*);
+                        continue;
+                    }
                 }
             }
         }
@@ -763,7 +820,7 @@ fn derive_pratt_enum(
 enum PrattKind {
     Atom,
     Prefix { bp: u32 },
-    Postfix { bp: u32 },
+    Postfix { bp: u32, inner_bp: Option<u32> },
     Infix { bp: u32, right_assoc: bool },
 }
 
@@ -772,6 +829,7 @@ fn parse_pratt_attrs(attrs: &[syn::Attribute]) -> syn::Result<PrattKind> {
         if attr.path().is_ident("parse") {
             let mut kind = None;
             let mut bp = None;
+            let mut inner_bp: Option<u32> = None;
             let mut right_assoc = false;
 
             attr.parse_nested_meta(|meta| {
@@ -786,6 +844,9 @@ fn parse_pratt_attrs(attrs: &[syn::Attribute]) -> syn::Result<PrattKind> {
                 } else if meta.path.is_ident("bp") {
                     let lit: syn::LitInt = meta.value()?.parse()?;
                     bp = Some(lit.base10_parse::<u32>()?);
+                } else if meta.path.is_ident("inner_bp") {
+                    let lit: syn::LitInt = meta.value()?.parse()?;
+                    inner_bp = Some(lit.base10_parse::<u32>()?);
                 } else if meta.path.is_ident("assoc") {
                     let lit: syn::LitStr = meta.value()?.parse()?;
                     if lit.value() == "right" {
@@ -802,6 +863,7 @@ fn parse_pratt_attrs(attrs: &[syn::Attribute]) -> syn::Result<PrattKind> {
                 }),
                 Some("postfix") => Ok(PrattKind::Postfix {
                     bp: bp.ok_or_else(|| syn::Error::new_spanned(attr, "postfix requires bp"))?,
+                    inner_bp,
                 }),
                 Some("infix") => Ok(PrattKind::Infix {
                     bp: bp.ok_or_else(|| syn::Error::new_spanned(attr, "infix requires bp"))?,
