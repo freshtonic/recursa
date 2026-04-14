@@ -78,24 +78,44 @@ pub struct FuncSetofReturn {
 
 // --- Function parameters ---
 
-/// `name type` -- a named function parameter.
+/// Argument mode prefix: `IN | OUT | INOUT | VARIADIC`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ArgMode {
+    In(keyword::In),
+    Inout(keyword::Inout),
+    Out(keyword::Out),
+    Variadic(keyword::Variadic),
+}
+
+/// `[mode] name type` -- a named function parameter, optionally prefixed
+/// with an argument mode (`IN`/`OUT`/`INOUT`/`VARIADIC`).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NamedFuncParam {
+    pub mode: Option<ArgMode>,
     pub name: literal::Ident,
     pub type_name: TypeName,
 }
 
-/// A single function parameter: either `name type` or just `type`.
+/// `[mode] type` -- an unnamed function parameter with optional mode.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct UnnamedFuncParam {
+    pub mode: Option<ArgMode>,
+    pub type_name: TypeName,
+}
+
+/// A single function parameter: either `[mode] name type` or `[mode] type`.
 ///
-/// Variant ordering: `Named` (`ident type`) is longer than `Unnamed`
-/// (`type`); list it first so longest-match-wins picks it when both
+/// Variant ordering: `Named` (`[mode] ident type`) is longer than `Unnamed`
+/// (`[mode] type`); list it first so longest-match-wins picks it when both
 /// could parse.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncParam {
     Named(NamedFuncParam),
-    Unnamed(TypeName),
+    Unnamed(UnnamedFuncParam),
 }
 
 // --- Function options (unordered list) ---
@@ -251,6 +271,42 @@ mod tests {
     fn parse_create_function_options_reordered() {
         let mut input = Input::new(
             "create function f() returns int language sql strict as 'SELECT 1'",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_in_out_named() {
+        let mut input = Input::new(
+            "create function f(in i int, out j int) returns int as $$ begin return i+1; end $$ language plpgsql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_in_out_no_returns() {
+        let mut input = Input::new(
+            "create function f(in i int, out j int) as $$ begin end $$ language plpgsql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_setof_record() {
+        let mut input = Input::new(
+            "create function gs(v integer, out a integer, out b integer) returns setof record as $f$ select 1 $f$ language plpgsql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_polymorphic_out() {
+        let mut input = Input::new(
+            "create function poly(a anyelement, b anyarray, OUT x anyarray) as $$ begin end $$ language plpgsql",
         );
         let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());

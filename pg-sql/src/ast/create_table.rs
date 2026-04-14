@@ -167,6 +167,17 @@ pub struct GeneratedIdentityConstraint(
     PhantomData<keyword::Identity>,
 );
 
+/// `GENERATED ALWAYS AS (expr) STORED` column constraint.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct GeneratedStoredConstraint {
+    pub _generated: PhantomData<keyword::Generated>,
+    pub _always: PhantomData<keyword::Always>,
+    pub _as: PhantomData<keyword::As>,
+    pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr, punct::RParen>,
+    pub _stored: PhantomData<keyword::Stored>,
+}
+
 /// DEFAULT expr column constraint.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
@@ -185,6 +196,7 @@ pub struct DefaultConstraint {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ColumnConstraintKind {
+    GeneratedStored(GeneratedStoredConstraint),
     GeneratedIdentity(GeneratedIdentityConstraint),
     PrimaryKey(PrimaryKeyConstraint),
     NotNull(NotNullConstraint),

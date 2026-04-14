@@ -2,6 +2,8 @@ pub mod analyze;
 pub mod common;
 pub mod create_function;
 pub mod create_index;
+pub mod create_procedure;
+pub mod create_tablespace;
 pub mod create_table;
 pub mod create_view;
 pub mod delete;
@@ -27,6 +29,8 @@ use self::{
     analyze::AnalyzeStmt,
     create_function::{CreateFunctionStmt, DropFunctionStmt},
     create_index::{CreateIndexStmt, DropIndexStmt},
+    create_procedure::{CallStmt, CreateProcedureStmt, DropProcedureStmt},
+    create_tablespace::{CreateTablespaceStmt, DropTablespaceStmt},
     create_table::CreateTableStmt,
     create_view::{CreateViewStmt, DropViewStmt},
     delete::DeleteStmt,
@@ -65,6 +69,8 @@ pub enum Statement {
     Explain(ExplainStmt),
     // CREATE variants: multi-keyword before single-keyword
     CreateFunction(CreateFunctionStmt),
+    CreateProcedure(CreateProcedureStmt),
+    CreateTablespace(CreateTablespaceStmt),
     CreateTrigger(CreateTriggerStmt),
     CreateEventTrigger(CreateEventTriggerStmt),
     CreateAccessMethod(CreateAccessMethodStmt),
@@ -94,6 +100,8 @@ pub enum Statement {
     CreateTable(CreateTableStmt),
     // DROP variants
     DropFunction(DropFunctionStmt),
+    DropProcedure(DropProcedureStmt),
+    DropTablespace(DropTablespaceStmt),
     DropTrigger(DropTriggerStmt),
     DropEventTrigger(DropEventTriggerStmt),
     DropAccessMethod(DropAccessMethodStmt),
@@ -147,6 +155,8 @@ pub enum Statement {
     AlterIndex(AlterIndexStmt),
     AlterView(AlterViewStmt),
     AlterFunction(AlterFunctionStmt),
+    // CALL stored procedure
+    Call(CallStmt),
     // DML
     Insert(InsertStmt),
     Update(UpdateStmt),

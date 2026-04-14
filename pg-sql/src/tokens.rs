@@ -334,7 +334,24 @@ pub mod keyword {
         XmlElementKw    => r"XMLELEMENT\b",
         XmlAttributesKw => r"XMLATTRIBUTES\b",
         XmlForestKw     => r"XMLFOREST\b",
+        XmlPiKw         => r"XMLPI\b",
         NameKw          => r"NAME\b",
+        // CREATE FUNCTION argument modes (Bundle 2)
+        Out         => r"OUT\b",
+        Inout       => r"INOUT\b",
+        // CREATE PROCEDURE / CALL (Bundle 3)
+        Call        => r"CALL\b",
+        // CREATE TABLESPACE (Bundle 4)
+        Tablespace  => r"TABLESPACE\b",
+        Owner       => r"OWNER\b",
+        Location    => r"LOCATION\b",
+        // GENERATED ALWAYS AS (expr) STORED (Bundle 5)
+        Stored      => r"STORED\b",
+        // U&'...' UESCAPE (Bundle 1)
+        Uescape     => r"UESCAPE\b",
+        // Aggregate WITHIN GROUP / FILTER (Bundle 8)
+        Within      => r"WITHIN\b",
+        Filter      => r"FILTER\b",
     }
 }
 
@@ -413,7 +430,9 @@ pub mod literal {
 
     recursa::literals! {
         DollarStringLit => r#"\$[a-zA-Z_]*\$[\s\S]*?\$[a-zA-Z_]*\$"#,
+        UnicodeQuotedIdent => r#"(?i:U)&"[^"]*(?:""[^"]*)*""#,
         QuotedIdent => r#""[^"]*(?:""[^"]*)*""#,
+        UnicodeStringLit => r"(?i:U)&'(?:[^'\\]|\\.|'')*'",
         EscapeStringLit => r"(?i:E)'(?:[^'\\]|\\.|'')*'",
         StringLit  => r"'[^']*(?:''[^']*)*'",
         // NumericLit must require a decimal point OR an exponent so it does
@@ -556,13 +575,16 @@ pub mod literal {
         }
     }
 
-    /// SQL identifier: unquoted (`foo`) or double-quoted (`"Foo"`).
+    /// SQL identifier: unicode-quoted (`U&"Foo"`), double-quoted (`"Foo"`),
+    /// or unquoted (`foo`).
     ///
-    /// Quoted before Unquoted so `"` is tried first (different first char).
+    /// Variant ordering: `UnicodeQuoted` (`U&"`) first as the longest prefix,
+    /// then `Quoted` (`"`), then `Unquoted` (letter).
     #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[parse(postcondition = ident_is_not_keyword)]
     #[visit(terminal)]
     pub enum Ident {
+        UnicodeQuoted(UnicodeQuotedIdent),
         Quoted(QuotedIdent),
         Unquoted(UnquotedIdent),
     }
@@ -570,6 +592,7 @@ pub mod literal {
     impl recursa::FormatTokens for Ident {
         fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
             match self {
+                Ident::UnicodeQuoted(u) => u.format_tokens(tokens),
                 Ident::Quoted(quoted) => quoted.format_tokens(tokens),
                 Ident::Unquoted(unquoted) => unquoted.format_tokens(tokens),
             }
@@ -580,6 +603,7 @@ pub mod literal {
         /// The raw text of the identifier.
         pub fn text(&self) -> &str {
             match self {
+                Ident::UnicodeQuoted(u) => &u.0,
                 Ident::Quoted(q) => &q.0,
                 Ident::Unquoted(u) => &u.0,
             }

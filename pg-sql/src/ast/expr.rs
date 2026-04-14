@@ -552,6 +552,47 @@ pub struct XmlForest {
     pub args: Surrounded<punct::LParen, Seq<XmlNamedArg, punct::Comma>, punct::RParen>,
 }
 
+/// `xmlpi(NAME ident [, content])`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct XmlPi {
+    pub _kw: PhantomData<keyword::XmlPiKw>,
+    pub inner: Surrounded<punct::LParen, XmlPiInner, punct::RParen>,
+}
+
+/// Inner contents of an `xmlpi(...)` call.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct XmlPiInner {
+    pub _name: PhantomData<keyword::NameKw>,
+    pub target: literal::AliasName,
+    pub content: Option<XmlPiContentTail>,
+}
+
+/// Optional `, content_expr` tail of `xmlpi`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct XmlPiContentTail {
+    pub _comma: punct::Comma,
+    pub expr: Box<Expr>,
+}
+
+/// `UESCAPE 'c'` suffix that may follow a `U&'...'` literal.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct UescapeSuffix {
+    pub _uescape: PhantomData<keyword::Uescape>,
+    pub escape_char: literal::StringLit,
+}
+
+/// `U&'...'` unicode string literal with optional `UESCAPE 'c'` suffix.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct UnicodeStringLitWithEscape {
+    pub lit: literal::UnicodeStringLit,
+    pub uescape: Option<UescapeSuffix>,
+}
+
 // --- Pratt expression enum ---
 
 /// SQL expression with Pratt-derived parsing.
@@ -780,6 +821,11 @@ pub enum Expr {
     /// ROW constructor: `ROW(...)`
     #[parse(atom)]
     RowExpr(RowExpr),
+    /// Unicode string literal: `U&'...'` with optional `UESCAPE 'c'`. Must
+    /// come before `CastFunc` and `StringLit` for the same reason as
+    /// `EscapeStringLit`.
+    #[parse(atom)]
+    UnicodeStringLit(UnicodeStringLitWithEscape),
     /// Escape string literal: `E'foo\n'`. Must come before `CastFunc` and
     /// `StringLit` — `CastFunc` is `TypeName StringLit` and would match `e`
     /// as a type name followed by the string literal.
@@ -806,6 +852,9 @@ pub enum Expr {
     /// `xmlattributes(expr [AS alias], ...)`. Before `Func`.
     #[parse(atom)]
     XmlAttributes(XmlAttributes),
+    /// `xmlpi(NAME ident [, content])`. Before `Func`.
+    #[parse(atom)]
+    XmlPi(XmlPi),
     /// Function call: `func(args)` -- must come before ColumnRef
     #[parse(atom)]
     Func(FuncCall),
@@ -943,6 +992,38 @@ mod tests {
             Input::new("xmlelement(name foo, xmlattributes(1 as a, 2 as b), 'content')");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::XmlElement(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_xmlpi_basic() {
+        let mut input = Input::new("xmlpi(name foo)");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::XmlPi(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_xmlpi_with_content() {
+        let mut input = Input::new("xmlpi(name foo, 'bar')");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::XmlPi(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_unicode_string_lit_basic() {
+        let mut input = Input::new(r"U&'d\0061t\+000061'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::UnicodeStringLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_unicode_string_lit_uescape() {
+        let mut input = Input::new(r"U&'d!0061t\+000061' UESCAPE '!'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::UnicodeStringLit(_)));
         assert!(input.is_empty());
     }
 
