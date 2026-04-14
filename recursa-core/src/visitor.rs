@@ -44,10 +44,10 @@ impl<'ast> NodeKey<'ast> {
 }
 
 /// Trait for types that can produce a `NodeKey`.
-pub trait AsNodeKey: 'static {
+pub trait AsNodeKey {
     fn as_node_key(&self) -> NodeKey<'_>
     where
-        Self: Sized,
+        Self: Sized + 'static,
     {
         NodeKey::new(self)
     }
@@ -57,14 +57,22 @@ pub trait AsNodeKey: 'static {
 ///
 /// The `visit` method drives traversal by calling `visitor.total_enter(self)`,
 /// visiting children, then `visitor.total_exit(self)`.
-pub trait Visit: 'static + Sized + AsNodeKey {
+pub trait Visit: Sized + AsNodeKey {
     fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>>;
 
-    fn downcast_ref<Target: Visit>(&self) -> Option<&Target> {
+    fn downcast_ref<Target: Visit>(&self) -> Option<&Target>
+    where
+        Self: 'static,
+        Target: 'static,
+    {
         (self as &dyn Any).downcast_ref::<Target>()
     }
 
-    fn is<Target: Visit>(&self) -> bool {
+    fn is<Target: Visit>(&self) -> bool
+    where
+        Self: 'static,
+        Target: 'static,
+    {
         (self as &dyn Any).is::<Target>()
     }
 }
@@ -101,9 +109,9 @@ pub trait Visitor<N>: Sized {
 pub trait TotalVisitor: Sized {
     type Error;
 
-    fn total_enter<N: 'static>(&mut self, node: &N) -> ControlFlow<Break<Self::Error>>;
+    fn total_enter<N>(&mut self, node: &N) -> ControlFlow<Break<Self::Error>>;
 
-    fn total_exit<N: 'static>(&mut self, node: &N) -> ControlFlow<Break<Self::Error>>;
+    fn total_exit<N>(&mut self, node: &N) -> ControlFlow<Break<Self::Error>>;
 }
 
 // -- Blanket Visit impls for container types --
