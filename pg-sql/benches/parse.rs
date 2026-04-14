@@ -185,10 +185,37 @@ fn bench_corpus_head_to_head(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_stress_aggregate(c: &mut Criterion) {
+    let stress = load_sql_dir(&fixtures_root().join("stress"));
+    let bytes: u64 = stress.iter().map(|(_, s)| s.len() as u64).sum();
+
+    let mut group = c.benchmark_group("stress/aggregate");
+    cap_time(&mut group);
+    group.throughput(Throughput::Bytes(bytes));
+
+    group.bench_function("pg-sql", |b| {
+        b.iter(|| {
+            for (_, sql) in &stress {
+                criterion::black_box(parse_with_pg_sql(sql));
+            }
+        });
+    });
+    group.bench_function("sqlparser", |b| {
+        b.iter(|| {
+            for (_, sql) in &stress {
+                criterion::black_box(parse_with_sqlparser(sql));
+            }
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_corpus_full,
     bench_corpus_head_to_head,
-    bench_stress_shapes
+    bench_stress_shapes,
+    bench_stress_aggregate
 );
 criterion_main!(benches);
