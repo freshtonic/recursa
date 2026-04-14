@@ -20,10 +20,15 @@ fn load_sql_dir(dir: &Path) -> Vec<(String, String)> {
         .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("sql"))
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            // Skip non-UTF8 fixtures (e.g. collate.windows.win1252.sql). They
-            // exist intentionally in the corpus but can't go through a &str API.
-            let contents = fs::read_to_string(e.path()).ok()?;
-            Some((name, contents))
+            // Skip fixtures we can't read as UTF-8 (e.g. collate.windows.win1252.sql)
+            // or any other read failure. Log so the corpus doesn't shrink invisibly.
+            match fs::read_to_string(e.path()) {
+                Ok(contents) => Some((name, contents)),
+                Err(err) => {
+                    eprintln!("warning: skipping fixture {name}: {err}");
+                    None
+                }
+            }
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
