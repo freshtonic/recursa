@@ -78,6 +78,8 @@ fn stress_shapes() -> Vec<(&'static str, Vec<(usize, String)>)> {
             (1_000, "select_list_1000.sql".into()),
             (10_000, "select_list_10000.sql".into()),
         ]),
+        // Sizes kept small: pg-sql's recursive-descent parser is pathologically
+        // slow on deep subquery nesting and was OOM-killed at depth 30.
         ("nested_subquery", vec![
             (5, "nested_subquery_5.sql".into()),
             (10, "nested_subquery_10.sql".into()),
