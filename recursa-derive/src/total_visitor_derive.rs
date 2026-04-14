@@ -60,8 +60,8 @@ pub fn derive_total_visitor(input: DeriveInput) -> syn::Result<TokenStream> {
         .iter()
         .map(|ty| {
             quote! {
-                if ::std::any::TypeId::of::<N>() == ::std::any::TypeId::of::<#ty>() {
-                    // SAFETY: TypeId match guarantees N is #ty
+                if ::std::any::type_name::<N>() == ::std::any::type_name::<#ty>() {
+                    // SAFETY: type_name match guarantees N is #ty
                     let node = unsafe { &*(node as *const N as *const #ty) };
                     return <Self as ::recursa_core::Visitor<#ty>>::enter(self, node);
                 }
@@ -75,7 +75,7 @@ pub fn derive_total_visitor(input: DeriveInput) -> syn::Result<TokenStream> {
         .iter()
         .map(|ty| {
             quote! {
-                if ::std::any::TypeId::of::<N>() == ::std::any::TypeId::of::<#ty>() {
+                if ::std::any::type_name::<N>() == ::std::any::type_name::<#ty>() {
                     let node = unsafe { &*(node as *const N as *const #ty) };
                     return <Self as ::recursa_core::Visitor<#ty>>::exit(self, node);
                 }
@@ -87,12 +87,16 @@ pub fn derive_total_visitor(input: DeriveInput) -> syn::Result<TokenStream> {
         impl #impl_generics ::recursa_core::TotalVisitor for #name #ty_generics #where_clause {
             type Error = #error_type;
 
-            fn total_enter<N: 'static>(&mut self, node: &N) -> ::std::ops::ControlFlow<::recursa_core::Break<Self::Error>> {
+            // Dispatch via type_name rather than TypeId: TypeId requires N: 'static,
+            // which rules out AST types carrying a borrowed 'input lifetime.
+            // type_name has no 'static bound and, while documented as diagnostic-only,
+            // is de facto unique per type in stable Rust. Accepted trade-off.
+            fn total_enter<N>(&mut self, node: &N) -> ::std::ops::ControlFlow<::recursa_core::Break<Self::Error>> {
                 #(#enter_arms)*
                 ::std::ops::ControlFlow::Continue(())
             }
 
-            fn total_exit<N: 'static>(&mut self, node: &N) -> ::std::ops::ControlFlow<::recursa_core::Break<Self::Error>> {
+            fn total_exit<N>(&mut self, node: &N) -> ::std::ops::ControlFlow<::recursa_core::Break<Self::Error>> {
                 #(#exit_arms)*
                 ::std::ops::ControlFlow::Continue(())
             }
