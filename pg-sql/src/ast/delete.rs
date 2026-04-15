@@ -11,9 +11,9 @@ use crate::tokens::{keyword, literal};
 /// Table alias with explicit AS keyword: `AS alias`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct AsAlias {
+pub struct AsAlias<'input> {
     pub _as: PhantomData<keyword::As>,
-    pub name: literal::Ident,
+    pub name: literal::Ident<'input>,
 }
 
 /// Table alias in DELETE FROM: either `AS alias` or bare `alias`.
@@ -22,12 +22,12 @@ pub struct AsAlias {
 /// Bare (`ident`), so longest-match-wins picks it when AS is present.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum TableAlias {
-    WithAs(AsAlias),
-    Bare(literal::Ident),
+pub enum TableAlias<'input> {
+    WithAs(AsAlias<'input>),
+    Bare(literal::Ident<'input>),
 }
 
-impl TableAlias {
+impl<'input> TableAlias<'input> {
     /// Returns the alias name regardless of variant.
     pub fn name(&self) -> &str {
         match self {
@@ -40,26 +40,27 @@ impl TableAlias {
 /// `USING table, ...` clause in DELETE statements.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct DeleteUsingClause {
+pub struct DeleteUsingClause<'input> {
     pub _using: PhantomData<keyword::Using>,
-    pub tables: recursa::seq::Seq<crate::ast::select::TableRef, crate::tokens::punct::Comma>,
+    pub tables:
+        recursa::seq::Seq<crate::ast::select::TableRef<'input>, crate::tokens::punct::Comma>,
 }
 
 /// DELETE FROM statement: `DELETE FROM table [alias] [USING ...] [WHERE expr] [RETURNING ...]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
-pub struct DeleteStmt {
+pub struct DeleteStmt<'input> {
     pub _delete: PhantomData<keyword::Delete>,
     pub _from: PhantomData<keyword::From>,
-    pub table_name: literal::Ident,
-    pub alias: Option<TableAlias>,
+    pub table_name: literal::Ident<'input>,
+    pub alias: Option<TableAlias<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub using_clause: Option<DeleteUsingClause>,
+    pub using_clause: Option<DeleteUsingClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub where_clause: Option<WhereClause>,
+    pub where_clause: Option<WhereClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub returning: Option<ReturningClause>,
+    pub returning: Option<ReturningClause<'input>>,
 }
 
 #[cfg(test)]

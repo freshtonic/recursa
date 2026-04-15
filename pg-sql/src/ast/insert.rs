@@ -25,9 +25,9 @@ pub struct DefaultValues {
 /// Multiple value rows: `VALUES (row1), (row2), ...`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct InsertValueRows {
+pub struct InsertValueRows<'input> {
     pub _values: PhantomData<keyword::Values>,
-    pub rows: Seq<ValueList, punct::Comma>,
+    pub rows: Seq<ValueList<'input>, punct::Comma>,
 }
 
 /// Insert source: DEFAULT VALUES, VALUES (row), ..., or SELECT query.
@@ -36,21 +36,21 @@ pub struct InsertValueRows {
 /// so longest-match-wins picks it when DEFAULT is present.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum InsertSource {
+pub enum InsertSource<'input> {
     Default(DefaultValues),
-    Rows(InsertValueRows),
-    Select(Box<crate::ast::values::CompoundQuery>),
+    Rows(InsertValueRows<'input>),
+    Select(Box<crate::ast::values::CompoundQuery<'input>>),
 }
 
 /// DO UPDATE SET ... [WHERE ...] action.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct DoUpdateAction {
+pub struct DoUpdateAction<'input> {
     pub _do: PhantomData<keyword::Do>,
     pub _update: PhantomData<keyword::Update>,
     pub _set: PhantomData<keyword::Set>,
-    pub assignments: Seq<SetAssignment, punct::Comma>,
-    pub where_clause: Option<WhereClause>,
+    pub assignments: Seq<SetAssignment<'input>, punct::Comma>,
+    pub where_clause: Option<WhereClause<'input>>,
 }
 
 /// DO NOTHING action.
@@ -68,44 +68,47 @@ pub struct DoNothingAction {
 /// at the next keyword, so the regex disambiguates.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum ConflictAction {
-    DoUpdate(DoUpdateAction),
+pub enum ConflictAction<'input> {
+    DoUpdate(DoUpdateAction<'input>),
     DoNothing(DoNothingAction),
 }
 
 /// ON CONFLICT clause: `ON CONFLICT [(col, ...)] DO UPDATE SET ... | DO NOTHING`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct OnConflictClause {
+pub struct OnConflictClause<'input> {
     pub _on: PhantomData<keyword::On>,
     pub _conflict: PhantomData<keyword::Conflict>,
-    pub target:
-        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
-    pub action: ConflictAction,
+    pub target: Option<
+        Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
+    >,
+    pub action: ConflictAction<'input>,
 }
 
 /// INSERT INTO statement with optional ON CONFLICT and RETURNING.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
-pub struct InsertStmt {
+pub struct InsertStmt<'input> {
     pub _insert: PhantomData<keyword::Insert>,
     pub _into: PhantomData<keyword::Into>,
-    pub table_name: literal::Ident,
-    pub columns: Option<ColumnList>,
+    pub table_name: literal::Ident<'input>,
+    pub columns: Option<ColumnList<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub source: InsertSource,
+    pub source: InsertSource<'input>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub on_conflict: Option<OnConflictClause>,
+    pub on_conflict: Option<OnConflictClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub returning: Option<ReturningClause>,
+    pub returning: Option<ReturningClause<'input>>,
 }
 
 /// Column list: `(col1, col2, ...)`.
-pub type ColumnList = Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>;
+pub type ColumnList<'input> =
+    Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>;
 
 /// Value list: `(col1, col2, ...)`.
-pub type ValueList = Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>;
+pub type ValueList<'input> =
+    Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>;
 
 #[cfg(test)]
 mod tests {

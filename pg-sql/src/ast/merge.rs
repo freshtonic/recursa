@@ -23,9 +23,9 @@ use crate::tokens::{keyword, literal, punct};
 /// `AND cond` qualifier on a WHEN clause.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct AndCondition {
+pub struct AndCondition<'input> {
     pub _and: PhantomData<keyword::And>,
-    pub condition: Expr,
+    pub condition: Expr<'input>,
 }
 
 /// `BY SOURCE` qualifier on `WHEN NOT MATCHED`.
@@ -55,10 +55,10 @@ pub enum NotMatchedBy {
 /// `UPDATE SET col = expr, ...` action body (the part after THEN).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct UpdateAction {
+pub struct UpdateAction<'input> {
     pub _update: PhantomData<keyword::Update>,
     pub _set: PhantomData<keyword::Set>,
-    pub assignments: Seq<SetAssignment, punct::Comma>,
+    pub assignments: Seq<SetAssignment<'input>, punct::Comma>,
 }
 
 /// `DELETE` action body.
@@ -83,8 +83,8 @@ pub struct DoNothingAction {
 /// declaration only.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum MatchedAction {
-    Update(UpdateAction),
+pub enum MatchedAction<'input> {
+    Update(UpdateAction<'input>),
     Delete(DeleteAction),
     DoNothing(DoNothingAction),
 }
@@ -98,14 +98,15 @@ pub struct InsertDefaultValues {
 }
 
 /// A single row of values: `(expr, ...)`.
-pub type ValueRow = Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>;
+pub type ValueRow<'input> =
+    Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>;
 
 /// `VALUES (row), (row), ...` body.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct InsertValuesBody {
+pub struct InsertValuesBody<'input> {
     pub _values: PhantomData<keyword::Values>,
-    pub rows: Seq<ValueRow, punct::Comma>,
+    pub rows: Seq<ValueRow<'input>, punct::Comma>,
 }
 
 /// Body of an INSERT inside MERGE: `VALUES ...` or `DEFAULT VALUES`.
@@ -114,60 +115,61 @@ pub struct InsertValuesBody {
 /// `Values` (`VALUES`) since they begin with different keywords.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum InsertBody {
+pub enum InsertBody<'input> {
     Default(InsertDefaultValues),
-    Values(InsertValuesBody),
+    Values(InsertValuesBody<'input>),
 }
 
 /// Optional `INTO target_name` after `INSERT`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct InsertInto {
+pub struct InsertInto<'input> {
     pub _into: PhantomData<keyword::Into>,
-    pub name: literal::Ident,
+    pub name: literal::Ident<'input>,
 }
 
 /// `INSERT [INTO target] [(cols)] { VALUES ... | DEFAULT VALUES }`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct InsertAction {
+pub struct InsertAction<'input> {
     pub _insert: PhantomData<keyword::Insert>,
-    pub into: Option<InsertInto>,
-    pub columns:
-        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
-    pub body: InsertBody,
+    pub into: Option<InsertInto<'input>>,
+    pub columns: Option<
+        Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
+    >,
+    pub body: InsertBody<'input>,
 }
 
 /// Action allowed after `WHEN NOT MATCHED ... THEN`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum NotMatchedAction {
-    Insert(InsertAction),
+pub enum NotMatchedAction<'input> {
+    Insert(InsertAction<'input>),
     DoNothing(DoNothingAction),
 }
 
 /// `WHEN NOT MATCHED [BY {SOURCE|TARGET}] [AND cond] THEN action`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct WhenNotMatched {
+pub struct WhenNotMatched<'input> {
     pub _when: PhantomData<keyword::When>,
     pub _not: PhantomData<keyword::Not>,
     pub _matched: PhantomData<keyword::Matched>,
     pub by: Option<NotMatchedBy>,
-    pub and: Option<AndCondition>,
+    pub and: Option<AndCondition<'input>>,
     pub _then: PhantomData<keyword::Then>,
-    pub action: NotMatchedAction,
+    pub action: NotMatchedAction<'input>,
 }
 
 /// `WHEN MATCHED [AND cond] THEN action`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct WhenMatched {
+pub struct WhenMatched<'input> {
     pub _when: PhantomData<keyword::When>,
     pub _matched: PhantomData<keyword::Matched>,
-    pub and: Option<AndCondition>,
+    pub and: Option<AndCondition<'input>>,
     pub _then: PhantomData<keyword::Then>,
-    pub action: MatchedAction,
+    pub action: MatchedAction<'input>,
 }
 
 /// A WHEN clause in MERGE.
@@ -176,24 +178,24 @@ pub struct WhenMatched {
 /// `Matched` (`WHEN MATCHED`); list it first.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum WhenClause {
-    NotMatched(WhenNotMatched),
-    Matched(WhenMatched),
+pub enum WhenClause<'input> {
+    NotMatched(WhenNotMatched<'input>),
+    Matched(WhenMatched<'input>),
 }
 
 /// MERGE statement.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct MergeStmt {
+pub struct MergeStmt<'input> {
     pub _merge: PhantomData<keyword::Merge>,
     pub _into: PhantomData<keyword::Into>,
-    pub target: PlainTable,
+    pub target: PlainTable<'input>,
     pub _using: PhantomData<keyword::Using>,
-    pub source: TableRef,
+    pub source: TableRef<'input>,
     pub _on: PhantomData<keyword::On>,
-    pub condition: Expr,
-    pub when_clauses: Seq<WhenClause, (), OptionalTrailing>,
-    pub returning: Option<ReturningClause>,
+    pub condition: Expr<'input>,
+    pub when_clauses: Seq<WhenClause<'input>, (), OptionalTrailing>,
+    pub returning: Option<ReturningClause<'input>>,
 }
 
 #[cfg(test)]
