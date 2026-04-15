@@ -21,16 +21,16 @@ pub enum SetScope {
 /// numeric literal (longest-match-wins).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum SetValue {
+pub enum SetValue<'input> {
     On(keyword::On),
     Off(keyword::Off),
     False(keyword::False),
     True(keyword::True),
     Default(keyword::Default),
-    StringLit(literal::StringLit),
-    NumericLit(literal::NumericLit),
-    IntegerLit(literal::IntegerLit),
-    Ident(literal::Ident),
+    StringLit(literal::StringLit<'input>),
+    NumericLit(literal::NumericLit<'input>),
+    IntegerLit(literal::IntegerLit<'input>),
+    Ident(literal::Ident<'input>),
 }
 
 /// The separator between param and value: TO or =.
@@ -44,54 +44,54 @@ pub enum SetSep {
 /// Plain SET statement: `SET [SESSION|LOCAL] param TO|= value [, value ...]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SetStmt {
+pub struct SetStmt<'input> {
     pub _set: PhantomData<keyword::Set>,
     pub scope: Option<SetScope>,
-    pub param: literal::AliasName,
+    pub param: literal::AliasName<'input>,
     pub sep: SetSep,
-    pub values: Seq<SetValue, punct::Comma>,
+    pub values: Seq<SetValue<'input>, punct::Comma>,
 }
 
 /// Role target in `SET ROLE`: role name, `NONE`, or `DEFAULT`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum SetRoleTarget {
+pub enum SetRoleTarget<'input> {
     None(keyword::None),
     Default(keyword::Default),
-    Role(literal::AliasName),
-    String(literal::StringLit),
+    Role(literal::AliasName<'input>),
+    String(literal::StringLit<'input>),
 }
 
 /// `SET [SESSION|LOCAL] ROLE { rolename | NONE | DEFAULT }`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SetRoleStmt {
+pub struct SetRoleStmt<'input> {
     pub _set: PhantomData<keyword::Set>,
     pub scope: Option<SetScope>,
     pub _role: PhantomData<keyword::Role>,
-    pub target: SetRoleTarget,
+    pub target: SetRoleTarget<'input>,
 }
 
 /// Role target in `SET SESSION AUTHORIZATION`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum SetSessionAuthTarget {
+pub enum SetSessionAuthTarget<'input> {
     Default(keyword::Default),
-    String(literal::StringLit),
-    Role(literal::AliasName),
+    String(literal::StringLit<'input>),
+    Role(literal::AliasName<'input>),
 }
 
 /// `SET [SESSION|LOCAL] SESSION AUTHORIZATION { rolename | DEFAULT }`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SetSessionAuthStmt {
+pub struct SetSessionAuthStmt<'input> {
     pub _set: PhantomData<keyword::Set>,
     // Only `LOCAL` is allowed here — the `SESSION` scope keyword would
     // conflict with the `SESSION AUTHORIZATION` literal that follows.
     pub local: Option<PhantomData<keyword::Local>>,
     pub _session: PhantomData<keyword::Session>,
     pub _authorization: PhantomData<keyword::Authorization>,
-    pub target: SetSessionAuthTarget,
+    pub target: SetSessionAuthTarget<'input>,
 }
 
 /// A signed numeric literal: `[-]numeric | [-]integer`.
@@ -99,23 +99,23 @@ pub struct SetSessionAuthStmt {
 /// Variant ordering: Numeric before Integer (longest-match-wins for `7.5`).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum SignedNumber {
-    Numeric(SignedNumeric),
-    Integer(SignedInteger),
+pub enum SignedNumber<'input> {
+    Numeric(SignedNumeric<'input>),
+    Integer(SignedInteger<'input>),
 }
 
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SignedNumeric {
+pub struct SignedNumeric<'input> {
     pub minus: Option<punct::Minus>,
-    pub value: literal::NumericLit,
+    pub value: literal::NumericLit<'input>,
 }
 
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SignedInteger {
+pub struct SignedInteger<'input> {
     pub minus: Option<punct::Minus>,
-    pub value: literal::IntegerLit,
+    pub value: literal::IntegerLit<'input>,
 }
 
 /// Target of `SET TIME ZONE`.
@@ -124,22 +124,22 @@ pub struct SignedInteger {
 /// `String`. INTERVAL form is deliberately skipped.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum SetTimeZoneTarget {
+pub enum SetTimeZoneTarget<'input> {
     Local(keyword::Local),
     Default(keyword::Default),
-    Number(SignedNumber),
-    String(literal::StringLit),
+    Number(SignedNumber<'input>),
+    String(literal::StringLit<'input>),
 }
 
 /// `SET [SESSION|LOCAL] TIME ZONE { signed_number | string | LOCAL | DEFAULT }`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SetTimeZoneStmt {
+pub struct SetTimeZoneStmt<'input> {
     pub _set: PhantomData<keyword::Set>,
     pub scope: Option<SetScope>,
     pub _time: PhantomData<keyword::Time>,
     pub _zone: PhantomData<keyword::Zone>,
-    pub target: SetTimeZoneTarget,
+    pub target: SetTimeZoneTarget<'input>,
 }
 
 /// Target of a RESET statement.
@@ -147,12 +147,12 @@ pub struct SetTimeZoneStmt {
 /// Variant ordering: multi-token variants before single-token variants.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum ResetTarget {
+pub enum ResetTarget<'input> {
     SessionAuth(ResetSessionAuth),
     TimeZone(ResetTimeZone),
     Role(keyword::Role),
     All(keyword::All),
-    Ident(literal::AliasName),
+    Ident(literal::AliasName<'input>),
 }
 
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -172,9 +172,9 @@ pub struct ResetTimeZone {
 /// RESET statement: `RESET { param | ALL | ROLE | SESSION AUTHORIZATION | TIME ZONE }`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ResetStmt {
+pub struct ResetStmt<'input> {
     pub _reset: PhantomData<keyword::Reset>,
-    pub target: ResetTarget,
+    pub target: ResetTarget<'input>,
 }
 
 // --- SHOW ---
@@ -210,20 +210,20 @@ pub struct ShowTransactionIsolationLevel {
 /// fallback so the specific forms are matched first.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum ShowTarget {
+pub enum ShowTarget<'input> {
     TransactionIsolationLevel(ShowTransactionIsolationLevel),
     SessionAuthorization(ShowSessionAuth),
     TimeZone(ShowTimeZone),
     All(keyword::All),
-    Param(literal::AliasName),
+    Param(literal::AliasName<'input>),
 }
 
 /// SHOW statement: `SHOW { name | ALL | TIME ZONE | SESSION AUTHORIZATION | TRANSACTION ISOLATION LEVEL }`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ShowStmt {
+pub struct ShowStmt<'input> {
     pub _show: PhantomData<keyword::Show>,
-    pub target: ShowTarget,
+    pub target: ShowTarget<'input>,
 }
 
 #[cfg(test)]

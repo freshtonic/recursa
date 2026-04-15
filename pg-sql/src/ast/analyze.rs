@@ -9,9 +9,9 @@ use crate::tokens::{keyword, literal};
 /// ANALYZE statement.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct AnalyzeStmt {
+pub struct AnalyzeStmt<'input> {
     pub _analyze: PhantomData<keyword::Analyze>,
-    pub table_name: literal::Ident,
+    pub table_name: literal::Ident<'input>,
 }
 
 #[cfg(test)]

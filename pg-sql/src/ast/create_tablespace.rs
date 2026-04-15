@@ -11,39 +11,39 @@ use crate::tokens::{keyword, literal};
 /// `OWNER role` optional clause.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct OwnerClause {
+pub struct OwnerClause<'input> {
     pub _owner: PhantomData<keyword::Owner>,
-    pub role: literal::Ident,
+    pub role: literal::Ident<'input>,
 }
 
 /// `LOCATION 'path'` clause.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct LocationClause {
+pub struct LocationClause<'input> {
     pub _location: PhantomData<keyword::Location>,
-    pub path: literal::StringLit,
+    pub path: literal::StringLit<'input>,
 }
 
 /// `CREATE TABLESPACE name [OWNER role] LOCATION 'path' [WITH (params)]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CreateTablespaceStmt {
+pub struct CreateTablespaceStmt<'input> {
     pub _create: PhantomData<keyword::Create>,
     pub _tablespace: PhantomData<keyword::Tablespace>,
-    pub name: literal::Ident,
-    pub owner: Option<OwnerClause>,
-    pub location: LocationClause,
-    pub with_options: Option<WithStorage>,
+    pub name: literal::Ident<'input>,
+    pub owner: Option<OwnerClause<'input>>,
+    pub location: LocationClause<'input>,
+    pub with_options: Option<WithStorage<'input>>,
 }
 
 /// `DROP TABLESPACE [IF EXISTS] name`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct DropTablespaceStmt {
+pub struct DropTablespaceStmt<'input> {
     pub _drop: PhantomData<keyword::Drop>,
     pub _tablespace: PhantomData<keyword::Tablespace>,
     pub if_exists: Option<IfExistsKw>,
-    pub name: literal::Ident,
+    pub name: literal::Ident<'input>,
 }
 
 #[cfg(test)]

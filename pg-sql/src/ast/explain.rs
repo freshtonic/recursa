@@ -11,30 +11,30 @@ use crate::tokens::{keyword, literal, punct};
 /// An explain option value: ON, OFF, or identifier.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum ExplainOptValue {
+pub enum ExplainOptValue<'input> {
     On(keyword::On),
     Off(keyword::Off),
-    Ident(literal::Ident),
+    Ident(literal::Ident<'input>),
 }
 
 /// A single explain option: `name value` (e.g., `costs off`).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ExplainOption {
-    pub name: literal::AliasName,
-    pub value: Option<ExplainOptValue>,
+pub struct ExplainOption<'input> {
+    pub name: literal::AliasName<'input>,
+    pub value: Option<ExplainOptValue<'input>>,
 }
 
 /// Explain options: `(opt, ...)`.
-pub type ExplainOptions =
-    Surrounded<punct::LParen, Seq<ExplainOption, punct::Comma>, punct::RParen>;
+pub type ExplainOptions<'input> =
+    Surrounded<punct::LParen, Seq<ExplainOption<'input>, punct::Comma>, punct::RParen>;
 
 /// EXPLAIN statement: `EXPLAIN [(options)] statement`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ExplainStmt {
+pub struct ExplainStmt<'input> {
     pub _explain: PhantomData<keyword::Explain>,
-    pub options: Option<ExplainOptions>,
+    pub options: Option<ExplainOptions<'input>>,
     pub body: Box<crate::ast::Statement>,
 }
 

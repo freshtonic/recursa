@@ -12,25 +12,25 @@ use crate::tokens::{keyword, literal, punct};
 /// SETOF type: `SETOF typename`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SetofReturn {
+pub struct SetofReturn<'input> {
     pub _setof: PhantomData<keyword::Setof>,
-    pub type_name: TypeName,
+    pub type_name: TypeName<'input>,
 }
 
 /// Function return type: `SETOF type` or plain `type`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum ReturnType {
-    Setof(SetofReturn),
-    Plain(TypeName),
+pub enum ReturnType<'input> {
+    Setof(SetofReturn<'input>),
+    Plain(TypeName<'input>),
 }
 
 /// LANGUAGE clause: `LANGUAGE name`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct LanguageOption {
+pub struct LanguageOption<'input> {
     pub _language: PhantomData<keyword::Language>,
-    pub name: literal::AliasName,
+    pub name: literal::AliasName<'input>,
 }
 
 /// Function body: either single-quoted string or dollar-quoted string.
@@ -38,42 +38,42 @@ pub struct LanguageOption {
 /// Variant ordering: dollar-quoted before single-quoted (different first chars).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum FuncBody {
-    Dollar(literal::DollarStringLit),
-    String(literal::StringLit),
+pub enum FuncBody<'input> {
+    Dollar(literal::DollarStringLit<'input>),
+    String(literal::StringLit<'input>),
 }
 
 /// Function return type name -- extends TypeName with additional types
 /// that are valid as function return types (e.g., `trigger`).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum FuncReturnTypeName {
+pub enum FuncReturnTypeName<'input> {
     Trigger(keyword::Trigger),
-    Base(TypeName),
+    Base(TypeName<'input>),
 }
 
 /// RETURNS clause for functions: `RETURNS [SETOF] type`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct FuncReturnsClause {
+pub struct FuncReturnsClause<'input> {
     pub _returns: PhantomData<keyword::Returns>,
-    pub return_type: FuncReturnType,
+    pub return_type: FuncReturnType<'input>,
 }
 
 /// Function return type: SETOF type, or plain type.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum FuncReturnType {
-    Setof(FuncSetofReturn),
-    Plain(FuncReturnTypeName),
+pub enum FuncReturnType<'input> {
+    Setof(FuncSetofReturn<'input>),
+    Plain(FuncReturnTypeName<'input>),
 }
 
 /// SETOF type for function returns.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct FuncSetofReturn {
+pub struct FuncSetofReturn<'input> {
     pub _setof: PhantomData<keyword::Setof>,
-    pub type_name: FuncReturnTypeName,
+    pub type_name: FuncReturnTypeName<'input>,
 }
 
 // --- Function parameters ---
@@ -92,18 +92,18 @@ pub enum ArgMode {
 /// with an argument mode (`IN`/`OUT`/`INOUT`/`VARIADIC`).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct NamedFuncParam {
+pub struct NamedFuncParam<'input> {
     pub mode: Option<ArgMode>,
-    pub name: literal::Ident,
-    pub type_name: TypeName,
+    pub name: literal::Ident<'input>,
+    pub type_name: TypeName<'input>,
 }
 
 /// `[mode] type` -- an unnamed function parameter with optional mode.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct UnnamedFuncParam {
+pub struct UnnamedFuncParam<'input> {
     pub mode: Option<ArgMode>,
-    pub type_name: TypeName,
+    pub type_name: TypeName<'input>,
 }
 
 /// A single function parameter: either `[mode] name type` or `[mode] type`.
@@ -113,9 +113,9 @@ pub struct UnnamedFuncParam {
 /// could parse.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum FuncParam {
-    Named(NamedFuncParam),
-    Unnamed(UnnamedFuncParam),
+pub enum FuncParam<'input> {
+    Named(NamedFuncParam<'input>),
+    Unnamed(UnnamedFuncParam<'input>),
 }
 
 // --- Function options (unordered list) ---
@@ -164,9 +164,9 @@ pub enum StrictnessOption {
 /// `AS body` clause.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct AsOption {
+pub struct AsOption<'input> {
     pub _as: PhantomData<keyword::As>,
-    pub body: FuncBody,
+    pub body: FuncBody<'input>,
 }
 
 /// A single function option clause.
@@ -176,11 +176,11 @@ pub struct AsOption {
 /// listed before plain `VolatilityOption`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum FuncOption {
+pub enum FuncOption<'input> {
     Strictness(StrictnessOption),
     Volatility(VolatilityOption),
-    Language(LanguageOption),
-    As(AsOption),
+    Language(LanguageOption<'input>),
+    As(AsOption<'input>),
 }
 
 /// CREATE [OR REPLACE] FUNCTION statement.
@@ -188,24 +188,24 @@ pub enum FuncOption {
 /// Function options after the signature/RETURNS may appear in any order.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CreateFunctionStmt {
+pub struct CreateFunctionStmt<'input> {
     pub _create: PhantomData<keyword::Create>,
     pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
     pub _function: PhantomData<keyword::Function>,
-    pub name: literal::Ident,
-    pub args: Surrounded<punct::LParen, Seq<FuncParam, punct::Comma>, punct::RParen>,
-    pub returns: Option<FuncReturnsClause>,
-    pub options: Seq<FuncOption, (), OptionalTrailing>,
+    pub name: literal::Ident<'input>,
+    pub args: Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>,
+    pub returns: Option<FuncReturnsClause<'input>>,
+    pub options: Seq<FuncOption<'input>, (), OptionalTrailing>,
 }
 
 /// DROP FUNCTION statement: `DROP FUNCTION name(args)`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct DropFunctionStmt {
+pub struct DropFunctionStmt<'input> {
     pub _drop: PhantomData<keyword::Drop>,
     pub _function: PhantomData<keyword::Function>,
-    pub name: literal::Ident,
-    pub args: Surrounded<punct::LParen, Seq<FuncParam, punct::Comma>, punct::RParen>,
+    pub name: literal::Ident<'input>,
+    pub args: Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>,
 }
 
 #[cfg(test)]

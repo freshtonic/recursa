@@ -165,18 +165,18 @@ pub struct SetSessionCharacteristics {
 /// `SET CONSTRAINTS { ALL | name [, …] } { DEFERRED | IMMEDIATE }`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SetConstraintsStmt {
+pub struct SetConstraintsStmt<'input> {
     pub _set: PhantomData<keyword::Set>,
     pub _constraints: PhantomData<keyword::Constraints>,
-    pub target: SetConstraintsTarget,
+    pub target: SetConstraintsTarget<'input>,
     pub mode: DeferredMode,
 }
 
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum SetConstraintsTarget {
+pub enum SetConstraintsTarget<'input> {
     All(keyword::All),
-    Names(Seq<literal::Ident, punct::Comma>),
+    Names(Seq<literal::Ident<'input>, punct::Comma>),
 }
 
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]

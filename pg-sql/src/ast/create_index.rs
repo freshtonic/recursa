@@ -61,7 +61,7 @@ pub struct OpclassSpec<'input> {
 #[parse(rules = SqlRules)]
 pub struct StorageParam<'input> {
     pub name: literal::AliasName<'input>,
-    pub value: Option<StorageParamValue>,
+    pub value: Option<StorageParamValue<'input>>,
 }
 
 /// `= value` suffix for a storage parameter.
@@ -71,9 +71,9 @@ pub struct StorageParam<'input> {
 /// simple literals and `Expr::ColumnRef` rejects keywords like `off`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct StorageParamValue {
+pub struct StorageParamValue<'input> {
     pub _eq: punct::Eq,
-    pub value: SetValue,
+    pub value: SetValue<'input>,
 }
 
 /// `WITH (name = value, ...)` storage parameters clause.

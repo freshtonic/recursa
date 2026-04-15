@@ -13,32 +13,33 @@ use crate::tokens::{keyword, literal, punct};
 /// CREATE [OR REPLACE] PROCEDURE name ( [ parameters ] ) options...
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CreateProcedureStmt {
+pub struct CreateProcedureStmt<'input> {
     pub _create: PhantomData<keyword::Create>,
     pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
     pub _procedure: PhantomData<keyword::Procedure>,
-    pub name: literal::Ident,
-    pub args: Surrounded<punct::LParen, Seq<FuncParam, punct::Comma>, punct::RParen>,
-    pub options: Seq<FuncOption, (), OptionalTrailing>,
+    pub name: literal::Ident<'input>,
+    pub args: Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>,
+    pub options: Seq<FuncOption<'input>, (), OptionalTrailing>,
 }
 
 /// DROP PROCEDURE name [(args)]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct DropProcedureStmt {
+pub struct DropProcedureStmt<'input> {
     pub _drop: PhantomData<keyword::Drop>,
     pub _procedure: PhantomData<keyword::Procedure>,
-    pub name: literal::Ident,
-    pub args: Option<Surrounded<punct::LParen, Seq<FuncParam, punct::Comma>, punct::RParen>>,
+    pub name: literal::Ident<'input>,
+    pub args:
+        Option<Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>>,
 }
 
 /// CALL name ( [ argument ] [, ...] )
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CallStmt {
+pub struct CallStmt<'input> {
     pub _call: PhantomData<keyword::Call>,
-    pub name: literal::Ident,
-    pub args: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
+    pub name: literal::Ident<'input>,
+    pub args: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
 }
 
 #[cfg(test)]
