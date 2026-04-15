@@ -27,7 +27,11 @@ pub struct SubscriptSuffix<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SingleAssignment<'input> {
-    pub column: literal::AliasName<'input>,
+    /// Target column. For ON CONFLICT DO UPDATE inside `INSERT ... AS
+    /// alias`, Postgres accepts a qualified name like `alias.col` on the
+    /// left-hand side, so we parse a `QualifiedName` (which still handles
+    /// the common bare-column case).
+    pub column: crate::ast::common::QualifiedName<'input>,
     pub subscript: Option<Box<SubscriptSuffix<'input>>>,
     pub eq: punct::Eq,
     pub value: Expr<'input>,
@@ -68,6 +72,15 @@ pub struct ReturningClause<'input> {
     pub items: Seq<crate::ast::select::SelectItem<'input>, punct::Comma>,
 }
 
+/// `[AS] alias` on an UPDATE target table.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct UpdateTableAlias<'input> {
+    pub r#as: Option<AS>,
+    pub name: literal::Ident<'input>,
+}
+
 /// UPDATE statement: `UPDATE table [alias] SET assignments [FROM ...] [WHERE ...] [RETURNING ...]`
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -76,7 +89,7 @@ pub struct ReturningClause<'input> {
 pub struct UpdateStmt<'input> {
     pub update: UPDATE,
     pub table_name: QualifiedName<'input>,
-    pub alias: Option<literal::Ident<'input>>,
+    pub alias: Option<UpdateTableAlias<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub set: SET,
     #[format_tokens(indent)]

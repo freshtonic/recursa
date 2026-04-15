@@ -106,6 +106,8 @@ pub struct InsertAction<'input> {
     pub columns: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
     >,
+    /// `OVERRIDING {SYSTEM|USER} VALUE` between the columns and the body.
+    pub overriding: Option<crate::ast::insert::OverridingClause>,
     pub body: InsertBody<'input>,
 }
 

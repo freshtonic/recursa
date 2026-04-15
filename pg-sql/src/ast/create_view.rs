@@ -33,6 +33,28 @@ pub struct CreateViewStmt<'input> {
     pub with_options: Option<crate::ast::create_index::WithStorage<'input>>,
     pub r#as: AS,
     pub query: CompoundQuery<'input>,
+    /// Optional `WITH [CASCADED|LOCAL] CHECK OPTION` trailer, used with
+    /// updatable views to cascade predicate checks to underlying rows.
+    pub check_option: Option<ViewCheckOption>,
+}
+
+/// `WITH [CASCADED | LOCAL] CHECK OPTION` trailer on CREATE VIEW.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ViewCheckOption {
+    pub with: WITH,
+    pub mode: Option<ViewCheckMode>,
+    pub check: CHECK,
+    pub option: OPTION,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ViewCheckMode {
+    Cascaded(CASCADED),
+    Local(LOCAL),
 }
 
 /// DROP VIEW statement:

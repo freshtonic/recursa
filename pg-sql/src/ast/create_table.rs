@@ -192,14 +192,26 @@ pub struct CheckConstraint<'input> {
     pub not_valid: Option<(NOT, VALID)>,
 }
 
-/// GENERATED ALWAYS AS IDENTITY column constraint, with optional
-/// `(sequence_option ...)` parenthesized list (e.g. `START WITH 44`).
+/// `GENERATED {ALWAYS | BY DEFAULT} AS IDENTITY` modifier.
+///
+/// Variant ordering: both start with a distinct keyword after `GENERATED`
+/// (`ALWAYS` vs `BY`), so order is cosmetic.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum GeneratedIdentityMode {
+    Always(ALWAYS),
+    ByDefault((BY, DEFAULT)),
+}
+
+/// GENERATED {ALWAYS | BY DEFAULT} AS IDENTITY column constraint, with
+/// optional `(sequence_option ...)` parenthesized list (e.g. `START WITH 44`).
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GeneratedIdentityConstraint<'input> {
     pub generated: GENERATED,
-    pub always: ALWAYS,
+    pub mode: GeneratedIdentityMode,
     pub r#as: AS,
     pub identity: IDENTITY,
     pub seq_options:
@@ -279,6 +291,16 @@ pub struct GeneratedStoredConstraint<'input> {
     pub stored: STORED,
 }
 
+/// `COMPRESSION method` column clause. Sets the compression method
+/// (e.g. `pglz`, `lz4`) for a toastable column.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CompressionConstraint<'input> {
+    pub compression: COMPRESSION,
+    pub method: literal::Ident<'input>,
+}
+
 /// DEFAULT expr column constraint.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -303,10 +325,14 @@ pub enum ColumnConstraintKind<'input> {
     GeneratedIdentity(GeneratedIdentityConstraint<'input>),
     PrimaryKey(PrimaryKeyConstraint),
     NotNull((NOT, NULL)),
+    /// Bare `NULL` — redundant (columns are nullable by default) but
+    /// syntactically accepted.
+    Null(NULL),
     Unique(UniqueConstraint),
     References(ReferencesConstraint<'input>),
     Default(DefaultConstraint<'input>),
     Check(CheckConstraint<'input>),
+    Compression(CompressionConstraint<'input>),
 }
 
 /// Optional `CONSTRAINT name` prefix shared by column-level and
@@ -444,6 +470,7 @@ pub enum LikeOptionKind {
     Statistics(STATISTICS),
     Generated(GENERATED),
     Identity(IDENTITY),
+    Compression(COMPRESSION),
 }
 
 /// `INCLUDING what`.
@@ -522,6 +549,40 @@ pub struct InheritsClause<'input> {
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
 }
 
+/// `TABLESPACE name` clause on CREATE TABLE / CREATE INDEX, placing the
+/// relation into a non-default tablespace.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TablespaceClause<'input> {
+    pub tablespace: TABLESPACE,
+    pub name: literal::Ident<'input>,
+}
+
+/// Legacy `WITH OIDS` / `WITHOUT OIDS` clause on CREATE TABLE. Kept for
+/// backward-compat parsing of pre-12 dumps; Postgres now rejects it at
+/// execution time but still accepts the syntax.
+///
+/// Variant ordering: `WithoutOids` (WITHOUT token) is disjoint from `WithOids`
+/// (WITH OIDS) — distinct first tokens, listed in declaration order.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum WithOidsClause {
+    WithOids((WITH, OIDS)),
+    WithoutOids((WITHOUT, OIDS)),
+}
+
+/// `USING access_method` clause on CREATE TABLE, selecting a non-default
+/// table access method (e.g. `heap`, `heap2`).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct UsingAccessMethodClause<'input> {
+    pub using: USING,
+    pub method: literal::Ident<'input>,
+}
+
 /// Column-based table body: `(cols_and_constraints) [INHERITS (...)] [PARTITION BY ...]`
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -534,8 +595,11 @@ pub struct ColumnsBody<'input> {
     >,
     pub inherits: Option<InheritsClause<'input>>,
     pub partition_by: Option<PartitionByClause<'input>>,
+    pub using: Option<UsingAccessMethodClause<'input>>,
+    pub with_oids: Option<WithOidsClause>,
     pub with_storage: Option<crate::ast::create_index::WithStorage<'input>>,
     pub on_commit: Option<OnCommitClause>,
+    pub tablespace: Option<TablespaceClause<'input>>,
 }
 
 /// `ON COMMIT { PRESERVE ROWS | DELETE ROWS | DROP }` for temp tables.
@@ -560,6 +624,37 @@ pub enum OnCommitAction {
     Drop(DROP),
 }
 
+/// One entry inside a `PARTITION OF parent (...)` column-option list.
+///
+/// Unlike a full column definition, a partition column option omits the
+/// column type — the type is inherited from the parent table. It is just
+/// `name [WITH OPTIONS] [COLLATE "..."] [constraints...]`, or alternatively
+/// a full table-level constraint (e.g. `CONSTRAINT c CHECK (...)`).
+///
+/// Variant ordering: `Constraint` (leading `CONSTRAINT` / `CHECK` /
+/// `PRIMARY` / `UNIQUE` / `FOREIGN` keywords) comes before `Column` (a
+/// bare identifier), so keyword-leading forms win.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum PartitionColumnOption<'input> {
+    Constraint(TableConstraint<'input>),
+    Column(PartitionColumnOptionDef<'input>),
+}
+
+/// Per-partition column option: `name [WITH OPTIONS] [COLLATE "..."]
+/// [constraints...]`. Overrides constraints/collation for a column
+/// inherited from the partitioned parent table.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct PartitionColumnOptionDef<'input> {
+    pub name: literal::Ident<'input>,
+    pub with_options: Option<(WITH, OPTIONS)>,
+    pub collate: Option<CollateClause<'input>>,
+    pub constraints: Seq<ColumnConstraint<'input>, (), OptionalTrailing>,
+}
+
 /// Partition-of table body: `PARTITION OF parent [(col_options, ...)] FOR VALUES IN (...) [PARTITION BY ...]`
 ///
 /// The optional `(col_options, ...)` list is a per-partition override of
@@ -576,14 +671,16 @@ pub struct PartitionOfBody<'input> {
     pub column_options: Option<
         Surrounded<
             punct::LParen,
-            Seq<ColumnOrConstraint<'input>, punct::Comma>,
+            Seq<PartitionColumnOption<'input>, punct::Comma>,
             punct::RParen,
         >,
     >,
     pub for_values: Option<ForValuesClause<'input>>,
     pub default: Option<DEFAULT>,
     pub partition_by: Option<PartitionByClause<'input>>,
+    pub using: Option<UsingAccessMethodClause<'input>>,
     pub with_storage: Option<crate::ast::create_index::WithStorage<'input>>,
+    pub tablespace: Option<TablespaceClause<'input>>,
 }
 
 /// AS-query table body: `AS SELECT ... [WITH [NO] DATA]`.
@@ -591,6 +688,10 @@ pub struct PartitionOfBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsQueryBody<'input> {
+    /// Optional `WITH (param = value, ...)` storage parameters before `AS`.
+    pub with_storage: Option<crate::ast::create_index::WithStorage<'input>>,
+    /// Optional `TABLESPACE name` before `AS`.
+    pub tablespace: Option<TablespaceClause<'input>>,
     pub r#as: AS,
     pub query: Box<crate::ast::Statement<'input>>,
     pub with_data: Option<WithDataClause>,
@@ -649,6 +750,11 @@ pub struct CreateTableStmt<'input> {
     pub table: TABLE,
     pub if_not_exists: Option<(IF, NOT, EXISTS)>,
     pub name: crate::ast::common::QualifiedName<'input>,
+    /// `USING am` between the table name and an `AS query` body, e.g.
+    /// `CREATE TABLE t USING heap2 AS SELECT ...`. When the body starts
+    /// with `(`, this clause is absent and `USING` appears after the
+    /// column list inside `ColumnsBody`.
+    pub using: Option<UsingAccessMethodClause<'input>>,
     pub body: CreateTableBody<'input>,
 }
 

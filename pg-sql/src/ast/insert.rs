@@ -15,6 +15,36 @@ use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 
 use crate::tokens::keyword::*;
+/// `[AS] alias` on INSERT target table, e.g. `INSERT INTO t AS x`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct InsertTableAlias<'input> {
+    pub r#as: AS,
+    pub name: literal::Ident<'input>,
+}
+
+/// `OVERRIDING {SYSTEM | USER} VALUE` clause on an INSERT statement.
+///
+/// Variant ordering: distinct first tokens (`SYSTEM` vs `USER`), so
+/// declaration order is cosmetic.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct OverridingClause {
+    pub overriding: OVERRIDING,
+    pub which: OverridingKind,
+    pub value: VALUE,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum OverridingKind {
+    System(SYSTEM),
+    User(USER),
+}
+
 /// Multiple value rows: `VALUES (row1), (row2), ...`
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -62,6 +92,20 @@ pub enum ConflictAction<'input> {
     DoNothing((DO, NOTHING)),
 }
 
+/// One entry in an `ON CONFLICT (...)` target list.
+///
+/// Matches the index-element grammar: an expression (plain column name,
+/// qualified name, parenthesized expression, or function call) optionally
+/// followed by a `COLLATE "name"` clause and an optional opclass ident.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ConflictTargetItem<'input> {
+    pub expr: Expr<'input>,
+    pub collate: Option<crate::ast::create_table::CollateClause<'input>>,
+    pub opclass: Option<literal::Ident<'input>>,
+}
+
 /// ON CONFLICT clause: `ON CONFLICT [(col, ...)] DO UPDATE SET ... | DO NOTHING`
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -70,8 +114,11 @@ pub struct OnConflictClause<'input> {
     pub on: ON,
     pub conflict: CONFLICT,
     pub target: Option<
-        Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
+        Surrounded<punct::LParen, Seq<ConflictTargetItem<'input>, punct::Comma>, punct::RParen>,
     >,
+    /// `WHERE predicate` after the arbiter target list, restricting the
+    /// partial-index arbiter to matching rows.
+    pub where_clause: Option<WhereClause<'input>>,
     pub action: ConflictAction<'input>,
 }
 
@@ -84,7 +131,14 @@ pub struct InsertStmt<'input> {
     pub insert: INSERT,
     pub into: INTO,
     pub table_name: QualifiedName<'input>,
+    /// Optional `[AS] alias` after the target table, used to rebind the
+    /// target in ON CONFLICT DO UPDATE expressions.
+    pub alias: Option<InsertTableAlias<'input>>,
     pub columns: Option<Box<ColumnList<'input>>>,
+    /// `OVERRIDING {SYSTEM|USER} VALUE` between the column list and the
+    /// source. Controls whether explicit values override GENERATED ALWAYS
+    /// identity columns.
+    pub overriding: Option<OverridingClause>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub source: Box<InsertSource<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
