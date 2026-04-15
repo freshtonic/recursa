@@ -24,7 +24,7 @@ pub struct StringLitSeq<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InContent<'input> {
-    Subquery(Box<crate::ast::values::CompoundQuery>),
+    Subquery(Box<crate::ast::values::CompoundQuery<'input>>),
     Exprs(Seq<Expr<'input>, punct::Comma>),
 }
 
@@ -166,7 +166,7 @@ pub enum WindowSpecBody<'input> {
 pub struct InlineWindowSpec<'input> {
     pub ref_name: Option<literal::Ident<'input>>,
     pub partition_by: Option<WindowPartitionBy<'input>>,
-    pub order_by: Option<crate::ast::select::OrderByClause>,
+    pub order_by: Option<crate::ast::select::OrderByClause<'input>>,
     pub frame: Option<WindowFrameClause<'input>>,
 }
 
@@ -324,19 +324,26 @@ pub struct VariadicArg<'input> {
 /// `WITHIN GROUP (ORDER BY ...)` clause for ordered-set aggregate functions.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct WithinGroupClause {
+pub struct WithinGroupClause<'input> {
     pub _within: PhantomData<keyword::Within>,
     pub _group: PhantomData<keyword::Group>,
-    pub order_by:
-        Surrounded<punct::LParen, Box<crate::ast::select::OrderByClause>, punct::RParen>,
+    pub order_by: Surrounded<
+        punct::LParen,
+        Box<crate::ast::select::OrderByClause<'input>>,
+        punct::RParen,
+    >,
 }
 
 /// `FILTER (WHERE condition)` clause for filtered aggregates.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct FilterClause {
+pub struct FilterClause<'input> {
     pub _filter: PhantomData<keyword::Filter>,
-    pub body: Surrounded<punct::LParen, Box<crate::ast::select::WhereClause>, punct::RParen>,
+    pub body: Surrounded<
+        punct::LParen,
+        Box<crate::ast::select::WhereClause<'input>>,
+        punct::RParen,
+    >,
 }
 
 /// Function call: `name([*] [DISTINCT] args [ORDER BY ...]) [WITHIN GROUP (...)] [FILTER (...)] [OVER (...)]`
@@ -348,10 +355,10 @@ pub struct FuncCall<'input> {
     pub star_arg: Option<punct::Star>,
     pub distinct: Option<DistinctKw>,
     pub args: Seq<FuncArg<'input>, punct::Comma>,
-    pub order_by: Option<Box<crate::ast::select::OrderByClause>>,
+    pub order_by: Option<Box<crate::ast::select::OrderByClause<'input>>>,
     pub rparen: punct::RParen,
-    pub within_group: Option<WithinGroupClause>,
-    pub filter: Option<FilterClause>,
+    pub within_group: Option<WithinGroupClause<'input>>,
+    pub filter: Option<FilterClause<'input>>,
     pub window: Option<WindowSpec<'input>>,
 }
 
@@ -361,7 +368,7 @@ pub struct FuncCall<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ParenContent<'input> {
-    Subquery(Box<crate::ast::values::CompoundQuery>),
+    Subquery(Box<crate::ast::values::CompoundQuery<'input>>),
     Exprs(Seq<Expr<'input>, punct::Comma>),
 }
 
@@ -371,9 +378,13 @@ pub type ParenExpr<'input> = Surrounded<punct::LParen, ParenContent<'input>, pun
 /// EXISTS subquery: `EXISTS (SELECT ...)`
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct ExistsExpr {
+pub struct ExistsExpr<'input> {
     pub _exists: keyword::Exists,
-    pub subquery: Surrounded<punct::LParen, Box<crate::ast::values::CompoundQuery>, punct::RParen>,
+    pub subquery: Surrounded<
+        punct::LParen,
+        Box<crate::ast::values::CompoundQuery<'input>>,
+        punct::RParen,
+    >,
 }
 
 /// ARRAY bracket constructor: `ARRAY[expr, ...]`
@@ -389,9 +400,13 @@ pub struct ArrayBracket<'input> {
 /// ARRAY subquery constructor: `ARRAY(subquery)`
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct ArraySubquery {
+pub struct ArraySubquery<'input> {
     pub _array: PhantomData<keyword::Array>,
-    pub subquery: Surrounded<punct::LParen, Box<crate::ast::values::CompoundQuery>, punct::RParen>,
+    pub subquery: Surrounded<
+        punct::LParen,
+        Box<crate::ast::values::CompoundQuery<'input>>,
+        punct::RParen,
+    >,
 }
 
 /// ARRAY constructor: `ARRAY[expr, ...]` or `ARRAY(subquery)`
@@ -402,7 +417,7 @@ pub struct ArraySubquery {
 #[parse(rules = SqlRules)]
 pub enum ArrayExpr<'input> {
     Bracket(ArrayBracket<'input>),
-    Subquery(ArraySubquery),
+    Subquery(ArraySubquery<'input>),
 }
 
 /// ROW constructor: `ROW(expr, ...)`
@@ -982,7 +997,7 @@ pub enum Expr<'input> {
     // --- Atoms ---
     /// EXISTS subquery: `EXISTS (SELECT ...)`
     #[parse(atom)]
-    Exists(ExistsExpr),
+    Exists(ExistsExpr<'input>),
     /// ARRAY constructor: `ARRAY[...]` or `ARRAY(...)`
     #[parse(atom)]
     Array(ArrayExpr<'input>),

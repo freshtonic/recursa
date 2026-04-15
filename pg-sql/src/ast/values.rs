@@ -11,9 +11,9 @@ use crate::tokens::{keyword, punct};
 /// TABLE statement: `TABLE tablename`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TableStmt {
+pub struct TableStmt<'input> {
     pub _table: PhantomData<keyword::Table>,
-    pub table_name: crate::tokens::literal::Ident,
+    pub table_name: crate::tokens::literal::Ident<'input>,
 }
 
 /// UNION ALL
@@ -71,9 +71,9 @@ pub enum SetOp {
 /// followed by the right-hand query.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SetOpCombiner {
+pub struct SetOpCombiner<'input> {
     pub op: SetOp,
-    pub right: Box<CompoundQuery>,
+    pub right: Box<CompoundQuery<'input>>,
 }
 
 /// A compound query: a query body optionally followed by a set operation.
@@ -81,27 +81,27 @@ pub struct SetOpCombiner {
 /// Paren variant handles `(WITH ... SELECT ... UNION ...)` grouping.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum CompoundQuery {
-    Paren(CompoundParen),
-    Table(TableStmt),
-    Body(CompoundBody),
+pub enum CompoundQuery<'input> {
+    Paren(CompoundParen<'input>),
+    Table(TableStmt<'input>),
+    Body(CompoundBody<'input>),
 }
 
 /// Parenthesized compound query with optional set operation continuation.
 /// e.g., `(SELECT ... UNION ALL ...) EXCEPT ...`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CompoundParen {
-    pub inner: Surrounded<punct::LParen, Box<CompoundQuery>, punct::RParen>,
-    pub set_op: Option<SetOpCombiner>,
+pub struct CompoundParen<'input> {
+    pub inner: Surrounded<punct::LParen, Box<CompoundQuery<'input>>, punct::RParen>,
+    pub set_op: Option<SetOpCombiner<'input>>,
 }
 
 /// A SELECT or VALUES body with optional set operation continuation.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CompoundBody {
-    pub body: SelectBody,
-    pub set_op: Option<SetOpCombiner>,
+pub struct CompoundBody<'input> {
+    pub body: SelectBody<'input>,
+    pub set_op: Option<SetOpCombiner<'input>>,
 }
 
 #[cfg(test)]

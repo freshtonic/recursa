@@ -41,75 +41,76 @@ pub enum SearchDirection {
 /// SEARCH clause: `SEARCH DEPTH|BREADTH FIRST BY col, ... SET col`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SearchClause {
+pub struct SearchClause<'input> {
     pub _search: PhantomData<keyword::Search>,
     pub direction: SearchDirection,
     pub _first: PhantomData<keyword::First>,
     pub _by: PhantomData<keyword::By>,
-    pub columns: Seq<literal::AliasName, punct::Comma>,
+    pub columns: Seq<literal::AliasName<'input>, punct::Comma>,
     pub _set: PhantomData<keyword::Set>,
-    pub set_column: literal::AliasName,
+    pub set_column: literal::AliasName<'input>,
 }
 
 /// CYCLE clause: `CYCLE col, ... SET col [TO val DEFAULT val] USING col`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CycleClause {
+pub struct CycleClause<'input> {
     pub _cycle: PhantomData<keyword::Cycle>,
-    pub columns: Seq<literal::AliasName, punct::Comma>,
+    pub columns: Seq<literal::AliasName<'input>, punct::Comma>,
     pub _set: PhantomData<keyword::Set>,
-    pub set_column: CycleSetColumn,
+    pub set_column: CycleSetColumn<'input>,
     pub _using: PhantomData<keyword::Using>,
-    pub using_column: literal::AliasName,
+    pub using_column: literal::AliasName<'input>,
 }
 
 /// SET column with optional TO/DEFAULT values.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CycleSetColumn {
-    pub name: literal::AliasName,
-    pub to_default: Option<CycleToDefault>,
+pub struct CycleSetColumn<'input> {
+    pub name: literal::AliasName<'input>,
+    pub to_default: Option<CycleToDefault<'input>>,
 }
 
 /// TO value DEFAULT value
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CycleToDefault {
+pub struct CycleToDefault<'input> {
     pub _to: PhantomData<keyword::To>,
-    pub to_value: Expr,
+    pub to_value: Expr<'input>,
     pub _default: PhantomData<keyword::Default>,
-    pub default_value: Expr,
+    pub default_value: Expr<'input>,
 }
 
 /// A single CTE definition: `name [(col, ...)] AS [MATERIALIZED|NOT MATERIALIZED] (query)
 ///   [SEARCH ...] [CYCLE ...]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CteDefinition {
-    pub name: literal::AliasName,
-    pub columns:
-        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+pub struct CteDefinition<'input> {
+    pub name: literal::AliasName<'input>,
+    pub columns: Option<
+        Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
+    >,
     pub _as: PhantomData<keyword::As>,
     pub materialized: Option<MaterializedOption>,
     pub query: Surrounded<punct::LParen, Box<crate::ast::Statement>, punct::RParen>,
-    pub search: Option<SearchClause>,
-    pub cycle: Option<CycleClause>,
+    pub search: Option<SearchClause<'input>>,
+    pub cycle: Option<CycleClause<'input>>,
 }
 
 /// WITH clause: `WITH [RECURSIVE] cte_def, ...`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct WithClause {
+pub struct WithClause<'input> {
     pub _with: PhantomData<keyword::With>,
     pub recursive: Option<PhantomData<keyword::Recursive>>,
-    pub ctes: Seq<CteDefinition, punct::Comma, NoTrailing, NonEmpty>,
+    pub ctes: Seq<CteDefinition<'input>, punct::Comma, NoTrailing, NonEmpty>,
 }
 
 /// WITH statement: WITH clause followed by a body statement.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct WithStatement {
-    pub with_clause: WithClause,
+pub struct WithStatement<'input> {
+    pub with_clause: WithClause<'input>,
     pub body: Box<crate::ast::Statement>,
 }
 

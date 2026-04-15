@@ -13,18 +13,18 @@ use crate::tokens::{keyword, literal, punct};
 /// A single item in the SELECT list: `expr [AS alias]` or `expr alias`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SelectItem {
-    pub expr: Expr,
-    pub alias: Option<Alias>,
+pub struct SelectItem<'input> {
+    pub expr: Expr<'input>,
+    pub alias: Option<Alias<'input>>,
 }
 
 /// Alias with explicit AS keyword: `AS name`.
 /// Uses AliasName so keywords are accepted (e.g., `SELECT 1 AS true`).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct AsAlias {
+pub struct AsAlias<'input> {
     pub _as: PhantomData<keyword::As>,
-    pub name: literal::AliasName,
+    pub name: literal::AliasName<'input>,
 }
 
 /// AS alias clause, or bare alias.
@@ -33,12 +33,12 @@ pub struct AsAlias {
 /// Bare (`ident`), so longest-match-wins picks it when AS is present.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum Alias {
-    WithAs(AsAlias),
-    Bare(literal::Ident),
+pub enum Alias<'input> {
+    WithAs(AsAlias<'input>),
+    Bare(literal::Ident<'input>),
 }
 
-impl Alias {
+impl<'input> Alias<'input> {
     /// Returns the alias name regardless of variant.
     pub fn name(&self) -> &str {
         match self {
@@ -51,38 +51,39 @@ impl Alias {
 /// FROM clause: `FROM table [, table ...]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct FromClause {
+pub struct FromClause<'input> {
     pub _from: PhantomData<keyword::From>,
-    pub tables: Seq<TableRef, punct::Comma>,
+    pub tables: Seq<TableRef<'input>, punct::Comma>,
 }
 
 /// Table name with inheritance marker and optional alias: `person* p`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct InheritedTable {
-    pub name: QualifiedName,
+pub struct InheritedTable<'input> {
+    pub name: QualifiedName<'input>,
     pub _star: punct::Star,
-    pub alias: Option<literal::Ident>,
+    pub alias: Option<literal::Ident<'input>>,
 }
 
 /// Table alias: `AS name [(col1, col2)]` or bare `name [(col1, col2)]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TableAlias {
+pub struct TableAlias<'input> {
     pub _as: Option<PhantomData<keyword::As>>,
-    pub name: literal::AliasName,
-    pub columns:
-        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+    pub name: literal::AliasName<'input>,
+    pub columns: Option<
+        Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
+    >,
 }
 
 /// Subquery in FROM: `(SELECT ...) AS alias`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SubqueryRef {
+pub struct SubqueryRef<'input> {
     pub _lparen: punct::LParen,
-    pub query: Box<crate::ast::values::CompoundQuery>,
+    pub query: Box<crate::ast::values::CompoundQuery<'input>>,
     pub _rparen: punct::RParen,
-    pub alias: TableAlias,
+    pub alias: TableAlias<'input>,
 }
 
 /// Parenthesized join tree in FROM: `(t1 CROSS JOIN t2) AS alias`.
@@ -92,22 +93,22 @@ pub struct SubqueryRef {
 /// whereas a parenthesized join tree starts with a table name (ident).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ParenJoinRef {
+pub struct ParenJoinRef<'input> {
     pub _lparen: punct::LParen,
-    pub table: Box<TableRef>,
+    pub table: Box<TableRef<'input>>,
     pub _rparen: punct::RParen,
-    pub alias: Option<TableAlias>,
+    pub alias: Option<TableAlias<'input>>,
 }
 
 /// LATERAL subquery in FROM: `LATERAL (VALUES(...)) v`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct LateralRef {
+pub struct LateralRef<'input> {
     pub _lateral: PhantomData<keyword::Lateral>,
     pub _lparen: punct::LParen,
-    pub query: Box<crate::ast::values::CompoundQuery>,
+    pub query: Box<crate::ast::values::CompoundQuery<'input>>,
     pub _rparen: punct::RParen,
-    pub alias: Option<literal::AliasName>,
+    pub alias: Option<literal::AliasName<'input>>,
 }
 
 /// Plain table reference with optional alias: `[ONLY] tablename [AS] alias`
@@ -116,10 +117,10 @@ pub struct LateralRef {
 /// of the `table *` `InheritedTable` form).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct PlainTable {
+pub struct PlainTable<'input> {
     pub only: Option<PhantomData<keyword::Only>>,
-    pub name: QualifiedName,
-    pub alias: Option<PlainTableAlias>,
+    pub name: QualifiedName<'input>,
+    pub alias: Option<PlainTableAlias<'input>>,
 }
 
 /// Alias of a plain table reference in FROM: `[AS] name [(col, col, ...)]`.
@@ -134,28 +135,30 @@ pub struct PlainTable {
 /// so longest-match-wins picks it when `AS` is present.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum PlainTableAlias {
-    WithAs(PlainTableAliasWithAs),
-    Bare(PlainTableAliasBare),
+pub enum PlainTableAlias<'input> {
+    WithAs(PlainTableAliasWithAs<'input>),
+    Bare(PlainTableAliasBare<'input>),
 }
 
 /// `AS name [(col, ...)]` form.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct PlainTableAliasWithAs {
+pub struct PlainTableAliasWithAs<'input> {
     pub _as: PhantomData<keyword::As>,
-    pub name: literal::AliasName,
-    pub columns:
-        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+    pub name: literal::AliasName<'input>,
+    pub columns: Option<
+        Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
+    >,
 }
 
 /// Bare `name [(col, ...)]` form. Uses `literal::Ident` to reject keywords.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct PlainTableAliasBare {
-    pub name: literal::Ident,
-    pub columns:
-        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+pub struct PlainTableAliasBare<'input> {
+    pub name: literal::Ident<'input>,
+    pub columns: Option<
+        Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
+    >,
 }
 
 /// `WITH ORDINALITY` suffix on a function table.
@@ -170,19 +173,19 @@ pub struct WithOrdinality {
 /// `name type` (e.g., `a int`).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ColumnDef {
-    pub name: literal::AliasName,
-    pub type_name: crate::ast::expr::TypeName,
+pub struct ColumnDef<'input> {
+    pub name: literal::AliasName<'input>,
+    pub type_name: crate::ast::expr::TypeName<'input>,
 }
 
 /// `[AS] alias (col type, ...)` or just `(col type, ...)` -- the
 /// column definition list form for table-returning functions.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ColumnDefList {
+pub struct ColumnDefList<'input> {
     pub _as: Option<PhantomData<keyword::As>>,
-    pub name: Option<literal::AliasName>,
-    pub columns: Surrounded<punct::LParen, Seq<ColumnDef, punct::Comma>, punct::RParen>,
+    pub name: Option<literal::AliasName<'input>>,
+    pub columns: Surrounded<punct::LParen, Seq<ColumnDef<'input>, punct::Comma>, punct::RParen>,
 }
 
 /// Alias of a function table reference: either a regular `TableAlias`
@@ -193,18 +196,18 @@ pub struct ColumnDefList {
 /// so list it first.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum FuncTableAlias {
-    ColumnDefList(ColumnDefList),
-    Plain(TableAlias),
+pub enum FuncTableAlias<'input> {
+    ColumnDefList(ColumnDefList<'input>),
+    Plain(TableAlias<'input>),
 }
 
 /// Function call used as table reference with optional WITH ORDINALITY and alias.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct FuncTableRef {
-    pub func: FuncCall,
+pub struct FuncTableRef<'input> {
+    pub func: FuncCall<'input>,
     pub ordinality: Option<WithOrdinality>,
-    pub alias: Option<FuncTableAlias>,
+    pub alias: Option<FuncTableAlias<'input>>,
 }
 
 /// A single table reference (no joins). Used as building block for JoinTableRef.
@@ -217,18 +220,18 @@ pub struct FuncTableRef {
 /// - Inherited before Table: `person*` matches longer than `person`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum SimpleTableRef {
-    Lateral(LateralRef),
-    Func(Box<FuncTableRef>),
+pub enum SimpleTableRef<'input> {
+    Lateral(LateralRef<'input>),
+    Func(Box<FuncTableRef<'input>>),
     // Subquery must come before ParenJoin: both start with `(`, but a
     // subquery body begins with a keyword (`SELECT`/`VALUES`/`TABLE`/`WITH`)
     // while a parenthesized join tree begins with an identifier. The parser
     // forks and tries in declaration order, so try the more restrictive
     // (keyword-leading) form first.
-    Subquery(SubqueryRef),
-    ParenJoin(ParenJoinRef),
-    Inherited(InheritedTable),
-    Table(PlainTable),
+    Subquery(SubqueryRef<'input>),
+    ParenJoin(ParenJoinRef<'input>),
+    Inherited(InheritedTable<'input>),
+    Table(PlainTable<'input>),
 }
 
 /// Join type: LEFT, RIGHT, FULL, INNER, CROSS, or plain JOIN.
@@ -245,25 +248,25 @@ pub enum JoinType {
 /// JOIN condition: ON expr or USING (col, ...)
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum JoinCondition {
-    On(JoinOn),
-    Using(JoinUsing),
+pub enum JoinCondition<'input> {
+    On(JoinOn<'input>),
+    Using(JoinUsing<'input>),
 }
 
 /// ON condition for JOIN
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct JoinOn {
+pub struct JoinOn<'input> {
     pub _on: PhantomData<keyword::On>,
-    pub condition: Box<Expr>,
+    pub condition: Box<Expr<'input>>,
 }
 
 /// `AS alias` form of a JOIN USING alias.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct JoinUsingAliasWithAs {
+pub struct JoinUsingAliasWithAs<'input> {
     pub _as: PhantomData<keyword::As>,
-    pub name: literal::AliasName,
+    pub name: literal::AliasName<'input>,
 }
 
 /// `[AS] alias` suffix on a JOIN ... USING column list.
@@ -272,18 +275,22 @@ pub struct JoinUsingAliasWithAs {
 /// (`ident`); list it first.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum JoinUsingAlias {
-    WithAs(JoinUsingAliasWithAs),
-    Bare(literal::Ident),
+pub enum JoinUsingAlias<'input> {
+    WithAs(JoinUsingAliasWithAs<'input>),
+    Bare(literal::Ident<'input>),
 }
 
 /// USING clause for JOIN: `USING (col, ...) [[AS] alias]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct JoinUsing {
+pub struct JoinUsing<'input> {
     pub _using: PhantomData<keyword::Using>,
-    pub columns: Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>,
-    pub alias: Option<JoinUsingAlias>,
+    pub columns: Surrounded<
+        punct::LParen,
+        Seq<literal::AliasName<'input>, punct::Comma>,
+        punct::RParen,
+    >,
+    pub alias: Option<JoinUsingAlias<'input>>,
 }
 
 /// A single join suffix:
@@ -294,29 +301,29 @@ pub struct JoinUsing {
 /// join type for simplicity.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct JoinSuffix {
+pub struct JoinSuffix<'input> {
     pub natural: Option<PhantomData<keyword::Natural>>,
     pub join_type: Option<JoinType>,
     pub _outer: Option<PhantomData<keyword::Outer>>,
     pub _join: PhantomData<keyword::Join>,
-    pub table: SimpleTableRef,
-    pub condition: Option<JoinCondition>,
+    pub table: SimpleTableRef<'input>,
+    pub condition: Option<JoinCondition<'input>>,
 }
 
 /// A table reference that may have zero or more JOIN suffixes.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TableRef {
-    pub base: SimpleTableRef,
-    pub joins: Seq<JoinSuffix, (), OptionalTrailing>,
+pub struct TableRef<'input> {
+    pub base: SimpleTableRef<'input>,
+    pub joins: Seq<JoinSuffix<'input>, (), OptionalTrailing>,
 }
 
 /// WHERE clause: `WHERE expr`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct WhereClause {
+pub struct WhereClause<'input> {
     pub _where: PhantomData<keyword::Where>,
-    pub condition: Expr,
+    pub condition: Expr<'input>,
 }
 
 /// USING operator in ORDER BY: `USING > | USING <`
@@ -364,8 +371,8 @@ pub struct NullsLast(PhantomData<keyword::Nulls>, PhantomData<keyword::Last>);
 /// A single ORDER BY item: `expr [ASC|DESC] [USING op] [NULLS FIRST|LAST]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct OrderByItem {
-    pub expr: Expr,
+pub struct OrderByItem<'input> {
+    pub expr: Expr<'input>,
     pub dir: Option<SortDir>,
     pub using: Option<UsingClause>,
     pub nulls: Option<NullsOrder>,
@@ -374,26 +381,26 @@ pub struct OrderByItem {
 /// ORDER BY clause: `ORDER BY item [, item ...]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct OrderByClause {
+pub struct OrderByClause<'input> {
     pub _order: PhantomData<keyword::Order>,
     pub _by: PhantomData<keyword::By>,
-    pub items: Seq<OrderByItem, punct::Comma>,
+    pub items: Seq<OrderByItem<'input>, punct::Comma>,
 }
 
 /// OFFSET clause: `OFFSET expr`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct OffsetClause {
+pub struct OffsetClause<'input> {
     pub _offset: PhantomData<keyword::Offset>,
-    pub count: Expr,
+    pub count: Expr<'input>,
 }
 
 /// LIMIT clause: `LIMIT expr`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct LimitClause {
+pub struct LimitClause<'input> {
     pub _limit: PhantomData<keyword::Limit>,
-    pub count: Expr,
+    pub count: Expr<'input>,
 }
 
 /// FOR UPDATE clause.
@@ -407,29 +414,29 @@ pub struct ForUpdateClause {
 /// GROUP BY clause: `GROUP BY expr, ...`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct GroupByClause {
+pub struct GroupByClause<'input> {
     pub _group: PhantomData<keyword::Group>,
     pub _by: PhantomData<keyword::By>,
-    pub exprs: Seq<Expr, punct::Comma>,
+    pub exprs: Seq<Expr<'input>, punct::Comma>,
 }
 
 /// HAVING clause: `HAVING expr`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct HavingClause {
+pub struct HavingClause<'input> {
     pub _having: PhantomData<keyword::Having>,
-    pub condition: Expr,
+    pub condition: Expr<'input>,
 }
 
 /// A single named window definition: `name AS (inline_window_spec)`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct WindowDef {
-    pub name: literal::Ident,
+pub struct WindowDef<'input> {
+    pub name: literal::Ident<'input>,
     pub _as: PhantomData<keyword::As>,
     pub spec: Surrounded<
         punct::LParen,
-        crate::ast::expr::InlineWindowSpec,
+        crate::ast::expr::InlineWindowSpec<'input>,
         punct::RParen,
     >,
 }
@@ -437,36 +444,36 @@ pub struct WindowDef {
 /// `WINDOW name AS (...)[, name AS (...), ...]` clause in SELECT.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct WindowClause {
+pub struct WindowClause<'input> {
     pub _window: PhantomData<keyword::Window>,
-    pub defs: Seq<WindowDef, punct::Comma, NoTrailing, NonEmpty>,
+    pub defs: Seq<WindowDef<'input>, punct::Comma, NoTrailing, NonEmpty>,
 }
 
 /// SELECT statement.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
-pub struct SelectStmt {
+pub struct SelectStmt<'input> {
     pub _select: PhantomData<keyword::Select>,
     pub distinct: Option<PhantomData<keyword::Distinct>>,
     #[format_tokens(group(consistent), indent, break(flat = " ", broken = "\n"))]
-    pub items: Seq<SelectItem, punct::Comma>,
+    pub items: Seq<SelectItem<'input>, punct::Comma>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub from_clause: Option<FromClause>,
+    pub from_clause: Option<FromClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub where_clause: Option<WhereClause>,
+    pub where_clause: Option<WhereClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub group_by: Option<GroupByClause>,
+    pub group_by: Option<GroupByClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub having: Option<HavingClause>,
+    pub having: Option<HavingClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub window: Option<WindowClause>,
+    pub window: Option<WindowClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub order_by: Option<OrderByClause>,
+    pub order_by: Option<OrderByClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub limit: Option<LimitClause>,
+    pub limit: Option<LimitClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub offset: Option<OffsetClause>,
+    pub offset: Option<OffsetClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub for_update: Option<ForUpdateClause>,
 }
@@ -476,19 +483,22 @@ pub struct SelectStmt {
 /// SelectStmt must come before ValuesStmt so `SELECT` keyword wins over ambiguity.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum SelectBody {
-    WithBody(Box<crate::ast::with_clause::WithStatement>),
-    Select(Box<SelectStmt>),
-    Values(ValuesBody),
+pub enum SelectBody<'input> {
+    WithBody(Box<crate::ast::with_clause::WithStatement<'input>>),
+    Select(Box<SelectStmt<'input>>),
+    Values(ValuesBody<'input>),
 }
 
 /// VALUES body: `VALUES (expr, ...), (expr, ...)`
 /// Can appear standalone or inside subqueries.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ValuesBody {
+pub struct ValuesBody<'input> {
     pub _values: PhantomData<keyword::Values>,
-    pub rows: Seq<Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>, punct::Comma>,
+    pub rows: Seq<
+        Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
+        punct::Comma,
+    >,
 }
 
 #[cfg(test)]
