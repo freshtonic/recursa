@@ -17,9 +17,9 @@ use crate::tokens::keyword::*;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubscriptSuffix<'input> {
-    pub _lbracket: punct::LBracket,
+    pub lbracket: punct::LBracket,
     pub index: Expr<'input>,
-    pub _rbracket: punct::RBracket,
+    pub rbracket: punct::RBracket,
 }
 
 /// Single SET assignment: `col[idx] = expr` or `col = expr`
@@ -29,7 +29,7 @@ pub struct SubscriptSuffix<'input> {
 pub struct SingleAssignment<'input> {
     pub column: literal::AliasName<'input>,
     pub subscript: Option<Box<SubscriptSuffix<'input>>>,
-    pub _eq: punct::Eq,
+    pub eq: punct::Eq,
     pub value: Expr<'input>,
 }
 
@@ -43,7 +43,7 @@ pub struct TupleAssignment<'input> {
         Seq<literal::AliasName<'input>, punct::Comma>,
         punct::RParen,
     >,
-    pub _eq: punct::Eq,
+    pub eq: punct::Eq,
     pub values: Expr<'input>,
 }
 
@@ -64,7 +64,7 @@ pub enum SetAssignment<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReturningClause<'input> {
-    pub _returning: RETURNING,
+    pub returning: RETURNING,
     pub items: Seq<crate::ast::select::SelectItem<'input>, punct::Comma>,
 }
 
@@ -74,11 +74,11 @@ pub struct ReturningClause<'input> {
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
 pub struct UpdateStmt<'input> {
-    pub _update: UPDATE,
+    pub update: UPDATE,
     pub table_name: QualifiedName<'input>,
     pub alias: Option<literal::Ident<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub _set: SET,
+    pub set: SET,
     #[format_tokens(indent)]
     pub assignments: Seq<SetAssignment<'input>, punct::Comma>,
     #[format_tokens(break(flat = " ", broken = "\n"))]

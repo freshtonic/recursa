@@ -14,7 +14,7 @@ use crate::tokens::keyword::*;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsAlias<'input> {
-    pub _as: AS,
+    pub r#as: AS,
     pub name: literal::Ident<'input>,
 }
 
@@ -45,7 +45,7 @@ impl<'input> TableAlias<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeleteUsingClause<'input> {
-    pub _using: USING,
+    pub using: USING,
     pub tables:
         recursa::seq::Seq<crate::ast::select::TableRef<'input>, crate::tokens::punct::Comma>,
 }
@@ -56,8 +56,8 @@ pub struct DeleteUsingClause<'input> {
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
 pub struct DeleteStmt<'input> {
-    pub _delete: DELETE,
-    pub _from: FROM,
+    pub delete: DELETE,
+    pub from: FROM,
     pub table_name: QualifiedName<'input>,
     pub alias: Option<Box<TableAlias<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]

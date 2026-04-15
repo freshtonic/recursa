@@ -25,7 +25,7 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AndCondition<'input> {
-    pub _and: AND,
+    pub and: AND,
     pub condition: Expr<'input>,
 }
 
@@ -43,8 +43,8 @@ pub enum NotMatchedBy {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UpdateAction<'input> {
-    pub _update: UPDATE,
-    pub _set: SET,
+    pub update: UPDATE,
+    pub set: SET,
     pub assignments: Seq<SetAssignment<'input>, punct::Comma>,
 }
 
@@ -71,7 +71,7 @@ pub type ValueRow<'input> =
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertValuesBody<'input> {
-    pub _values: VALUES,
+    pub values: VALUES,
     pub rows: Seq<ValueRow<'input>, punct::Comma>,
 }
 
@@ -92,7 +92,7 @@ pub enum InsertBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertInto<'input> {
-    pub _into: INTO,
+    pub into: INTO,
     pub name: literal::Ident<'input>,
 }
 
@@ -101,7 +101,7 @@ pub struct InsertInto<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertAction<'input> {
-    pub _insert: INSERT,
+    pub insert: INSERT,
     pub into: Option<InsertInto<'input>>,
     pub columns: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
@@ -123,12 +123,12 @@ pub enum NotMatchedAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhenNotMatched<'input> {
-    pub _when: WHEN,
-    pub _not: NOT,
-    pub _matched: MATCHED,
+    pub when: WHEN,
+    pub not: NOT,
+    pub matched: MATCHED,
     pub by: Option<NotMatchedBy>,
     pub and: Option<AndCondition<'input>>,
-    pub _then: THEN,
+    pub then: THEN,
     pub action: NotMatchedAction<'input>,
 }
 
@@ -137,10 +137,10 @@ pub struct WhenNotMatched<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhenMatched<'input> {
-    pub _when: WHEN,
-    pub _matched: MATCHED,
+    pub when: WHEN,
+    pub matched: MATCHED,
     pub and: Option<AndCondition<'input>>,
-    pub _then: THEN,
+    pub then: THEN,
     pub action: MatchedAction<'input>,
 }
 
@@ -161,12 +161,12 @@ pub enum WhenClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MergeStmt<'input> {
-    pub _merge: MERGE,
-    pub _into: INTO,
+    pub merge: MERGE,
+    pub into: INTO,
     pub target: Box<PlainTable<'input>>,
-    pub _using: USING,
+    pub using: USING,
     pub source: Box<TableRef<'input>>,
-    pub _on: ON,
+    pub on: ON,
     pub condition: Box<Expr<'input>>,
     pub when_clauses: Seq<WhenClause<'input>, (), OptionalTrailing>,
     pub returning: Option<Box<ReturningClause<'input>>>,

@@ -22,7 +22,7 @@ use crate::tokens::keyword::*;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UsingMethod<'input> {
-    pub _using: USING,
+    pub using: USING,
     pub method: literal::AliasName<'input>,
 }
 
@@ -32,7 +32,7 @@ pub struct UsingMethod<'input> {
 #[parse(rules = SqlRules)]
 pub struct OpclassOption<'input> {
     pub name: literal::AliasName<'input>,
-    pub _eq: punct::Eq,
+    pub eq: punct::Eq,
     pub value: Expr<'input>,
 }
 
@@ -67,7 +67,7 @@ pub struct StorageParam<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StorageParamValue<'input> {
-    pub _eq: punct::Eq,
+    pub eq: punct::Eq,
     pub value: SetValue<'input>,
 }
 
@@ -76,7 +76,7 @@ pub struct StorageParamValue<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithStorage<'input> {
-    pub _with: WITH,
+    pub with: WITH,
     pub params:
         Surrounded<punct::LParen, Seq<StorageParam<'input>, punct::Comma>, punct::RParen>,
 }
@@ -86,7 +86,7 @@ pub struct WithStorage<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IncludeClause<'input> {
-    pub _include: INCLUDE,
+    pub include: INCLUDE,
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
 }
@@ -112,7 +112,7 @@ pub enum IndexTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IndexCollate<'input> {
-    pub _collate: COLLATE,
+    pub collate: COLLATE,
     pub name: literal::Ident<'input>,
 }
 
@@ -144,13 +144,13 @@ pub struct IndexElem<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateIndexStmt<'input> {
-    pub _create: CREATE,
+    pub create: CREATE,
     pub unique: Option<UNIQUE>,
-    pub _index: INDEX,
+    pub index: INDEX,
     pub concurrently: Option<CONCURRENTLY>,
     pub if_not_exists: Option<(IF, NOT, EXISTS)>,
     pub name: Option<literal::Ident<'input>>,
-    pub _on: ON,
+    pub on: ON,
     /// Optional `ONLY` modifier — restricts the index to the named table
     /// without descending into inheritance children (partitioned tables).
     pub only: Option<ONLY>,
@@ -185,8 +185,8 @@ pub enum NullsDistinctClause {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropIndexStmt<'input> {
-    pub _drop: DROP,
-    pub _index: INDEX,
+    pub drop: DROP,
+    pub index: INDEX,
     pub concurrently: Option<CONCURRENTLY>,
     pub if_exists: Option<(IF, EXISTS)>,
     pub names: Seq<literal::Ident<'input>, punct::Comma>,

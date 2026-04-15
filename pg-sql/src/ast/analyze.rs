@@ -11,7 +11,7 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AnalyzeStmt<'input> {
-    pub _analyze: ANALYZE,
+    pub analyze: ANALYZE,
     pub table_name: literal::Ident<'input>,
 }
 

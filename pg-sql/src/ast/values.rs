@@ -13,7 +13,7 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableStmt<'input> {
-    pub _table: TABLE,
+    pub table: TABLE,
     pub table_name: crate::tokens::literal::Ident<'input>,
 }
 

@@ -14,8 +14,8 @@ use crate::tokens::keyword::*;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PrimaryKeyConstraint {
-    pub _primary: PRIMARY,
-    pub _key: KEY,
+    pub primary: PRIMARY,
+    pub key: KEY,
     /// Optional `[NOT] DEFERRABLE [INITIALLY {DEFERRED|IMMEDIATE}]` suffix.
     pub attrs: ConstraintAttrs,
 }
@@ -25,7 +25,7 @@ pub struct PrimaryKeyConstraint {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UniqueConstraint {
-    pub _unique: UNIQUE,
+    pub unique: UNIQUE,
     /// Optional `NULLS [NOT] DISTINCT` qualifier (Postgres 15+).
     pub nulls: Option<NullsDistinctQualifier>,
     /// Optional `[NOT] DEFERRABLE [INITIALLY ...]` attributes.
@@ -37,9 +37,9 @@ pub struct UniqueConstraint {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NullsDistinctQualifier {
-    pub _nulls: NULLS,
+    pub nulls: NULLS,
     pub not: Option<NOT>,
-    pub _distinct: DISTINCT,
+    pub distinct: DISTINCT,
 }
 
 /// Referential action for `ON DELETE` / `ON UPDATE`.
@@ -61,8 +61,8 @@ pub enum ReferentialAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetNullKw<'input> {
-    pub _set: SET,
-    pub _null: NULL,
+    pub set: SET,
+    pub null: NULL,
     pub cols: Option<
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     >,
@@ -72,8 +72,8 @@ pub struct SetNullKw<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetDefaultKw<'input> {
-    pub _set: SET,
-    pub _default: DEFAULT,
+    pub set: SET,
+    pub default: DEFAULT,
     pub cols: Option<
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     >,
@@ -84,8 +84,8 @@ pub struct SetDefaultKw<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnDeleteAction<'input> {
-    pub _on: ON,
-    pub _delete: DELETE,
+    pub on: ON,
+    pub delete: DELETE,
     pub action: ReferentialAction<'input>,
 }
 
@@ -94,8 +94,8 @@ pub struct OnDeleteAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnUpdateAction<'input> {
-    pub _on: ON,
-    pub _update: UPDATE,
+    pub on: ON,
+    pub update: UPDATE,
     pub action: ReferentialAction<'input>,
 }
 
@@ -114,7 +114,7 @@ pub enum MatchKind {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MatchClause {
-    pub _match: MATCH,
+    pub r#match: MATCH,
     pub kind: MatchKind,
 }
 
@@ -134,7 +134,7 @@ pub enum DeferrableKind {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InitiallyClause {
-    pub _initially: INITIALLY,
+    pub initially: INITIALLY,
     pub mode: InitiallyMode,
 }
 
@@ -165,7 +165,7 @@ pub enum OnAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReferencesConstraint<'input> {
-    pub _references: REFERENCES,
+    pub references: REFERENCES,
     pub table: literal::AliasName<'input>,
     pub columns: Option<
         Surrounded<
@@ -186,7 +186,7 @@ pub struct ReferencesConstraint<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CheckConstraint<'input> {
-    pub _check: CHECK,
+    pub check: CHECK,
     pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr<'input>, punct::RParen>,
     pub no_inherit: Option<(NO, INHERIT)>,
     pub not_valid: Option<(NOT, VALID)>,
@@ -198,10 +198,10 @@ pub struct CheckConstraint<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GeneratedIdentityConstraint<'input> {
-    pub _generated: GENERATED,
-    pub _always: ALWAYS,
-    pub _as: AS,
-    pub _identity: IDENTITY,
+    pub generated: GENERATED,
+    pub always: ALWAYS,
+    pub r#as: AS,
+    pub identity: IDENTITY,
     pub seq_options:
         Option<Surrounded<punct::LParen, Vec<IdentitySeqOption<'input>>, punct::RParen>>,
 }
@@ -229,8 +229,8 @@ pub enum IdentitySeqOption<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptStartWith<'input> {
-    pub _start: START,
-    pub _with: Option<WITH>,
+    pub start: START,
+    pub with: Option<WITH>,
     pub value: crate::ast::expr::Expr<'input>,
 }
 
@@ -238,8 +238,8 @@ pub struct SeqOptStartWith<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptIncrementBy<'input> {
-    pub _increment: INCREMENT,
-    pub _by: Option<BY>,
+    pub increment: INCREMENT,
+    pub by: Option<BY>,
     pub value: crate::ast::expr::Expr<'input>,
 }
 
@@ -247,7 +247,7 @@ pub struct SeqOptIncrementBy<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptMinValue<'input> {
-    pub _minvalue: MINVALUE,
+    pub minvalue: MINVALUE,
     pub value: crate::ast::expr::Expr<'input>,
 }
 
@@ -255,7 +255,7 @@ pub struct SeqOptMinValue<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptMaxValue<'input> {
-    pub _maxvalue: MAXVALUE,
+    pub maxvalue: MAXVALUE,
     pub value: crate::ast::expr::Expr<'input>,
 }
 
@@ -263,7 +263,7 @@ pub struct SeqOptMaxValue<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptCache<'input> {
-    pub _cache: CACHE,
+    pub cache: CACHE,
     pub value: crate::ast::expr::Expr<'input>,
 }
 
@@ -272,11 +272,11 @@ pub struct SeqOptCache<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GeneratedStoredConstraint<'input> {
-    pub _generated: GENERATED,
-    pub _always: ALWAYS,
-    pub _as: AS,
+    pub generated: GENERATED,
+    pub always: ALWAYS,
+    pub r#as: AS,
     pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr<'input>, punct::RParen>,
-    pub _stored: STORED,
+    pub stored: STORED,
 }
 
 /// DEFAULT expr column constraint.
@@ -284,7 +284,7 @@ pub struct GeneratedStoredConstraint<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DefaultConstraint<'input> {
-    pub _default: DEFAULT,
+    pub default: DEFAULT,
     pub expr: crate::ast::expr::Expr<'input>,
 }
 
@@ -315,7 +315,7 @@ pub enum ColumnConstraintKind<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ConstraintNamePrefix<'input> {
-    pub _constraint: CONSTRAINT,
+    pub constraint: CONSTRAINT,
     pub name: literal::Ident<'input>,
 }
 
@@ -333,7 +333,7 @@ pub struct ColumnConstraint<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CollateClause<'input> {
-    pub _collate: COLLATE,
+    pub collate: COLLATE,
     pub name: literal::Ident<'input>,
 }
 
@@ -373,8 +373,8 @@ pub struct ConstraintAttrs {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TablePrimaryKey<'input> {
-    pub _primary: PRIMARY,
-    pub _key: KEY,
+    pub primary: PRIMARY,
+    pub key: KEY,
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     pub attrs: ConstraintAttrs,
@@ -385,7 +385,7 @@ pub struct TablePrimaryKey<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableUnique<'input> {
-    pub _unique: UNIQUE,
+    pub unique: UNIQUE,
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     pub attrs: ConstraintAttrs,
@@ -396,8 +396,8 @@ pub struct TableUnique<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableForeignKey<'input> {
-    pub _foreign: FOREIGN,
-    pub _key: KEY,
+    pub foreign: FOREIGN,
+    pub key: KEY,
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     pub references: ReferencesConstraint<'input>,
@@ -451,7 +451,7 @@ pub enum LikeOptionKind {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IncludingOption {
-    pub _including: INCLUDING,
+    pub including: INCLUDING,
     pub what: LikeOptionKind,
 }
 
@@ -460,7 +460,7 @@ pub struct IncludingOption {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExcludingOption {
-    pub _excluding: EXCLUDING,
+    pub excluding: EXCLUDING,
     pub what: LikeOptionKind,
 }
 
@@ -480,7 +480,7 @@ pub enum LikeOption {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LikeClause<'input> {
-    pub _like: LIKE,
+    pub like: LIKE,
     pub source: crate::ast::common::QualifiedName<'input>,
     pub options: Vec<LikeOption>,
 }
@@ -517,7 +517,7 @@ pub enum TempKw {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InheritsClause<'input> {
-    pub _inherits: INHERITS,
+    pub inherits: INHERITS,
     pub parents:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
 }
@@ -546,8 +546,8 @@ pub struct ColumnsBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnCommitClause {
-    pub _on: ON,
-    pub _commit: COMMIT,
+    pub on: ON,
+    pub commit: COMMIT,
     pub action: OnCommitAction,
 }
 
@@ -565,8 +565,8 @@ pub enum OnCommitAction {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PartitionOfBody<'input> {
-    pub _partition: PARTITION,
-    pub _of: OF,
+    pub partition: PARTITION,
+    pub of: OF,
     pub parent: literal::Ident<'input>,
     pub for_values: Option<ForValuesClause<'input>>,
     pub default: Option<DEFAULT>,
@@ -579,7 +579,7 @@ pub struct PartitionOfBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsQueryBody<'input> {
-    pub _as: AS,
+    pub r#as: AS,
     pub query: Box<crate::ast::Statement<'input>>,
     pub with_data: Option<WithDataClause>,
 }
@@ -602,7 +602,7 @@ pub enum WithDataClause {
 pub struct ColumnsAsQueryBody<'input> {
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
-    pub _as: AS,
+    pub r#as: AS,
     pub query: Box<crate::ast::Statement<'input>>,
     pub with_data: Option<WithDataClause>,
 }
@@ -631,10 +631,10 @@ pub enum CreateTableBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTableStmt<'input> {
-    pub _create: CREATE,
+    pub create: CREATE,
     pub temp: Option<TempKw>,
     pub unlogged: Option<UNLOGGED>,
-    pub _table: TABLE,
+    pub table: TABLE,
     pub if_not_exists: Option<(IF, NOT, EXISTS)>,
     pub name: literal::Ident<'input>,
     pub body: CreateTableBody<'input>,

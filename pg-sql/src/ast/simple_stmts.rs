@@ -35,8 +35,8 @@ pub enum IsolationLevelKind {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsolationLevelMode {
-    pub _isolation: ISOLATION,
-    pub _level: LEVEL,
+    pub isolation: ISOLATION,
+    pub level_kw: LEVEL,
     pub level: IsolationLevelKind,
 }
 
@@ -69,7 +69,7 @@ pub enum WorkOrTransaction {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct BeginStmt {
-    pub _begin: BEGIN,
+    pub begin: BEGIN,
     pub work: Option<WorkOrTransaction>,
     pub modes: Option<Seq<TransactionMode, punct::Comma>>,
 }
@@ -79,7 +79,7 @@ pub struct BeginStmt {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct EndStmt {
-    pub _end: END,
+    pub end: END,
     pub work: Option<WorkOrTransaction>,
 }
 
@@ -88,7 +88,7 @@ pub struct EndStmt {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AbortStmt {
-    pub _abort: ABORT,
+    pub abort: ABORT,
     pub work: Option<WorkOrTransaction>,
 }
 
@@ -97,8 +97,8 @@ pub struct AbortStmt {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StartTransactionStmt {
-    pub _start: START,
-    pub _transaction: TRANSACTION,
+    pub start: START,
+    pub transaction: TRANSACTION,
     pub modes: Option<Seq<TransactionMode, punct::Comma>>,
 }
 
@@ -108,7 +108,7 @@ pub struct StartTransactionStmt {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetTransactionStmt {
-    pub _set: SET,
+    pub set: SET,
     pub target: SetTransactionTarget,
     pub modes: Seq<TransactionMode, punct::Comma>,
 }
@@ -126,8 +126,8 @@ pub enum SetTransactionTarget {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetConstraintsStmt<'input> {
-    pub _set: SET,
-    pub _constraints: CONSTRAINTS,
+    pub set: SET,
+    pub constraints: CONSTRAINTS,
     pub target: SetConstraintsTarget<'input>,
     pub mode: DeferredMode,
 }
@@ -153,7 +153,7 @@ pub enum DeferredMode {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CommitStmt<'input> {
-    pub _commit: COMMIT,
+    pub commit: COMMIT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -164,7 +164,7 @@ pub struct CommitStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RollbackStmt<'input> {
-    pub _rollback: ROLLBACK,
+    pub rollback: ROLLBACK,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -173,7 +173,7 @@ pub struct RollbackStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SavepointStmt<'input> {
-    pub _savepoint: SAVEPOINT,
+    pub savepoint: SAVEPOINT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -184,7 +184,7 @@ pub struct SavepointStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReleaseStmt<'input> {
-    pub _release: RELEASE,
+    pub release: RELEASE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -195,7 +195,7 @@ pub struct ReleaseStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PrepareStmt<'input> {
-    pub _prepare: PREPARE,
+    pub prepare: PREPARE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -204,7 +204,7 @@ pub struct PrepareStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExecuteStmt<'input> {
-    pub _execute: EXECUTE,
+    pub execute: EXECUTE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -215,7 +215,7 @@ pub struct ExecuteStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeallocateStmt<'input> {
-    pub _deallocate: DEALLOCATE,
+    pub deallocate: DEALLOCATE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -226,7 +226,7 @@ pub struct DeallocateStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GrantStmt<'input> {
-    pub _grant: GRANT,
+    pub grant: GRANT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -235,7 +235,7 @@ pub struct GrantStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RevokeStmt<'input> {
-    pub _revoke: REVOKE,
+    pub revoke: REVOKE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -246,7 +246,7 @@ pub struct RevokeStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CopyStmt<'input> {
-    pub _copy: COPY,
+    pub copy: COPY,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -259,7 +259,7 @@ pub struct CopyStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TruncateStmt<'input> {
-    pub _truncate: TRUNCATE,
+    pub truncate: TRUNCATE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -270,7 +270,7 @@ pub struct TruncateStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CommentStmt<'input> {
-    pub _comment: COMMENT,
+    pub comment: COMMENT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -283,7 +283,7 @@ pub struct CommentStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LockStmt<'input> {
-    pub _lock: LOCK,
+    pub lock: LOCK,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -294,7 +294,7 @@ pub struct LockStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeclareStmt<'input> {
-    pub _declare: DECLARE,
+    pub declare: DECLARE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -312,7 +312,7 @@ pub enum FetchSource {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchAbsolute<'input> {
-    pub _absolute: ABSOLUTE,
+    pub absolute: ABSOLUTE,
     pub count: literal::IntegerLit<'input>,
 }
 
@@ -321,7 +321,7 @@ pub struct FetchAbsolute<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchRelative<'input> {
-    pub _relative: RELATIVE,
+    pub relative: RELATIVE,
     pub count: literal::IntegerLit<'input>,
 }
 
@@ -330,7 +330,7 @@ pub struct FetchRelative<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchForward<'input> {
-    pub _forward: FORWARD,
+    pub forward: FORWARD,
     pub count: Option<FetchCountOrAll<'input>>,
 }
 
@@ -339,7 +339,7 @@ pub struct FetchForward<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchBackward<'input> {
-    pub _backward: BACKWARD,
+    pub backward: BACKWARD,
     pub count: Option<FetchCountOrAll<'input>>,
 }
 
@@ -380,7 +380,7 @@ pub enum FetchDirection<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchStmt<'input> {
-    pub _fetch: FETCH,
+    pub fetch: FETCH,
     pub direction: Option<FetchDirection<'input>>,
     pub source: Option<FetchSource>,
     pub cursor: literal::AliasName<'input>,
@@ -391,7 +391,7 @@ pub struct FetchStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CloseStmt<'input> {
-    pub _close: CLOSE,
+    pub close: CLOSE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -402,7 +402,7 @@ pub struct CloseStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MoveStmt<'input> {
-    pub _move: MOVE,
+    pub r#move: MOVE,
     pub direction: Option<FetchDirection<'input>>,
     pub source: Option<FetchSource>,
     pub cursor: literal::AliasName<'input>,
@@ -437,7 +437,7 @@ pub struct VacuumOptions<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReindexStmt<'input> {
-    pub _reindex: REINDEX,
+    pub reindex: REINDEX,
     pub options: Option<VacuumOptions<'input>>,
     pub tail: Option<RawStatement<'input>>,
 }
@@ -451,7 +451,7 @@ pub struct ReindexStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RefreshStmt<'input> {
-    pub _refresh: REFRESH,
+    pub refresh: REFRESH,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -462,7 +462,7 @@ pub struct RefreshStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotifyStmt<'input> {
-    pub _notify: NOTIFY,
+    pub notify: NOTIFY,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -471,7 +471,7 @@ pub struct NotifyStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ListenStmt<'input> {
-    pub _listen: LISTEN,
+    pub listen: LISTEN,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -491,7 +491,7 @@ pub enum UnlistenTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnlistenStmt<'input> {
-    pub _unlisten: UNLISTEN,
+    pub unlisten: UNLISTEN,
     pub target: UnlistenTarget<'input>,
 }
 
@@ -502,7 +502,7 @@ pub struct UnlistenStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoStmt<'input> {
-    pub _do: DO,
+    pub r#do: DO,
     pub language: Option<DoLanguage<'input>>,
     pub body: literal::DollarStringLit<'input>,
     pub trailing_language: Option<DoLanguage<'input>>,
@@ -513,7 +513,7 @@ pub struct DoStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoLanguage<'input> {
-    pub _language: LANGUAGE,
+    pub language: LANGUAGE,
     pub name: literal::Ident<'input>,
 }
 
@@ -524,7 +524,7 @@ pub struct DoLanguage<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DiscardStmt<'input> {
-    pub _discard: DISCARD,
+    pub discard: DISCARD,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -535,7 +535,7 @@ pub struct DiscardStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReassignStmt<'input> {
-    pub _reassign: REASSIGN,
+    pub reassign: REASSIGN,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -546,7 +546,7 @@ pub struct ReassignStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SecurityLabelStmt<'input> {
-    pub _security: SECURITY,
+    pub security: SECURITY,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -559,7 +559,7 @@ pub struct SecurityLabelStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ClusterStmt<'input> {
-    pub _cluster: CLUSTER,
+    pub cluster: CLUSTER,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -570,7 +570,7 @@ pub struct ClusterStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct VacuumStmt<'input> {
-    pub _vacuum: VACUUM,
+    pub vacuum: VACUUM,
     pub options: Option<VacuumOptions<'input>>,
     pub tail: Option<RawStatement<'input>>,
 }
@@ -582,8 +582,8 @@ pub struct VacuumStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTableStmt<'input> {
-    pub _alter: ALTER,
-    pub _table: TABLE,
+    pub alter: ALTER,
+    pub table: TABLE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -592,7 +592,7 @@ pub struct AlterTableStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CheckpointStmt {
-    pub _checkpoint: CHECKPOINT,
+    pub checkpoint: CHECKPOINT,
 }
 
 /// `ALTER DEFAULT PRIVILEGES [FOR ROLE ...] [IN SCHEMA ...] { GRANT | REVOKE } ...`
@@ -600,9 +600,9 @@ pub struct CheckpointStmt {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterDefaultPrivilegesStmt<'input> {
-    pub _alter: ALTER,
-    pub _default: DEFAULT,
-    pub _privileges: PRIVILEGES,
+    pub alter: ALTER,
+    pub default: DEFAULT,
+    pub privileges: PRIVILEGES,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -614,8 +614,8 @@ pub struct AlterDefaultPrivilegesStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTriggerStmt<'input> {
-    pub _create: CREATE,
-    pub _trigger: TRIGGER,
+    pub create: CREATE,
+    pub trigger: TRIGGER,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -624,8 +624,8 @@ pub struct CreateTriggerStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropTriggerStmt<'input> {
-    pub _drop: DROP,
-    pub _trigger: TRIGGER,
+    pub drop: DROP,
+    pub trigger: TRIGGER,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -634,9 +634,9 @@ pub struct DropTriggerStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateRuleStmt<'input> {
-    pub _create: CREATE,
+    pub create: CREATE,
     pub or_replace: Option<(OR, REPLACE)>,
-    pub _rule: RULE,
+    pub rule: RULE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -645,8 +645,8 @@ pub struct CreateRuleStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropRuleStmt<'input> {
-    pub _drop: DROP,
-    pub _rule: RULE,
+    pub drop: DROP,
+    pub rule: RULE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -766,8 +766,8 @@ alter_stmts! {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterForeignStmt<'input> {
-    pub _alter: ALTER,
-    pub _foreign: FOREIGN,
+    pub alter: ALTER,
+    pub foreign: FOREIGN,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -776,8 +776,8 @@ pub struct AlterForeignStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateEventTriggerStmt<'input> {
-    pub _create: CREATE,
-    pub _event: EVENT,
+    pub create: CREATE,
+    pub event: EVENT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -786,8 +786,8 @@ pub struct CreateEventTriggerStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropEventTriggerStmt<'input> {
-    pub _drop: DROP,
-    pub _event: EVENT,
+    pub drop: DROP,
+    pub event: EVENT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -796,8 +796,8 @@ pub struct DropEventTriggerStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterEventTriggerStmt<'input> {
-    pub _alter: ALTER,
-    pub _event: EVENT,
+    pub alter: ALTER,
+    pub event: EVENT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -806,8 +806,8 @@ pub struct AlterEventTriggerStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropOwnedStmt<'input> {
-    pub _drop: DROP,
-    pub _owned: OWNED,
+    pub drop: DROP,
+    pub owned: OWNED,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -816,8 +816,8 @@ pub struct DropOwnedStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateAccessMethodStmt<'input> {
-    pub _create: CREATE,
-    pub _access: ACCESS,
+    pub create: CREATE,
+    pub access: ACCESS,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -826,8 +826,8 @@ pub struct CreateAccessMethodStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropAccessMethodStmt<'input> {
-    pub _drop: DROP,
-    pub _access: ACCESS,
+    pub drop: DROP,
+    pub access: ACCESS,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -836,8 +836,8 @@ pub struct DropAccessMethodStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateMaterializedViewStmt<'input> {
-    pub _create: CREATE,
-    pub _materialized: MATERIALIZED,
+    pub create: CREATE,
+    pub materialized: MATERIALIZED,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -846,8 +846,8 @@ pub struct CreateMaterializedViewStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropMaterializedViewStmt<'input> {
-    pub _drop: DROP,
-    pub _materialized: MATERIALIZED,
+    pub drop: DROP,
+    pub materialized: MATERIALIZED,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -856,8 +856,8 @@ pub struct DropMaterializedViewStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterMaterializedViewStmt<'input> {
-    pub _alter: ALTER,
-    pub _materialized: MATERIALIZED,
+    pub alter: ALTER,
+    pub materialized: MATERIALIZED,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -866,8 +866,8 @@ pub struct AlterMaterializedViewStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateForeignStmt<'input> {
-    pub _create: CREATE,
-    pub _foreign: FOREIGN,
+    pub create: CREATE,
+    pub foreign: FOREIGN,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -876,8 +876,8 @@ pub struct CreateForeignStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropForeignStmt<'input> {
-    pub _drop: DROP,
-    pub _foreign: FOREIGN,
+    pub drop: DROP,
+    pub foreign: FOREIGN,
     pub tail: Option<RawStatement<'input>>,
 }
 

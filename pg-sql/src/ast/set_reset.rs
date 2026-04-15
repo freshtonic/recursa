@@ -80,7 +80,7 @@ pub enum SetSep {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetStmt<'input> {
-    pub _set: SET,
+    pub set: SET,
     pub scope: Option<SetScope>,
     pub param: literal::AliasName<'input>,
     pub sep: SetSep,
@@ -103,9 +103,9 @@ pub enum SetRoleTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetRoleStmt<'input> {
-    pub _set: SET,
+    pub set: SET,
     pub scope: Option<SetScope>,
-    pub _role: ROLE,
+    pub role: ROLE,
     pub target: SetRoleTarget<'input>,
 }
 
@@ -124,12 +124,12 @@ pub enum SetSessionAuthTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetSessionAuthStmt<'input> {
-    pub _set: SET,
+    pub set: SET,
     // Only `LOCAL` is allowed here — the `SESSION` scope keyword would
     // conflict with the `SESSION AUTHORIZATION` literal that follows.
     pub local: Option<LOCAL>,
-    pub _session: SESSION,
-    pub _authorization: AUTHORIZATION,
+    pub session: SESSION,
+    pub authorization: AUTHORIZATION,
     pub target: SetSessionAuthTarget<'input>,
 }
 
@@ -179,10 +179,10 @@ pub enum SetTimeZoneTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetTimeZoneStmt<'input> {
-    pub _set: SET,
+    pub set: SET,
     pub scope: Option<SetScope>,
-    pub _time: TIME,
-    pub _zone: ZONE,
+    pub time: TIME,
+    pub zone: ZONE,
     pub target: SetTimeZoneTarget<'input>,
 }
 
@@ -205,7 +205,7 @@ pub enum ResetTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ResetStmt<'input> {
-    pub _reset: RESET,
+    pub reset: RESET,
     pub target: ResetTarget<'input>,
 }
 
@@ -231,7 +231,7 @@ pub enum ShowTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ShowStmt<'input> {
-    pub _show: SHOW,
+    pub show: SHOW,
     pub target: ShowTarget<'input>,
 }
 

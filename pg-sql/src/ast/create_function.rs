@@ -14,7 +14,7 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetofReturn<'input> {
-    pub _setof: SETOF,
+    pub setof: SETOF,
     pub type_name: TypeName<'input>,
 }
 
@@ -32,7 +32,7 @@ pub enum ReturnType<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LanguageOption<'input> {
-    pub _language: LANGUAGE,
+    pub language: LANGUAGE,
     pub name: literal::AliasName<'input>,
 }
 
@@ -63,7 +63,7 @@ pub enum FuncReturnTypeName<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncReturnsClause<'input> {
-    pub _returns: RETURNS,
+    pub returns: RETURNS,
     pub return_type: FuncReturnType<'input>,
 }
 
@@ -81,7 +81,7 @@ pub enum FuncReturnType<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncSetofReturn<'input> {
-    pub _setof: SETOF,
+    pub setof: SETOF,
     pub type_name: FuncReturnTypeName<'input>,
 }
 
@@ -178,7 +178,7 @@ pub enum ParallelMode {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ParallelOption {
-    pub _parallel: PARALLEL,
+    pub parallel: PARALLEL,
     pub mode: ParallelMode,
 }
 
@@ -198,7 +198,7 @@ pub enum SetAssignSep {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetFuncOption<'input> {
-    pub _set: SET,
+    pub set: SET,
     pub name: literal::AliasName<'input>,
     pub sep: SetAssignSep,
     pub value: crate::ast::set_reset::SetValue<'input>,
@@ -221,7 +221,7 @@ pub enum StrictnessOption {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsOption<'input> {
-    pub _as: AS,
+    pub r#as: AS,
     pub body: FuncBody<'input>,
 }
 
@@ -249,9 +249,9 @@ pub enum FuncOption<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateFunctionStmt<'input> {
-    pub _create: CREATE,
+    pub create: CREATE,
     pub or_replace: Option<(OR, REPLACE)>,
-    pub _function: FUNCTION,
+    pub function: FUNCTION,
     pub name: crate::ast::common::QualifiedName<'input>,
     pub args: Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>,
     pub returns: Option<FuncReturnsClause<'input>>,
@@ -277,8 +277,8 @@ pub struct DropFunctionTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropFunctionStmt<'input> {
-    pub _drop: DROP,
-    pub _function: FUNCTION,
+    pub drop: DROP,
+    pub function: FUNCTION,
     pub targets: Seq<DropFunctionTarget<'input>, punct::Comma>,
     pub behavior: Option<crate::ast::common::DropBehavior>,
 }

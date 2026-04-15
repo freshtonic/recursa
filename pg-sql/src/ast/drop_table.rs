@@ -15,8 +15,8 @@ use crate::tokens::keyword::*;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropTableStmt<'input> {
-    pub _drop: DROP,
-    pub _table: TABLE,
+    pub drop: DROP,
+    pub table: TABLE,
     pub if_exists: Option<(IF, EXISTS)>,
     pub names: Seq<QualifiedName<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,

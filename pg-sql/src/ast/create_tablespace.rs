@@ -14,7 +14,7 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OwnerClause<'input> {
-    pub _owner: OWNER,
+    pub owner: OWNER,
     pub role: literal::Ident<'input>,
 }
 
@@ -23,7 +23,7 @@ pub struct OwnerClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LocationClause<'input> {
-    pub _location: LOCATION,
+    pub location: LOCATION,
     pub path: literal::StringLit<'input>,
 }
 
@@ -32,8 +32,8 @@ pub struct LocationClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTablespaceStmt<'input> {
-    pub _create: CREATE,
-    pub _tablespace: TABLESPACE,
+    pub create: CREATE,
+    pub tablespace: TABLESPACE,
     pub name: literal::Ident<'input>,
     pub owner: Option<OwnerClause<'input>>,
     pub location: LocationClause<'input>,
@@ -45,8 +45,8 @@ pub struct CreateTablespaceStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTablespaceRename<'input> {
-    pub _rename: RENAME,
-    pub _to: TO,
+    pub rename: RENAME,
+    pub to: TO,
     pub new_name: literal::Ident<'input>,
 }
 
@@ -55,8 +55,8 @@ pub struct AlterTablespaceRename<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTablespaceOwner<'input> {
-    pub _owner: OWNER,
-    pub _to: TO,
+    pub owner: OWNER,
+    pub to: TO,
     pub new_owner: literal::Ident<'input>,
 }
 
@@ -65,7 +65,7 @@ pub struct AlterTablespaceOwner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTablespaceSetAction<'input> {
-    pub _set: SET,
+    pub set: SET,
     pub params:
         Surrounded<punct::LParen, Seq<StorageParam<'input>, punct::Comma>, punct::RParen>,
 }
@@ -75,7 +75,7 @@ pub struct AlterTablespaceSetAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTablespaceResetAction<'input> {
-    pub _reset: RESET,
+    pub reset: RESET,
     pub params:
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
 }
@@ -100,8 +100,8 @@ pub enum AlterTablespaceAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTablespaceStmt<'input> {
-    pub _alter: ALTER,
-    pub _tablespace: TABLESPACE,
+    pub alter: ALTER,
+    pub tablespace: TABLESPACE,
     pub name: literal::Ident<'input>,
     pub action: AlterTablespaceAction<'input>,
 }
@@ -111,8 +111,8 @@ pub struct AlterTablespaceStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropTablespaceStmt<'input> {
-    pub _drop: DROP,
-    pub _tablespace: TABLESPACE,
+    pub drop: DROP,
+    pub tablespace: TABLESPACE,
     pub if_exists: Option<(IF, EXISTS)>,
     pub name: literal::Ident<'input>,
 }

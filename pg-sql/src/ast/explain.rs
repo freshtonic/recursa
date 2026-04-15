@@ -36,7 +36,7 @@ pub type ExplainOptions<'input> =
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExplainStmt<'input> {
-    pub _explain: EXPLAIN,
+    pub explain: EXPLAIN,
     pub options: Option<ExplainOptions<'input>>,
     pub body: Box<crate::ast::Statement<'input>>,
 }

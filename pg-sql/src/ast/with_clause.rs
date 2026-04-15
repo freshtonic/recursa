@@ -37,12 +37,12 @@ pub enum SearchDirection {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SearchClause<'input> {
-    pub _search: SEARCH,
+    pub search: SEARCH,
     pub direction: SearchDirection,
-    pub _first: FIRST,
-    pub _by: BY,
+    pub first: FIRST,
+    pub by: BY,
     pub columns: Seq<literal::AliasName<'input>, punct::Comma>,
-    pub _set: SET,
+    pub set: SET,
     pub set_column: literal::AliasName<'input>,
 }
 
@@ -51,11 +51,11 @@ pub struct SearchClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CycleClause<'input> {
-    pub _cycle: CYCLE,
+    pub cycle: CYCLE,
     pub columns: Seq<literal::AliasName<'input>, punct::Comma>,
-    pub _set: SET,
+    pub set: SET,
     pub set_column: CycleSetColumn<'input>,
-    pub _using: USING,
+    pub using: USING,
     pub using_column: literal::AliasName<'input>,
 }
 
@@ -73,9 +73,9 @@ pub struct CycleSetColumn<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CycleToDefault<'input> {
-    pub _to: TO,
+    pub to: TO,
     pub to_value: Expr<'input>,
-    pub _default: DEFAULT,
+    pub default: DEFAULT,
     pub default_value: Expr<'input>,
 }
 
@@ -89,7 +89,7 @@ pub struct CteDefinition<'input> {
     pub columns: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
     >,
-    pub _as: AS,
+    pub r#as: AS,
     pub materialized: Option<MaterializedOption>,
     pub query: Surrounded<punct::LParen, Box<crate::ast::Statement<'input>>, punct::RParen>,
     pub search: Option<SearchClause<'input>>,
@@ -101,7 +101,7 @@ pub struct CteDefinition<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithClause<'input> {
-    pub _with: WITH,
+    pub with: WITH,
     pub recursive: Option<RECURSIVE>,
     pub ctes: Seq<CteDefinition<'input>, punct::Comma, NoTrailing, NonEmpty>,
 }

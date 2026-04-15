@@ -17,8 +17,8 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PartitionByClause<'input> {
-    pub _partition: PARTITION,
-    pub _by: BY,
+    pub partition: PARTITION,
+    pub by: BY,
     pub strategy: literal::AliasName<'input>,
     /// Partition key items — may be plain column names or expressions like
     /// `((a+b)/2)`.
@@ -31,9 +31,9 @@ pub struct PartitionByClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForValuesInClause<'input> {
-    pub _for: FOR,
-    pub _values: VALUES,
-    pub _in: IN,
+    pub r#for: FOR,
+    pub values_kw: VALUES,
+    pub r#in: IN,
     pub values: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
 }
 
@@ -42,9 +42,9 @@ pub struct ForValuesInClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FromToSpec<'input> {
-    pub _from: FROM,
+    pub from: FROM,
     pub from_values: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
-    pub _to: TO,
+    pub to: TO,
     pub to_values: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
 }
 
@@ -53,7 +53,7 @@ pub struct FromToSpec<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InListSpec<'input> {
-    pub _in: IN,
+    pub r#in: IN,
     pub values: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
 }
 
@@ -62,7 +62,7 @@ pub struct InListSpec<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ModulusEntry<'input> {
-    pub _modulus: MODULUS,
+    pub modulus: MODULUS,
     pub value: Expr<'input>,
 }
 
@@ -71,7 +71,7 @@ pub struct ModulusEntry<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RemainderEntry<'input> {
-    pub _remainder: REMAINDER,
+    pub remainder: REMAINDER,
     pub value: Expr<'input>,
 }
 
@@ -89,7 +89,7 @@ pub enum HashPartItem<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithModulusSpec<'input> {
-    pub _with: WITH,
+    pub with: WITH,
     pub items:
         Surrounded<punct::LParen, Seq<HashPartItem<'input>, punct::Comma>, punct::RParen>,
 }
@@ -111,8 +111,8 @@ pub enum ForValuesSpec<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForValuesClause<'input> {
-    pub _for: FOR,
-    pub _values: VALUES,
+    pub r#for: FOR,
+    pub values: VALUES,
     pub spec: ForValuesSpec<'input>,
 }
 
@@ -130,8 +130,8 @@ pub struct PartitionColumnDef<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreatePartitionedTableStmt<'input> {
-    pub _create: CREATE,
-    pub _table: TABLE,
+    pub create: CREATE,
+    pub table: TABLE,
     pub name: literal::Ident<'input>,
     pub columns:
         Surrounded<punct::LParen, Seq<PartitionColumnDef<'input>, punct::Comma>, punct::RParen>,
@@ -143,11 +143,11 @@ pub struct CreatePartitionedTableStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreatePartitionOfStmt<'input> {
-    pub _create: CREATE,
-    pub _table: TABLE,
+    pub create: CREATE,
+    pub table: TABLE,
     pub name: literal::Ident<'input>,
-    pub _partition: PARTITION,
-    pub _of: OF,
+    pub partition: PARTITION,
+    pub of: OF,
     pub parent: literal::Ident<'input>,
     pub for_values: ForValuesInClause<'input>,
     pub partition_by: Option<PartitionByClause<'input>>,

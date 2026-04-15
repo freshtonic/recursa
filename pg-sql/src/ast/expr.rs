@@ -122,7 +122,7 @@ pub struct QualifiedWildcard<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowSpec<'input> {
-    pub _over: OVER,
+    pub over: OVER,
     pub body: WindowSpecBody<'input>,
 }
 
@@ -160,8 +160,8 @@ pub struct InlineWindowSpec<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowPartitionBy<'input> {
-    pub _partition: PARTITION,
-    pub _by: BY,
+    pub partition: PARTITION,
+    pub by: BY,
     pub exprs: Seq<Expr<'input>, punct::Comma>,
 }
 
@@ -194,9 +194,9 @@ pub enum WindowFrameClause<'input> {
 #[parse(rules = SqlRules)]
 pub struct WindowFrameBetween<'input> {
     pub unit: WindowFrameUnit,
-    pub _between: BETWEEN,
+    pub between: BETWEEN,
     pub start: WindowFrameBound<'input>,
-    pub _and: AND,
+    pub and: AND,
     pub end: WindowFrameBound<'input>,
     pub exclude: Option<WindowFrameExclude>,
 }
@@ -233,7 +233,7 @@ pub enum WindowFrameBound<'input> {
 #[parse(rules = SqlRules)]
 pub struct ExprPreceding<'input> {
     pub expr: Box<Expr<'input>>,
-    pub _preceding: PRECEDING,
+    pub preceding: PRECEDING,
 }
 
 #[railroad]
@@ -241,7 +241,7 @@ pub struct ExprPreceding<'input> {
 #[parse(rules = SqlRules)]
 pub struct ExprFollowing<'input> {
     pub expr: Box<Expr<'input>>,
-    pub _following: FOLLOWING,
+    pub following: FOLLOWING,
 }
 
 /// `EXCLUDE { CURRENT ROW | GROUP | TIES | NO OTHERS }` frame exclusion.
@@ -249,7 +249,7 @@ pub struct ExprFollowing<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowFrameExclude {
-    pub _exclude: EXCLUDE,
+    pub exclude: EXCLUDE,
     pub target: WindowFrameExcludeTarget,
 }
 
@@ -287,7 +287,7 @@ pub enum FuncArg<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct VariadicArg<'input> {
-    pub _variadic: VARIADIC,
+    pub variadic: VARIADIC,
     pub value: Box<Expr<'input>>,
 }
 
@@ -297,7 +297,7 @@ pub struct VariadicArg<'input> {
 #[parse(rules = SqlRules)]
 pub struct NamedFuncArg<'input> {
     pub name: literal::AliasName<'input>,
-    pub _arrow: punct::FatArrow,
+    pub arrow: punct::FatArrow,
     pub value: Box<Expr<'input>>,
 }
 
@@ -306,8 +306,8 @@ pub struct NamedFuncArg<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithinGroupClause<'input> {
-    pub _within: WITHIN,
-    pub _group: GROUP,
+    pub within: WITHIN,
+    pub group: GROUP,
     pub order_by: Surrounded<
         punct::LParen,
         Box<crate::ast::select::OrderByClause<'input>>,
@@ -320,7 +320,7 @@ pub struct WithinGroupClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FilterClause<'input> {
-    pub _filter: FILTER,
+    pub filter: FILTER,
     pub body: Surrounded<
         punct::LParen,
         Box<crate::ast::select::WhereClause<'input>>,
@@ -364,7 +364,7 @@ pub type ParenExpr<'input> = Surrounded<punct::LParen, ParenContent<'input>, pun
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ExistsExpr<'input> {
-    pub _exists: EXISTS,
+    pub exists: EXISTS,
     pub subquery: Surrounded<
         punct::LParen,
         Box<crate::ast::values::CompoundQuery<'input>>,
@@ -377,7 +377,7 @@ pub struct ExistsExpr<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ArrayBracket<'input> {
-    pub _array: ARRAY,
+    pub array: ARRAY,
     pub lbracket: punct::LBracket,
     pub elements: Seq<Expr<'input>, punct::Comma>,
     pub rbracket: punct::RBracket,
@@ -388,7 +388,7 @@ pub struct ArrayBracket<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ArraySubquery<'input> {
-    pub _array: ARRAY,
+    pub array: ARRAY,
     pub subquery: Surrounded<
         punct::LParen,
         Box<crate::ast::values::CompoundQuery<'input>>,
@@ -413,7 +413,7 @@ pub enum ArrayExpr<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct RowExpr<'input> {
-    pub _row: ROW,
+    pub row: ROW,
     pub values: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
 }
 
@@ -422,9 +422,9 @@ pub struct RowExpr<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseWhenArm<'input> {
-    pub _when: WHEN,
+    pub when: WHEN,
     pub condition: Box<Expr<'input>>,
-    pub _then: THEN,
+    pub then: THEN,
     pub result: Box<Expr<'input>>,
 }
 
@@ -433,7 +433,7 @@ pub struct CaseWhenArm<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseElse<'input> {
-    pub _else: ELSE,
+    pub r#else: ELSE,
     pub result: Box<Expr<'input>>,
 }
 
@@ -442,11 +442,11 @@ pub struct CaseElse<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseSearched<'input> {
-    pub _case: CASE,
+    pub case: CASE,
     pub first_arm: CaseWhenArm<'input>,
     pub rest_arms: Vec<CaseWhenArm<'input>>,
     pub else_clause: Option<CaseElse<'input>>,
-    pub _end: END,
+    pub end: END,
 }
 
 /// Simple CASE: `CASE operand WHEN val THEN result [...] [ELSE result] END`.
@@ -454,12 +454,12 @@ pub struct CaseSearched<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseSimple<'input> {
-    pub _case: CASE,
+    pub case: CASE,
     pub operand: Box<Expr<'input>>,
     pub first_arm: CaseWhenArm<'input>,
     pub rest_arms: Vec<CaseWhenArm<'input>>,
     pub else_clause: Option<CaseElse<'input>>,
-    pub _end: END,
+    pub end: END,
 }
 
 /// CASE expression: searched form (first, since `CASE WHEN` is a longer
@@ -494,8 +494,8 @@ pub struct CastType<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct NotInSuffix<'input> {
-    pub _not: NOT,
-    pub _in: IN,
+    pub not: NOT,
+    pub r#in: IN,
     pub list: InList<'input>,
 }
 
@@ -533,7 +533,7 @@ pub enum TimeZoneQualifier {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TimestampLit<'input> {
-    pub _timestamp: TIMESTAMP,
+    pub timestamp: TIMESTAMP,
     /// Optional precision, e.g., `timestamp(6)`.
     pub precision: Option<TypePrecision<'input>>,
     pub tz: Option<TimeZoneQualifier>,
@@ -545,7 +545,7 @@ pub struct TimestampLit<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TimeLit<'input> {
-    pub _time: TIME,
+    pub time: TIME,
     /// Optional precision, e.g., `time(2)`.
     pub precision: Option<TypePrecision<'input>>,
     pub tz: Option<TimeZoneQualifier>,
@@ -581,7 +581,7 @@ pub enum IntervalQualifier {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct IntervalLit<'input> {
-    pub _interval: INTERVAL,
+    pub interval: INTERVAL,
     pub value: literal::StringLit<'input>,
     pub qualifier: Option<IntervalQualifier>,
 }
@@ -611,7 +611,7 @@ pub struct XmlNamedArg<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlNamedArgAlias<'input> {
-    pub _as: AS,
+    pub r#as: AS,
     pub name: literal::AliasName<'input>,
 }
 
@@ -621,7 +621,7 @@ pub struct XmlNamedArgAlias<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlAttributes<'input> {
-    pub _kw: XMLATTRIBUTES,
+    pub kw: XMLATTRIBUTES,
     pub args: Surrounded<punct::LParen, Seq<XmlNamedArg<'input>, punct::Comma>, punct::RParen>,
 }
 
@@ -630,7 +630,7 @@ pub struct XmlAttributes<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElementAttrsTail<'input> {
-    pub _comma: punct::Comma,
+    pub comma: punct::Comma,
     pub attrs: XmlAttributes<'input>,
     pub content: Option<XmlElementContentTail<'input>>,
 }
@@ -640,7 +640,7 @@ pub struct XmlElementAttrsTail<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElementContentTail<'input> {
-    pub _comma: punct::Comma,
+    pub comma: punct::Comma,
     pub exprs: Seq<Expr<'input>, punct::Comma>,
 }
 
@@ -662,7 +662,7 @@ pub enum XmlElementTail<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElementInner<'input> {
-    pub _name: NAME,
+    pub name: NAME,
     pub element_name: literal::AliasName<'input>,
     pub tail: Option<XmlElementTail<'input>>,
 }
@@ -672,7 +672,7 @@ pub struct XmlElementInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElement<'input> {
-    pub _kw: XMLELEMENT,
+    pub kw: XMLELEMENT,
     pub inner: Surrounded<punct::LParen, XmlElementInner<'input>, punct::RParen>,
 }
 
@@ -681,7 +681,7 @@ pub struct XmlElement<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlForest<'input> {
-    pub _kw: XMLFOREST,
+    pub kw: XMLFOREST,
     pub args: Surrounded<punct::LParen, Seq<XmlNamedArg<'input>, punct::Comma>, punct::RParen>,
 }
 
@@ -690,7 +690,7 @@ pub struct XmlForest<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlPi<'input> {
-    pub _kw: XMLPI,
+    pub kw: XMLPI,
     pub inner: Surrounded<punct::LParen, XmlPiInner<'input>, punct::RParen>,
 }
 
@@ -699,7 +699,7 @@ pub struct XmlPi<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlPiInner<'input> {
-    pub _name: NAME,
+    pub name: NAME,
     pub target: literal::AliasName<'input>,
     pub content: Option<XmlPiContentTail<'input>>,
 }
@@ -709,7 +709,7 @@ pub struct XmlPiInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlPiContentTail<'input> {
-    pub _comma: punct::Comma,
+    pub comma: punct::Comma,
     pub expr: Box<Expr<'input>>,
 }
 
@@ -745,7 +745,7 @@ pub struct TrimChars<'input> {
 pub struct TrimInner<'input> {
     pub dir: Option<TrimDir>,
     pub chars: Option<TrimChars<'input>>,
-    pub _from: FROM,
+    pub from: FROM,
     pub source: Box<Expr<'input>>,
 }
 
@@ -754,7 +754,7 @@ pub struct TrimInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TrimCall<'input> {
-    pub _kw: TRIM,
+    pub kw: TRIM,
     pub inner: Surrounded<punct::LParen, TrimInner<'input>, punct::RParen>,
 }
 
@@ -763,7 +763,7 @@ pub struct TrimCall<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForCount<'input> {
-    pub _for: FOR,
+    pub r#for: FOR,
     pub count: Box<Expr<'input>>,
 }
 
@@ -772,7 +772,7 @@ pub struct ForCount<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringFromFor<'input> {
-    pub _from: FROM,
+    pub from: FROM,
     pub start: Box<Expr<'input>>,
     pub for_count: Option<ForCount<'input>>,
 }
@@ -782,9 +782,9 @@ pub struct SubstringFromFor<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringSimilar<'input> {
-    pub _similar: SIMILAR,
+    pub similar: SIMILAR,
     pub pattern: Box<Expr<'input>>,
-    pub _escape: ESCAPE,
+    pub escape_kw: ESCAPE,
     pub escape: Box<Expr<'input>>,
 }
 
@@ -815,8 +815,8 @@ pub struct SubstringInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CollationForCall<'input> {
-    pub _collation: COLLATION,
-    pub _for: FOR,
+    pub collation: COLLATION,
+    pub r#for: FOR,
     pub arg: Surrounded<punct::LParen, Box<Expr<'input>>, punct::RParen>,
 }
 
@@ -826,7 +826,7 @@ pub struct CollationForCall<'input> {
 #[parse(rules = SqlRules)]
 pub struct CastAsInner<'input> {
     pub value: Box<Expr<'input>>,
-    pub _as: AS,
+    pub r#as: AS,
     pub target: CastType<'input>,
     pub collate: Option<CollateSuffix<'input>>,
 }
@@ -836,7 +836,7 @@ pub struct CastAsInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CollateSuffix<'input> {
-    pub _collate: COLLATE,
+    pub collate: COLLATE,
     pub name: literal::Ident<'input>,
 }
 
@@ -845,7 +845,7 @@ pub struct CollateSuffix<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CastCall<'input> {
-    pub _kw: CAST,
+    pub kw: CAST,
     pub inner: Surrounded<punct::LParen, CastAsInner<'input>, punct::RParen>,
 }
 
@@ -855,7 +855,7 @@ pub struct CastCall<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringCall<'input> {
-    pub _kw: SUBSTRING,
+    pub kw: SUBSTRING,
     pub inner: Surrounded<punct::LParen, SubstringInner<'input>, punct::RParen>,
 }
 
@@ -865,7 +865,7 @@ pub struct SubstringCall<'input> {
 #[parse(rules = SqlRules)]
 pub struct PositionInner<'input> {
     pub needle: Box<Expr<'input>>,
-    pub _in: IN,
+    pub r#in: IN,
     pub haystack: Box<Expr<'input>>,
 }
 
@@ -874,7 +874,7 @@ pub struct PositionInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PositionCall<'input> {
-    pub _kw: POSITION,
+    pub kw: POSITION,
     pub inner: Surrounded<punct::LParen, PositionInner<'input>, punct::RParen>,
 }
 
@@ -884,9 +884,9 @@ pub struct PositionCall<'input> {
 #[parse(rules = SqlRules)]
 pub struct OverlayInner<'input> {
     pub source: Box<Expr<'input>>,
-    pub _placing: PLACING,
+    pub placing: PLACING,
     pub new: Box<Expr<'input>>,
-    pub _from: FROM,
+    pub from: FROM,
     pub start: Box<Expr<'input>>,
     pub for_count: Option<ForCount<'input>>,
 }
@@ -896,7 +896,7 @@ pub struct OverlayInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OverlayCall<'input> {
-    pub _kw: OVERLAY,
+    pub kw: OVERLAY,
     pub inner: Surrounded<punct::LParen, OverlayInner<'input>, punct::RParen>,
 }
 
@@ -919,7 +919,7 @@ pub enum ExtractField<'input> {
 #[parse(rules = SqlRules)]
 pub struct ExtractInner<'input> {
     pub field: ExtractField<'input>,
-    pub _from: FROM,
+    pub from: FROM,
     pub source: Box<Expr<'input>>,
 }
 
@@ -928,7 +928,7 @@ pub struct ExtractInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExtractCall<'input> {
-    pub _kw: EXTRACT,
+    pub kw: EXTRACT,
     pub inner: Surrounded<punct::LParen, ExtractInner<'input>, punct::RParen>,
 }
 
@@ -937,7 +937,7 @@ pub struct ExtractCall<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UescapeSuffix<'input> {
-    pub _uescape: UESCAPE,
+    pub uescape: UESCAPE,
     pub escape_char: literal::StringLit<'input>,
 }
 

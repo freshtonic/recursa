@@ -20,7 +20,7 @@ use crate::tokens::keyword::*;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertValueRows<'input> {
-    pub _values: VALUES,
+    pub values: VALUES,
     pub rows: Seq<ValueList<'input>, punct::Comma>,
 }
 
@@ -42,9 +42,9 @@ pub enum InsertSource<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoUpdateAction<'input> {
-    pub _do: DO,
-    pub _update: UPDATE,
-    pub _set: SET,
+    pub r#do: DO,
+    pub update: UPDATE,
+    pub set: SET,
     pub assignments: Seq<SetAssignment<'input>, punct::Comma>,
     pub where_clause: Option<WhereClause<'input>>,
 }
@@ -67,8 +67,8 @@ pub enum ConflictAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnConflictClause<'input> {
-    pub _on: ON,
-    pub _conflict: CONFLICT,
+    pub on: ON,
+    pub conflict: CONFLICT,
     pub target: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
     >,
@@ -81,8 +81,8 @@ pub struct OnConflictClause<'input> {
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
 pub struct InsertStmt<'input> {
-    pub _insert: INSERT,
-    pub _into: INTO,
+    pub insert: INSERT,
+    pub into: INTO,
     pub table_name: QualifiedName<'input>,
     pub columns: Option<Box<ColumnList<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]

@@ -25,7 +25,7 @@ pub struct SelectItem<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsAlias<'input> {
-    pub _as: AS,
+    pub r#as: AS,
     pub name: literal::AliasName<'input>,
 }
 
@@ -56,7 +56,7 @@ impl<'input> Alias<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FromClause<'input> {
-    pub _from: FROM,
+    pub from: FROM,
     pub tables: Seq<TableRef<'input>, punct::Comma>,
 }
 
@@ -66,7 +66,7 @@ pub struct FromClause<'input> {
 #[parse(rules = SqlRules)]
 pub struct InheritedTable<'input> {
     pub name: QualifiedName<'input>,
-    pub _star: punct::Star,
+    pub star: punct::Star,
     pub alias: Option<literal::Ident<'input>>,
 }
 
@@ -75,7 +75,7 @@ pub struct InheritedTable<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableAliasWithAs<'input> {
-    pub _as: AS,
+    pub r#as: AS,
     pub name: literal::AliasName<'input>,
     pub columns:
         Option<Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>>,
@@ -109,9 +109,9 @@ pub enum TableAlias<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubqueryRef<'input> {
-    pub _lparen: punct::LParen,
+    pub lparen: punct::LParen,
     pub query: Box<crate::ast::values::CompoundQuery<'input>>,
-    pub _rparen: punct::RParen,
+    pub rparen: punct::RParen,
     pub alias: Option<TableAlias<'input>>,
 }
 
@@ -124,9 +124,9 @@ pub struct SubqueryRef<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ParenJoinRef<'input> {
-    pub _lparen: punct::LParen,
+    pub lparen: punct::LParen,
     pub table: Box<TableRef<'input>>,
-    pub _rparen: punct::RParen,
+    pub rparen: punct::RParen,
     pub alias: Option<PlainTableAlias<'input>>,
 }
 
@@ -135,10 +135,10 @@ pub struct ParenJoinRef<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LateralRef<'input> {
-    pub _lateral: LATERAL,
-    pub _lparen: punct::LParen,
+    pub lateral: LATERAL,
+    pub lparen: punct::LParen,
     pub query: Box<crate::ast::values::CompoundQuery<'input>>,
-    pub _rparen: punct::RParen,
+    pub rparen: punct::RParen,
     pub alias: Option<literal::AliasName<'input>>,
 }
 
@@ -178,7 +178,7 @@ pub enum PlainTableAlias<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PlainTableAliasWithAs<'input> {
-    pub _as: AS,
+    pub r#as: AS,
     pub name: literal::AliasName<'input>,
     pub columns: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
@@ -213,7 +213,7 @@ pub struct ColumnDef<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnDefList<'input> {
-    pub _as: Option<AS>,
+    pub r#as: Option<AS>,
     pub name: Option<literal::AliasName<'input>>,
     pub columns: Surrounded<punct::LParen, Seq<ColumnDef<'input>, punct::Comma>, punct::RParen>,
 }
@@ -293,7 +293,7 @@ pub enum JoinCondition<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinOn<'input> {
-    pub _on: ON,
+    pub on: ON,
     pub condition: Box<Expr<'input>>,
 }
 
@@ -302,7 +302,7 @@ pub struct JoinOn<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinUsingAliasWithAs<'input> {
-    pub _as: AS,
+    pub r#as: AS,
     pub name: literal::AliasName<'input>,
 }
 
@@ -323,7 +323,7 @@ pub enum JoinUsingAlias<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinUsing<'input> {
-    pub _using: USING,
+    pub using: USING,
     pub columns: Surrounded<
         punct::LParen,
         Seq<literal::AliasName<'input>, punct::Comma>,
@@ -344,8 +344,8 @@ pub struct JoinUsing<'input> {
 pub struct JoinSuffix<'input> {
     pub natural: Option<NATURAL>,
     pub join_type: Option<JoinType>,
-    pub _outer: Option<OUTER>,
-    pub _join: JOIN,
+    pub outer: Option<OUTER>,
+    pub join: JOIN,
     pub table: SimpleTableRef<'input>,
     pub condition: Option<JoinCondition<'input>>,
 }
@@ -364,7 +364,7 @@ pub struct TableRef<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhereClause<'input> {
-    pub _where: WHERE,
+    pub r#where: WHERE,
     pub condition: Expr<'input>,
 }
 
@@ -382,7 +382,7 @@ pub enum UsingOp {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UsingClause {
-    pub _using: USING,
+    pub using: USING,
     pub op: UsingOp,
 }
 
@@ -420,8 +420,8 @@ pub struct OrderByItem<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrderByClause<'input> {
-    pub _order: ORDER,
-    pub _by: BY,
+    pub order: ORDER,
+    pub by: BY,
     pub items: Seq<OrderByItem<'input>, punct::Comma>,
 }
 
@@ -430,7 +430,7 @@ pub struct OrderByClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OffsetClause<'input> {
-    pub _offset: OFFSET,
+    pub offset: OFFSET,
     pub count: Expr<'input>,
 }
 
@@ -439,7 +439,7 @@ pub struct OffsetClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LimitClause<'input> {
-    pub _limit: LIMIT,
+    pub limit: LIMIT,
     pub count: Expr<'input>,
 }
 
@@ -448,7 +448,7 @@ pub struct LimitClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForUpdateClause {
-    pub _for: FOR,
+    pub r#for: FOR,
     pub mode: LockingMode,
 }
 
@@ -472,8 +472,8 @@ pub enum LockingMode {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GroupByClause<'input> {
-    pub _group: GROUP,
-    pub _by: BY,
+    pub group: GROUP,
+    pub by: BY,
     /// Optional `DISTINCT` / `ALL` modifier (Postgres 16+).
     pub modifier: Option<GroupByModifier>,
     pub items: Seq<GroupByItem<'input>, punct::Comma>,
@@ -493,8 +493,8 @@ pub enum GroupByModifier {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GroupingSetsItem<'input> {
-    pub _grouping: GROUPING,
-    pub _sets: SETS,
+    pub grouping: GROUPING,
+    pub sets: SETS,
     pub groups:
         Surrounded<punct::LParen, Seq<Box<GroupByItem<'input>>, punct::Comma>, punct::RParen>,
 }
@@ -504,7 +504,7 @@ pub struct GroupingSetsItem<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RollupItem<'input> {
-    pub _rollup: ROLLUP,
+    pub rollup: ROLLUP,
     pub items:
         Surrounded<punct::LParen, Seq<Box<GroupByItem<'input>>, punct::Comma>, punct::RParen>,
 }
@@ -514,7 +514,7 @@ pub struct RollupItem<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CubeItem<'input> {
-    pub _cube: CUBE,
+    pub cube: CUBE,
     pub items:
         Surrounded<punct::LParen, Seq<Box<GroupByItem<'input>>, punct::Comma>, punct::RParen>,
 }
@@ -539,7 +539,7 @@ pub enum GroupByItem<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct HavingClause<'input> {
-    pub _having: HAVING,
+    pub having: HAVING,
     pub condition: Expr<'input>,
 }
 
@@ -549,7 +549,7 @@ pub struct HavingClause<'input> {
 #[parse(rules = SqlRules)]
 pub struct WindowDef<'input> {
     pub name: literal::Ident<'input>,
-    pub _as: AS,
+    pub r#as: AS,
     pub spec: Surrounded<
         punct::LParen,
         crate::ast::expr::InlineWindowSpec<'input>,
@@ -562,7 +562,7 @@ pub struct WindowDef<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WindowClause<'input> {
-    pub _window: WINDOW,
+    pub window: WINDOW,
     pub defs: Seq<WindowDef<'input>, punct::Comma, NoTrailing, NonEmpty>,
 }
 
@@ -572,10 +572,10 @@ pub struct WindowClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SelectIntoClause<'input> {
-    pub _into: INTO,
+    pub into: INTO,
     pub temp: Option<crate::ast::create_table::TempKw>,
     pub unlogged: Option<UNLOGGED>,
-    pub _table: Option<TABLE>,
+    pub table: Option<TABLE>,
     pub target: crate::ast::common::QualifiedName<'input>,
 }
 
@@ -595,8 +595,8 @@ pub enum SelectDistinct<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SelectDistinctOn<'input> {
-    pub _distinct: DISTINCT,
-    pub _on: ON,
+    pub distinct: DISTINCT,
+    pub on: ON,
     pub exprs: Surrounded<
         punct::LParen,
         Seq<crate::ast::expr::Expr<'input>, punct::Comma>,
@@ -610,7 +610,7 @@ pub struct SelectDistinctOn<'input> {
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
 pub struct SelectStmt<'input> {
-    pub _select: SELECT,
+    pub select: SELECT,
     pub distinct: Option<Box<SelectDistinct<'input>>>,
     #[format_tokens(group(consistent), indent, break(flat = " ", broken = "\n"))]
     pub items: Seq<SelectItem<'input>, punct::Comma>,
@@ -654,7 +654,7 @@ pub enum SelectBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ValuesBody<'input> {
-    pub _values: VALUES,
+    pub values: VALUES,
     pub rows: Seq<
         Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
         punct::Comma,

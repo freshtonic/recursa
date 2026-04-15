@@ -19,11 +19,11 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateViewStmt<'input> {
-    pub _create: CREATE,
+    pub create: CREATE,
     pub or_replace: Option<(OR, REPLACE)>,
     pub temp: Option<TempKw>,
     pub recursive: Option<RECURSIVE>,
-    pub _view: VIEW,
+    pub view: VIEW,
     pub name: literal::Ident<'input>,
     pub columns: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
@@ -31,7 +31,7 @@ pub struct CreateViewStmt<'input> {
     /// Optional `WITH (option [= value], ...)` view options such as
     /// `security_invoker`, `security_barrier`, `check_option`.
     pub with_options: Option<crate::ast::create_index::WithStorage<'input>>,
-    pub _as: AS,
+    pub r#as: AS,
     pub query: CompoundQuery<'input>,
 }
 
@@ -44,8 +44,8 @@ pub struct CreateViewStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropViewStmt<'input> {
-    pub _drop: DROP,
-    pub _view: VIEW,
+    pub drop: DROP,
+    pub view: VIEW,
     pub if_exists: Option<(IF, EXISTS)>,
     pub names: Seq<QualifiedName<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,
