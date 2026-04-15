@@ -6,6 +6,7 @@ use recursa_diagram::railroad;
 
 use crate::ast::common::QualifiedName;
 use crate::ast::expr::{Expr, FuncCall};
+use crate::ast::values::Subquery;
 use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 
@@ -110,7 +111,7 @@ pub enum TableAlias<'input> {
 #[parse(rules = SqlRules)]
 pub struct SubqueryRef<'input> {
     pub lparen: punct::LParen,
-    pub query: Box<crate::ast::values::Subquery<'input>>,
+    pub query: Box<Subquery<'input>>,
     pub rparen: punct::RParen,
     pub alias: Option<TableAlias<'input>>,
 }
@@ -138,7 +139,7 @@ pub struct LateralRef<'input> {
     pub lateral: LATERAL,
     pub query: Surrounded<
         punct::LParen,
-        Box<crate::ast::values::Subquery<'input>>,
+        Box<Subquery<'input>>,
         punct::RParen,
     >,
     pub alias: Option<PlainTableAlias<'input>>,

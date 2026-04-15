@@ -8,6 +8,7 @@ use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 use recursa_diagram::railroad;
 
+use crate::ast::values::Subquery;
 use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 
@@ -26,7 +27,7 @@ pub struct StringLitSeq<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InContent<'input> {
-    Subquery(Box<crate::ast::values::Subquery<'input>>),
+    Subquery(Box<Subquery<'input>>),
     Exprs(Seq<Expr<'input>, punct::Comma>),
 }
 
@@ -351,7 +352,7 @@ pub struct FuncCall<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ParenContent<'input> {
-    Subquery(Box<crate::ast::values::Subquery<'input>>),
+    Subquery(Box<Subquery<'input>>),
     Exprs(Seq<Expr<'input>, punct::Comma>),
 }
 
@@ -370,7 +371,7 @@ pub struct ParenExpr<'input>(
 pub struct ExistsExpr<'input> {
     pub exists: EXISTS,
     pub subquery:
-        Surrounded<punct::LParen, Box<crate::ast::values::Subquery<'input>>, punct::RParen>,
+        Surrounded<punct::LParen, Box<Subquery<'input>>, punct::RParen>,
 }
 
 /// ARRAY bracket constructor: `ARRAY[expr, ...]`
@@ -391,7 +392,7 @@ pub struct ArrayBracket<'input> {
 pub struct ArraySubquery<'input> {
     pub array: ARRAY,
     pub subquery:
-        Surrounded<punct::LParen, Box<crate::ast::values::Subquery<'input>>, punct::RParen>,
+        Surrounded<punct::LParen, Box<Subquery<'input>>, punct::RParen>,
 }
 
 /// ARRAY constructor: `ARRAY[expr, ...]` or `ARRAY(subquery)`

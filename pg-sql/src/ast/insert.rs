@@ -11,6 +11,7 @@ use crate::ast::common::QualifiedName;
 use crate::ast::expr::Expr;
 use crate::ast::select::WhereClause;
 use crate::ast::update::{ReturningClause, SetAssignment};
+use crate::ast::values::Subquery;
 use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 
@@ -65,7 +66,7 @@ pub struct InsertValueRows<'input> {
 pub enum InsertSource<'input> {
     Default((DEFAULT, VALUES)),
     Rows(InsertValueRows<'input>),
-    Select(Box<crate::ast::values::Subquery<'input>>),
+    Select(Box<Subquery<'input>>),
 }
 
 /// DO UPDATE SET ... [WHERE ...] action.
