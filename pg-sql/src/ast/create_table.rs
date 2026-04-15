@@ -560,14 +560,26 @@ pub enum OnCommitAction {
     Drop(DROP),
 }
 
-/// Partition-of table body: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
+/// Partition-of table body: `PARTITION OF parent [(col_options, ...)] FOR VALUES IN (...) [PARTITION BY ...]`
+///
+/// The optional `(col_options, ...)` list is a per-partition override of
+/// column constraints (e.g. `b NOT NULL`, `b DEFAULT 1`, `CONSTRAINT c CHECK
+/// (...)`), reusing the same `ColumnOrConstraint` grammar as a columns-based
+/// table body.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PartitionOfBody<'input> {
     pub partition: PARTITION,
     pub of: OF,
-    pub parent: literal::Ident<'input>,
+    pub parent: crate::ast::common::QualifiedName<'input>,
+    pub column_options: Option<
+        Surrounded<
+            punct::LParen,
+            Seq<ColumnOrConstraint<'input>, punct::Comma>,
+            punct::RParen,
+        >,
+    >,
     pub for_values: Option<ForValuesClause<'input>>,
     pub default: Option<DEFAULT>,
     pub partition_by: Option<PartitionByClause<'input>>,
@@ -636,7 +648,7 @@ pub struct CreateTableStmt<'input> {
     pub unlogged: Option<UNLOGGED>,
     pub table: TABLE,
     pub if_not_exists: Option<(IF, NOT, EXISTS)>,
-    pub name: literal::Ident<'input>,
+    pub name: crate::ast::common::QualifiedName<'input>,
     pub body: CreateTableBody<'input>,
 }
 
@@ -702,7 +714,7 @@ mod tests {
     fn parse_create_table_single_column() {
         let mut input = Input::new("CREATE TABLE BOOLTBL1 (f1 bool)");
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.name.text(), "BOOLTBL1");
+        assert_eq!(stmt.name.object(), "BOOLTBL1");
         assert_eq!(stmt.items().unwrap().len(), 1);
         assert!(input.is_empty());
     }
@@ -711,7 +723,7 @@ mod tests {
     fn parse_create_table_multiple_columns() {
         let mut input = Input::new("CREATE TABLE BOOLTBL3 (d text, b bool, o int)");
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.name.text(), "BOOLTBL3");
+        assert_eq!(stmt.name.object(), "BOOLTBL3");
         assert_eq!(stmt.items().unwrap().len(), 3);
         assert!(input.is_empty());
     }
@@ -761,7 +773,7 @@ mod tests {
         let mut input = Input::new("CREATE TEMP TABLE foo (f1 int)");
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.temp.is_some());
-        assert_eq!(stmt.name.text(), "foo");
+        assert_eq!(stmt.name.object(), "foo");
         assert!(input.is_empty());
     }
 
@@ -770,7 +782,7 @@ mod tests {
         let mut input =
             Input::new("create table list_parted_tbl (a int,b int) partition by list (a)");
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.name.text(), "list_parted_tbl");
+        assert_eq!(stmt.name.object(), "list_parted_tbl");
         assert!(input.is_empty());
     }
 
@@ -780,7 +792,7 @@ mod tests {
             "create table list_parted_tbl1 partition of list_parted_tbl for values in (1) partition by list(b)",
         );
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.name.text(), "list_parted_tbl1");
+        assert_eq!(stmt.name.object(), "list_parted_tbl1");
         assert!(input.is_empty());
     }
 

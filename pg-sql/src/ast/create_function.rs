@@ -279,6 +279,20 @@ pub struct DropFunctionTarget<'input> {
 pub struct DropFunctionStmt<'input> {
     pub drop: DROP,
     pub function: FUNCTION,
+    pub if_exists: Option<(IF, EXISTS)>,
+    pub targets: Seq<DropFunctionTarget<'input>, punct::Comma>,
+    pub behavior: Option<crate::ast::common::DropBehavior>,
+}
+
+/// DROP ROUTINE statement — Postgres synonym for DROP FUNCTION/PROCEDURE
+/// that dispatches by name/signature at lookup time.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DropRoutineStmt<'input> {
+    pub drop: DROP,
+    pub routine: ROUTINE,
+    pub if_exists: Option<(IF, EXISTS)>,
     pub targets: Seq<DropFunctionTarget<'input>, punct::Comma>,
     pub behavior: Option<crate::ast::common::DropBehavior>,
 }

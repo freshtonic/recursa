@@ -30,9 +30,11 @@ pub struct CreateProcedureStmt<'input> {
 pub struct DropProcedureStmt<'input> {
     pub drop: DROP,
     pub procedure: PROCEDURE,
-    pub name: literal::Ident<'input>,
+    pub if_exists: Option<(IF, EXISTS)>,
+    pub name: crate::ast::common::QualifiedName<'input>,
     pub args:
         Option<Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>>,
+    pub behavior: Option<crate::ast::common::DropBehavior>,
 }
 
 /// CALL name ( [ argument ] [, ...] )

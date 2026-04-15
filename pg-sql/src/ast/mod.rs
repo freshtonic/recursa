@@ -28,7 +28,7 @@ use crate::tokens::{literal, punct};
 
 use self::{
     analyze::AnalyzeStmt,
-    create_function::{CreateFunctionStmt, DropFunctionStmt},
+    create_function::{CreateFunctionStmt, DropFunctionStmt, DropRoutineStmt},
     create_index::{CreateIndexStmt, DropIndexStmt},
     create_procedure::{CallStmt, CreateProcedureStmt, DropProcedureStmt},
     create_table::CreateTableStmt,
@@ -76,6 +76,7 @@ pub enum Statement<'input> {
     CreateEventTrigger(CreateEventTriggerStmt<'input>),
     CreateAccessMethod(CreateAccessMethodStmt<'input>),
     CreateMaterializedView(CreateMaterializedViewStmt<'input>),
+    CreateTextSearch(CreateTextSearchStmt<'input>),
     CreateForeign(CreateForeignStmt<'input>),
     CreateIndex(Box<CreateIndexStmt<'input>>),
     CreateView(Box<CreateViewStmt<'input>>),
@@ -104,11 +105,13 @@ pub enum Statement<'input> {
     // DROP variants
     DropFunction(Box<DropFunctionStmt<'input>>),
     DropProcedure(Box<DropProcedureStmt<'input>>),
+    DropRoutine(Box<DropRoutineStmt<'input>>),
     DropTablespace(Box<DropTablespaceStmt<'input>>),
     DropTrigger(DropTriggerStmt<'input>),
     DropEventTrigger(DropEventTriggerStmt<'input>),
     DropAccessMethod(DropAccessMethodStmt<'input>),
     DropMaterializedView(DropMaterializedViewStmt<'input>),
+    DropTextSearch(DropTextSearchStmt<'input>),
     DropForeign(DropForeignStmt<'input>),
     DropOwned(DropOwnedStmt<'input>),
     DropIndex(DropIndexStmt<'input>),
@@ -140,6 +143,7 @@ pub enum Statement<'input> {
     AlterForeign(AlterForeignStmt<'input>),
     AlterEventTrigger(AlterEventTriggerStmt<'input>),
     AlterMaterializedView(AlterMaterializedViewStmt<'input>),
+    AlterTextSearch(AlterTextSearchStmt<'input>),
     AlterTablespace(AlterTablespaceStmt<'input>),
     AlterTable(AlterTableStmt<'input>),
     AlterRule(AlterRuleStmt<'input>),

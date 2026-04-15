@@ -24,7 +24,7 @@ pub struct CreateViewStmt<'input> {
     pub temp: Option<TempKw>,
     pub recursive: Option<RECURSIVE>,
     pub view: VIEW,
-    pub name: literal::Ident<'input>,
+    pub name: QualifiedName<'input>,
     pub columns: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
     >,
@@ -63,7 +63,7 @@ mod tests {
     fn parse_create_view() {
         let mut input = Input::new("CREATE VIEW v AS SELECT 1");
         let stmt = CreateViewStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.name.text(), "v");
+        assert_eq!(stmt.name.object(), "v");
         assert!(stmt.or_replace.is_none());
         assert!(stmt.temp.is_none());
         assert!(stmt.recursive.is_none());

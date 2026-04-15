@@ -115,6 +115,7 @@ pub mod keyword {
         STATEMENT   => r"STATEMENT\b",
         EXECUTE     => r"EXECUTE\b",
         PROCEDURE   => r"PROCEDURE\b",
+        ROUTINE     => r"ROUTINE\b",
         INSTEAD     => r"INSTEAD\b",
         ALSO        => r"ALSO\b",
         NEW         => r"NEW\b",

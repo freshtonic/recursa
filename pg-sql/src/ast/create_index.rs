@@ -189,7 +189,7 @@ pub struct DropIndexStmt<'input> {
     pub index: INDEX,
     pub concurrently: Option<CONCURRENTLY>,
     pub if_exists: Option<(IF, EXISTS)>,
-    pub names: Seq<literal::Ident<'input>, punct::Comma>,
+    pub names: Seq<crate::ast::common::QualifiedName<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,
 }
 

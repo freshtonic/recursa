@@ -72,7 +72,8 @@ pub enum TypeName<'input> {
     Bit(BIT),
     /// `CHARACTER` and `CHARACTER VARYING` — same shape as `BIT`.
     Character(CHARACTER),
-    Ident(literal::Ident<'input>),
+    /// Qualified type name (`schema.type`) or a bare identifier.
+    Ident(crate::ast::common::QualifiedName<'input>),
 }
 
 /// Boolean test suffix: the part after `IS` in `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`.
@@ -1031,6 +1032,16 @@ pub enum Expr<'input> {
         ILIKE,
         Box<Expr<'input>>,
     ),
+    /// `expr NOT SIMILAR TO pattern`. Declared before `NotLike` so the longer
+    /// `NOT SIMILAR TO` form wins longest-match-wins disambiguation.
+    #[parse(postfix, bp = 5, inner_bp = 6)]
+    NotSimilarTo(
+        Box<Expr<'input>>,
+        NOT,
+        SIMILAR,
+        TO,
+        Box<Expr<'input>>,
+    ),
     /// `expr NOT LIKE pattern`. Must come before the `Not` prefix atom so
     /// longest-match-wins prefers the postfix form.
     #[parse(postfix, bp = 5, inner_bp = 6)]
@@ -1038,6 +1049,14 @@ pub enum Expr<'input> {
         Box<Expr<'input>>,
         NOT,
         LIKE,
+        Box<Expr<'input>>,
+    ),
+    /// `expr SIMILAR TO pattern` — SQL standard similar-to pattern match.
+    #[parse(postfix, bp = 5, inner_bp = 6)]
+    SimilarTo(
+        Box<Expr<'input>>,
+        SIMILAR,
+        TO,
         Box<Expr<'input>>,
     ),
     /// `expr ILIKE pattern`
@@ -2449,6 +2468,22 @@ mod tests {
         let mut input = Input::new("table_name NOT LIKE 'bar%'");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::NotLike(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_similar_to_expr() {
+        let mut input = Input::new("x SIMILAR TO 'a%'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::SimilarTo(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_not_similar_to_expr() {
+        let mut input = Input::new("x NOT SIMILAR TO 'a%'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::NotSimilarTo(..)));
         assert!(input.is_empty());
     }
 

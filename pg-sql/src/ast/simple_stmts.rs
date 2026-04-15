@@ -881,6 +881,39 @@ pub struct DropForeignStmt<'input> {
     pub tail: Option<RawStatement<'input>>,
 }
 
+/// `CREATE TEXT SEARCH { PARSER | DICTIONARY | TEMPLATE | CONFIGURATION } ...`
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CreateTextSearchStmt<'input> {
+    pub create: CREATE,
+    pub text: TEXT,
+    pub search: SEARCH,
+    pub tail: Option<RawStatement<'input>>,
+}
+
+/// `DROP TEXT SEARCH { PARSER | DICTIONARY | TEMPLATE | CONFIGURATION } ...`
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DropTextSearchStmt<'input> {
+    pub drop: DROP,
+    pub text: TEXT,
+    pub search: SEARCH,
+    pub tail: Option<RawStatement<'input>>,
+}
+
+/// `ALTER TEXT SEARCH { PARSER | DICTIONARY | TEMPLATE | CONFIGURATION } ...`
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterTextSearchStmt<'input> {
+    pub alter: ALTER,
+    pub text: TEXT,
+    pub search: SEARCH,
+    pub tail: Option<RawStatement<'input>>,
+}
+
 #[cfg(test)]
 mod tests {
     use recursa::{Input, Parse};
@@ -1034,6 +1067,29 @@ mod tests {
     fn parse_reindex_tablespace_table() {
         let mut input = Input::new("REINDEX (TABLESPACE ts) TABLE tbl");
         let _stmt = ReindexStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_text_search_dictionary() {
+        let mut input =
+            Input::new("CREATE TEXT SEARCH DICTIONARY alt_ts_dict1 (template=simple)");
+        let _stmt = CreateTextSearchStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_text_search_configuration_rename() {
+        let mut input =
+            Input::new("ALTER TEXT SEARCH CONFIGURATION alt_ts_conf1 RENAME TO alt_ts_conf2");
+        let _stmt = AlterTextSearchStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_drop_text_search_parser() {
+        let mut input = Input::new("DROP TEXT SEARCH PARSER my_parser");
+        let _stmt = DropTextSearchStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

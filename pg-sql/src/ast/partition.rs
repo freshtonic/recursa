@@ -12,6 +12,20 @@ use crate::tokens::{literal, punct};
 use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
 
+/// One partition key item: `{ column_name | ( expr ) } [COLLATE collation] [opclass_name]`.
+///
+/// The `opclass` operator class name is a trailing identifier (e.g.
+/// `point_ops`, `int4_ops`) that binds the column/expression to a specific
+/// operator class for the partition strategy.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct PartitionKeyItem<'input> {
+    pub expr: Expr<'input>,
+    pub collate: Option<(COLLATE, literal::AliasName<'input>)>,
+    pub opclass: Option<literal::AliasName<'input>>,
+}
+
 /// PARTITION BY LIST (col) clause.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -21,8 +35,9 @@ pub struct PartitionByClause<'input> {
     pub by: BY,
     pub strategy: literal::AliasName<'input>,
     /// Partition key items — may be plain column names or expressions like
-    /// `((a+b)/2)`.
-    pub columns: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
+    /// `((a+b)/2)`, optionally followed by a trailing opclass name.
+    pub columns:
+        Surrounded<punct::LParen, Seq<PartitionKeyItem<'input>, punct::Comma>, punct::RParen>,
 }
 
 /// FOR VALUES IN (val, ...) clause — legacy name kept for backward compat

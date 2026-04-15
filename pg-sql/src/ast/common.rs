@@ -23,10 +23,15 @@ pub enum DropBehavior {
 /// `QualifiedName` is only used in non-expression positions (FROM targets,
 /// DROP targets, ALTER targets, etc.).
 #[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedName<'input> {
-    pub parts: Seq<literal::Ident<'input>, punct::Dot>,
+    pub parts: Seq<
+        literal::Ident<'input>,
+        punct::Dot,
+        recursa::seq::NoTrailing,
+        recursa::seq::NonEmpty,
+    >,
 }
 
 impl<'input> QualifiedName<'input> {
