@@ -19,18 +19,9 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum MaterializedOption {
-    NotMaterialized(NotMaterialized),
+    NotMaterialized((NOT, MATERIALIZED)),
     Materialized(MATERIALIZED),
 }
-
-/// NOT MATERIALIZED
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NotMaterialized(
-    NOT,
-    MATERIALIZED,
-);
 
 /// SEARCH direction: DEPTH or BREADTH
 #[railroad]

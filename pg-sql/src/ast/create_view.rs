@@ -14,31 +14,13 @@ use crate::tokens::{literal, punct};
 use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
 
-/// OR REPLACE keyword pair.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct OrReplaceKw {
-    pub _or: OR,
-    pub _replace: REPLACE,
-}
-
-/// IF EXISTS keyword pair.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IfExistsKw {
-    pub _if: IF,
-    pub _exists: EXISTS,
-}
-
 /// CREATE VIEW statement.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateViewStmt<'input> {
     pub _create: CREATE,
-    pub or_replace: Option<OrReplaceKw>,
+    pub or_replace: Option<(OR, REPLACE)>,
     pub temp: Option<TempKw>,
     pub recursive: Option<RECURSIVE>,
     pub _view: VIEW,
@@ -64,7 +46,7 @@ pub struct CreateViewStmt<'input> {
 pub struct DropViewStmt<'input> {
     pub _drop: DROP,
     pub _view: VIEW,
-    pub if_exists: Option<IfExistsKw>,
+    pub if_exists: Option<(IF, EXISTS)>,
     pub names: Seq<QualifiedName<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,
 }

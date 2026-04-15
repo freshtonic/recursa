@@ -16,7 +16,7 @@ use recursa_diagram::railroad;
 #[parse(rules = SqlRules)]
 pub struct CreateProcedureStmt<'input> {
     pub _create: CREATE,
-    pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
+    pub or_replace: Option<(OR, REPLACE)>,
     pub _procedure: PROCEDURE,
     pub name: literal::Ident<'input>,
     pub args: Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>,

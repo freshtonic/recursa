@@ -141,6 +141,28 @@ impl<T: Visit> Visit for Vec<T> {
     }
 }
 
+// -- Blanket Visit impls for tuples --
+
+macro_rules! impl_visit_for_tuple {
+    ($($T:ident $idx:tt),+) => {
+        impl<$($T: Visit),+> AsNodeKey for ($($T,)+) {}
+        impl<$($T: Visit),+> Visit for ($($T,)+) {
+            fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+                $(self.$idx.visit(visitor)?;)+
+                ControlFlow::Continue(())
+            }
+        }
+    };
+}
+
+impl_visit_for_tuple!(A 0, B 1);
+impl_visit_for_tuple!(A 0, B 1, C 2);
+impl_visit_for_tuple!(A 0, B 1, C 2, D 3);
+impl_visit_for_tuple!(A 0, B 1, C 2, D 3, E 4);
+impl_visit_for_tuple!(A 0, B 1, C 2, D 3, E 4, F 5);
+impl_visit_for_tuple!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+impl_visit_for_tuple!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+
 // -- Unit type is transparent for Visit (no-op separator in Seq<T, ()>) --
 
 impl AsNodeKey for () {}

@@ -6,7 +6,6 @@ use recursa_diagram::railroad;
 
 pub use crate::ast::common::DropBehavior;
 
-use crate::ast::create_view::IfExistsKw;
 use crate::ast::expr::{Expr, FuncCall};
 use crate::ast::select::{NullsOrder, SortDir, WhereClause};
 use crate::ast::set_reset::SetValue;
@@ -14,16 +13,6 @@ use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 
 use crate::tokens::keyword::*;
-/// `IF NOT EXISTS` keyword sequence.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IfNotExistsKw {
-    pub _if: IF,
-    pub _not: NOT,
-    pub _exists: EXISTS,
-}
-
 /// Index access method: `USING method_name`.
 ///
 /// The method name can be an identifier or one of the built-in method
@@ -159,7 +148,7 @@ pub struct CreateIndexStmt<'input> {
     pub unique: Option<UNIQUE>,
     pub _index: INDEX,
     pub concurrently: Option<CONCURRENTLY>,
-    pub if_not_exists: Option<IfNotExistsKw>,
+    pub if_not_exists: Option<(IF, NOT, EXISTS)>,
     pub name: Option<literal::Ident<'input>>,
     pub _on: ON,
     /// Optional `ONLY` modifier — restricts the index to the named table
@@ -183,25 +172,8 @@ pub struct CreateIndexStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum NullsDistinctClause {
-    NotDistinct(NullsNotDistinct),
-    Distinct(NullsDistinct),
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NullsDistinct {
-    pub _nulls: NULLS,
-    pub _distinct: DISTINCT,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NullsNotDistinct {
-    pub _nulls: NULLS,
-    pub _not: NOT,
-    pub _distinct: DISTINCT,
+    NotDistinct((NULLS, NOT, DISTINCT)),
+    Distinct((NULLS, DISTINCT)),
 }
 
 /// DROP INDEX statement:
@@ -216,7 +188,7 @@ pub struct DropIndexStmt<'input> {
     pub _drop: DROP,
     pub _index: INDEX,
     pub concurrently: Option<CONCURRENTLY>,
-    pub if_exists: Option<IfExistsKw>,
+    pub if_exists: Option<(IF, EXISTS)>,
     pub names: Seq<literal::Ident<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,
 }

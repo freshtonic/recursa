@@ -58,7 +58,7 @@ pub enum TypeName<'input> {
     Varchar(VARCHAR),
     /// `DOUBLE PRECISION` — two-keyword type. Listed before `Ident` so the
     /// DOUBLE match isn't accidentally consumed as a plain identifier.
-    DoublePrecision(DoublePrecisionType),
+    DoublePrecision((DOUBLE, PRECISION)),
     /// `TIMESTAMP` (optional `WITH/WITHOUT TIME ZONE` qualifier handled
     /// at the `CastType` level so precision can sit between).
     Timestamp(TIMESTAMP),
@@ -75,39 +75,6 @@ pub enum TypeName<'input> {
     Ident(literal::Ident<'input>),
 }
 
-/// `DOUBLE PRECISION` type (8-byte float).
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct DoublePrecisionType {
-    pub _double: DOUBLE,
-    pub _precision: PRECISION,
-}
-
-// --- Boolean test suffix structs ---
-// NOT variants listed before non-NOT variants so the longer pattern wins via
-// longest-match lookahead (e.g., "NOT TRUE" matches before "TRUE").
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IsNotTrue(pub NOT, pub TRUE);
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IsNotFalse(pub NOT, pub FALSE);
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IsNotUnknown(pub NOT, pub UNKNOWN);
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IsNotNull(pub NOT, pub NULL);
-
 /// Boolean test suffix: the part after `IS` in `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`.
 ///
 /// NOT variants are listed first so the combined peek regex disambiguates
@@ -116,10 +83,10 @@ pub struct IsNotNull(pub NOT, pub NULL);
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum BoolTestKind {
-    IsNotTrue(IsNotTrue),
-    IsNotFalse(IsNotFalse),
-    IsNotUnknown(IsNotUnknown),
-    IsNotNull(IsNotNull),
+    IsNotTrue((NOT, TRUE)),
+    IsNotFalse((NOT, FALSE)),
+    IsNotUnknown((NOT, UNKNOWN)),
+    IsNotNull((NOT, NULL)),
     IsTrue(TRUE),
     IsFalse(FALSE),
     IsUnknown(UNKNOWN),
@@ -254,35 +221,11 @@ pub struct WindowFrameSingle<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowFrameBound<'input> {
-    UnboundedPreceding(UnboundedPreceding),
-    UnboundedFollowing(UnboundedFollowing),
-    CurrentRow(CurrentRow),
+    UnboundedPreceding((UNBOUNDED, PRECEDING)),
+    UnboundedFollowing((UNBOUNDED, FOLLOWING)),
+    CurrentRow((CURRENT, ROW)),
     ExprPreceding(ExprPreceding<'input>),
     ExprFollowing(ExprFollowing<'input>),
-}
-
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct UnboundedPreceding {
-    pub _unbounded: UNBOUNDED,
-    pub _preceding: PRECEDING,
-}
-
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct UnboundedFollowing {
-    pub _unbounded: UNBOUNDED,
-    pub _following: FOLLOWING,
-}
-
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct CurrentRow {
-    pub _current: CURRENT,
-    pub _row: ROW,
 }
 
 #[railroad]
@@ -314,18 +257,10 @@ pub struct WindowFrameExclude {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowFrameExcludeTarget {
-    CurrentRow(CurrentRow),
+    CurrentRow((CURRENT, ROW)),
     Group(GROUP),
     Ties(TIES),
-    NoOthers(NoOthers),
-}
-
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct NoOthers {
-    pub _no: NO,
-    pub _others: OTHERS,
+    NoOthers((NO, OTHERS)),
 }
 
 /// Function call: `name(arg1, arg2, ...)`
@@ -589,26 +524,8 @@ pub struct TypeCastFunc<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum TimeZoneQualifier {
-    With(WithTimeZone),
-    Without(WithoutTimeZone),
-}
-
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct WithTimeZone {
-    pub _with: WITH,
-    pub _time: TIME,
-    pub _zone: ZONE,
-}
-
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct WithoutTimeZone {
-    pub _without: WITHOUT,
-    pub _time: TIME,
-    pub _zone: ZONE,
+    With((WITH, TIME, ZONE)),
+    Without((WITHOUT, TIME, ZONE)),
 }
 
 /// `TIMESTAMP [WITH|WITHOUT TIME ZONE] 'string'`.
@@ -635,76 +552,6 @@ pub struct TimeLit<'input> {
     pub value: literal::StringLit<'input>,
 }
 
-/// `YEAR TO MONTH` qualifier.
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct YearToMonth {
-    pub _year: YEAR,
-    pub _to: TO,
-    pub _month: MONTH,
-}
-
-/// `DAY TO HOUR` qualifier.
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct DayToHour {
-    pub _day: DAY,
-    pub _to: TO,
-    pub _hour: HOUR,
-}
-
-/// `DAY TO MINUTE` qualifier.
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct DayToMinute {
-    pub _day: DAY,
-    pub _to: TO,
-    pub _minute: MINUTE,
-}
-
-/// `DAY TO SECOND` qualifier.
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct DayToSecond {
-    pub _day: DAY,
-    pub _to: TO,
-    pub _second: SECOND,
-}
-
-/// `HOUR TO MINUTE` qualifier.
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct HourToMinute {
-    pub _hour: HOUR,
-    pub _to: TO,
-    pub _minute: MINUTE,
-}
-
-/// `HOUR TO SECOND` qualifier.
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct HourToSecond {
-    pub _hour: HOUR,
-    pub _to: TO,
-    pub _second: SECOND,
-}
-
-/// `MINUTE TO SECOND` qualifier.
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct MinuteToSecond {
-    pub _minute: MINUTE,
-    pub _to: TO,
-    pub _second: SECOND,
-}
-
 /// Optional qualifier after `INTERVAL 'str'`.
 ///
 /// Variant ordering: multi-keyword `X TO Y` forms must come before the
@@ -714,13 +561,13 @@ pub struct MinuteToSecond {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum IntervalQualifier {
-    YearToMonth(YearToMonth),
-    DayToHour(DayToHour),
-    DayToMinute(DayToMinute),
-    DayToSecond(DayToSecond),
-    HourToMinute(HourToMinute),
-    HourToSecond(HourToSecond),
-    MinuteToSecond(MinuteToSecond),
+    YearToMonth((YEAR, TO, MONTH)),
+    DayToHour((DAY, TO, HOUR)),
+    DayToMinute((DAY, TO, MINUTE)),
+    DayToSecond((DAY, TO, SECOND)),
+    HourToMinute((HOUR, TO, MINUTE)),
+    HourToSecond((HOUR, TO, SECOND)),
+    MinuteToSecond((MINUTE, TO, SECOND)),
     Year(YEAR),
     Month(MONTH),
     Day(DAY),

@@ -17,48 +17,6 @@ pub struct TableStmt<'input> {
     pub table_name: crate::tokens::literal::Ident<'input>,
 }
 
-/// UNION ALL
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct UnionAllOp(UNION, ALL);
-
-/// UNION DISTINCT
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct UnionDistinctOp(UNION, DISTINCT);
-
-/// UNION (bare)
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct UnionOp(UNION);
-
-/// EXCEPT ALL
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ExceptAllOp(EXCEPT, ALL);
-
-/// EXCEPT (bare)
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ExceptOp(EXCEPT);
-
-/// INTERSECT ALL
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IntersectAllOp(INTERSECT, ALL);
-
-/// INTERSECT (bare)
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IntersectOp(INTERSECT);
-
 /// Set operation type.
 ///
 /// Variant ordering: longer keyword sequences first within each group
@@ -67,13 +25,13 @@ pub struct IntersectOp(INTERSECT);
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetOp {
-    UnionAll(UnionAllOp),
-    UnionDistinct(UnionDistinctOp),
-    ExceptAll(ExceptAllOp),
-    IntersectAll(IntersectAllOp),
-    Union(UnionOp),
-    Except(ExceptOp),
-    Intersect(IntersectOp),
+    UnionAll((UNION, ALL)),
+    UnionDistinct((UNION, DISTINCT)),
+    ExceptAll((EXCEPT, ALL)),
+    IntersectAll((INTERSECT, ALL)),
+    Union(UNION),
+    Except(EXCEPT),
+    Intersect(INTERSECT),
 }
 
 /// A set operation combiner: `UNION [ALL|DISTINCT] | EXCEPT [ALL] | INTERSECT [ALL]`

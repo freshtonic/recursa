@@ -196,14 +196,6 @@ pub struct PlainTableAliasBare<'input> {
     >,
 }
 
-/// `WITH ORDINALITY` suffix on a function table.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct WithOrdinality {
-    pub _with: WITH,
-    pub _ordinality: ORDINALITY,
-}
 
 /// A column definition inside a function-table column-def-list:
 /// `name type` (e.g., `a int`).
@@ -246,7 +238,7 @@ pub enum FuncTableAlias<'input> {
 #[parse(rules = SqlRules)]
 pub struct FuncTableRef<'input> {
     pub func: FuncCall<'input>,
-    pub ordinality: Option<WithOrdinality>,
+    pub ordinality: Option<(WITH, ORDINALITY)>,
     pub alias: Option<FuncTableAlias<'input>>,
 }
 
@@ -408,21 +400,9 @@ pub enum SortDir {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum NullsOrder {
-    First(NullsFirst),
-    Last(NullsLast),
+    First((NULLS, FIRST)),
+    Last((NULLS, LAST)),
 }
-
-/// NULLS FIRST
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NullsFirst(NULLS, FIRST);
-
-/// NULLS LAST
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NullsLast(NULLS, LAST);
 
 /// A single ORDER BY item: `expr [ASC|DESC] [USING op] [NULLS FIRST|LAST]`
 #[railroad]
@@ -480,27 +460,10 @@ pub struct ForUpdateClause {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum LockingMode {
-    NoKeyUpdate(NoKeyUpdate),
-    KeyShare(KeyShare),
+    NoKeyUpdate((NO, KEY, UPDATE)),
+    KeyShare((KEY, SHARE)),
     Update(UPDATE),
     Share(SHARE),
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NoKeyUpdate {
-    pub _no: NO,
-    pub _key: KEY,
-    pub _update: UPDATE,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct KeyShare {
-    pub _key: KEY,
-    pub _share: SHARE,
 }
 
 /// GROUP BY clause: `GROUP BY item, ...` where each item is an expression
@@ -625,7 +588,7 @@ pub struct SelectIntoClause<'input> {
 #[parse(rules = SqlRules)]
 pub enum SelectDistinct<'input> {
     On(SelectDistinctOn<'input>),
-    All(SelectDistinctAll),
+    All(DISTINCT),
 }
 
 #[railroad]
@@ -639,13 +602,6 @@ pub struct SelectDistinctOn<'input> {
         Seq<crate::ast::expr::Expr<'input>, punct::Comma>,
         punct::RParen,
     >,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct SelectDistinctAll {
-    pub _distinct: DISTINCT,
 }
 
 /// SELECT statement.

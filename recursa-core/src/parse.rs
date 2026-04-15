@@ -81,6 +81,46 @@ impl<'input, T: Parse<'input>> Parse<'input> for std::marker::PhantomData<T> {
     }
 }
 
+/// Blanket implementations: tuples `(T1, T2, ..., Tn)` parse as a sequence,
+/// equivalent to a tuple struct with the same fields. Useful for grouping
+/// short fixed-length keyword sequences without having to declare a named
+/// wrapper type. `peek` delegates to the first element; `parse` parses each
+/// element in declaration order with `consume_ignored` between them.
+macro_rules! impl_parse_for_tuple {
+    ($head:ident, $($tail:ident),+) => {
+        impl<'input, $head, $($tail),+> Parse<'input> for ($head, $($tail),+)
+        where
+            $head: Parse<'input>,
+            $($tail: Parse<'input>),+
+        {
+            fn peek<R: ParseRules>(input: &Input<'input>) -> bool {
+                $head::peek::<R>(input)
+            }
+
+            #[allow(non_snake_case)]
+            fn parse<R: ParseRules>(input: &mut Input<'input>) -> Result<Self, ParseError> {
+                let mut fork = input.fork();
+                R::consume_ignored(&mut fork);
+                let $head = $head::parse::<R>(&mut fork)?;
+                $(
+                    R::consume_ignored(&mut fork);
+                    let $tail = $tail::parse::<R>(&mut fork)?;
+                )+
+                input.commit(fork);
+                Ok(($head, $($tail),+))
+            }
+        }
+    };
+}
+
+impl_parse_for_tuple!(A, B);
+impl_parse_for_tuple!(A, B, C);
+impl_parse_for_tuple!(A, B, C, D);
+impl_parse_for_tuple!(A, B, C, D, E);
+impl_parse_for_tuple!(A, B, C, D, E, F);
+impl_parse_for_tuple!(A, B, C, D, E, F, G);
+impl_parse_for_tuple!(A, B, C, D, E, F, G, H);
+
 /// Blanket implementation: `Vec<T>` parses zero-or-more `T` with no separator.
 /// Repeatedly parses `T` while `T::peek` succeeds.
 impl<'input, T: Parse<'input>> Parse<'input> for Vec<T> {

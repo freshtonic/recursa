@@ -24,34 +24,10 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum IsolationLevelKind {
-    RepeatableRead(RepeatableReadLevel),
-    ReadCommitted(ReadCommittedLevel),
-    ReadUncommitted(ReadUncommittedLevel),
+    RepeatableRead((REPEATABLE, READ)),
+    ReadCommitted((READ, COMMITTED)),
+    ReadUncommitted((READ, UNCOMMITTED)),
     Serializable(SERIALIZABLE),
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct RepeatableReadLevel {
-    pub _repeatable: REPEATABLE,
-    pub _read: READ,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ReadCommittedLevel {
-    pub _read: READ,
-    pub _committed: COMMITTED,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ReadUncommittedLevel {
-    pub _read: READ,
-    pub _uncommitted: UNCOMMITTED,
 }
 
 /// `ISOLATION LEVEL <level>` transaction mode.
@@ -64,32 +40,6 @@ pub struct IsolationLevelMode {
     pub level: IsolationLevelKind,
 }
 
-/// `READ ONLY` or `READ WRITE` transaction mode.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ReadOnlyMode {
-    pub _read: READ,
-    pub _only: ONLY,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ReadWriteMode {
-    pub _read: READ,
-    pub _write: WRITE,
-}
-
-/// `[NOT] DEFERRABLE` transaction mode.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NotDeferrableMode {
-    pub _not: NOT,
-    pub _deferrable: DEFERRABLE,
-}
-
 /// A single transaction mode.
 ///
 /// Variant ordering: multi-word before single, and `NotDeferrable` (NOT
@@ -99,9 +49,9 @@ pub struct NotDeferrableMode {
 #[parse(rules = SqlRules)]
 pub enum TransactionMode {
     IsolationLevel(IsolationLevelMode),
-    ReadOnly(ReadOnlyMode),
-    ReadWrite(ReadWriteMode),
-    NotDeferrable(NotDeferrableMode),
+    ReadOnly((READ, ONLY)),
+    ReadWrite((READ, WRITE)),
+    NotDeferrable((NOT, DEFERRABLE)),
     Deferrable(DEFERRABLE),
 }
 
@@ -167,18 +117,8 @@ pub struct SetTransactionStmt {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetTransactionTarget {
-    SessionCharacteristics(SetSessionCharacteristics),
+    SessionCharacteristics((SESSION, CHARACTERISTICS, AS, TRANSACTION)),
     Transaction(TRANSACTION),
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct SetSessionCharacteristics {
-    pub _session: SESSION,
-    pub _characteristics: CHARACTERISTICS,
-    pub _as: AS,
-    pub _transaction: TRANSACTION,
 }
 
 /// `SET CONSTRAINTS { ALL | name [, …] } { DEFERRED | IMMEDIATE }`
@@ -695,7 +635,7 @@ pub struct DropTriggerStmt<'input> {
 #[parse(rules = SqlRules)]
 pub struct CreateRuleStmt<'input> {
     pub _create: CREATE,
-    pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
+    pub or_replace: Option<(OR, REPLACE)>,
     pub _rule: RULE,
     pub tail: Option<RawStatement<'input>>,
 }

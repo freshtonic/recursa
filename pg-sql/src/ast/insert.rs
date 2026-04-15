@@ -15,15 +15,6 @@ use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 
 use crate::tokens::keyword::*;
-/// DEFAULT VALUES variant.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct DefaultValues {
-    pub _default: DEFAULT,
-    pub _values: VALUES,
-}
-
 /// Multiple value rows: `VALUES (row1), (row2), ...`
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -41,7 +32,7 @@ pub struct InsertValueRows<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InsertSource<'input> {
-    Default(DefaultValues),
+    Default((DEFAULT, VALUES)),
     Rows(InsertValueRows<'input>),
     Select(Box<crate::ast::values::CompoundQuery<'input>>),
 }
@@ -58,15 +49,6 @@ pub struct DoUpdateAction<'input> {
     pub where_clause: Option<WhereClause<'input>>,
 }
 
-/// DO NOTHING action.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct DoNothingAction {
-    pub _do: DO,
-    pub _nothing: NOTHING,
-}
-
 /// ON CONFLICT action: DO UPDATE SET ... [WHERE ...] or DO NOTHING.
 ///
 /// Variant ordering: DoUpdate (`DO UPDATE SET`) is longer than
@@ -77,7 +59,7 @@ pub struct DoNothingAction {
 #[parse(rules = SqlRules)]
 pub enum ConflictAction<'input> {
     DoUpdate(Box<DoUpdateAction<'input>>),
-    DoNothing(DoNothingAction),
+    DoNothing((DO, NOTHING)),
 }
 
 /// ON CONFLICT clause: `ON CONFLICT [(col, ...)] DO UPDATE SET ... | DO NOTHING`

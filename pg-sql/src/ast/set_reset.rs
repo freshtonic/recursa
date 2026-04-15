@@ -193,27 +193,11 @@ pub struct SetTimeZoneStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ResetTarget<'input> {
-    SessionAuth(ResetSessionAuth),
-    TimeZone(ResetTimeZone),
+    SessionAuth((SESSION, AUTHORIZATION)),
+    TimeZone((TIME, ZONE)),
     Role(ROLE),
     All(ALL),
     Ident(literal::AliasName<'input>),
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ResetSessionAuth {
-    pub _session: SESSION,
-    pub _authorization: AUTHORIZATION,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ResetTimeZone {
-    pub _time: TIME,
-    pub _zone: ZONE,
 }
 
 /// RESET statement: `RESET { param | ALL | ROLE | SESSION AUTHORIZATION | TIME ZONE }`.
@@ -227,34 +211,6 @@ pub struct ResetStmt<'input> {
 
 // --- SHOW ---
 
-/// `SESSION AUTHORIZATION` target for `SHOW`.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ShowSessionAuth {
-    pub _session: SESSION,
-    pub _authorization: AUTHORIZATION,
-}
-
-/// `TIME ZONE` target for `SHOW`.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ShowTimeZone {
-    pub _time: TIME,
-    pub _zone: ZONE,
-}
-
-/// `TRANSACTION ISOLATION LEVEL` target for `SHOW`.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ShowTransactionIsolationLevel {
-    pub _transaction: TRANSACTION,
-    pub _isolation: ISOLATION,
-    pub _level: LEVEL,
-}
-
 /// Target of a SHOW statement.
 ///
 /// Variant ordering: multi-token targets before single-token `Param`
@@ -263,9 +219,9 @@ pub struct ShowTransactionIsolationLevel {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ShowTarget<'input> {
-    TransactionIsolationLevel(ShowTransactionIsolationLevel),
-    SessionAuthorization(ShowSessionAuth),
-    TimeZone(ShowTimeZone),
+    TransactionIsolationLevel((TRANSACTION, ISOLATION, LEVEL)),
+    SessionAuthorization((SESSION, AUTHORIZATION)),
+    TimeZone((TIME, ZONE)),
     All(ALL),
     Param(literal::AliasName<'input>),
 }

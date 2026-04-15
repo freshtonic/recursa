@@ -20,12 +20,6 @@ pub struct PrimaryKeyConstraint {
     pub attrs: ConstraintAttrs,
 }
 
-/// NOT NULL column constraint.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NotNullConstraint(NOT, NULL);
-
 /// UNIQUE column constraint.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -56,19 +50,11 @@ pub struct NullsDistinctQualifier {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ReferentialAction<'input> {
-    NoAction(NoActionKw),
+    NoAction((NO, ACTION)),
     SetNull(SetNullKw<'input>),
     SetDefault(SetDefaultKw<'input>),
     Cascade(CASCADE),
     Restrict(RESTRICT),
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NoActionKw {
-    pub _no: NO,
-    pub _action: ACTION,
 }
 
 #[railroad]
@@ -139,16 +125,8 @@ pub struct MatchClause {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum DeferrableKind {
-    NotDeferrable(NotDeferrableKw),
+    NotDeferrable((NOT, DEFERRABLE)),
     Deferrable(DEFERRABLE),
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NotDeferrableKw {
-    pub _not: NOT,
-    pub _deferrable: DEFERRABLE,
 }
 
 /// `INITIALLY DEFERRED | INITIALLY IMMEDIATE`.
@@ -200,16 +178,7 @@ pub struct ReferencesConstraint<'input> {
     pub actions: Vec<OnAction<'input>>,
     pub deferrable: Option<DeferrableKind>,
     pub initially: Option<InitiallyClause>,
-    pub not_valid: Option<NotValidKw>,
-}
-
-/// `NOT VALID` suffix on a CHECK or FOREIGN KEY constraint.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NotValidKw {
-    pub _not: NOT,
-    pub _valid: VALID,
+    pub not_valid: Option<(NOT, VALID)>,
 }
 
 /// `CHECK (expr) [NO INHERIT] [NOT VALID]`
@@ -219,16 +188,8 @@ pub struct NotValidKw {
 pub struct CheckConstraint<'input> {
     pub _check: CHECK,
     pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr<'input>, punct::RParen>,
-    pub no_inherit: Option<NoInheritKw>,
-    pub not_valid: Option<NotValidKw>,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct NoInheritKw {
-    pub _no: NO,
-    pub _inherit: INHERIT,
+    pub no_inherit: Option<(NO, INHERIT)>,
+    pub not_valid: Option<(NOT, VALID)>,
 }
 
 /// GENERATED ALWAYS AS IDENTITY column constraint, with optional
@@ -256,12 +217,12 @@ pub enum IdentitySeqOption<'input> {
     StartWith(SeqOptStartWith<'input>),
     IncrementBy(SeqOptIncrementBy<'input>),
     MinValue(SeqOptMinValue<'input>),
-    NoMinValue(SeqOptNoMinValue),
+    NoMinValue((NO, MINVALUE)),
     MaxValue(SeqOptMaxValue<'input>),
-    NoMaxValue(SeqOptNoMaxValue),
+    NoMaxValue((NO, MAXVALUE)),
     Cache(SeqOptCache<'input>),
-    Cycle(SeqOptCycle),
-    NoCycle(SeqOptNoCycle),
+    Cycle(CYCLE),
+    NoCycle((NO, CYCLE)),
 }
 
 #[railroad]
@@ -293,14 +254,6 @@ pub struct SeqOptMinValue<'input> {
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SeqOptNoMinValue {
-    pub _no: NO,
-    pub _minvalue: MINVALUE,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
 pub struct SeqOptMaxValue<'input> {
     pub _maxvalue: MAXVALUE,
     pub value: crate::ast::expr::Expr<'input>,
@@ -309,32 +262,9 @@ pub struct SeqOptMaxValue<'input> {
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SeqOptNoMaxValue {
-    pub _no: NO,
-    pub _maxvalue: MAXVALUE,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
 pub struct SeqOptCache<'input> {
     pub _cache: CACHE,
     pub value: crate::ast::expr::Expr<'input>,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct SeqOptCycle {
-    pub _cycle: CYCLE,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct SeqOptNoCycle {
-    pub _no: NO,
-    pub _cycle: CYCLE,
 }
 
 /// `GENERATED ALWAYS AS (expr) STORED` column constraint.
@@ -372,7 +302,7 @@ pub enum ColumnConstraintKind<'input> {
     GeneratedStored(GeneratedStoredConstraint<'input>),
     GeneratedIdentity(GeneratedIdentityConstraint<'input>),
     PrimaryKey(PrimaryKeyConstraint),
-    NotNull(NotNullConstraint),
+    NotNull((NOT, NULL)),
     Unique(UniqueConstraint),
     References(ReferencesConstraint<'input>),
     Default(DefaultConstraint<'input>),
@@ -625,32 +555,9 @@ pub struct OnCommitClause {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum OnCommitAction {
-    PreserveRows(OnCommitPreserveRows),
-    DeleteRows(OnCommitDeleteRows),
-    Drop(OnCommitDrop),
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct OnCommitPreserveRows {
-    pub _preserve: PRESERVE,
-    pub _rows: ROWS,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct OnCommitDeleteRows {
-    pub _delete: DELETE,
-    pub _rows: ROWS,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct OnCommitDrop {
-    pub _drop: DROP,
+    PreserveRows((PRESERVE, ROWS)),
+    DeleteRows((DELETE, ROWS)),
+    Drop(DROP),
 }
 
 /// Partition-of table body: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
@@ -684,25 +591,8 @@ pub struct AsQueryBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum WithDataClause {
-    NoData(WithNoData),
-    Data(WithData),
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct WithNoData {
-    pub _with: WITH,
-    pub _no: NO,
-    pub _data: DATA,
-}
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct WithData {
-    pub _with: WITH,
-    pub _data: DATA,
+    NoData((WITH, NO, DATA)),
+    Data((WITH, DATA)),
 }
 
 /// `(col, col, ...) AS query [WITH [NO] DATA]` — CTAS with column list.
@@ -745,7 +635,7 @@ pub struct CreateTableStmt<'input> {
     pub temp: Option<TempKw>,
     pub unlogged: Option<UNLOGGED>,
     pub _table: TABLE,
-    pub if_not_exists: Option<crate::ast::create_index::IfNotExistsKw>,
+    pub if_not_exists: Option<(IF, NOT, EXISTS)>,
     pub name: literal::Ident<'input>,
     pub body: CreateTableBody<'input>,
 }

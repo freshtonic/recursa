@@ -4,7 +4,6 @@ use recursa::{FormatTokens, Parse, Visit};
 use recursa_diagram::railroad;
 
 use crate::ast::common::{DropBehavior, QualifiedName};
-use crate::ast::create_view::IfExistsKw;
 use crate::rules::SqlRules;
 use crate::tokens::{punct};
 
@@ -18,7 +17,7 @@ use crate::tokens::keyword::*;
 pub struct DropTableStmt<'input> {
     pub _drop: DROP,
     pub _table: TABLE,
-    pub if_exists: Option<IfExistsKw>,
+    pub if_exists: Option<(IF, EXISTS)>,
     pub names: Seq<QualifiedName<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,
 }

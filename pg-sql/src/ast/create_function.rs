@@ -204,29 +204,6 @@ pub struct SetFuncOption<'input> {
     pub value: crate::ast::set_reset::SetValue<'input>,
 }
 
-/// `CALLED ON NULL INPUT`.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct CalledOnNullInput {
-    pub _called: CALLED,
-    pub _on: ON,
-    pub _null: NULL,
-    pub _input: INPUT,
-}
-
-/// `RETURNS NULL ON NULL INPUT`.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ReturnsNullOnNullInput {
-    pub _returns: RETURNS,
-    pub _null: NULL,
-    pub _on: ON,
-    pub _null2: NULL,
-    pub _input: INPUT,
-}
-
 /// `STRICT` / `CALLED ON NULL INPUT` / `RETURNS NULL ON NULL INPUT`.
 ///
 /// Variant ordering: longer (multi-keyword) forms before `Strict`.
@@ -234,8 +211,8 @@ pub struct ReturnsNullOnNullInput {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum StrictnessOption {
-    CalledOnNullInput(CalledOnNullInput),
-    ReturnsNullOnNullInput(ReturnsNullOnNullInput),
+    CalledOnNullInput((CALLED, ON, NULL, INPUT)),
+    ReturnsNullOnNullInput((RETURNS, NULL, ON, NULL, INPUT)),
     Strict(STRICT),
 }
 
@@ -273,7 +250,7 @@ pub enum FuncOption<'input> {
 #[parse(rules = SqlRules)]
 pub struct CreateFunctionStmt<'input> {
     pub _create: CREATE,
-    pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
+    pub or_replace: Option<(OR, REPLACE)>,
     pub _function: FUNCTION,
     pub name: crate::ast::common::QualifiedName<'input>,
     pub args: Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>,

@@ -4,7 +4,6 @@ use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::create_index::{StorageParam, WithStorage};
-use crate::ast::create_view::IfExistsKw;
 use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 use crate::tokens::keyword::*;
@@ -114,7 +113,7 @@ pub struct AlterTablespaceStmt<'input> {
 pub struct DropTablespaceStmt<'input> {
     pub _drop: DROP,
     pub _tablespace: TABLESPACE,
-    pub if_exists: Option<IfExistsKw>,
+    pub if_exists: Option<(IF, EXISTS)>,
     pub name: literal::Ident<'input>,
 }
 

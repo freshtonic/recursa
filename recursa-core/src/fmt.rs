@@ -100,6 +100,24 @@ impl FormatTokens for () {
     fn format_tokens(&self, _tokens: &mut Vec<Token>) {}
 }
 
+macro_rules! impl_format_tokens_for_tuple {
+    ($($T:ident $idx:tt),+) => {
+        impl<$($T: FormatTokens),+> FormatTokens for ($($T,)+) {
+            fn format_tokens(&self, tokens: &mut Vec<Token>) {
+                $(self.$idx.format_tokens(tokens);)+
+            }
+        }
+    };
+}
+
+impl_format_tokens_for_tuple!(A 0, B 1);
+impl_format_tokens_for_tuple!(A 0, B 1, C 2);
+impl_format_tokens_for_tuple!(A 0, B 1, C 2, D 3);
+impl_format_tokens_for_tuple!(A 0, B 1, C 2, D 3, E 4);
+impl_format_tokens_for_tuple!(A 0, B 1, C 2, D 3, E 4, F 5);
+impl_format_tokens_for_tuple!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+impl_format_tokens_for_tuple!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+
 /// Runtime formatting style configuration.
 #[derive(Debug, Clone)]
 pub struct FormatStyle {

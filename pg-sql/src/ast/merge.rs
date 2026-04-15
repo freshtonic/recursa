@@ -29,31 +29,13 @@ pub struct AndCondition<'input> {
     pub condition: Expr<'input>,
 }
 
-/// `BY SOURCE` qualifier on `WHEN NOT MATCHED`.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct BySource {
-    pub _by: BY,
-    pub _source: SOURCE,
-}
-
-/// `BY TARGET` qualifier on `WHEN NOT MATCHED`.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct ByTarget {
-    pub _by: BY,
-    pub _target: TARGET,
-}
-
 /// `BY SOURCE` or `BY TARGET`.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum NotMatchedBy {
-    Source(BySource),
-    Target(ByTarget),
+    Source((BY, SOURCE)),
+    Target((BY, TARGET)),
 }
 
 /// `UPDATE SET col = expr, ...` action body (the part after THEN).
@@ -66,23 +48,6 @@ pub struct UpdateAction<'input> {
     pub assignments: Seq<SetAssignment<'input>, punct::Comma>,
 }
 
-/// `DELETE` action body.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct DeleteAction {
-    pub _delete: DELETE,
-}
-
-/// `DO NOTHING` action body.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct DoNothingAction {
-    pub _do: DO,
-    pub _nothing: NOTHING,
-}
-
 /// Action allowed after `WHEN MATCHED ... THEN`.
 ///
 /// Variant ordering: `DoNothing` (`DO NOTHING`) and `Update` (`UPDATE`) and
@@ -93,17 +58,8 @@ pub struct DoNothingAction {
 #[parse(rules = SqlRules)]
 pub enum MatchedAction<'input> {
     Update(UpdateAction<'input>),
-    Delete(DeleteAction),
-    DoNothing(DoNothingAction),
-}
-
-/// `DEFAULT VALUES` form of an INSERT body.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct InsertDefaultValues {
-    pub _default: DEFAULT,
-    pub _values: VALUES,
+    Delete(DELETE),
+    DoNothing((DO, NOTHING)),
 }
 
 /// A single row of values: `(expr, ...)`.
@@ -127,7 +83,7 @@ pub struct InsertValuesBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InsertBody<'input> {
-    Default(InsertDefaultValues),
+    Default((DEFAULT, VALUES)),
     Values(InsertValuesBody<'input>),
 }
 
@@ -159,7 +115,7 @@ pub struct InsertAction<'input> {
 #[parse(rules = SqlRules)]
 pub enum NotMatchedAction<'input> {
     Insert(InsertAction<'input>),
-    DoNothing(DoNothingAction),
+    DoNothing((DO, NOTHING)),
 }
 
 /// `WHEN NOT MATCHED [BY {SOURCE|TARGET}] [AND cond] THEN action`.
