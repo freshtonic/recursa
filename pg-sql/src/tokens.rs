@@ -477,13 +477,20 @@ pub mod punct {
 // Literals
 pub mod literal {
     use super::*;
+    use recursa_diagram::railroad;
 
     recursa::literals! {
+        #[railroad(label = "<$ String Literal>")]
         DollarStringLit => r#"\$[a-zA-Z_]*\$[\s\S]*?\$[a-zA-Z_]*\$"#,
+        #[railroad(label = "<Unicode Quoter Identifier>")]
         UnicodeQuotedIdent => r#"(?i:U)&"[^"]*(?:""[^"]*)*""#,
+        #[railroad(label = "<Quoted Identifier>")]
         QuotedIdent => r#""[^"]*(?:""[^"]*)*""#,
+        #[railroad(label = "<Unicode String Literal>")]
         UnicodeStringLit => r"(?i:U)&'(?:[^'\\]|\\.|'')*'",
+        #[railroad(label = "<Escape String Literal>")]
         EscapeStringLit => r"(?i:E)'(?:[^'\\]|\\.|'')*'",
+        #[railroad(label = "<String Literal>")]
         StringLit  => r"'[^']*(?:''[^']*)*'",
         // NumericLit must require a decimal point OR an exponent so it does
         // not collide with bare integers (handled by IntegerLit). Forms:
@@ -493,11 +500,14 @@ pub mod literal {
         // Digit groups allow `_` as a separator between digits (Postgres 16+).
         // A digit group is `[0-9](?:_?[0-9])*` — starts with a digit, and
         // every subsequent `_` must be followed by a digit.
+        #[railroad(label = "<Numeric Literal>")]
         NumericLit => r"(?:[0-9](?:_?[0-9])*\.(?:[0-9](?:_?[0-9])*)?|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*",
+        #[railroad(label = "<Integer Literal>")]
         IntegerLit => r"[0-9](?:_?[0-9])*",
         // psql client variable substitution: `:foo` or `:'foo'` or `:"foo"`.
         // Treated as an opaque expression atom so SELECTs that reference
         // psql-set variables parse structurally.
+        #[railroad(label = "<psql var>")]
         PsqlVar => r#":(?:[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")"#,
     }
 
@@ -626,6 +636,7 @@ pub mod literal {
     #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[parse(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*", postcondition = not_keyword)]
     #[visit(terminal)]
+    #[railroad(label = "<Unquoted Identifier>")]
     pub struct UnquotedIdent<'input>(pub ::std::borrow::Cow<'input, str>);
 
     impl<'input> recursa::FormatTokens for UnquotedIdent<'input> {
@@ -642,9 +653,13 @@ pub mod literal {
     #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[parse(postcondition = ident_is_not_keyword)]
     #[visit(terminal)]
+    #[railroad(label = "<Identifier>")]
     pub enum Ident<'input> {
+        #[railroad(label = "<Unicode Quoted>")]
         UnicodeQuoted(UnicodeQuotedIdent<'input>),
+        #[railroad(label = "<Quoted>")]
         Quoted(QuotedIdent<'input>),
+        #[railroad(label = "<Unquoted>")]
         Unquoted(UnquotedIdent<'input>),
     }
 
@@ -675,6 +690,7 @@ pub mod literal {
     #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[parse(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
     #[visit(terminal)]
+    #[railroad(label = "<Bare Alias Name>")]
     pub struct BareAliasName<'input>(pub ::std::borrow::Cow<'input, str>);
 
     impl<'input> recursa::FormatTokens for BareAliasName<'input> {
@@ -690,8 +706,11 @@ pub mod literal {
     /// different first chars, so order is for clarity, not disambiguation.
     #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[visit(terminal)]
+    #[railroad(label = "<Alias Name>")]
     pub enum AliasName<'input> {
+        #[railroad(label = "<Quoted>")]
         Quoted(QuotedIdent<'input>),
+        #[railroad(label = "<Bare>")]
         Bare(BareAliasName<'input>),
     }
 

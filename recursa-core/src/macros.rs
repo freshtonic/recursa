@@ -80,10 +80,17 @@ macro_rules! punctuation {
 }
 
 /// Declare literal/capturing token types and a combined `Literal` enum.
+///
+/// Each entry may carry one or more outer attributes (e.g.
+/// `#[railroad(label = "...")]`) which are forwarded as-is to the
+/// generated `pub struct`. They are emitted *before* the built-in
+/// `#[derive(...)]`, so attribute macros like `#[railroad]` consume the
+/// derives as part of their input and re-emit them unchanged.
 #[macro_export]
 macro_rules! literals {
-    ($($name:ident => $pattern:literal),* $(,)?) => {
+    ($($(#[$attr:meta])* $name:ident => $pattern:literal),* $(,)?) => {
         $(
+            $(#[$attr])*
             #[derive(::recursa_derive::Parse, ::recursa_derive::Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             #[parse(pattern = $pattern)]
             #[visit(terminal)]
