@@ -556,6 +556,54 @@ mod tests {
 
     use super::*;
 
+    /// Convert a byte offset into `(line, col)` (both 1-based).
+    fn line_col(src: &str, byte_offset: usize) -> (usize, usize) {
+        let cap = byte_offset.min(src.len());
+        let prefix = &src[..cap];
+        let line = prefix.bytes().filter(|&b| b == b'\n').count() + 1;
+        let last_nl = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let col = src[last_nl..cap].chars().count() + 1;
+        (line, col)
+    }
+
+    /// Parse a SQL fixture file, panicking with `path:line:col: …` context on error.
+    ///
+    /// Parses the whole file; on any parse error or leftover input, computes the
+    /// human-readable line/column of the offending byte and includes it in the
+    /// panic message alongside a short snippet.
+    fn parse_fixture(name: &str) -> Vec<FileItem<'static>> {
+        let path = format!("fixtures/sql/{name}");
+        let sql = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{path}: cannot read fixture: {e}"));
+        // Leak so the returned Vec borrows 'static (test-only convenience).
+        let sql: &'static str = Box::leak(sql.into_boxed_str());
+        let mut input = Input::new(sql);
+        let items = match parse_sql_file(&mut input) {
+            Ok(items) => items,
+            Err(e) => {
+                let span = e.span();
+                let (line, col) = line_col(sql, span.start);
+                let snippet_end = (span.start + 80).min(sql.len());
+                let snippet = &sql[span.start..snippet_end];
+                panic!(
+                    "{path}:{line}:{col}: parse error: {e}\n  near: {}",
+                    snippet.replace('\n', "\\n")
+                );
+            }
+        };
+        if !input.is_empty() {
+            let cursor = input.cursor();
+            let (line, col) = line_col(sql, cursor);
+            let snippet_end = (cursor + 80).min(sql.len());
+            let snippet = &sql[cursor..snippet_end];
+            panic!(
+                "{path}:{line}:{col}: leftover input after parse:\n  near: {}",
+                snippet.replace('\n', "\\n")
+            );
+        }
+        items
+    }
+
     #[test]
     fn parse_statement_select() {
         let mut input = Input::new("SELECT 1 AS one");
@@ -656,573 +704,181 @@ mod tests {
 
     #[test]
     fn parse_boolean_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/boolean.sql")
-            .expect("boolean.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-
-        assert!(
-            commands.len() > 50,
-            "expected >50 commands, got {}",
-            commands.len()
-        );
-
-        assert!(
-            input.is_empty(),
-            "leftover input at offset {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("boolean.sql");
+        assert!(items.len() > 50, "expected >50 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_comments_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/comments.sql")
-            .expect("comments.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 3,
-            "expected >3 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("comments.sql");
+        assert!(items.len() > 3, "expected >3 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_select_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/select.sql")
-            .expect("select.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 10,
-            "expected >10 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("select.sql");
+        assert!(items.len() > 10, "expected >10 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_union_sql_fixture() {
-        let sql =
-            std::fs::read_to_string("fixtures/sql/union.sql").expect("union.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 10,
-            "expected >10 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("union.sql");
+        assert!(items.len() > 10, "expected >10 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_subselect_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/subselect.sql")
-            .expect("subselect.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 10,
-            "expected >10 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("subselect.sql");
+        assert!(items.len() > 10, "expected >10 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_case_sql_fixture() {
-        let sql =
-            std::fs::read_to_string("fixtures/sql/case.sql").expect("case.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 10,
-            "expected >10 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("case.sql");
+        assert!(items.len() > 10, "expected >10 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_delete_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/delete.sql")
-            .expect("delete.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 5,
-            "expected >5 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("delete.sql");
+        assert!(items.len() > 5, "expected >5 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_with_sql_fixture() {
-        let sql =
-            std::fs::read_to_string("fixtures/sql/with.sql").expect("with.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 10,
-            "expected >10 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("with.sql");
+        assert!(items.len() > 10, "expected >10 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_select_having_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/select_having.sql")
-            .expect("select_having.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("select_having.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_select_implicit_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/select_implicit.sql")
-            .expect("select_implicit.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("select_implicit.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_select_distinct_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/select_distinct.sql")
-            .expect("select_distinct.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("select_distinct.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_select_into_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/select_into.sql")
-            .expect("select_into.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("select_into.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_prepared_xacts_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/prepared_xacts.sql")
-            .expect("prepared_xacts.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("prepared_xacts.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_namespace_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/namespace.sql")
-            .expect("namespace.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("namespace.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_btree_index_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/btree_index.sql")
-            .expect("btree_index.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("btree_index.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_hash_index_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/hash_index.sql")
-            .expect("hash_index.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("hash_index.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_update_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/update.sql")
-            .expect("update.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("update.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_transactions_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/transactions.sql")
-            .expect("transactions.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("transactions.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_aggregates_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/aggregates.sql")
-            .expect("aggregates.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("aggregates.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_arrays_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/arrays.sql")
-            .expect("arrays.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("arrays.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_join_sql_fixture() {
-        let sql =
-            std::fs::read_to_string("fixtures/sql/join.sql").expect("join.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("join.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_limit_sql_fixture() {
-        let sql =
-            std::fs::read_to_string("fixtures/sql/limit.sql").expect("limit.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("limit.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_returning_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/returning.sql")
-            .expect("returning.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("returning.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_truncate_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/truncate.sql")
-            .expect("truncate.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("truncate.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_alter_table_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/alter_table.sql")
-            .expect("alter_table.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("alter_table.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_create_table_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/create_table.sql")
-            .expect("create_table.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("create_table.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_insert_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/insert.sql")
-            .expect("insert.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("insert.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_typed_table_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/typed_table.sql")
-            .expect("typed_table.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("typed_table.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_vacuum_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/vacuum.sql")
-            .expect("vacuum.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("vacuum.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 
     #[test]
     fn parse_drop_if_exists_sql_fixture() {
-        let sql = std::fs::read_to_string("fixtures/sql/drop_if_exists.sql")
-            .expect("drop_if_exists.sql fixture not found");
-        let mut input = Input::new(&sql);
-        let commands = parse_sql_file(&mut input).unwrap();
-        assert!(
-            commands.len() > 0,
-            "expected >0 commands, got {}",
-            commands.len()
-        );
-        assert!(
-            input.is_empty(),
-            "leftover at {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
-        );
+        let items = parse_fixture("drop_if_exists.sql");
+        assert!(items.len() > 0, "expected >0 commands, got {}", items.len());
     }
 }

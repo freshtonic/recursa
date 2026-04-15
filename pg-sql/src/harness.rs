@@ -12,6 +12,16 @@ use recursa_core::fmt::FormatStyle;
 use crate::ast::parse_sql_file;
 use crate::formatter::format_file;
 
+/// Convert a byte offset into `(line, col)` (both 1-based).
+fn byte_offset_to_line_col(src: &str, byte_offset: usize) -> (usize, usize) {
+    let cap = byte_offset.min(src.len());
+    let prefix = &src[..cap];
+    let line = prefix.bytes().filter(|&b| b == b'\n').count() + 1;
+    let last_nl = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let col = src[last_nl..cap].chars().count() + 1;
+    (line, col)
+}
+
 pub fn run_regression_test(
     test_name: &str,
     prereqs: &[&str],
@@ -25,13 +35,20 @@ pub fn run_regression_test(
 
     // Parse and reformat
     let mut input = Input::new(&sql_source);
-    let items = parse_sql_file(&mut input).map_err(|e| format!("parse error: {e}"))?;
+    let items = parse_sql_file(&mut input).map_err(|e| {
+        let span = e.span();
+        let (line, col) = byte_offset_to_line_col(&sql_source, span.start);
+        format!("{}:{line}:{col}: parse error: {e}", sql_path.display())
+    })?;
 
     if !input.is_empty() {
+        let cursor = input.cursor();
+        let (line, col) = byte_offset_to_line_col(&sql_source, cursor);
+        let snippet_end = (cursor + 80).min(sql_source.len());
+        let snippet = sql_source[cursor..snippet_end].replace('\n', "\\n");
         return Err(format!(
-            "leftover input at offset {}: {:?}",
-            input.cursor(),
-            &input.remaining()[..input.remaining().len().min(100)]
+            "{}:{line}:{col}: leftover input after parse:\n  near: {snippet}",
+            sql_path.display()
         ));
     }
 

@@ -51,6 +51,16 @@ impl ParseError {
         &self.inner.expected
     }
 
+    /// The full source text the error was raised against.
+    pub fn source(&self) -> &str {
+        &self.inner.src
+    }
+
+    /// The byte span of the problematic input within `source()`.
+    pub fn span(&self) -> Range<usize> {
+        self.inner.span.clone()
+    }
+
     /// Set what was actually found.
     pub fn with_found(mut self, found: impl Into<String>) -> Self {
         self.inner.found = Some(found.into());
