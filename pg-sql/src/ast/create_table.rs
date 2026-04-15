@@ -279,13 +279,13 @@ pub struct SeqOptCache<'input> {
     pub value: crate::ast::expr::Expr<'input>,
 }
 
-/// `GENERATED ALWAYS AS (expr) STORED` column constraint.
+/// `GENERATED {ALWAYS | BY DEFAULT} AS (expr) STORED` column constraint.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GeneratedStoredConstraint<'input> {
     pub generated: GENERATED,
-    pub always: ALWAYS,
+    pub mode: GeneratedIdentityMode,
     pub r#as: AS,
     pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr<'input>, punct::RParen>,
     pub stored: STORED,
@@ -403,7 +403,19 @@ pub struct TablePrimaryKey<'input> {
     pub key: KEY,
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
+    pub include: Option<IncludeColumns<'input>>,
     pub attrs: ConstraintAttrs,
+}
+
+/// `INCLUDE (col, ...)` covering-index clause used on PRIMARY KEY / UNIQUE
+/// table constraints and on CREATE INDEX.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IncludeColumns<'input> {
+    pub include: INCLUDE,
+    pub columns:
+        Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
 }
 
 /// `UNIQUE (col, ...)`
@@ -412,8 +424,10 @@ pub struct TablePrimaryKey<'input> {
 #[parse(rules = SqlRules)]
 pub struct TableUnique<'input> {
     pub unique: UNIQUE,
+    pub nulls: Option<NullsDistinctQualifier>,
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
+    pub include: Option<IncludeColumns<'input>>,
     pub attrs: ConstraintAttrs,
 }
 

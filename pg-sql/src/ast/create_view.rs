@@ -28,6 +28,9 @@ pub struct CreateViewStmt<'input> {
     pub columns: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
     >,
+    /// Optional `USING access_method` (accepted by PG parser though rejected
+    /// semantically for plain VIEW; tests include it).
+    pub using: Option<ViewUsing<'input>>,
     /// Optional `WITH (option [= value], ...)` view options such as
     /// `security_invoker`, `security_barrier`, `check_option`.
     pub with_options: Option<crate::ast::create_index::WithStorage<'input>>,
@@ -36,6 +39,15 @@ pub struct CreateViewStmt<'input> {
     /// Optional `WITH [CASCADED|LOCAL] CHECK OPTION` trailer, used with
     /// updatable views to cascade predicate checks to underlying rows.
     pub check_option: Option<ViewCheckOption>,
+}
+
+/// `USING access_method` trailer on CREATE VIEW.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ViewUsing<'input> {
+    pub using: USING,
+    pub method: literal::AliasName<'input>,
 }
 
 /// `WITH [CASCADED | LOCAL] CHECK OPTION` trailer on CREATE VIEW.

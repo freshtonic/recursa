@@ -73,6 +73,9 @@ pub enum TypeName<'input> {
     Bit(BIT),
     /// `CHARACTER` and `CHARACTER VARYING` — same shape as `BIT`.
     Character(CHARACTER),
+    /// `UNKNOWN` — pseudo-type used for untyped literals; reserved keyword so
+    /// it must be matched explicitly rather than falling through to `Ident`.
+    Unknown(UNKNOWN),
     /// Qualified type name (`schema.type`) or a bare identifier.
     Ident(crate::ast::common::QualifiedName<'input>),
 }
@@ -329,7 +332,7 @@ pub struct FilterClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncCall<'input> {
-    pub name: literal::AliasName<'input>,
+    pub name: crate::ast::common::QualifiedName<'input>,
     pub lparen: punct::LParen,
     pub star_arg: Option<punct::Star>,
     pub distinct: Option<DISTINCT>,

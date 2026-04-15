@@ -40,7 +40,9 @@ use self::{
     insert::InsertStmt,
     merge::MergeStmt,
     select::SelectStmt,
-    set_reset::{ResetStmt, SetRoleStmt, SetSessionAuthStmt, SetStmt, SetTimeZoneStmt, ShowStmt},
+    set_reset::{
+        LoadStmt, ResetStmt, SetRoleStmt, SetSessionAuthStmt, SetStmt, SetTimeZoneStmt, ShowStmt,
+    },
     simple_stmts::*,
     update::UpdateStmt,
     values::{Subquery, TableStmt},
@@ -375,6 +377,8 @@ pub enum Statement<'input> {
     Reset(ResetStmt<'input>),
     #[railroad(label = "SHOW ..")]
     Show(ShowStmt<'input>),
+    #[railroad(label = "LOAD ..")]
+    Load(LoadStmt<'input>),
     #[railroad(label = "ANALYZE ..")]
     Analyze(AnalyzeStmt<'input>),
     // Query

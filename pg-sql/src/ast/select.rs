@@ -136,10 +136,12 @@ pub struct ParenJoinRef<'input> {
 #[parse(rules = SqlRules)]
 pub struct LateralRef<'input> {
     pub lateral: LATERAL,
-    pub lparen: punct::LParen,
-    pub query: Box<crate::ast::values::Subquery<'input>>,
-    pub rparen: punct::RParen,
-    pub alias: Option<literal::AliasName<'input>>,
+    pub query: Surrounded<
+        punct::LParen,
+        Box<crate::ast::values::Subquery<'input>>,
+        punct::RParen,
+    >,
+    pub alias: Option<PlainTableAlias<'input>>,
 }
 
 /// Plain table reference with optional alias: `[ONLY] tablename [AS] alias`
