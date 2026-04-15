@@ -77,7 +77,7 @@ pub struct DoNothingAction {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ConflictAction<'input> {
-    DoUpdate(DoUpdateAction<'input>),
+    DoUpdate(Box<DoUpdateAction<'input>>),
     DoNothing(DoNothingAction),
 }
 
@@ -103,13 +103,13 @@ pub struct InsertStmt<'input> {
     pub _insert: PhantomData<keyword::Insert>,
     pub _into: PhantomData<keyword::Into>,
     pub table_name: QualifiedName<'input>,
-    pub columns: Option<ColumnList<'input>>,
+    pub columns: Option<Box<ColumnList<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub source: InsertSource<'input>,
+    pub source: Box<InsertSource<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub on_conflict: Option<OnConflictClause<'input>>,
+    pub on_conflict: Option<Box<OnConflictClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub returning: Option<ReturningClause<'input>>,
+    pub returning: Option<Box<ReturningClause<'input>>>,
 }
 
 /// Column list: `(col1, col2, ...)`.
@@ -163,7 +163,7 @@ mod tests {
     fn parse_insert_default_values_returning() {
         let mut input = Input::new("INSERT INTO t DEFAULT VALUES RETURNING *");
         let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert!(matches!(stmt.source, super::InsertSource::Default(_)));
+        assert!(matches!(*stmt.source, super::InsertSource::Default(_)));
         assert!(stmt.returning.is_some());
         assert!(input.is_empty());
     }
@@ -172,7 +172,7 @@ mod tests {
     fn parse_insert_select() {
         let mut input = Input::new("INSERT INTO y SELECT generate_series(1, 10)");
         let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert!(matches!(stmt.source, super::InsertSource::Select(_)));
+        assert!(matches!(*stmt.source, super::InsertSource::Select(_)));
         assert!(input.is_empty());
     }
 

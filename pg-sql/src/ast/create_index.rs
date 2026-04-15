@@ -167,13 +167,13 @@ pub struct CreateIndexStmt<'input> {
     /// without descending into inheritance children (partitioned tables).
     pub only: Option<PhantomData<keyword::Only>>,
     pub table_name: literal::Ident<'input>,
-    pub using: Option<UsingMethod<'input>>,
+    pub using: Option<Box<UsingMethod<'input>>>,
     pub columns:
         Surrounded<punct::LParen, Seq<IndexElem<'input>, punct::Comma>, punct::RParen>,
-    pub include: Option<IncludeClause<'input>>,
+    pub include: Option<Box<IncludeClause<'input>>>,
     pub nulls_distinct: Option<NullsDistinctClause>,
-    pub with_storage: Option<WithStorage<'input>>,
-    pub where_clause: Option<WhereClause<'input>>,
+    pub with_storage: Option<Box<WithStorage<'input>>>,
+    pub where_clause: Option<Box<WhereClause<'input>>>,
 }
 
 /// `NULLS [NOT] DISTINCT` modifier on a unique index.

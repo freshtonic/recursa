@@ -208,13 +208,13 @@ pub enum WhenClause<'input> {
 pub struct MergeStmt<'input> {
     pub _merge: PhantomData<keyword::Merge>,
     pub _into: PhantomData<keyword::Into>,
-    pub target: PlainTable<'input>,
+    pub target: Box<PlainTable<'input>>,
     pub _using: PhantomData<keyword::Using>,
-    pub source: TableRef<'input>,
+    pub source: Box<TableRef<'input>>,
     pub _on: PhantomData<keyword::On>,
-    pub condition: Expr<'input>,
+    pub condition: Box<Expr<'input>>,
     pub when_clauses: Seq<WhenClause<'input>, (), OptionalTrailing>,
-    pub returning: Option<ReturningClause<'input>>,
+    pub returning: Option<Box<ReturningClause<'input>>>,
 }
 
 #[cfg(test)]

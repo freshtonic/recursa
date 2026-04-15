@@ -64,22 +64,21 @@ use self::{
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-#[allow(clippy::large_enum_variant)]
 pub enum Statement<'input> {
     // --- Multi-keyword statements (longest first_pattern first) ---
-    With(WithStatement<'input>),
-    Explain(ExplainStmt<'input>),
+    With(Box<WithStatement<'input>>),
+    Explain(Box<ExplainStmt<'input>>),
     // CREATE variants: multi-keyword before single-keyword
-    CreateFunction(CreateFunctionStmt<'input>),
-    CreateProcedure(CreateProcedureStmt<'input>),
-    CreateTablespace(CreateTablespaceStmt<'input>),
+    CreateFunction(Box<CreateFunctionStmt<'input>>),
+    CreateProcedure(Box<CreateProcedureStmt<'input>>),
+    CreateTablespace(Box<CreateTablespaceStmt<'input>>),
     CreateTrigger(CreateTriggerStmt<'input>),
     CreateEventTrigger(CreateEventTriggerStmt<'input>),
     CreateAccessMethod(CreateAccessMethodStmt<'input>),
     CreateMaterializedView(CreateMaterializedViewStmt<'input>),
     CreateForeign(CreateForeignStmt<'input>),
-    CreateIndex(CreateIndexStmt<'input>),
-    CreateView(CreateViewStmt<'input>),
+    CreateIndex(Box<CreateIndexStmt<'input>>),
+    CreateView(Box<CreateViewStmt<'input>>),
     CreateRule(CreateRuleStmt<'input>),
     CreateGroup(CreateGroupStmt<'input>),
     CreateRole(CreateRoleStmt<'input>),
@@ -101,11 +100,11 @@ pub enum Statement<'input> {
     CreateServer(CreateServerStmt<'input>),
     CreateLanguage(CreateLanguageStmt<'input>),
     CreateDatabase(CreateDatabaseStmt<'input>),
-    CreateTable(CreateTableStmt<'input>),
+    CreateTable(Box<CreateTableStmt<'input>>),
     // DROP variants
-    DropFunction(DropFunctionStmt<'input>),
-    DropProcedure(DropProcedureStmt<'input>),
-    DropTablespace(DropTablespaceStmt<'input>),
+    DropFunction(Box<DropFunctionStmt<'input>>),
+    DropProcedure(Box<DropProcedureStmt<'input>>),
+    DropTablespace(Box<DropTablespaceStmt<'input>>),
     DropTrigger(DropTriggerStmt<'input>),
     DropEventTrigger(DropEventTriggerStmt<'input>),
     DropAccessMethod(DropAccessMethodStmt<'input>),
@@ -135,7 +134,7 @@ pub enum Statement<'input> {
     DropServer(DropServerStmt<'input>),
     DropLanguage(DropLanguageStmt<'input>),
     DropDatabase(DropDatabaseStmt<'input>),
-    DropTable(DropTableStmt<'input>),
+    DropTable(Box<DropTableStmt<'input>>),
     // ALTER variants: multi-keyword before single-keyword
     AlterDefaultPrivileges(AlterDefaultPrivilegesStmt<'input>),
     AlterForeign(AlterForeignStmt<'input>),
@@ -169,10 +168,10 @@ pub enum Statement<'input> {
     // CALL stored procedure
     Call(CallStmt<'input>),
     // DML
-    Insert(InsertStmt<'input>),
-    Update(UpdateStmt<'input>),
-    Merge(MergeStmt<'input>),
-    Delete(DeleteStmt<'input>),
+    Insert(Box<InsertStmt<'input>>),
+    Update(Box<UpdateStmt<'input>>),
+    Merge(Box<MergeStmt<'input>>),
+    Delete(Box<DeleteStmt<'input>>),
     // Transaction control
     Rollback(RollbackStmt<'input>),
     Savepoint(SavepointStmt<'input>),
@@ -194,18 +193,18 @@ pub enum Statement<'input> {
     Comment(CommentStmt<'input>),
     Copy(CopyStmt<'input>),
     Truncate(TruncateStmt<'input>),
-    Reindex(ReindexStmt<'input>),
+    Reindex(Box<ReindexStmt<'input>>),
     Refresh(RefreshStmt<'input>),
     Cluster(ClusterStmt<'input>),
     Checkpoint(CheckpointStmt),
-    Vacuum(VacuumStmt<'input>),
+    Vacuum(Box<VacuumStmt<'input>>),
     Lock(LockStmt<'input>),
     Notify(NotifyStmt<'input>),
     Listen(ListenStmt<'input>),
     Unlisten(UnlistenStmt<'input>),
     Discard(DiscardStmt<'input>),
     Reassign(ReassignStmt<'input>),
-    Do(DoStmt<'input>),
+    Do(Box<DoStmt<'input>>),
     // Cursor
     Declare(DeclareStmt<'input>),
     Fetch(FetchStmt<'input>),
@@ -224,8 +223,8 @@ pub enum Statement<'input> {
     Show(ShowStmt<'input>),
     Analyze(AnalyzeStmt<'input>),
     // Query
-    Values(CompoundQuery<'input>),
-    Select(SelectStmt<'input>),
+    Values(Box<CompoundQuery<'input>>),
+    Select(Box<SelectStmt<'input>>),
     Table(TableStmt<'input>),
     /// Catch-all: consumes tokens until the next semicolon.
     Raw(RawStatement<'input>),
@@ -407,7 +406,6 @@ pub struct PsqlDirective<'input> {
 #[railroad]
 #[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-#[allow(clippy::large_enum_variant)]
 pub enum PsqlCommand<'input> {
     /// A psql directive (e.g., `\pset null '(null)'`).
     /// Listed first so `\` is checked before statement keywords.
@@ -555,6 +553,139 @@ mod tests {
     use recursa::{Input, Parse};
 
     use super::*;
+
+    /// Regression guard: keep the top-level statement enums small enough that the
+    /// recursive descent parser fits in the default test thread stack.
+    /// Prior to boxing the largest variants, `Statement` was 1480 bytes and
+    /// fixture-parsing tests required `RUST_MIN_STACK=16777216`.
+    #[test]
+    fn statement_size_is_bounded() {
+        use std::mem::size_of;
+        let stmt = size_of::<Statement<'_>>();
+        let item = size_of::<FileItem<'_>>();
+        assert!(
+            stmt <= 128,
+            "Statement grew to {stmt} bytes — Box the largest variants",
+        );
+        assert!(
+            item <= 128,
+            "FileItem grew to {item} bytes — Box the largest variants",
+        );
+    }
+
+    /// Print sizes of major AST node types. Run with `--nocapture` to see output.
+    /// `#[ignore]` so it doesn't run by default but stays available for diagnosis.
+    #[test]
+    #[ignore]
+    fn report_ast_sizes() {
+        use std::mem::size_of;
+        let mut sizes: Vec<(&'static str, usize)> = vec![
+            ("FileItem", size_of::<FileItem<'_>>()),
+            ("PsqlCommand", size_of::<PsqlCommand<'_>>()),
+            ("TerminatedStatement", size_of::<TerminatedStatement<'_>>()),
+            ("Statement", size_of::<Statement<'_>>()),
+            ("Expr", size_of::<crate::ast::expr::Expr<'_>>()),
+            ("CaseSearched", size_of::<crate::ast::expr::CaseSearched<'_>>()),
+            ("CaseSimple", size_of::<crate::ast::expr::CaseSimple<'_>>()),
+            ("IntervalLit", size_of::<crate::ast::expr::IntervalLit<'_>>()),
+            ("TimestampLit", size_of::<crate::ast::expr::TimestampLit<'_>>()),
+            ("TypeCastFunc", size_of::<crate::ast::expr::TypeCastFunc<'_>>()),
+            ("XmlElement", size_of::<crate::ast::expr::XmlElement<'_>>()),
+            ("XmlForest", size_of::<crate::ast::expr::XmlForest<'_>>()),
+            ("XmlAttributes", size_of::<crate::ast::expr::XmlAttributes<'_>>()),
+            ("XmlPi", size_of::<crate::ast::expr::XmlPi<'_>>()),
+            ("ArrayExpr", size_of::<crate::ast::expr::ArrayExpr<'_>>()),
+            ("QualifiedRef", size_of::<crate::ast::expr::QualifiedRef<'_>>()),
+            ("QualifiedWildcard", size_of::<crate::ast::expr::QualifiedWildcard<'_>>()),
+            ("ParenExpr", size_of::<crate::ast::expr::ParenExpr<'_>>()),
+            ("ExistsExpr", size_of::<crate::ast::expr::ExistsExpr<'_>>()),
+            ("ArrayBracket", size_of::<crate::ast::expr::ArrayBracket<'_>>()),
+            ("RowExpr", size_of::<crate::ast::expr::RowExpr<'_>>()),
+            ("CastType", size_of::<crate::ast::expr::CastType<'_>>()),
+            ("ExtractCall", size_of::<crate::ast::expr::ExtractCall<'_>>()),
+            ("NotInSuffix", size_of::<crate::ast::expr::NotInSuffix<'_>>()),
+            ("InContent", size_of::<crate::ast::expr::InContent<'_>>()),
+            ("InList", size_of::<crate::ast::expr::InList<'_>>()),
+            ("SubstringCall", size_of::<crate::ast::expr::SubstringCall<'_>>()),
+            ("OverlayCall", size_of::<crate::ast::expr::OverlayCall<'_>>()),
+            ("TrimCall", size_of::<crate::ast::expr::TrimCall<'_>>()),
+            ("PositionCall", size_of::<crate::ast::expr::PositionCall<'_>>()),
+            ("SelectStmt", size_of::<crate::ast::select::SelectStmt<'_>>()),
+            ("CreateTableStmt", size_of::<crate::ast::create_table::CreateTableStmt<'_>>()),
+            ("CreateFunctionStmt", size_of::<crate::ast::create_function::CreateFunctionStmt<'_>>()),
+            ("InsertStmt", size_of::<crate::ast::insert::InsertStmt<'_>>()),
+            ("UpdateStmt", size_of::<crate::ast::update::UpdateStmt<'_>>()),
+            ("DeleteStmt", size_of::<crate::ast::delete::DeleteStmt<'_>>()),
+            ("MergeStmt", size_of::<crate::ast::merge::MergeStmt<'_>>()),
+            ("ExplainStmt", size_of::<crate::ast::explain::ExplainStmt<'_>>()),
+            ("CompoundQuery", size_of::<crate::ast::values::CompoundQuery<'_>>()),
+            ("WithStatement", size_of::<crate::ast::with_clause::WithStatement<'_>>()),
+            ("FuncCall", size_of::<crate::ast::expr::FuncCall<'_>>()),
+            ("ColumnDef", size_of::<crate::ast::create_table::ColumnDef<'_>>()),
+            ("ConflictAction", size_of::<crate::ast::insert::ConflictAction<'_>>()),
+            ("DoUpdateAction", size_of::<crate::ast::insert::DoUpdateAction<'_>>()),
+            ("GroupByItem", size_of::<crate::ast::select::GroupByItem<'_>>()),
+            ("FuncArg", size_of::<crate::ast::expr::FuncArg<'_>>()),
+            ("AlterTableStmt", size_of::<simple_stmts::AlterTableStmt<'_>>()),
+            ("CreateTriggerStmt", size_of::<simple_stmts::CreateTriggerStmt<'_>>()),
+            ("CreateRuleStmt", size_of::<simple_stmts::CreateRuleStmt<'_>>()),
+            ("CreateForeignStmt", size_of::<simple_stmts::CreateForeignStmt<'_>>()),
+            ("CreateMaterializedViewStmt", size_of::<simple_stmts::CreateMaterializedViewStmt<'_>>()),
+            ("AlterMaterializedViewStmt", size_of::<simple_stmts::AlterMaterializedViewStmt<'_>>()),
+            ("CopyStmt", size_of::<simple_stmts::CopyStmt<'_>>()),
+            ("VacuumStmt", size_of::<simple_stmts::VacuumStmt<'_>>()),
+            ("ReindexStmt", size_of::<simple_stmts::ReindexStmt<'_>>()),
+            ("ClusterStmt", size_of::<simple_stmts::ClusterStmt<'_>>()),
+            ("GrantStmt", size_of::<simple_stmts::GrantStmt<'_>>()),
+            ("RevokeStmt", size_of::<simple_stmts::RevokeStmt<'_>>()),
+            ("DoStmt", size_of::<simple_stmts::DoStmt<'_>>()),
+            ("CreateRoleStmt", size_of::<simple_stmts::CreateRoleStmt<'_>>()),
+            ("CreateAggregateStmt", size_of::<simple_stmts::CreateAggregateStmt<'_>>()),
+            ("CreateOperatorStmt", size_of::<simple_stmts::CreateOperatorStmt<'_>>()),
+            ("AnalyzeStmt", size_of::<crate::ast::analyze::AnalyzeStmt<'_>>()),
+            ("CreateIndexStmt", size_of::<crate::ast::create_index::CreateIndexStmt<'_>>()),
+            ("CreateViewStmt", size_of::<crate::ast::create_view::CreateViewStmt<'_>>()),
+            ("DropTableStmt", size_of::<crate::ast::drop_table::DropTableStmt<'_>>()),
+            ("RawStatement", size_of::<RawStatement<'_>>()),
+            ("CreateProcedureStmt", size_of::<crate::ast::create_procedure::CreateProcedureStmt<'_>>()),
+            ("CreateTablespaceStmt", size_of::<crate::ast::create_tablespace::CreateTablespaceStmt<'_>>()),
+            ("DropFunctionStmt", size_of::<crate::ast::create_function::DropFunctionStmt<'_>>()),
+            ("CreateEventTriggerStmt", size_of::<simple_stmts::CreateEventTriggerStmt<'_>>()),
+            ("CreateAccessMethodStmt", size_of::<simple_stmts::CreateAccessMethodStmt<'_>>()),
+            ("CreateLanguageStmt", size_of::<simple_stmts::CreateLanguageStmt<'_>>()),
+            ("CreateDatabaseStmt", size_of::<simple_stmts::CreateDatabaseStmt<'_>>()),
+            ("CreateUserStmt", size_of::<simple_stmts::CreateUserStmt<'_>>()),
+            ("CreateSchemaStmt", size_of::<simple_stmts::CreateSchemaStmt<'_>>()),
+            ("CreateSequenceStmt", size_of::<simple_stmts::CreateSequenceStmt<'_>>()),
+            ("CreateTypeStmt", size_of::<simple_stmts::CreateTypeStmt<'_>>()),
+            ("CreateDomainStmt", size_of::<simple_stmts::CreateDomainStmt<'_>>()),
+            ("CreateCastStmt", size_of::<simple_stmts::CreateCastStmt<'_>>()),
+            ("CreateCollationStmt", size_of::<simple_stmts::CreateCollationStmt<'_>>()),
+            ("CreateExtensionStmt", size_of::<simple_stmts::CreateExtensionStmt<'_>>()),
+            ("CreatePolicyStmt", size_of::<simple_stmts::CreatePolicyStmt<'_>>()),
+            ("CreateStatisticsStmt", size_of::<simple_stmts::CreateStatisticsStmt<'_>>()),
+            ("CreatePublicationStmt", size_of::<simple_stmts::CreatePublicationStmt<'_>>()),
+            ("CreateSubscriptionStmt", size_of::<simple_stmts::CreateSubscriptionStmt<'_>>()),
+            ("CreateConversionStmt", size_of::<simple_stmts::CreateConversionStmt<'_>>()),
+            ("CreateServerStmt", size_of::<simple_stmts::CreateServerStmt<'_>>()),
+            ("CreateGroupStmt", size_of::<simple_stmts::CreateGroupStmt<'_>>()),
+            ("AlterIndexStmt", size_of::<simple_stmts::AlterIndexStmt<'_>>()),
+            ("AlterViewStmt", size_of::<simple_stmts::AlterViewStmt<'_>>()),
+            ("AlterFunctionStmt", size_of::<simple_stmts::AlterFunctionStmt<'_>>()),
+            ("CommentStmt", size_of::<simple_stmts::CommentStmt<'_>>()),
+            ("SecurityLabelStmt", size_of::<simple_stmts::SecurityLabelStmt<'_>>()),
+            ("PrepareStmt", size_of::<simple_stmts::PrepareStmt<'_>>()),
+            ("TableRef", size_of::<crate::ast::select::TableRef<'_>>()),
+            ("SimpleTableRef", size_of::<crate::ast::select::SimpleTableRef<'_>>()),
+            ("CompoundQuery (if any)", size_of::<crate::ast::values::CompoundQuery<'_>>()),
+        ];
+        sizes.sort_by(|a, b| b.1.cmp(&a.1));
+        eprintln!("\n=== AST sizes (bytes) ===");
+        for (name, size) in &sizes {
+            eprintln!("{size:>6}  {name}");
+        }
+        eprintln!();
+    }
 
     /// Convert a byte offset into `(line, col)` (both 1-based).
     fn line_col(src: &str, byte_offset: usize) -> (usize, usize) {

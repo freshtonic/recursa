@@ -83,11 +83,11 @@ pub struct UpdateStmt<'input> {
     #[format_tokens(indent)]
     pub assignments: Seq<SetAssignment<'input>, punct::Comma>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub from_clause: Option<FromClause<'input>>,
+    pub from_clause: Option<Box<FromClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub where_clause: Option<WhereClause<'input>>,
+    pub where_clause: Option<Box<WhereClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub returning: Option<ReturningClause<'input>>,
+    pub returning: Option<Box<ReturningClause<'input>>>,
 }
 
 #[cfg(test)]

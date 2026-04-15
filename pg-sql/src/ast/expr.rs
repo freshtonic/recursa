@@ -1156,7 +1156,7 @@ pub enum Expr<'input> {
     // --- Postfix ---
     /// Postgres-style cast: `expr::type`
     #[parse(postfix, bp = 20)]
-    Cast(Box<Expr<'input>>, punct::ColonColon, CastType<'input>),
+    Cast(Box<Expr<'input>>, punct::ColonColon, Box<CastType<'input>>),
     /// Array subscript: `expr[idx]`
     #[parse(postfix, bp = 20)]
     Subscript(
@@ -1458,7 +1458,7 @@ pub enum Expr<'input> {
     /// `xmlelement(NAME ident [, xmlattributes(...)] [, content])`. Must come
     /// before `Func` so `xmlelement(` is matched as the special form.
     #[parse(atom)]
-    XmlElement(XmlElement<'input>),
+    XmlElement(Box<XmlElement<'input>>),
     /// `xmlforest(expr [AS alias], ...)`. Before `Func` for the same reason.
     #[parse(atom)]
     XmlForest(XmlForest<'input>),
@@ -1492,7 +1492,7 @@ pub enum Expr<'input> {
     Extract(ExtractCall<'input>),
     /// Function call: `func(args)` -- must come before ColumnRef
     #[parse(atom)]
-    Func(FuncCall<'input>),
+    Func(Box<FuncCall<'input>>),
     /// Qualified wildcard: `table.*` -- must come before QualRef and ColumnRef
     #[parse(atom)]
     QualWild(QualifiedWildcard<'input>),

@@ -60,13 +60,13 @@ pub struct DeleteStmt<'input> {
     pub _delete: PhantomData<keyword::Delete>,
     pub _from: PhantomData<keyword::From>,
     pub table_name: QualifiedName<'input>,
-    pub alias: Option<TableAlias<'input>>,
+    pub alias: Option<Box<TableAlias<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub using_clause: Option<DeleteUsingClause<'input>>,
+    pub using_clause: Option<Box<DeleteUsingClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub where_clause: Option<WhereClause<'input>>,
+    pub where_clause: Option<Box<WhereClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub returning: Option<ReturningClause<'input>>,
+    pub returning: Option<Box<ReturningClause<'input>>>,
 }
 
 #[cfg(test)]
@@ -99,7 +99,7 @@ mod tests {
         let mut input = Input::new("DELETE FROM delete_test AS dt WHERE dt.a > 75");
         let stmt = DeleteStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.table_name.object(), "delete_test");
-        assert!(matches!(stmt.alias, Some(TableAlias::WithAs(_))));
+        assert!(matches!(stmt.alias.as_deref(), Some(TableAlias::WithAs(_))));
         assert_eq!(stmt.alias.as_ref().unwrap().name(), "dt");
         assert!(stmt.where_clause.is_some());
         assert!(input.is_empty());
@@ -110,7 +110,7 @@ mod tests {
         let mut input = Input::new("DELETE FROM delete_test dt WHERE delete_test.a > 25");
         let stmt = DeleteStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.table_name.object(), "delete_test");
-        assert!(matches!(stmt.alias, Some(TableAlias::Bare(_))));
+        assert!(matches!(stmt.alias.as_deref(), Some(TableAlias::Bare(_))));
         assert_eq!(stmt.alias.as_ref().unwrap().name(), "dt");
         assert!(stmt.where_clause.is_some());
         assert!(input.is_empty());

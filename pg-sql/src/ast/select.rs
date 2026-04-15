@@ -569,7 +569,7 @@ pub enum GroupByItem<'input> {
     GroupingSets(GroupingSetsItem<'input>),
     Rollup(RollupItem<'input>),
     Cube(CubeItem<'input>),
-    Expr(Expr<'input>),
+    Expr(Box<Expr<'input>>),
 }
 
 /// HAVING clause: `HAVING expr`
@@ -656,29 +656,29 @@ pub struct SelectDistinctAll {
 #[format_tokens(group(consistent))]
 pub struct SelectStmt<'input> {
     pub _select: PhantomData<keyword::Select>,
-    pub distinct: Option<SelectDistinct<'input>>,
+    pub distinct: Option<Box<SelectDistinct<'input>>>,
     #[format_tokens(group(consistent), indent, break(flat = " ", broken = "\n"))]
     pub items: Seq<SelectItem<'input>, punct::Comma>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub into: Option<SelectIntoClause<'input>>,
+    pub into: Option<Box<SelectIntoClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub from_clause: Option<FromClause<'input>>,
+    pub from_clause: Option<Box<FromClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub where_clause: Option<WhereClause<'input>>,
+    pub where_clause: Option<Box<WhereClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub group_by: Option<GroupByClause<'input>>,
+    pub group_by: Option<Box<GroupByClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub having: Option<HavingClause<'input>>,
+    pub having: Option<Box<HavingClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub window: Option<WindowClause<'input>>,
+    pub window: Option<Box<WindowClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub order_by: Option<OrderByClause<'input>>,
+    pub order_by: Option<Box<OrderByClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub limit: Option<LimitClause<'input>>,
+    pub limit: Option<Box<LimitClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub offset: Option<OffsetClause<'input>>,
+    pub offset: Option<Box<OffsetClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub for_update: Option<ForUpdateClause>,
+    pub for_update: Option<Box<ForUpdateClause>>,
 }
 
 /// A SELECT body that can appear in subqueries -- WITH, SELECT, or VALUES.
