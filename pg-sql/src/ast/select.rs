@@ -71,15 +71,38 @@ pub struct InheritedTable {
     pub alias: Option<literal::Ident>,
 }
 
-/// Table alias: `AS name [(col1, col2)]` or bare `name [(col1, col2)]`.
+/// `AS name [(col1, col2)]` table alias form.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TableAlias {
-    pub _as: Option<PhantomData<keyword::As>>,
+pub struct TableAliasWithAs {
+    pub _as: PhantomData<keyword::As>,
     pub name: literal::AliasName,
     pub columns:
         Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+}
+
+/// Bare `name [(col1, col2)]` table alias form. Bare alias names must not
+/// be reserved keywords (uses `Ident`, not `AliasName`), otherwise clauses
+/// like `FROM unnest(a) ORDER BY 1` would consume `ORDER` as an alias.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TableAliasBare {
+    pub name: literal::Ident,
+    pub columns:
+        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+}
+
+/// Table alias: `AS name [(col1, col2)]` or bare `name [(col1, col2)]`.
+///
+/// Variant ordering: `WithAs` (`AS`) before `Bare` (ident).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum TableAlias {
+    WithAs(TableAliasWithAs),
+    Bare(TableAliasBare),
 }
 
 /// Subquery in FROM: `(SELECT ...) AS alias`
@@ -90,7 +113,7 @@ pub struct SubqueryRef {
     pub _lparen: punct::LParen,
     pub query: Box<crate::ast::values::CompoundQuery>,
     pub _rparen: punct::RParen,
-    pub alias: TableAlias,
+    pub alias: Option<TableAlias>,
 }
 
 /// Parenthesized join tree in FROM: `(t1 CROSS JOIN t2) AS alias`.
@@ -526,6 +549,51 @@ pub struct WindowClause {
     pub defs: Seq<WindowDef, punct::Comma, NoTrailing, NonEmpty>,
 }
 
+/// `INTO [TEMP|TEMPORARY|UNLOGGED] [TABLE] target` clause for the
+/// Postgres `SELECT ... INTO new_table` statement form.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SelectIntoClause {
+    pub _into: PhantomData<keyword::Into>,
+    pub temp: Option<crate::ast::create_table::TempKw>,
+    pub unlogged: Option<PhantomData<keyword::Unlogged>>,
+    pub _table: Option<PhantomData<keyword::Table>>,
+    pub target: crate::ast::common::QualifiedName,
+}
+
+/// `DISTINCT` or `DISTINCT ON (exprs)` qualifier on a SELECT.
+///
+/// Variant ordering: `On` (longer, starts with `DISTINCT ON`) before `All`
+/// (just `DISTINCT`).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum SelectDistinct {
+    On(SelectDistinctOn),
+    All(SelectDistinctAll),
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SelectDistinctOn {
+    pub _distinct: PhantomData<keyword::Distinct>,
+    pub _on: PhantomData<keyword::On>,
+    pub exprs: Surrounded<
+        punct::LParen,
+        Seq<crate::ast::expr::Expr, punct::Comma>,
+        punct::RParen,
+    >,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SelectDistinctAll {
+    pub _distinct: PhantomData<keyword::Distinct>,
+}
+
 /// SELECT statement.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -533,9 +601,11 @@ pub struct WindowClause {
 #[format_tokens(group(consistent))]
 pub struct SelectStmt {
     pub _select: PhantomData<keyword::Select>,
-    pub distinct: Option<PhantomData<keyword::Distinct>>,
+    pub distinct: Option<SelectDistinct>,
     #[format_tokens(group(consistent), indent, break(flat = " ", broken = "\n"))]
     pub items: Seq<SelectItem, punct::Comma>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
+    pub into: Option<SelectIntoClause>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub from_clause: Option<FromClause>,
     #[format_tokens(break(flat = " ", broken = "\n"))]

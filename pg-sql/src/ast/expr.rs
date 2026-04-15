@@ -939,6 +939,7 @@ pub struct SubstringSimilar {
 pub enum SubstringTail {
     Similar(SubstringSimilar),
     FromFor(SubstringFromFor),
+    For(ForCount),
 }
 
 /// Inner of `SUBSTRING(...)`: `source` followed by FROM/SIMILAR tail.
@@ -948,6 +949,45 @@ pub enum SubstringTail {
 pub struct SubstringInner {
     pub source: Box<Expr>,
     pub tail: SubstringTail,
+}
+
+/// `COLLATION FOR (expr)` — SQL-standard collation introspection.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CollationForCall {
+    pub _collation: keyword::Collation,
+    pub _for: keyword::For,
+    pub arg: Surrounded<punct::LParen, Box<Expr>, punct::RParen>,
+}
+
+/// `expr AS cast_type [COLLATE "c"]` — inner of `CAST(...)`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CastAsInner {
+    pub value: Box<Expr>,
+    pub _as: keyword::As,
+    pub target: CastType,
+    pub collate: Option<CollateSuffix>,
+}
+
+/// `COLLATE "name"` suffix appearing after a cast target type.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CollateSuffix {
+    pub _collate: keyword::Collate,
+    pub name: literal::Ident,
+}
+
+/// `CAST(expr AS type [COLLATE "c"])` — SQL-standard cast form.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CastCall {
+    pub _kw: keyword::Cast,
+    pub inner: Surrounded<punct::LParen, CastAsInner, punct::RParen>,
 }
 
 /// `SUBSTRING(source FROM start [FOR len])` /
@@ -1108,6 +1148,12 @@ pub enum Expr {
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
     BoolTest(Box<Expr>, keyword::Is, BoolTestKind),
+    /// Postgres `expr NOTNULL` postfix null test (synonym for `IS NOT NULL`).
+    #[parse(postfix, bp = 8)]
+    Notnull(Box<Expr>, keyword::Notnull),
+    /// Postgres `expr ISNULL` postfix null test (synonym for `IS NULL`).
+    #[parse(postfix, bp = 8)]
+    Isnull(Box<Expr>, keyword::Isnull),
     /// NOT IN list: `expr NOT IN (val, ...)`
     #[parse(postfix, bp = 6)]
     NotInExpr(Box<Expr>, NotInSuffix),
@@ -1372,6 +1418,12 @@ pub enum Expr {
     /// since `trim` is also a valid function-call identifier.
     #[parse(atom)]
     Trim(TrimCall),
+    /// `CAST(expr AS type [COLLATE "c"])`. Before `Func`.
+    #[parse(atom)]
+    CastCall(CastCall),
+    /// `COLLATION FOR (expr)`. Before `Func`.
+    #[parse(atom)]
+    CollationFor(CollationForCall),
     /// `SUBSTRING(source FROM ... | SIMILAR ...)`. Before `Func`.
     #[parse(atom)]
     Substring(SubstringCall),
@@ -1652,6 +1704,45 @@ mod tests {
     #[test]
     fn parse_substring_from_for() {
         let mut input = Input::new("SUBSTRING('1234567890' FROM 4 FOR 3)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_notnull_isnull() {
+        let mut input = Input::new("x.c NOTNULL");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Notnull(..)));
+        assert!(input.is_empty());
+        let mut input = Input::new("x.c ISNULL");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Isnull(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_collation_for() {
+        let mut input = Input::new("collation for ('foo')");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+        let mut input = Input::new("collation for ((SELECT a FROM t LIMIT 1))");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_cast_call() {
+        let mut input = Input::new("CAST('42' AS text COLLATE \"C\")");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+        let mut input = Input::new("CAST(b AS varchar)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_substring_for_only() {
+        let mut input = Input::new("substring(d FOR 30)");
         let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }

@@ -242,10 +242,23 @@ pub struct RawStatement {
 
 impl<'input> Parse<'input> for RawStatement {
     fn peek<R: ParseRules>(input: &Input<'input>) -> bool {
+        // Accept the start of a statement-like fragment: an SQL identifier
+        // (alpha or `_`) or a quoted ident (`"foo"`). The double-quote case
+        // matters for `Option<RawStatement>` tails on partially-implemented
+        // stmts like `ALTER COLLATION "en_US" REFRESH VERSION` whose tail
+        // starts with a quoted ident. Other leading characters (digits,
+        // backslash, etc.) are intentionally rejected so COPY-from-stdin
+        // data blocks remain as `RawLines`, not raw statements.
         !input.is_empty()
             && input
                 .remaining()
-                .starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                .starts_with(|c: char| {
+                    c.is_ascii_alphabetic()
+                        || c == '_'
+                        || c == '"'
+                        || c == ':'
+                        || c == '('
+                })
     }
 
     fn parse<R: ParseRules>(input: &mut Input<'input>) -> Result<Self, ParseError> {
