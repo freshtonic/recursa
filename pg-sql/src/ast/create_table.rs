@@ -390,9 +390,9 @@ pub struct PartitionOfBody<'input> {
 /// AS-query table body: `AS SELECT ...`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct AsQueryBody {
+pub struct AsQueryBody<'input> {
     pub _as: PhantomData<keyword::As>,
-    pub query: Box<crate::ast::Statement>,
+    pub query: Box<crate::ast::Statement<'input>>,
 }
 
 /// The body of a CREATE TABLE statement after `CREATE [TEMP] TABLE name`.
@@ -402,7 +402,7 @@ pub struct AsQueryBody {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum CreateTableBody<'input> {
-    AsQuery(AsQueryBody),
+    AsQuery(AsQueryBody<'input>),
     PartitionOf(PartitionOfBody<'input>),
     Columns(ColumnsBody<'input>),
 }

@@ -63,160 +63,160 @@ use self::{
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[allow(clippy::large_enum_variant)]
-pub enum Statement {
+pub enum Statement<'input> {
     // --- Multi-keyword statements (longest first_pattern first) ---
-    With(WithStatement),
-    Explain(ExplainStmt),
+    With(WithStatement<'input>),
+    Explain(ExplainStmt<'input>),
     // CREATE variants: multi-keyword before single-keyword
-    CreateFunction(CreateFunctionStmt),
-    CreateProcedure(CreateProcedureStmt),
-    CreateTablespace(CreateTablespaceStmt),
-    CreateTrigger(CreateTriggerStmt),
-    CreateEventTrigger(CreateEventTriggerStmt),
-    CreateAccessMethod(CreateAccessMethodStmt),
-    CreateMaterializedView(CreateMaterializedViewStmt),
-    CreateForeign(CreateForeignStmt),
-    CreateIndex(CreateIndexStmt),
-    CreateView(CreateViewStmt),
-    CreateRule(CreateRuleStmt),
-    CreateGroup(CreateGroupStmt),
-    CreateRole(CreateRoleStmt),
-    CreateUser(CreateUserStmt),
-    CreateSchema(CreateSchemaStmt),
-    CreateSequence(CreateSequenceStmt),
-    CreateType(CreateTypeStmt),
-    CreateDomain(CreateDomainStmt),
-    CreateAggregate(CreateAggregateStmt),
-    CreateOperator(CreateOperatorStmt),
-    CreateCast(CreateCastStmt),
-    CreateCollation(CreateCollationStmt),
-    CreateExtension(CreateExtensionStmt),
-    CreatePolicy(CreatePolicyStmt),
-    CreateStatistics(CreateStatisticsStmt),
-    CreatePublication(CreatePublicationStmt),
-    CreateSubscription(CreateSubscriptionStmt),
-    CreateConversion(CreateConversionStmt),
-    CreateServer(CreateServerStmt),
-    CreateTable(CreateTableStmt),
+    CreateFunction(CreateFunctionStmt<'input>),
+    CreateProcedure(CreateProcedureStmt<'input>),
+    CreateTablespace(CreateTablespaceStmt<'input>),
+    CreateTrigger(CreateTriggerStmt<'input>),
+    CreateEventTrigger(CreateEventTriggerStmt<'input>),
+    CreateAccessMethod(CreateAccessMethodStmt<'input>),
+    CreateMaterializedView(CreateMaterializedViewStmt<'input>),
+    CreateForeign(CreateForeignStmt<'input>),
+    CreateIndex(CreateIndexStmt<'input>),
+    CreateView(CreateViewStmt<'input>),
+    CreateRule(CreateRuleStmt<'input>),
+    CreateGroup(CreateGroupStmt<'input>),
+    CreateRole(CreateRoleStmt<'input>),
+    CreateUser(CreateUserStmt<'input>),
+    CreateSchema(CreateSchemaStmt<'input>),
+    CreateSequence(CreateSequenceStmt<'input>),
+    CreateType(CreateTypeStmt<'input>),
+    CreateDomain(CreateDomainStmt<'input>),
+    CreateAggregate(CreateAggregateStmt<'input>),
+    CreateOperator(CreateOperatorStmt<'input>),
+    CreateCast(CreateCastStmt<'input>),
+    CreateCollation(CreateCollationStmt<'input>),
+    CreateExtension(CreateExtensionStmt<'input>),
+    CreatePolicy(CreatePolicyStmt<'input>),
+    CreateStatistics(CreateStatisticsStmt<'input>),
+    CreatePublication(CreatePublicationStmt<'input>),
+    CreateSubscription(CreateSubscriptionStmt<'input>),
+    CreateConversion(CreateConversionStmt<'input>),
+    CreateServer(CreateServerStmt<'input>),
+    CreateTable(CreateTableStmt<'input>),
     // DROP variants
-    DropFunction(DropFunctionStmt),
-    DropProcedure(DropProcedureStmt),
-    DropTablespace(DropTablespaceStmt),
-    DropTrigger(DropTriggerStmt),
-    DropEventTrigger(DropEventTriggerStmt),
-    DropAccessMethod(DropAccessMethodStmt),
-    DropMaterializedView(DropMaterializedViewStmt),
-    DropForeign(DropForeignStmt),
-    DropOwned(DropOwnedStmt),
-    DropIndex(DropIndexStmt),
-    DropView(DropViewStmt),
-    DropRule(DropRuleStmt),
-    DropGroup(DropGroupStmt),
-    DropRole(DropRoleStmt),
-    DropUser(DropUserStmt),
-    DropSchema(DropSchemaStmt),
-    DropSequence(DropSequenceStmt),
-    DropType(DropTypeStmt),
-    DropDomain(DropDomainStmt),
-    DropAggregate(DropAggregateStmt),
-    DropOperator(DropOperatorStmt),
-    DropCast(DropCastStmt),
-    DropCollation(DropCollationStmt),
-    DropExtension(DropExtensionStmt),
-    DropPolicy(DropPolicyStmt),
-    DropStatistics(DropStatisticsStmt),
-    DropPublication(DropPublicationStmt),
-    DropSubscription(DropSubscriptionStmt),
-    DropConversion(DropConversionStmt),
-    DropServer(DropServerStmt),
-    DropTable(DropTableStmt),
+    DropFunction(DropFunctionStmt<'input>),
+    DropProcedure(DropProcedureStmt<'input>),
+    DropTablespace(DropTablespaceStmt<'input>),
+    DropTrigger(DropTriggerStmt<'input>),
+    DropEventTrigger(DropEventTriggerStmt<'input>),
+    DropAccessMethod(DropAccessMethodStmt<'input>),
+    DropMaterializedView(DropMaterializedViewStmt<'input>),
+    DropForeign(DropForeignStmt<'input>),
+    DropOwned(DropOwnedStmt<'input>),
+    DropIndex(DropIndexStmt<'input>),
+    DropView(DropViewStmt<'input>),
+    DropRule(DropRuleStmt<'input>),
+    DropGroup(DropGroupStmt<'input>),
+    DropRole(DropRoleStmt<'input>),
+    DropUser(DropUserStmt<'input>),
+    DropSchema(DropSchemaStmt<'input>),
+    DropSequence(DropSequenceStmt<'input>),
+    DropType(DropTypeStmt<'input>),
+    DropDomain(DropDomainStmt<'input>),
+    DropAggregate(DropAggregateStmt<'input>),
+    DropOperator(DropOperatorStmt<'input>),
+    DropCast(DropCastStmt<'input>),
+    DropCollation(DropCollationStmt<'input>),
+    DropExtension(DropExtensionStmt<'input>),
+    DropPolicy(DropPolicyStmt<'input>),
+    DropStatistics(DropStatisticsStmt<'input>),
+    DropPublication(DropPublicationStmt<'input>),
+    DropSubscription(DropSubscriptionStmt<'input>),
+    DropConversion(DropConversionStmt<'input>),
+    DropServer(DropServerStmt<'input>),
+    DropTable(DropTableStmt<'input>),
     // ALTER variants: multi-keyword before single-keyword
-    AlterForeign(AlterForeignStmt),
-    AlterEventTrigger(AlterEventTriggerStmt),
-    AlterMaterializedView(AlterMaterializedViewStmt),
-    AlterTable(AlterTableStmt),
-    AlterGroup(AlterGroupStmt),
-    AlterRole(AlterRoleStmt),
-    AlterUser(AlterUserStmt),
-    AlterSchema(AlterSchemaStmt),
-    AlterSequence(AlterSequenceStmt),
-    AlterType(AlterTypeStmt),
-    AlterDomain(AlterDomainStmt),
-    AlterAggregate(AlterAggregateStmt),
-    AlterOperator(AlterOperatorStmt),
-    AlterCollation(AlterCollationStmt),
-    AlterExtension(AlterExtensionStmt),
-    AlterPolicy(AlterPolicyStmt),
-    AlterStatistics(AlterStatisticsStmt),
-    AlterPublication(AlterPublicationStmt),
-    AlterSubscription(AlterSubscriptionStmt),
-    AlterConversion(AlterConversionStmt),
-    AlterServer(AlterServerStmt),
-    AlterIndex(AlterIndexStmt),
-    AlterView(AlterViewStmt),
-    AlterFunction(AlterFunctionStmt),
+    AlterForeign(AlterForeignStmt<'input>),
+    AlterEventTrigger(AlterEventTriggerStmt<'input>),
+    AlterMaterializedView(AlterMaterializedViewStmt<'input>),
+    AlterTable(AlterTableStmt<'input>),
+    AlterGroup(AlterGroupStmt<'input>),
+    AlterRole(AlterRoleStmt<'input>),
+    AlterUser(AlterUserStmt<'input>),
+    AlterSchema(AlterSchemaStmt<'input>),
+    AlterSequence(AlterSequenceStmt<'input>),
+    AlterType(AlterTypeStmt<'input>),
+    AlterDomain(AlterDomainStmt<'input>),
+    AlterAggregate(AlterAggregateStmt<'input>),
+    AlterOperator(AlterOperatorStmt<'input>),
+    AlterCollation(AlterCollationStmt<'input>),
+    AlterExtension(AlterExtensionStmt<'input>),
+    AlterPolicy(AlterPolicyStmt<'input>),
+    AlterStatistics(AlterStatisticsStmt<'input>),
+    AlterPublication(AlterPublicationStmt<'input>),
+    AlterSubscription(AlterSubscriptionStmt<'input>),
+    AlterConversion(AlterConversionStmt<'input>),
+    AlterServer(AlterServerStmt<'input>),
+    AlterIndex(AlterIndexStmt<'input>),
+    AlterView(AlterViewStmt<'input>),
+    AlterFunction(AlterFunctionStmt<'input>),
     // CALL stored procedure
-    Call(CallStmt),
+    Call(CallStmt<'input>),
     // DML
-    Insert(InsertStmt),
-    Update(UpdateStmt),
-    Merge(MergeStmt),
-    Delete(DeleteStmt),
+    Insert(InsertStmt<'input>),
+    Update(UpdateStmt<'input>),
+    Merge(MergeStmt<'input>),
+    Delete(DeleteStmt<'input>),
     // Transaction control
-    Rollback(RollbackStmt),
-    Savepoint(SavepointStmt),
-    Release(ReleaseStmt),
+    Rollback(RollbackStmt<'input>),
+    Savepoint(SavepointStmt<'input>),
+    Release(ReleaseStmt<'input>),
     StartTransaction(StartTransactionStmt),
     Begin(BeginStmt),
-    Commit(CommitStmt),
+    Commit(CommitStmt<'input>),
     End(EndStmt),
     Abort(AbortStmt),
     // PREPARE / EXECUTE / DEALLOCATE
-    Deallocate(DeallocateStmt),
-    Prepare(PrepareStmt),
-    Execute(ExecuteStmt),
+    Deallocate(DeallocateStmt<'input>),
+    Prepare(PrepareStmt<'input>),
+    Execute(ExecuteStmt<'input>),
     // Permissions
-    Grant(GrantStmt),
-    Revoke(RevokeStmt),
+    Grant(GrantStmt<'input>),
+    Revoke(RevokeStmt<'input>),
     // Utility
-    SecurityLabel(SecurityLabelStmt),
-    Comment(CommentStmt),
-    Copy(CopyStmt),
-    Truncate(TruncateStmt),
-    Reindex(ReindexStmt),
-    Refresh(RefreshStmt),
-    Cluster(ClusterStmt),
-    Vacuum(VacuumStmt),
-    Lock(LockStmt),
-    Notify(NotifyStmt),
-    Listen(ListenStmt),
-    Unlisten(UnlistenStmt),
-    Discard(DiscardStmt),
-    Reassign(ReassignStmt),
-    Do(DoStmt),
+    SecurityLabel(SecurityLabelStmt<'input>),
+    Comment(CommentStmt<'input>),
+    Copy(CopyStmt<'input>),
+    Truncate(TruncateStmt<'input>),
+    Reindex(ReindexStmt<'input>),
+    Refresh(RefreshStmt<'input>),
+    Cluster(ClusterStmt<'input>),
+    Vacuum(VacuumStmt<'input>),
+    Lock(LockStmt<'input>),
+    Notify(NotifyStmt<'input>),
+    Listen(ListenStmt<'input>),
+    Unlisten(UnlistenStmt<'input>),
+    Discard(DiscardStmt<'input>),
+    Reassign(ReassignStmt<'input>),
+    Do(DoStmt<'input>),
     // Cursor
-    Declare(DeclareStmt),
-    Fetch(FetchStmt),
-    Close(CloseStmt),
-    Move(MoveStmt),
+    Declare(DeclareStmt<'input>),
+    Fetch(FetchStmt<'input>),
+    Close(CloseStmt<'input>),
+    Move(MoveStmt<'input>),
     // Configuration
     // Multi-keyword SET variants must come before plain Set so
     // longest-match-wins picks the more specific form.
-    SetConstraints(SetConstraintsStmt),
+    SetConstraints(SetConstraintsStmt<'input>),
     SetTransaction(SetTransactionStmt),
-    SetSessionAuth(SetSessionAuthStmt),
-    SetTimeZone(SetTimeZoneStmt),
-    SetRole(SetRoleStmt),
-    Set(SetStmt),
-    Reset(ResetStmt),
-    Show(ShowStmt),
-    Analyze(AnalyzeStmt),
+    SetSessionAuth(SetSessionAuthStmt<'input>),
+    SetTimeZone(SetTimeZoneStmt<'input>),
+    SetRole(SetRoleStmt<'input>),
+    Set(SetStmt<'input>),
+    Reset(ResetStmt<'input>),
+    Show(ShowStmt<'input>),
+    Analyze(AnalyzeStmt<'input>),
     // Query
-    Values(CompoundQuery),
-    Select(SelectStmt),
-    Table(TableStmt),
+    Values(CompoundQuery<'input>),
+    Select(SelectStmt<'input>),
+    Table(TableStmt<'input>),
     /// Catch-all: consumes tokens until the next semicolon.
-    Raw(RawStatement),
+    Raw(RawStatement<'input>),
 }
 
 /// A raw statement: consumes everything up to (but not including) the next semicolon.
@@ -224,12 +224,18 @@ pub enum Statement {
 /// Manual Parse impl needed because this is a catch-all that doesn't use structured
 /// token parsing. It's intentionally the last variant in Statement.
 /// To eliminate this, implement proper AST types for each statement kind.
-#[derive(Debug, Clone, FormatTokens, Visit)]
-pub struct RawStatement {
-    pub text: String,
+#[derive(Debug, Clone, Visit)]
+pub struct RawStatement<'input> {
+    pub text: ::std::borrow::Cow<'input, str>,
 }
 
-impl<'input> Parse<'input> for RawStatement {
+impl<'input> FormatTokens for RawStatement<'input> {
+    fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
+        tokens.push(recursa::fmt::Token::String(self.text.as_ref().to_string()));
+    }
+}
+
+impl<'input> Parse<'input> for RawStatement<'input> {
     fn peek<R: ParseRules>(input: &Input<'input>) -> bool {
         !input.is_empty()
             && input
@@ -315,7 +321,7 @@ impl<'input> Parse<'input> for RawStatement {
             }
         }
 
-        let text = remaining[..byte_pos].to_string();
+        let text = ::std::borrow::Cow::Borrowed(&remaining[..byte_pos]);
         input.advance(byte_pos);
         Ok(RawStatement { text })
     }
@@ -324,29 +330,29 @@ impl<'input> Parse<'input> for RawStatement {
 /// A SQL statement followed by a semicolon.
 #[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TerminatedStatement {
-    pub stmt: Statement,
+pub struct TerminatedStatement<'input> {
+    pub stmt: Statement<'input>,
     pub semi: punct::Semi,
 }
 
 /// A psql directive: backslash followed by the rest of the line.
 #[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct PsqlDirective {
+pub struct PsqlDirective<'input> {
     pub backslash: punct::BackSlash,
-    pub rest: literal::RestOfLine,
+    pub rest: literal::RestOfLine<'input>,
 }
 
 /// A command in a psql input file: either a SQL statement or a psql directive.
 #[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[allow(clippy::large_enum_variant)]
-pub enum PsqlCommand {
+pub enum PsqlCommand<'input> {
     /// A psql directive (e.g., `\pset null '(null)'`).
     /// Listed first so `\` is checked before statement keywords.
-    Directive(PsqlDirective),
+    Directive(PsqlDirective<'input>),
     /// A SQL statement followed by a semicolon.
-    Statement(TerminatedStatement),
+    Statement(TerminatedStatement<'input>),
 }
 
 /// Parse a complete SQL file into a list of commands.
@@ -357,9 +363,9 @@ pub enum PsqlCommand {
 /// PostgreSQL regression test files).
 /// An item in a parsed SQL file: either a parsed command or raw text
 /// (e.g., COPY FROM stdin data blocks that can't be parsed as SQL).
-pub enum FileItem {
-    Command(PsqlCommand),
-    RawLines(String),
+pub enum FileItem<'input> {
+    Command(PsqlCommand<'input>),
+    RawLines(::std::borrow::Cow<'input, str>),
 }
 
 /// Statistics about how statements were parsed in a file.
@@ -389,7 +395,7 @@ impl ParseStats {
 }
 
 /// Compute parsing statistics for a list of file items.
-pub fn parse_stats(items: &[FileItem]) -> ParseStats {
+pub fn parse_stats(items: &[FileItem<'_>]) -> ParseStats {
     let mut stats = ParseStats::default();
     for item in items {
         match item {
@@ -415,8 +421,13 @@ pub fn parse_stats(items: &[FileItem]) -> ParseStats {
 ///
 /// Gracefully handles parse errors and unparseable content (COPY FROM stdin
 /// data blocks, etc.) by preserving them as `RawLines`.
-pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<FileItem>, ParseError> {
+pub fn parse_sql_file<'input>(
+    input: &mut Input<'input>,
+) -> Result<Vec<FileItem<'input>>, ParseError> {
     let mut items = Vec::new();
+    // Owned accumulator: raw lines are not contiguous in the source (intervening
+    // consume_ignored calls may skip whitespace/comments between them), so we
+    // can't borrow a slice. Stored as Cow::Owned on flush.
     let mut raw_buf = String::new();
     loop {
         SqlRules::consume_ignored(input);
@@ -426,13 +437,15 @@ pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<FileItem>, ParseError
         if !PsqlCommand::peek::<SqlRules>(input) {
             // Collect unparseable lines (e.g., COPY FROM stdin data blocks).
             let line = take_line(input);
-            raw_buf.push_str(&line);
+            raw_buf.push_str(line);
             raw_buf.push('\n');
             continue;
         }
         // Flush any accumulated raw lines before the next command
         if !raw_buf.is_empty() {
-            items.push(FileItem::RawLines(std::mem::take(&mut raw_buf)));
+            items.push(FileItem::RawLines(::std::borrow::Cow::Owned(
+                std::mem::take(&mut raw_buf),
+            )));
         }
         match PsqlCommand::parse::<SqlRules>(input) {
             Ok(cmd) => items.push(FileItem::Command(cmd)),
@@ -454,7 +467,7 @@ pub fn parse_sql_file(input: &mut Input<'_>) -> Result<Vec<FileItem>, ParseError
     }
     // Flush trailing raw lines
     if !raw_buf.is_empty() {
-        items.push(FileItem::RawLines(raw_buf));
+        items.push(FileItem::RawLines(::std::borrow::Cow::Owned(raw_buf)));
     }
     Ok(items)
 }

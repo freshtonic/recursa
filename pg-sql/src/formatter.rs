@@ -39,7 +39,7 @@ mod tests {
         let items = parse_sql_file(&mut input).unwrap();
         match &items[0] {
             crate::ast::FileItem::Command(cmd) => format_tokens_sql(cmd, FormatStyle::default()),
-            crate::ast::FileItem::RawLines(text) => text.clone(),
+            crate::ast::FileItem::RawLines(text) => text.to_string(),
         }
     }
 

@@ -92,7 +92,7 @@ pub struct CteDefinition<'input> {
     >,
     pub _as: PhantomData<keyword::As>,
     pub materialized: Option<MaterializedOption>,
-    pub query: Surrounded<punct::LParen, Box<crate::ast::Statement>, punct::RParen>,
+    pub query: Surrounded<punct::LParen, Box<crate::ast::Statement<'input>>, punct::RParen>,
     pub search: Option<SearchClause<'input>>,
     pub cycle: Option<CycleClause<'input>>,
 }
@@ -111,7 +111,7 @@ pub struct WithClause<'input> {
 #[parse(rules = SqlRules)]
 pub struct WithStatement<'input> {
     pub with_clause: WithClause<'input>,
-    pub body: Box<crate::ast::Statement>,
+    pub body: Box<crate::ast::Statement<'input>>,
 }
 
 #[cfg(test)]

@@ -35,7 +35,7 @@ pub type ExplainOptions<'input> =
 pub struct ExplainStmt<'input> {
     pub _explain: PhantomData<keyword::Explain>,
     pub options: Option<ExplainOptions<'input>>,
-    pub body: Box<crate::ast::Statement>,
+    pub body: Box<crate::ast::Statement<'input>>,
 }
 
 #[cfg(test)]
