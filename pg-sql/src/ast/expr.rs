@@ -38,10 +38,10 @@ pub struct InList<'input>(#[deref] pub Surrounded<punct::LParen, InContent<'inpu
 
 /// Parenthesized precision/scale for type names: `(10,2)` or `(3)`.
 #[railroad(label = "<Precision>")]
-#[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
+#[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit, derive_more::Deref)]
 #[parse(rules = SqlRules)]
 pub struct TypePrecision<'input>(
-    Surrounded<punct::LParen, Seq<literal::IntegerLit<'input>, punct::Comma>, punct::RParen>,
+    #[deref] pub Surrounded<punct::LParen, Seq<literal::IntegerLit<'input>, punct::Comma>, punct::RParen>,
 );
 
 /// Type name for casts.
