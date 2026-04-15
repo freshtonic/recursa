@@ -42,6 +42,9 @@ pub struct CreateViewStmt {
     pub name: literal::Ident,
     pub columns:
         Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+    /// Optional `WITH (option [= value], ...)` view options such as
+    /// `security_invoker`, `security_barrier`, `check_option`.
+    pub with_options: Option<crate::ast::create_index::WithStorage>,
     pub _as: PhantomData<keyword::As>,
     pub query: CompoundQuery,
 }

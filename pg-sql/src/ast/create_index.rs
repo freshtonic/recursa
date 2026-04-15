@@ -148,6 +148,9 @@ pub struct CreateIndexStmt {
     pub if_not_exists: Option<IfNotExistsKw>,
     pub name: Option<literal::Ident>,
     pub _on: PhantomData<keyword::On>,
+    /// Optional `ONLY` modifier — restricts the index to the named table
+    /// without descending into inheritance children (partitioned tables).
+    pub only: Option<PhantomData<keyword::Only>>,
     pub table_name: literal::Ident,
     pub using: Option<UsingMethod>,
     pub columns: Surrounded<punct::LParen, Seq<IndexElem, punct::Comma>, punct::RParen>,
@@ -215,6 +218,13 @@ mod tests {
         let mut input = Input::new("CREATE INDEX CONCURRENTLY fooi ON foo (f1)");
         let stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.concurrently.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_index_on_only() {
+        let mut input = Input::new("CREATE INDEX idx ON ONLY ptif_test (a)");
+        let _stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

@@ -147,6 +147,44 @@ pub enum VolatilityOption {
     Volatile(keyword::Volatile),
 }
 
+/// `PARALLEL SAFE` / `PARALLEL RESTRICTED` / `PARALLEL UNSAFE` parallelism
+/// declaration.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ParallelMode {
+    Safe(keyword::SafeKw),
+    Restricted(keyword::RestrictedKw),
+    Unsafe(keyword::UnsafeKw),
+}
+
+/// `PARALLEL { SAFE | RESTRICTED | UNSAFE }` function option.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ParallelOption {
+    pub _parallel: PhantomData<keyword::ParallelKw>,
+    pub mode: ParallelMode,
+}
+
+/// Separator between a SET config parameter name and its value — either
+/// `=` or `TO`.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum SetAssignSep {
+    Eq(punct::Eq),
+    To(keyword::To),
+}
+
+/// `SET config_param { = | TO } value` function option — per-function GUC
+/// override applied when the function runs.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SetFuncOption {
+    pub _set: PhantomData<keyword::Set>,
+    pub name: literal::AliasName,
+    pub sep: SetAssignSep,
+    pub value: crate::ast::set_reset::SetValue,
+}
+
 /// `CALLED ON NULL INPUT`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
@@ -197,6 +235,8 @@ pub struct AsOption {
 pub enum FuncOption {
     Strictness(StrictnessOption),
     Volatility(VolatilityOption),
+    Parallel(ParallelOption),
+    Set(SetFuncOption),
     Language(LanguageOption),
     As(AsOption),
 }
@@ -210,20 +250,31 @@ pub struct CreateFunctionStmt {
     pub _create: PhantomData<keyword::Create>,
     pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
     pub _function: PhantomData<keyword::Function>,
-    pub name: literal::Ident,
+    pub name: crate::ast::common::QualifiedName,
     pub args: Surrounded<punct::LParen, Seq<FuncParam, punct::Comma>, punct::RParen>,
     pub returns: Option<FuncReturnsClause>,
     pub options: Seq<FuncOption, (), OptionalTrailing>,
 }
 
-/// DROP FUNCTION statement: `DROP FUNCTION name(args)`.
+/// A single entry in a `DROP FUNCTION` target list: optional qualified name
+/// plus an optional parenthesized signature.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DropFunctionTarget {
+    pub name: crate::ast::common::QualifiedName,
+    pub args: Option<Surrounded<punct::LParen, Seq<FuncParam, punct::Comma>, punct::RParen>>,
+}
+
+/// DROP FUNCTION statement: `DROP FUNCTION name[(args)] [, name[(args)] ...]`.
+///
+/// The argument list on each target is optional: when the function name is
+/// unambiguous in the current schema, Postgres allows omitting the signature.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropFunctionStmt {
     pub _drop: PhantomData<keyword::Drop>,
     pub _function: PhantomData<keyword::Function>,
-    pub name: literal::Ident,
-    pub args: Surrounded<punct::LParen, Seq<FuncParam, punct::Comma>, punct::RParen>,
+    pub targets: Seq<DropFunctionTarget, punct::Comma>,
 }
 
 #[cfg(test)]
@@ -239,7 +290,7 @@ mod tests {
             "create function sillysrf(int) returns setof int as 'values (1),(10),(2),($1)' language sql immutable",
         );
         let stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.name.text(), "sillysrf");
+        assert_eq!(stmt.name.object(), "sillysrf");
         assert!(input.is_empty());
     }
 
@@ -247,7 +298,14 @@ mod tests {
     fn parse_drop_function_basic() {
         let mut input = Input::new("drop function sillysrf(int)");
         let stmt = DropFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.name.text(), "sillysrf");
+        assert_eq!(stmt.targets.iter().next().unwrap().name.object(), "sillysrf");
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_drop_function_multi() {
+        let mut input = Input::new("drop function a(), b(), c()");
+        let _stmt = DropFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

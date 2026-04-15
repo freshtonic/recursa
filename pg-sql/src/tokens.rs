@@ -411,6 +411,13 @@ pub mod keyword {
         Backward    => r"BACKWARD\b",
         Absolute    => r"ABSOLUTE\b",
         Relative    => r"RELATIVE\b",
+        // DOUBLE PRECISION type name
+        DoubleKw    => r"DOUBLE\b",
+        PrecisionKw => r"PRECISION\b",
+        // PARALLEL SAFE / RESTRICTED / UNSAFE function option
+        SafeKw       => r"SAFE\b",
+        UnsafeKw     => r"UNSAFE\b",
+        RestrictedKw => r"RESTRICTED\b",
     }
 }
 
@@ -500,6 +507,8 @@ pub mod punct {
         // Geometric "same as" operator. Must precede bare `~`.
         TildeEq        => r"~=",       "~=",
         Tilde          => r"~",        "~",
+        // Exponentiation operator (Postgres).
+        Caret          => r"\^",       "^",
     }
 }
 

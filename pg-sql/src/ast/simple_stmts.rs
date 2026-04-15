@@ -625,11 +625,12 @@ pub struct DropTriggerStmt {
     pub tail: Option<RawStatement>,
 }
 
-/// CREATE RULE ...
+/// CREATE [OR REPLACE] RULE ...
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateRuleStmt {
     pub _create: PhantomData<keyword::Create>,
+    pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
     pub _rule: PhantomData<keyword::Rule>,
     pub tail: Option<RawStatement>,
 }
@@ -643,6 +644,19 @@ pub struct DropRuleStmt {
     pub tail: Option<RawStatement>,
 }
 
+/// Optional `TEMP` or `TEMPORARY` modifier that can appear between `CREATE`
+/// and the object keyword for temporary objects (sequences, tables, views,
+/// etc.).
+///
+/// Variant ordering: `Temporary` (longer) before `Temp` so the longer keyword
+/// wins longest-match disambiguation.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum TempModifier {
+    Temporary(keyword::Temporary),
+    Temp(keyword::Temp),
+}
+
 // --- CREATE/DROP/ALTER for remaining object types ---
 // Each captures the leading keyword pair for enum disambiguation.
 
@@ -653,6 +667,10 @@ macro_rules! create_drop_stmts {
             #[parse(rules = SqlRules)]
             pub struct $create_name {
                 pub _create: PhantomData<keyword::Create>,
+                /// Optional temporary modifier: `TEMP` or `TEMPORARY`. Postgres
+                /// accepts it on sequence/view/table/etc. so we tolerate it
+                /// uniformly in these raw-tailed stubs.
+                pub temp: Option<TempModifier>,
                 pub _obj: PhantomData<keyword::$kw>,
                 pub tail: Option<RawStatement>,
             }

@@ -52,7 +52,18 @@ pub enum TypeName {
     Serial(keyword::Serial),
     Numeric(keyword::Numeric),
     Varchar(keyword::Varchar),
+    /// `DOUBLE PRECISION` — two-keyword type. Listed before `Ident` so the
+    /// DOUBLE match isn't accidentally consumed as a plain identifier.
+    DoublePrecision(DoublePrecisionType),
     Ident(literal::Ident),
+}
+
+/// `DOUBLE PRECISION` type (8-byte float).
+#[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DoublePrecisionType {
+    pub _double: keyword::DoubleKw,
+    pub _precision: keyword::PrecisionKw,
 }
 
 // --- Boolean test suffix structs ---
@@ -423,6 +434,56 @@ pub struct RowExpr {
     pub values: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
 }
 
+/// `WHEN cond THEN result` arm of a CASE expression.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct CaseWhenArm {
+    pub _when: keyword::When,
+    pub condition: Box<Expr>,
+    pub _then: keyword::Then,
+    pub result: Box<Expr>,
+}
+
+/// `ELSE result` clause of a CASE expression.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct CaseElse {
+    pub _else: keyword::Else,
+    pub result: Box<Expr>,
+}
+
+/// Searched CASE: `CASE WHEN cond THEN result [...] [ELSE result] END`.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct CaseSearched {
+    pub _case: keyword::Case,
+    pub first_arm: CaseWhenArm,
+    pub rest_arms: Vec<CaseWhenArm>,
+    pub else_clause: Option<CaseElse>,
+    pub _end: keyword::End,
+}
+
+/// Simple CASE: `CASE operand WHEN val THEN result [...] [ELSE result] END`.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct CaseSimple {
+    pub _case: keyword::Case,
+    pub operand: Box<Expr>,
+    pub first_arm: CaseWhenArm,
+    pub rest_arms: Vec<CaseWhenArm>,
+    pub else_clause: Option<CaseElse>,
+    pub _end: keyword::End,
+}
+
+/// CASE expression: searched form (first, since `CASE WHEN` is a longer
+/// specific prefix than `CASE` followed by any expression) or simple form.
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum CaseExpr {
+    Searched(CaseSearched),
+    Simple(CaseSimple),
+}
+
 /// Cast type with optional precision and zero-or-more array suffixes:
 /// `numeric(10,0)`, `integer[]`, `int4[][][]`.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
@@ -442,12 +503,22 @@ pub struct NotInSuffix {
     pub list: InList,
 }
 
-/// Function-style type cast: `bool 'value'`, `text 'hello'`
+/// Payload for function-style type cast: either a string literal (common
+/// case `bool 'value'`) or a psql client variable substitution
+/// (`bigint :'txid_current'`).
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum TypeCastValue {
+    String(literal::StringLit),
+    PsqlVar(literal::PsqlVar),
+}
+
+/// Function-style type cast: `bool 'value'`, `text 'hello'`, `bigint :'var'`.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TypeCastFunc {
     pub type_name: TypeName,
-    pub value: literal::StringLit,
+    pub value: TypeCastValue,
 }
 
 /// `WITH TIME ZONE` or `WITHOUT TIME ZONE` suffix for `TIMESTAMP`/`TIME`.
@@ -913,6 +984,26 @@ pub enum Expr {
     /// comparisons (bp 5) but looser than `::` cast (bp 20).
     #[parse(postfix, bp = 18)]
     Collate(Box<Expr>, keyword::Collate, literal::Ident),
+    /// `expr IS NOT DISTINCT FROM expr`. Declared before `IsDistinctFrom` so
+    /// the longer `NOT` prefix wins disambiguation.
+    #[parse(postfix, bp = 5, inner_bp = 6)]
+    IsNotDistinctFrom(
+        Box<Expr>,
+        keyword::Is,
+        keyword::Not,
+        keyword::Distinct,
+        keyword::From,
+        Box<Expr>,
+    ),
+    /// `expr IS DISTINCT FROM expr`.
+    #[parse(postfix, bp = 5, inner_bp = 6)]
+    IsDistinctFrom(
+        Box<Expr>,
+        keyword::Is,
+        keyword::Distinct,
+        keyword::From,
+        Box<Expr>,
+    ),
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
     BoolTest(Box<Expr>, keyword::Is, BoolTestKind),
@@ -1121,6 +1212,9 @@ pub enum Expr {
     /// Modulo: `expr % expr`
     #[parse(infix, bp = 11)]
     Mod(Box<Expr>, punct::Percent, Box<Expr>),
+    /// Exponentiation: `expr ^ expr` (Postgres numeric power operator).
+    #[parse(infix, bp = 13)]
+    Pow(Box<Expr>, punct::Caret, Box<Expr>),
 
     // --- Atoms ---
     /// EXISTS subquery: `EXISTS (SELECT ...)`
@@ -1132,6 +1226,9 @@ pub enum Expr {
     /// ROW constructor: `ROW(...)`
     #[parse(atom)]
     RowExpr(RowExpr),
+    /// CASE expression: `CASE [expr] WHEN ... THEN ... [ELSE ...] END`
+    #[parse(atom)]
+    Case(CaseExpr),
     /// Unicode string literal: `U&'...'` with optional `UESCAPE 'c'`. Must
     /// come before `CastFunc` and `StringLit` for the same reason as
     /// `EscapeStringLit`.
@@ -1532,6 +1629,63 @@ mod tests {
     #[test]
     fn parse_extract_year_from_now() {
         let mut input = Input::new("EXTRACT(year FROM now())");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_is_distinct_from() {
+        let mut input = Input::new("a IS DISTINCT FROM b");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_is_not_distinct_from() {
+        let mut input = Input::new("a IS NOT DISTINCT FROM b");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_power_operator() {
+        let mut input = Input::new("2^1000");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_double_precision_type_cast() {
+        let mut input = Input::new("3.14::double precision");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_case_searched() {
+        let mut input = Input::new("CASE WHEN 1 < 2 THEN 3 END");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Case(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_case_searched_with_else() {
+        let mut input = Input::new("CASE WHEN 1 < 2 THEN 3 WHEN 4 < 5 THEN 6 ELSE 7 END");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_case_simple() {
+        let mut input = Input::new("CASE x WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_case_nested() {
+        let mut input = Input::new("CASE WHEN (CASE WHEN 1=1 THEN 1 END) > 0 THEN 'y' END");
         let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }

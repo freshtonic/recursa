@@ -19,7 +19,9 @@ pub struct PartitionByClause {
     pub _partition: PhantomData<keyword::Partition>,
     pub _by: PhantomData<keyword::By>,
     pub strategy: literal::AliasName,
-    pub columns: Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>,
+    /// Partition key items — may be plain column names or expressions like
+    /// `((a+b)/2)`.
+    pub columns: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
 }
 
 /// FOR VALUES IN (val, ...) clause — legacy name kept for backward compat

@@ -12,7 +12,12 @@ use crate::tokens::{keyword, literal, punct};
 /// PRIMARY KEY column constraint.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct PrimaryKeyConstraint(PhantomData<keyword::Primary>, PhantomData<keyword::Key>);
+pub struct PrimaryKeyConstraint {
+    pub _primary: PhantomData<keyword::Primary>,
+    pub _key: PhantomData<keyword::Key>,
+    /// Optional `[NOT] DEFERRABLE [INITIALLY {DEFERRED|IMMEDIATE}]` suffix.
+    pub attrs: ConstraintAttrs,
+}
 
 /// NOT NULL column constraint.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -22,7 +27,22 @@ pub struct NotNullConstraint(PhantomData<keyword::Not>, PhantomData<keyword::Nul
 /// UNIQUE column constraint.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct UniqueConstraint(PhantomData<keyword::Unique>);
+pub struct UniqueConstraint {
+    pub _unique: PhantomData<keyword::Unique>,
+    /// Optional `NULLS [NOT] DISTINCT` qualifier (Postgres 15+).
+    pub nulls: Option<NullsDistinctQualifier>,
+    /// Optional `[NOT] DEFERRABLE [INITIALLY ...]` attributes.
+    pub attrs: ConstraintAttrs,
+}
+
+/// `NULLS DISTINCT` or `NULLS NOT DISTINCT` for UNIQUE constraints.
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NullsDistinctQualifier {
+    pub _nulls: PhantomData<keyword::Nulls>,
+    pub not: Option<PhantomData<keyword::Not>>,
+    pub _distinct: PhantomData<keyword::Distinct>,
+}
 
 /// Referential action for `ON DELETE` / `ON UPDATE`.
 ///
