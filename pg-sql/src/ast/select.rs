@@ -458,13 +458,44 @@ pub struct LimitClause {
     pub count: Expr,
 }
 
-/// FOR UPDATE clause.
+/// FOR UPDATE / FOR SHARE / FOR NO KEY UPDATE / FOR KEY SHARE locking clause.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForUpdateClause {
     pub _for: PhantomData<keyword::For>,
+    pub mode: LockingMode,
+}
+
+/// Lock strength for `SELECT ... FOR ...` locking clauses.
+///
+/// Variant ordering: longer (`NO KEY UPDATE`, `KEY SHARE`) before shorter
+/// (`UPDATE`, `SHARE`) so longest-match wins.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum LockingMode {
+    NoKeyUpdate(NoKeyUpdate),
+    KeyShare(KeyShare),
+    Update(keyword::Update),
+    Share(keyword::Share),
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NoKeyUpdate {
+    pub _no: PhantomData<keyword::No>,
+    pub _key: PhantomData<keyword::Key>,
     pub _update: PhantomData<keyword::Update>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct KeyShare {
+    pub _key: PhantomData<keyword::Key>,
+    pub _share: PhantomData<keyword::Share>,
 }
 
 /// GROUP BY clause: `GROUP BY item, ...` where each item is an expression
@@ -475,7 +506,18 @@ pub struct ForUpdateClause {
 pub struct GroupByClause {
     pub _group: PhantomData<keyword::Group>,
     pub _by: PhantomData<keyword::By>,
+    /// Optional `DISTINCT` / `ALL` modifier (Postgres 16+).
+    pub modifier: Option<GroupByModifier>,
     pub items: Seq<GroupByItem, punct::Comma>,
+}
+
+/// `GROUP BY [DISTINCT|ALL]` modifier.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum GroupByModifier {
+    Distinct(keyword::Distinct),
+    All(keyword::All),
 }
 
 /// `GROUPING SETS ( item, ... )`.
@@ -995,10 +1037,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_group_by_distinct_modifier() {
+        // Regression: groupingsets.sql uses `GROUP BY DISTINCT ROLLUP(a, b), ROLLUP(a, c)`
+        // and `GROUP BY ALL ROLLUP(a, b), ROLLUP(a, c)`.
+        for src in [
+            "SELECT a FROM t GROUP BY DISTINCT ROLLUP(a, b), ROLLUP(a, c)",
+            "SELECT a FROM t GROUP BY ALL ROLLUP(a, b), ROLLUP(a, c)",
+        ] {
+            let mut input = Input::new(src);
+            SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+            assert!(input.is_empty(), "leftover for {src:?}");
+        }
+    }
+
+    #[test]
     fn parse_select_for_update() {
         let mut input = Input::new("SELECT f1 FROM t FOR UPDATE");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.for_update.is_some());
         assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_locking_variants() {
+        // Regression: matview.sql uses `FOR SHARE`. Postgres also supports
+        // `FOR NO KEY UPDATE` and `FOR KEY SHARE`.
+        for src in [
+            "SELECT * FROM t FOR SHARE",
+            "SELECT * FROM t FOR NO KEY UPDATE",
+            "SELECT * FROM t FOR KEY SHARE",
+        ] {
+            let mut input = Input::new(src);
+            let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+            assert!(stmt.for_update.is_some(), "no locking clause: {src:?}");
+            assert!(input.is_empty(), "leftover for {src:?}");
+        }
     }
 }

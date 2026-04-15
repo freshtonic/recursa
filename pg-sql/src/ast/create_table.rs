@@ -711,6 +711,10 @@ pub struct ColumnsAsQueryBody {
 pub enum CreateTableBody {
     AsQuery(AsQueryBody),
     PartitionOf(PartitionOfBody),
+    /// `(col, ...) AS query` — CTAS with explicit column list.
+    /// Listed before `Columns` so the `( ... ) AS` form wins over the
+    /// columns-only `( ... )` form via longer match.
+    ColumnsAsQuery(ColumnsAsQueryBody),
     Columns(ColumnsBody),
 }
 
@@ -739,7 +743,9 @@ impl CreateTableStmt {
     {
         match &self.body {
             CreateTableBody::Columns(b) => Some(&b.columns),
-            CreateTableBody::PartitionOf(_) | CreateTableBody::AsQuery(_) => None,
+            CreateTableBody::PartitionOf(_)
+            | CreateTableBody::AsQuery(_)
+            | CreateTableBody::ColumnsAsQuery(_) => None,
         }
     }
 
@@ -800,6 +806,30 @@ mod tests {
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "BOOLTBL3");
         assert_eq!(stmt.items().unwrap().len(), 3);
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_ctas_with_column_list() {
+        // Regression: matview.sql uses `CREATE TABLE foo(a, b) AS VALUES(1, 10)`.
+        let mut input = Input::new("CREATE TABLE mvtest_foo(a, b) AS VALUES(1, 10)");
+        let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(
+            stmt.body,
+            super::CreateTableBody::ColumnsAsQuery(_)
+        ));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_time_zone_types() {
+        // Regression: brin.sql brintest table uses `time without time zone`,
+        // `timestamp with time zone`, `bit varying(16)` as column types.
+        let mut input = Input::new(
+            "CREATE TABLE t (a time without time zone, b timestamp with time zone, c time with time zone, d timestamp without time zone, e bit varying(16), f bit(10), g character)",
+        );
+        let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert_eq!(stmt.items().unwrap().len(), 7);
         assert!(input.is_empty());
     }
 

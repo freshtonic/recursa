@@ -143,6 +143,7 @@ pub enum Statement {
     AlterMaterializedView(AlterMaterializedViewStmt),
     AlterTablespace(AlterTablespaceStmt),
     AlterTable(AlterTableStmt),
+    AlterRule(AlterRuleStmt),
     AlterGroup(AlterGroupStmt),
     AlterRole(AlterRoleStmt),
     AlterUser(AlterUserStmt),

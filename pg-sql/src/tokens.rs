@@ -429,6 +429,13 @@ pub mod keyword {
         SafeKw       => r"SAFE\b",
         UnsafeKw     => r"UNSAFE\b",
         RestrictedKw => r"RESTRICTED\b",
+        // Type-name modifiers used contextually inside column type positions.
+        // Not in SQL_KEYWORDS so they remain usable as identifiers elsewhere.
+        BitKw        => r"BIT\b",
+        Varying      => r"VARYING\b",
+        CharacterKw  => r"CHARACTER\b",
+        // SELECT FOR SHARE / FOR KEY SHARE / FOR NO KEY UPDATE locking clauses.
+        Share        => r"SHARE\b",
     }
 }
 

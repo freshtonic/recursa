@@ -60,6 +60,19 @@ pub enum TypeName {
     /// `DOUBLE PRECISION` — two-keyword type. Listed before `Ident` so the
     /// DOUBLE match isn't accidentally consumed as a plain identifier.
     DoublePrecision(DoublePrecisionType),
+    /// `TIMESTAMP` (optional `WITH/WITHOUT TIME ZONE` qualifier handled
+    /// at the `CastType` level so precision can sit between).
+    Timestamp(keyword::Timestamp),
+    /// `TIME` — same shape as `TIMESTAMP`.
+    Time(keyword::Time),
+    /// `INTERVAL` — qualifier (`YEAR TO MONTH` etc.) is currently not
+    /// modeled at the type level; only the bare keyword is consumed.
+    Interval(keyword::IntervalKw),
+    /// `BIT` and `BIT VARYING` (the optional `VARYING` modifier is handled
+    /// at the `CastType` level).
+    Bit(keyword::BitKw),
+    /// `CHARACTER` and `CHARACTER VARYING` — same shape as `BIT`.
+    Character(keyword::CharacterKw),
     Ident(literal::Ident),
 }
 
@@ -542,7 +555,13 @@ pub enum CaseExpr {
 #[parse(rules = SqlRules)]
 pub struct CastType {
     pub base: TypeName,
+    /// `VARYING` modifier (e.g., `BIT VARYING`, `CHARACTER VARYING`).
+    /// Always precedes the precision parens.
+    pub varying: Option<keyword::Varying>,
     pub precision: Option<TypePrecision>,
+    /// `WITH/WITHOUT TIME ZONE` qualifier on `TIME`/`TIMESTAMP` types.
+    /// Always follows the precision parens.
+    pub tz: Option<TimeZoneQualifier>,
     pub array_suffixes: Vec<ArrayTypeSuffix>,
 }
 
@@ -609,6 +628,8 @@ pub struct WithoutTimeZone {
 #[parse(rules = SqlRules)]
 pub struct TimestampLit {
     pub _timestamp: keyword::Timestamp,
+    /// Optional precision, e.g., `timestamp(6)`.
+    pub precision: Option<TypePrecision>,
     pub tz: Option<TimeZoneQualifier>,
     pub value: literal::StringLit,
 }
@@ -619,6 +640,8 @@ pub struct TimestampLit {
 #[parse(rules = SqlRules)]
 pub struct TimeLit {
     pub _time: keyword::Time,
+    /// Optional precision, e.g., `time(2)`.
+    pub precision: Option<TypePrecision>,
     pub tz: Option<TimeZoneQualifier>,
     pub value: literal::StringLit,
 }
@@ -1454,6 +1477,10 @@ pub enum Expr {
     /// Integer literal: `42`
     #[parse(atom)]
     IntegerLit(literal::IntegerLit),
+    /// Dollar-quoted string literal: `$$...$$` or `$tag$...$tag$`.
+    /// Listed before `StringLit` since it has a distinct prefix (`$`).
+    #[parse(atom)]
+    DollarStringLit(literal::DollarStringLit),
     /// String literal sequence: `'hello'` or `'first' 'second' ...` —
     /// Postgres concatenates adjacent string literals into one.
     #[parse(atom)]
@@ -1495,6 +1522,15 @@ mod tests {
         let mut input = Input::new("42");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::IntegerLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_dollar_string_literal_expr() {
+        // Regression: json.sql uses `$$'foo'$$::json` and similar.
+        let mut input = Input::new("$$''$$");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::DollarStringLit(_)));
         assert!(input.is_empty());
     }
 
@@ -1929,6 +1965,15 @@ mod tests {
     #[test]
     fn parse_timestamp_with_tz_literal() {
         let mut input = Input::new("timestamp with time zone '2001-12-27 04:05:06+08'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::TimestampLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_timestamp_precision_without_tz_literal() {
+        // Regression: timestamp.sql uses `timestamp(2) without time zone 'now'`.
+        let mut input = Input::new("timestamp(2) without time zone 'now'");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::TimestampLit(_)));
         assert!(input.is_empty());
