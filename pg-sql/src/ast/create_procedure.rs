@@ -1,6 +1,4 @@
 /// CREATE PROCEDURE / DROP PROCEDURE / CALL statement AST.
-use std::marker::PhantomData;
-
 use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
@@ -8,7 +6,8 @@ use recursa::{FormatTokens, Parse, Visit};
 use crate::ast::create_function::{FuncOption, FuncParam};
 use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
+use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
 
 /// CREATE [OR REPLACE] PROCEDURE name ( [ parameters ] ) options...
@@ -16,9 +15,9 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateProcedureStmt<'input> {
-    pub _create: PhantomData<keyword::Create>,
+    pub _create: CREATE,
     pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
-    pub _procedure: PhantomData<keyword::Procedure>,
+    pub _procedure: PROCEDURE,
     pub name: literal::Ident<'input>,
     pub args: Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>,
     pub options: Seq<FuncOption<'input>, (), OptionalTrailing>,
@@ -29,8 +28,8 @@ pub struct CreateProcedureStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropProcedureStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _procedure: PhantomData<keyword::Procedure>,
+    pub _drop: DROP,
+    pub _procedure: PROCEDURE,
     pub name: literal::Ident<'input>,
     pub args:
         Option<Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>>,
@@ -41,7 +40,7 @@ pub struct DropProcedureStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CallStmt<'input> {
-    pub _call: PhantomData<keyword::Call>,
+    pub _call: CALL,
     pub name: literal::Ident<'input>,
     pub args: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
 }

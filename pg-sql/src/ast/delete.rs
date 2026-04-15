@@ -1,6 +1,4 @@
 /// DELETE FROM statement AST.
-use std::marker::PhantomData;
-
 use recursa::{FormatTokens, Parse, Visit};
 use recursa_diagram::railroad;
 
@@ -8,14 +6,15 @@ use crate::ast::common::QualifiedName;
 use crate::ast::select::WhereClause;
 use crate::ast::update::ReturningClause;
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal};
+use crate::tokens::{literal};
 
+use crate::tokens::keyword::*;
 /// Table alias with explicit AS keyword: `AS alias`.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsAlias<'input> {
-    pub _as: PhantomData<keyword::As>,
+    pub _as: AS,
     pub name: literal::Ident<'input>,
 }
 
@@ -46,7 +45,7 @@ impl<'input> TableAlias<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeleteUsingClause<'input> {
-    pub _using: PhantomData<keyword::Using>,
+    pub _using: USING,
     pub tables:
         recursa::seq::Seq<crate::ast::select::TableRef<'input>, crate::tokens::punct::Comma>,
 }
@@ -57,8 +56,8 @@ pub struct DeleteUsingClause<'input> {
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
 pub struct DeleteStmt<'input> {
-    pub _delete: PhantomData<keyword::Delete>,
-    pub _from: PhantomData<keyword::From>,
+    pub _delete: DELETE,
+    pub _from: FROM,
     pub table_name: QualifiedName<'input>,
     pub alias: Option<Box<TableAlias<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]

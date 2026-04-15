@@ -1,12 +1,11 @@
 /// EXPLAIN statement AST.
-use std::marker::PhantomData;
-
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
+use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
 
 /// An explain option value: ON, OFF, or identifier.
@@ -14,8 +13,8 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ExplainOptValue<'input> {
-    On(keyword::On),
-    Off(keyword::Off),
+    On(ON),
+    Off(OFF),
     Ident(literal::Ident<'input>),
 }
 
@@ -37,7 +36,7 @@ pub type ExplainOptions<'input> =
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExplainStmt<'input> {
-    pub _explain: PhantomData<keyword::Explain>,
+    pub _explain: EXPLAIN,
     pub options: Option<ExplainOptions<'input>>,
     pub body: Box<crate::ast::Statement<'input>>,
 }

@@ -1,8 +1,6 @@
 /// UPDATE statement AST.
 ///
 /// `UPDATE table SET col = expr [, ...] [FROM ...] [WHERE ...] [RETURNING ...]`
-use std::marker::PhantomData;
-
 use recursa::seq::Seq;
 use recursa::{FormatTokens, Parse, Visit};
 use recursa_diagram::railroad;
@@ -11,8 +9,9 @@ use crate::ast::common::QualifiedName;
 use crate::ast::expr::Expr;
 use crate::ast::select::{FromClause, WhereClause};
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
 
+use crate::tokens::keyword::*;
 /// `[idx]` subscript suffix for a target column in UPDATE SET.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -65,7 +64,7 @@ pub enum SetAssignment<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReturningClause<'input> {
-    pub _returning: PhantomData<keyword::Returning>,
+    pub _returning: RETURNING,
     pub items: Seq<crate::ast::select::SelectItem<'input>, punct::Comma>,
 }
 
@@ -75,11 +74,11 @@ pub struct ReturningClause<'input> {
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
 pub struct UpdateStmt<'input> {
-    pub _update: PhantomData<keyword::Update>,
+    pub _update: UPDATE,
     pub table_name: QualifiedName<'input>,
     pub alias: Option<literal::Ident<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
-    pub _set: PhantomData<keyword::Set>,
+    pub _set: SET,
     #[format_tokens(indent)]
     pub assignments: Seq<SetAssignment<'input>, punct::Comma>,
     #[format_tokens(break(flat = " ", broken = "\n"))]

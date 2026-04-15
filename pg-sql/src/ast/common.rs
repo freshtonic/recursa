@@ -1,32 +1,19 @@
 /// Common AST building blocks shared across multiple statement kinds.
-use std::marker::PhantomData;
-
 use recursa::seq::Seq;
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
+use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
-
-/// `CASCADE` drop behavior.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct CascadeKw(pub PhantomData<keyword::Cascade>);
-
-/// `RESTRICT` drop behavior.
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct RestrictKw(pub PhantomData<keyword::Restrict>);
 
 /// `CASCADE | RESTRICT` drop behavior.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum DropBehavior {
-    Cascade(CascadeKw),
-    Restrict(RestrictKw),
+    Cascade(CASCADE),
+    Restrict(RESTRICT),
 }
 
 /// A dotted name: `name`, `schema.name`, or `catalog.schema.name`.

@@ -1,6 +1,4 @@
 /// CREATE TABLE statement AST.
-use std::marker::PhantomData;
-
 use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
@@ -8,15 +6,16 @@ use recursa_diagram::railroad;
 
 use crate::ast::partition::{ForValuesClause, PartitionByClause};
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
 
+use crate::tokens::keyword::*;
 /// PRIMARY KEY column constraint.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PrimaryKeyConstraint {
-    pub _primary: PhantomData<keyword::Primary>,
-    pub _key: PhantomData<keyword::Key>,
+    pub _primary: PRIMARY,
+    pub _key: KEY,
     /// Optional `[NOT] DEFERRABLE [INITIALLY {DEFERRED|IMMEDIATE}]` suffix.
     pub attrs: ConstraintAttrs,
 }
@@ -25,14 +24,14 @@ pub struct PrimaryKeyConstraint {
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct NotNullConstraint(PhantomData<keyword::Not>, PhantomData<keyword::Null>);
+pub struct NotNullConstraint(NOT, NULL);
 
 /// UNIQUE column constraint.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UniqueConstraint {
-    pub _unique: PhantomData<keyword::Unique>,
+    pub _unique: UNIQUE,
     /// Optional `NULLS [NOT] DISTINCT` qualifier (Postgres 15+).
     pub nulls: Option<NullsDistinctQualifier>,
     /// Optional `[NOT] DEFERRABLE [INITIALLY ...]` attributes.
@@ -44,9 +43,9 @@ pub struct UniqueConstraint {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NullsDistinctQualifier {
-    pub _nulls: PhantomData<keyword::Nulls>,
-    pub not: Option<PhantomData<keyword::Not>>,
-    pub _distinct: PhantomData<keyword::Distinct>,
+    pub _nulls: NULLS,
+    pub not: Option<NOT>,
+    pub _distinct: DISTINCT,
 }
 
 /// Referential action for `ON DELETE` / `ON UPDATE`.
@@ -60,24 +59,24 @@ pub enum ReferentialAction<'input> {
     NoAction(NoActionKw),
     SetNull(SetNullKw<'input>),
     SetDefault(SetDefaultKw<'input>),
-    Cascade(PhantomData<keyword::Cascade>),
-    Restrict(PhantomData<keyword::Restrict>),
+    Cascade(CASCADE),
+    Restrict(RESTRICT),
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NoActionKw {
-    pub _no: PhantomData<keyword::No>,
-    pub _action: PhantomData<keyword::Action>,
+    pub _no: NO,
+    pub _action: ACTION,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetNullKw<'input> {
-    pub _set: PhantomData<keyword::Set>,
-    pub _null: PhantomData<keyword::Null>,
+    pub _set: SET,
+    pub _null: NULL,
     pub cols: Option<
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     >,
@@ -87,8 +86,8 @@ pub struct SetNullKw<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetDefaultKw<'input> {
-    pub _set: PhantomData<keyword::Set>,
-    pub _default: PhantomData<keyword::Default>,
+    pub _set: SET,
+    pub _default: DEFAULT,
     pub cols: Option<
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     >,
@@ -99,8 +98,8 @@ pub struct SetDefaultKw<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnDeleteAction<'input> {
-    pub _on: PhantomData<keyword::On>,
-    pub _delete: PhantomData<keyword::Delete>,
+    pub _on: ON,
+    pub _delete: DELETE,
     pub action: ReferentialAction<'input>,
 }
 
@@ -109,8 +108,8 @@ pub struct OnDeleteAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnUpdateAction<'input> {
-    pub _on: PhantomData<keyword::On>,
-    pub _update: PhantomData<keyword::Update>,
+    pub _on: ON,
+    pub _update: UPDATE,
     pub action: ReferentialAction<'input>,
 }
 
@@ -119,9 +118,9 @@ pub struct OnUpdateAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum MatchKind {
-    Full(PhantomData<keyword::Full>),
-    Partial(PhantomData<keyword::Partial>),
-    Simple(PhantomData<keyword::Simple>),
+    Full(FULL),
+    Partial(PARTIAL),
+    Simple(SIMPLE),
 }
 
 /// `MATCH FULL | MATCH PARTIAL | MATCH SIMPLE`.
@@ -129,7 +128,7 @@ pub enum MatchKind {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MatchClause {
-    pub _match: PhantomData<keyword::Match>,
+    pub _match: MATCH,
     pub kind: MatchKind,
 }
 
@@ -141,15 +140,15 @@ pub struct MatchClause {
 #[parse(rules = SqlRules)]
 pub enum DeferrableKind {
     NotDeferrable(NotDeferrableKw),
-    Deferrable(PhantomData<keyword::Deferrable>),
+    Deferrable(DEFERRABLE),
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotDeferrableKw {
-    pub _not: PhantomData<keyword::Not>,
-    pub _deferrable: PhantomData<keyword::Deferrable>,
+    pub _not: NOT,
+    pub _deferrable: DEFERRABLE,
 }
 
 /// `INITIALLY DEFERRED | INITIALLY IMMEDIATE`.
@@ -157,7 +156,7 @@ pub struct NotDeferrableKw {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InitiallyClause {
-    pub _initially: PhantomData<keyword::Initially>,
+    pub _initially: INITIALLY,
     pub mode: InitiallyMode,
 }
 
@@ -165,8 +164,8 @@ pub struct InitiallyClause {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InitiallyMode {
-    Deferred(PhantomData<keyword::Deferred>),
-    Immediate(PhantomData<keyword::Immediate>),
+    Deferred(DEFERRED),
+    Immediate(IMMEDIATE),
 }
 
 /// `ON DELETE ...` or `ON UPDATE ...` trailing action on a REFERENCES
@@ -188,7 +187,7 @@ pub enum OnAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReferencesConstraint<'input> {
-    pub _references: PhantomData<keyword::References>,
+    pub _references: REFERENCES,
     pub table: literal::AliasName<'input>,
     pub columns: Option<
         Surrounded<
@@ -209,8 +208,8 @@ pub struct ReferencesConstraint<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotValidKw {
-    pub _not: PhantomData<keyword::Not>,
-    pub _valid: PhantomData<keyword::ValidKw>,
+    pub _not: NOT,
+    pub _valid: VALID,
 }
 
 /// `CHECK (expr) [NO INHERIT] [NOT VALID]`
@@ -218,7 +217,7 @@ pub struct NotValidKw {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CheckConstraint<'input> {
-    pub _check: PhantomData<keyword::Check>,
+    pub _check: CHECK,
     pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr<'input>, punct::RParen>,
     pub no_inherit: Option<NoInheritKw>,
     pub not_valid: Option<NotValidKw>,
@@ -228,8 +227,8 @@ pub struct CheckConstraint<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NoInheritKw {
-    pub _no: PhantomData<keyword::No>,
-    pub _inherit: PhantomData<keyword::Inherit>,
+    pub _no: NO,
+    pub _inherit: INHERIT,
 }
 
 /// GENERATED ALWAYS AS IDENTITY column constraint, with optional
@@ -238,10 +237,10 @@ pub struct NoInheritKw {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GeneratedIdentityConstraint<'input> {
-    pub _generated: PhantomData<keyword::Generated>,
-    pub _always: PhantomData<keyword::Always>,
-    pub _as: PhantomData<keyword::As>,
-    pub _identity: PhantomData<keyword::Identity>,
+    pub _generated: GENERATED,
+    pub _always: ALWAYS,
+    pub _as: AS,
+    pub _identity: IDENTITY,
     pub seq_options:
         Option<Surrounded<punct::LParen, Vec<IdentitySeqOption<'input>>, punct::RParen>>,
 }
@@ -269,8 +268,8 @@ pub enum IdentitySeqOption<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptStartWith<'input> {
-    pub _start: PhantomData<keyword::Start>,
-    pub _with: Option<PhantomData<keyword::With>>,
+    pub _start: START,
+    pub _with: Option<WITH>,
     pub value: crate::ast::expr::Expr<'input>,
 }
 
@@ -278,8 +277,8 @@ pub struct SeqOptStartWith<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptIncrementBy<'input> {
-    pub _increment: PhantomData<keyword::Increment>,
-    pub _by: Option<PhantomData<keyword::By>>,
+    pub _increment: INCREMENT,
+    pub _by: Option<BY>,
     pub value: crate::ast::expr::Expr<'input>,
 }
 
@@ -287,7 +286,7 @@ pub struct SeqOptIncrementBy<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptMinValue<'input> {
-    pub _minvalue: PhantomData<keyword::Minvalue>,
+    pub _minvalue: MINVALUE,
     pub value: crate::ast::expr::Expr<'input>,
 }
 
@@ -295,15 +294,15 @@ pub struct SeqOptMinValue<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptNoMinValue {
-    pub _no: PhantomData<keyword::No>,
-    pub _minvalue: PhantomData<keyword::Minvalue>,
+    pub _no: NO,
+    pub _minvalue: MINVALUE,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptMaxValue<'input> {
-    pub _maxvalue: PhantomData<keyword::Maxvalue>,
+    pub _maxvalue: MAXVALUE,
     pub value: crate::ast::expr::Expr<'input>,
 }
 
@@ -311,15 +310,15 @@ pub struct SeqOptMaxValue<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptNoMaxValue {
-    pub _no: PhantomData<keyword::No>,
-    pub _maxvalue: PhantomData<keyword::Maxvalue>,
+    pub _no: NO,
+    pub _maxvalue: MAXVALUE,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptCache<'input> {
-    pub _cache: PhantomData<keyword::Cache>,
+    pub _cache: CACHE,
     pub value: crate::ast::expr::Expr<'input>,
 }
 
@@ -327,15 +326,15 @@ pub struct SeqOptCache<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptCycle {
-    pub _cycle: PhantomData<keyword::Cycle>,
+    pub _cycle: CYCLE,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SeqOptNoCycle {
-    pub _no: PhantomData<keyword::No>,
-    pub _cycle: PhantomData<keyword::Cycle>,
+    pub _no: NO,
+    pub _cycle: CYCLE,
 }
 
 /// `GENERATED ALWAYS AS (expr) STORED` column constraint.
@@ -343,11 +342,11 @@ pub struct SeqOptNoCycle {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GeneratedStoredConstraint<'input> {
-    pub _generated: PhantomData<keyword::Generated>,
-    pub _always: PhantomData<keyword::Always>,
-    pub _as: PhantomData<keyword::As>,
+    pub _generated: GENERATED,
+    pub _always: ALWAYS,
+    pub _as: AS,
     pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr<'input>, punct::RParen>,
-    pub _stored: PhantomData<keyword::Stored>,
+    pub _stored: STORED,
 }
 
 /// DEFAULT expr column constraint.
@@ -355,7 +354,7 @@ pub struct GeneratedStoredConstraint<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DefaultConstraint<'input> {
-    pub _default: PhantomData<keyword::Default>,
+    pub _default: DEFAULT,
     pub expr: crate::ast::expr::Expr<'input>,
 }
 
@@ -386,7 +385,7 @@ pub enum ColumnConstraintKind<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ConstraintNamePrefix<'input> {
-    pub _constraint: PhantomData<keyword::Constraint>,
+    pub _constraint: CONSTRAINT,
     pub name: literal::Ident<'input>,
 }
 
@@ -404,7 +403,7 @@ pub struct ColumnConstraint<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CollateClause<'input> {
-    pub _collate: PhantomData<keyword::Collate>,
+    pub _collate: COLLATE,
     pub name: literal::Ident<'input>,
 }
 
@@ -444,8 +443,8 @@ pub struct ConstraintAttrs {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TablePrimaryKey<'input> {
-    pub _primary: PhantomData<keyword::Primary>,
-    pub _key: PhantomData<keyword::Key>,
+    pub _primary: PRIMARY,
+    pub _key: KEY,
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     pub attrs: ConstraintAttrs,
@@ -456,7 +455,7 @@ pub struct TablePrimaryKey<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableUnique<'input> {
-    pub _unique: PhantomData<keyword::Unique>,
+    pub _unique: UNIQUE,
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     pub attrs: ConstraintAttrs,
@@ -467,8 +466,8 @@ pub struct TableUnique<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableForeignKey<'input> {
-    pub _foreign: PhantomData<keyword::Foreign>,
-    pub _key: PhantomData<keyword::Key>,
+    pub _foreign: FOREIGN,
+    pub _key: KEY,
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     pub references: ReferencesConstraint<'input>,
@@ -506,15 +505,15 @@ pub struct TableConstraint<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum LikeOptionKind {
-    All(keyword::All),
-    Defaults(keyword::DefaultsKw),
-    Constraints(keyword::Constraints),
-    Indexes(keyword::IndexesKw),
-    Storage(keyword::StorageKw),
-    Comments(keyword::CommentsKw),
-    Statistics(keyword::Statistics),
-    Generated(keyword::Generated),
-    Identity(keyword::Identity),
+    All(ALL),
+    Defaults(DEFAULTS),
+    Constraints(CONSTRAINTS),
+    Indexes(INDEXES),
+    Storage(STORAGE),
+    Comments(COMMENTS),
+    Statistics(STATISTICS),
+    Generated(GENERATED),
+    Identity(IDENTITY),
 }
 
 /// `INCLUDING what`.
@@ -522,7 +521,7 @@ pub enum LikeOptionKind {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IncludingOption {
-    pub _including: PhantomData<keyword::IncludingKw>,
+    pub _including: INCLUDING,
     pub what: LikeOptionKind,
 }
 
@@ -531,7 +530,7 @@ pub struct IncludingOption {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExcludingOption {
-    pub _excluding: PhantomData<keyword::ExcludingKw>,
+    pub _excluding: EXCLUDING,
     pub what: LikeOptionKind,
 }
 
@@ -551,7 +550,7 @@ pub enum LikeOption {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LikeClause<'input> {
-    pub _like: PhantomData<keyword::Like>,
+    pub _like: LIKE,
     pub source: crate::ast::common::QualifiedName<'input>,
     pub options: Vec<LikeOption>,
 }
@@ -579,8 +578,8 @@ pub enum ColumnOrConstraint<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TempKw {
-    Temp(PhantomData<keyword::Temp>),
-    Temporary(PhantomData<keyword::Temporary>),
+    Temp(TEMP),
+    Temporary(TEMPORARY),
 }
 
 /// INHERITS clause: `INHERITS (parent, ...)`
@@ -588,7 +587,7 @@ pub enum TempKw {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InheritsClause<'input> {
-    pub _inherits: PhantomData<keyword::Inherits>,
+    pub _inherits: INHERITS,
     pub parents:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
 }
@@ -617,8 +616,8 @@ pub struct ColumnsBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnCommitClause {
-    pub _on: PhantomData<keyword::On>,
-    pub _commit: PhantomData<keyword::Commit>,
+    pub _on: ON,
+    pub _commit: COMMIT,
     pub action: OnCommitAction,
 }
 
@@ -635,23 +634,23 @@ pub enum OnCommitAction {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnCommitPreserveRows {
-    pub _preserve: PhantomData<keyword::Preserve>,
-    pub _rows: PhantomData<keyword::Rows>,
+    pub _preserve: PRESERVE,
+    pub _rows: ROWS,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnCommitDeleteRows {
-    pub _delete: PhantomData<keyword::Delete>,
-    pub _rows: PhantomData<keyword::Rows>,
+    pub _delete: DELETE,
+    pub _rows: ROWS,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnCommitDrop {
-    pub _drop: PhantomData<keyword::Drop>,
+    pub _drop: DROP,
 }
 
 /// Partition-of table body: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
@@ -659,11 +658,11 @@ pub struct OnCommitDrop {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PartitionOfBody<'input> {
-    pub _partition: PhantomData<keyword::Partition>,
-    pub _of: PhantomData<keyword::Of>,
+    pub _partition: PARTITION,
+    pub _of: OF,
     pub parent: literal::Ident<'input>,
     pub for_values: Option<ForValuesClause<'input>>,
-    pub default: Option<PhantomData<keyword::Default>>,
+    pub default: Option<DEFAULT>,
     pub partition_by: Option<PartitionByClause<'input>>,
     pub with_storage: Option<crate::ast::create_index::WithStorage<'input>>,
 }
@@ -673,7 +672,7 @@ pub struct PartitionOfBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsQueryBody<'input> {
-    pub _as: PhantomData<keyword::As>,
+    pub _as: AS,
     pub query: Box<crate::ast::Statement<'input>>,
     pub with_data: Option<WithDataClause>,
 }
@@ -693,17 +692,17 @@ pub enum WithDataClause {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithNoData {
-    pub _with: PhantomData<keyword::With>,
-    pub _no: PhantomData<keyword::No>,
-    pub _data: PhantomData<keyword::Data>,
+    pub _with: WITH,
+    pub _no: NO,
+    pub _data: DATA,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithData {
-    pub _with: PhantomData<keyword::With>,
-    pub _data: PhantomData<keyword::Data>,
+    pub _with: WITH,
+    pub _data: DATA,
 }
 
 /// `(col, col, ...) AS query [WITH [NO] DATA]` — CTAS with column list.
@@ -713,7 +712,7 @@ pub struct WithData {
 pub struct ColumnsAsQueryBody<'input> {
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
-    pub _as: PhantomData<keyword::As>,
+    pub _as: AS,
     pub query: Box<crate::ast::Statement<'input>>,
     pub with_data: Option<WithDataClause>,
 }
@@ -742,10 +741,10 @@ pub enum CreateTableBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTableStmt<'input> {
-    pub _create: PhantomData<keyword::Create>,
+    pub _create: CREATE,
     pub temp: Option<TempKw>,
-    pub unlogged: Option<PhantomData<keyword::Unlogged>>,
-    pub _table: PhantomData<keyword::Table>,
+    pub unlogged: Option<UNLOGGED>,
+    pub _table: TABLE,
     pub if_not_exists: Option<crate::ast::create_index::IfNotExistsKw>,
     pub name: literal::Ident<'input>,
     pub body: CreateTableBody<'input>,

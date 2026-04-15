@@ -1,6 +1,4 @@
 /// DROP TABLE statement AST.
-use std::marker::PhantomData;
-
 use recursa::seq::Seq;
 use recursa::{FormatTokens, Parse, Visit};
 use recursa_diagram::railroad;
@@ -8,8 +6,9 @@ use recursa_diagram::railroad;
 use crate::ast::common::{DropBehavior, QualifiedName};
 use crate::ast::create_view::IfExistsKw;
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, punct};
+use crate::tokens::{punct};
 
+use crate::tokens::keyword::*;
 /// ```sql
 /// DROP TABLE [IF EXISTS] name [, name ...] [CASCADE | RESTRICT]
 /// ```
@@ -17,8 +16,8 @@ use crate::tokens::{keyword, punct};
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropTableStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _table: PhantomData<keyword::Table>,
+    pub _drop: DROP,
+    pub _table: TABLE,
     pub if_exists: Option<IfExistsKw>,
     pub names: Seq<QualifiedName<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,

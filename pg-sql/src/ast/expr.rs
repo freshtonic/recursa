@@ -3,16 +3,15 @@
 /// Handles atoms, prefix (NOT, unary minus), infix (AND, OR, comparisons,
 /// arithmetic), and postfix operators (::type cast, IS [NOT] TRUE/FALSE/UNKNOWN/NULL,
 /// IN (list)).
-use std::marker::PhantomData;
-
 use recursa::seq::{NonEmpty, OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 use recursa_diagram::railroad;
 
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
 
+use crate::tokens::keyword::*;
 /// One or more adjacent string literals, concatenated by Postgres into a
 /// single value: `'first' ' - next' 'third'`.
 #[railroad]
@@ -49,30 +48,30 @@ pub struct ArrayTypeSuffix(pub punct::LBracket, pub punct::RBracket);
 #[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TypeName<'input> {
-    Bool(keyword::Bool),
-    Boolean(keyword::Boolean),
-    Text(keyword::Text),
-    Integer(keyword::Integer),
-    Int(keyword::Int),
-    Serial(keyword::Serial),
-    Numeric(keyword::Numeric),
-    Varchar(keyword::Varchar),
+    Bool(BOOL),
+    Boolean(BOOLEAN),
+    Text(TEXT),
+    Integer(INTEGER),
+    Int(INT),
+    Serial(SERIAL),
+    Numeric(NUMERIC),
+    Varchar(VARCHAR),
     /// `DOUBLE PRECISION` — two-keyword type. Listed before `Ident` so the
     /// DOUBLE match isn't accidentally consumed as a plain identifier.
     DoublePrecision(DoublePrecisionType),
     /// `TIMESTAMP` (optional `WITH/WITHOUT TIME ZONE` qualifier handled
     /// at the `CastType` level so precision can sit between).
-    Timestamp(keyword::Timestamp),
+    Timestamp(TIMESTAMP),
     /// `TIME` — same shape as `TIMESTAMP`.
-    Time(keyword::Time),
+    Time(TIME),
     /// `INTERVAL` — qualifier (`YEAR TO MONTH` etc.) is currently not
     /// modeled at the type level; only the bare keyword is consumed.
-    Interval(keyword::IntervalKw),
+    Interval(INTERVAL),
     /// `BIT` and `BIT VARYING` (the optional `VARYING` modifier is handled
     /// at the `CastType` level).
-    Bit(keyword::BitKw),
+    Bit(BIT),
     /// `CHARACTER` and `CHARACTER VARYING` — same shape as `BIT`.
-    Character(keyword::CharacterKw),
+    Character(CHARACTER),
     Ident(literal::Ident<'input>),
 }
 
@@ -81,8 +80,8 @@ pub enum TypeName<'input> {
 #[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoublePrecisionType {
-    pub _double: keyword::DoubleKw,
-    pub _precision: keyword::PrecisionKw,
+    pub _double: DOUBLE,
+    pub _precision: PRECISION,
 }
 
 // --- Boolean test suffix structs ---
@@ -92,42 +91,22 @@ pub struct DoublePrecisionType {
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotTrue(pub keyword::Not, pub keyword::True);
+pub struct IsNotTrue(pub NOT, pub TRUE);
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotFalse(pub keyword::Not, pub keyword::False);
+pub struct IsNotFalse(pub NOT, pub FALSE);
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotUnknown(pub keyword::Not, pub keyword::Unknown);
+pub struct IsNotUnknown(pub NOT, pub UNKNOWN);
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IsNotNull(pub keyword::Not, pub keyword::Null);
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IsTrue(pub keyword::True);
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IsFalse(pub keyword::False);
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IsUnknown(pub keyword::Unknown);
-
-#[railroad]
-#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
-#[parse(rules = SqlRules)]
-pub struct IsNull(pub keyword::Null);
+pub struct IsNotNull(pub NOT, pub NULL);
 
 /// Boolean test suffix: the part after `IS` in `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`.
 ///
@@ -141,10 +120,10 @@ pub enum BoolTestKind {
     IsNotFalse(IsNotFalse),
     IsNotUnknown(IsNotUnknown),
     IsNotNull(IsNotNull),
-    IsTrue(IsTrue),
-    IsFalse(IsFalse),
-    IsUnknown(IsUnknown),
-    IsNull(IsNull),
+    IsTrue(TRUE),
+    IsFalse(FALSE),
+    IsUnknown(UNKNOWN),
+    IsNull(NULL),
 }
 
 // --- Atom wrapper structs ---
@@ -171,18 +150,12 @@ pub struct QualifiedWildcard<'input> {
     pub star: punct::Star,
 }
 
-/// Optional DISTINCT keyword in function calls: `count(DISTINCT x)`
-#[railroad]
-#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
-#[parse(rules = SqlRules)]
-pub struct DistinctKw(pub keyword::Distinct);
-
 /// Window specification: `OVER window_name` or `OVER (inline_spec)`.
 #[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowSpec<'input> {
-    pub _over: keyword::Over,
+    pub _over: OVER,
     pub body: WindowSpecBody<'input>,
 }
 
@@ -220,8 +193,8 @@ pub struct InlineWindowSpec<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowPartitionBy<'input> {
-    pub _partition: keyword::Partition,
-    pub _by: keyword::By,
+    pub _partition: PARTITION,
+    pub _by: BY,
     pub exprs: Seq<Expr<'input>, punct::Comma>,
 }
 
@@ -230,9 +203,9 @@ pub struct WindowPartitionBy<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowFrameUnit {
-    Rows(keyword::Rows),
-    Range(keyword::RangeKw),
-    Groups(keyword::Groups),
+    Rows(ROWS),
+    Range(RANGE),
+    Groups(GROUPS),
 }
 
 /// `WINDOW` frame clause: `unit BETWEEN start AND end [EXCLUDE ...]`
@@ -254,9 +227,9 @@ pub enum WindowFrameClause<'input> {
 #[parse(rules = SqlRules)]
 pub struct WindowFrameBetween<'input> {
     pub unit: WindowFrameUnit,
-    pub _between: keyword::Between,
+    pub _between: BETWEEN,
     pub start: WindowFrameBound<'input>,
-    pub _and: keyword::And,
+    pub _and: AND,
     pub end: WindowFrameBound<'input>,
     pub exclude: Option<WindowFrameExclude>,
 }
@@ -292,24 +265,24 @@ pub enum WindowFrameBound<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct UnboundedPreceding {
-    pub _unbounded: keyword::Unbounded,
-    pub _preceding: keyword::Preceding,
+    pub _unbounded: UNBOUNDED,
+    pub _preceding: PRECEDING,
 }
 
 #[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct UnboundedFollowing {
-    pub _unbounded: keyword::Unbounded,
-    pub _following: keyword::Following,
+    pub _unbounded: UNBOUNDED,
+    pub _following: FOLLOWING,
 }
 
 #[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CurrentRow {
-    pub _current: keyword::CurrentKw,
-    pub _row: keyword::Row,
+    pub _current: CURRENT,
+    pub _row: ROW,
 }
 
 #[railroad]
@@ -317,7 +290,7 @@ pub struct CurrentRow {
 #[parse(rules = SqlRules)]
 pub struct ExprPreceding<'input> {
     pub expr: Box<Expr<'input>>,
-    pub _preceding: keyword::Preceding,
+    pub _preceding: PRECEDING,
 }
 
 #[railroad]
@@ -325,7 +298,7 @@ pub struct ExprPreceding<'input> {
 #[parse(rules = SqlRules)]
 pub struct ExprFollowing<'input> {
     pub expr: Box<Expr<'input>>,
-    pub _following: keyword::Following,
+    pub _following: FOLLOWING,
 }
 
 /// `EXCLUDE { CURRENT ROW | GROUP | TIES | NO OTHERS }` frame exclusion.
@@ -333,7 +306,7 @@ pub struct ExprFollowing<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowFrameExclude {
-    pub _exclude: keyword::Excludew,
+    pub _exclude: EXCLUDE,
     pub target: WindowFrameExcludeTarget,
 }
 
@@ -342,8 +315,8 @@ pub struct WindowFrameExclude {
 #[parse(rules = SqlRules)]
 pub enum WindowFrameExcludeTarget {
     CurrentRow(CurrentRow),
-    Group(keyword::Group),
-    Ties(keyword::Ties),
+    Group(GROUP),
+    Ties(TIES),
     NoOthers(NoOthers),
 }
 
@@ -351,8 +324,8 @@ pub enum WindowFrameExcludeTarget {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct NoOthers {
-    pub _no: keyword::No,
-    pub _others: keyword::Others,
+    pub _no: NO,
+    pub _others: OTHERS,
 }
 
 /// Function call: `name(arg1, arg2, ...)`
@@ -379,7 +352,7 @@ pub enum FuncArg<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct VariadicArg<'input> {
-    pub _variadic: keyword::Variadic,
+    pub _variadic: VARIADIC,
     pub value: Box<Expr<'input>>,
 }
 
@@ -398,8 +371,8 @@ pub struct NamedFuncArg<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithinGroupClause<'input> {
-    pub _within: PhantomData<keyword::Within>,
-    pub _group: PhantomData<keyword::Group>,
+    pub _within: WITHIN,
+    pub _group: GROUP,
     pub order_by: Surrounded<
         punct::LParen,
         Box<crate::ast::select::OrderByClause<'input>>,
@@ -412,7 +385,7 @@ pub struct WithinGroupClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FilterClause<'input> {
-    pub _filter: PhantomData<keyword::Filter>,
+    pub _filter: FILTER,
     pub body: Surrounded<
         punct::LParen,
         Box<crate::ast::select::WhereClause<'input>>,
@@ -428,7 +401,7 @@ pub struct FuncCall<'input> {
     pub name: literal::AliasName<'input>,
     pub lparen: punct::LParen,
     pub star_arg: Option<punct::Star>,
-    pub distinct: Option<DistinctKw>,
+    pub distinct: Option<DISTINCT>,
     pub args: Seq<FuncArg<'input>, punct::Comma>,
     pub order_by: Option<Box<crate::ast::select::OrderByClause<'input>>>,
     pub rparen: punct::RParen,
@@ -456,7 +429,7 @@ pub type ParenExpr<'input> = Surrounded<punct::LParen, ParenContent<'input>, pun
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ExistsExpr<'input> {
-    pub _exists: keyword::Exists,
+    pub _exists: EXISTS,
     pub subquery: Surrounded<
         punct::LParen,
         Box<crate::ast::values::CompoundQuery<'input>>,
@@ -469,7 +442,7 @@ pub struct ExistsExpr<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ArrayBracket<'input> {
-    pub _array: PhantomData<keyword::Array>,
+    pub _array: ARRAY,
     pub lbracket: punct::LBracket,
     pub elements: Seq<Expr<'input>, punct::Comma>,
     pub rbracket: punct::RBracket,
@@ -480,7 +453,7 @@ pub struct ArrayBracket<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ArraySubquery<'input> {
-    pub _array: PhantomData<keyword::Array>,
+    pub _array: ARRAY,
     pub subquery: Surrounded<
         punct::LParen,
         Box<crate::ast::values::CompoundQuery<'input>>,
@@ -505,7 +478,7 @@ pub enum ArrayExpr<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct RowExpr<'input> {
-    pub _row: keyword::Row,
+    pub _row: ROW,
     pub values: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
 }
 
@@ -514,9 +487,9 @@ pub struct RowExpr<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseWhenArm<'input> {
-    pub _when: keyword::When,
+    pub _when: WHEN,
     pub condition: Box<Expr<'input>>,
-    pub _then: keyword::Then,
+    pub _then: THEN,
     pub result: Box<Expr<'input>>,
 }
 
@@ -525,7 +498,7 @@ pub struct CaseWhenArm<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseElse<'input> {
-    pub _else: keyword::Else,
+    pub _else: ELSE,
     pub result: Box<Expr<'input>>,
 }
 
@@ -534,11 +507,11 @@ pub struct CaseElse<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseSearched<'input> {
-    pub _case: keyword::Case,
+    pub _case: CASE,
     pub first_arm: CaseWhenArm<'input>,
     pub rest_arms: Vec<CaseWhenArm<'input>>,
     pub else_clause: Option<CaseElse<'input>>,
-    pub _end: keyword::End,
+    pub _end: END,
 }
 
 /// Simple CASE: `CASE operand WHEN val THEN result [...] [ELSE result] END`.
@@ -546,12 +519,12 @@ pub struct CaseSearched<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CaseSimple<'input> {
-    pub _case: keyword::Case,
+    pub _case: CASE,
     pub operand: Box<Expr<'input>>,
     pub first_arm: CaseWhenArm<'input>,
     pub rest_arms: Vec<CaseWhenArm<'input>>,
     pub else_clause: Option<CaseElse<'input>>,
-    pub _end: keyword::End,
+    pub _end: END,
 }
 
 /// CASE expression: searched form (first, since `CASE WHEN` is a longer
@@ -573,7 +546,7 @@ pub struct CastType<'input> {
     pub base: TypeName<'input>,
     /// `VARYING` modifier (e.g., `BIT VARYING`, `CHARACTER VARYING`).
     /// Always precedes the precision parens.
-    pub varying: Option<keyword::Varying>,
+    pub varying: Option<VARYING>,
     pub precision: Option<TypePrecision<'input>>,
     /// `WITH/WITHOUT TIME ZONE` qualifier on `TIME`/`TIMESTAMP` types.
     /// Always follows the precision parens.
@@ -586,8 +559,8 @@ pub struct CastType<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct NotInSuffix<'input> {
-    pub _not: keyword::Not,
-    pub _in: keyword::In,
+    pub _not: NOT,
+    pub _in: IN,
     pub list: InList<'input>,
 }
 
@@ -624,18 +597,18 @@ pub enum TimeZoneQualifier {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WithTimeZone {
-    pub _with: keyword::With,
-    pub _time: keyword::Time,
-    pub _zone: keyword::Zone,
+    pub _with: WITH,
+    pub _time: TIME,
+    pub _zone: ZONE,
 }
 
 #[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WithoutTimeZone {
-    pub _without: keyword::Without,
-    pub _time: keyword::Time,
-    pub _zone: keyword::Zone,
+    pub _without: WITHOUT,
+    pub _time: TIME,
+    pub _zone: ZONE,
 }
 
 /// `TIMESTAMP [WITH|WITHOUT TIME ZONE] 'string'`.
@@ -643,7 +616,7 @@ pub struct WithoutTimeZone {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TimestampLit<'input> {
-    pub _timestamp: keyword::Timestamp,
+    pub _timestamp: TIMESTAMP,
     /// Optional precision, e.g., `timestamp(6)`.
     pub precision: Option<TypePrecision<'input>>,
     pub tz: Option<TimeZoneQualifier>,
@@ -655,7 +628,7 @@ pub struct TimestampLit<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TimeLit<'input> {
-    pub _time: keyword::Time,
+    pub _time: TIME,
     /// Optional precision, e.g., `time(2)`.
     pub precision: Option<TypePrecision<'input>>,
     pub tz: Option<TimeZoneQualifier>,
@@ -667,9 +640,9 @@ pub struct TimeLit<'input> {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct YearToMonth {
-    pub _year: keyword::YearKw,
-    pub _to: keyword::To,
-    pub _month: keyword::MonthKw,
+    pub _year: YEAR,
+    pub _to: TO,
+    pub _month: MONTH,
 }
 
 /// `DAY TO HOUR` qualifier.
@@ -677,9 +650,9 @@ pub struct YearToMonth {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct DayToHour {
-    pub _day: keyword::DayKw,
-    pub _to: keyword::To,
-    pub _hour: keyword::HourKw,
+    pub _day: DAY,
+    pub _to: TO,
+    pub _hour: HOUR,
 }
 
 /// `DAY TO MINUTE` qualifier.
@@ -687,9 +660,9 @@ pub struct DayToHour {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct DayToMinute {
-    pub _day: keyword::DayKw,
-    pub _to: keyword::To,
-    pub _minute: keyword::MinuteKw,
+    pub _day: DAY,
+    pub _to: TO,
+    pub _minute: MINUTE,
 }
 
 /// `DAY TO SECOND` qualifier.
@@ -697,9 +670,9 @@ pub struct DayToMinute {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct DayToSecond {
-    pub _day: keyword::DayKw,
-    pub _to: keyword::To,
-    pub _second: keyword::SecondKw,
+    pub _day: DAY,
+    pub _to: TO,
+    pub _second: SECOND,
 }
 
 /// `HOUR TO MINUTE` qualifier.
@@ -707,9 +680,9 @@ pub struct DayToSecond {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct HourToMinute {
-    pub _hour: keyword::HourKw,
-    pub _to: keyword::To,
-    pub _minute: keyword::MinuteKw,
+    pub _hour: HOUR,
+    pub _to: TO,
+    pub _minute: MINUTE,
 }
 
 /// `HOUR TO SECOND` qualifier.
@@ -717,9 +690,9 @@ pub struct HourToMinute {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct HourToSecond {
-    pub _hour: keyword::HourKw,
-    pub _to: keyword::To,
-    pub _second: keyword::SecondKw,
+    pub _hour: HOUR,
+    pub _to: TO,
+    pub _second: SECOND,
 }
 
 /// `MINUTE TO SECOND` qualifier.
@@ -727,9 +700,9 @@ pub struct HourToSecond {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct MinuteToSecond {
-    pub _minute: keyword::MinuteKw,
-    pub _to: keyword::To,
-    pub _second: keyword::SecondKw,
+    pub _minute: MINUTE,
+    pub _to: TO,
+    pub _second: SECOND,
 }
 
 /// Optional qualifier after `INTERVAL 'str'`.
@@ -748,12 +721,12 @@ pub enum IntervalQualifier {
     HourToMinute(HourToMinute),
     HourToSecond(HourToSecond),
     MinuteToSecond(MinuteToSecond),
-    Year(keyword::YearKw),
-    Month(keyword::MonthKw),
-    Day(keyword::DayKw),
-    Hour(keyword::HourKw),
-    Minute(keyword::MinuteKw),
-    Second(keyword::SecondKw),
+    Year(YEAR),
+    Month(MONTH),
+    Day(DAY),
+    Hour(HOUR),
+    Minute(MINUTE),
+    Second(SECOND),
 }
 
 /// `INTERVAL 'str' [qualifier]`.
@@ -761,7 +734,7 @@ pub enum IntervalQualifier {
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct IntervalLit<'input> {
-    pub _interval: keyword::IntervalKw,
+    pub _interval: INTERVAL,
     pub value: literal::StringLit<'input>,
     pub qualifier: Option<IntervalQualifier>,
 }
@@ -791,7 +764,7 @@ pub struct XmlNamedArg<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlNamedArgAlias<'input> {
-    pub _as: PhantomData<keyword::As>,
+    pub _as: AS,
     pub name: literal::AliasName<'input>,
 }
 
@@ -801,7 +774,7 @@ pub struct XmlNamedArgAlias<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlAttributes<'input> {
-    pub _kw: PhantomData<keyword::XmlAttributesKw>,
+    pub _kw: XMLATTRIBUTES,
     pub args: Surrounded<punct::LParen, Seq<XmlNamedArg<'input>, punct::Comma>, punct::RParen>,
 }
 
@@ -842,7 +815,7 @@ pub enum XmlElementTail<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElementInner<'input> {
-    pub _name: PhantomData<keyword::NameKw>,
+    pub _name: NAME,
     pub element_name: literal::AliasName<'input>,
     pub tail: Option<XmlElementTail<'input>>,
 }
@@ -852,7 +825,7 @@ pub struct XmlElementInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElement<'input> {
-    pub _kw: PhantomData<keyword::XmlElementKw>,
+    pub _kw: XMLELEMENT,
     pub inner: Surrounded<punct::LParen, XmlElementInner<'input>, punct::RParen>,
 }
 
@@ -861,7 +834,7 @@ pub struct XmlElement<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlForest<'input> {
-    pub _kw: PhantomData<keyword::XmlForestKw>,
+    pub _kw: XMLFOREST,
     pub args: Surrounded<punct::LParen, Seq<XmlNamedArg<'input>, punct::Comma>, punct::RParen>,
 }
 
@@ -870,7 +843,7 @@ pub struct XmlForest<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlPi<'input> {
-    pub _kw: PhantomData<keyword::XmlPiKw>,
+    pub _kw: XMLPI,
     pub inner: Surrounded<punct::LParen, XmlPiInner<'input>, punct::RParen>,
 }
 
@@ -879,7 +852,7 @@ pub struct XmlPi<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlPiInner<'input> {
-    pub _name: PhantomData<keyword::NameKw>,
+    pub _name: NAME,
     pub target: literal::AliasName<'input>,
     pub content: Option<XmlPiContentTail<'input>>,
 }
@@ -903,9 +876,9 @@ pub struct XmlPiContentTail<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TrimDir {
-    Leading(keyword::Leading),
-    Trailing(keyword::Trailing),
-    Both(keyword::BothKw),
+    Leading(LEADING),
+    Trailing(TRAILING),
+    Both(BOTH),
 }
 
 /// `[chars] FROM source`: the optional chars-to-trim before `FROM`.
@@ -925,7 +898,7 @@ pub struct TrimChars<'input> {
 pub struct TrimInner<'input> {
     pub dir: Option<TrimDir>,
     pub chars: Option<TrimChars<'input>>,
-    pub _from: PhantomData<keyword::From>,
+    pub _from: FROM,
     pub source: Box<Expr<'input>>,
 }
 
@@ -934,7 +907,7 @@ pub struct TrimInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TrimCall<'input> {
-    pub _kw: PhantomData<keyword::TrimKw>,
+    pub _kw: TRIM,
     pub inner: Surrounded<punct::LParen, TrimInner<'input>, punct::RParen>,
 }
 
@@ -943,7 +916,7 @@ pub struct TrimCall<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForCount<'input> {
-    pub _for: PhantomData<keyword::For>,
+    pub _for: FOR,
     pub count: Box<Expr<'input>>,
 }
 
@@ -952,7 +925,7 @@ pub struct ForCount<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringFromFor<'input> {
-    pub _from: PhantomData<keyword::From>,
+    pub _from: FROM,
     pub start: Box<Expr<'input>>,
     pub for_count: Option<ForCount<'input>>,
 }
@@ -962,9 +935,9 @@ pub struct SubstringFromFor<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringSimilar<'input> {
-    pub _similar: PhantomData<keyword::Similar>,
+    pub _similar: SIMILAR,
     pub pattern: Box<Expr<'input>>,
-    pub _escape: PhantomData<keyword::EscapeKw>,
+    pub _escape: ESCAPE,
     pub escape: Box<Expr<'input>>,
 }
 
@@ -995,8 +968,8 @@ pub struct SubstringInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CollationForCall<'input> {
-    pub _collation: keyword::Collation,
-    pub _for: keyword::For,
+    pub _collation: COLLATION,
+    pub _for: FOR,
     pub arg: Surrounded<punct::LParen, Box<Expr<'input>>, punct::RParen>,
 }
 
@@ -1006,7 +979,7 @@ pub struct CollationForCall<'input> {
 #[parse(rules = SqlRules)]
 pub struct CastAsInner<'input> {
     pub value: Box<Expr<'input>>,
-    pub _as: keyword::As,
+    pub _as: AS,
     pub target: CastType<'input>,
     pub collate: Option<CollateSuffix<'input>>,
 }
@@ -1016,7 +989,7 @@ pub struct CastAsInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CollateSuffix<'input> {
-    pub _collate: keyword::Collate,
+    pub _collate: COLLATE,
     pub name: literal::Ident<'input>,
 }
 
@@ -1025,7 +998,7 @@ pub struct CollateSuffix<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CastCall<'input> {
-    pub _kw: keyword::Cast,
+    pub _kw: CAST,
     pub inner: Surrounded<punct::LParen, CastAsInner<'input>, punct::RParen>,
 }
 
@@ -1035,7 +1008,7 @@ pub struct CastCall<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringCall<'input> {
-    pub _kw: PhantomData<keyword::SubstringKw>,
+    pub _kw: SUBSTRING,
     pub inner: Surrounded<punct::LParen, SubstringInner<'input>, punct::RParen>,
 }
 
@@ -1045,7 +1018,7 @@ pub struct SubstringCall<'input> {
 #[parse(rules = SqlRules)]
 pub struct PositionInner<'input> {
     pub needle: Box<Expr<'input>>,
-    pub _in: PhantomData<keyword::In>,
+    pub _in: IN,
     pub haystack: Box<Expr<'input>>,
 }
 
@@ -1054,7 +1027,7 @@ pub struct PositionInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PositionCall<'input> {
-    pub _kw: PhantomData<keyword::PositionKw>,
+    pub _kw: POSITION,
     pub inner: Surrounded<punct::LParen, PositionInner<'input>, punct::RParen>,
 }
 
@@ -1064,9 +1037,9 @@ pub struct PositionCall<'input> {
 #[parse(rules = SqlRules)]
 pub struct OverlayInner<'input> {
     pub source: Box<Expr<'input>>,
-    pub _placing: PhantomData<keyword::Placing>,
+    pub _placing: PLACING,
     pub new: Box<Expr<'input>>,
-    pub _from: PhantomData<keyword::From>,
+    pub _from: FROM,
     pub start: Box<Expr<'input>>,
     pub for_count: Option<ForCount<'input>>,
 }
@@ -1076,7 +1049,7 @@ pub struct OverlayInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OverlayCall<'input> {
-    pub _kw: PhantomData<keyword::OverlayKw>,
+    pub _kw: OVERLAY,
     pub inner: Surrounded<punct::LParen, OverlayInner<'input>, punct::RParen>,
 }
 
@@ -1099,7 +1072,7 @@ pub enum ExtractField<'input> {
 #[parse(rules = SqlRules)]
 pub struct ExtractInner<'input> {
     pub field: ExtractField<'input>,
-    pub _from: PhantomData<keyword::From>,
+    pub _from: FROM,
     pub source: Box<Expr<'input>>,
 }
 
@@ -1108,7 +1081,7 @@ pub struct ExtractInner<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExtractCall<'input> {
-    pub _kw: PhantomData<keyword::ExtractKw>,
+    pub _kw: EXTRACT,
     pub inner: Surrounded<punct::LParen, ExtractInner<'input>, punct::RParen>,
 }
 
@@ -1117,7 +1090,7 @@ pub struct ExtractCall<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UescapeSuffix<'input> {
-    pub _uescape: PhantomData<keyword::Uescape>,
+    pub _uescape: UESCAPE,
     pub escape_char: literal::StringLit<'input>,
 }
 
@@ -1139,7 +1112,7 @@ pub struct UnicodeStringLitWithEscape<'input> {
 pub enum Expr<'input> {
     // --- Prefix ---
     #[parse(prefix, bp = 15)]
-    Not(keyword::Not, Box<Expr<'input>>),
+    Not(NOT, Box<Expr<'input>>),
     #[parse(prefix, bp = 12)]
     Neg(punct::Minus, Box<Expr<'input>>),
     /// Unary geometric "center point": `@@ expr`. Postgres uses `@@` as
@@ -1168,36 +1141,36 @@ pub enum Expr<'input> {
     /// `expr COLLATE "collation"` — collation specifier. Binds tighter than
     /// comparisons (bp 5) but looser than `::` cast (bp 20).
     #[parse(postfix, bp = 18)]
-    Collate(Box<Expr<'input>>, keyword::Collate, literal::Ident<'input>),
+    Collate(Box<Expr<'input>>, COLLATE, literal::Ident<'input>),
     /// `expr IS NOT DISTINCT FROM expr`. Declared before `IsDistinctFrom` so
     /// the longer `NOT` prefix wins disambiguation.
     #[parse(postfix, bp = 5, inner_bp = 6)]
     IsNotDistinctFrom(
         Box<Expr<'input>>,
-        keyword::Is,
-        keyword::Not,
-        keyword::Distinct,
-        keyword::From,
+        IS,
+        NOT,
+        DISTINCT,
+        FROM,
         Box<Expr<'input>>,
     ),
     /// `expr IS DISTINCT FROM expr`.
     #[parse(postfix, bp = 5, inner_bp = 6)]
     IsDistinctFrom(
         Box<Expr<'input>>,
-        keyword::Is,
-        keyword::Distinct,
-        keyword::From,
+        IS,
+        DISTINCT,
+        FROM,
         Box<Expr<'input>>,
     ),
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
-    BoolTest(Box<Expr<'input>>, keyword::Is, BoolTestKind),
+    BoolTest(Box<Expr<'input>>, IS, BoolTestKind),
     /// Postgres `expr NOTNULL` postfix null test (synonym for `IS NOT NULL`).
     #[parse(postfix, bp = 8)]
-    Notnull(Box<Expr<'input>>, keyword::Notnull),
+    Notnull(Box<Expr<'input>>, NOTNULL),
     /// Postgres `expr ISNULL` postfix null test (synonym for `IS NULL`).
     #[parse(postfix, bp = 8)]
-    Isnull(Box<Expr<'input>>, keyword::Isnull),
+    Isnull(Box<Expr<'input>>, ISNULL),
     /// NOT IN list: `expr NOT IN (val, ...)`
     #[parse(postfix, bp = 6)]
     NotInExpr(Box<Expr<'input>>, NotInSuffix<'input>),
@@ -1207,8 +1180,8 @@ pub enum Expr<'input> {
     #[parse(postfix, bp = 5, inner_bp = 6)]
     NotIlike(
         Box<Expr<'input>>,
-        keyword::Not,
-        keyword::Ilike,
+        NOT,
+        ILIKE,
         Box<Expr<'input>>,
     ),
     /// `expr NOT LIKE pattern`. Must come before the `Not` prefix atom so
@@ -1216,16 +1189,16 @@ pub enum Expr<'input> {
     #[parse(postfix, bp = 5, inner_bp = 6)]
     NotLike(
         Box<Expr<'input>>,
-        keyword::Not,
-        keyword::Like,
+        NOT,
+        LIKE,
         Box<Expr<'input>>,
     ),
     /// `expr ILIKE pattern`
     #[parse(infix, bp = 5)]
-    Ilike(Box<Expr<'input>>, keyword::Ilike, Box<Expr<'input>>),
+    Ilike(Box<Expr<'input>>, ILIKE, Box<Expr<'input>>),
     /// `expr LIKE pattern`
     #[parse(infix, bp = 5)]
-    Like(Box<Expr<'input>>, keyword::Like, Box<Expr<'input>>),
+    Like(Box<Expr<'input>>, LIKE, Box<Expr<'input>>),
     /// `expr !~* pattern` — POSIX case-insensitive negated regex match.
     #[parse(infix, bp = 5)]
     RegexNotIMatch(Box<Expr<'input>>, punct::BangTildeStar, Box<Expr<'input>>),
@@ -1244,7 +1217,7 @@ pub enum Expr<'input> {
     RegexMatch(Box<Expr<'input>>, punct::Tilde, Box<Expr<'input>>),
     /// IN list: `expr IN (val, ...)`
     #[parse(postfix, bp = 6)]
-    InExpr(Box<Expr<'input>>, keyword::In, InList<'input>),
+    InExpr(Box<Expr<'input>>, IN, InList<'input>),
     /// `expr NOT BETWEEN low AND high`. Declared before `BetweenExpr` so
     /// the longer `NOT BETWEEN` prefix wins disambiguation. `inner_bp = 3`
     /// keeps the low/high operands from swallowing the literal `AND` that
@@ -1252,10 +1225,10 @@ pub enum Expr<'input> {
     #[parse(postfix, bp = 6, inner_bp = 3)]
     NotBetweenExpr(
         Box<Expr<'input>>,
-        keyword::Not,
-        keyword::Between,
+        NOT,
+        BETWEEN,
         Box<Expr<'input>>,
-        keyword::And,
+        AND,
         Box<Expr<'input>>,
     ),
     /// `expr BETWEEN low AND high`. See `NotBetweenExpr` for the
@@ -1263,9 +1236,9 @@ pub enum Expr<'input> {
     #[parse(postfix, bp = 6, inner_bp = 3)]
     BetweenExpr(
         Box<Expr<'input>>,
-        keyword::Between,
+        BETWEEN,
         Box<Expr<'input>>,
-        keyword::And,
+        AND,
         Box<Expr<'input>>,
     ),
 
@@ -1370,9 +1343,9 @@ pub enum Expr<'input> {
     StrictlyRight(Box<Expr<'input>>, punct::GtGt, Box<Expr<'input>>),
 
     #[parse(infix, bp = 1)]
-    Or(Box<Expr<'input>>, keyword::Or, Box<Expr<'input>>),
+    Or(Box<Expr<'input>>, OR, Box<Expr<'input>>),
     #[parse(infix, bp = 2)]
-    And(Box<Expr<'input>>, keyword::And, Box<Expr<'input>>),
+    And(Box<Expr<'input>>, AND, Box<Expr<'input>>),
     #[parse(infix, bp = 5)]
     BangEq(Box<Expr<'input>>, punct::BangEq, Box<Expr<'input>>),
     #[parse(infix, bp = 5)]
@@ -1518,16 +1491,16 @@ pub enum Expr<'input> {
     StringLit(StringLitSeq<'input>),
     /// Boolean true
     #[parse(atom)]
-    BoolTrue(keyword::True),
+    BoolTrue(TRUE),
     /// Boolean false
     #[parse(atom)]
-    BoolFalse(keyword::False),
+    BoolFalse(FALSE),
     /// NULL
     #[parse(atom)]
-    Null(keyword::Null),
+    Null(NULL),
     /// `DEFAULT` — placeholder usable in INSERT/UPDATE value positions.
     #[parse(atom)]
-    Default(keyword::Default),
+    Default(DEFAULT),
     /// Unqualified column reference: `f1` or `"Foo"`
     #[parse(atom)]
     ColumnRef(literal::Ident<'input>),

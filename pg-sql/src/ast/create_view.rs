@@ -2,8 +2,6 @@
 ///
 /// `CREATE [OR REPLACE] [TEMP|TEMPORARY] [RECURSIVE] VIEW name [(cols)] AS query`
 /// `DROP VIEW [IF EXISTS] name`
-use std::marker::PhantomData;
-
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
@@ -12,7 +10,8 @@ use crate::ast::common::{DropBehavior, QualifiedName};
 use crate::ast::create_table::TempKw;
 use crate::ast::values::CompoundQuery;
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
+use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
 
 /// OR REPLACE keyword pair.
@@ -20,8 +19,8 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrReplaceKw {
-    pub _or: PhantomData<keyword::Or>,
-    pub _replace: PhantomData<keyword::Replace>,
+    pub _or: OR,
+    pub _replace: REPLACE,
 }
 
 /// IF EXISTS keyword pair.
@@ -29,8 +28,8 @@ pub struct OrReplaceKw {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IfExistsKw {
-    pub _if: PhantomData<keyword::If>,
-    pub _exists: PhantomData<keyword::Exists>,
+    pub _if: IF,
+    pub _exists: EXISTS,
 }
 
 /// CREATE VIEW statement.
@@ -38,11 +37,11 @@ pub struct IfExistsKw {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateViewStmt<'input> {
-    pub _create: PhantomData<keyword::Create>,
+    pub _create: CREATE,
     pub or_replace: Option<OrReplaceKw>,
     pub temp: Option<TempKw>,
-    pub recursive: Option<PhantomData<keyword::Recursive>>,
-    pub _view: PhantomData<keyword::View>,
+    pub recursive: Option<RECURSIVE>,
+    pub _view: VIEW,
     pub name: literal::Ident<'input>,
     pub columns: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
@@ -50,7 +49,7 @@ pub struct CreateViewStmt<'input> {
     /// Optional `WITH (option [= value], ...)` view options such as
     /// `security_invoker`, `security_barrier`, `check_option`.
     pub with_options: Option<crate::ast::create_index::WithStorage<'input>>,
-    pub _as: PhantomData<keyword::As>,
+    pub _as: AS,
     pub query: CompoundQuery<'input>,
 }
 
@@ -63,8 +62,8 @@ pub struct CreateViewStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropViewStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _view: PhantomData<keyword::View>,
+    pub _drop: DROP,
+    pub _view: VIEW,
     pub if_exists: Option<IfExistsKw>,
     pub names: Seq<QualifiedName<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,

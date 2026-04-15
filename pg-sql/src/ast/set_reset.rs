@@ -1,11 +1,10 @@
 /// SET/RESET statement AST.
-use std::marker::PhantomData;
-
 use recursa::seq::Seq;
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
+use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
 
 /// Scope of a SET statement: `SESSION` or `LOCAL`.
@@ -13,8 +12,8 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetScope {
-    Session(keyword::Session),
-    Local(keyword::Local),
+    Session(SESSION),
+    Local(LOCAL),
 }
 
 /// The value in a SET statement: literal, keyword, or identifier.
@@ -25,11 +24,11 @@ pub enum SetScope {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetValue<'input> {
-    On(keyword::On),
-    Off(keyword::Off),
-    False(keyword::False),
-    True(keyword::True),
-    Default(keyword::Default),
+    On(ON),
+    Off(OFF),
+    False(FALSE),
+    True(TRUE),
+    Default(DEFAULT),
     StringLit(literal::StringLit<'input>),
     SignedNumeric(SignedNumericLit<'input>),
     NumericLit(literal::NumericLit<'input>),
@@ -72,7 +71,7 @@ pub enum UnsignedNumericLit<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetSep {
-    To(keyword::To),
+    To(TO),
     Eq(punct::Eq),
 }
 
@@ -81,7 +80,7 @@ pub enum SetSep {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetStmt<'input> {
-    pub _set: PhantomData<keyword::Set>,
+    pub _set: SET,
     pub scope: Option<SetScope>,
     pub param: literal::AliasName<'input>,
     pub sep: SetSep,
@@ -93,8 +92,8 @@ pub struct SetStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetRoleTarget<'input> {
-    None(keyword::None),
-    Default(keyword::Default),
+    None(NONE),
+    Default(DEFAULT),
     Role(literal::AliasName<'input>),
     String(literal::StringLit<'input>),
 }
@@ -104,9 +103,9 @@ pub enum SetRoleTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetRoleStmt<'input> {
-    pub _set: PhantomData<keyword::Set>,
+    pub _set: SET,
     pub scope: Option<SetScope>,
-    pub _role: PhantomData<keyword::Role>,
+    pub _role: ROLE,
     pub target: SetRoleTarget<'input>,
 }
 
@@ -115,7 +114,7 @@ pub struct SetRoleStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetSessionAuthTarget<'input> {
-    Default(keyword::Default),
+    Default(DEFAULT),
     String(literal::StringLit<'input>),
     Role(literal::AliasName<'input>),
 }
@@ -125,12 +124,12 @@ pub enum SetSessionAuthTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetSessionAuthStmt<'input> {
-    pub _set: PhantomData<keyword::Set>,
+    pub _set: SET,
     // Only `LOCAL` is allowed here — the `SESSION` scope keyword would
     // conflict with the `SESSION AUTHORIZATION` literal that follows.
-    pub local: Option<PhantomData<keyword::Local>>,
-    pub _session: PhantomData<keyword::Session>,
-    pub _authorization: PhantomData<keyword::Authorization>,
+    pub local: Option<LOCAL>,
+    pub _session: SESSION,
+    pub _authorization: AUTHORIZATION,
     pub target: SetSessionAuthTarget<'input>,
 }
 
@@ -169,8 +168,8 @@ pub struct SignedInteger<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetTimeZoneTarget<'input> {
-    Local(keyword::Local),
-    Default(keyword::Default),
+    Local(LOCAL),
+    Default(DEFAULT),
     Number(SignedNumber<'input>),
     String(literal::StringLit<'input>),
 }
@@ -180,10 +179,10 @@ pub enum SetTimeZoneTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetTimeZoneStmt<'input> {
-    pub _set: PhantomData<keyword::Set>,
+    pub _set: SET,
     pub scope: Option<SetScope>,
-    pub _time: PhantomData<keyword::Time>,
-    pub _zone: PhantomData<keyword::Zone>,
+    pub _time: TIME,
+    pub _zone: ZONE,
     pub target: SetTimeZoneTarget<'input>,
 }
 
@@ -196,8 +195,8 @@ pub struct SetTimeZoneStmt<'input> {
 pub enum ResetTarget<'input> {
     SessionAuth(ResetSessionAuth),
     TimeZone(ResetTimeZone),
-    Role(keyword::Role),
-    All(keyword::All),
+    Role(ROLE),
+    All(ALL),
     Ident(literal::AliasName<'input>),
 }
 
@@ -205,16 +204,16 @@ pub enum ResetTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ResetSessionAuth {
-    pub _session: PhantomData<keyword::Session>,
-    pub _authorization: PhantomData<keyword::Authorization>,
+    pub _session: SESSION,
+    pub _authorization: AUTHORIZATION,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ResetTimeZone {
-    pub _time: PhantomData<keyword::Time>,
-    pub _zone: PhantomData<keyword::Zone>,
+    pub _time: TIME,
+    pub _zone: ZONE,
 }
 
 /// RESET statement: `RESET { param | ALL | ROLE | SESSION AUTHORIZATION | TIME ZONE }`.
@@ -222,7 +221,7 @@ pub struct ResetTimeZone {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ResetStmt<'input> {
-    pub _reset: PhantomData<keyword::Reset>,
+    pub _reset: RESET,
     pub target: ResetTarget<'input>,
 }
 
@@ -233,8 +232,8 @@ pub struct ResetStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ShowSessionAuth {
-    pub _session: PhantomData<keyword::Session>,
-    pub _authorization: PhantomData<keyword::Authorization>,
+    pub _session: SESSION,
+    pub _authorization: AUTHORIZATION,
 }
 
 /// `TIME ZONE` target for `SHOW`.
@@ -242,8 +241,8 @@ pub struct ShowSessionAuth {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ShowTimeZone {
-    pub _time: PhantomData<keyword::Time>,
-    pub _zone: PhantomData<keyword::Zone>,
+    pub _time: TIME,
+    pub _zone: ZONE,
 }
 
 /// `TRANSACTION ISOLATION LEVEL` target for `SHOW`.
@@ -251,9 +250,9 @@ pub struct ShowTimeZone {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ShowTransactionIsolationLevel {
-    pub _transaction: PhantomData<keyword::Transaction>,
-    pub _isolation: PhantomData<keyword::Isolation>,
-    pub _level: PhantomData<keyword::Level>,
+    pub _transaction: TRANSACTION,
+    pub _isolation: ISOLATION,
+    pub _level: LEVEL,
 }
 
 /// Target of a SHOW statement.
@@ -267,7 +266,7 @@ pub enum ShowTarget<'input> {
     TransactionIsolationLevel(ShowTransactionIsolationLevel),
     SessionAuthorization(ShowSessionAuth),
     TimeZone(ShowTimeZone),
-    All(keyword::All),
+    All(ALL),
     Param(literal::AliasName<'input>),
 }
 
@@ -276,7 +275,7 @@ pub enum ShowTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ShowStmt<'input> {
-    pub _show: PhantomData<keyword::Show>,
+    pub _show: SHOW,
     pub target: ShowTarget<'input>,
 }
 

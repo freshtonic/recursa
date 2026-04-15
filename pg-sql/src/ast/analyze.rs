@@ -1,10 +1,9 @@
 /// ANALYZE statement AST: `ANALYZE tablename`.
-use std::marker::PhantomData;
-
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal};
+use crate::tokens::{literal};
+use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
 
 /// ANALYZE statement.
@@ -12,7 +11,7 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AnalyzeStmt<'input> {
-    pub _analyze: PhantomData<keyword::Analyze>,
+    pub _analyze: ANALYZE,
     pub table_name: literal::Ident<'input>,
 }
 

@@ -4,15 +4,14 @@
 ///   [SEARCH DEPTH|BREADTH FIRST BY col, ... SET col]
 ///   [CYCLE col, ... SET col [TO val DEFAULT val] USING col]
 ///   [, ...] SELECT|INSERT|UPDATE|DELETE|MERGE`
-use std::marker::PhantomData;
-
 use recursa::seq::{NoTrailing, NonEmpty, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
+use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
 
 /// Materialization option: `MATERIALIZED` or `NOT MATERIALIZED`.
@@ -21,7 +20,7 @@ use recursa_diagram::railroad;
 #[parse(rules = SqlRules)]
 pub enum MaterializedOption {
     NotMaterialized(NotMaterialized),
-    Materialized(keyword::Materialized),
+    Materialized(MATERIALIZED),
 }
 
 /// NOT MATERIALIZED
@@ -29,8 +28,8 @@ pub enum MaterializedOption {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotMaterialized(
-    PhantomData<keyword::Not>,
-    PhantomData<keyword::Materialized>,
+    NOT,
+    MATERIALIZED,
 );
 
 /// SEARCH direction: DEPTH or BREADTH
@@ -38,8 +37,8 @@ pub struct NotMaterialized(
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SearchDirection {
-    Depth(keyword::Depth),
-    Breadth(keyword::Breadth),
+    Depth(DEPTH),
+    Breadth(BREADTH),
 }
 
 /// SEARCH clause: `SEARCH DEPTH|BREADTH FIRST BY col, ... SET col`
@@ -47,12 +46,12 @@ pub enum SearchDirection {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SearchClause<'input> {
-    pub _search: PhantomData<keyword::Search>,
+    pub _search: SEARCH,
     pub direction: SearchDirection,
-    pub _first: PhantomData<keyword::First>,
-    pub _by: PhantomData<keyword::By>,
+    pub _first: FIRST,
+    pub _by: BY,
     pub columns: Seq<literal::AliasName<'input>, punct::Comma>,
-    pub _set: PhantomData<keyword::Set>,
+    pub _set: SET,
     pub set_column: literal::AliasName<'input>,
 }
 
@@ -61,11 +60,11 @@ pub struct SearchClause<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CycleClause<'input> {
-    pub _cycle: PhantomData<keyword::Cycle>,
+    pub _cycle: CYCLE,
     pub columns: Seq<literal::AliasName<'input>, punct::Comma>,
-    pub _set: PhantomData<keyword::Set>,
+    pub _set: SET,
     pub set_column: CycleSetColumn<'input>,
-    pub _using: PhantomData<keyword::Using>,
+    pub _using: USING,
     pub using_column: literal::AliasName<'input>,
 }
 
@@ -83,9 +82,9 @@ pub struct CycleSetColumn<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CycleToDefault<'input> {
-    pub _to: PhantomData<keyword::To>,
+    pub _to: TO,
     pub to_value: Expr<'input>,
-    pub _default: PhantomData<keyword::Default>,
+    pub _default: DEFAULT,
     pub default_value: Expr<'input>,
 }
 
@@ -99,7 +98,7 @@ pub struct CteDefinition<'input> {
     pub columns: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
     >,
-    pub _as: PhantomData<keyword::As>,
+    pub _as: AS,
     pub materialized: Option<MaterializedOption>,
     pub query: Surrounded<punct::LParen, Box<crate::ast::Statement<'input>>, punct::RParen>,
     pub search: Option<SearchClause<'input>>,
@@ -111,8 +110,8 @@ pub struct CteDefinition<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithClause<'input> {
-    pub _with: PhantomData<keyword::With>,
-    pub recursive: Option<PhantomData<keyword::Recursive>>,
+    pub _with: WITH,
+    pub recursive: Option<RECURSIVE>,
     pub ctes: Seq<CteDefinition<'input>, punct::Comma, NoTrailing, NonEmpty>,
 }
 

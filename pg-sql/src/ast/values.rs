@@ -1,12 +1,11 @@
 /// VALUES statement, TABLE statement, and set operation support (UNION, EXCEPT, INTERSECT).
-use std::marker::PhantomData;
-
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::select::SelectBody;
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, punct};
+use crate::tokens::{punct};
+use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
 
 /// TABLE statement: `TABLE tablename`.
@@ -14,7 +13,7 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableStmt<'input> {
-    pub _table: PhantomData<keyword::Table>,
+    pub _table: TABLE,
     pub table_name: crate::tokens::literal::Ident<'input>,
 }
 
@@ -22,43 +21,43 @@ pub struct TableStmt<'input> {
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct UnionAllOp(PhantomData<keyword::Union>, PhantomData<keyword::All>);
+pub struct UnionAllOp(UNION, ALL);
 
 /// UNION DISTINCT
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct UnionDistinctOp(PhantomData<keyword::Union>, PhantomData<keyword::Distinct>);
+pub struct UnionDistinctOp(UNION, DISTINCT);
 
 /// UNION (bare)
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct UnionOp(PhantomData<keyword::Union>);
+pub struct UnionOp(UNION);
 
 /// EXCEPT ALL
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ExceptAllOp(PhantomData<keyword::Except>, PhantomData<keyword::All>);
+pub struct ExceptAllOp(EXCEPT, ALL);
 
 /// EXCEPT (bare)
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ExceptOp(PhantomData<keyword::Except>);
+pub struct ExceptOp(EXCEPT);
 
 /// INTERSECT ALL
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IntersectAllOp(PhantomData<keyword::Intersect>, PhantomData<keyword::All>);
+pub struct IntersectAllOp(INTERSECT, ALL);
 
 /// INTERSECT (bare)
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IntersectOp(PhantomData<keyword::Intersect>);
+pub struct IntersectOp(INTERSECT);
 
 /// Set operation type.
 ///

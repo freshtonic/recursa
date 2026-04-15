@@ -4,8 +4,6 @@
 /// Each struct has keyword PhantomData fields for disambiguation in the Statement
 /// enum, followed by an optional RawStatement tail that captures any remaining
 /// content before the semicolon.
-use std::marker::PhantomData;
-
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
@@ -13,7 +11,8 @@ use recursa::{FormatTokens, Parse, Visit};
 use crate::ast::RawStatement;
 use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
+use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
 
 // --- Transaction control ---
@@ -28,31 +27,31 @@ pub enum IsolationLevelKind {
     RepeatableRead(RepeatableReadLevel),
     ReadCommitted(ReadCommittedLevel),
     ReadUncommitted(ReadUncommittedLevel),
-    Serializable(keyword::Serializable),
+    Serializable(SERIALIZABLE),
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RepeatableReadLevel {
-    pub _repeatable: PhantomData<keyword::Repeatable>,
-    pub _read: PhantomData<keyword::ReadKw>,
+    pub _repeatable: REPEATABLE,
+    pub _read: READ,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadCommittedLevel {
-    pub _read: PhantomData<keyword::ReadKw>,
-    pub _committed: PhantomData<keyword::Committed>,
+    pub _read: READ,
+    pub _committed: COMMITTED,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadUncommittedLevel {
-    pub _read: PhantomData<keyword::ReadKw>,
-    pub _uncommitted: PhantomData<keyword::Uncommitted>,
+    pub _read: READ,
+    pub _uncommitted: UNCOMMITTED,
 }
 
 /// `ISOLATION LEVEL <level>` transaction mode.
@@ -60,8 +59,8 @@ pub struct ReadUncommittedLevel {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsolationLevelMode {
-    pub _isolation: PhantomData<keyword::Isolation>,
-    pub _level: PhantomData<keyword::Level>,
+    pub _isolation: ISOLATION,
+    pub _level: LEVEL,
     pub level: IsolationLevelKind,
 }
 
@@ -70,16 +69,16 @@ pub struct IsolationLevelMode {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadOnlyMode {
-    pub _read: PhantomData<keyword::ReadKw>,
-    pub _only: PhantomData<keyword::Only>,
+    pub _read: READ,
+    pub _only: ONLY,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadWriteMode {
-    pub _read: PhantomData<keyword::ReadKw>,
-    pub _write: PhantomData<keyword::WriteKw>,
+    pub _read: READ,
+    pub _write: WRITE,
 }
 
 /// `[NOT] DEFERRABLE` transaction mode.
@@ -87,8 +86,8 @@ pub struct ReadWriteMode {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotDeferrableMode {
-    pub _not: PhantomData<keyword::Not>,
-    pub _deferrable: PhantomData<keyword::Deferrable>,
+    pub _not: NOT,
+    pub _deferrable: DEFERRABLE,
 }
 
 /// A single transaction mode.
@@ -103,7 +102,7 @@ pub enum TransactionMode {
     ReadOnly(ReadOnlyMode),
     ReadWrite(ReadWriteMode),
     NotDeferrable(NotDeferrableMode),
-    Deferrable(keyword::Deferrable),
+    Deferrable(DEFERRABLE),
 }
 
 /// Optional `WORK | TRANSACTION` suffix.
@@ -111,8 +110,8 @@ pub enum TransactionMode {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum WorkOrTransaction {
-    Work(keyword::Work),
-    Transaction(keyword::Transaction),
+    Work(WORK),
+    Transaction(TRANSACTION),
 }
 
 /// BEGIN [WORK | TRANSACTION] [transaction_mode [, ...]]
@@ -120,7 +119,7 @@ pub enum WorkOrTransaction {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct BeginStmt {
-    pub _begin: PhantomData<keyword::Begin>,
+    pub _begin: BEGIN,
     pub work: Option<WorkOrTransaction>,
     pub modes: Option<Seq<TransactionMode, punct::Comma>>,
 }
@@ -130,7 +129,7 @@ pub struct BeginStmt {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct EndStmt {
-    pub _end: PhantomData<keyword::End>,
+    pub _end: END,
     pub work: Option<WorkOrTransaction>,
 }
 
@@ -139,7 +138,7 @@ pub struct EndStmt {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AbortStmt {
-    pub _abort: PhantomData<keyword::Abort>,
+    pub _abort: ABORT,
     pub work: Option<WorkOrTransaction>,
 }
 
@@ -148,8 +147,8 @@ pub struct AbortStmt {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StartTransactionStmt {
-    pub _start: PhantomData<keyword::Start>,
-    pub _transaction: PhantomData<keyword::Transaction>,
+    pub _start: START,
+    pub _transaction: TRANSACTION,
     pub modes: Option<Seq<TransactionMode, punct::Comma>>,
 }
 
@@ -159,7 +158,7 @@ pub struct StartTransactionStmt {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetTransactionStmt {
-    pub _set: PhantomData<keyword::Set>,
+    pub _set: SET,
     pub target: SetTransactionTarget,
     pub modes: Seq<TransactionMode, punct::Comma>,
 }
@@ -169,17 +168,17 @@ pub struct SetTransactionStmt {
 #[parse(rules = SqlRules)]
 pub enum SetTransactionTarget {
     SessionCharacteristics(SetSessionCharacteristics),
-    Transaction(keyword::Transaction),
+    Transaction(TRANSACTION),
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetSessionCharacteristics {
-    pub _session: PhantomData<keyword::Session>,
-    pub _characteristics: PhantomData<keyword::Characteristics>,
-    pub _as: PhantomData<keyword::As>,
-    pub _transaction: PhantomData<keyword::Transaction>,
+    pub _session: SESSION,
+    pub _characteristics: CHARACTERISTICS,
+    pub _as: AS,
+    pub _transaction: TRANSACTION,
 }
 
 /// `SET CONSTRAINTS { ALL | name [, …] } { DEFERRED | IMMEDIATE }`
@@ -187,8 +186,8 @@ pub struct SetSessionCharacteristics {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetConstraintsStmt<'input> {
-    pub _set: PhantomData<keyword::Set>,
-    pub _constraints: PhantomData<keyword::Constraints>,
+    pub _set: SET,
+    pub _constraints: CONSTRAINTS,
     pub target: SetConstraintsTarget<'input>,
     pub mode: DeferredMode,
 }
@@ -197,7 +196,7 @@ pub struct SetConstraintsStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetConstraintsTarget<'input> {
-    All(keyword::All),
+    All(ALL),
     Names(Seq<literal::Ident<'input>, punct::Comma>),
 }
 
@@ -205,8 +204,8 @@ pub enum SetConstraintsTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum DeferredMode {
-    Deferred(keyword::Deferred),
-    Immediate(keyword::Immediate),
+    Deferred(DEFERRED),
+    Immediate(IMMEDIATE),
 }
 
 /// COMMIT [WORK | TRANSACTION]
@@ -214,7 +213,7 @@ pub enum DeferredMode {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CommitStmt<'input> {
-    pub _commit: PhantomData<keyword::Commit>,
+    pub _commit: COMMIT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -225,7 +224,7 @@ pub struct CommitStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RollbackStmt<'input> {
-    pub _rollback: PhantomData<keyword::Rollback>,
+    pub _rollback: ROLLBACK,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -234,7 +233,7 @@ pub struct RollbackStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SavepointStmt<'input> {
-    pub _savepoint: PhantomData<keyword::Savepoint>,
+    pub _savepoint: SAVEPOINT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -245,7 +244,7 @@ pub struct SavepointStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReleaseStmt<'input> {
-    pub _release: PhantomData<keyword::Release>,
+    pub _release: RELEASE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -256,7 +255,7 @@ pub struct ReleaseStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PrepareStmt<'input> {
-    pub _prepare: PhantomData<keyword::Prepare>,
+    pub _prepare: PREPARE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -265,7 +264,7 @@ pub struct PrepareStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExecuteStmt<'input> {
-    pub _execute: PhantomData<keyword::Execute>,
+    pub _execute: EXECUTE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -276,7 +275,7 @@ pub struct ExecuteStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeallocateStmt<'input> {
-    pub _deallocate: PhantomData<keyword::Deallocate>,
+    pub _deallocate: DEALLOCATE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -287,7 +286,7 @@ pub struct DeallocateStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GrantStmt<'input> {
-    pub _grant: PhantomData<keyword::Grant>,
+    pub _grant: GRANT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -296,7 +295,7 @@ pub struct GrantStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RevokeStmt<'input> {
-    pub _revoke: PhantomData<keyword::Revoke>,
+    pub _revoke: REVOKE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -307,7 +306,7 @@ pub struct RevokeStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CopyStmt<'input> {
-    pub _copy: PhantomData<keyword::Copy>,
+    pub _copy: COPY,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -320,7 +319,7 @@ pub struct CopyStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TruncateStmt<'input> {
-    pub _truncate: PhantomData<keyword::Truncate>,
+    pub _truncate: TRUNCATE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -331,7 +330,7 @@ pub struct TruncateStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CommentStmt<'input> {
-    pub _comment: PhantomData<keyword::Comment>,
+    pub _comment: COMMENT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -344,7 +343,7 @@ pub struct CommentStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LockStmt<'input> {
-    pub _lock: PhantomData<keyword::Lock>,
+    pub _lock: LOCK,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -355,7 +354,7 @@ pub struct LockStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeclareStmt<'input> {
-    pub _declare: PhantomData<keyword::Declare>,
+    pub _declare: DECLARE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -364,8 +363,8 @@ pub struct DeclareStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FetchSource {
-    From(keyword::From),
-    In(keyword::In),
+    From(FROM),
+    In(IN),
 }
 
 /// `ABSOLUTE n` form.
@@ -373,7 +372,7 @@ pub enum FetchSource {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchAbsolute<'input> {
-    pub _absolute: PhantomData<keyword::Absolute>,
+    pub _absolute: ABSOLUTE,
     pub count: literal::IntegerLit<'input>,
 }
 
@@ -382,7 +381,7 @@ pub struct FetchAbsolute<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchRelative<'input> {
-    pub _relative: PhantomData<keyword::Relative>,
+    pub _relative: RELATIVE,
     pub count: literal::IntegerLit<'input>,
 }
 
@@ -391,7 +390,7 @@ pub struct FetchRelative<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchForward<'input> {
-    pub _forward: PhantomData<keyword::Forward>,
+    pub _forward: FORWARD,
     pub count: Option<FetchCountOrAll<'input>>,
 }
 
@@ -400,7 +399,7 @@ pub struct FetchForward<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchBackward<'input> {
-    pub _backward: PhantomData<keyword::Backward>,
+    pub _backward: BACKWARD,
     pub count: Option<FetchCountOrAll<'input>>,
 }
 
@@ -409,7 +408,7 @@ pub struct FetchBackward<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FetchCountOrAll<'input> {
-    All(keyword::All),
+    All(ALL),
     Count(literal::IntegerLit<'input>),
 }
 
@@ -426,11 +425,11 @@ pub enum FetchDirection<'input> {
     Relative(FetchRelative<'input>),
     Forward(FetchForward<'input>),
     Backward(FetchBackward<'input>),
-    Next(keyword::Next),
-    Prior(keyword::Prior),
-    First(keyword::First),
-    Last(keyword::Last),
-    All(keyword::All),
+    Next(NEXT),
+    Prior(PRIOR),
+    First(FIRST),
+    Last(LAST),
+    All(ALL),
     Count(literal::IntegerLit<'input>),
 }
 
@@ -441,7 +440,7 @@ pub enum FetchDirection<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchStmt<'input> {
-    pub _fetch: PhantomData<keyword::Fetch>,
+    pub _fetch: FETCH,
     pub direction: Option<FetchDirection<'input>>,
     pub source: Option<FetchSource>,
     pub cursor: literal::AliasName<'input>,
@@ -452,7 +451,7 @@ pub struct FetchStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CloseStmt<'input> {
-    pub _close: PhantomData<keyword::Close>,
+    pub _close: CLOSE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -463,7 +462,7 @@ pub struct CloseStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MoveStmt<'input> {
-    pub _move: PhantomData<keyword::Move>,
+    pub _move: MOVE,
     pub direction: Option<FetchDirection<'input>>,
     pub source: Option<FetchSource>,
     pub cursor: literal::AliasName<'input>,
@@ -498,7 +497,7 @@ pub struct VacuumOptions<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReindexStmt<'input> {
-    pub _reindex: PhantomData<keyword::Reindex>,
+    pub _reindex: REINDEX,
     pub options: Option<VacuumOptions<'input>>,
     pub tail: Option<RawStatement<'input>>,
 }
@@ -512,7 +511,7 @@ pub struct ReindexStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RefreshStmt<'input> {
-    pub _refresh: PhantomData<keyword::Refresh>,
+    pub _refresh: REFRESH,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -523,7 +522,7 @@ pub struct RefreshStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotifyStmt<'input> {
-    pub _notify: PhantomData<keyword::Notify>,
+    pub _notify: NOTIFY,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -532,7 +531,7 @@ pub struct NotifyStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ListenStmt<'input> {
-    pub _listen: PhantomData<keyword::Listen>,
+    pub _listen: LISTEN,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -552,7 +551,7 @@ pub enum UnlistenTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnlistenStmt<'input> {
-    pub _unlisten: PhantomData<keyword::Unlisten>,
+    pub _unlisten: UNLISTEN,
     pub target: UnlistenTarget<'input>,
 }
 
@@ -563,7 +562,7 @@ pub struct UnlistenStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoStmt<'input> {
-    pub _do: PhantomData<keyword::DoBlock>,
+    pub _do: DO,
     pub language: Option<DoLanguage<'input>>,
     pub body: literal::DollarStringLit<'input>,
     pub trailing_language: Option<DoLanguage<'input>>,
@@ -574,7 +573,7 @@ pub struct DoStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoLanguage<'input> {
-    pub _language: PhantomData<keyword::Language>,
+    pub _language: LANGUAGE,
     pub name: literal::Ident<'input>,
 }
 
@@ -585,7 +584,7 @@ pub struct DoLanguage<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DiscardStmt<'input> {
-    pub _discard: PhantomData<keyword::Discard>,
+    pub _discard: DISCARD,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -596,7 +595,7 @@ pub struct DiscardStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReassignStmt<'input> {
-    pub _reassign: PhantomData<keyword::Reassign>,
+    pub _reassign: REASSIGN,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -607,7 +606,7 @@ pub struct ReassignStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SecurityLabelStmt<'input> {
-    pub _security: PhantomData<keyword::Security>,
+    pub _security: SECURITY,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -620,7 +619,7 @@ pub struct SecurityLabelStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ClusterStmt<'input> {
-    pub _cluster: PhantomData<keyword::Clusterw>,
+    pub _cluster: CLUSTER,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -631,7 +630,7 @@ pub struct ClusterStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct VacuumStmt<'input> {
-    pub _vacuum: PhantomData<keyword::Vacuumw>,
+    pub _vacuum: VACUUM,
     pub options: Option<VacuumOptions<'input>>,
     pub tail: Option<RawStatement<'input>>,
 }
@@ -643,8 +642,8 @@ pub struct VacuumStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTableStmt<'input> {
-    pub _alter: PhantomData<keyword::Alter>,
-    pub _table: PhantomData<keyword::Table>,
+    pub _alter: ALTER,
+    pub _table: TABLE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -653,7 +652,7 @@ pub struct AlterTableStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CheckpointStmt {
-    pub _checkpoint: PhantomData<keyword::Checkpoint>,
+    pub _checkpoint: CHECKPOINT,
 }
 
 /// `ALTER DEFAULT PRIVILEGES [FOR ROLE ...] [IN SCHEMA ...] { GRANT | REVOKE } ...`
@@ -661,9 +660,9 @@ pub struct CheckpointStmt {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterDefaultPrivilegesStmt<'input> {
-    pub _alter: PhantomData<keyword::Alter>,
-    pub _default: PhantomData<keyword::Default>,
-    pub _privileges: PhantomData<keyword::Privileges>,
+    pub _alter: ALTER,
+    pub _default: DEFAULT,
+    pub _privileges: PRIVILEGES,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -675,8 +674,8 @@ pub struct AlterDefaultPrivilegesStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTriggerStmt<'input> {
-    pub _create: PhantomData<keyword::Create>,
-    pub _trigger: PhantomData<keyword::Trigger>,
+    pub _create: CREATE,
+    pub _trigger: TRIGGER,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -685,8 +684,8 @@ pub struct CreateTriggerStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropTriggerStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _trigger: PhantomData<keyword::Trigger>,
+    pub _drop: DROP,
+    pub _trigger: TRIGGER,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -695,9 +694,9 @@ pub struct DropTriggerStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateRuleStmt<'input> {
-    pub _create: PhantomData<keyword::Create>,
+    pub _create: CREATE,
     pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
-    pub _rule: PhantomData<keyword::Rule>,
+    pub _rule: RULE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -706,8 +705,8 @@ pub struct CreateRuleStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropRuleStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _rule: PhantomData<keyword::Rule>,
+    pub _drop: DROP,
+    pub _rule: RULE,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -721,8 +720,8 @@ pub struct DropRuleStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TempModifier {
-    Temporary(keyword::Temporary),
-    Temp(keyword::Temp),
+    Temporary(TEMPORARY),
+    Temp(TEMP),
 }
 
 // --- CREATE/DROP/ALTER for remaining object types ---
@@ -735,12 +734,12 @@ macro_rules! create_drop_stmts {
             #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
             #[parse(rules = SqlRules)]
             pub struct $create_name<'input> {
-                pub _create: PhantomData<keyword::Create>,
+                pub _create: CREATE,
                 /// Optional temporary modifier: `TEMP` or `TEMPORARY`. Postgres
                 /// accepts it on sequence/view/table/etc. so we tolerate it
                 /// uniformly in these raw-tailed stubs.
                 pub temp: Option<TempModifier>,
-                pub _obj: PhantomData<keyword::$kw>,
+                pub _obj: $kw,
                 pub tail: Option<RawStatement<'input>>,
             }
 
@@ -748,8 +747,8 @@ macro_rules! create_drop_stmts {
             #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
             #[parse(rules = SqlRules)]
             pub struct $drop_name<'input> {
-                pub _drop: PhantomData<keyword::Drop>,
-                pub _obj: PhantomData<keyword::$kw>,
+                pub _drop: DROP,
+                pub _obj: $kw,
                 pub tail: Option<RawStatement<'input>>,
             }
         )*
@@ -757,26 +756,26 @@ macro_rules! create_drop_stmts {
 }
 
 create_drop_stmts! {
-    Group, CreateGroupStmt, DropGroupStmt, Group;
-    Role, CreateRoleStmt, DropRoleStmt, Role;
-    User, CreateUserStmt, DropUserStmt, User;
-    Schema, CreateSchemaStmt, DropSchemaStmt, Schema;
-    Sequence, CreateSequenceStmt, DropSequenceStmt, Sequence;
-    Type, CreateTypeStmt, DropTypeStmt, Type;
-    Domain, CreateDomainStmt, DropDomainStmt, Domain;
-    Aggregate, CreateAggregateStmt, DropAggregateStmt, Aggregate;
-    Operator, CreateOperatorStmt, DropOperatorStmt, Operator;
-    Cast, CreateCastStmt, DropCastStmt, Cast;
-    Collation, CreateCollationStmt, DropCollationStmt, Collation;
-    Extension, CreateExtensionStmt, DropExtensionStmt, Extension;
-    Policy, CreatePolicyStmt, DropPolicyStmt, Policy;
-    Statistics, CreateStatisticsStmt, DropStatisticsStmt, Statistics;
-    Publication, CreatePublicationStmt, DropPublicationStmt, Publication;
-    Subscription, CreateSubscriptionStmt, DropSubscriptionStmt, Subscription;
-    Conversion, CreateConversionStmt, DropConversionStmt, Conversion;
-    Server, CreateServerStmt, DropServerStmt, Server;
-    Language, CreateLanguageStmt, DropLanguageStmt, Language;
-    Database, CreateDatabaseStmt, DropDatabaseStmt, Database;
+    Group, CreateGroupStmt, DropGroupStmt, GROUP;
+    Role, CreateRoleStmt, DropRoleStmt, ROLE;
+    User, CreateUserStmt, DropUserStmt, USER;
+    Schema, CreateSchemaStmt, DropSchemaStmt, SCHEMA;
+    Sequence, CreateSequenceStmt, DropSequenceStmt, SEQUENCE;
+    Type, CreateTypeStmt, DropTypeStmt, TYPE;
+    Domain, CreateDomainStmt, DropDomainStmt, DOMAIN;
+    Aggregate, CreateAggregateStmt, DropAggregateStmt, AGGREGATE;
+    Operator, CreateOperatorStmt, DropOperatorStmt, OPERATOR;
+    Cast, CreateCastStmt, DropCastStmt, CAST;
+    Collation, CreateCollationStmt, DropCollationStmt, COLLATION;
+    Extension, CreateExtensionStmt, DropExtensionStmt, EXTENSION;
+    Policy, CreatePolicyStmt, DropPolicyStmt, POLICY;
+    Statistics, CreateStatisticsStmt, DropStatisticsStmt, STATISTICS;
+    Publication, CreatePublicationStmt, DropPublicationStmt, PUBLICATION;
+    Subscription, CreateSubscriptionStmt, DropSubscriptionStmt, SUBSCRIPTION;
+    Conversion, CreateConversionStmt, DropConversionStmt, CONVERSION;
+    Server, CreateServerStmt, DropServerStmt, SERVER;
+    Language, CreateLanguageStmt, DropLanguageStmt, LANGUAGE;
+    Database, CreateDatabaseStmt, DropDatabaseStmt, DATABASE;
 }
 
 macro_rules! alter_stmts {
@@ -786,8 +785,8 @@ macro_rules! alter_stmts {
             #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
             #[parse(rules = SqlRules)]
             pub struct $alter_name<'input> {
-                pub _alter: PhantomData<keyword::Alter>,
-                pub _obj: PhantomData<keyword::$kw>,
+                pub _alter: ALTER,
+                pub _obj: $kw,
                 pub tail: Option<RawStatement<'input>>,
             }
         )*
@@ -795,29 +794,29 @@ macro_rules! alter_stmts {
 }
 
 alter_stmts! {
-    Rule, AlterRuleStmt, Rule;
-    Group, AlterGroupStmt, Group;
-    Role, AlterRoleStmt, Role;
-    User, AlterUserStmt, User;
-    Schema, AlterSchemaStmt, Schema;
-    Sequence, AlterSequenceStmt, Sequence;
-    Type, AlterTypeStmt, Type;
-    Domain, AlterDomainStmt, Domain;
-    Aggregate, AlterAggregateStmt, Aggregate;
-    Operator, AlterOperatorStmt, Operator;
-    Collation, AlterCollationStmt, Collation;
-    Extension, AlterExtensionStmt, Extension;
-    Policy, AlterPolicyStmt, Policy;
-    Statistics, AlterStatisticsStmt, Statistics;
-    Publication, AlterPublicationStmt, Publication;
-    Subscription, AlterSubscriptionStmt, Subscription;
-    Conversion, AlterConversionStmt, Conversion;
-    Server, AlterServerStmt, Server;
-    Index, AlterIndexStmt, Index;
-    View, AlterViewStmt, View;
-    Function, AlterFunctionStmt, Function;
-    Language, AlterLanguageStmt, Language;
-    Database, AlterDatabaseStmt, Database;
+    Rule, AlterRuleStmt, RULE;
+    Group, AlterGroupStmt, GROUP;
+    Role, AlterRoleStmt, ROLE;
+    User, AlterUserStmt, USER;
+    Schema, AlterSchemaStmt, SCHEMA;
+    Sequence, AlterSequenceStmt, SEQUENCE;
+    Type, AlterTypeStmt, TYPE;
+    Domain, AlterDomainStmt, DOMAIN;
+    Aggregate, AlterAggregateStmt, AGGREGATE;
+    Operator, AlterOperatorStmt, OPERATOR;
+    Collation, AlterCollationStmt, COLLATION;
+    Extension, AlterExtensionStmt, EXTENSION;
+    Policy, AlterPolicyStmt, POLICY;
+    Statistics, AlterStatisticsStmt, STATISTICS;
+    Publication, AlterPublicationStmt, PUBLICATION;
+    Subscription, AlterSubscriptionStmt, SUBSCRIPTION;
+    Conversion, AlterConversionStmt, CONVERSION;
+    Server, AlterServerStmt, SERVER;
+    Index, AlterIndexStmt, INDEX;
+    View, AlterViewStmt, VIEW;
+    Function, AlterFunctionStmt, FUNCTION;
+    Language, AlterLanguageStmt, LANGUAGE;
+    Database, AlterDatabaseStmt, DATABASE;
 }
 
 // Special multi-keyword DDL types
@@ -827,8 +826,8 @@ alter_stmts! {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterForeignStmt<'input> {
-    pub _alter: PhantomData<keyword::Alter>,
-    pub _foreign: PhantomData<keyword::Foreign>,
+    pub _alter: ALTER,
+    pub _foreign: FOREIGN,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -837,8 +836,8 @@ pub struct AlterForeignStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateEventTriggerStmt<'input> {
-    pub _create: PhantomData<keyword::Create>,
-    pub _event: PhantomData<keyword::Event>,
+    pub _create: CREATE,
+    pub _event: EVENT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -847,8 +846,8 @@ pub struct CreateEventTriggerStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropEventTriggerStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _event: PhantomData<keyword::Event>,
+    pub _drop: DROP,
+    pub _event: EVENT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -857,8 +856,8 @@ pub struct DropEventTriggerStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterEventTriggerStmt<'input> {
-    pub _alter: PhantomData<keyword::Alter>,
-    pub _event: PhantomData<keyword::Event>,
+    pub _alter: ALTER,
+    pub _event: EVENT,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -867,8 +866,8 @@ pub struct AlterEventTriggerStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropOwnedStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _owned: PhantomData<keyword::Owned>,
+    pub _drop: DROP,
+    pub _owned: OWNED,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -877,8 +876,8 @@ pub struct DropOwnedStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateAccessMethodStmt<'input> {
-    pub _create: PhantomData<keyword::Create>,
-    pub _access: PhantomData<keyword::Access>,
+    pub _create: CREATE,
+    pub _access: ACCESS,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -887,8 +886,8 @@ pub struct CreateAccessMethodStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropAccessMethodStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _access: PhantomData<keyword::Access>,
+    pub _drop: DROP,
+    pub _access: ACCESS,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -897,8 +896,8 @@ pub struct DropAccessMethodStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateMaterializedViewStmt<'input> {
-    pub _create: PhantomData<keyword::Create>,
-    pub _materialized: PhantomData<keyword::Materialized>,
+    pub _create: CREATE,
+    pub _materialized: MATERIALIZED,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -907,8 +906,8 @@ pub struct CreateMaterializedViewStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropMaterializedViewStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _materialized: PhantomData<keyword::Materialized>,
+    pub _drop: DROP,
+    pub _materialized: MATERIALIZED,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -917,8 +916,8 @@ pub struct DropMaterializedViewStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterMaterializedViewStmt<'input> {
-    pub _alter: PhantomData<keyword::Alter>,
-    pub _materialized: PhantomData<keyword::Materialized>,
+    pub _alter: ALTER,
+    pub _materialized: MATERIALIZED,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -927,8 +926,8 @@ pub struct AlterMaterializedViewStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateForeignStmt<'input> {
-    pub _create: PhantomData<keyword::Create>,
-    pub _foreign: PhantomData<keyword::Foreign>,
+    pub _create: CREATE,
+    pub _foreign: FOREIGN,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -937,8 +936,8 @@ pub struct CreateForeignStmt<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropForeignStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _foreign: PhantomData<keyword::Foreign>,
+    pub _drop: DROP,
+    pub _foreign: FOREIGN,
     pub tail: Option<RawStatement<'input>>,
 }
 

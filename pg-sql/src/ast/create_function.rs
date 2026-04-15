@@ -1,13 +1,12 @@
 /// CREATE FUNCTION / DROP FUNCTION statement AST.
-use std::marker::PhantomData;
-
 use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::expr::{CastType, Expr, TypeName};
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
+use crate::tokens::keyword::*;
 use recursa_diagram::railroad;
 
 /// SETOF type: `SETOF typename`
@@ -15,7 +14,7 @@ use recursa_diagram::railroad;
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetofReturn<'input> {
-    pub _setof: PhantomData<keyword::Setof>,
+    pub _setof: SETOF,
     pub type_name: TypeName<'input>,
 }
 
@@ -33,7 +32,7 @@ pub enum ReturnType<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LanguageOption<'input> {
-    pub _language: PhantomData<keyword::Language>,
+    pub _language: LANGUAGE,
     pub name: literal::AliasName<'input>,
 }
 
@@ -55,7 +54,7 @@ pub enum FuncBody<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncReturnTypeName<'input> {
-    Trigger(keyword::Trigger),
+    Trigger(TRIGGER),
     Base(CastType<'input>),
 }
 
@@ -64,7 +63,7 @@ pub enum FuncReturnTypeName<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncReturnsClause<'input> {
-    pub _returns: PhantomData<keyword::Returns>,
+    pub _returns: RETURNS,
     pub return_type: FuncReturnType<'input>,
 }
 
@@ -82,7 +81,7 @@ pub enum FuncReturnType<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncSetofReturn<'input> {
-    pub _setof: PhantomData<keyword::Setof>,
+    pub _setof: SETOF,
     pub type_name: FuncReturnTypeName<'input>,
 }
 
@@ -93,10 +92,10 @@ pub struct FuncSetofReturn<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ArgMode {
-    In(keyword::In),
-    Inout(keyword::Inout),
-    Out(keyword::Out),
-    Variadic(keyword::Variadic),
+    In(IN),
+    Inout(INOUT),
+    Out(OUT),
+    Variadic(VARIADIC),
 }
 
 /// `[mode] name type [default]` -- a named function parameter.
@@ -125,7 +124,7 @@ pub struct UnnamedFuncParam<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ParamDefaultSep {
-    Default(keyword::Default),
+    Default(DEFAULT),
     Eq(punct::Eq),
 }
 
@@ -158,9 +157,9 @@ pub enum FuncParam<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum VolatilityOption {
-    Immutable(keyword::Immutable),
-    Stable(keyword::Stable),
-    Volatile(keyword::Volatile),
+    Immutable(IMMUTABLE),
+    Stable(STABLE),
+    Volatile(VOLATILE),
 }
 
 /// `PARALLEL SAFE` / `PARALLEL RESTRICTED` / `PARALLEL UNSAFE` parallelism
@@ -169,9 +168,9 @@ pub enum VolatilityOption {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ParallelMode {
-    Safe(keyword::SafeKw),
-    Restricted(keyword::RestrictedKw),
-    Unsafe(keyword::UnsafeKw),
+    Safe(SAFE),
+    Restricted(RESTRICTED),
+    Unsafe(UNSAFE),
 }
 
 /// `PARALLEL { SAFE | RESTRICTED | UNSAFE }` function option.
@@ -179,7 +178,7 @@ pub enum ParallelMode {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ParallelOption {
-    pub _parallel: PhantomData<keyword::ParallelKw>,
+    pub _parallel: PARALLEL,
     pub mode: ParallelMode,
 }
 
@@ -190,7 +189,7 @@ pub struct ParallelOption {
 #[parse(rules = SqlRules)]
 pub enum SetAssignSep {
     Eq(punct::Eq),
-    To(keyword::To),
+    To(TO),
 }
 
 /// `SET config_param { = | TO } value` function option — per-function GUC
@@ -199,7 +198,7 @@ pub enum SetAssignSep {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetFuncOption<'input> {
-    pub _set: PhantomData<keyword::Set>,
+    pub _set: SET,
     pub name: literal::AliasName<'input>,
     pub sep: SetAssignSep,
     pub value: crate::ast::set_reset::SetValue<'input>,
@@ -210,10 +209,10 @@ pub struct SetFuncOption<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CalledOnNullInput {
-    pub _called: PhantomData<keyword::Called>,
-    pub _on: PhantomData<keyword::On>,
-    pub _null: PhantomData<keyword::Null>,
-    pub _input: PhantomData<keyword::Input>,
+    pub _called: CALLED,
+    pub _on: ON,
+    pub _null: NULL,
+    pub _input: INPUT,
 }
 
 /// `RETURNS NULL ON NULL INPUT`.
@@ -221,11 +220,11 @@ pub struct CalledOnNullInput {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReturnsNullOnNullInput {
-    pub _returns: PhantomData<keyword::Returns>,
-    pub _null: PhantomData<keyword::Null>,
-    pub _on: PhantomData<keyword::On>,
-    pub _null2: PhantomData<keyword::Null>,
-    pub _input: PhantomData<keyword::Input>,
+    pub _returns: RETURNS,
+    pub _null: NULL,
+    pub _on: ON,
+    pub _null2: NULL,
+    pub _input: INPUT,
 }
 
 /// `STRICT` / `CALLED ON NULL INPUT` / `RETURNS NULL ON NULL INPUT`.
@@ -237,7 +236,7 @@ pub struct ReturnsNullOnNullInput {
 pub enum StrictnessOption {
     CalledOnNullInput(CalledOnNullInput),
     ReturnsNullOnNullInput(ReturnsNullOnNullInput),
-    Strict(keyword::Strict),
+    Strict(STRICT),
 }
 
 /// `AS body` clause.
@@ -245,7 +244,7 @@ pub enum StrictnessOption {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsOption<'input> {
-    pub _as: PhantomData<keyword::As>,
+    pub _as: AS,
     pub body: FuncBody<'input>,
 }
 
@@ -273,9 +272,9 @@ pub enum FuncOption<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateFunctionStmt<'input> {
-    pub _create: PhantomData<keyword::Create>,
+    pub _create: CREATE,
     pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
-    pub _function: PhantomData<keyword::Function>,
+    pub _function: FUNCTION,
     pub name: crate::ast::common::QualifiedName<'input>,
     pub args: Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>,
     pub returns: Option<FuncReturnsClause<'input>>,
@@ -301,8 +300,8 @@ pub struct DropFunctionTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropFunctionStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _function: PhantomData<keyword::Function>,
+    pub _drop: DROP,
+    pub _function: FUNCTION,
     pub targets: Seq<DropFunctionTarget<'input>, punct::Comma>,
     pub behavior: Option<crate::ast::common::DropBehavior>,
 }

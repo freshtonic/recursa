@@ -1,28 +1,27 @@
 /// CREATE INDEX / DROP INDEX statement AST.
-use std::marker::PhantomData;
-
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 use recursa_diagram::railroad;
 
-pub use crate::ast::common::{CascadeKw, DropBehavior, RestrictKw};
+pub use crate::ast::common::DropBehavior;
 
 use crate::ast::create_view::IfExistsKw;
 use crate::ast::expr::{Expr, FuncCall};
 use crate::ast::select::{NullsOrder, SortDir, WhereClause};
 use crate::ast::set_reset::SetValue;
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
 
+use crate::tokens::keyword::*;
 /// `IF NOT EXISTS` keyword sequence.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IfNotExistsKw {
-    pub _if: PhantomData<keyword::If>,
-    pub _not: PhantomData<keyword::Not>,
-    pub _exists: PhantomData<keyword::Exists>,
+    pub _if: IF,
+    pub _not: NOT,
+    pub _exists: EXISTS,
 }
 
 /// Index access method: `USING method_name`.
@@ -34,7 +33,7 @@ pub struct IfNotExistsKw {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UsingMethod<'input> {
-    pub _using: PhantomData<keyword::Using>,
+    pub _using: USING,
     pub method: literal::AliasName<'input>,
 }
 
@@ -88,7 +87,7 @@ pub struct StorageParamValue<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithStorage<'input> {
-    pub _with: PhantomData<keyword::With>,
+    pub _with: WITH,
     pub params:
         Surrounded<punct::LParen, Seq<StorageParam<'input>, punct::Comma>, punct::RParen>,
 }
@@ -98,7 +97,7 @@ pub struct WithStorage<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IncludeClause<'input> {
-    pub _include: PhantomData<keyword::Include>,
+    pub _include: INCLUDE,
     pub columns:
         Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
 }
@@ -124,7 +123,7 @@ pub enum IndexTarget<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IndexCollate<'input> {
-    pub _collate: PhantomData<keyword::Collate>,
+    pub _collate: COLLATE,
     pub name: literal::Ident<'input>,
 }
 
@@ -156,16 +155,16 @@ pub struct IndexElem<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateIndexStmt<'input> {
-    pub _create: PhantomData<keyword::Create>,
-    pub unique: Option<PhantomData<keyword::Unique>>,
-    pub _index: PhantomData<keyword::Index>,
-    pub concurrently: Option<PhantomData<keyword::Concurrently>>,
+    pub _create: CREATE,
+    pub unique: Option<UNIQUE>,
+    pub _index: INDEX,
+    pub concurrently: Option<CONCURRENTLY>,
     pub if_not_exists: Option<IfNotExistsKw>,
     pub name: Option<literal::Ident<'input>>,
-    pub _on: PhantomData<keyword::On>,
+    pub _on: ON,
     /// Optional `ONLY` modifier — restricts the index to the named table
     /// without descending into inheritance children (partitioned tables).
-    pub only: Option<PhantomData<keyword::Only>>,
+    pub only: Option<ONLY>,
     pub table_name: literal::Ident<'input>,
     pub using: Option<Box<UsingMethod<'input>>>,
     pub columns:
@@ -192,17 +191,17 @@ pub enum NullsDistinctClause {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NullsDistinct {
-    pub _nulls: PhantomData<keyword::Nulls>,
-    pub _distinct: PhantomData<keyword::Distinct>,
+    pub _nulls: NULLS,
+    pub _distinct: DISTINCT,
 }
 
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NullsNotDistinct {
-    pub _nulls: PhantomData<keyword::Nulls>,
-    pub _not: PhantomData<keyword::Not>,
-    pub _distinct: PhantomData<keyword::Distinct>,
+    pub _nulls: NULLS,
+    pub _not: NOT,
+    pub _distinct: DISTINCT,
 }
 
 /// DROP INDEX statement:
@@ -214,9 +213,9 @@ pub struct NullsNotDistinct {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropIndexStmt<'input> {
-    pub _drop: PhantomData<keyword::Drop>,
-    pub _index: PhantomData<keyword::Index>,
-    pub concurrently: Option<PhantomData<keyword::Concurrently>>,
+    pub _drop: DROP,
+    pub _index: INDEX,
+    pub concurrently: Option<CONCURRENTLY>,
     pub if_exists: Option<IfExistsKw>,
     pub names: Seq<literal::Ident<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,

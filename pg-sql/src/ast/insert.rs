@@ -2,8 +2,6 @@
 ///
 /// Supports: `INSERT INTO table [(cols)] source [ON CONFLICT ...] [RETURNING ...]`
 /// where source is DEFAULT VALUES, VALUES rows, or SELECT query.
-use std::marker::PhantomData;
-
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
@@ -14,15 +12,16 @@ use crate::ast::expr::Expr;
 use crate::ast::select::WhereClause;
 use crate::ast::update::{ReturningClause, SetAssignment};
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal, punct};
+use crate::tokens::{literal, punct};
 
+use crate::tokens::keyword::*;
 /// DEFAULT VALUES variant.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DefaultValues {
-    pub _default: PhantomData<keyword::Default>,
-    pub _values: PhantomData<keyword::Values>,
+    pub _default: DEFAULT,
+    pub _values: VALUES,
 }
 
 /// Multiple value rows: `VALUES (row1), (row2), ...`
@@ -30,7 +29,7 @@ pub struct DefaultValues {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertValueRows<'input> {
-    pub _values: PhantomData<keyword::Values>,
+    pub _values: VALUES,
     pub rows: Seq<ValueList<'input>, punct::Comma>,
 }
 
@@ -52,9 +51,9 @@ pub enum InsertSource<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoUpdateAction<'input> {
-    pub _do: PhantomData<keyword::Do>,
-    pub _update: PhantomData<keyword::Update>,
-    pub _set: PhantomData<keyword::Set>,
+    pub _do: DO,
+    pub _update: UPDATE,
+    pub _set: SET,
     pub assignments: Seq<SetAssignment<'input>, punct::Comma>,
     pub where_clause: Option<WhereClause<'input>>,
 }
@@ -64,8 +63,8 @@ pub struct DoUpdateAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoNothingAction {
-    pub _do: PhantomData<keyword::Do>,
-    pub _nothing: PhantomData<keyword::Nothing>,
+    pub _do: DO,
+    pub _nothing: NOTHING,
 }
 
 /// ON CONFLICT action: DO UPDATE SET ... [WHERE ...] or DO NOTHING.
@@ -86,8 +85,8 @@ pub enum ConflictAction<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnConflictClause<'input> {
-    pub _on: PhantomData<keyword::On>,
-    pub _conflict: PhantomData<keyword::Conflict>,
+    pub _on: ON,
+    pub _conflict: CONFLICT,
     pub target: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
     >,
@@ -100,8 +99,8 @@ pub struct OnConflictClause<'input> {
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
 pub struct InsertStmt<'input> {
-    pub _insert: PhantomData<keyword::Insert>,
-    pub _into: PhantomData<keyword::Into>,
+    pub _insert: INSERT,
+    pub _into: INTO,
     pub table_name: QualifiedName<'input>,
     pub columns: Option<Box<ColumnList<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]

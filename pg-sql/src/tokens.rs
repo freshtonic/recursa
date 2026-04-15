@@ -1,442 +1,358 @@
 use recursa::{Parse, ParseError, Visit};
 
 /// Keywords
+#[allow(non_camel_case_types)]
 pub mod keyword {
     // Keywords (case-insensitive, with word boundary)
     recursa::keywords! {
-        Select      => r"SELECT\b",
-        From        => r"FROM\b",
-        Where       => r"WHERE\b",
-        As          => r"AS\b",
-        And         => r"AND\b",
-        Or          => r"OR\b",
-        Not         => r"NOT\b",
-        True        => r"TRUE\b",
-        False       => r"FALSE\b",
-        Null        => r"NULL\b",
-        Is          => r"IS\b",
-        Unknown     => r"UNKNOWN\b",
-        Create      => r"CREATE\b",
-        Table       => r"TABLE\b",
-        Insert      => r"INSERT\b",
-        Into        => r"INTO\b",
-        Values      => r"VALUES\b",
-        Drop        => r"DROP\b",
-        Delete      => r"DELETE\b",
-        Order       => r"ORDER\b",
-        By          => r"BY\b",
-        Bool        => r"BOOL\b",
-        Boolean     => r"BOOLEAN\b",
-        Text        => r"TEXT\b",
-        Int         => r"INT\b",
-        Serial      => r"SERIAL\b",
-        Primary     => r"PRIMARY\b",
-        Key         => r"KEY\b",
-        Asc         => r"ASC\b",
-        Desc        => r"DESC\b",
-        Nulls       => r"NULLS\b",
-        First       => r"FIRST\b",
-        Last        => r"LAST\b",
-        Using       => r"USING\b",
-        Offset      => r"OFFSET\b",
-        Limit       => r"LIMIT\b",
-        Analyze     => r"ANALYZE\b",
-        Set         => r"SET\b",
-        Reset       => r"RESET\b",
-        To          => r"TO\b",
-        On          => r"ON\b",
-        Off         => r"OFF\b",
-        Temp        => r"TEMP\b",
-        Index       => r"INDEX\b",
-        Explain     => r"EXPLAIN\b",
-        For         => r"FOR\b",
-        Update      => r"UPDATE\b",
-        Function    => r"FUNCTION\b",
-        Returns     => r"RETURNS\b",
-        Setof       => r"SETOF\b",
-        Language    => r"LANGUAGE\b",
-        Immutable   => r"IMMUTABLE\b",
-        Union       => r"UNION\b",
-        All         => r"ALL\b",
-        In          => r"IN\b",
-        Default     => r"DEFAULT\b",
-        Lateral     => r"LATERAL\b",
-        Partition   => r"PARTITION\b",
-        Of          => r"OF\b",
-        Costs       => r"COSTS\b",
-        Timing      => r"TIMING\b",
-        Summary     => r"SUMMARY\b",
-        // WITH clause and CTE support
-        With        => r"WITH\b",
-        Recursive   => r"RECURSIVE\b",
-        Materialized => r"MATERIALIZED\b",
-        // Set operations
-        Except      => r"EXCEPT\b",
-        Intersect   => r"INTERSECT\b",
-        Distinct    => r"DISTINCT\b",
-        // JOIN support
-        Join        => r"JOIN\b",
-        Left        => r"LEFT\b",
-        Right       => r"RIGHT\b",
-        Full        => r"FULL\b",
-        Inner       => r"INNER\b",
-        Cross       => r"CROSS\b",
-        // GROUP BY / HAVING / DISTINCT
-        Group       => r"GROUP\b",
-        Having      => r"HAVING\b",
-        // UPDATE statement
-        Returning   => r"RETURNING\b",
-        // MERGE statement
-        Merge       => r"MERGE\b",
-        When        => r"WHEN\b",
-        Matched     => r"MATCHED\b",
-        Then        => r"THEN\b",
-        // INSERT ON CONFLICT
-        Conflict    => r"CONFLICT\b",
-        Do          => r"DO\b",
-        Nothing     => r"NOTHING\b",
-        Excluded    => r"EXCLUDED\b",
-        // VIEW
-        View        => r"VIEW\b",
-        Replace     => r"REPLACE\b",
-        Temporary   => r"TEMPORARY\b",
-        // EXISTS
-        Exists      => r"EXISTS\b",
-        // SEARCH / CYCLE
-        Search      => r"SEARCH\b",
-        Depth       => r"DEPTH\b",
-        Breadth     => r"BREADTH\b",
-        Cycle       => r"CYCLE\b",
-        // ARRAY / ROW
-        Array       => r"ARRAY\b",
-        Row         => r"ROW\b",
-        // OVER / window functions
-        Over        => r"OVER\b",
-        // Additional type names
-        Integer     => r"INTEGER\b",
-        Numeric     => r"NUMERIC\b",
-        Varchar     => r"VARCHAR\b",
-        // CREATE TABLE AS, ALTER TABLE
-        Alter       => r"ALTER\b",
-        Add         => r"ADD\b",
-        Unique      => r"UNIQUE\b",
-        // RULE / TRIGGER
-        Rule        => r"RULE\b",
-        Trigger     => r"TRIGGER\b",
-        Before      => r"BEFORE\b",
-        After       => r"AFTER\b",
-        Each        => r"EACH\b",
-        Statement   => r"STATEMENT\b",
-        Execute     => r"EXECUTE\b",
-        Procedure   => r"PROCEDURE\b",
-        Instead     => r"INSTEAD\b",
-        Also        => r"ALSO\b",
-        New         => r"NEW\b",
-        Old         => r"OLD\b",
-        // Transaction
-        Begin       => r"BEGIN\b",
-        Commit      => r"COMMIT\b",
-        // TRUNCATE
-        Truncate    => r"TRUNCATE\b",
-        // NOTIFY
-        Notify      => r"NOTIFY\b",
-        // INHERITS
-        Inherits    => r"INHERITS\b",
-        // REFERENCES
-        References  => r"REFERENCES\b",
-        // GENERATED / ALWAYS / IDENTITY
-        Generated   => r"GENERATED\b",
-        Always      => r"ALWAYS\b",
-        Identity    => r"IDENTITY\b",
-        // LOCAL
-        Local       => r"LOCAL\b",
-        // ANY / SOME
-        Any         => r"ANY\b",
-        // SUM / COUNT / MAX / MIN etc -- just identifiers, but need to not block
+        SELECT      => r"SELECT\b",
+        FROM        => r"FROM\b",
+        WHERE       => r"WHERE\b",
+        AS          => r"AS\b",
+        AND         => r"AND\b",
+        OR          => r"OR\b",
+        NOT         => r"NOT\b",
+        TRUE        => r"TRUE\b",
+        FALSE       => r"FALSE\b",
+        NULL        => r"NULL\b",
+        IS          => r"IS\b",
+        UNKNOWN     => r"UNKNOWN\b",
+        CREATE      => r"CREATE\b",
+        TABLE       => r"TABLE\b",
+        INSERT      => r"INSERT\b",
+        INTO        => r"INTO\b",
+        VALUES      => r"VALUES\b",
+        DROP        => r"DROP\b",
+        DELETE      => r"DELETE\b",
+        ORDER       => r"ORDER\b",
+        BY          => r"BY\b",
+        BOOL        => r"BOOL\b",
+        BOOLEAN     => r"BOOLEAN\b",
+        TEXT        => r"TEXT\b",
+        INT         => r"INT\b",
+        SERIAL      => r"SERIAL\b",
+        PRIMARY     => r"PRIMARY\b",
+        KEY         => r"KEY\b",
+        ASC         => r"ASC\b",
+        DESC        => r"DESC\b",
+        NULLS       => r"NULLS\b",
+        FIRST       => r"FIRST\b",
+        LAST        => r"LAST\b",
+        USING       => r"USING\b",
+        OFFSET      => r"OFFSET\b",
+        LIMIT       => r"LIMIT\b",
+        ANALYZE     => r"ANALYZE\b",
+        SET         => r"SET\b",
+        RESET       => r"RESET\b",
+        TO          => r"TO\b",
+        ON          => r"ON\b",
+        OFF         => r"OFF\b",
+        TEMP        => r"TEMP\b",
+        INDEX       => r"INDEX\b",
+        EXPLAIN     => r"EXPLAIN\b",
+        FOR         => r"FOR\b",
+        UPDATE      => r"UPDATE\b",
+        FUNCTION    => r"FUNCTION\b",
+        RETURNS     => r"RETURNS\b",
+        SETOF       => r"SETOF\b",
+        LANGUAGE    => r"LANGUAGE\b",
+        IMMUTABLE   => r"IMMUTABLE\b",
+        UNION       => r"UNION\b",
+        ALL         => r"ALL\b",
+        IN          => r"IN\b",
+        DEFAULT     => r"DEFAULT\b",
+        LATERAL     => r"LATERAL\b",
+        PARTITION   => r"PARTITION\b",
+        OF          => r"OF\b",
+        COSTS       => r"COSTS\b",
+        TIMING      => r"TIMING\b",
+        SUMMARY     => r"SUMMARY\b",  // WITH clause and CTE support
+        WITH        => r"WITH\b",
+        RECURSIVE   => r"RECURSIVE\b",
+        MATERIALIZED => r"MATERIALIZED\b",  // SET operations
+        EXCEPT      => r"EXCEPT\b",
+        INTERSECT   => r"INTERSECT\b",
+        DISTINCT    => r"DISTINCT\b",  // JOIN support
+        JOIN        => r"JOIN\b",
+        LEFT        => r"LEFT\b",
+        RIGHT       => r"RIGHT\b",
+        FULL        => r"FULL\b",
+        INNER       => r"INNER\b",
+        CROSS       => r"CROSS\b",  // GROUP BY / HAVING / DISTINCT
+        GROUP       => r"GROUP\b",
+        HAVING      => r"HAVING\b",  // UPDATE statement
+        RETURNING   => r"RETURNING\b",  // MERGE statement
+        MERGE       => r"MERGE\b",
+        WHEN        => r"WHEN\b",
+        MATCHED     => r"MATCHED\b",
+        THEN        => r"THEN\b",  // INSERT ON CONFLICT
+        CONFLICT    => r"CONFLICT\b",
+        DO          => r"DO\b",
+        NOTHING     => r"NOTHING\b",
+        EXCLUDED    => r"EXCLUDED\b",  // VIEW
+        VIEW        => r"VIEW\b",
+        REPLACE     => r"REPLACE\b",
+        TEMPORARY   => r"TEMPORARY\b",  // EXISTS
+        EXISTS      => r"EXISTS\b",  // SEARCH / CYCLE
+        SEARCH      => r"SEARCH\b",
+        DEPTH       => r"DEPTH\b",
+        BREADTH     => r"BREADTH\b",
+        CYCLE       => r"CYCLE\b",  // ARRAY / ROW
+        ARRAY       => r"ARRAY\b",
+        ROW         => r"ROW\b",  // OVER / window functions
+        OVER        => r"OVER\b",  // Additional type names
+        INTEGER     => r"INTEGER\b",
+        NUMERIC     => r"NUMERIC\b",
+        VARCHAR     => r"VARCHAR\b",  // CREATE TABLE AS, ALTER TABLE
+        ALTER       => r"ALTER\b",
+        ADD         => r"ADD\b",
+        UNIQUE      => r"UNIQUE\b",  // RULE / TRIGGER
+        RULE        => r"RULE\b",
+        TRIGGER     => r"TRIGGER\b",
+        BEFORE      => r"BEFORE\b",
+        AFTER       => r"AFTER\b",
+        EACH        => r"EACH\b",
+        STATEMENT   => r"STATEMENT\b",
+        EXECUTE     => r"EXECUTE\b",
+        PROCEDURE   => r"PROCEDURE\b",
+        INSTEAD     => r"INSTEAD\b",
+        ALSO        => r"ALSO\b",
+        NEW         => r"NEW\b",
+        OLD         => r"OLD\b",  // TRANSACTION
+        BEGIN       => r"BEGIN\b",
+        COMMIT      => r"COMMIT\b",  // TRUNCATE
+        TRUNCATE    => r"TRUNCATE\b",  // NOTIFY
+        NOTIFY      => r"NOTIFY\b",  // INHERITS
+        INHERITS    => r"INHERITS\b",  // REFERENCES
+        REFERENCES  => r"REFERENCES\b",  // GENERATED / ALWAYS / IDENTITY
+        GENERATED   => r"GENERATED\b",
+        ALWAYS      => r"ALWAYS\b",
+        IDENTITY    => r"IDENTITY\b",  // LOCAL
+        LOCAL       => r"LOCAL\b",  // ANY / SOME
+        ANY         => r"ANY\b",  // SUM / COUNT / MAX / MIN etc -- just identifiers, but need to not block
         // BETWEEN
-        Between     => r"BETWEEN\b",
-        // LIKE / ILIKE
-        Like        => r"LIKE\b",
-        Ilike       => r"ILIKE\b",
-        // COLLATE
-        Collate     => r"COLLATE\b",
-        // UNLOGGED table
-        Unlogged    => r"UNLOGGED\b",
-        // DATABASE object
-        Database    => r"DATABASE\b",
-        // ALTER DEFAULT PRIVILEGES
-        Privileges  => r"PRIVILEGES\b",
-        // CHECKPOINT statement
-        Checkpoint  => r"CHECKPOINT\b",
-        // Hash partition modulus / remainder
-        Modulus     => r"MODULUS\b",
-        Remainder   => r"REMAINDER\b",
-        // CASE WHEN
-        Case        => r"CASE\b",
-        Else        => r"ELSE\b",
-        End         => r"END\b",
-        // Verbose
-        Verbose     => r"VERBOSE\b",
-        // IF
-        If          => r"IF\b",
-        // ONLY (for UPDATE/DELETE ONLY)
-        Only        => r"ONLY\b",
-        // Or (already used for expr but need it as keyword for CREATE OR REPLACE)
+        BETWEEN     => r"BETWEEN\b",  // LIKE / ILIKE
+        LIKE        => r"LIKE\b",
+        ILIKE       => r"ILIKE\b",  // COLLATE
+        COLLATE     => r"COLLATE\b",  // UNLOGGED table
+        UNLOGGED    => r"UNLOGGED\b",  // DATABASE object
+        DATABASE    => r"DATABASE\b",  // ALTER DEFAULT PRIVILEGES
+        PRIVILEGES  => r"PRIVILEGES\b",  // CHECKPOINT statement
+        CHECKPOINT  => r"CHECKPOINT\b",  // HASH partition modulus / remainder
+        MODULUS     => r"MODULUS\b",
+        REMAINDER   => r"REMAINDER\b",  // CASE WHEN
+        CASE        => r"CASE\b",
+        ELSE        => r"ELSE\b",
+        END         => r"END\b",  // VERBOSE
+        VERBOSE     => r"VERBOSE\b",  // IF
+        IF          => r"IF\b",  // ONLY (for UPDATE/DELETE ONLY)
+        ONLY        => r"ONLY\b",  // OR (already used for expr but need it as keyword for CREATE OR REPLACE)
         // INHERITS
-        //Inherits already declared above
+        //INHERITS already declared above
         // REFERENCES already declared above
-        // NOT NULL constraint -- Not already declared
-        // GENERATED ALWAYS AS IDENTITY -- Generated, Always, Identity already declared
-        No          => r"NO\b",
-        Data        => r"DATA\b",
-        // Transaction control
-        Rollback    => r"ROLLBACK\b",
-        Savepoint   => r"SAVEPOINT\b",
-        Release     => r"RELEASE\b",
-        // PREPARE / EXECUTE / DEALLOCATE
-        Prepare     => r"PREPARE\b",
-        Deallocate  => r"DEALLOCATE\b",
-        // GRANT / REVOKE
-        Grant       => r"GRANT\b",
-        Revoke      => r"REVOKE\b",
-        // COMMENT
-        Comment     => r"COMMENT\b",
-        // COPY
-        Copy        => r"COPY\b",
-        // LOCK
-        Lock        => r"LOCK\b",
-        // Cursor operations
-        Declare     => r"DECLARE\b",
-        Fetch       => r"FETCH\b",
-        Close       => r"CLOSE\b",
-        Move        => r"MOVE\b",
-        Cursor      => r"CURSOR\b",
-        // REINDEX
-        Reindex     => r"REINDEX\b",
-        // REFRESH
-        Refresh     => r"REFRESH\b",
-        // DO
-        DoBlock     => r"DO\b",
-        // LISTEN / UNLISTEN
-        Listen      => r"LISTEN\b",
-        Unlisten    => r"UNLISTEN\b",
-        // DISCARD
-        Discard     => r"DISCARD\b",
-        // REASSIGN
-        Reassign    => r"REASSIGN\b",
-        // SECURITY LABEL
-        Security    => r"SECURITY\b",
-        Label       => r"LABEL\b",
-        // CLUSTER
-        Clusterw    => r"CLUSTER\b",
-        // VACUUM
-        Vacuumw     => r"VACUUM\b",
-        // Additional DDL object types
-        Role        => r"ROLE\b",
-        User        => r"USER\b",
-        Schema      => r"SCHEMA\b",
-        Sequence    => r"SEQUENCE\b",
-        Type        => r"TYPE\b",
-        Domain      => r"DOMAIN\b",
-        Aggregate   => r"AGGREGATE\b",
-        Operator    => r"OPERATOR\b",
-        Cast        => r"CAST\b",
-        Collation   => r"COLLATION\b",
-        Extension   => r"EXTENSION\b",
-        Foreign     => r"FOREIGN\b",
-        Policy      => r"POLICY\b",
-        Statistics  => r"STATISTICS\b",
-        Publication => r"PUBLICATION\b",
-        Subscription => r"SUBSCRIPTION\b",
-        Owned       => r"OWNED\b",
-        Concurrently => r"CONCURRENTLY\b",
-        Access      => r"ACCESS\b",
-        Method      => r"METHOD\b",
-        Conversion  => r"CONVERSION\b",
-        Server      => r"SERVER\b",
-        Wrapper     => r"WRAPPER\b",
-        Mapping     => r"MAPPING\b",
-        Event       => r"EVENT\b",
-        // Constraint-related keywords
-        Constraint  => r"CONSTRAINT\b",
-        Check       => r"CHECK\b",
-        Match       => r"MATCH\b",
-        Partial     => r"PARTIAL\b",
-        Simple      => r"SIMPLE\b",
-        Restrict    => r"RESTRICT\b",
-        Action      => r"ACTION\b",
-        Deferrable  => r"DEFERRABLE\b",
-        Initially   => r"INITIALLY\b",
-        Deferred    => r"DEFERRED\b",
-        Immediate   => r"IMMEDIATE\b",
-        Inherit     => r"INHERIT\b",
-        Cascade     => r"CASCADE\b",
-        Include     => r"INCLUDE\b",
-        // Index method keywords
-        Btree       => r"BTREE\b",
-        Gin         => r"GIN\b",
-        Gist        => r"GIST\b",
-        Hash        => r"HASH\b",
-        Spgist      => r"SPGIST\b",
-        Brin        => r"BRIN\b",
-        // SET / RESET extension keywords. Deliberately NOT added to
+        // NOT NULL constraint -- NOT already declared
+        // GENERATED ALWAYS AS IDENTITY -- GENERATED, ALWAYS, IDENTITY already declared
+        NO          => r"NO\b",
+        DATA        => r"DATA\b",  // TRANSACTION control
+        ROLLBACK    => r"ROLLBACK\b",
+        SAVEPOINT   => r"SAVEPOINT\b",
+        RELEASE     => r"RELEASE\b",  // PREPARE / EXECUTE / DEALLOCATE
+        PREPARE     => r"PREPARE\b",
+        DEALLOCATE  => r"DEALLOCATE\b",  // GRANT / REVOKE
+        GRANT       => r"GRANT\b",
+        REVOKE      => r"REVOKE\b",  // COMMENT
+        COMMENT     => r"COMMENT\b",  // COPY
+        COPY        => r"COPY\b",  // LOCK
+        LOCK        => r"LOCK\b",  // CURSOR operations
+        DECLARE     => r"DECLARE\b",
+        FETCH       => r"FETCH\b",
+        CLOSE       => r"CLOSE\b",
+        MOVE        => r"MOVE\b",
+        CURSOR      => r"CURSOR\b",  // REINDEX
+        REINDEX     => r"REINDEX\b",  // REFRESH
+        REFRESH     => r"REFRESH\b",  // DO
+        LISTEN      => r"LISTEN\b",
+        UNLISTEN    => r"UNLISTEN\b",  // DISCARD
+        DISCARD     => r"DISCARD\b",  // REASSIGN
+        REASSIGN    => r"REASSIGN\b",  // SECURITY LABEL
+        SECURITY    => r"SECURITY\b",
+        LABEL       => r"LABEL\b",  // CLUSTER
+        CLUSTER    => r"CLUSTER\b",  // VACUUM
+        VACUUM     => r"VACUUM\b",  // Additional DDL object types
+        ROLE        => r"ROLE\b",
+        USER        => r"USER\b",
+        SCHEMA      => r"SCHEMA\b",
+        SEQUENCE    => r"SEQUENCE\b",
+        TYPE        => r"TYPE\b",
+        DOMAIN      => r"DOMAIN\b",
+        AGGREGATE   => r"AGGREGATE\b",
+        OPERATOR    => r"OPERATOR\b",
+        CAST        => r"CAST\b",
+        COLLATION   => r"COLLATION\b",
+        EXTENSION   => r"EXTENSION\b",
+        FOREIGN     => r"FOREIGN\b",
+        POLICY      => r"POLICY\b",
+        STATISTICS  => r"STATISTICS\b",
+        PUBLICATION => r"PUBLICATION\b",
+        SUBSCRIPTION => r"SUBSCRIPTION\b",
+        OWNED       => r"OWNED\b",
+        CONCURRENTLY => r"CONCURRENTLY\b",
+        ACCESS      => r"ACCESS\b",
+        METHOD      => r"METHOD\b",
+        CONVERSION  => r"CONVERSION\b",
+        SERVER      => r"SERVER\b",
+        WRAPPER     => r"WRAPPER\b",
+        MAPPING     => r"MAPPING\b",
+        EVENT       => r"EVENT\b",  // CONSTRAINT-related keywords
+        CONSTRAINT  => r"CONSTRAINT\b",
+        CHECK       => r"CHECK\b",
+        MATCH       => r"MATCH\b",
+        PARTIAL     => r"PARTIAL\b",
+        SIMPLE      => r"SIMPLE\b",
+        RESTRICT    => r"RESTRICT\b",
+        ACTION      => r"ACTION\b",
+        DEFERRABLE  => r"DEFERRABLE\b",
+        INITIALLY   => r"INITIALLY\b",
+        DEFERRED    => r"DEFERRED\b",
+        IMMEDIATE   => r"IMMEDIATE\b",
+        INHERIT     => r"INHERIT\b",
+        CASCADE     => r"CASCADE\b",
+        INCLUDE     => r"INCLUDE\b",  // INDEX method keywords
+        BTREE       => r"BTREE\b",
+        GIN         => r"GIN\b",
+        GIST        => r"GIST\b",
+        HASH        => r"HASH\b",
+        SPGIST      => r"SPGIST\b",
+        BRIN        => r"BRIN\b",  // SET / RESET extension keywords. Deliberately NOT added to
         // SQL_KEYWORDS so they remain usable as ordinary identifiers
         // (e.g., column names `session`, `time`, etc.). They are only
         // recognized as keywords in positions where the grammar
         // explicitly looks for them.
-        Show        => r"SHOW\b",
-        Transaction => r"TRANSACTION\b",
-        Isolation   => r"ISOLATION\b",
-        Level       => r"LEVEL\b",
-        Serializable => r"SERIALIZABLE\b",
-        Repeatable   => r"REPEATABLE\b",
-        ReadKw       => r"READ\b",
-        WriteKw      => r"WRITE\b",
-        Committed    => r"COMMITTED\b",
-        Uncommitted  => r"UNCOMMITTED\b",
-        Constraints  => r"CONSTRAINTS\b",
-        Start        => r"START\b",
-        Work         => r"WORK\b",
-        Abort        => r"ABORT\b",
-        Characteristics => r"CHARACTERISTICS\b",
-        Variadic     => r"VARIADIC\b",
-        Without      => r"WITHOUT\b",
-        Timestamp    => r"TIMESTAMP\b",
-        Session     => r"SESSION\b",
-        Authorization => r"AUTHORIZATION\b",
-        Time        => r"TIME\b",
-        Zone        => r"ZONE\b",
-        None        => r"NONE\b",
-        // Window function keywords (frame clauses, named windows). Not in
+        SHOW        => r"SHOW\b",
+        TRANSACTION => r"TRANSACTION\b",
+        ISOLATION   => r"ISOLATION\b",
+        LEVEL       => r"LEVEL\b",
+        SERIALIZABLE => r"SERIALIZABLE\b",
+        REPEATABLE   => r"REPEATABLE\b",
+        READ       => r"READ\b",
+        WRITE      => r"WRITE\b",
+        COMMITTED    => r"COMMITTED\b",
+        UNCOMMITTED  => r"UNCOMMITTED\b",
+        CONSTRAINTS  => r"CONSTRAINTS\b",
+        START        => r"START\b",
+        WORK         => r"WORK\b",
+        ABORT        => r"ABORT\b",
+        CHARACTERISTICS => r"CHARACTERISTICS\b",
+        VARIADIC     => r"VARIADIC\b",
+        WITHOUT      => r"WITHOUT\b",
+        TIMESTAMP    => r"TIMESTAMP\b",
+        SESSION     => r"SESSION\b",
+        AUTHORIZATION => r"AUTHORIZATION\b",
+        TIME        => r"TIME\b",
+        ZONE        => r"ZONE\b",
+        NONE        => r"NONE\b",  // WINDOW function keywords (frame clauses, named windows). NOT in
         // SQL_KEYWORDS for the same reason: they can still appear as
         // identifiers outside window grammar contexts.
-        Window      => r"WINDOW\b",
-        Rows        => r"ROWS\b",
-        RangeKw     => r"RANGE\b",
-        Groups      => r"GROUPS\b",
-        Unbounded   => r"UNBOUNDED\b",
-        Preceding   => r"PRECEDING\b",
-        Following   => r"FOLLOWING\b",
-        CurrentKw   => r"CURRENT\b",
-        Excludew    => r"EXCLUDE\b",
-        Others      => r"OTHERS\b",
-        Ties        => r"TIES\b",
-        // MERGE: BY SOURCE / BY TARGET qualifiers. Not in SQL_KEYWORDS;
+        WINDOW      => r"WINDOW\b",
+        ROWS        => r"ROWS\b",
+        RANGE     => r"RANGE\b",
+        GROUPS      => r"GROUPS\b",
+        UNBOUNDED   => r"UNBOUNDED\b",
+        PRECEDING   => r"PRECEDING\b",
+        FOLLOWING   => r"FOLLOWING\b",
+        CURRENT   => r"CURRENT\b",
+        EXCLUDE    => r"EXCLUDE\b",
+        OTHERS      => r"OTHERS\b",
+        TIES        => r"TIES\b",  // MERGE: BY SOURCE / BY TARGET qualifiers. NOT in SQL_KEYWORDS;
         // these are recognized contextually in MERGE WHEN clauses only.
-        Source      => r"SOURCE\b",
-        Target      => r"TARGET\b",
-        // CREATE FUNCTION option keywords. Not in SQL_KEYWORDS so they remain
+        SOURCE      => r"SOURCE\b",
+        TARGET      => r"TARGET\b",  // CREATE FUNCTION option keywords. NOT in SQL_KEYWORDS so they remain
         // usable as identifiers (column names, etc.) outside function options.
-        Strict      => r"STRICT\b",
-        Stable      => r"STABLE\b",
-        Volatile    => r"VOLATILE\b",
-        Called      => r"CALLED\b",
-        Input       => r"INPUT\b",
-        Ordinality  => r"ORDINALITY\b",
-        // JOIN modifiers
-        Natural     => r"NATURAL\b",
-        Outer       => r"OUTER\b",
-        // XML function keywords (xmlelement / xmlattributes / xmlforest).
+        STRICT      => r"STRICT\b",
+        STABLE      => r"STABLE\b",
+        VOLATILE    => r"VOLATILE\b",
+        CALLED      => r"CALLED\b",
+        INPUT       => r"INPUT\b",
+        ORDINALITY  => r"ORDINALITY\b",  // JOIN modifiers
+        NATURAL     => r"NATURAL\b",
+        OUTER       => r"OUTER\b",  // XML function keywords (xmlelement / xmlattributes / xmlforest).
         // These are recognized only inside the XML function-call atoms.
-        XmlElementKw    => r"XMLELEMENT\b",
-        XmlAttributesKw => r"XMLATTRIBUTES\b",
-        XmlForestKw     => r"XMLFOREST\b",
-        XmlPiKw         => r"XMLPI\b",
-        NameKw          => r"NAME\b",
-        // CREATE FUNCTION argument modes (Bundle 2)
-        Out         => r"OUT\b",
-        Inout       => r"INOUT\b",
-        // CREATE PROCEDURE / CALL (Bundle 3)
-        Call        => r"CALL\b",
-        // CREATE TABLESPACE (Bundle 4)
-        Tablespace  => r"TABLESPACE\b",
-        Owner       => r"OWNER\b",
-        Location    => r"LOCATION\b",
-        // GENERATED ALWAYS AS (expr) STORED (Bundle 5)
-        Stored      => r"STORED\b",
-        // U&'...' UESCAPE (Bundle 1)
-        Uescape     => r"UESCAPE\b",
-        // Aggregate WITHIN GROUP / FILTER (Bundle 8)
-        Within      => r"WITHIN\b",
-        Filter      => r"FILTER\b",
-        // SQL-standard string functions: TRIM/SUBSTRING/POSITION/OVERLAY.
-        // Not in SQL_KEYWORDS — recognized only inside their dedicated
+        XMLELEMENT    => r"XMLELEMENT\b",
+        XMLATTRIBUTES => r"XMLATTRIBUTES\b",
+        XMLFOREST     => r"XMLFOREST\b",
+        XMLPI         => r"XMLPI\b",
+        NAME          => r"NAME\b",  // CREATE FUNCTION argument modes (Bundle 2)
+        OUT         => r"OUT\b",
+        INOUT       => r"INOUT\b",  // CREATE PROCEDURE / CALL (Bundle 3)
+        CALL        => r"CALL\b",  // CREATE TABLESPACE (Bundle 4)
+        TABLESPACE  => r"TABLESPACE\b",
+        OWNER       => r"OWNER\b",
+        LOCATION    => r"LOCATION\b",  // GENERATED ALWAYS AS (expr) STORED (Bundle 5)
+        STORED      => r"STORED\b",  // U&'...' UESCAPE (Bundle 1)
+        UESCAPE     => r"UESCAPE\b",  // AGGREGATE WITHIN GROUP / FILTER (Bundle 8)
+        WITHIN      => r"WITHIN\b",
+        FILTER      => r"FILTER\b",  // SQL-standard string functions: TRIM/SUBSTRING/POSITION/OVERLAY.
+        // NOT in SQL_KEYWORDS — recognized only inside their dedicated
         // function-call atoms.
-        TrimKw      => r"TRIM\b",
-        SubstringKw => r"SUBSTRING\b",
-        PositionKw  => r"POSITION\b",
-        OverlayKw   => r"OVERLAY\b",
-        ExtractKw   => r"EXTRACT\b",
-        // Postgres postfix null tests: `expr NOTNULL` / `expr ISNULL`.
-        Notnull     => r"NOTNULL\b",
-        Isnull      => r"ISNULL\b",
-        // CREATE TEMP TABLE ... ON COMMIT clauses
-        Preserve    => r"PRESERVE\b",
-        // Sequence options for IDENTITY column / CREATE SEQUENCE
-        Increment   => r"INCREMENT\b",
-        Minvalue    => r"MINVALUE\b",
-        Maxvalue    => r"MAXVALUE\b",
-        Cache       => r"CACHE\b",
-        Leading     => r"LEADING\b",
-        Trailing    => r"TRAILING\b",
-        BothKw      => r"BOTH\b",
-        Similar     => r"SIMILAR\b",
-        EscapeKw    => r"ESCAPE\b",
-        Placing     => r"PLACING\b",
-        // GROUP BY grouping primitives (Bundle: grouping sets)
-        GroupingKw  => r"GROUPING\b",
-        SetsKw      => r"SETS\b",
-        RollupKw    => r"ROLLUP\b",
-        CubeKw      => r"CUBE\b",
-        // INTERVAL literal qualifier keywords
-        IntervalKw  => r"INTERVAL\b",
-        YearKw      => r"YEAR\b",
-        MonthKw     => r"MONTH\b",
-        DayKw       => r"DAY\b",
-        HourKw      => r"HOUR\b",
-        MinuteKw    => r"MINUTE\b",
-        SecondKw    => r"SECOND\b",
-        // CREATE TABLE (LIKE ...) options
-        IncludingKw => r"INCLUDING\b",
-        ExcludingKw => r"EXCLUDING\b",
-        DefaultsKw  => r"DEFAULTS\b",
-        IndexesKw   => r"INDEXES\b",
-        StorageKw   => r"STORAGE\b",
-        CommentsKw  => r"COMMENTS\b",
-        // CHECK / FK constraint suffix
-        ValidKw     => r"VALID\b",
-        // VACUUM / REINDEX option values
-        ParallelKw  => r"PARALLEL\b",
-        // ALTER ... RENAME TO
-        RenameKw    => r"RENAME\b",
-        // CREATE/ALTER/DROP LANGUAGE option keywords
-        Trusted     => r"TRUSTED\b",
-        Procedural  => r"PROCEDURAL\b",
-        Handler     => r"HANDLER\b",
-        Validator   => r"VALIDATOR\b",
-        InlineKw    => r"INLINE\b",
-        // FETCH / MOVE direction keywords
-        Next        => r"NEXT\b",
-        Prior       => r"PRIOR\b",
-        Forward     => r"FORWARD\b",
-        Backward    => r"BACKWARD\b",
-        Absolute    => r"ABSOLUTE\b",
-        Relative    => r"RELATIVE\b",
-        // DOUBLE PRECISION type name
-        DoubleKw    => r"DOUBLE\b",
-        PrecisionKw => r"PRECISION\b",
-        // PARALLEL SAFE / RESTRICTED / UNSAFE function option
-        SafeKw       => r"SAFE\b",
-        UnsafeKw     => r"UNSAFE\b",
-        RestrictedKw => r"RESTRICTED\b",
-        // Type-name modifiers used contextually inside column type positions.
-        // Not in SQL_KEYWORDS so they remain usable as identifiers elsewhere.
-        BitKw        => r"BIT\b",
-        Varying      => r"VARYING\b",
-        CharacterKw  => r"CHARACTER\b",
-        // SELECT FOR SHARE / FOR KEY SHARE / FOR NO KEY UPDATE locking clauses.
-        Share        => r"SHARE\b",
-    }
+        TRIM      => r"TRIM\b",
+        SUBSTRING => r"SUBSTRING\b",
+        POSITION  => r"POSITION\b",
+        OVERLAY   => r"OVERLAY\b",
+        EXTRACT   => r"EXTRACT\b",  // Postgres postfix null tests: `expr NOTNULL` / `expr ISNULL`.
+        NOTNULL     => r"NOTNULL\b",
+        ISNULL      => r"ISNULL\b",  // CREATE TEMP TABLE ... ON COMMIT clauses
+        PRESERVE    => r"PRESERVE\b",  // SEQUENCE options for IDENTITY column / CREATE SEQUENCE
+        INCREMENT   => r"INCREMENT\b",
+        MINVALUE    => r"MINVALUE\b",
+        MAXVALUE    => r"MAXVALUE\b",
+        CACHE       => r"CACHE\b",
+        LEADING     => r"LEADING\b",
+        TRAILING    => r"TRAILING\b",
+        BOTH      => r"BOTH\b",
+        SIMILAR     => r"SIMILAR\b",
+        ESCAPE    => r"ESCAPE\b",
+        PLACING     => r"PLACING\b",  // GROUP BY grouping primitives (Bundle: grouping sets)
+        GROUPING  => r"GROUPING\b",
+        SETS      => r"SETS\b",
+        ROLLUP    => r"ROLLUP\b",
+        CUBE      => r"CUBE\b",  // INTERVAL literal qualifier keywords
+        INTERVAL  => r"INTERVAL\b",
+        YEAR      => r"YEAR\b",
+        MONTH     => r"MONTH\b",
+        DAY       => r"DAY\b",
+        HOUR      => r"HOUR\b",
+        MINUTE    => r"MINUTE\b",
+        SECOND    => r"SECOND\b",  // CREATE TABLE (LIKE ...) options
+        INCLUDING => r"INCLUDING\b",
+        EXCLUDING => r"EXCLUDING\b",
+        DEFAULTS  => r"DEFAULTS\b",
+        INDEXES   => r"INDEXES\b",
+        STORAGE   => r"STORAGE\b",
+        COMMENTS  => r"COMMENTS\b",  // CHECK / FK constraint suffix
+        VALID     => r"VALID\b",  // VACUUM / REINDEX option values
+        PARALLEL  => r"PARALLEL\b",  // ALTER ... RENAME TO
+        RENAME    => r"RENAME\b",  // CREATE/ALTER/DROP LANGUAGE option keywords
+        TRUSTED     => r"TRUSTED\b",
+        PROCEDURAL  => r"PROCEDURAL\b",
+        HANDLER     => r"HANDLER\b",
+        VALIDATOR   => r"VALIDATOR\b",
+        INLINE    => r"INLINE\b",  // FETCH / MOVE direction keywords
+        NEXT        => r"NEXT\b",
+        PRIOR       => r"PRIOR\b",
+        FORWARD     => r"FORWARD\b",
+        BACKWARD    => r"BACKWARD\b",
+        ABSOLUTE    => r"ABSOLUTE\b",
+        RELATIVE    => r"RELATIVE\b",  // DOUBLE PRECISION type name
+        DOUBLE    => r"DOUBLE\b",
+        PRECISION => r"PRECISION\b",  // PARALLEL SAFE / RESTRICTED / UNSAFE function option
+        SAFE       => r"SAFE\b",
+        UNSAFE     => r"UNSAFE\b",
+        RESTRICTED => r"RESTRICTED\b",  // TYPE-name modifiers used contextually inside column type positions.
+        // NOT in SQL_KEYWORDS so they remain usable as identifiers elsewhere.
+        BIT        => r"BIT\b",
+        VARYING      => r"VARYING\b",
+        CHARACTER  => r"CHARACTER\b",  // SELECT FOR SHARE / FOR KEY SHARE / FOR NO KEY UPDATE locking clauses.
+        SHARE        => r"SHARE\b",}
 }
 
 /// Punctuation
@@ -556,7 +472,7 @@ pub mod literal {
 
     // --- Identifier ---
 
-    /// All SQL keywords (uppercase) for identifier exclusion.
+    /// ALL SQL keywords (uppercase) for identifier exclusion.
     ///
     /// This is the set the grammar treats as reserved for the purpose of
     /// rejecting bare identifiers. Postgres has a much smaller reserved set
@@ -577,7 +493,7 @@ pub mod literal {
         "NULL",
         "IS",
         "UNKNOWN",
-        // Statement leads.
+        // STATEMENT leads.
         "CREATE",
         "TABLE",
         "INSERT",
@@ -595,7 +511,7 @@ pub mod literal {
         // PRIMARY and KEY are contextual: they appear in `PRIMARY KEY`
         // constraint positions but PostgreSQL allows them as ordinary column
         // and identifier names elsewhere (e.g., `CREATE INDEX i ON t(key)`).
-        // Recognized as `keyword::Primary` / `keyword::Key` only where the
+        // Recognized as `keyword::PRIMARY` / `keyword::KEY` only where the
         // grammar explicitly looks for them.
         "ASC",
         "DESC",
@@ -794,49 +710,49 @@ mod tests {
     #[test]
     fn keyword_select_uppercase() {
         let input = Input::new("SELECT");
-        assert!(Select::peek::<NoRules>(&input));
+        assert!(SELECT::peek::<NoRules>(&input));
     }
 
     #[test]
     fn keyword_select_lowercase() {
         let input = Input::new("select");
-        assert!(Select::peek::<NoRules>(&input));
+        assert!(SELECT::peek::<NoRules>(&input));
     }
 
     #[test]
     fn keyword_select_mixed_case() {
         let input = Input::new("SeLeCt");
-        assert!(Select::peek::<NoRules>(&input));
+        assert!(SELECT::peek::<NoRules>(&input));
     }
 
     #[test]
     fn keyword_select_not_prefix_of_identifier() {
         let input = Input::new("SELECTED");
-        assert!(!Select::peek::<NoRules>(&input));
+        assert!(!SELECT::peek::<NoRules>(&input));
     }
 
     #[test]
     fn keyword_bool_not_prefix_of_booleq() {
         let input = Input::new("booleq");
-        assert!(!Bool::peek::<NoRules>(&input));
+        assert!(!BOOL::peek::<NoRules>(&input));
     }
 
     #[test]
     fn keyword_bool_matches_standalone() {
         let input = Input::new("bool");
-        assert!(Bool::peek::<NoRules>(&input));
+        assert!(BOOL::peek::<NoRules>(&input));
     }
 
     #[test]
     fn keyword_boolean_matches() {
         let input = Input::new("BOOLEAN");
-        assert!(Boolean::peek::<NoRules>(&input));
+        assert!(BOOLEAN::peek::<NoRules>(&input));
     }
 
     #[test]
     fn keyword_not_matches() {
         let input = Input::new("NOT");
-        assert!(Not::peek::<NoRules>(&input));
+        assert!(NOT::peek::<NoRules>(&input));
     }
 
     // --- Punctuation tests ---
@@ -903,7 +819,7 @@ mod tests {
         assert_eq!(lit.0, "'   f           '");
     }
 
-    // --- Integer literal tests ---
+    // --- INTEGER literal tests ---
 
     #[test]
     fn integer_literal() {
@@ -919,7 +835,7 @@ mod tests {
         assert_eq!(lit.0, "0");
     }
 
-    // --- Numeric literal tests (decimals + exponent) ---
+    // --- NUMERIC literal tests (decimals + exponent) ---
 
     #[test]
     fn numeric_literal_simple_decimal() {
