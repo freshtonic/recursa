@@ -41,12 +41,12 @@ struct Counter {
 impl TotalVisitor for Counter {
     type Error = ();
 
-    fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+    fn total_enter<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
         self.enters += 1;
         ControlFlow::Continue(())
     }
 
-    fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+    fn total_exit<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
         self.exits += 1;
         ControlFlow::Continue(())
     }
@@ -99,15 +99,15 @@ fn visit_skip_children() {
     impl TotalVisitor for SkipTwoTokens {
         type Error = ();
 
-        fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
-            if std::any::TypeId::of::<N>() == std::any::TypeId::of::<TwoTokens>() {
+        fn total_enter<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+            if std::any::type_name::<N>() == std::any::type_name::<TwoTokens>() {
                 ControlFlow::Break(Break::SkipChildren)
             } else {
                 ControlFlow::Continue(())
             }
         }
 
-        fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+        fn total_exit<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
             ControlFlow::Continue(())
         }
     }

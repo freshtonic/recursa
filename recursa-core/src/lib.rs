@@ -365,12 +365,12 @@ mod tests {
     impl TotalVisitor for Counter {
         type Error = ();
 
-        fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+        fn total_enter<N>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
             self.enter_count += 1;
             ControlFlow::Continue(())
         }
 
-        fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
+        fn total_exit<N>(&mut self, _node: &N) -> ControlFlow<Break<Self::Error>> {
             self.exit_count += 1;
             ControlFlow::Continue(())
         }
@@ -407,15 +407,15 @@ mod tests {
         impl TotalVisitor for TypeChecker {
             type Error = ();
 
-            fn total_enter<N: 'static>(&mut self, node: &N) -> ControlFlow<Break<()>> {
-                if std::any::TypeId::of::<N>() == std::any::TypeId::of::<Leaf>() {
+            fn total_enter<N>(&mut self, node: &N) -> ControlFlow<Break<()>> {
+                if ::std::any::type_name::<N>() == ::std::any::type_name::<Leaf>() {
                     let node = unsafe { &*(node as *const N as *const Leaf) };
                     return <Self as Visitor<Leaf>>::enter(self, node);
                 }
                 ControlFlow::Continue(())
             }
 
-            fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+            fn total_exit<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
                 ControlFlow::Continue(())
             }
         }
@@ -433,11 +433,11 @@ mod tests {
         impl TotalVisitor for Skipper {
             type Error = ();
 
-            fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+            fn total_enter<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
                 ControlFlow::Break(Break::SkipChildren)
             }
 
-            fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+            fn total_exit<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
                 ControlFlow::Continue(())
             }
         }

@@ -48,14 +48,15 @@ struct IdentCollector {
 impl TotalVisitor for IdentCollector {
     type Error = ();
 
-    fn total_enter<N: 'static>(&mut self, node: &N) -> ControlFlow<Break<()>> {
-        if let Some(ident) = (node as &dyn std::any::Any).downcast_ref::<Ident>() {
+    fn total_enter<N>(&mut self, node: &N) -> ControlFlow<Break<()>> {
+        if std::any::type_name::<N>() == std::any::type_name::<Ident>() {
+            let ident = unsafe { &*(node as *const N as *const Ident) };
             self.idents.push(ident.0.clone());
         }
         ControlFlow::Continue(())
     }
 
-    fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+    fn total_exit<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
         ControlFlow::Continue(())
     }
 }
@@ -74,14 +75,14 @@ fn visitor_skip_children_prevents_descent() {
     struct SkipLetStmt;
     impl TotalVisitor for SkipLetStmt {
         type Error = ();
-        fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
-            if std::any::TypeId::of::<N>() == std::any::TypeId::of::<LetStmt>() {
+        fn total_enter<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+            if std::any::type_name::<N>() == std::any::type_name::<LetStmt>() {
                 ControlFlow::Break(Break::SkipChildren)
             } else {
                 ControlFlow::Continue(())
             }
         }
-        fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+        fn total_exit<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
             ControlFlow::Continue(())
         }
     }
@@ -100,11 +101,11 @@ fn visitor_counts_all_nodes() {
     }
     impl TotalVisitor for NodeCounter {
         type Error = ();
-        fn total_enter<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+        fn total_enter<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
             self.count += 1;
             ControlFlow::Continue(())
         }
-        fn total_exit<N: 'static>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
+        fn total_exit<N>(&mut self, _node: &N) -> ControlFlow<Break<()>> {
             ControlFlow::Continue(())
         }
     }
