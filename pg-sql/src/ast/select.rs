@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use recursa::seq::{NoTrailing, NonEmpty, OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
 use crate::ast::common::QualifiedName;
 use crate::ast::expr::{Expr, FuncCall};
@@ -11,6 +12,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// A single item in the SELECT list: `expr [AS alias]` or `expr alias`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SelectItem<'input> {
@@ -20,6 +22,7 @@ pub struct SelectItem<'input> {
 
 /// Alias with explicit AS keyword: `AS name`.
 /// Uses AliasName so keywords are accepted (e.g., `SELECT 1 AS true`).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsAlias<'input> {
@@ -31,6 +34,7 @@ pub struct AsAlias<'input> {
 ///
 /// Variant ordering: WithAs (`AS name`) has a longer first_pattern than
 /// Bare (`ident`), so longest-match-wins picks it when AS is present.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum Alias<'input> {
@@ -49,6 +53,7 @@ impl<'input> Alias<'input> {
 }
 
 /// FROM clause: `FROM table [, table ...]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FromClause<'input> {
@@ -57,6 +62,7 @@ pub struct FromClause<'input> {
 }
 
 /// Table name with inheritance marker and optional alias: `person* p`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InheritedTable<'input> {
@@ -66,6 +72,7 @@ pub struct InheritedTable<'input> {
 }
 
 /// Table alias: `AS name [(col1, col2)]` or bare `name [(col1, col2)]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableAlias<'input> {
@@ -77,6 +84,7 @@ pub struct TableAlias<'input> {
 }
 
 /// Subquery in FROM: `(SELECT ...) AS alias`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubqueryRef<'input> {
@@ -91,16 +99,18 @@ pub struct SubqueryRef<'input> {
 /// Distinguished from `SubqueryRef` by what the `(` contains: a subquery
 /// starts with `SELECT` / `VALUES` / `TABLE` / `WITH` (all keywords),
 /// whereas a parenthesized join tree starts with a table name (ident).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ParenJoinRef<'input> {
     pub _lparen: punct::LParen,
     pub table: Box<TableRef<'input>>,
     pub _rparen: punct::RParen,
-    pub alias: Option<TableAlias<'input>>,
+    pub alias: Option<PlainTableAlias<'input>>,
 }
 
 /// LATERAL subquery in FROM: `LATERAL (VALUES(...)) v`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LateralRef<'input> {
@@ -115,6 +125,7 @@ pub struct LateralRef<'input> {
 ///
 /// `ONLY` means do not recurse into inheritance children (the opposite
 /// of the `table *` `InheritedTable` form).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PlainTable<'input> {
@@ -133,6 +144,7 @@ pub struct PlainTable<'input> {
 ///
 /// Variant ordering: `WithAs` (starts with `AS`) must be listed before `Bare`
 /// so longest-match-wins picks it when `AS` is present.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum PlainTableAlias<'input> {
@@ -141,6 +153,7 @@ pub enum PlainTableAlias<'input> {
 }
 
 /// `AS name [(col, ...)]` form.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PlainTableAliasWithAs<'input> {
@@ -152,6 +165,7 @@ pub struct PlainTableAliasWithAs<'input> {
 }
 
 /// Bare `name [(col, ...)]` form. Uses `literal::Ident` to reject keywords.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PlainTableAliasBare<'input> {
@@ -162,6 +176,7 @@ pub struct PlainTableAliasBare<'input> {
 }
 
 /// `WITH ORDINALITY` suffix on a function table.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithOrdinality {
@@ -171,6 +186,7 @@ pub struct WithOrdinality {
 
 /// A column definition inside a function-table column-def-list:
 /// `name type` (e.g., `a int`).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnDef<'input> {
@@ -180,6 +196,7 @@ pub struct ColumnDef<'input> {
 
 /// `[AS] alias (col type, ...)` or just `(col type, ...)` -- the
 /// column definition list form for table-returning functions.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnDefList<'input> {
@@ -194,6 +211,7 @@ pub struct ColumnDefList<'input> {
 /// Variant ordering: `ColumnDefList` is more specific (its inner uses
 /// `name type` pairs requiring at least one type token after each name)
 /// so list it first.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncTableAlias<'input> {
@@ -202,6 +220,7 @@ pub enum FuncTableAlias<'input> {
 }
 
 /// Function call used as table reference with optional WITH ORDINALITY and alias.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncTableRef<'input> {
@@ -218,6 +237,7 @@ pub struct FuncTableRef<'input> {
 /// - Func before Inherited/Table: FuncCall's `ident(` pattern is longer
 ///   than bare ident.
 /// - Inherited before Table: `person*` matches longer than `person`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SimpleTableRef<'input> {
@@ -235,6 +255,7 @@ pub enum SimpleTableRef<'input> {
 }
 
 /// Join type: LEFT, RIGHT, FULL, INNER, CROSS, or plain JOIN.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum JoinType {
@@ -246,6 +267,7 @@ pub enum JoinType {
 }
 
 /// JOIN condition: ON expr or USING (col, ...)
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum JoinCondition<'input> {
@@ -254,6 +276,7 @@ pub enum JoinCondition<'input> {
 }
 
 /// ON condition for JOIN
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinOn<'input> {
@@ -262,6 +285,7 @@ pub struct JoinOn<'input> {
 }
 
 /// `AS alias` form of a JOIN USING alias.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinUsingAliasWithAs<'input> {
@@ -273,6 +297,7 @@ pub struct JoinUsingAliasWithAs<'input> {
 ///
 /// Variant ordering: `WithAs` (`AS name`) is longer than `Bare`
 /// (`ident`); list it first.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum JoinUsingAlias<'input> {
@@ -281,6 +306,7 @@ pub enum JoinUsingAlias<'input> {
 }
 
 /// USING clause for JOIN: `USING (col, ...) [[AS] alias]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinUsing<'input> {
@@ -299,6 +325,7 @@ pub struct JoinUsing<'input> {
 /// `OUTER` is allowed (and traditionally written) after `LEFT`/`RIGHT`/`FULL`.
 /// Postgres accepts but does not require it; the grammar accepts it after any
 /// join type for simplicity.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct JoinSuffix<'input> {
@@ -311,6 +338,7 @@ pub struct JoinSuffix<'input> {
 }
 
 /// A table reference that may have zero or more JOIN suffixes.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableRef<'input> {
@@ -319,6 +347,7 @@ pub struct TableRef<'input> {
 }
 
 /// WHERE clause: `WHERE expr`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhereClause<'input> {
@@ -327,6 +356,7 @@ pub struct WhereClause<'input> {
 }
 
 /// USING operator in ORDER BY: `USING > | USING <`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum UsingOp {
@@ -335,6 +365,7 @@ pub enum UsingOp {
 }
 
 /// USING clause in ORDER BY: `USING op`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UsingClause {
@@ -343,6 +374,7 @@ pub struct UsingClause {
 }
 
 /// Sort direction: ASC or DESC.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SortDir {
@@ -351,6 +383,7 @@ pub enum SortDir {
 }
 
 /// NULLS FIRST or NULLS LAST.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum NullsOrder {
@@ -359,16 +392,19 @@ pub enum NullsOrder {
 }
 
 /// NULLS FIRST
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NullsFirst(PhantomData<keyword::Nulls>, PhantomData<keyword::First>);
 
 /// NULLS LAST
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NullsLast(PhantomData<keyword::Nulls>, PhantomData<keyword::Last>);
 
 /// A single ORDER BY item: `expr [ASC|DESC] [USING op] [NULLS FIRST|LAST]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrderByItem<'input> {
@@ -379,6 +415,7 @@ pub struct OrderByItem<'input> {
 }
 
 /// ORDER BY clause: `ORDER BY item [, item ...]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrderByClause<'input> {
@@ -388,6 +425,7 @@ pub struct OrderByClause<'input> {
 }
 
 /// OFFSET clause: `OFFSET expr`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OffsetClause<'input> {
@@ -396,6 +434,7 @@ pub struct OffsetClause<'input> {
 }
 
 /// LIMIT clause: `LIMIT expr`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LimitClause<'input> {
@@ -404,6 +443,7 @@ pub struct LimitClause<'input> {
 }
 
 /// FOR UPDATE clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForUpdateClause {
@@ -411,16 +451,65 @@ pub struct ForUpdateClause {
     pub _update: PhantomData<keyword::Update>,
 }
 
-/// GROUP BY clause: `GROUP BY expr, ...`
+/// GROUP BY clause: `GROUP BY item, ...` where each item is an expression
+/// or one of the grouping primitives (GROUPING SETS, ROLLUP, CUBE).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GroupByClause<'input> {
     pub _group: PhantomData<keyword::Group>,
     pub _by: PhantomData<keyword::By>,
-    pub exprs: Seq<Expr<'input>, punct::Comma>,
+    pub items: Seq<GroupByItem<'input>, punct::Comma>,
+}
+
+/// `GROUPING SETS ( item, ... )`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct GroupingSetsItem<'input> {
+    pub _grouping: PhantomData<keyword::GroupingKw>,
+    pub _sets: PhantomData<keyword::SetsKw>,
+    pub groups:
+        Surrounded<punct::LParen, Seq<Box<GroupByItem<'input>>, punct::Comma>, punct::RParen>,
+}
+
+/// `ROLLUP ( item, ... )`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct RollupItem<'input> {
+    pub _rollup: PhantomData<keyword::RollupKw>,
+    pub items:
+        Surrounded<punct::LParen, Seq<Box<GroupByItem<'input>>, punct::Comma>, punct::RParen>,
+}
+
+/// `CUBE ( item, ... )`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CubeItem<'input> {
+    pub _cube: PhantomData<keyword::CubeKw>,
+    pub items:
+        Surrounded<punct::LParen, Seq<Box<GroupByItem<'input>>, punct::Comma>, punct::RParen>,
+}
+
+/// A single element in a GROUP BY clause.
+///
+/// Variant ordering: two-keyword primitives first (`GROUPING SETS`), then
+/// single-keyword primitives (`ROLLUP`, `CUBE`), then the catch-all `Expr`
+/// which also handles `(a, b)` row-style groupings.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum GroupByItem<'input> {
+    GroupingSets(GroupingSetsItem<'input>),
+    Rollup(RollupItem<'input>),
+    Cube(CubeItem<'input>),
+    Expr(Expr<'input>),
 }
 
 /// HAVING clause: `HAVING expr`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct HavingClause<'input> {
@@ -429,6 +518,7 @@ pub struct HavingClause<'input> {
 }
 
 /// A single named window definition: `name AS (inline_window_spec)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WindowDef<'input> {
@@ -442,6 +532,7 @@ pub struct WindowDef<'input> {
 }
 
 /// `WINDOW name AS (...)[, name AS (...), ...]` clause in SELECT.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WindowClause<'input> {
@@ -450,6 +541,7 @@ pub struct WindowClause<'input> {
 }
 
 /// SELECT statement.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
@@ -481,6 +573,7 @@ pub struct SelectStmt<'input> {
 /// A SELECT body that can appear in subqueries -- WITH, SELECT, or VALUES.
 /// WithBody must come before Select so `WITH ... SELECT` matches before bare `SELECT`.
 /// SelectStmt must come before ValuesStmt so `SELECT` keyword wins over ambiguity.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SelectBody<'input> {
@@ -491,6 +584,7 @@ pub enum SelectBody<'input> {
 
 /// VALUES body: `VALUES (expr, ...), (expr, ...)`
 /// Can appear standalone or inside subqueries.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ValuesBody<'input> {
@@ -532,9 +626,8 @@ mod tests {
 
     #[test]
     fn parse_select_paren_join_with_col_aliases() {
-        let mut input = Input::new(
-            "SELECT * FROM (a t1 (x, y) CROSS JOIN b t2 (p, q)) AS tx (a, b, c, d)",
-        );
+        let mut input =
+            Input::new("SELECT * FROM (a t1 (x, y) CROSS JOIN b t2 (p, q)) AS tx (a, b, c, d)");
         let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
@@ -674,9 +767,8 @@ mod tests {
 
     #[test]
     fn parse_select_window_clause() {
-        let mut input = Input::new(
-            "SELECT sum(x) OVER w FROM t WINDOW w AS (PARTITION BY y ORDER BY z)",
-        );
+        let mut input =
+            Input::new("SELECT sum(x) OVER w FROM t WINDOW w AS (PARTITION BY y ORDER BY z)");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.window.is_some());
         assert!(input.is_empty());
@@ -730,17 +822,15 @@ mod tests {
 
     #[test]
     fn parse_select_func_with_ordinality() {
-        let mut input =
-            Input::new("SELECT * FROM rngfunct(1) WITH ORDINALITY AS z(a, b, ord)");
+        let mut input = Input::new("SELECT * FROM rngfunct(1) WITH ORDINALITY AS z(a, b, ord)");
         let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
     #[test]
     fn parse_select_func_column_def_list() {
-        let mut input = Input::new(
-            "SELECT * FROM test_ret_set_rec_dyn(1500) AS (a int, b int, c int)",
-        );
+        let mut input =
+            Input::new("SELECT * FROM test_ret_set_rec_dyn(1500) AS (a int, b int, c int)");
         let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
@@ -785,6 +875,69 @@ mod tests {
     fn parse_select_right_outer_join_on() {
         let mut input = Input::new("SELECT * FROM a RIGHT OUTER JOIN b ON a.i = b.i");
         let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_paren_join_simple() {
+        let mut input =
+            Input::new("SELECT * FROM a LEFT JOIN (b JOIN c ON b.x = c.x) ON a.y = b.y");
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_paren_join_with_subquery_inside() {
+        let mut input = Input::new(
+            "SELECT * FROM a LEFT JOIN (b JOIN (SELECT 1 AS x) s ON b.x = s.x) ON a.y = b.y",
+        );
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_paren_join_leading_subquery() {
+        let mut input = Input::new(
+            "SELECT * FROM a LEFT JOIN ((SELECT * FROM b) s LEFT JOIN c ON s.x = c.x) ON a.y = s.y",
+        );
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_group_by_grouping_sets_simple() {
+        let mut input = Input::new("SELECT sum(c) FROM t GROUP BY GROUPING SETS ((), (a), (a,b))");
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.group_by.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_group_by_rollup() {
+        let mut input = Input::new("SELECT sum(c) FROM t GROUP BY ROLLUP (a, b)");
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_group_by_cube() {
+        let mut input = Input::new("SELECT sum(c) FROM t GROUP BY CUBE (a, b)");
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_group_by_grouping_sets_nested() {
+        let mut input =
+            Input::new("SELECT sum(c) FROM t GROUP BY GROUPING SETS (ROLLUP(a), CUBE(b))");
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_group_by_mixed_primitives() {
+        let mut input = Input::new("SELECT sum(c) FROM t GROUP BY a, ROLLUP(b), CUBE(c)");
+        SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

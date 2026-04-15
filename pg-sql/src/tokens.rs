@@ -162,6 +162,12 @@ pub mod keyword {
         Collate     => r"COLLATE\b",
         // UNLOGGED table
         Unlogged    => r"UNLOGGED\b",
+        // DATABASE object
+        Database    => r"DATABASE\b",
+        // ALTER DEFAULT PRIVILEGES
+        Privileges  => r"PRIVILEGES\b",
+        // CHECKPOINT statement
+        Checkpoint  => r"CHECKPOINT\b",
         // Hash partition modulus / remainder
         Modulus     => r"MODULUS\b",
         Remainder   => r"REMAINDER\b",
@@ -359,12 +365,59 @@ pub mod keyword {
         SubstringKw => r"SUBSTRING\b",
         PositionKw  => r"POSITION\b",
         OverlayKw   => r"OVERLAY\b",
+        ExtractKw   => r"EXTRACT\b",
         Leading     => r"LEADING\b",
         Trailing    => r"TRAILING\b",
         BothKw      => r"BOTH\b",
         Similar     => r"SIMILAR\b",
         EscapeKw    => r"ESCAPE\b",
         Placing     => r"PLACING\b",
+        // GROUP BY grouping primitives (Bundle: grouping sets)
+        GroupingKw  => r"GROUPING\b",
+        SetsKw      => r"SETS\b",
+        RollupKw    => r"ROLLUP\b",
+        CubeKw      => r"CUBE\b",
+        // INTERVAL literal qualifier keywords
+        IntervalKw  => r"INTERVAL\b",
+        YearKw      => r"YEAR\b",
+        MonthKw     => r"MONTH\b",
+        DayKw       => r"DAY\b",
+        HourKw      => r"HOUR\b",
+        MinuteKw    => r"MINUTE\b",
+        SecondKw    => r"SECOND\b",
+        // CREATE TABLE (LIKE ...) options
+        IncludingKw => r"INCLUDING\b",
+        ExcludingKw => r"EXCLUDING\b",
+        DefaultsKw  => r"DEFAULTS\b",
+        IndexesKw   => r"INDEXES\b",
+        StorageKw   => r"STORAGE\b",
+        CommentsKw  => r"COMMENTS\b",
+        // CHECK / FK constraint suffix
+        ValidKw     => r"VALID\b",
+        // VACUUM / REINDEX option values
+        ParallelKw  => r"PARALLEL\b",
+        // ALTER ... RENAME TO
+        RenameKw    => r"RENAME\b",
+        // CREATE/ALTER/DROP LANGUAGE option keywords
+        Trusted     => r"TRUSTED\b",
+        Procedural  => r"PROCEDURAL\b",
+        Handler     => r"HANDLER\b",
+        Validator   => r"VALIDATOR\b",
+        InlineKw    => r"INLINE\b",
+        // FETCH / MOVE direction keywords
+        Next        => r"NEXT\b",
+        Prior       => r"PRIOR\b",
+        Forward     => r"FORWARD\b",
+        Backward    => r"BACKWARD\b",
+        Absolute    => r"ABSOLUTE\b",
+        Relative    => r"RELATIVE\b",
+        // DOUBLE PRECISION type name
+        DoubleKw    => r"DOUBLE\b",
+        PrecisionKw => r"PRECISION\b",
+        // PARALLEL SAFE / RESTRICTED / UNSAFE function option
+        SafeKw       => r"SAFE\b",
+        UnsafeKw     => r"UNSAFE\b",
+        RestrictedKw => r"RESTRICTED\b",
     }
 }
 
@@ -378,6 +431,7 @@ pub mod punct {
         Star      => r"\*",        "*",
         Dot       => r"\.",        ".",
         Eq        => "=",          "=",
+        FatArrow  => r"=>",        "=>",
         BangEq    => "!=",         "!=",
         Neq       => "<>",         "<>",
         // 3-char `<`-prefixed operators must come before 2-char `<=`/`<>`/`<<`
@@ -394,6 +448,14 @@ pub mod punct {
         Lt        => "<",          "<",
         Gt        => ">",          ">",
         ColonColon => "::",        "::",
+        // Psql meta-commands that can terminate a SQL statement in place of `;`.
+        // Must be listed before plain BackSlash so longest-match-wins picks the
+        // specific directive over the bare backslash.
+        PsqlCrosstabview => r"\\crosstabview\b", "\\crosstabview",
+        PsqlGexec  => r"\\gexec\b", "\\gexec",
+        PsqlGset   => r"\\gset\b",  "\\gset",
+        PsqlGx     => r"\\gx\b",    "\\gx",
+        PsqlG      => r"\\g\b",     "\\g",
         BackSlash  => r"\\",       "\\",
         Plus       => r"\+",       "+",
         // 3-char `-|-` before 2-char `->>`/`->` before single-char `-`.
@@ -404,6 +466,9 @@ pub mod punct {
         PipeGtGt       => r"\|>>", "|>>",
         PipeAmpGt      => r"\|&>", "|&>",
         Concat     => r"\|\|",     "||",
+        // Single-char `|` (bitwise OR). Must be declared after `||` and
+        // other `|`-prefixed operators so longest-match picks the longer form.
+        Pipe       => r"\|",       "|",
         Slash      => "/",         "/",
         Percent    => "%",         "%",
         LBracket   => r"\[",       "[",
@@ -411,6 +476,9 @@ pub mod punct {
         // JSON/JSONB operators. Longer before shorter (longest-match-wins).
         HashArrowArrow => r"#>>",      "#>>",
         HashArrow      => r"#>",       "#>",
+        // Single-char `#` (bitwise XOR). Must come after all longer `#`-prefixed
+        // tokens so longest-match-wins.
+        Pound          => r"\#",       "#",
         ArrowArrow     => r"->>",      "->>",
         Arrow          => r"->",       "->",
         QuestionPipe   => r"\?\|",     "?|",
@@ -429,11 +497,18 @@ pub mod punct {
         AmpAmp         => r"&&",       "&&",
         AmpLt          => r"&<",       "&<",
         AmpGt          => r"&>",       "&>",
+        // Single-char `&` (bitwise AND). Must follow all longer `&`-prefixed
+        // operators so longest-match-wins.
+        Amp            => r"&",        "&",
         // POSIX regex match operators. Longest-first.
         BangTildeStar  => r"!~\*",     "!~*",
         TildeStar      => r"~\*",      "~*",
         BangTilde      => r"!~",       "!~",
+        // Geometric "same as" operator. Must precede bare `~`.
+        TildeEq        => r"~=",       "~=",
         Tilde          => r"~",        "~",
+        // Exponentiation operator (Postgres).
+        Caret          => r"\^",       "^",
     }
 }
 
@@ -506,6 +581,7 @@ pub mod literal {
         // grammar explicitly looks for them.
         "ASC",
         "DESC",
+        "NULLS",
         "UNIQUE",
         "USING",
         "OFFSET",

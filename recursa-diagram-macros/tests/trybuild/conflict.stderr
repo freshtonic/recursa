@@ -1,0 +1,5 @@
+error: `skip` and `label` are mutually exclusive
+ --> tests/trybuild/conflict.rs:5:5
+  |
+5 |     #[railroad(label = "X", skip)]
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

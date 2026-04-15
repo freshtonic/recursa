@@ -1,0 +1,9 @@
+[package]
+name = "recursa-diagram-core"
+version = "0.1.0"
+edition = "2024"
+description = "Layout primitives and SVG rendering for recursa railroad syntax diagrams"
+license = "MIT"
+repository = "https://github.com/freshtonic/recursa"
+
+[dependencies]

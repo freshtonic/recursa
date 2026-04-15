@@ -7,7 +7,9 @@ use std::marker::PhantomData;
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
+use crate::ast::common::QualifiedName;
 use crate::ast::expr::Expr;
 use crate::ast::select::WhereClause;
 use crate::ast::update::{ReturningClause, SetAssignment};
@@ -15,6 +17,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// DEFAULT VALUES variant.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DefaultValues {
@@ -23,6 +26,7 @@ pub struct DefaultValues {
 }
 
 /// Multiple value rows: `VALUES (row1), (row2), ...`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertValueRows<'input> {
@@ -34,6 +38,7 @@ pub struct InsertValueRows<'input> {
 ///
 /// Variant ordering: Default (`DEFAULT VALUES`) is longer than Rows (`VALUES`),
 /// so longest-match-wins picks it when DEFAULT is present.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InsertSource<'input> {
@@ -43,6 +48,7 @@ pub enum InsertSource<'input> {
 }
 
 /// DO UPDATE SET ... [WHERE ...] action.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoUpdateAction<'input> {
@@ -54,6 +60,7 @@ pub struct DoUpdateAction<'input> {
 }
 
 /// DO NOTHING action.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoNothingAction {
@@ -66,6 +73,7 @@ pub struct DoNothingAction {
 /// Variant ordering: DoUpdate (`DO UPDATE SET`) is longer than
 /// DoNothing (`DO NOTHING`), but both start with `DO` and diverge
 /// at the next keyword, so the regex disambiguates.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ConflictAction<'input> {
@@ -74,6 +82,7 @@ pub enum ConflictAction<'input> {
 }
 
 /// ON CONFLICT clause: `ON CONFLICT [(col, ...)] DO UPDATE SET ... | DO NOTHING`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnConflictClause<'input> {
@@ -86,13 +95,14 @@ pub struct OnConflictClause<'input> {
 }
 
 /// INSERT INTO statement with optional ON CONFLICT and RETURNING.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
 pub struct InsertStmt<'input> {
     pub _insert: PhantomData<keyword::Insert>,
     pub _into: PhantomData<keyword::Into>,
-    pub table_name: literal::Ident<'input>,
+    pub table_name: QualifiedName<'input>,
     pub columns: Option<ColumnList<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub source: InsertSource<'input>,
@@ -118,10 +128,18 @@ mod tests {
     use crate::rules::SqlRules;
 
     #[test]
+    fn parse_insert_qualified_table() {
+        let mut input = Input::new("INSERT INTO pg_catalog.foo VALUES (1)");
+        let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert_eq!(stmt.table_name.object(), "foo");
+        assert!(input.is_empty());
+    }
+
+    #[test]
     fn parse_insert_with_columns() {
         let mut input = Input::new("INSERT INTO BOOLTBL1 (f1) VALUES (bool 't')");
         let stmt = InsertStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.table_name.text(), "BOOLTBL1");
+        assert_eq!(stmt.table_name.object(), "BOOLTBL1");
         assert!(stmt.columns.is_some());
         assert_eq!(stmt.columns.as_ref().unwrap().inner.len(), 1);
         assert!(input.is_empty());

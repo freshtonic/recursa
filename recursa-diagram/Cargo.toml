@@ -1,0 +1,11 @@
+[package]
+name = "recursa-diagram"
+version = "0.1.0"
+edition = "2024"
+description = "Facade crate re-exporting recursa-diagram-core and recursa-diagram-macros for railroad syntax diagrams"
+license = "MIT"
+repository = "https://github.com/freshtonic/recursa"
+
+[dependencies]
+recursa-diagram-core = { path = "../recursa-diagram-core" }
+recursa-diagram-macros = { path = "../recursa-diagram-macros" }

@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 
 use recursa::seq::Seq;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
 use crate::ast::common::{DropBehavior, QualifiedName};
 use crate::ast::create_view::IfExistsKw;
@@ -12,6 +13,7 @@ use crate::tokens::{keyword, punct};
 /// ```sql
 /// DROP TABLE [IF EXISTS] name [, name ...] [CASCADE | RESTRICT]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropTableStmt<'input> {

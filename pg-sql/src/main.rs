@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use recursa::Input;
 use recursa_core::fmt::FormatStyle;
 
-use pg_sql::ast::{parse_sql_file, parse_stats, FileItem, PsqlCommand, Statement};
+use pg_sql::ast::{FileItem, PsqlCommand, Statement, parse_sql_file, parse_stats};
 use pg_sql::formatter::format_file;
 
 #[derive(Parser)]

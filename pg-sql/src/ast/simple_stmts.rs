@@ -7,17 +7,21 @@
 use std::marker::PhantomData;
 
 use recursa::seq::Seq;
+use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::RawStatement;
+use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 // --- Transaction control ---
 
 /// Isolation level following `ISOLATION LEVEL`.
 ///
 /// Variant ordering: multi-word forms before single-word `Serializable`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum IsolationLevelKind {
@@ -27,6 +31,7 @@ pub enum IsolationLevelKind {
     Serializable(keyword::Serializable),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RepeatableReadLevel {
@@ -34,6 +39,7 @@ pub struct RepeatableReadLevel {
     pub _read: PhantomData<keyword::ReadKw>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadCommittedLevel {
@@ -41,6 +47,7 @@ pub struct ReadCommittedLevel {
     pub _committed: PhantomData<keyword::Committed>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadUncommittedLevel {
@@ -49,6 +56,7 @@ pub struct ReadUncommittedLevel {
 }
 
 /// `ISOLATION LEVEL <level>` transaction mode.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsolationLevelMode {
@@ -58,6 +66,7 @@ pub struct IsolationLevelMode {
 }
 
 /// `READ ONLY` or `READ WRITE` transaction mode.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadOnlyMode {
@@ -65,6 +74,7 @@ pub struct ReadOnlyMode {
     pub _only: PhantomData<keyword::Only>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReadWriteMode {
@@ -73,6 +83,7 @@ pub struct ReadWriteMode {
 }
 
 /// `[NOT] DEFERRABLE` transaction mode.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotDeferrableMode {
@@ -84,6 +95,7 @@ pub struct NotDeferrableMode {
 ///
 /// Variant ordering: multi-word before single, and `NotDeferrable` (NOT
 /// DEFERRABLE) before bare `Deferrable`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TransactionMode {
@@ -95,6 +107,7 @@ pub enum TransactionMode {
 }
 
 /// Optional `WORK | TRANSACTION` suffix.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum WorkOrTransaction {
@@ -103,6 +116,7 @@ pub enum WorkOrTransaction {
 }
 
 /// BEGIN [WORK | TRANSACTION] [transaction_mode [, ...]]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct BeginStmt {
@@ -112,6 +126,7 @@ pub struct BeginStmt {
 }
 
 /// END [WORK | TRANSACTION] — alias for COMMIT.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct EndStmt {
@@ -120,6 +135,7 @@ pub struct EndStmt {
 }
 
 /// ABORT [WORK | TRANSACTION] — alias for ROLLBACK.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AbortStmt {
@@ -128,6 +144,7 @@ pub struct AbortStmt {
 }
 
 /// START TRANSACTION [transaction_mode [, ...]]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StartTransactionStmt {
@@ -138,6 +155,7 @@ pub struct StartTransactionStmt {
 
 /// SET TRANSACTION transaction_mode [, ...]
 /// SET SESSION CHARACTERISTICS AS TRANSACTION transaction_mode [, ...]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetTransactionStmt {
@@ -146,6 +164,7 @@ pub struct SetTransactionStmt {
     pub modes: Seq<TransactionMode, punct::Comma>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetTransactionTarget {
@@ -153,6 +172,7 @@ pub enum SetTransactionTarget {
     Transaction(keyword::Transaction),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetSessionCharacteristics {
@@ -163,6 +183,7 @@ pub struct SetSessionCharacteristics {
 }
 
 /// `SET CONSTRAINTS { ALL | name [, …] } { DEFERRED | IMMEDIATE }`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetConstraintsStmt<'input> {
@@ -172,6 +193,7 @@ pub struct SetConstraintsStmt<'input> {
     pub mode: DeferredMode,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetConstraintsTarget<'input> {
@@ -179,6 +201,7 @@ pub enum SetConstraintsTarget<'input> {
     Names(Seq<literal::Ident<'input>, punct::Comma>),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum DeferredMode {
@@ -187,6 +210,7 @@ pub enum DeferredMode {
 }
 
 /// COMMIT [WORK | TRANSACTION]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CommitStmt<'input> {
@@ -197,6 +221,7 @@ pub struct CommitStmt<'input> {
 /// ```sql
 /// ROLLBACK [WORK | TRANSACTION] [TO [SAVEPOINT] name]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RollbackStmt<'input> {
@@ -205,6 +230,7 @@ pub struct RollbackStmt<'input> {
 }
 
 /// SAVEPOINT name
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SavepointStmt<'input> {
@@ -215,6 +241,7 @@ pub struct SavepointStmt<'input> {
 /// ```sql
 /// RELEASE [SAVEPOINT] name
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReleaseStmt<'input> {
@@ -225,6 +252,7 @@ pub struct ReleaseStmt<'input> {
 // --- PREPARE / EXECUTE / DEALLOCATE ---
 
 /// PREPARE name [(types)] AS statement
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PrepareStmt<'input> {
@@ -233,6 +261,7 @@ pub struct PrepareStmt<'input> {
 }
 
 /// EXECUTE name [(params)]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExecuteStmt<'input> {
@@ -243,6 +272,7 @@ pub struct ExecuteStmt<'input> {
 /// ```sql
 /// DEALLOCATE [PREPARE] name | ALL
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeallocateStmt<'input> {
@@ -253,6 +283,7 @@ pub struct DeallocateStmt<'input> {
 // --- GRANT / REVOKE ---
 
 /// GRANT privileges ON object TO role [WITH GRANT OPTION]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GrantStmt<'input> {
@@ -261,6 +292,7 @@ pub struct GrantStmt<'input> {
 }
 
 /// REVOKE privileges ON object FROM role
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RevokeStmt<'input> {
@@ -271,6 +303,7 @@ pub struct RevokeStmt<'input> {
 // --- COPY ---
 
 /// COPY table [(columns)] FROM/TO target [WITH options]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CopyStmt<'input> {
@@ -283,6 +316,7 @@ pub struct CopyStmt<'input> {
 /// ```sql
 /// TRUNCATE [TABLE] name [, ...] [CASCADE | RESTRICT]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TruncateStmt<'input> {
@@ -293,6 +327,7 @@ pub struct TruncateStmt<'input> {
 // --- COMMENT ---
 
 /// COMMENT ON object IS 'text' | NULL
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CommentStmt<'input> {
@@ -305,6 +340,7 @@ pub struct CommentStmt<'input> {
 /// ```sql
 /// LOCK [TABLE] name [, ...] [IN mode MODE] [NOWAIT]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LockStmt<'input> {
@@ -315,6 +351,7 @@ pub struct LockStmt<'input> {
 // --- Cursor operations ---
 
 /// DECLARE name CURSOR FOR query
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeclareStmt<'input> {
@@ -322,17 +359,96 @@ pub struct DeclareStmt<'input> {
     pub tail: Option<RawStatement<'input>>,
 }
 
+/// `FROM` or `IN` cursor-source keyword in FETCH/MOVE.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum FetchSource {
+    From(keyword::From),
+    In(keyword::In),
+}
+
+/// `ABSOLUTE n` form.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct FetchAbsolute<'input> {
+    pub _absolute: PhantomData<keyword::Absolute>,
+    pub count: literal::IntegerLit<'input>,
+}
+
+/// `RELATIVE n` form.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct FetchRelative<'input> {
+    pub _relative: PhantomData<keyword::Relative>,
+    pub count: literal::IntegerLit<'input>,
+}
+
+/// `FORWARD [n|ALL]` form.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct FetchForward<'input> {
+    pub _forward: PhantomData<keyword::Forward>,
+    pub count: Option<FetchCountOrAll<'input>>,
+}
+
+/// `BACKWARD [n|ALL]` form.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct FetchBackward<'input> {
+    pub _backward: PhantomData<keyword::Backward>,
+    pub count: Option<FetchCountOrAll<'input>>,
+}
+
+/// A count or `ALL` marker following `FORWARD`/`BACKWARD`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum FetchCountOrAll<'input> {
+    All(keyword::All),
+    Count(literal::IntegerLit<'input>),
+}
+
+/// FETCH/MOVE direction clause.
+///
+/// Variant ordering: multi-token forms (`ABSOLUTE n`, `RELATIVE n`,
+/// `FORWARD [...]`, `BACKWARD [...]`) before single-keyword directions.
+/// `Count` (bare integer) listed last since it has no keyword prefix.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum FetchDirection<'input> {
+    Absolute(FetchAbsolute<'input>),
+    Relative(FetchRelative<'input>),
+    Forward(FetchForward<'input>),
+    Backward(FetchBackward<'input>),
+    Next(keyword::Next),
+    Prior(keyword::Prior),
+    First(keyword::First),
+    Last(keyword::Last),
+    All(keyword::All),
+    Count(literal::IntegerLit<'input>),
+}
+
 /// ```sql
-/// FETCH [direction] [FROM | IN] cursor
+/// FETCH [direction] [FROM|IN] cursor_name
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FetchStmt<'input> {
     pub _fetch: PhantomData<keyword::Fetch>,
-    pub tail: Option<RawStatement<'input>>,
+    pub direction: Option<FetchDirection<'input>>,
+    pub source: Option<FetchSource>,
+    pub cursor: literal::AliasName<'input>,
 }
 
 /// CLOSE cursor | ALL
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CloseStmt<'input> {
@@ -341,22 +457,49 @@ pub struct CloseStmt<'input> {
 }
 
 /// ```sql
-/// MOVE [direction] [FROM | IN] cursor
+/// MOVE [direction] [FROM|IN] cursor_name
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MoveStmt<'input> {
     pub _move: PhantomData<keyword::Move>,
-    pub tail: Option<RawStatement<'input>>,
+    pub direction: Option<FetchDirection<'input>>,
+    pub source: Option<FetchSource>,
+    pub cursor: literal::AliasName<'input>,
 }
 
 // --- REINDEX ---
 
+/// A single option inside a VACUUM/REINDEX `( ... )` list: `name [value]`.
+///
+/// The option name may be any SQL word (including keywords like `FULL`,
+/// `FREEZE`, `PARALLEL`) so it uses `AliasName`. The value is any expression,
+/// which covers integers, floats, identifiers, boolean literals, and signed
+/// numbers (`-1`).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct VacuumOption<'input> {
+    pub name: literal::AliasName<'input>,
+    pub value: Option<Expr<'input>>,
+}
+
+/// Parenthesized options list: `( opt [= val] [, ...] )`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct VacuumOptions<'input> {
+    pub list: Surrounded<punct::LParen, Seq<VacuumOption<'input>, punct::Comma>, punct::RParen>,
+}
+
 /// REINDEX [( options )] { INDEX | TABLE | SCHEMA | DATABASE | SYSTEM } name
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReindexStmt<'input> {
     pub _reindex: PhantomData<keyword::Reindex>,
+    pub options: Option<VacuumOptions<'input>>,
     pub tail: Option<RawStatement<'input>>,
 }
 
@@ -365,6 +508,7 @@ pub struct ReindexStmt<'input> {
 /// ```sql
 /// REFRESH MATERIALIZED VIEW [CONCURRENTLY] name [WITH [NO] DATA]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct RefreshStmt<'input> {
@@ -375,6 +519,7 @@ pub struct RefreshStmt<'input> {
 // --- NOTIFY / LISTEN / UNLISTEN ---
 
 /// NOTIFY channel [, payload]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotifyStmt<'input> {
@@ -383,6 +528,7 @@ pub struct NotifyStmt<'input> {
 }
 
 /// LISTEN channel
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ListenStmt<'input> {
@@ -390,27 +536,52 @@ pub struct ListenStmt<'input> {
     pub tail: Option<RawStatement<'input>>,
 }
 
+/// Target of an UNLISTEN statement: a channel name or `*` (all channels).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum UnlistenTarget<'input> {
+    /// `*` — unlisten from every channel.
+    All(punct::Star),
+    /// A specific channel name.
+    Channel(literal::Ident<'input>),
+}
+
 /// UNLISTEN channel | *
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnlistenStmt<'input> {
     pub _unlisten: PhantomData<keyword::Unlisten>,
-    pub tail: Option<RawStatement<'input>>,
+    pub target: UnlistenTarget<'input>,
 }
 
 // --- DO ---
 
-/// DO [LANGUAGE lang] code
+/// `DO [LANGUAGE lang] $$ ... $$` anonymous code block.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoStmt<'input> {
     pub _do: PhantomData<keyword::DoBlock>,
-    pub tail: Option<RawStatement<'input>>,
+    pub language: Option<DoLanguage<'input>>,
+    pub body: literal::DollarStringLit<'input>,
+    pub trailing_language: Option<DoLanguage<'input>>,
+}
+
+/// `LANGUAGE lang` clause on a `DO` block (may appear before or after body).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DoLanguage<'input> {
+    pub _language: PhantomData<keyword::Language>,
+    pub name: literal::Ident<'input>,
 }
 
 // --- DISCARD ---
 
 /// DISCARD ALL | PLANS | SEQUENCES | TEMP
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DiscardStmt<'input> {
@@ -421,6 +592,7 @@ pub struct DiscardStmt<'input> {
 // --- REASSIGN ---
 
 /// REASSIGN OWNED BY role TO role
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReassignStmt<'input> {
@@ -431,6 +603,7 @@ pub struct ReassignStmt<'input> {
 // --- SECURITY LABEL ---
 
 /// SECURITY LABEL [FOR provider] ON object IS 'label' | NULL
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SecurityLabelStmt<'input> {
@@ -443,6 +616,7 @@ pub struct SecurityLabelStmt<'input> {
 /// ```sql
 /// CLUSTER [VERBOSE] [table [USING index]]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ClusterStmt<'input> {
@@ -453,16 +627,19 @@ pub struct ClusterStmt<'input> {
 // --- VACUUM ---
 
 /// VACUUM [(options)] [table [(columns)]]
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct VacuumStmt<'input> {
     pub _vacuum: PhantomData<keyword::Vacuumw>,
+    pub options: Option<VacuumOptions<'input>>,
     pub tail: Option<RawStatement<'input>>,
 }
 
 // --- ALTER TABLE ---
 
 /// ALTER TABLE ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterTableStmt<'input> {
@@ -471,10 +648,30 @@ pub struct AlterTableStmt<'input> {
     pub tail: Option<RawStatement<'input>>,
 }
 
+/// `CHECKPOINT` — force a transaction log checkpoint.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CheckpointStmt {
+    pub _checkpoint: PhantomData<keyword::Checkpoint>,
+}
+
+/// `ALTER DEFAULT PRIVILEGES [FOR ROLE ...] [IN SCHEMA ...] { GRANT | REVOKE } ...`
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterDefaultPrivilegesStmt<'input> {
+    pub _alter: PhantomData<keyword::Alter>,
+    pub _default: PhantomData<keyword::Default>,
+    pub _privileges: PhantomData<keyword::Privileges>,
+    pub tail: Option<RawStatement<'input>>,
+}
+
 // --- CREATE/DROP for types not yet fully parsed ---
 // These capture the leading keywords for disambiguation, with raw tail.
 
 /// CREATE TRIGGER ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTriggerStmt<'input> {
@@ -484,6 +681,7 @@ pub struct CreateTriggerStmt<'input> {
 }
 
 /// DROP TRIGGER ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropTriggerStmt<'input> {
@@ -492,16 +690,19 @@ pub struct DropTriggerStmt<'input> {
     pub tail: Option<RawStatement<'input>>,
 }
 
-/// CREATE RULE ...
+/// CREATE [OR REPLACE] RULE ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateRuleStmt<'input> {
     pub _create: PhantomData<keyword::Create>,
+    pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
     pub _rule: PhantomData<keyword::Rule>,
     pub tail: Option<RawStatement<'input>>,
 }
 
 /// DROP RULE ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropRuleStmt<'input> {
@@ -510,20 +711,40 @@ pub struct DropRuleStmt<'input> {
     pub tail: Option<RawStatement<'input>>,
 }
 
+/// Optional `TEMP` or `TEMPORARY` modifier that can appear between `CREATE`
+/// and the object keyword for temporary objects (sequences, tables, views,
+/// etc.).
+///
+/// Variant ordering: `Temporary` (longer) before `Temp` so the longer keyword
+/// wins longest-match disambiguation.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum TempModifier {
+    Temporary(keyword::Temporary),
+    Temp(keyword::Temp),
+}
+
 // --- CREATE/DROP/ALTER for remaining object types ---
 // Each captures the leading keyword pair for enum disambiguation.
 
 macro_rules! create_drop_stmts {
     ($($name:ident, $create_name:ident, $drop_name:ident, $kw:ident);* $(;)?) => {
         $(
+            #[railroad]
             #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
             #[parse(rules = SqlRules)]
             pub struct $create_name<'input> {
                 pub _create: PhantomData<keyword::Create>,
+                /// Optional temporary modifier: `TEMP` or `TEMPORARY`. Postgres
+                /// accepts it on sequence/view/table/etc. so we tolerate it
+                /// uniformly in these raw-tailed stubs.
+                pub temp: Option<TempModifier>,
                 pub _obj: PhantomData<keyword::$kw>,
                 pub tail: Option<RawStatement<'input>>,
             }
 
+            #[railroad]
             #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
             #[parse(rules = SqlRules)]
             pub struct $drop_name<'input> {
@@ -554,11 +775,14 @@ create_drop_stmts! {
     Subscription, CreateSubscriptionStmt, DropSubscriptionStmt, Subscription;
     Conversion, CreateConversionStmt, DropConversionStmt, Conversion;
     Server, CreateServerStmt, DropServerStmt, Server;
+    Language, CreateLanguageStmt, DropLanguageStmt, Language;
+    Database, CreateDatabaseStmt, DropDatabaseStmt, Database;
 }
 
 macro_rules! alter_stmts {
     ($($name:ident, $alter_name:ident, $kw:ident);* $(;)?) => {
         $(
+            #[railroad]
             #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
             #[parse(rules = SqlRules)]
             pub struct $alter_name<'input> {
@@ -591,11 +815,14 @@ alter_stmts! {
     Index, AlterIndexStmt, Index;
     View, AlterViewStmt, View;
     Function, AlterFunctionStmt, Function;
+    Language, AlterLanguageStmt, Language;
+    Database, AlterDatabaseStmt, Database;
 }
 
 // Special multi-keyword DDL types
 
 /// CREATE FOREIGN TABLE / DATA WRAPPER
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterForeignStmt<'input> {
@@ -605,6 +832,7 @@ pub struct AlterForeignStmt<'input> {
 }
 
 /// CREATE EVENT TRIGGER
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateEventTriggerStmt<'input> {
@@ -614,6 +842,7 @@ pub struct CreateEventTriggerStmt<'input> {
 }
 
 /// DROP EVENT TRIGGER
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropEventTriggerStmt<'input> {
@@ -623,6 +852,7 @@ pub struct DropEventTriggerStmt<'input> {
 }
 
 /// ALTER EVENT TRIGGER
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterEventTriggerStmt<'input> {
@@ -632,6 +862,7 @@ pub struct AlterEventTriggerStmt<'input> {
 }
 
 /// DROP OWNED BY
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropOwnedStmt<'input> {
@@ -641,6 +872,7 @@ pub struct DropOwnedStmt<'input> {
 }
 
 /// CREATE ACCESS METHOD
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateAccessMethodStmt<'input> {
@@ -650,6 +882,7 @@ pub struct CreateAccessMethodStmt<'input> {
 }
 
 /// DROP ACCESS METHOD
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropAccessMethodStmt<'input> {
@@ -659,6 +892,7 @@ pub struct DropAccessMethodStmt<'input> {
 }
 
 /// CREATE MATERIALIZED VIEW
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateMaterializedViewStmt<'input> {
@@ -668,6 +902,7 @@ pub struct CreateMaterializedViewStmt<'input> {
 }
 
 /// DROP MATERIALIZED VIEW
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropMaterializedViewStmt<'input> {
@@ -677,6 +912,7 @@ pub struct DropMaterializedViewStmt<'input> {
 }
 
 /// ALTER MATERIALIZED VIEW
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AlterMaterializedViewStmt<'input> {
@@ -686,6 +922,7 @@ pub struct AlterMaterializedViewStmt<'input> {
 }
 
 /// CREATE FOREIGN ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateForeignStmt<'input> {
@@ -695,6 +932,7 @@ pub struct CreateForeignStmt<'input> {
 }
 
 /// DROP FOREIGN ...
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropForeignStmt<'input> {
@@ -735,6 +973,27 @@ mod tests {
     fn parse_alter_group_drop_user() {
         let mut input = Input::new("ALTER GROUP g1 DROP USER u1");
         let _stmt = AlterGroupStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_language() {
+        let mut input = Input::new("CREATE LANGUAGE plpgsql HANDLER plpgsql_call_handler");
+        let _stmt = CreateLanguageStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_language_owner() {
+        let mut input = Input::new("ALTER LANGUAGE plpgsql OWNER TO foo");
+        let _stmt = AlterLanguageStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_drop_language() {
+        let mut input = Input::new("DROP LANGUAGE plpgsql");
+        let _stmt = DropLanguageStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
@@ -806,6 +1065,42 @@ mod tests {
     fn parse_begin_isolation() {
         let mut input = Input::new("BEGIN ISOLATION LEVEL SERIALIZABLE");
         let _stmt = BeginStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_vacuum_full() {
+        let mut input = Input::new("VACUUM (FULL) tbl");
+        let stmt = VacuumStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(stmt.options.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_vacuum_full_freeze() {
+        let mut input = Input::new("VACUUM (FULL, FREEZE) tbl");
+        let _stmt = VacuumStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_vacuum_parallel_value() {
+        let mut input = Input::new("VACUUM (PARALLEL 2) tbl");
+        let _stmt = VacuumStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_reindex_tablespace_table() {
+        let mut input = Input::new("REINDEX (TABLESPACE ts) TABLE tbl");
+        let _stmt = ReindexStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_reindex_verbose_index() {
+        let mut input = Input::new("REINDEX (VERBOSE) INDEX i");
+        let _stmt = ReindexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 }

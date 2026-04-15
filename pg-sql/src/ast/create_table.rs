@@ -4,30 +4,56 @@ use std::marker::PhantomData;
 use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
 use crate::ast::partition::{ForValuesClause, PartitionByClause};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// PRIMARY KEY column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct PrimaryKeyConstraint(PhantomData<keyword::Primary>, PhantomData<keyword::Key>);
+pub struct PrimaryKeyConstraint {
+    pub _primary: PhantomData<keyword::Primary>,
+    pub _key: PhantomData<keyword::Key>,
+    /// Optional `[NOT] DEFERRABLE [INITIALLY {DEFERRED|IMMEDIATE}]` suffix.
+    pub attrs: ConstraintAttrs,
+}
 
 /// NOT NULL column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotNullConstraint(PhantomData<keyword::Not>, PhantomData<keyword::Null>);
 
 /// UNIQUE column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct UniqueConstraint(PhantomData<keyword::Unique>);
+pub struct UniqueConstraint {
+    pub _unique: PhantomData<keyword::Unique>,
+    /// Optional `NULLS [NOT] DISTINCT` qualifier (Postgres 15+).
+    pub nulls: Option<NullsDistinctQualifier>,
+    /// Optional `[NOT] DEFERRABLE [INITIALLY ...]` attributes.
+    pub attrs: ConstraintAttrs,
+}
+
+/// `NULLS DISTINCT` or `NULLS NOT DISTINCT` for UNIQUE constraints.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NullsDistinctQualifier {
+    pub _nulls: PhantomData<keyword::Nulls>,
+    pub not: Option<PhantomData<keyword::Not>>,
+    pub _distinct: PhantomData<keyword::Distinct>,
+}
 
 /// Referential action for `ON DELETE` / `ON UPDATE`.
 ///
 /// Variant ordering: multi-word variants (`NO ACTION`, `SET NULL`, `SET DEFAULT`)
 /// come before single-word ones to satisfy longest-match.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ReferentialAction<'input> {
@@ -38,6 +64,7 @@ pub enum ReferentialAction<'input> {
     Restrict(PhantomData<keyword::Restrict>),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NoActionKw {
@@ -45,6 +72,7 @@ pub struct NoActionKw {
     pub _action: PhantomData<keyword::Action>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetNullKw<'input> {
@@ -55,6 +83,7 @@ pub struct SetNullKw<'input> {
     >,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetDefaultKw<'input> {
@@ -66,6 +95,7 @@ pub struct SetDefaultKw<'input> {
 }
 
 /// `ON DELETE <action>`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnDeleteAction<'input> {
@@ -75,6 +105,7 @@ pub struct OnDeleteAction<'input> {
 }
 
 /// `ON UPDATE <action>`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OnUpdateAction<'input> {
@@ -84,6 +115,7 @@ pub struct OnUpdateAction<'input> {
 }
 
 /// Match type for a foreign key: `MATCH FULL | PARTIAL | SIMPLE`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum MatchKind {
@@ -93,6 +125,7 @@ pub enum MatchKind {
 }
 
 /// `MATCH FULL | MATCH PARTIAL | MATCH SIMPLE`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MatchClause {
@@ -103,6 +136,7 @@ pub struct MatchClause {
 /// `DEFERRABLE | NOT DEFERRABLE`.
 ///
 /// Variant ordering: `NotDeferrable` (two keywords) before `Deferrable`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum DeferrableKind {
@@ -110,6 +144,7 @@ pub enum DeferrableKind {
     Deferrable(PhantomData<keyword::Deferrable>),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotDeferrableKw {
@@ -118,6 +153,7 @@ pub struct NotDeferrableKw {
 }
 
 /// `INITIALLY DEFERRED | INITIALLY IMMEDIATE`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InitiallyClause {
@@ -125,6 +161,7 @@ pub struct InitiallyClause {
     pub mode: InitiallyMode,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InitiallyMode {
@@ -132,8 +169,22 @@ pub enum InitiallyMode {
     Immediate(PhantomData<keyword::Immediate>),
 }
 
+/// `ON DELETE ...` or `ON UPDATE ...` trailing action on a REFERENCES
+/// constraint. Modeled as an enum so both orders of the two clauses
+/// are accepted via a `Vec<OnAction>`.
+///
+/// Variant ordering: both start with `ON`; they diverge at the next keyword.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum OnAction<'input> {
+    OnDelete(OnDeleteAction<'input>),
+    OnUpdate(OnUpdateAction<'input>),
+}
+
 /// REFERENCES constraint:
-/// `REFERENCES table [(col, ...)] [MATCH ...] [ON DELETE ...] [ON UPDATE ...] [DEFERRABLE | NOT DEFERRABLE] [INITIALLY ...]`
+/// `REFERENCES table [(col, ...)] [MATCH ...] [ON DELETE|UPDATE ...]* [DEFERRABLE | NOT DEFERRABLE] [INITIALLY ...]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReferencesConstraint<'input> {
@@ -147,21 +198,33 @@ pub struct ReferencesConstraint<'input> {
         >,
     >,
     pub match_clause: Option<MatchClause>,
-    pub on_delete: Option<OnDeleteAction<'input>>,
-    pub on_update: Option<OnUpdateAction<'input>>,
+    pub actions: Vec<OnAction<'input>>,
     pub deferrable: Option<DeferrableKind>,
     pub initially: Option<InitiallyClause>,
+    pub not_valid: Option<NotValidKw>,
 }
 
-/// `CHECK (expr) [NO INHERIT]`
+/// `NOT VALID` suffix on a CHECK or FOREIGN KEY constraint.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NotValidKw {
+    pub _not: PhantomData<keyword::Not>,
+    pub _valid: PhantomData<keyword::ValidKw>,
+}
+
+/// `CHECK (expr) [NO INHERIT] [NOT VALID]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CheckConstraint<'input> {
     pub _check: PhantomData<keyword::Check>,
     pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr<'input>, punct::RParen>,
     pub no_inherit: Option<NoInheritKw>,
+    pub not_valid: Option<NotValidKw>,
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NoInheritKw {
@@ -170,6 +233,7 @@ pub struct NoInheritKw {
 }
 
 /// GENERATED ALWAYS AS IDENTITY column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GeneratedIdentityConstraint(
@@ -180,6 +244,7 @@ pub struct GeneratedIdentityConstraint(
 );
 
 /// `GENERATED ALWAYS AS (expr) STORED` column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct GeneratedStoredConstraint<'input> {
@@ -191,6 +256,7 @@ pub struct GeneratedStoredConstraint<'input> {
 }
 
 /// DEFAULT expr column constraint.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DefaultConstraint<'input> {
@@ -205,6 +271,7 @@ pub struct DefaultConstraint<'input> {
 /// - PrimaryKey (`PRIMARY KEY`) before others (unique keyword)
 /// - NotNull (`NOT NULL`) before others
 /// - References, Unique, Default, Check all start with distinct keywords
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ColumnConstraintKind<'input> {
@@ -220,6 +287,7 @@ pub enum ColumnConstraintKind<'input> {
 
 /// Optional `CONSTRAINT name` prefix shared by column-level and
 /// table-level constraints.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ConstraintNamePrefix<'input> {
@@ -228,6 +296,7 @@ pub struct ConstraintNamePrefix<'input> {
 }
 
 /// A column constraint with its optional `CONSTRAINT name` prefix.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnConstraint<'input> {
@@ -236,6 +305,7 @@ pub struct ColumnConstraint<'input> {
 }
 
 /// `COLLATE "name"` clause used after a column's type.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CollateClause<'input> {
@@ -244,6 +314,7 @@ pub struct CollateClause<'input> {
 }
 
 /// A column definition: `name type [COLLATE "..."] [constraints...]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnDef<'input> {
@@ -265,6 +336,7 @@ impl<'input> ColumnDef<'input> {
 // --- Table-level constraints ---
 
 /// Optional trailing deferrable/initially pair shared by PK/UNIQUE/FK.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ConstraintAttrs {
@@ -273,6 +345,7 @@ pub struct ConstraintAttrs {
 }
 
 /// `PRIMARY KEY (col, ...)`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TablePrimaryKey<'input> {
@@ -284,6 +357,7 @@ pub struct TablePrimaryKey<'input> {
 }
 
 /// `UNIQUE (col, ...)`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableUnique<'input> {
@@ -294,6 +368,7 @@ pub struct TableUnique<'input> {
 }
 
 /// `FOREIGN KEY (col, ...) REFERENCES table [(col, ...)] [MATCH ...] [ON ...] [DEFERRABLE ...] [INITIALLY ...]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableForeignKey<'input> {
@@ -312,6 +387,7 @@ pub type TableCheck<'input> = CheckConstraint<'input>;
 /// Variant ordering: `PRIMARY KEY` (PRIMARY), `FOREIGN KEY` (FOREIGN),
 /// `UNIQUE`, `CHECK` — all start with distinct unique keywords so order
 /// is not strictly required for disambiguation.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TableConstraintKind<'input> {
@@ -322,6 +398,7 @@ pub enum TableConstraintKind<'input> {
 }
 
 /// A table-level constraint with optional `CONSTRAINT name` prefix.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableConstraint<'input> {
@@ -329,21 +406,81 @@ pub struct TableConstraint<'input> {
     pub kind: TableConstraintKind<'input>,
 }
 
-/// One item in a CREATE TABLE column list: either a column definition or
-/// a table-level constraint.
+/// A single `INCLUDING` / `EXCLUDING` option on a `LIKE` source table clause.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum LikeOptionKind {
+    All(keyword::All),
+    Defaults(keyword::DefaultsKw),
+    Constraints(keyword::Constraints),
+    Indexes(keyword::IndexesKw),
+    Storage(keyword::StorageKw),
+    Comments(keyword::CommentsKw),
+    Statistics(keyword::Statistics),
+    Generated(keyword::Generated),
+    Identity(keyword::Identity),
+}
+
+/// `INCLUDING what`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct IncludingOption {
+    pub _including: PhantomData<keyword::IncludingKw>,
+    pub what: LikeOptionKind,
+}
+
+/// `EXCLUDING what`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ExcludingOption {
+    pub _excluding: PhantomData<keyword::ExcludingKw>,
+    pub what: LikeOptionKind,
+}
+
+/// One option on a `LIKE table` clause.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum LikeOption {
+    Including(IncludingOption),
+    Excluding(ExcludingOption),
+}
+
+/// `LIKE source_table [INCLUDING/EXCLUDING option ...]` clause in a column
+/// list body. Copies column definitions (and optionally other properties)
+/// from an existing table.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct LikeClause<'input> {
+    pub _like: PhantomData<keyword::Like>,
+    pub source: crate::ast::common::QualifiedName<'input>,
+    pub options: Vec<LikeOption>,
+}
+
+/// One item in a CREATE TABLE column list: a `LIKE table` clause, a
+/// table-level constraint, or a column definition.
 ///
-/// Variant ordering: `Constraint` must come first because its leading
+/// Variant ordering: the `Like` variant starts with the `LIKE` keyword and
+/// must come first (its leading token is otherwise an infix operator in
+/// expressions, so it can't collide with `Column` which starts with an
+/// ident). `Constraint` must come before `Column` because its leading
 /// tokens (`CONSTRAINT`, `PRIMARY`, `UNIQUE`, `FOREIGN`, `CHECK`) are
-/// keywords, while a `Column` starts with an identifier — peek
-/// disambiguates cleanly, but declaration order prefers the longer match.
+/// keywords, while a `Column` starts with an identifier.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ColumnOrConstraint<'input> {
+    Like(LikeClause<'input>),
     Constraint(TableConstraint<'input>),
     Column(ColumnDef<'input>),
 }
 
 /// Optional TEMP or TEMPORARY keyword.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TempKw {
@@ -352,6 +489,7 @@ pub enum TempKw {
 }
 
 /// INHERITS clause: `INHERITS (parent, ...)`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InheritsClause<'input> {
@@ -361,6 +499,7 @@ pub struct InheritsClause<'input> {
 }
 
 /// Column-based table body: `(cols_and_constraints) [INHERITS (...)] [PARTITION BY ...]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnsBody<'input> {
@@ -375,6 +514,7 @@ pub struct ColumnsBody<'input> {
 }
 
 /// Partition-of table body: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PartitionOfBody<'input> {
@@ -388,6 +528,7 @@ pub struct PartitionOfBody<'input> {
 }
 
 /// AS-query table body: `AS SELECT ...`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsQueryBody<'input> {
@@ -399,6 +540,7 @@ pub struct AsQueryBody<'input> {
 ///
 /// Variant ordering: AsQuery (`AS`) and PartitionOf (`PARTITION`) start with
 /// keywords; Columns starts with `(`. Longest-match-wins disambiguates.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum CreateTableBody<'input> {
@@ -410,6 +552,7 @@ pub enum CreateTableBody<'input> {
 /// ```sql
 /// CREATE [TEMP] TABLE statement.
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTableStmt<'input> {
@@ -417,6 +560,7 @@ pub struct CreateTableStmt<'input> {
     pub temp: Option<TempKw>,
     pub unlogged: Option<PhantomData<keyword::Unlogged>>,
     pub _table: PhantomData<keyword::Table>,
+    pub if_not_exists: Option<crate::ast::create_index::IfNotExistsKw>,
     pub name: literal::Ident<'input>,
     pub body: CreateTableBody<'input>,
 }
@@ -441,7 +585,7 @@ impl<'input> CreateTableStmt<'input> {
             s.iter()
                 .filter_map(|item| match item {
                     ColumnOrConstraint::Column(c) => Some(c),
-                    ColumnOrConstraint::Constraint(_) => None,
+                    ColumnOrConstraint::Constraint(_) | ColumnOrConstraint::Like(_) => None,
                 })
                 .collect()
         })
@@ -475,9 +619,8 @@ mod tests {
 
     #[test]
     fn parse_create_table_array_column_types() {
-        let mut input = Input::new(
-            "CREATE TABLE t (a int2[], b int4[][][], c varchar(5)[], d text[])",
-        );
+        let mut input =
+            Input::new("CREATE TABLE t (a int2[], b int4[][][], c varchar(5)[], d text[])");
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.items().unwrap().len(), 4);
         assert!(input.is_empty());
@@ -613,6 +756,49 @@ mod tests {
     }
 
     #[test]
+    fn parse_create_table_like_bare() {
+        let mut input = Input::new("CREATE TABLE foo (LIKE bar)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_like_including_all() {
+        let mut input = Input::new("CREATE TABLE foo (LIKE bar INCLUDING ALL)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_like_including_excluding() {
+        let mut input =
+            Input::new("CREATE TABLE foo (LIKE bar INCLUDING DEFAULTS EXCLUDING CONSTRAINTS)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_like_mixed_with_columns() {
+        let mut input = Input::new("CREATE TABLE foo (a int, LIKE bar INCLUDING ALL, b text)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_table_check_no_inherit_not_valid() {
+        let mut input = Input::new("CREATE TABLE t (d date, CHECK (false) NO INHERIT NOT VALID)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_table_check_not_valid() {
+        let mut input = Input::new("CREATE TABLE t (a int, CHECK (a > 0) NOT VALID)");
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
     fn parse_create_table_with_storage_params() {
         let mut input = Input::new("CREATE TABLE t (a int) WITH (fillfactor = 70)");
         let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
@@ -651,25 +837,22 @@ mod tests {
 
     #[test]
     fn parse_partition_of_range_from_to() {
-        let mut input =
-            Input::new("CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (10)");
+        let mut input = Input::new("CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (10)");
         let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
     #[test]
     fn parse_partition_of_list_in() {
-        let mut input =
-            Input::new("CREATE TABLE p2 PARTITION OF p FOR VALUES IN (1, 2, 3)");
+        let mut input = Input::new("CREATE TABLE p2 PARTITION OF p FOR VALUES IN (1, 2, 3)");
         let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
     #[test]
     fn parse_partition_of_hash_with_modulus() {
-        let mut input = Input::new(
-            "CREATE TABLE p3 PARTITION OF p FOR VALUES WITH (MODULUS 4, REMAINDER 0)",
-        );
+        let mut input =
+            Input::new("CREATE TABLE p3 PARTITION OF p FOR VALUES WITH (MODULUS 4, REMAINDER 0)");
         let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }

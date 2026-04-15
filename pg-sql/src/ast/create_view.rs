@@ -13,8 +13,10 @@ use crate::ast::create_table::TempKw;
 use crate::ast::values::CompoundQuery;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// OR REPLACE keyword pair.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OrReplaceKw {
@@ -23,6 +25,7 @@ pub struct OrReplaceKw {
 }
 
 /// IF EXISTS keyword pair.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IfExistsKw {
@@ -31,6 +34,7 @@ pub struct IfExistsKw {
 }
 
 /// CREATE VIEW statement.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateViewStmt<'input> {
@@ -43,6 +47,9 @@ pub struct CreateViewStmt<'input> {
     pub columns: Option<
         Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
     >,
+    /// Optional `WITH (option [= value], ...)` view options such as
+    /// `security_invoker`, `security_barrier`, `check_option`.
+    pub with_options: Option<crate::ast::create_index::WithStorage<'input>>,
     pub _as: PhantomData<keyword::As>,
     pub query: CompoundQuery<'input>,
 }
@@ -52,6 +59,7 @@ pub struct CreateViewStmt<'input> {
 /// ```sql
 /// DROP VIEW [IF EXISTS] name [, name ...] [CASCADE | RESTRICT]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropViewStmt<'input> {

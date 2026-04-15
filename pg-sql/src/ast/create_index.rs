@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
 pub use crate::ast::common::{CascadeKw, DropBehavior, RestrictKw};
 
@@ -15,6 +16,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// `IF NOT EXISTS` keyword sequence.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IfNotExistsKw {
@@ -28,6 +30,7 @@ pub struct IfNotExistsKw {
 /// The method name can be an identifier or one of the built-in method
 /// keywords (`btree`, `gin`, ...). We accept `literal::AliasName` so both
 /// identifiers and keywords are allowed in this position.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UsingMethod<'input> {
@@ -36,6 +39,7 @@ pub struct UsingMethod<'input> {
 }
 
 /// A single opclass option: `name = value`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OpclassOption<'input> {
@@ -49,6 +53,7 @@ pub type OpclassOptions<'input> =
     Surrounded<punct::LParen, Seq<OpclassOption<'input>, punct::Comma>, punct::RParen>;
 
 /// Opclass name plus optional options: `int4_ops [(opt = val, ...)]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OpclassSpec<'input> {
@@ -57,6 +62,7 @@ pub struct OpclassSpec<'input> {
 }
 
 /// A storage parameter entry: `name [= value]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StorageParam<'input> {
@@ -69,6 +75,7 @@ pub struct StorageParam<'input> {
 /// The value is a permissive SetValue (keywords like `off`, `on`, string/numeric
 /// literals, identifiers) rather than a full `Expr` — storage param values are
 /// simple literals and `Expr::ColumnRef` rejects keywords like `off`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StorageParamValue<'input> {
@@ -77,6 +84,7 @@ pub struct StorageParamValue<'input> {
 }
 
 /// `WITH (name = value, ...)` storage parameters clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithStorage<'input> {
@@ -86,6 +94,7 @@ pub struct WithStorage<'input> {
 }
 
 /// `INCLUDE (col, ...)` covering-index clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IncludeClause<'input> {
@@ -101,6 +110,7 @@ pub struct IncludeClause<'input> {
 /// - `Expr` (`(`) starts with a different token than the others.
 /// - `Func` (`ident(`) must come before `Col` (`ident`) so longest-match
 ///   prefers the function call form.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum IndexTarget<'input> {
@@ -110,6 +120,7 @@ pub enum IndexTarget<'input> {
 }
 
 /// `COLLATE "name"` on an index element.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IndexCollate<'input> {
@@ -119,6 +130,7 @@ pub struct IndexCollate<'input> {
 
 /// An index element:
 /// `column_or_expr [COLLATE "name"] [opclass [(options)]] [ASC|DESC] [NULLS FIRST|LAST]`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IndexElem<'input> {
@@ -140,6 +152,7 @@ pub struct IndexElem<'input> {
 /// ```
 ///
 /// The index name is optional (Postgres allows it to be omitted).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateIndexStmt<'input> {
@@ -150,6 +163,9 @@ pub struct CreateIndexStmt<'input> {
     pub if_not_exists: Option<IfNotExistsKw>,
     pub name: Option<literal::Ident<'input>>,
     pub _on: PhantomData<keyword::On>,
+    /// Optional `ONLY` modifier — restricts the index to the named table
+    /// without descending into inheritance children (partitioned tables).
+    pub only: Option<PhantomData<keyword::Only>>,
     pub table_name: literal::Ident<'input>,
     pub using: Option<UsingMethod<'input>>,
     pub columns:
@@ -164,6 +180,7 @@ pub struct CreateIndexStmt<'input> {
 /// ```sql
 /// DROP INDEX [CONCURRENTLY] [IF EXISTS] name [, name ...] [CASCADE | RESTRICT]
 /// ```
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropIndexStmt<'input> {
@@ -218,6 +235,13 @@ mod tests {
         let mut input = Input::new("CREATE INDEX CONCURRENTLY fooi ON foo (f1)");
         let stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.concurrently.is_some());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_index_on_only() {
+        let mut input = Input::new("CREATE INDEX idx ON ONLY ptif_test (a)");
+        let _stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

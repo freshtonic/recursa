@@ -3,8 +3,8 @@ pub mod common;
 pub mod create_function;
 pub mod create_index;
 pub mod create_procedure;
-pub mod create_tablespace;
 pub mod create_table;
+pub mod create_tablespace;
 pub mod create_view;
 pub mod delete;
 pub mod drop_table;
@@ -21,6 +21,7 @@ pub mod values;
 pub mod with_clause;
 
 use recursa::{FormatTokens, Input, Parse, ParseError, ParseRules, Visit};
+use recursa_diagram::railroad;
 
 use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
@@ -30,8 +31,8 @@ use self::{
     create_function::{CreateFunctionStmt, DropFunctionStmt},
     create_index::{CreateIndexStmt, DropIndexStmt},
     create_procedure::{CallStmt, CreateProcedureStmt, DropProcedureStmt},
-    create_tablespace::{CreateTablespaceStmt, DropTablespaceStmt},
     create_table::CreateTableStmt,
+    create_tablespace::{AlterTablespaceStmt, CreateTablespaceStmt, DropTablespaceStmt},
     create_view::{CreateViewStmt, DropViewStmt},
     delete::DeleteStmt,
     drop_table::DropTableStmt,
@@ -60,6 +61,7 @@ use self::{
 /// - `Values` (CompoundQuery) starts with VALUES/TABLE/SELECT so it could
 ///   conflict. It must come after Explain but before bare Select to handle
 ///   `VALUES ... UNION ALL ...` and `TABLE tablename`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[allow(clippy::large_enum_variant)]
@@ -97,6 +99,8 @@ pub enum Statement<'input> {
     CreateSubscription(CreateSubscriptionStmt<'input>),
     CreateConversion(CreateConversionStmt<'input>),
     CreateServer(CreateServerStmt<'input>),
+    CreateLanguage(CreateLanguageStmt<'input>),
+    CreateDatabase(CreateDatabaseStmt<'input>),
     CreateTable(CreateTableStmt<'input>),
     // DROP variants
     DropFunction(DropFunctionStmt<'input>),
@@ -129,11 +133,15 @@ pub enum Statement<'input> {
     DropSubscription(DropSubscriptionStmt<'input>),
     DropConversion(DropConversionStmt<'input>),
     DropServer(DropServerStmt<'input>),
+    DropLanguage(DropLanguageStmt<'input>),
+    DropDatabase(DropDatabaseStmt<'input>),
     DropTable(DropTableStmt<'input>),
     // ALTER variants: multi-keyword before single-keyword
+    AlterDefaultPrivileges(AlterDefaultPrivilegesStmt<'input>),
     AlterForeign(AlterForeignStmt<'input>),
     AlterEventTrigger(AlterEventTriggerStmt<'input>),
     AlterMaterializedView(AlterMaterializedViewStmt<'input>),
+    AlterTablespace(AlterTablespaceStmt<'input>),
     AlterTable(AlterTableStmt<'input>),
     AlterGroup(AlterGroupStmt<'input>),
     AlterRole(AlterRoleStmt<'input>),
@@ -152,6 +160,8 @@ pub enum Statement<'input> {
     AlterSubscription(AlterSubscriptionStmt<'input>),
     AlterConversion(AlterConversionStmt<'input>),
     AlterServer(AlterServerStmt<'input>),
+    AlterLanguage(AlterLanguageStmt<'input>),
+    AlterDatabase(AlterDatabaseStmt<'input>),
     AlterIndex(AlterIndexStmt<'input>),
     AlterView(AlterViewStmt<'input>),
     AlterFunction(AlterFunctionStmt<'input>),
@@ -186,6 +196,7 @@ pub enum Statement<'input> {
     Reindex(ReindexStmt<'input>),
     Refresh(RefreshStmt<'input>),
     Cluster(ClusterStmt<'input>),
+    Checkpoint(CheckpointStmt),
     Vacuum(VacuumStmt<'input>),
     Lock(LockStmt<'input>),
     Notify(NotifyStmt<'input>),
@@ -327,15 +338,50 @@ impl<'input> Parse<'input> for RawStatement<'input> {
     }
 }
 
-/// A SQL statement followed by a semicolon.
+/// A psql meta-command that terminates a SQL statement in place of `;`.
+///
+/// Psql accepts `\gset`, `\gexec`, `\g`, `\gx`, and `\crosstabview` as
+/// statement terminators: e.g. `SELECT oid FROM pg_database \gset` sends the
+/// query and binds the results to psql variables, ending the statement just
+/// like `;` would.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[parse(rules = SqlRules)]
+pub enum PsqlTerminator {
+    /// `\crosstabview` — listed first as the longest-prefix variant.
+    Crosstabview(punct::PsqlCrosstabview),
+    /// `\gexec`
+    Gexec(punct::PsqlGexec),
+    /// `\gset`
+    Gset(punct::PsqlGset),
+    /// `\gx`
+    Gx(punct::PsqlGx),
+    /// `\g`
+    G(punct::PsqlG),
+}
+
+/// The terminator of a SQL statement: a semicolon or a psql meta-command.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[parse(rules = SqlRules)]
+pub enum StatementTerminator {
+    /// A psql meta-command like `\gset`.
+    Psql(PsqlTerminator),
+    /// A plain semicolon.
+    Semi(punct::Semi),
+}
+
+/// A SQL statement followed by a terminator (`;` or a psql meta-command).
+#[railroad]
 #[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TerminatedStatement<'input> {
     pub stmt: Statement<'input>,
-    pub semi: punct::Semi,
+    pub terminator: StatementTerminator,
 }
 
 /// A psql directive: backslash followed by the rest of the line.
+#[railroad]
 #[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PsqlDirective<'input> {
@@ -344,6 +390,7 @@ pub struct PsqlDirective<'input> {
 }
 
 /// A command in a psql input file: either a SQL statement or a psql directive.
+#[railroad]
 #[derive(Debug, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[allow(clippy::large_enum_variant)]
@@ -458,7 +505,7 @@ pub fn parse_sql_file<'input>(
                     items.push(FileItem::Command(PsqlCommand::Statement(
                         TerminatedStatement {
                             stmt: Statement::Raw(raw),
-                            semi,
+                            terminator: StatementTerminator::Semi(semi),
                         },
                     )));
                 }

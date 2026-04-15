@@ -1,0 +1,269 @@
+use recursa_diagram_core::layout::{
+    Choice, Node, NonTerminal, OneOrMore, Optional, Sequence, Terminal, zero_or_more,
+};
+
+fn assert_baseline_invariant(n: &Node) {
+    assert_eq!(
+        n.up() + n.down(),
+        n.height(),
+        "baseline invariant violated: up({}) + down({}) != height({})",
+        n.up(),
+        n.down(),
+        n.height()
+    );
+}
+
+#[test]
+fn terminal_geometry_pins_constants() {
+    let t = Node::Terminal(Terminal::new("SELECT"));
+    assert_eq!(t.width(), 6 * 8 + 40); // 88
+    assert_eq!(t.height(), 22);
+    assert_eq!(t.up(), 11);
+    assert_eq!(t.down(), 11);
+    assert_eq!(Terminal::new("SELECT").text, "SELECT");
+}
+
+#[test]
+fn non_terminal_width_scales_with_text() {
+    let short = Node::NonTerminal(NonTerminal::new("Expr", None));
+    let long = Node::NonTerminal(NonTerminal::new("VeryLongTypeName", None));
+    assert!(long.width() > short.width());
+    assert_eq!(short.width(), 4 * 8 + 40); // "Expr" → 72
+}
+
+#[test]
+fn non_terminal_preserves_href() {
+    let nt = NonTerminal::new("Expr", Some("Expr.html".into()));
+    assert_eq!(nt.href.as_deref(), Some("Expr.html"));
+}
+
+#[test]
+fn sequence_width_sums_children_plus_spacing() {
+    let a = Node::Terminal(Terminal::new("A"));
+    let b = Node::Terminal(Terminal::new("B"));
+    let wa = a.width();
+    let wb = b.width();
+    let seq = Node::Sequence(Sequence::new(vec![a, b]));
+    // 10 px spacer between adjacent children.
+    assert_eq!(seq.width(), wa + wb + 10);
+    assert_baseline_invariant(&seq);
+}
+
+#[test]
+fn empty_sequence_has_zero_body_width() {
+    let seq = Node::Sequence(Sequence::new(vec![]));
+    // Entry/exit stubs: 20 px total.
+    assert_eq!(seq.width(), 20);
+    assert_baseline_invariant(&seq);
+}
+
+#[test]
+fn choice_width_is_max_child_plus_rails() {
+    let a = Node::Terminal(Terminal::new("A"));
+    let b = Node::Terminal(Terminal::new("LONGER_OPTION"));
+    let wb = b.width();
+    let ch = Node::Choice(Choice::new(0, vec![a, b]));
+    // 20 px for entry/exit rails.
+    assert_eq!(ch.width(), wb + 20);
+    assert_baseline_invariant(&ch);
+}
+
+#[test]
+fn choice_height_sums_children_plus_vertical_gap() {
+    let a = Node::Terminal(Terminal::new("A"));
+    let b = Node::Terminal(Terminal::new("B"));
+    let ha = a.height();
+    let hb = b.height();
+    let ch = Node::Choice(Choice::new(0, vec![a, b]));
+    // 10 px vertical gap between branches.
+    assert_eq!(ch.height(), ha + hb + 10);
+    assert_baseline_invariant(&ch);
+}
+
+#[test]
+fn optional_adds_skip_branch() {
+    let child = Node::Terminal(Terminal::new("X"));
+    let cw = child.width();
+    let opt = Node::Optional(Optional::new(child));
+    // skip rail adds 20 px of rails; height grows by BOX_HEIGHT + VERTICAL_GAP.
+    assert_eq!(opt.width(), cw + 20);
+    // Terminal("X"): height 22. Optional: 22 + 22 + 10 = 54.
+    assert_eq!(opt.height(), 54);
+    assert_baseline_invariant(&opt);
+}
+
+#[test]
+fn one_or_more_with_separator() {
+    let child = Node::Terminal(Terminal::new("EXPR"));
+    let sep = Node::Terminal(Terminal::new(","));
+    let max_w = child.width().max(sep.width());
+    let oom = Node::OneOrMore(OneOrMore::new(child, Some(sep)));
+    assert_eq!(oom.width(), max_w + 20);
+    assert_baseline_invariant(&oom);
+}
+
+#[test]
+fn one_or_more_without_separator() {
+    let child = Node::Terminal(Terminal::new("EXPR"));
+    let cw = child.width();
+    let oom = Node::OneOrMore(OneOrMore::new(child, None));
+    assert_eq!(oom.width(), cw + 20);
+    assert_baseline_invariant(&oom);
+}
+
+#[test]
+fn zero_or_more_wraps_one_or_more_in_optional() {
+    let child = Node::Terminal(Terminal::new("EXPR"));
+    let cw = child.width();
+    let z = zero_or_more(child, None);
+    // OneOrMore adds 20 px of rails, Optional wraps it and adds another 20 px.
+    assert_eq!(z.width(), cw + 20 + 20);
+    assert!(matches!(z, Node::Optional(_)));
+    assert_baseline_invariant(&z);
+}
+
+#[test]
+fn nested_optional_one_or_more_pins_geometry() {
+    let child = Node::Terminal(Terminal::new("X"));
+    let oom = Node::OneOrMore(OneOrMore::new(child, None));
+    let opt = Node::Optional(Optional::new(oom));
+
+    // Pin exact values so future refactors are deliberate.
+    // Terminal("X"): width = 8 + 40 = 48, height = 22, up = 11, down = 11
+    // OneOrMore(.., None): width = 48 + 20 = 68, height = 22 + 10 + 10 = 42,
+    //   up = 11, down = 11 + 10 + 10 = 31
+    // Optional: width = 68 + 20 = 88, height = 42 + 22 + 10 = 74,
+    //   up = 11 + 22 + 10 = 43, down = 31
+    assert_eq!(opt.width(), 88);
+    assert_eq!(opt.height(), 74);
+    assert_eq!(opt.up(), 43);
+    assert_eq!(opt.down(), 31);
+    assert_baseline_invariant(&opt);
+}
+
+#[test]
+fn wrapped_sequence_fits_on_one_row_matches_unwrapped() {
+    // Three small terminals well below a generous threshold. Geometry should
+    // exactly match a single-row Sequence::new and rows must be empty.
+    let children = || {
+        vec![
+            Node::Terminal(Terminal::new("A")),
+            Node::Terminal(Terminal::new("B")),
+            Node::Terminal(Terminal::new("C")),
+        ]
+    };
+    let unwrapped = Sequence::new(children());
+    let wrapped = Sequence::wrapped(children(), 10_000);
+    assert!(wrapped.rows.is_empty(), "rows should be empty when fitting");
+    assert_eq!(wrapped.width, unwrapped.width);
+    assert_eq!(wrapped.height, unwrapped.height);
+    assert_eq!(wrapped.up, unwrapped.up);
+    assert_eq!(wrapped.down, unwrapped.down);
+    assert_baseline_invariant(&Node::Sequence(wrapped));
+}
+
+#[test]
+fn wrapped_sequence_zero_max_width_is_single_row() {
+    // max_width = 0 is the "wrap disabled" sentinel; must behave like Sequence::new.
+    let children = vec![
+        Node::Terminal(Terminal::new("A")),
+        Node::Terminal(Terminal::new("B")),
+    ];
+    let wrapped = Sequence::wrapped(children, 0);
+    assert!(wrapped.rows.is_empty());
+}
+
+#[test]
+fn wrapped_sequence_splits_at_threshold() {
+    // Each Terminal("XXXX") is width 4*8 + 40 = 72. Five children plus spacers
+    // would be 5*72 + 4*10 = 400. With max_width = 160 we should get multiple
+    // rows (two children per row: 72+72+10=154 fits, adding a third would
+    // exceed 160).
+    let children: Vec<Node> = (0..5)
+        .map(|_| Node::Terminal(Terminal::new("XXXX")))
+        .collect();
+    let wrapped = Sequence::wrapped(children, 160);
+    assert!(
+        !wrapped.rows.is_empty(),
+        "expected wrap, got single row: {wrapped:?}"
+    );
+    // Row breaks at indices 2 and 4 => rows [0..2], [2..4], [4..5].
+    assert_eq!(wrapped.rows, vec![2, 4]);
+}
+
+#[test]
+fn wrapped_sequence_pins_multi_row_geometry() {
+    // Five "XXXX" terminals (width = 4*8+40 = 72 each) with max_width 160.
+    // Greedy packing: [0,1] → 72+10+72=154 fits; adding [2] → 236 > 160, break.
+    // Same for [2,3]. Row 3 gets [4] alone. rows = [2, 4], row widths [154,154,72].
+    //
+    // width  = max_row_w + CHOICE_RAIL_WIDTH = 154 + 20 = 174
+    // strips = 3 * (11 + 11) = 66
+    // gaps   = 2 * WRAP_ROW_GAP(20) = 40
+    // height = 66 + 40 = 106
+    // up     = row_0.up = 11
+    // down   = height - up = 95
+    //
+    // Pin exact integers so a future refactor of the wrap formula can't
+    // slip past an invariant-only check.
+    let children: Vec<Node> = (0..5)
+        .map(|_| Node::Terminal(Terminal::new("XXXX")))
+        .collect();
+    let wrapped = Sequence::wrapped(children, 160);
+    assert_eq!(wrapped.rows, vec![2, 4]);
+    assert_eq!(wrapped.width, 174);
+    assert_eq!(wrapped.height, 106);
+    assert_eq!(wrapped.up, 11);
+    assert_eq!(wrapped.down, 95);
+    assert_baseline_invariant(&Node::Sequence(wrapped));
+}
+
+#[test]
+fn wrapped_sequence_pathological_single_oversized_child() {
+    // A single child wider than max_width still gets a row of its own.
+    // Pin the width to the **loop path** result (cw + CHOICE_RAIL_WIDTH)
+    // rather than the short-circuit `Sequence::new(vec![child])` result (cw)
+    // so we verify the loop actually ran and admitted the oversized child,
+    // not that we got the right `rows.is_empty()` answer for the wrong reason.
+    let child = Node::Terminal(Terminal::new("SUPER_DUPER_LONG_TERMINAL_NAME"));
+    let cw = child.width();
+    assert!(cw > 50);
+    let wrapped = Sequence::wrapped(vec![child], 50);
+    assert!(wrapped.rows.is_empty());
+    assert_eq!(
+        wrapped.width,
+        cw + 20,
+        "expected loop-path width (cw + CHOICE_RAIL_WIDTH), got {}",
+        wrapped.width
+    );
+}
+
+#[test]
+fn wrapped_sequence_pathological_oversized_child_among_others() {
+    // Pathological: middle child is wider than max_width. It must get its own
+    // row even though it doesn't fit.
+    let a = Node::Terminal(Terminal::new("A"));
+    let big = Node::Terminal(Terminal::new("SUPER_DUPER_LONG_TERMINAL_NAME"));
+    let c = Node::Terminal(Terminal::new("C"));
+    let wrapped = Sequence::wrapped(vec![a, big, c], 60);
+    // Expect rows [A], [big], [C] → breaks at 1 and 2.
+    assert_eq!(wrapped.rows, vec![1, 2]);
+}
+
+#[test]
+fn choice_with_nonzero_default_idx_pins_up_down() {
+    let a = Node::Terminal(Terminal::new("A")); // height 22, up/down 11
+    let b = Node::Terminal(Terminal::new("B")); // height 22, up/down 11
+    let c = Node::Terminal(Terminal::new("C")); // height 22, up/down 11
+    let ch = Node::Choice(Choice::new(1, vec![a, b, c]));
+
+    // default is middle branch (b). "A" is above → contributes to up;
+    // "C" is below → contributes to down.
+    // height = 22*3 + 10*2 = 86
+    // up = b.up() + (a.height() + VERTICAL_GAP) = 11 + 32 = 43
+    // down = b.down() + (c.height() + VERTICAL_GAP) = 11 + 32 = 43
+    assert_eq!(ch.height(), 86);
+    assert_eq!(ch.up(), 43);
+    assert_eq!(ch.down(), 43);
+    assert_baseline_invariant(&ch);
+}

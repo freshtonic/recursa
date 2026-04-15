@@ -5,13 +5,16 @@ use std::marker::PhantomData;
 
 use recursa::seq::Seq;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
+use crate::ast::common::QualifiedName;
 use crate::ast::expr::Expr;
 use crate::ast::select::{FromClause, WhereClause};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// `[idx]` subscript suffix for a target column in UPDATE SET.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubscriptSuffix<'input> {
@@ -21,6 +24,7 @@ pub struct SubscriptSuffix<'input> {
 }
 
 /// Single SET assignment: `col[idx] = expr` or `col = expr`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SingleAssignment<'input> {
@@ -31,6 +35,7 @@ pub struct SingleAssignment<'input> {
 }
 
 /// Tuple SET assignment: `(col, ...) = expr`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TupleAssignment<'input> {
@@ -47,6 +52,7 @@ pub struct TupleAssignment<'input> {
 ///
 /// Variant ordering: Tuple starts with `(` which is longer than a bare
 /// identifier, so longest-match-wins picks it when parens are present.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetAssignment<'input> {
@@ -55,6 +61,7 @@ pub enum SetAssignment<'input> {
 }
 
 /// RETURNING clause: `RETURNING expr, ...`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReturningClause<'input> {
@@ -63,12 +70,13 @@ pub struct ReturningClause<'input> {
 }
 
 /// UPDATE statement: `UPDATE table [alias] SET assignments [FROM ...] [WHERE ...] [RETURNING ...]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 #[format_tokens(group(consistent))]
 pub struct UpdateStmt<'input> {
     pub _update: PhantomData<keyword::Update>,
-    pub table_name: literal::Ident<'input>,
+    pub table_name: QualifiedName<'input>,
     pub alias: Option<literal::Ident<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub _set: PhantomData<keyword::Set>,
@@ -91,10 +99,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_update_qualified_table() {
+        let mut input = Input::new("UPDATE pg_catalog.pg_class SET relname = '123'");
+        let stmt = UpdateStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert_eq!(stmt.table_name.object(), "pg_class");
+        assert!(input.is_empty());
+    }
+
+    #[test]
     fn parse_update_simple() {
         let mut input = Input::new("UPDATE y SET a = a + 1");
         let stmt = UpdateStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.table_name.text(), "y");
+        assert_eq!(stmt.table_name.object(), "y");
         assert!(input.is_empty());
     }
 

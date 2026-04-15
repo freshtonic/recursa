@@ -13,8 +13,10 @@ use recursa::{FormatTokens, Parse, Visit};
 use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// Materialization option: `MATERIALIZED` or `NOT MATERIALIZED`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum MaterializedOption {
@@ -23,6 +25,7 @@ pub enum MaterializedOption {
 }
 
 /// NOT MATERIALIZED
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NotMaterialized(
@@ -31,6 +34,7 @@ pub struct NotMaterialized(
 );
 
 /// SEARCH direction: DEPTH or BREADTH
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SearchDirection {
@@ -39,6 +43,7 @@ pub enum SearchDirection {
 }
 
 /// SEARCH clause: `SEARCH DEPTH|BREADTH FIRST BY col, ... SET col`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SearchClause<'input> {
@@ -52,6 +57,7 @@ pub struct SearchClause<'input> {
 }
 
 /// CYCLE clause: `CYCLE col, ... SET col [TO val DEFAULT val] USING col`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CycleClause<'input> {
@@ -64,6 +70,7 @@ pub struct CycleClause<'input> {
 }
 
 /// SET column with optional TO/DEFAULT values.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CycleSetColumn<'input> {
@@ -72,6 +79,7 @@ pub struct CycleSetColumn<'input> {
 }
 
 /// TO value DEFAULT value
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CycleToDefault<'input> {
@@ -83,6 +91,7 @@ pub struct CycleToDefault<'input> {
 
 /// A single CTE definition: `name [(col, ...)] AS [MATERIALIZED|NOT MATERIALIZED] (query)
 ///   [SEARCH ...] [CYCLE ...]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CteDefinition<'input> {
@@ -98,6 +107,7 @@ pub struct CteDefinition<'input> {
 }
 
 /// WITH clause: `WITH [RECURSIVE] cte_def, ...`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithClause<'input> {
@@ -107,6 +117,7 @@ pub struct WithClause<'input> {
 }
 
 /// WITH statement: WITH clause followed by a body statement.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithStatement<'input> {

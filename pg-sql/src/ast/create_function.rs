@@ -5,11 +5,13 @@ use recursa::seq::{OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
-use crate::ast::expr::TypeName;
+use crate::ast::expr::{CastType, Expr, TypeName};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// SETOF type: `SETOF typename`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetofReturn<'input> {
@@ -18,6 +20,7 @@ pub struct SetofReturn<'input> {
 }
 
 /// Function return type: `SETOF type` or plain `type`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ReturnType<'input> {
@@ -26,6 +29,7 @@ pub enum ReturnType<'input> {
 }
 
 /// LANGUAGE clause: `LANGUAGE name`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LanguageOption<'input> {
@@ -36,6 +40,7 @@ pub struct LanguageOption<'input> {
 /// Function body: either single-quoted string or dollar-quoted string.
 ///
 /// Variant ordering: dollar-quoted before single-quoted (different first chars).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncBody<'input> {
@@ -44,15 +49,18 @@ pub enum FuncBody<'input> {
 }
 
 /// Function return type name -- extends TypeName with additional types
-/// that are valid as function return types (e.g., `trigger`).
+/// that are valid as function return types (e.g., `trigger`), and allows
+/// array suffixes via `CastType`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncReturnTypeName<'input> {
     Trigger(keyword::Trigger),
-    Base(TypeName<'input>),
+    Base(CastType<'input>),
 }
 
 /// RETURNS clause for functions: `RETURNS [SETOF] type`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncReturnsClause<'input> {
@@ -61,6 +69,7 @@ pub struct FuncReturnsClause<'input> {
 }
 
 /// Function return type: SETOF type, or plain type.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncReturnType<'input> {
@@ -69,6 +78,7 @@ pub enum FuncReturnType<'input> {
 }
 
 /// SETOF type for function returns.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncSetofReturn<'input> {
@@ -79,6 +89,7 @@ pub struct FuncSetofReturn<'input> {
 // --- Function parameters ---
 
 /// Argument mode prefix: `IN | OUT | INOUT | VARIADIC`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ArgMode {
@@ -88,22 +99,43 @@ pub enum ArgMode {
     Variadic(keyword::Variadic),
 }
 
-/// `[mode] name type` -- a named function parameter, optionally prefixed
-/// with an argument mode (`IN`/`OUT`/`INOUT`/`VARIADIC`).
+/// `[mode] name type [default]` -- a named function parameter.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct NamedFuncParam<'input> {
     pub mode: Option<ArgMode>,
     pub name: literal::Ident<'input>,
-    pub type_name: TypeName<'input>,
+    pub type_name: CastType<'input>,
+    pub default: Option<ParamDefault<'input>>,
 }
 
-/// `[mode] type` -- an unnamed function parameter with optional mode.
+/// `[mode] type [default]` -- an unnamed function parameter.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnnamedFuncParam<'input> {
     pub mode: Option<ArgMode>,
-    pub type_name: TypeName<'input>,
+    pub type_name: CastType<'input>,
+    pub default: Option<ParamDefault<'input>>,
+}
+
+/// Default value separator: `DEFAULT` or `=`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ParamDefaultSep {
+    Default(keyword::Default),
+    Eq(punct::Eq),
+}
+
+/// `DEFAULT expr` or `= expr` trailing default on a function parameter.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ParamDefault<'input> {
+    pub sep: ParamDefaultSep,
+    pub value: Expr<'input>,
 }
 
 /// A single function parameter: either `[mode] name type` or `[mode] type`.
@@ -111,6 +143,7 @@ pub struct UnnamedFuncParam<'input> {
 /// Variant ordering: `Named` (`[mode] ident type`) is longer than `Unnamed`
 /// (`[mode] type`); list it first so longest-match-wins picks it when both
 /// could parse.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncParam<'input> {
@@ -121,6 +154,7 @@ pub enum FuncParam<'input> {
 // --- Function options (unordered list) ---
 
 /// `IMMUTABLE` / `STABLE` / `VOLATILE` volatility.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum VolatilityOption {
@@ -129,7 +163,50 @@ pub enum VolatilityOption {
     Volatile(keyword::Volatile),
 }
 
+/// `PARALLEL SAFE` / `PARALLEL RESTRICTED` / `PARALLEL UNSAFE` parallelism
+/// declaration.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ParallelMode {
+    Safe(keyword::SafeKw),
+    Restricted(keyword::RestrictedKw),
+    Unsafe(keyword::UnsafeKw),
+}
+
+/// `PARALLEL { SAFE | RESTRICTED | UNSAFE }` function option.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ParallelOption {
+    pub _parallel: PhantomData<keyword::ParallelKw>,
+    pub mode: ParallelMode,
+}
+
+/// Separator between a SET config parameter name and its value — either
+/// `=` or `TO`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum SetAssignSep {
+    Eq(punct::Eq),
+    To(keyword::To),
+}
+
+/// `SET config_param { = | TO } value` function option — per-function GUC
+/// override applied when the function runs.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SetFuncOption<'input> {
+    pub _set: PhantomData<keyword::Set>,
+    pub name: literal::AliasName<'input>,
+    pub sep: SetAssignSep,
+    pub value: crate::ast::set_reset::SetValue<'input>,
+}
+
 /// `CALLED ON NULL INPUT`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CalledOnNullInput {
@@ -140,6 +217,7 @@ pub struct CalledOnNullInput {
 }
 
 /// `RETURNS NULL ON NULL INPUT`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ReturnsNullOnNullInput {
@@ -153,6 +231,7 @@ pub struct ReturnsNullOnNullInput {
 /// `STRICT` / `CALLED ON NULL INPUT` / `RETURNS NULL ON NULL INPUT`.
 ///
 /// Variant ordering: longer (multi-keyword) forms before `Strict`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum StrictnessOption {
@@ -162,6 +241,7 @@ pub enum StrictnessOption {
 }
 
 /// `AS body` clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsOption<'input> {
@@ -174,11 +254,14 @@ pub struct AsOption<'input> {
 /// Variant ordering: multi-token options listed before single-keyword
 /// options, and `StrictnessOption` (which itself has multi-keyword variants)
 /// listed before plain `VolatilityOption`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncOption<'input> {
     Strictness(StrictnessOption),
     Volatility(VolatilityOption),
+    Parallel(ParallelOption),
+    Set(SetFuncOption<'input>),
     Language(LanguageOption<'input>),
     As(AsOption<'input>),
 }
@@ -186,26 +269,41 @@ pub enum FuncOption<'input> {
 /// CREATE [OR REPLACE] FUNCTION statement.
 ///
 /// Function options after the signature/RETURNS may appear in any order.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateFunctionStmt<'input> {
     pub _create: PhantomData<keyword::Create>,
     pub or_replace: Option<crate::ast::create_view::OrReplaceKw>,
     pub _function: PhantomData<keyword::Function>,
-    pub name: literal::Ident<'input>,
+    pub name: crate::ast::common::QualifiedName<'input>,
     pub args: Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>,
     pub returns: Option<FuncReturnsClause<'input>>,
     pub options: Seq<FuncOption<'input>, (), OptionalTrailing>,
 }
 
-/// DROP FUNCTION statement: `DROP FUNCTION name(args)`.
+/// A single entry in a `DROP FUNCTION` target list: optional qualified name
+/// plus an optional parenthesized signature.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DropFunctionTarget<'input> {
+    pub name: crate::ast::common::QualifiedName<'input>,
+    pub args:
+        Option<Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>>,
+}
+
+/// DROP FUNCTION statement: `DROP FUNCTION name[(args)] [, name[(args)] ...]`.
+///
+/// The argument list on each target is optional: when the function name is
+/// unambiguous in the current schema, Postgres allows omitting the signature.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropFunctionStmt<'input> {
     pub _drop: PhantomData<keyword::Drop>,
     pub _function: PhantomData<keyword::Function>,
-    pub name: literal::Ident<'input>,
-    pub args: Surrounded<punct::LParen, Seq<FuncParam<'input>, punct::Comma>, punct::RParen>,
+    pub targets: Seq<DropFunctionTarget<'input>, punct::Comma>,
 }
 
 #[cfg(test)]
@@ -221,7 +319,7 @@ mod tests {
             "create function sillysrf(int) returns setof int as 'values (1),(10),(2),($1)' language sql immutable",
         );
         let stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.name.text(), "sillysrf");
+        assert_eq!(stmt.name.object(), "sillysrf");
         assert!(input.is_empty());
     }
 
@@ -229,7 +327,17 @@ mod tests {
     fn parse_drop_function_basic() {
         let mut input = Input::new("drop function sillysrf(int)");
         let stmt = DropFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.name.text(), "sillysrf");
+        assert_eq!(
+            stmt.targets.iter().next().unwrap().name.object(),
+            "sillysrf"
+        );
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_drop_function_multi() {
+        let mut input = Input::new("drop function a(), b(), c()");
+        let _stmt = DropFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
@@ -251,9 +359,8 @@ mod tests {
 
     #[test]
     fn parse_create_function_returns_trigger() {
-        let mut input = Input::new(
-            "create function f() returns trigger language plpgsql as $$ begin end $$",
-        );
+        let mut input =
+            Input::new("create function f() returns trigger language plpgsql as $$ begin end $$");
         let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
@@ -269,9 +376,8 @@ mod tests {
 
     #[test]
     fn parse_create_function_options_reordered() {
-        let mut input = Input::new(
-            "create function f() returns int language sql strict as 'SELECT 1'",
-        );
+        let mut input =
+            Input::new("create function f() returns int language sql strict as 'SELECT 1'");
         let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
@@ -308,6 +414,58 @@ mod tests {
         let mut input = Input::new(
             "create function poly(a anyelement, b anyarray, OUT x anyarray) as $$ begin end $$ language plpgsql",
         );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_param_eq_default() {
+        let mut input = Input::new(
+            "create function f(a int = 1, b int = 2) returns int as $$ select 1 $$ language sql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_param_default_keyword() {
+        let mut input = Input::new(
+            "create function f(a int default 1) returns int as $$ select 1 $$ language sql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_unnamed_default() {
+        let mut input = Input::new(
+            "create function dfunc(a int = 1, int = 2) returns int as $$ select 1 $$ language sql",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_array_arg() {
+        let mut input =
+            Input::new("CREATE FUNCTION stfnp(int[]) RETURNS int[] AS 'select $1' LANGUAGE SQL");
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_array_arg_multi() {
+        let mut input = Input::new(
+            "CREATE FUNCTION f(int[], text[]) RETURNS int[] AS 'select $1' LANGUAGE SQL",
+        );
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_function_nested_array() {
+        let mut input =
+            Input::new("CREATE FUNCTION f(x int[][]) RETURNS int[][] AS 'select x' LANGUAGE SQL");
         let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }

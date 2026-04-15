@@ -8,12 +8,14 @@ use std::marker::PhantomData;
 use recursa::seq::{NonEmpty, OptionalTrailing, Seq};
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
+use recursa_diagram::railroad;
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 
 /// One or more adjacent string literals, concatenated by Postgres into a
 /// single value: `'first' ' - next' 'third'`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct StringLitSeq<'input> {
@@ -21,6 +23,7 @@ pub struct StringLitSeq<'input> {
 }
 
 /// Content inside IN parentheses: either a subquery or expression list.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InContent<'input> {
@@ -36,11 +39,13 @@ pub type TypePrecision<'input> =
     Surrounded<punct::LParen, Seq<literal::IntegerLit<'input>, punct::Comma>, punct::RParen>;
 
 /// Array type suffix: `[]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ArrayTypeSuffix(pub punct::LBracket, pub punct::RBracket);
 
 /// Type name for casts.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TypeName<'input> {
@@ -52,41 +57,61 @@ pub enum TypeName<'input> {
     Serial(keyword::Serial),
     Numeric(keyword::Numeric),
     Varchar(keyword::Varchar),
+    /// `DOUBLE PRECISION` — two-keyword type. Listed before `Ident` so the
+    /// DOUBLE match isn't accidentally consumed as a plain identifier.
+    DoublePrecision(DoublePrecisionType),
     Ident(literal::Ident<'input>),
+}
+
+/// `DOUBLE PRECISION` type (8-byte float).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct DoublePrecisionType {
+    pub _double: keyword::DoubleKw,
+    pub _precision: keyword::PrecisionKw,
 }
 
 // --- Boolean test suffix structs ---
 // NOT variants listed before non-NOT variants so the longer pattern wins via
 // longest-match lookahead (e.g., "NOT TRUE" matches before "TRUE").
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotTrue(pub keyword::Not, pub keyword::True);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotFalse(pub keyword::Not, pub keyword::False);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotUnknown(pub keyword::Not, pub keyword::Unknown);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNotNull(pub keyword::Not, pub keyword::Null);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsTrue(pub keyword::True);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsFalse(pub keyword::False);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsUnknown(pub keyword::Unknown);
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IsNull(pub keyword::Null);
@@ -95,6 +120,7 @@ pub struct IsNull(pub keyword::Null);
 ///
 /// NOT variants are listed first so the combined peek regex disambiguates
 /// via longest match (e.g., `NOT TRUE` is longer than `TRUE`).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum BoolTestKind {
@@ -113,6 +139,7 @@ pub enum BoolTestKind {
 /// Qualified column reference: `table.column`
 ///
 /// Uses AliasName for the table part to allow keywords like EXCLUDED, NEW, OLD.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedRef<'input> {
@@ -122,6 +149,7 @@ pub struct QualifiedRef<'input> {
 }
 
 /// Qualified wildcard: `table.*`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct QualifiedWildcard<'input> {
@@ -131,11 +159,13 @@ pub struct QualifiedWildcard<'input> {
 }
 
 /// Optional DISTINCT keyword in function calls: `count(DISTINCT x)`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct DistinctKw(pub keyword::Distinct);
 
 /// Window specification: `OVER window_name` or `OVER (inline_spec)`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowSpec<'input> {
@@ -148,6 +178,7 @@ pub struct WindowSpec<'input> {
 /// Variant ordering: Inline (starts with `(`) before Named (starts with an
 /// identifier). They start with different tokens so peek disambiguation is
 /// trivial.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowSpecBody<'input> {
@@ -161,6 +192,7 @@ pub enum WindowSpecBody<'input> {
 /// `WINDOW w2 AS (w1 ORDER BY x)`). It relies on `Option<literal::Ident>`
 /// peek-disambiguating cleanly against `PARTITION`/`ORDER`/`ROWS`/etc.
 /// because keywords are rejected by `literal::Ident`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct InlineWindowSpec<'input> {
@@ -171,6 +203,7 @@ pub struct InlineWindowSpec<'input> {
 }
 
 /// PARTITION BY in window: `PARTITION BY expr, ...`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowPartitionBy<'input> {
@@ -180,6 +213,7 @@ pub struct WindowPartitionBy<'input> {
 }
 
 /// Frame unit: `ROWS | RANGE | GROUPS`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowFrameUnit {
@@ -193,6 +227,7 @@ pub enum WindowFrameUnit {
 ///
 /// Variant ordering: `Between` (starts with `unit BETWEEN`) before `Single`
 /// (starts with `unit <bound>`). Longest-match-wins.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowFrameClause<'input> {
@@ -201,6 +236,7 @@ pub enum WindowFrameClause<'input> {
 }
 
 /// `unit BETWEEN start AND end [EXCLUDE ...]`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowFrameBetween<'input> {
@@ -213,6 +249,7 @@ pub struct WindowFrameBetween<'input> {
 }
 
 /// `unit start [EXCLUDE ...]`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowFrameSingle<'input> {
@@ -227,6 +264,7 @@ pub struct WindowFrameSingle<'input> {
 /// `CURRENT ROW`, `UNBOUNDED FOLLOWING`), then the expr-prefixed forms
 /// (`expr PRECEDING` / `expr FOLLOWING`). The expr forms start with an
 /// expression and can't be confused with keyword-prefixed forms.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowFrameBound<'input> {
@@ -237,6 +275,7 @@ pub enum WindowFrameBound<'input> {
     ExprFollowing(ExprFollowing<'input>),
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct UnboundedPreceding {
@@ -244,6 +283,7 @@ pub struct UnboundedPreceding {
     pub _preceding: keyword::Preceding,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct UnboundedFollowing {
@@ -251,6 +291,7 @@ pub struct UnboundedFollowing {
     pub _following: keyword::Following,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CurrentRow {
@@ -258,6 +299,7 @@ pub struct CurrentRow {
     pub _row: keyword::Row,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ExprPreceding<'input> {
@@ -265,6 +307,7 @@ pub struct ExprPreceding<'input> {
     pub _preceding: keyword::Preceding,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ExprFollowing<'input> {
@@ -273,6 +316,7 @@ pub struct ExprFollowing<'input> {
 }
 
 /// `EXCLUDE { CURRENT ROW | GROUP | TIES | NO OTHERS }` frame exclusion.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WindowFrameExclude {
@@ -280,6 +324,7 @@ pub struct WindowFrameExclude {
     pub target: WindowFrameExcludeTarget,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum WindowFrameExcludeTarget {
@@ -289,6 +334,7 @@ pub enum WindowFrameExcludeTarget {
     NoOthers(NoOthers),
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct NoOthers {
@@ -307,13 +353,16 @@ pub struct NoOthers {
 ///
 /// Variant ordering: `Variadic` before `Plain` since `VARIADIC` keyword is
 /// longer than starting an expression.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum FuncArg<'input> {
+    Named(NamedFuncArg<'input>),
     Variadic(VariadicArg<'input>),
     Plain(Box<Expr<'input>>),
 }
 
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct VariadicArg<'input> {
@@ -321,7 +370,18 @@ pub struct VariadicArg<'input> {
     pub value: Box<Expr<'input>>,
 }
 
+/// Named function argument: `name => value` (Postgres).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NamedFuncArg<'input> {
+    pub name: literal::AliasName<'input>,
+    pub _arrow: punct::FatArrow,
+    pub value: Box<Expr<'input>>,
+}
+
 /// `WITHIN GROUP (ORDER BY ...)` clause for ordered-set aggregate functions.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WithinGroupClause<'input> {
@@ -335,6 +395,7 @@ pub struct WithinGroupClause<'input> {
 }
 
 /// `FILTER (WHERE condition)` clause for filtered aggregates.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FilterClause<'input> {
@@ -347,6 +408,7 @@ pub struct FilterClause<'input> {
 }
 
 /// Function call: `name([*] [DISTINCT] args [ORDER BY ...]) [WITHIN GROUP (...)] [FILTER (...)] [OVER (...)]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct FuncCall<'input> {
@@ -365,6 +427,7 @@ pub struct FuncCall<'input> {
 /// Content inside parentheses: either a subquery or a comma-separated expression list.
 /// Subquery (CompoundQuery) must come first so SELECT/VALUES/WITH keywords are matched
 /// before trying to parse as a regular expression.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ParenContent<'input> {
@@ -376,6 +439,7 @@ pub enum ParenContent<'input> {
 pub type ParenExpr<'input> = Surrounded<punct::LParen, ParenContent<'input>, punct::RParen>;
 
 /// EXISTS subquery: `EXISTS (SELECT ...)`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ExistsExpr<'input> {
@@ -388,6 +452,7 @@ pub struct ExistsExpr<'input> {
 }
 
 /// ARRAY bracket constructor: `ARRAY[expr, ...]`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ArrayBracket<'input> {
@@ -398,6 +463,7 @@ pub struct ArrayBracket<'input> {
 }
 
 /// ARRAY subquery constructor: `ARRAY(subquery)`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct ArraySubquery<'input> {
@@ -413,6 +479,7 @@ pub struct ArraySubquery<'input> {
 ///
 /// Variant ordering: Bracket (`ARRAY[`) has a longer first_pattern than
 /// Subquery (`ARRAY(`) because `[` is a different token than `(`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum ArrayExpr<'input> {
@@ -421,6 +488,7 @@ pub enum ArrayExpr<'input> {
 }
 
 /// ROW constructor: `ROW(expr, ...)`
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct RowExpr<'input> {
@@ -428,8 +496,64 @@ pub struct RowExpr<'input> {
     pub values: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
 }
 
+/// `WHEN cond THEN result` arm of a CASE expression.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct CaseWhenArm<'input> {
+    pub _when: keyword::When,
+    pub condition: Box<Expr<'input>>,
+    pub _then: keyword::Then,
+    pub result: Box<Expr<'input>>,
+}
+
+/// `ELSE result` clause of a CASE expression.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct CaseElse<'input> {
+    pub _else: keyword::Else,
+    pub result: Box<Expr<'input>>,
+}
+
+/// Searched CASE: `CASE WHEN cond THEN result [...] [ELSE result] END`.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct CaseSearched<'input> {
+    pub _case: keyword::Case,
+    pub first_arm: CaseWhenArm<'input>,
+    pub rest_arms: Vec<CaseWhenArm<'input>>,
+    pub else_clause: Option<CaseElse<'input>>,
+    pub _end: keyword::End,
+}
+
+/// Simple CASE: `CASE operand WHEN val THEN result [...] [ELSE result] END`.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct CaseSimple<'input> {
+    pub _case: keyword::Case,
+    pub operand: Box<Expr<'input>>,
+    pub first_arm: CaseWhenArm<'input>,
+    pub rest_arms: Vec<CaseWhenArm<'input>>,
+    pub else_clause: Option<CaseElse<'input>>,
+    pub _end: keyword::End,
+}
+
+/// CASE expression: searched form (first, since `CASE WHEN` is a longer
+/// specific prefix than `CASE` followed by any expression) or simple form.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum CaseExpr<'input> {
+    Searched(CaseSearched<'input>),
+    Simple(CaseSimple<'input>),
+}
+
 /// Cast type with optional precision and zero-or-more array suffixes:
 /// `numeric(10,0)`, `integer[]`, `int4[][][]`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct CastType<'input> {
@@ -439,6 +563,7 @@ pub struct CastType<'input> {
 }
 
 /// NOT IN list: `expr NOT IN (val, ...)` suffix.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct NotInSuffix<'input> {
@@ -447,15 +572,28 @@ pub struct NotInSuffix<'input> {
     pub list: InList<'input>,
 }
 
-/// Function-style type cast: `bool 'value'`, `text 'hello'`
+/// Payload for function-style type cast: either a string literal (common
+/// case `bool 'value'`) or a psql client variable substitution
+/// (`bigint :'txid_current'`).
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum TypeCastValue<'input> {
+    String(literal::StringLit<'input>),
+    PsqlVar(literal::PsqlVar<'input>),
+}
+
+/// Function-style type cast: `bool 'value'`, `text 'hello'`, `bigint :'var'`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TypeCastFunc<'input> {
     pub type_name: TypeName<'input>,
-    pub value: literal::StringLit<'input>,
+    pub value: TypeCastValue<'input>,
 }
 
 /// `WITH TIME ZONE` or `WITHOUT TIME ZONE` suffix for `TIMESTAMP`/`TIME`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub enum TimeZoneQualifier {
@@ -463,6 +601,7 @@ pub enum TimeZoneQualifier {
     Without(WithoutTimeZone),
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WithTimeZone {
@@ -471,6 +610,7 @@ pub struct WithTimeZone {
     pub _zone: keyword::Zone,
 }
 
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct WithoutTimeZone {
@@ -480,6 +620,7 @@ pub struct WithoutTimeZone {
 }
 
 /// `TIMESTAMP [WITH|WITHOUT TIME ZONE] 'string'`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TimestampLit<'input> {
@@ -489,12 +630,117 @@ pub struct TimestampLit<'input> {
 }
 
 /// `TIME [WITH|WITHOUT TIME ZONE] 'string'`.
+#[railroad]
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
 pub struct TimeLit<'input> {
     pub _time: keyword::Time,
     pub tz: Option<TimeZoneQualifier>,
     pub value: literal::StringLit<'input>,
+}
+
+/// `YEAR TO MONTH` qualifier.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct YearToMonth {
+    pub _year: keyword::YearKw,
+    pub _to: keyword::To,
+    pub _month: keyword::MonthKw,
+}
+
+/// `DAY TO HOUR` qualifier.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct DayToHour {
+    pub _day: keyword::DayKw,
+    pub _to: keyword::To,
+    pub _hour: keyword::HourKw,
+}
+
+/// `DAY TO MINUTE` qualifier.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct DayToMinute {
+    pub _day: keyword::DayKw,
+    pub _to: keyword::To,
+    pub _minute: keyword::MinuteKw,
+}
+
+/// `DAY TO SECOND` qualifier.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct DayToSecond {
+    pub _day: keyword::DayKw,
+    pub _to: keyword::To,
+    pub _second: keyword::SecondKw,
+}
+
+/// `HOUR TO MINUTE` qualifier.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct HourToMinute {
+    pub _hour: keyword::HourKw,
+    pub _to: keyword::To,
+    pub _minute: keyword::MinuteKw,
+}
+
+/// `HOUR TO SECOND` qualifier.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct HourToSecond {
+    pub _hour: keyword::HourKw,
+    pub _to: keyword::To,
+    pub _second: keyword::SecondKw,
+}
+
+/// `MINUTE TO SECOND` qualifier.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct MinuteToSecond {
+    pub _minute: keyword::MinuteKw,
+    pub _to: keyword::To,
+    pub _second: keyword::SecondKw,
+}
+
+/// Optional qualifier after `INTERVAL 'str'`.
+///
+/// Variant ordering: multi-keyword `X TO Y` forms must come before the
+/// single-keyword forms so longest-match-wins picks the fuller qualifier
+/// when available.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub enum IntervalQualifier {
+    YearToMonth(YearToMonth),
+    DayToHour(DayToHour),
+    DayToMinute(DayToMinute),
+    DayToSecond(DayToSecond),
+    HourToMinute(HourToMinute),
+    HourToSecond(HourToSecond),
+    MinuteToSecond(MinuteToSecond),
+    Year(keyword::YearKw),
+    Month(keyword::MonthKw),
+    Day(keyword::DayKw),
+    Hour(keyword::HourKw),
+    Minute(keyword::MinuteKw),
+    Second(keyword::SecondKw),
+}
+
+/// `INTERVAL 'str' [qualifier]`.
+#[railroad]
+#[derive(FormatTokens, Parse, Visit, Debug, Clone)]
+#[parse(rules = SqlRules)]
+pub struct IntervalLit<'input> {
+    pub _interval: keyword::IntervalKw,
+    pub value: literal::StringLit<'input>,
+    pub qualifier: Option<IntervalQualifier>,
 }
 
 // --- XML function atoms ---
@@ -509,6 +755,7 @@ pub struct TimeLit<'input> {
 // They are modeled here as dedicated atoms declared before `FuncCall`.
 
 /// A `name [AS alias]` argument to `xmlattributes` / `xmlforest`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlNamedArg<'input> {
@@ -517,6 +764,7 @@ pub struct XmlNamedArg<'input> {
 }
 
 /// `AS alias` suffix on an XML named argument.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlNamedArgAlias<'input> {
@@ -526,6 +774,7 @@ pub struct XmlNamedArgAlias<'input> {
 
 /// `xmlattributes(expr [AS alias], ...)` — used as a positional argument
 /// to `xmlelement`, but also can be parsed standalone.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlAttributes<'input> {
@@ -534,6 +783,7 @@ pub struct XmlAttributes<'input> {
 }
 
 /// Optional `, xmlattributes(...) [, content_exprs]` tail of `xmlelement`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElementAttrsTail<'input> {
@@ -543,6 +793,7 @@ pub struct XmlElementAttrsTail<'input> {
 }
 
 /// Optional `, content_exprs` tail of `xmlelement`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElementContentTail<'input> {
@@ -555,6 +806,7 @@ pub struct XmlElementContentTail<'input> {
 /// Variant ordering: the `WithAttrs` form starts with `, xmlattributes(`
 /// (longer match) and must be tried before `WithContent` which starts with
 /// just `,`. Both trail an `xmlelement(NAME ident` head.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum XmlElementTail<'input> {
@@ -563,6 +815,7 @@ pub enum XmlElementTail<'input> {
 }
 
 /// Inner contents of an `xmlelement(...)` call.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElementInner<'input> {
@@ -572,6 +825,7 @@ pub struct XmlElementInner<'input> {
 }
 
 /// `xmlelement(NAME ident [, xmlattributes(...)] [, content_exprs])`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlElement<'input> {
@@ -580,6 +834,7 @@ pub struct XmlElement<'input> {
 }
 
 /// `xmlforest(expr [AS alias], ...)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlForest<'input> {
@@ -588,6 +843,7 @@ pub struct XmlForest<'input> {
 }
 
 /// `xmlpi(NAME ident [, content])`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlPi<'input> {
@@ -596,6 +852,7 @@ pub struct XmlPi<'input> {
 }
 
 /// Inner contents of an `xmlpi(...)` call.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlPiInner<'input> {
@@ -605,6 +862,7 @@ pub struct XmlPiInner<'input> {
 }
 
 /// Optional `, content_expr` tail of `xmlpi`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct XmlPiContentTail<'input> {
@@ -618,6 +876,7 @@ pub struct XmlPiContentTail<'input> {
 // separators inside parens that don't fit a comma-separated FuncCall.
 
 /// Trim direction: `LEADING | TRAILING | BOTH`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TrimDir {
@@ -627,6 +886,7 @@ pub enum TrimDir {
 }
 
 /// `[chars] FROM source`: the optional chars-to-trim before `FROM`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TrimChars<'input> {
@@ -636,6 +896,7 @@ pub struct TrimChars<'input> {
 /// Inside of `TRIM(...)`. Forms:
 ///   `[LEADING|TRAILING|BOTH] [chars] FROM source`
 ///   (a fully-positional `TRIM(src, chars)` form is left to ordinary FuncCall).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TrimInner<'input> {
@@ -646,6 +907,7 @@ pub struct TrimInner<'input> {
 }
 
 /// `TRIM([LEADING|TRAILING|BOTH] [chars] FROM source)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TrimCall<'input> {
@@ -654,6 +916,7 @@ pub struct TrimCall<'input> {
 }
 
 /// `FOR len` suffix in `SUBSTRING(... FROM ... FOR ...)` / `OVERLAY(...)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForCount<'input> {
@@ -662,6 +925,7 @@ pub struct ForCount<'input> {
 }
 
 /// `FROM start [FOR len]` form for SUBSTRING.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringFromFor<'input> {
@@ -671,6 +935,7 @@ pub struct SubstringFromFor<'input> {
 }
 
 /// `SIMILAR pattern ESCAPE escape` form for SUBSTRING.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringSimilar<'input> {
@@ -684,6 +949,7 @@ pub struct SubstringSimilar<'input> {
 ///
 /// Variant ordering: `Similar` (`SIMILAR`) before `FromFor` (`FROM`) — distinct
 /// first tokens, so order is not strictly required, but listed by length.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SubstringTail<'input> {
@@ -692,6 +958,7 @@ pub enum SubstringTail<'input> {
 }
 
 /// Inner of `SUBSTRING(...)`: `source` followed by FROM/SIMILAR tail.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringInner<'input> {
@@ -701,6 +968,7 @@ pub struct SubstringInner<'input> {
 
 /// `SUBSTRING(source FROM start [FOR len])` /
 /// `SUBSTRING(source SIMILAR pattern ESCAPE escape)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SubstringCall<'input> {
@@ -709,6 +977,7 @@ pub struct SubstringCall<'input> {
 }
 
 /// Inner of `POSITION(needle IN haystack)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PositionInner<'input> {
@@ -718,6 +987,7 @@ pub struct PositionInner<'input> {
 }
 
 /// `POSITION(needle IN haystack)`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct PositionCall<'input> {
@@ -726,6 +996,7 @@ pub struct PositionCall<'input> {
 }
 
 /// Inner of `OVERLAY(source PLACING new FROM start [FOR len])`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OverlayInner<'input> {
@@ -738,6 +1009,7 @@ pub struct OverlayInner<'input> {
 }
 
 /// `OVERLAY(source PLACING new FROM start [FOR len])`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OverlayCall<'input> {
@@ -745,7 +1017,40 @@ pub struct OverlayCall<'input> {
     pub inner: Surrounded<punct::LParen, OverlayInner<'input>, punct::RParen>,
 }
 
+/// Field argument of `EXTRACT(field FROM source)`.
+///
+/// Variant ordering: `StringLit` before `Ident` — string literal has a
+/// distinct first token (`'`) so order is not strictly required; listed
+/// first to match the Postgres docs ordering.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum ExtractField<'input> {
+    StringLit(StringLitSeq<'input>),
+    Ident(literal::AliasName<'input>),
+}
+
+/// Inner of `EXTRACT(field FROM source)`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ExtractInner<'input> {
+    pub field: ExtractField<'input>,
+    pub _from: PhantomData<keyword::From>,
+    pub source: Box<Expr<'input>>,
+}
+
+/// `EXTRACT(field FROM source)` — Postgres-specific function syntax.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ExtractCall<'input> {
+    pub _kw: PhantomData<keyword::ExtractKw>,
+    pub inner: Surrounded<punct::LParen, ExtractInner<'input>, punct::RParen>,
+}
+
 /// `UESCAPE 'c'` suffix that may follow a `U&'...'` literal.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UescapeSuffix<'input> {
@@ -754,6 +1059,7 @@ pub struct UescapeSuffix<'input> {
 }
 
 /// `U&'...'` unicode string literal with optional `UESCAPE 'c'` suffix.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnicodeStringLitWithEscape<'input> {
@@ -764,6 +1070,7 @@ pub struct UnicodeStringLitWithEscape<'input> {
 // --- Pratt expression enum ---
 
 /// SQL expression with Pratt-derived parsing.
+#[railroad]
 #[derive(FormatTokens, Parse, Debug, Clone, Visit)]
 #[parse(rules = SqlRules, pratt)]
 pub enum Expr<'input> {
@@ -772,6 +1079,16 @@ pub enum Expr<'input> {
     Not(keyword::Not, Box<Expr<'input>>),
     #[parse(prefix, bp = 12)]
     Neg(punct::Minus, Box<Expr<'input>>),
+    /// Unary geometric "center point": `@@ expr`. Postgres uses `@@` as
+    /// a prefix operator on box / polygon / etc. (in addition to the
+    /// text-search infix form).
+    #[parse(prefix, bp = 12)]
+    GeomCenter(punct::AtAt, Box<Expr<'input>>),
+    /// Bitwise NOT: `~ expr` (e.g. inet / bit / int bitwise complement).
+    /// Must come before any infix `~` variant so the prefix form wins when
+    /// `~` appears at the start of an operand.
+    #[parse(prefix, bp = 12)]
+    BitNot(punct::Tilde, Box<Expr<'input>>),
 
     // --- Postfix ---
     /// Postgres-style cast: `expr::type`
@@ -789,6 +1106,26 @@ pub enum Expr<'input> {
     /// comparisons (bp 5) but looser than `::` cast (bp 20).
     #[parse(postfix, bp = 18)]
     Collate(Box<Expr<'input>>, keyword::Collate, literal::Ident<'input>),
+    /// `expr IS NOT DISTINCT FROM expr`. Declared before `IsDistinctFrom` so
+    /// the longer `NOT` prefix wins disambiguation.
+    #[parse(postfix, bp = 5, inner_bp = 6)]
+    IsNotDistinctFrom(
+        Box<Expr<'input>>,
+        keyword::Is,
+        keyword::Not,
+        keyword::Distinct,
+        keyword::From,
+        Box<Expr<'input>>,
+    ),
+    /// `expr IS DISTINCT FROM expr`.
+    #[parse(postfix, bp = 5, inner_bp = 6)]
+    IsDistinctFrom(
+        Box<Expr<'input>>,
+        keyword::Is,
+        keyword::Distinct,
+        keyword::From,
+        Box<Expr<'input>>,
+    ),
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
     BoolTest(Box<Expr<'input>>, keyword::Is, BoolTestKind),
@@ -829,6 +1166,10 @@ pub enum Expr<'input> {
     /// `expr !~ pattern` — POSIX negated regex match.
     #[parse(infix, bp = 5)]
     RegexNotMatch(Box<Expr<'input>>, punct::BangTilde, Box<Expr<'input>>),
+    /// `expr ~= expr` — geometric "same as" operator. Declared before `RegexMatch`
+    /// so the longer `~=` wins longest-match.
+    #[parse(infix, bp = 5)]
+    GeomSame(Box<Expr<'input>>, punct::TildeEq, Box<Expr<'input>>),
     /// `expr ~ pattern` — POSIX regex match.
     #[parse(infix, bp = 5)]
     RegexMatch(Box<Expr<'input>>, punct::Tilde, Box<Expr<'input>>),
@@ -980,6 +1321,16 @@ pub enum Expr<'input> {
     /// String concatenation: `expr || expr`
     #[parse(infix, bp = 10)]
     Concat(Box<Expr<'input>>, punct::Concat, Box<Expr<'input>>),
+    /// Bitwise OR: `expr | expr`. Must come after `Concat` (`||`) so the
+    /// longer token matches first at the punctuation level.
+    #[parse(infix, bp = 10)]
+    BitOr(Box<Expr<'input>>, punct::Pipe, Box<Expr<'input>>),
+    /// Bitwise AND: `expr & expr`.
+    #[parse(infix, bp = 10)]
+    BitAnd(Box<Expr<'input>>, punct::Amp, Box<Expr<'input>>),
+    /// Bitwise XOR: `expr # expr` (Postgres bit-string / integer operator).
+    #[parse(infix, bp = 10)]
+    BitXor(Box<Expr<'input>>, punct::Pound, Box<Expr<'input>>),
     #[parse(infix, bp = 10)]
     Add(Box<Expr<'input>>, punct::Plus, Box<Expr<'input>>),
     #[parse(infix, bp = 10)]
@@ -993,6 +1344,9 @@ pub enum Expr<'input> {
     /// Modulo: `expr % expr`
     #[parse(infix, bp = 11)]
     Mod(Box<Expr<'input>>, punct::Percent, Box<Expr<'input>>),
+    /// Exponentiation: `expr ^ expr` (Postgres numeric power operator).
+    #[parse(infix, bp = 13)]
+    Pow(Box<Expr<'input>>, punct::Caret, Box<Expr<'input>>),
 
     // --- Atoms ---
     /// EXISTS subquery: `EXISTS (SELECT ...)`
@@ -1004,6 +1358,9 @@ pub enum Expr<'input> {
     /// ROW constructor: `ROW(...)`
     #[parse(atom)]
     RowExpr(RowExpr<'input>),
+    /// CASE expression: `CASE [expr] WHEN ... THEN ... [ELSE ...] END`
+    #[parse(atom)]
+    Case(CaseExpr<'input>),
     /// Unicode string literal: `U&'...'` with optional `UESCAPE 'c'`. Must
     /// come before `CastFunc` and `StringLit` for the same reason as
     /// `EscapeStringLit`.
@@ -1021,6 +1378,10 @@ pub enum Expr<'input> {
     /// `TIME [WITH|WITHOUT TIME ZONE] 'string'`. Must come before `CastFunc`.
     #[parse(atom)]
     TimeLit(TimeLit<'input>),
+    /// `INTERVAL 'string' [qualifier]`. Must come before `CastFunc` since
+    /// `interval` would otherwise parse as an ident-based TypeName.
+    #[parse(atom)]
+    IntervalLit(IntervalLit<'input>),
     /// Function-style type cast: `bool 't'` -- must come before ColumnRef
     /// since type keywords like `bool` overlap with identifiers
     #[parse(atom)]
@@ -1051,6 +1412,9 @@ pub enum Expr<'input> {
     /// `OVERLAY(source PLACING new FROM start [FOR len])`. Before `Func`.
     #[parse(atom)]
     Overlay(OverlayCall<'input>),
+    /// `EXTRACT(field FROM source)`. Before `Func`.
+    #[parse(atom)]
+    Extract(ExtractCall<'input>),
     /// Function call: `func(args)` -- must come before ColumnRef
     #[parse(atom)]
     Func(FuncCall<'input>),
@@ -1352,6 +1716,113 @@ mod tests {
     }
 
     #[test]
+    fn parse_extract_epoch_from_date() {
+        let mut input = Input::new("EXTRACT(EPOCH FROM DATE '1970-01-01')");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Extract(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_extract_century_from_ident() {
+        let mut input = Input::new("EXTRACT(CENTURY FROM d)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_extract_string_field() {
+        let mut input = Input::new("EXTRACT('year' FROM t)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_func_named_arg_mixed() {
+        let mut input = Input::new("f(a, b => 1, c)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_jsonb_path_query_silent() {
+        let mut input = Input::new("jsonb_path_query('[1]', 'strict $[1]', silent => true)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_func_all_named_args() {
+        let mut input = Input::new("f(silent => false, verbose => true)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_extract_year_from_now() {
+        let mut input = Input::new("EXTRACT(year FROM now())");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_is_distinct_from() {
+        let mut input = Input::new("a IS DISTINCT FROM b");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_is_not_distinct_from() {
+        let mut input = Input::new("a IS NOT DISTINCT FROM b");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_power_operator() {
+        let mut input = Input::new("2^1000");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_double_precision_type_cast() {
+        let mut input = Input::new("3.14::double precision");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_case_searched() {
+        let mut input = Input::new("CASE WHEN 1 < 2 THEN 3 END");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Case(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_case_searched_with_else() {
+        let mut input = Input::new("CASE WHEN 1 < 2 THEN 3 WHEN 4 < 5 THEN 6 ELSE 7 END");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_case_simple() {
+        let mut input = Input::new("CASE x WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_case_nested() {
+        let mut input = Input::new("CASE WHEN (CASE WHEN 1=1 THEN 1 END) > 0 THEN 'y' END");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
     fn parse_func_call_within_group() {
         let mut input = Input::new("percentile_disc(0.5) WITHIN GROUP (ORDER BY v)");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
@@ -1421,10 +1892,42 @@ mod tests {
     }
 
     #[test]
-    fn parse_interval_literal_as_castfunc() {
+    fn parse_interval_literal_bare() {
         let mut input = Input::new("interval '1 hour'");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
-        assert!(matches!(expr, Expr::CastFunc(_)));
+        assert!(matches!(expr, Expr::IntervalLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_interval_literal_year() {
+        let mut input = Input::new("INTERVAL '1' YEAR");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::IntervalLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_interval_literal_year_to_month() {
+        let mut input = Input::new("INTERVAL '1-2' YEAR TO MONTH");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::IntervalLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_interval_literal_day_to_hour() {
+        let mut input = Input::new("INTERVAL '1 2:03' DAY TO HOUR");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::IntervalLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_interval_literal_hour_to_second() {
+        let mut input = Input::new("INTERVAL '1' HOUR TO SECOND");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::IntervalLit(_)));
         assert!(input.is_empty());
     }
 

@@ -1,14 +1,18 @@
 /// CREATE TABLESPACE / DROP TABLESPACE statement AST.
 use std::marker::PhantomData;
 
+use recursa::seq::Seq;
+use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
-use crate::ast::create_index::WithStorage;
+use crate::ast::create_index::{StorageParam, WithStorage};
 use crate::ast::create_view::IfExistsKw;
 use crate::rules::SqlRules;
-use crate::tokens::{keyword, literal};
+use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// `OWNER role` optional clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct OwnerClause<'input> {
@@ -17,6 +21,7 @@ pub struct OwnerClause<'input> {
 }
 
 /// `LOCATION 'path'` clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LocationClause<'input> {
@@ -25,6 +30,7 @@ pub struct LocationClause<'input> {
 }
 
 /// `CREATE TABLESPACE name [OWNER role] LOCATION 'path' [WITH (params)]`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CreateTablespaceStmt<'input> {
@@ -36,7 +42,74 @@ pub struct CreateTablespaceStmt<'input> {
     pub with_options: Option<WithStorage<'input>>,
 }
 
+/// `RENAME TO new_name` action on ALTER TABLESPACE.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterTablespaceRename<'input> {
+    pub _rename: PhantomData<keyword::RenameKw>,
+    pub _to: PhantomData<keyword::To>,
+    pub new_name: literal::Ident<'input>,
+}
+
+/// `OWNER TO new_owner` action on ALTER TABLESPACE.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterTablespaceOwner<'input> {
+    pub _owner: PhantomData<keyword::Owner>,
+    pub _to: PhantomData<keyword::To>,
+    pub new_owner: literal::Ident<'input>,
+}
+
+/// `SET (param = value, ...)` action on ALTER TABLESPACE.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterTablespaceSetAction<'input> {
+    pub _set: PhantomData<keyword::Set>,
+    pub params:
+        Surrounded<punct::LParen, Seq<StorageParam<'input>, punct::Comma>, punct::RParen>,
+}
+
+/// `RESET (param [, ...])` action on ALTER TABLESPACE.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterTablespaceResetAction<'input> {
+    pub _reset: PhantomData<keyword::Reset>,
+    pub params:
+        Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
+}
+
+/// One of the supported ALTER TABLESPACE actions.
+///
+/// Variant ordering: all variants start with distinct keywords (SET, RESET,
+/// RENAME, OWNER), so order is for clarity only.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum AlterTablespaceAction<'input> {
+    Set(AlterTablespaceSetAction<'input>),
+    Reset(AlterTablespaceResetAction<'input>),
+    Rename(AlterTablespaceRename<'input>),
+    Owner(AlterTablespaceOwner<'input>),
+}
+
+/// `ALTER TABLESPACE name { RENAME TO new_name | OWNER TO new_owner
+///                         | SET (params) | RESET (params) }`
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AlterTablespaceStmt<'input> {
+    pub _alter: PhantomData<keyword::Alter>,
+    pub _tablespace: PhantomData<keyword::Tablespace>,
+    pub name: literal::Ident<'input>,
+    pub action: AlterTablespaceAction<'input>,
+}
+
 /// `DROP TABLESPACE [IF EXISTS] name`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DropTablespaceStmt<'input> {
@@ -85,6 +158,35 @@ mod tests {
     fn parse_drop_tablespace_if_exists() {
         let mut input = Input::new("DROP TABLESPACE IF EXISTS ts1");
         let _stmt = DropTablespaceStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_tablespace_set() {
+        let mut input = Input::new("ALTER TABLESPACE ts SET (random_page_cost = 1.0)");
+        let _stmt = AlterTablespaceStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_tablespace_reset() {
+        let mut input =
+            Input::new("ALTER TABLESPACE ts RESET (random_page_cost, effective_io_concurrency)");
+        let _stmt = AlterTablespaceStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_tablespace_rename() {
+        let mut input = Input::new("ALTER TABLESPACE ts RENAME TO ts2");
+        let _stmt = AlterTablespaceStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_alter_tablespace_owner() {
+        let mut input = Input::new("ALTER TABLESPACE ts OWNER TO foo");
+        let _stmt = AlterTablespaceStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 }

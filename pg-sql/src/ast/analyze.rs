@@ -5,8 +5,10 @@ use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal};
+use recursa_diagram::railroad;
 
 /// ANALYZE statement.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AnalyzeStmt<'input> {

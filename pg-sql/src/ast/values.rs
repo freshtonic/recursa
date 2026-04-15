@@ -7,8 +7,10 @@ use recursa::{FormatTokens, Parse, Visit};
 use crate::ast::select::SelectBody;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, punct};
+use recursa_diagram::railroad;
 
 /// TABLE statement: `TABLE tablename`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableStmt<'input> {
@@ -17,36 +19,43 @@ pub struct TableStmt<'input> {
 }
 
 /// UNION ALL
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnionAllOp(PhantomData<keyword::Union>, PhantomData<keyword::All>);
 
 /// UNION DISTINCT
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnionDistinctOp(PhantomData<keyword::Union>, PhantomData<keyword::Distinct>);
 
 /// UNION (bare)
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UnionOp(PhantomData<keyword::Union>);
 
 /// EXCEPT ALL
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExceptAllOp(PhantomData<keyword::Except>, PhantomData<keyword::All>);
 
 /// EXCEPT (bare)
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ExceptOp(PhantomData<keyword::Except>);
 
 /// INTERSECT ALL
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IntersectAllOp(PhantomData<keyword::Intersect>, PhantomData<keyword::All>);
 
 /// INTERSECT (bare)
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct IntersectOp(PhantomData<keyword::Intersect>);
@@ -55,6 +64,7 @@ pub struct IntersectOp(PhantomData<keyword::Intersect>);
 ///
 /// Variant ordering: longer keyword sequences first within each group
 /// so longest-match-wins picks UNION ALL over bare UNION, etc.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum SetOp {
@@ -69,6 +79,7 @@ pub enum SetOp {
 
 /// A set operation combiner: `UNION [ALL|DISTINCT] | EXCEPT [ALL] | INTERSECT [ALL]`
 /// followed by the right-hand query.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct SetOpCombiner<'input> {
@@ -79,6 +90,7 @@ pub struct SetOpCombiner<'input> {
 /// A compound query: a query body optionally followed by a set operation.
 /// This allows chaining: `VALUES ... UNION ALL SELECT ... EXCEPT TABLE ...`
 /// Paren variant handles `(WITH ... SELECT ... UNION ...)` grouping.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum CompoundQuery<'input> {
@@ -89,6 +101,7 @@ pub enum CompoundQuery<'input> {
 
 /// Parenthesized compound query with optional set operation continuation.
 /// e.g., `(SELECT ... UNION ALL ...) EXCEPT ...`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CompoundParen<'input> {
@@ -97,6 +110,7 @@ pub struct CompoundParen<'input> {
 }
 
 /// A SELECT or VALUES body with optional set operation continuation.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CompoundBody<'input> {

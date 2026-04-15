@@ -19,8 +19,10 @@ use crate::ast::select::{PlainTable, TableRef};
 use crate::ast::update::{ReturningClause, SetAssignment};
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
+use recursa_diagram::railroad;
 
 /// `AND cond` qualifier on a WHEN clause.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AndCondition<'input> {
@@ -29,6 +31,7 @@ pub struct AndCondition<'input> {
 }
 
 /// `BY SOURCE` qualifier on `WHEN NOT MATCHED`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct BySource {
@@ -37,6 +40,7 @@ pub struct BySource {
 }
 
 /// `BY TARGET` qualifier on `WHEN NOT MATCHED`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ByTarget {
@@ -45,6 +49,7 @@ pub struct ByTarget {
 }
 
 /// `BY SOURCE` or `BY TARGET`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum NotMatchedBy {
@@ -53,6 +58,7 @@ pub enum NotMatchedBy {
 }
 
 /// `UPDATE SET col = expr, ...` action body (the part after THEN).
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct UpdateAction<'input> {
@@ -62,6 +68,7 @@ pub struct UpdateAction<'input> {
 }
 
 /// `DELETE` action body.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DeleteAction {
@@ -69,6 +76,7 @@ pub struct DeleteAction {
 }
 
 /// `DO NOTHING` action body.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct DoNothingAction {
@@ -81,6 +89,7 @@ pub struct DoNothingAction {
 /// Variant ordering: `DoNothing` (`DO NOTHING`) and `Update` (`UPDATE`) and
 /// `Delete` (`DELETE`) all start with distinct keywords, so order is by
 /// declaration only.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum MatchedAction<'input> {
@@ -90,6 +99,7 @@ pub enum MatchedAction<'input> {
 }
 
 /// `DEFAULT VALUES` form of an INSERT body.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertDefaultValues {
@@ -102,6 +112,7 @@ pub type ValueRow<'input> =
     Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>;
 
 /// `VALUES (row), (row), ...` body.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertValuesBody<'input> {
@@ -113,6 +124,7 @@ pub struct InsertValuesBody<'input> {
 ///
 /// Variant ordering: `Default` (`DEFAULT VALUES`) is matched before
 /// `Values` (`VALUES`) since they begin with different keywords.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InsertBody<'input> {
@@ -121,6 +133,7 @@ pub enum InsertBody<'input> {
 }
 
 /// Optional `INTO target_name` after `INSERT`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertInto<'input> {
@@ -129,6 +142,7 @@ pub struct InsertInto<'input> {
 }
 
 /// `INSERT [INTO target] [(cols)] { VALUES ... | DEFAULT VALUES }`
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct InsertAction<'input> {
@@ -141,6 +155,7 @@ pub struct InsertAction<'input> {
 }
 
 /// Action allowed after `WHEN NOT MATCHED ... THEN`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum NotMatchedAction<'input> {
@@ -149,6 +164,7 @@ pub enum NotMatchedAction<'input> {
 }
 
 /// `WHEN NOT MATCHED [BY {SOURCE|TARGET}] [AND cond] THEN action`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhenNotMatched<'input> {
@@ -162,6 +178,7 @@ pub struct WhenNotMatched<'input> {
 }
 
 /// `WHEN MATCHED [AND cond] THEN action`.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhenMatched<'input> {
@@ -176,6 +193,7 @@ pub struct WhenMatched<'input> {
 ///
 /// Variant ordering: `NotMatched` (`WHEN NOT MATCHED`) is longer than
 /// `Matched` (`WHEN MATCHED`); list it first.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum WhenClause<'input> {
@@ -184,6 +202,7 @@ pub enum WhenClause<'input> {
 }
 
 /// MERGE statement.
+#[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct MergeStmt<'input> {
@@ -225,7 +244,8 @@ mod tests {
 
     #[test]
     fn parse_merge_when_matched_and() {
-        let sql = "MERGE INTO t USING s ON t.a = s.a WHEN MATCHED AND t.a = 2 THEN UPDATE SET b = s.b";
+        let sql =
+            "MERGE INTO t USING s ON t.a = s.a WHEN MATCHED AND t.a = 2 THEN UPDATE SET b = s.b";
         let mut input = Input::new(sql);
         let _stmt = MergeStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
@@ -249,7 +269,8 @@ mod tests {
 
     #[test]
     fn parse_merge_insert_multi_values() {
-        let sql = "MERGE INTO t USING s ON t.a = s.a WHEN NOT MATCHED THEN INSERT VALUES (1,1), (2,2)";
+        let sql =
+            "MERGE INTO t USING s ON t.a = s.a WHEN NOT MATCHED THEN INSERT VALUES (1,1), (2,2)";
         let mut input = Input::new(sql);
         let _stmt = MergeStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
