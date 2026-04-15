@@ -174,7 +174,11 @@ impl<'a> Visit for ::std::borrow::Cow<'a, str> {
 
 impl AsNodeKey for String {}
 impl Visit for String {
-    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ::std::ops::ControlFlow<Break<V::Error>> {
-        ::std::ops::ControlFlow::Continue(())
+    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>> {
+        match visitor.total_enter(self) {
+            ControlFlow::Continue(()) | ControlFlow::Break(Break::SkipChildren) => {}
+            other => return other,
+        }
+        visitor.total_exit(self)
     }
 }
