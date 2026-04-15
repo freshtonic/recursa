@@ -3,8 +3,8 @@ pub mod common;
 pub mod create_function;
 pub mod create_index;
 pub mod create_procedure;
-pub mod create_tablespace;
 pub mod create_table;
+pub mod create_tablespace;
 pub mod create_view;
 pub mod delete;
 pub mod drop_table;
@@ -31,8 +31,8 @@ use self::{
     create_function::{CreateFunctionStmt, DropFunctionStmt},
     create_index::{CreateIndexStmt, DropIndexStmt},
     create_procedure::{CallStmt, CreateProcedureStmt, DropProcedureStmt},
-    create_tablespace::{AlterTablespaceStmt, CreateTablespaceStmt, DropTablespaceStmt},
     create_table::CreateTableStmt,
+    create_tablespace::{AlterTablespaceStmt, CreateTablespaceStmt, DropTablespaceStmt},
     create_view::{CreateViewStmt, DropViewStmt},
     delete::DeleteStmt,
     drop_table::DropTableStmt,

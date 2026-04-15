@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use criterion::{
-    criterion_group, criterion_main, measurement::WallTime, BenchmarkGroup, BenchmarkId, Criterion,
-    Throughput,
+    BenchmarkGroup, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
+    measurement::WallTime,
 };
 
 /// Cap warm-up and measurement time so a single pathological case (e.g. deep
@@ -63,33 +63,48 @@ fn parse_with_sqlparser(sql: &str) -> bool {
 /// `src/bin/gen_stress.rs`. Keep in sync when adding shapes.
 fn stress_shapes() -> Vec<(&'static str, Vec<(usize, String)>)> {
     vec![
-        ("insert_values", vec![
-            (100, "insert_values_100.sql".into()),
-            (1_000, "insert_values_1000.sql".into()),
-            (10_000, "insert_values_10000.sql".into()),
-        ]),
-        ("bool_chain", vec![
-            (10, "bool_chain_10.sql".into()),
-            (100, "bool_chain_100.sql".into()),
-            (1_000, "bool_chain_1000.sql".into()),
-        ]),
-        ("select_list", vec![
-            (100, "select_list_100.sql".into()),
-            (1_000, "select_list_1000.sql".into()),
-            (10_000, "select_list_10000.sql".into()),
-        ]),
+        (
+            "insert_values",
+            vec![
+                (100, "insert_values_100.sql".into()),
+                (1_000, "insert_values_1000.sql".into()),
+                (10_000, "insert_values_10000.sql".into()),
+            ],
+        ),
+        (
+            "bool_chain",
+            vec![
+                (10, "bool_chain_10.sql".into()),
+                (100, "bool_chain_100.sql".into()),
+                (1_000, "bool_chain_1000.sql".into()),
+            ],
+        ),
+        (
+            "select_list",
+            vec![
+                (100, "select_list_100.sql".into()),
+                (1_000, "select_list_1000.sql".into()),
+                (10_000, "select_list_10000.sql".into()),
+            ],
+        ),
         // Sizes kept small: pg-sql's recursive-descent parser is pathologically
         // slow on deep subquery nesting and was OOM-killed at depth 30.
-        ("nested_subquery", vec![
-            (5, "nested_subquery_5.sql".into()),
-            (10, "nested_subquery_10.sql".into()),
-            (15, "nested_subquery_15.sql".into()),
-        ]),
-        ("in_list", vec![
-            (100, "in_list_100.sql".into()),
-            (1_000, "in_list_1000.sql".into()),
-            (10_000, "in_list_10000.sql".into()),
-        ]),
+        (
+            "nested_subquery",
+            vec![
+                (5, "nested_subquery_5.sql".into()),
+                (10, "nested_subquery_10.sql".into()),
+                (15, "nested_subquery_15.sql".into()),
+            ],
+        ),
+        (
+            "in_list",
+            vec![
+                (100, "in_list_100.sql".into()),
+                (1_000, "in_list_1000.sql".into()),
+                (10_000, "in_list_10000.sql".into()),
+            ],
+        ),
     ]
 }
 

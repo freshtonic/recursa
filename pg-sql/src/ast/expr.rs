@@ -387,8 +387,7 @@ pub struct NamedFuncArg {
 pub struct WithinGroupClause {
     pub _within: PhantomData<keyword::Within>,
     pub _group: PhantomData<keyword::Group>,
-    pub order_by:
-        Surrounded<punct::LParen, Box<crate::ast::select::OrderByClause>, punct::RParen>,
+    pub order_by: Surrounded<punct::LParen, Box<crate::ast::select::OrderByClause>, punct::RParen>,
 }
 
 /// `FILTER (WHERE condition)` clause for filtered aggregates.

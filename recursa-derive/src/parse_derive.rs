@@ -259,11 +259,7 @@ fn is_box_of_self(ty: &Type, name: &syn::Ident) -> bool {
     let Some(syn::GenericArgument::Type(Type::Path(inner))) = args.args.first() else {
         return false;
     };
-    inner
-        .path
-        .segments
-        .last()
-        .is_some_and(|s| s.ident == *name)
+    inner.path.segments.last().is_some_and(|s| s.ident == *name)
 }
 
 fn is_option_type(ty: &Type) -> bool {
@@ -696,67 +692,70 @@ fn derive_pratt_enum(
         }
     });
 
-    let postfix_arms = postfix_variants.iter().map(|(vname, field_types, bp, inner_bp)| {
-        let op_ty = &field_types[1];
-        let remaining_types = &field_types[2..];
+    let postfix_arms = postfix_variants
+        .iter()
+        .map(|(vname, field_types, bp, inner_bp)| {
+            let op_ty = &field_types[1];
+            let remaining_types = &field_types[2..];
 
-        // Build the sequence of field parses that runs inside a fork. Each
-        // parse uses `?` against the fork's IIFE result, so any failure
-        // falls through to the next postfix/infix arm rather than aborting
-        // `parse_expr`. This mirrors the atom try-in-order behavior and
-        // allows postfix variants with overlapping first-token peeks
-        // (e.g. `NOT IN` vs `NOT BETWEEN`) to disambiguate by trying each
-        // in declaration order.
-        let mut field_parses = Vec::new();
-        let mut field_idents = Vec::new();
-        let op_ident = syn::Ident::new("__f1", proc_macro2::Span::call_site());
-        field_parses.push(quote! {
-            let #op_ident = <#op_ty as ::recursa_core::Parse>::parse::<#rules>(&mut fork)?;
-        });
-        field_idents.push(op_ident);
-        for (i, ty) in remaining_types.iter().enumerate() {
-            let ident = syn::Ident::new(&format!("__f{}", i + 2), proc_macro2::Span::call_site());
-            // If this field is `Box<Self>` and the variant specifies `inner_bp`,
-            // recurse via `parse_expr(&mut fork, inner_bp)` instead of the
-            // plain `Parse::parse`, which would re-enter at `min_bp = 0` and
-            // greedily consume infix operators that should belong to the
-            // outer postfix.
-            let parse_call = if let Some(ibp) = inner_bp
-                && is_box_of_self(ty, name)
-            {
-                quote! {
-                    let #ident = ::std::boxed::Box::new(parse_expr(&mut fork, #ibp)?);
-                }
-            } else {
-                quote! {
-                    let #ident = <#ty as ::recursa_core::Parse>::parse::<#rules>(&mut fork)?;
-                }
-            };
+            // Build the sequence of field parses that runs inside a fork. Each
+            // parse uses `?` against the fork's IIFE result, so any failure
+            // falls through to the next postfix/infix arm rather than aborting
+            // `parse_expr`. This mirrors the atom try-in-order behavior and
+            // allows postfix variants with overlapping first-token peeks
+            // (e.g. `NOT IN` vs `NOT BETWEEN`) to disambiguate by trying each
+            // in declaration order.
+            let mut field_parses = Vec::new();
+            let mut field_idents = Vec::new();
+            let op_ident = syn::Ident::new("__f1", proc_macro2::Span::call_site());
             field_parses.push(quote! {
-                <#rules as ::recursa_core::ParseRules>::consume_ignored(&mut fork);
-                #parse_call
+                let #op_ident = <#op_ty as ::recursa_core::Parse>::parse::<#rules>(&mut fork)?;
             });
-            field_idents.push(ident);
-        }
-        let all_idents = &field_idents;
-        quote! {
-            {
-                <#rules as ::recursa_core::ParseRules>::consume_ignored(input);
-                if <#op_ty as ::recursa_core::Parse>::peek::<#rules>(input) && #bp >= min_bp {
-                    let attempt: ::std::result::Result<_, ::recursa_core::ParseError> = (|| {
-                        let mut fork = input.fork();
-                        #(#field_parses)*
-                        ::std::result::Result::Ok((fork, #(#all_idents),*))
-                    })();
-                    if let ::std::result::Result::Ok((fork, #(#all_idents),*)) = attempt {
-                        input.commit(fork);
-                        lhs = #name::#vname(Box::new(lhs), #(#all_idents),*);
-                        continue;
+            field_idents.push(op_ident);
+            for (i, ty) in remaining_types.iter().enumerate() {
+                let ident =
+                    syn::Ident::new(&format!("__f{}", i + 2), proc_macro2::Span::call_site());
+                // If this field is `Box<Self>` and the variant specifies `inner_bp`,
+                // recurse via `parse_expr(&mut fork, inner_bp)` instead of the
+                // plain `Parse::parse`, which would re-enter at `min_bp = 0` and
+                // greedily consume infix operators that should belong to the
+                // outer postfix.
+                let parse_call = if let Some(ibp) = inner_bp
+                    && is_box_of_self(ty, name)
+                {
+                    quote! {
+                        let #ident = ::std::boxed::Box::new(parse_expr(&mut fork, #ibp)?);
+                    }
+                } else {
+                    quote! {
+                        let #ident = <#ty as ::recursa_core::Parse>::parse::<#rules>(&mut fork)?;
+                    }
+                };
+                field_parses.push(quote! {
+                    <#rules as ::recursa_core::ParseRules>::consume_ignored(&mut fork);
+                    #parse_call
+                });
+                field_idents.push(ident);
+            }
+            let all_idents = &field_idents;
+            quote! {
+                {
+                    <#rules as ::recursa_core::ParseRules>::consume_ignored(input);
+                    if <#op_ty as ::recursa_core::Parse>::peek::<#rules>(input) && #bp >= min_bp {
+                        let attempt: ::std::result::Result<_, ::recursa_core::ParseError> = (|| {
+                            let mut fork = input.fork();
+                            #(#field_parses)*
+                            ::std::result::Result::Ok((fork, #(#all_idents),*))
+                        })();
+                        if let ::std::result::Result::Ok((fork, #(#all_idents),*)) = attempt {
+                            input.commit(fork);
+                            lhs = #name::#vname(Box::new(lhs), #(#all_idents),*);
+                            continue;
+                        }
                     }
                 }
             }
-        }
-    });
+        });
 
     let infix_arms = infix_variants
         .iter()

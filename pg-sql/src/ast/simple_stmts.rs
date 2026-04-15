@@ -10,8 +10,8 @@ use recursa::seq::Seq;
 use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
-use crate::ast::expr::Expr;
 use crate::ast::RawStatement;
+use crate::ast::expr::Expr;
 use crate::rules::SqlRules;
 use crate::tokens::{keyword, literal, punct};
 use recursa_diagram::railroad;

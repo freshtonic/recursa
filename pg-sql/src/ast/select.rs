@@ -514,11 +514,7 @@ pub struct HavingClause {
 pub struct WindowDef {
     pub name: literal::Ident,
     pub _as: PhantomData<keyword::As>,
-    pub spec: Surrounded<
-        punct::LParen,
-        crate::ast::expr::InlineWindowSpec,
-        punct::RParen,
-    >,
+    pub spec: Surrounded<punct::LParen, crate::ast::expr::InlineWindowSpec, punct::RParen>,
 }
 
 /// `WINDOW name AS (...)[, name AS (...), ...]` clause in SELECT.
@@ -613,9 +609,8 @@ mod tests {
 
     #[test]
     fn parse_select_paren_join_with_col_aliases() {
-        let mut input = Input::new(
-            "SELECT * FROM (a t1 (x, y) CROSS JOIN b t2 (p, q)) AS tx (a, b, c, d)",
-        );
+        let mut input =
+            Input::new("SELECT * FROM (a t1 (x, y) CROSS JOIN b t2 (p, q)) AS tx (a, b, c, d)");
         let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
@@ -755,9 +750,8 @@ mod tests {
 
     #[test]
     fn parse_select_window_clause() {
-        let mut input = Input::new(
-            "SELECT sum(x) OVER w FROM t WINDOW w AS (PARTITION BY y ORDER BY z)",
-        );
+        let mut input =
+            Input::new("SELECT sum(x) OVER w FROM t WINDOW w AS (PARTITION BY y ORDER BY z)");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.window.is_some());
         assert!(input.is_empty());
@@ -811,17 +805,15 @@ mod tests {
 
     #[test]
     fn parse_select_func_with_ordinality() {
-        let mut input =
-            Input::new("SELECT * FROM rngfunct(1) WITH ORDINALITY AS z(a, b, ord)");
+        let mut input = Input::new("SELECT * FROM rngfunct(1) WITH ORDINALITY AS z(a, b, ord)");
         let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
     #[test]
     fn parse_select_func_column_def_list() {
-        let mut input = Input::new(
-            "SELECT * FROM test_ret_set_rec_dyn(1500) AS (a int, b int, c int)",
-        );
+        let mut input =
+            Input::new("SELECT * FROM test_ret_set_rec_dyn(1500) AS (a int, b int, c int)");
         let _stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
@@ -897,8 +889,7 @@ mod tests {
 
     #[test]
     fn parse_group_by_grouping_sets_simple() {
-        let mut input =
-            Input::new("SELECT sum(c) FROM t GROUP BY GROUPING SETS ((), (a), (a,b))");
+        let mut input = Input::new("SELECT sum(c) FROM t GROUP BY GROUPING SETS ((), (a), (a,b))");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.group_by.is_some());
         assert!(input.is_empty());

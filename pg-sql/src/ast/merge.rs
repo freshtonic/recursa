@@ -242,7 +242,8 @@ mod tests {
 
     #[test]
     fn parse_merge_when_matched_and() {
-        let sql = "MERGE INTO t USING s ON t.a = s.a WHEN MATCHED AND t.a = 2 THEN UPDATE SET b = s.b";
+        let sql =
+            "MERGE INTO t USING s ON t.a = s.a WHEN MATCHED AND t.a = 2 THEN UPDATE SET b = s.b";
         let mut input = Input::new(sql);
         let _stmt = MergeStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
@@ -266,7 +267,8 @@ mod tests {
 
     #[test]
     fn parse_merge_insert_multi_values() {
-        let sql = "MERGE INTO t USING s ON t.a = s.a WHEN NOT MATCHED THEN INSERT VALUES (1,1), (2,2)";
+        let sql =
+            "MERGE INTO t USING s ON t.a = s.a WHEN NOT MATCHED THEN INSERT VALUES (1,1), (2,2)";
         let mut input = Input::new(sql);
         let _stmt = MergeStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());

@@ -186,7 +186,8 @@ pub enum OnAction {
 pub struct ReferencesConstraint {
     pub _references: PhantomData<keyword::References>,
     pub table: literal::AliasName,
-    pub columns: Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+    pub columns:
+        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
     pub match_clause: Option<MatchClause>,
     pub actions: Vec<OnAction>,
     pub deferrable: Option<DeferrableKind>,
@@ -489,8 +490,7 @@ pub struct InheritsClause {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ColumnsBody {
-    pub columns:
-        Surrounded<punct::LParen, Seq<ColumnOrConstraint, punct::Comma>, punct::RParen>,
+    pub columns: Surrounded<punct::LParen, Seq<ColumnOrConstraint, punct::Comma>, punct::RParen>,
     pub inherits: Option<InheritsClause>,
     pub partition_by: Option<PartitionByClause>,
     pub with_storage: Option<crate::ast::create_index::WithStorage>,
@@ -601,9 +601,8 @@ mod tests {
 
     #[test]
     fn parse_create_table_array_column_types() {
-        let mut input = Input::new(
-            "CREATE TABLE t (a int2[], b int4[][][], c varchar(5)[], d text[])",
-        );
+        let mut input =
+            Input::new("CREATE TABLE t (a int2[], b int4[][][], c varchar(5)[], d text[])");
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.items().unwrap().len(), 4);
         assert!(input.is_empty());
@@ -762,8 +761,7 @@ mod tests {
 
     #[test]
     fn parse_create_table_like_mixed_with_columns() {
-        let mut input =
-            Input::new("CREATE TABLE foo (a int, LIKE bar INCLUDING ALL, b text)");
+        let mut input = Input::new("CREATE TABLE foo (a int, LIKE bar INCLUDING ALL, b text)");
         let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
@@ -821,25 +819,22 @@ mod tests {
 
     #[test]
     fn parse_partition_of_range_from_to() {
-        let mut input =
-            Input::new("CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (10)");
+        let mut input = Input::new("CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (10)");
         let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
     #[test]
     fn parse_partition_of_list_in() {
-        let mut input =
-            Input::new("CREATE TABLE p2 PARTITION OF p FOR VALUES IN (1, 2, 3)");
+        let mut input = Input::new("CREATE TABLE p2 PARTITION OF p FOR VALUES IN (1, 2, 3)");
         let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 
     #[test]
     fn parse_partition_of_hash_with_modulus() {
-        let mut input = Input::new(
-            "CREATE TABLE p3 PARTITION OF p FOR VALUES WITH (MODULUS 4, REMAINDER 0)",
-        );
+        let mut input =
+            Input::new("CREATE TABLE p3 PARTITION OF p FOR VALUES WITH (MODULUS 4, REMAINDER 0)");
         let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }

@@ -326,7 +326,10 @@ mod tests {
     fn parse_drop_function_basic() {
         let mut input = Input::new("drop function sillysrf(int)");
         let stmt = DropFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.targets.iter().next().unwrap().name.object(), "sillysrf");
+        assert_eq!(
+            stmt.targets.iter().next().unwrap().name.object(),
+            "sillysrf"
+        );
         assert!(input.is_empty());
     }
 
@@ -355,9 +358,8 @@ mod tests {
 
     #[test]
     fn parse_create_function_returns_trigger() {
-        let mut input = Input::new(
-            "create function f() returns trigger language plpgsql as $$ begin end $$",
-        );
+        let mut input =
+            Input::new("create function f() returns trigger language plpgsql as $$ begin end $$");
         let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
@@ -373,9 +375,8 @@ mod tests {
 
     #[test]
     fn parse_create_function_options_reordered() {
-        let mut input = Input::new(
-            "create function f() returns int language sql strict as 'SELECT 1'",
-        );
+        let mut input =
+            Input::new("create function f() returns int language sql strict as 'SELECT 1'");
         let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
@@ -445,9 +446,8 @@ mod tests {
 
     #[test]
     fn parse_create_function_array_arg() {
-        let mut input = Input::new(
-            "CREATE FUNCTION stfnp(int[]) RETURNS int[] AS 'select $1' LANGUAGE SQL",
-        );
+        let mut input =
+            Input::new("CREATE FUNCTION stfnp(int[]) RETURNS int[] AS 'select $1' LANGUAGE SQL");
         let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
@@ -463,9 +463,8 @@ mod tests {
 
     #[test]
     fn parse_create_function_nested_array() {
-        let mut input = Input::new(
-            "CREATE FUNCTION f(x int[][]) RETURNS int[][] AS 'select x' LANGUAGE SQL",
-        );
+        let mut input =
+            Input::new("CREATE FUNCTION f(x int[][]) RETURNS int[][] AS 'select x' LANGUAGE SQL");
         let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
