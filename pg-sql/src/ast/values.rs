@@ -41,7 +41,7 @@ pub enum SetOp {
 #[parse(rules = SqlRules)]
 pub struct SetOpCombiner<'input> {
     pub op: SetOp,
-    pub right: Box<CompoundQuery<'input>>,
+    pub right: Box<Subquery<'input>>,
 }
 
 /// A compound query: a query body optionally followed by a set operation.
@@ -50,7 +50,7 @@ pub struct SetOpCombiner<'input> {
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum CompoundQuery<'input> {
+pub enum Subquery<'input> {
     Paren(CompoundParen<'input>),
     Table(TableStmt<'input>),
     Body(CompoundBody<'input>),
@@ -62,7 +62,7 @@ pub enum CompoundQuery<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct CompoundParen<'input> {
-    pub inner: Surrounded<punct::LParen, Box<CompoundQuery<'input>>, punct::RParen>,
+    pub inner: Surrounded<punct::LParen, Box<Subquery<'input>>, punct::RParen>,
     pub set_op: Option<SetOpCombiner<'input>>,
 }
 

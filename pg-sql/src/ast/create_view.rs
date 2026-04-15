@@ -8,7 +8,7 @@ use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::common::{DropBehavior, QualifiedName};
 use crate::ast::create_table::TempKw;
-use crate::ast::values::CompoundQuery;
+use crate::ast::values::Subquery;
 use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 use crate::tokens::keyword::*;
@@ -32,7 +32,7 @@ pub struct CreateViewStmt<'input> {
     /// `security_invoker`, `security_barrier`, `check_option`.
     pub with_options: Option<crate::ast::create_index::WithStorage<'input>>,
     pub r#as: AS,
-    pub query: CompoundQuery<'input>,
+    pub query: Subquery<'input>,
     /// Optional `WITH [CASCADED|LOCAL] CHECK OPTION` trailer, used with
     /// updatable views to cascade predicate checks to underlying rows.
     pub check_option: Option<ViewCheckOption>,

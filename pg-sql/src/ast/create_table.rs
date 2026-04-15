@@ -429,9 +429,6 @@ pub struct TableForeignKey<'input> {
     pub references: ReferencesConstraint<'input>,
 }
 
-/// Table-level `CHECK (expr) [NO INHERIT]`.
-pub type TableCheck<'input> = CheckConstraint<'input>;
-
 /// A table-level constraint kind.
 ///
 /// Variant ordering: `PRIMARY KEY` (PRIMARY), `FOREIGN KEY` (FOREIGN),
@@ -444,7 +441,7 @@ pub enum TableConstraintKind<'input> {
     PrimaryKey(TablePrimaryKey<'input>),
     ForeignKey(TableForeignKey<'input>),
     Unique(TableUnique<'input>),
-    Check(TableCheck<'input>),
+    Check(CheckConstraint<'input>),
 }
 
 /// A table-level constraint with optional `CONSTRAINT name` prefix.

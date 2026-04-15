@@ -37,8 +37,12 @@ pub struct OpclassOption<'input> {
 }
 
 /// Parenthesized opclass option list: `(name = value, ...)`.
-pub type OpclassOptions<'input> =
-    Surrounded<punct::LParen, Seq<OpclassOption<'input>, punct::Comma>, punct::RParen>;
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, derive_more::Deref)]
+#[parse(rules = SqlRules)]
+pub struct OpclassOptions<'input>(
+    #[deref] Surrounded<punct::LParen, Seq<OpclassOption<'input>, punct::Comma>, punct::RParen>,
+);
 
 /// Opclass name plus optional options: `int4_ops [(opt = val, ...)]`.
 #[railroad]
@@ -77,8 +81,7 @@ pub struct StorageParamValue<'input> {
 #[parse(rules = SqlRules)]
 pub struct WithStorage<'input> {
     pub with: WITH,
-    pub params:
-        Surrounded<punct::LParen, Seq<StorageParam<'input>, punct::Comma>, punct::RParen>,
+    pub params: Surrounded<punct::LParen, Seq<StorageParam<'input>, punct::Comma>, punct::RParen>,
 }
 
 /// `INCLUDE (col, ...)` covering-index clause.
@@ -156,8 +159,7 @@ pub struct CreateIndexStmt<'input> {
     pub only: Option<ONLY>,
     pub table_name: crate::ast::common::QualifiedName<'input>,
     pub using: Option<Box<UsingMethod<'input>>>,
-    pub columns:
-        Surrounded<punct::LParen, Seq<IndexElem<'input>, punct::Comma>, punct::RParen>,
+    pub columns: Surrounded<punct::LParen, Seq<IndexElem<'input>, punct::Comma>, punct::RParen>,
     pub include: Option<Box<IncludeClause<'input>>>,
     pub nulls_distinct: Option<NullsDistinctClause>,
     pub with_storage: Option<Box<WithStorage<'input>>>,
@@ -202,8 +204,7 @@ mod tests {
 
     #[test]
     fn parse_create_unique_index_nulls_distinct() {
-        let mut input =
-            recursa::Input::new("CREATE UNIQUE INDEX i ON t (i) NULLS NOT DISTINCT");
+        let mut input = recursa::Input::new("CREATE UNIQUE INDEX i ON t (i) NULLS NOT DISTINCT");
         let _stmt = CreateIndexStmt::parse::<crate::rules::SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
         let mut input = recursa::Input::new("CREATE UNIQUE INDEX i ON t (i) NULLS DISTINCT");

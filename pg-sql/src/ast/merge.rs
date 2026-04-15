@@ -63,8 +63,10 @@ pub enum MatchedAction<'input> {
 }
 
 /// A single row of values: `(expr, ...)`.
-pub type ValueRow<'input> =
-    Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>;
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ValueRow<'input>(pub Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>);
 
 /// `VALUES (row), (row), ...` body.
 #[railroad]

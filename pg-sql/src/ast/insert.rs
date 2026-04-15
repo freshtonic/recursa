@@ -15,6 +15,7 @@ use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 
 use crate::tokens::keyword::*;
+
 /// `[AS] alias` on INSERT target table, e.g. `INSERT INTO t AS x`.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -64,7 +65,7 @@ pub struct InsertValueRows<'input> {
 pub enum InsertSource<'input> {
     Default((DEFAULT, VALUES)),
     Rows(InsertValueRows<'input>),
-    Select(Box<crate::ast::values::CompoundQuery<'input>>),
+    Select(Box<crate::ast::values::Subquery<'input>>),
 }
 
 /// DO UPDATE SET ... [WHERE ...] action.
@@ -148,12 +149,20 @@ pub struct InsertStmt<'input> {
 }
 
 /// Column list: `(col1, col2, ...)`.
-pub type ColumnList<'input> =
-    Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>;
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, derive_more::Deref)]
+#[parse(rules = SqlRules)]
+pub struct ColumnList<'input>(
+    #[deref] pub Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
+);
 
 /// Value list: `(col1, col2, ...)`.
-pub type ValueList<'input> =
-    Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>;
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, derive_more::Deref)]
+#[parse(rules = SqlRules)]
+pub struct ValueList<'input>(
+    #[deref] pub Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
+);
 
 #[cfg(test)]
 mod tests {

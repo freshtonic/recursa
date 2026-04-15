@@ -26,25 +26,26 @@ pub struct StringLitSeq<'input> {
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum InContent<'input> {
-    Subquery(Box<crate::ast::values::CompoundQuery<'input>>),
+    Subquery(Box<crate::ast::values::Subquery<'input>>),
     Exprs(Seq<Expr<'input>, punct::Comma>),
 }
 
 /// `IN (expr, ...)` or `IN (subquery)` postfix suffix.
-pub type InList<'input> = Surrounded<punct::LParen, InContent<'input>, punct::RParen>;
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, derive_more::Deref)]
+#[parse(rules = SqlRules)]
+pub struct InList<'input>(#[deref] pub Surrounded<punct::LParen, InContent<'input>, punct::RParen>);
 
 /// Parenthesized precision/scale for type names: `(10,2)` or `(3)`.
-pub type TypePrecision<'input> =
-    Surrounded<punct::LParen, Seq<literal::IntegerLit<'input>, punct::Comma>, punct::RParen>;
-
-/// Array type suffix: `[]`
-#[railroad]
+#[railroad(label = "<Precision>")]
 #[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ArrayTypeSuffix(pub punct::LBracket, pub punct::RBracket);
+pub struct TypePrecision<'input>(
+    Surrounded<punct::LParen, Seq<literal::IntegerLit<'input>, punct::Comma>, punct::RParen>,
+);
 
 /// Type name for casts.
-#[railroad]
+#[railroad(label = "<Type Name>")]
 #[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum TypeName<'input> {
@@ -309,11 +310,8 @@ pub struct NamedFuncArg<'input> {
 pub struct WithinGroupClause<'input> {
     pub within: WITHIN,
     pub group: GROUP,
-    pub order_by: Surrounded<
-        punct::LParen,
-        Box<crate::ast::select::OrderByClause<'input>>,
-        punct::RParen,
-    >,
+    pub order_by:
+        Surrounded<punct::LParen, Box<crate::ast::select::OrderByClause<'input>>, punct::RParen>,
 }
 
 /// `FILTER (WHERE condition)` clause for filtered aggregates.
@@ -322,11 +320,8 @@ pub struct WithinGroupClause<'input> {
 #[parse(rules = SqlRules)]
 pub struct FilterClause<'input> {
     pub filter: FILTER,
-    pub body: Surrounded<
-        punct::LParen,
-        Box<crate::ast::select::WhereClause<'input>>,
-        punct::RParen,
-    >,
+    pub body:
+        Surrounded<punct::LParen, Box<crate::ast::select::WhereClause<'input>>, punct::RParen>,
 }
 
 /// Function call: `name([*] [DISTINCT] args [ORDER BY ...]) [WITHIN GROUP (...)] [FILTER (...)] [OVER (...)]`
@@ -347,18 +342,23 @@ pub struct FuncCall<'input> {
 }
 
 /// Content inside parentheses: either a subquery or a comma-separated expression list.
-/// Subquery (CompoundQuery) must come first so SELECT/VALUES/WITH keywords are matched
+/// Subquery (Subquery) must come first so SELECT/VALUES/WITH keywords are matched
 /// before trying to parse as a regular expression.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub enum ParenContent<'input> {
-    Subquery(Box<crate::ast::values::CompoundQuery<'input>>),
+    Subquery(Box<crate::ast::values::Subquery<'input>>),
     Exprs(Seq<Expr<'input>, punct::Comma>),
 }
 
 /// Parenthesized expression: `(expr)`, `(expr, expr, ...)`, or `(SELECT/VALUES ...)`
-pub type ParenExpr<'input> = Surrounded<punct::LParen, ParenContent<'input>, punct::RParen>;
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, derive_more::Deref)]
+#[parse(rules = SqlRules)]
+pub struct ParenExpr<'input>(
+    #[deref] pub Surrounded<punct::LParen, ParenContent<'input>, punct::RParen>,
+);
 
 /// EXISTS subquery: `EXISTS (SELECT ...)`
 #[railroad]
@@ -366,11 +366,8 @@ pub type ParenExpr<'input> = Surrounded<punct::LParen, ParenContent<'input>, pun
 #[parse(rules = SqlRules)]
 pub struct ExistsExpr<'input> {
     pub exists: EXISTS,
-    pub subquery: Surrounded<
-        punct::LParen,
-        Box<crate::ast::values::CompoundQuery<'input>>,
-        punct::RParen,
-    >,
+    pub subquery:
+        Surrounded<punct::LParen, Box<crate::ast::values::Subquery<'input>>, punct::RParen>,
 }
 
 /// ARRAY bracket constructor: `ARRAY[expr, ...]`
@@ -390,11 +387,8 @@ pub struct ArrayBracket<'input> {
 #[parse(rules = SqlRules)]
 pub struct ArraySubquery<'input> {
     pub array: ARRAY,
-    pub subquery: Surrounded<
-        punct::LParen,
-        Box<crate::ast::values::CompoundQuery<'input>>,
-        punct::RParen,
-    >,
+    pub subquery:
+        Surrounded<punct::LParen, Box<crate::ast::values::Subquery<'input>>, punct::RParen>,
 }
 
 /// ARRAY constructor: `ARRAY[expr, ...]` or `ARRAY(subquery)`
@@ -487,7 +481,10 @@ pub struct CastType<'input> {
     /// `WITH/WITHOUT TIME ZONE` qualifier on `TIME`/`TIMESTAMP` types.
     /// Always follows the precision parens.
     pub tz: Option<TimeZoneQualifier>,
-    pub array_suffixes: Vec<ArrayTypeSuffix>,
+    // TODO: implement a Count combinator in recursa:
+    // e.g.
+    // struct Count<T> { count: usize }
+    pub array_suffixes: Vec<(punct::LBracket, punct::RBracket)>,
 }
 
 /// NOT IN list: `expr NOT IN (val, ...)` suffix.
@@ -1021,13 +1018,7 @@ pub enum Expr<'input> {
     ),
     /// `expr IS DISTINCT FROM expr`.
     #[parse(postfix, bp = 5, inner_bp = 6)]
-    IsDistinctFrom(
-        Box<Expr<'input>>,
-        IS,
-        DISTINCT,
-        FROM,
-        Box<Expr<'input>>,
-    ),
+    IsDistinctFrom(Box<Expr<'input>>, (IS, DISTINCT, FROM), Box<Expr<'input>>),
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
     BoolTest(Box<Expr<'input>>, IS, BoolTestKind),
@@ -1044,39 +1035,18 @@ pub enum Expr<'input> {
     /// `NOT ILIKE` is tried first (matters only if any rule shares a prefix;
     /// here `NOT ILIKE` vs `NOT LIKE` differ on the second token).
     #[parse(postfix, bp = 5, inner_bp = 6)]
-    NotIlike(
-        Box<Expr<'input>>,
-        NOT,
-        ILIKE,
-        Box<Expr<'input>>,
-    ),
+    NotIlike(Box<Expr<'input>>, NOT, ILIKE, Box<Expr<'input>>),
     /// `expr NOT SIMILAR TO pattern`. Declared before `NotLike` so the longer
     /// `NOT SIMILAR TO` form wins longest-match-wins disambiguation.
     #[parse(postfix, bp = 5, inner_bp = 6)]
-    NotSimilarTo(
-        Box<Expr<'input>>,
-        NOT,
-        SIMILAR,
-        TO,
-        Box<Expr<'input>>,
-    ),
+    NotSimilarTo(Box<Expr<'input>>, NOT, SIMILAR, TO, Box<Expr<'input>>),
     /// `expr NOT LIKE pattern`. Must come before the `Not` prefix atom so
     /// longest-match-wins prefers the postfix form.
     #[parse(postfix, bp = 5, inner_bp = 6)]
-    NotLike(
-        Box<Expr<'input>>,
-        NOT,
-        LIKE,
-        Box<Expr<'input>>,
-    ),
+    NotLike(Box<Expr<'input>>, NOT, LIKE, Box<Expr<'input>>),
     /// `expr SIMILAR TO pattern` — SQL standard similar-to pattern match.
     #[parse(postfix, bp = 5, inner_bp = 6)]
-    SimilarTo(
-        Box<Expr<'input>>,
-        SIMILAR,
-        TO,
-        Box<Expr<'input>>,
-    ),
+    SimilarTo(Box<Expr<'input>>, SIMILAR, TO, Box<Expr<'input>>),
     /// `expr ILIKE pattern`
     #[parse(infix, bp = 5)]
     Ilike(Box<Expr<'input>>, ILIKE, Box<Expr<'input>>),

@@ -110,7 +110,7 @@ pub enum TableAlias<'input> {
 #[parse(rules = SqlRules)]
 pub struct SubqueryRef<'input> {
     pub lparen: punct::LParen,
-    pub query: Box<crate::ast::values::CompoundQuery<'input>>,
+    pub query: Box<crate::ast::values::Subquery<'input>>,
     pub rparen: punct::RParen,
     pub alias: Option<TableAlias<'input>>,
 }
@@ -137,7 +137,7 @@ pub struct ParenJoinRef<'input> {
 pub struct LateralRef<'input> {
     pub lateral: LATERAL,
     pub lparen: punct::LParen,
-    pub query: Box<crate::ast::values::CompoundQuery<'input>>,
+    pub query: Box<crate::ast::values::Subquery<'input>>,
     pub rparen: punct::RParen,
     pub alias: Option<literal::AliasName<'input>>,
 }

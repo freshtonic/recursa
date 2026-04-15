@@ -43,7 +43,7 @@ use self::{
     set_reset::{ResetStmt, SetRoleStmt, SetSessionAuthStmt, SetStmt, SetTimeZoneStmt, ShowStmt},
     simple_stmts::*,
     update::UpdateStmt,
-    values::{CompoundQuery, TableStmt},
+    values::{Subquery, TableStmt},
     with_clause::WithStatement,
 };
 
@@ -229,7 +229,7 @@ pub enum Statement<'input> {
     Show(ShowStmt<'input>),
     Analyze(AnalyzeStmt<'input>),
     // Query
-    Values(Box<CompoundQuery<'input>>),
+    Values(Box<Subquery<'input>>),
     Select(Box<SelectStmt<'input>>),
     Table(TableStmt<'input>),
     /// Catch-all: consumes tokens until the next semicolon.
@@ -624,7 +624,7 @@ mod tests {
             ("DeleteStmt", size_of::<crate::ast::delete::DeleteStmt<'_>>()),
             ("MergeStmt", size_of::<crate::ast::merge::MergeStmt<'_>>()),
             ("ExplainStmt", size_of::<crate::ast::explain::ExplainStmt<'_>>()),
-            ("CompoundQuery", size_of::<crate::ast::values::CompoundQuery<'_>>()),
+            ("CompoundQuery", size_of::<crate::ast::values::Subquery<'_>>()),
             ("WithStatement", size_of::<crate::ast::with_clause::WithStatement<'_>>()),
             ("FuncCall", size_of::<crate::ast::expr::FuncCall<'_>>()),
             ("ColumnDef", size_of::<crate::ast::create_table::ColumnDef<'_>>()),
@@ -683,7 +683,7 @@ mod tests {
             ("PrepareStmt", size_of::<simple_stmts::PrepareStmt<'_>>()),
             ("TableRef", size_of::<crate::ast::select::TableRef<'_>>()),
             ("SimpleTableRef", size_of::<crate::ast::select::SimpleTableRef<'_>>()),
-            ("CompoundQuery (if any)", size_of::<crate::ast::values::CompoundQuery<'_>>()),
+            ("CompoundQuery (if any)", size_of::<crate::ast::values::Subquery<'_>>()),
         ];
         sizes.sort_by(|a, b| b.1.cmp(&a.1));
         eprintln!("\n=== AST sizes (bytes) ===");

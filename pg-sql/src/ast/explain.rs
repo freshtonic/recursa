@@ -4,8 +4,8 @@ use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::rules::SqlRules;
-use crate::tokens::{literal, punct};
 use crate::tokens::keyword::*;
+use crate::tokens::{literal, punct};
 use recursa_diagram::railroad;
 
 /// An explain option value: ON, OFF, or identifier.
@@ -28,8 +28,12 @@ pub struct ExplainOption<'input> {
 }
 
 /// Explain options: `(opt, ...)`.
-pub type ExplainOptions<'input> =
-    Surrounded<punct::LParen, Seq<ExplainOption<'input>, punct::Comma>, punct::RParen>;
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit, derive_more::Deref)]
+#[parse(rules = SqlRules)]
+pub struct ExplainOptions<'input>(
+    #[deref] pub Surrounded<punct::LParen, Seq<ExplainOption<'input>, punct::Comma>, punct::RParen>,
+);
 
 /// EXPLAIN statement: `EXPLAIN [(options)] statement`.
 #[railroad]

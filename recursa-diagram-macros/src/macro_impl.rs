@@ -34,40 +34,9 @@ const DEFAULT_MAX_WIDTH: u32 = 1200;
 
 pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
     let attrs = parse_type_attrs(attr)?;
-
-    // `#[railroad]` accepts both struct/enum definitions (parsed as
-    // `DeriveInput`) and type aliases (parsed as `ItemType`). Type aliases
-    // expose only their RHS `Type`, which we can feed directly into
-    // `recognize` because it already knows how to handle the generic
-    // wrappers (`Surrounded`, `Seq`, ...) typically found on aliases.
-    //
-    // Try the richer `DeriveInput` path first so its better diagnostics
-    // surface for malformed structs/enums; only fall back to `ItemType`
-    // when the input clearly is not a struct/enum.
-    let (node, body) = match parse2::<DeriveInput>(item.clone()) {
-        Ok(input) => {
-            let node = build_node(&input, &attrs)?;
-            let body = strip_body(&input);
-            (node, body)
-        }
-        Err(derive_err) => match parse2::<syn::ItemType>(item) {
-            Ok(alias) => {
-                if let Some(label) = &attrs.label {
-                    let node = Node::Terminal(Terminal::new(label));
-                    let body = quote! { #alias };
-                    (node, body)
-                } else {
-                    let cx = Ctx {
-                        crate_path: attrs.crate_path.as_deref(),
-                    };
-                    let node = recognize(&alias.ty, cx);
-                    let body = quote! { #alias };
-                    (node, body)
-                }
-            }
-            Err(_) => return Err(derive_err),
-        },
-    };
+    let input: DeriveInput = parse2(item)?;
+    let node = build_node(&input, &attrs)?;
+    let body = strip_body(&input);
 
     let svg = render(&node);
     // Rustdoc parses doc attributes as CommonMark. A raw `<svg>` is recognized
@@ -630,44 +599,6 @@ mod tests {
             },
             other => panic!("expected Sequence, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn type_alias_renders_via_rhs_recognition() {
-        // `pub type Foo = Surrounded<LParen, X, RParen>` — the macro should
-        // accept it (alongside structs/enums) and render the RHS.
-        let item: TokenStream = quote! {
-            pub type ExplainOptions = Surrounded<punct::LParen, Foo, punct::RParen>;
-        };
-        let out = expand(quote! {}, item).unwrap().to_string();
-        // The original alias must survive in the output (so callers can
-        // still use the type) and the doc attribute must be present.
-        assert!(
-            out.contains("pub type ExplainOptions"),
-            "alias missing: {out}"
-        );
-        assert!(out.contains("# [doc ="), "doc attr missing: {out}");
-        // The literal `(` and `)` glyphs from punct::LParen/RParen should
-        // appear in the embedded SVG via Token nodes (rendered with the
-        // `terminal token` CSS class).
-        assert!(
-            out.contains("terminal token"),
-            "expected token class: {out}"
-        );
-        assert!(out.contains("(</text>"), "expected `(` glyph in svg: {out}");
-        assert!(out.contains(")</text>"), "expected `)` glyph in svg: {out}");
-    }
-
-    #[test]
-    fn type_alias_with_label_renders_terminal() {
-        let item: TokenStream = quote! {
-            #[railroad(label = "EXPLAIN OPTIONS")]
-            pub type ExplainOptions = Surrounded<punct::LParen, Foo, punct::RParen>;
-        };
-        let out = expand(quote! { label = "EXPLAIN OPTIONS" }, item)
-            .unwrap()
-            .to_string();
-        assert!(out.contains("EXPLAIN OPTIONS"), "label missing: {out}");
     }
 
     #[test]
