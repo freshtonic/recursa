@@ -33,11 +33,11 @@ pub enum DropBehavior {
 /// DROP targets, ALTER targets, etc.).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct QualifiedName {
-    pub parts: Seq<literal::Ident, punct::Dot>,
+pub struct QualifiedName<'input> {
+    pub parts: Seq<literal::Ident<'input>, punct::Dot>,
 }
 
-impl QualifiedName {
+impl<'input> QualifiedName<'input> {
     /// Returns the final (object) name part.
     pub fn object(&self) -> &str {
         self.parts
