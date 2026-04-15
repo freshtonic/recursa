@@ -79,7 +79,7 @@ pub struct SetDefaultKw<'input> {
     >,
 }
 
-/// `ON DELETE <action>`.
+/// `ON DELETE action`.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
@@ -89,7 +89,7 @@ pub struct OnDeleteAction<'input> {
     pub action: ReferentialAction<'input>,
 }
 
-/// `ON UPDATE <action>`.
+/// `ON UPDATE action`.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
@@ -148,7 +148,7 @@ pub enum InitiallyMode {
 
 /// `ON DELETE ...` or `ON UPDATE ...` trailing action on a REFERENCES
 /// constraint. Modeled as an enum so both orders of the two clauses
-/// are accepted via a `Vec<OnAction>`.
+/// are accepted via a [`Vec`]`<`[`OnAction`]`>`.
 ///
 /// Variant ordering: both start with `ON`; they diverge at the next keyword.
 #[railroad]

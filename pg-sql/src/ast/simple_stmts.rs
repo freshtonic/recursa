@@ -30,7 +30,7 @@ pub enum IsolationLevelKind {
     Serializable(SERIALIZABLE),
 }
 
-/// `ISOLATION LEVEL <level>` transaction mode.
+/// `ISOLATION LEVEL level` transaction mode.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
