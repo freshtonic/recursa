@@ -621,6 +621,7 @@ pub struct SelectIntoClause<'input> {
     pub unlogged: Option<UNLOGGED>,
     pub table: Option<TABLE>,
     pub target: crate::ast::common::QualifiedName<'input>,
+    pub using: Option<crate::ast::create_table::UsingAccessMethodClause<'input>>,
 }
 
 /// `DISTINCT` or `DISTINCT ON (exprs)` qualifier on a SELECT.
@@ -656,8 +657,12 @@ pub struct SelectDistinctOn<'input> {
 pub struct SelectStmt<'input> {
     pub select: SELECT,
     pub distinct: Option<Box<SelectDistinct<'input>>>,
+    /// SELECT item list. Wrapped in `Option` (with `NonEmpty` Seq inside) so
+    /// the parser fork-and-tries the items via `Option::parse`. This both
+    /// allows the empty form `SELECT FROM tbl` (a regression-test case) and
+    /// avoids over-eager peeks in `Expr` consuming the next clause keyword.
     #[format_tokens(group(consistent), indent, break(flat = " ", broken = "\n"))]
-    pub items: Seq<SelectItem<'input>, punct::Comma>,
+    pub items: Option<Box<Seq<SelectItem<'input>, punct::Comma, NoTrailing, NonEmpty>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub into: Option<Box<SelectIntoClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
@@ -678,6 +683,19 @@ pub struct SelectStmt<'input> {
     pub offset: Option<Box<OffsetClause<'input>>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub for_update: Option<Box<ForUpdateClause>>,
+}
+
+impl<'input> SelectStmt<'input> {
+    /// Number of items in the SELECT list (zero if the list is empty,
+    /// e.g. the regression-test form `SELECT FROM tbl`).
+    pub fn item_count(&self) -> usize {
+        self.items.as_deref().map_or(0, |s| s.len())
+    }
+
+    /// Iterate over the SELECT items.
+    pub fn items(&self) -> impl Iterator<Item = &SelectItem<'input>> {
+        self.items.as_deref().into_iter().flat_map(|s| s.iter())
+    }
 }
 
 /// A SELECT body that can appear in subqueries -- WITH, SELECT, or VALUES.
@@ -716,7 +734,16 @@ mod tests {
     fn parse_simple_select() {
         let mut input = Input::new("SELECT 1 AS one");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.items.len(), 1);
+        assert_eq!(stmt.item_count(), 1);
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_empty_items() {
+        let mut input = Input::new("SELECT FROM emp");
+        let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert_eq!(stmt.item_count(), 0);
+        assert!(stmt.from_clause.is_some());
         assert!(input.is_empty());
     }
 
@@ -746,7 +773,7 @@ mod tests {
     fn parse_select_from_where() {
         let mut input = Input::new("SELECT f1 FROM BOOLTBL1 WHERE f1 = true");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.items.len(), 1);
+        assert_eq!(stmt.item_count(), 1);
         assert!(stmt.from_clause.is_some());
         assert!(stmt.where_clause.is_some());
     }
@@ -755,14 +782,15 @@ mod tests {
     fn parse_select_star() {
         let mut input = Input::new("SELECT * FROM t");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.items.len(), 1);
+        assert_eq!(stmt.item_count(), 1);
     }
 
     #[test]
     fn parse_select_with_alias_keyword() {
         let mut input = Input::new("SELECT 1 AS true");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
-        let alias = stmt.items[0].alias.as_ref().unwrap();
+        let first = stmt.items().next().unwrap();
+        let alias = first.alias.as_ref().unwrap();
         assert_eq!(alias.name(), "true");
     }
 

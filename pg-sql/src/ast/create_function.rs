@@ -281,6 +281,17 @@ pub enum FuncOption<'input> {
     /// `TRANSFORM FOR TYPE typ [, ...]`.
     Transform(TransformOption<'input>),
     As(AsOption<'input>),
+    /// `RETURN expr` — SQL-standard single-expression function body.
+    Return(ReturnOption<'input>),
+}
+
+/// `RETURN expr` option on CREATE FUNCTION (SQL-standard body form).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ReturnOption<'input> {
+    pub r#return: RETURN,
+    pub expr: Expr<'input>,
 }
 
 #[railroad]
@@ -417,6 +428,13 @@ mod tests {
 
     use crate::ast::create_function::{CreateFunctionStmt, DropFunctionStmt};
     use crate::rules::SqlRules;
+
+    #[test]
+    fn parse_create_function_return_body() {
+        let mut input = Input::new("CREATE FUNCTION f() RETURNS boolean RETURN false");
+        let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
 
     #[test]
     fn parse_create_function_basic() {

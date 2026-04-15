@@ -329,7 +329,16 @@ pub mod keyword {
         DEFAULTS  => r"DEFAULTS\b",
         INDEXES   => r"INDEXES\b",
         STORAGE   => r"STORAGE\b",
-        COMMENTS  => r"COMMENTS\b",  // CHECK / FK constraint suffix
+        COMMENTS  => r"COMMENTS\b",
+        COMPRESSION => r"COMPRESSION\b",
+        RETURN      => r"RETURN\b",  // SQL-standard function body
+        OIDS        => r"OIDS\b",  // CREATE TABLE legacy WITH OIDS / WITHOUT OIDS
+        OPTIONS     => r"OPTIONS\b",  // partition column `WITH OPTIONS`
+        OVERRIDING  => r"OVERRIDING\b",  // INSERT OVERRIDING {SYSTEM|USER} VALUE
+        SYSTEM      => r"SYSTEM\b",
+        VALUE       => r"VALUE\b",
+        CASCADED    => r"CASCADED\b",  // CREATE VIEW WITH [CASCADED|LOCAL] CHECK OPTION
+        OPTION      => r"OPTION\b",  // CHECK / FK constraint suffix
         VALID     => r"VALID\b",  // VACUUM / REINDEX option values
         PARALLEL  => r"PARALLEL\b",  // ALTER ... RENAME TO
         RENAME    => r"RENAME\b",  // CREATE/ALTER/DROP LANGUAGE option keywords

@@ -697,6 +697,10 @@ macro_rules! create_drop_stmts {
             #[parse(rules = SqlRules)]
             pub struct $create_name<'input> {
                 pub _create: CREATE,
+                /// Optional `OR REPLACE`. Postgres accepts it on aggregate,
+                /// function, procedure, rule, view, etc.; we tolerate it
+                /// uniformly in these raw-tailed stubs.
+                pub or_replace: Option<(OR, REPLACE)>,
                 /// Optional temporary modifier: `TEMP` or `TEMPORARY`. Postgres
                 /// accepts it on sequence/view/table/etc. so we tolerate it
                 /// uniformly in these raw-tailed stubs.

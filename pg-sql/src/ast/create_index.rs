@@ -154,13 +154,14 @@ pub struct CreateIndexStmt<'input> {
     /// Optional `ONLY` modifier — restricts the index to the named table
     /// without descending into inheritance children (partitioned tables).
     pub only: Option<ONLY>,
-    pub table_name: literal::Ident<'input>,
+    pub table_name: crate::ast::common::QualifiedName<'input>,
     pub using: Option<Box<UsingMethod<'input>>>,
     pub columns:
         Surrounded<punct::LParen, Seq<IndexElem<'input>, punct::Comma>, punct::RParen>,
     pub include: Option<Box<IncludeClause<'input>>>,
     pub nulls_distinct: Option<NullsDistinctClause>,
     pub with_storage: Option<Box<WithStorage<'input>>>,
+    pub tablespace: Option<crate::ast::create_table::TablespaceClause<'input>>,
     pub where_clause: Option<Box<WhereClause<'input>>>,
 }
 
@@ -216,7 +217,7 @@ mod tests {
         let mut input = Input::new("CREATE INDEX fooi ON foo (f1)");
         let stmt = CreateIndexStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.as_ref().unwrap().text(), "fooi");
-        assert_eq!(stmt.table_name.text(), "foo");
+        assert_eq!(stmt.table_name.object(), "foo");
         assert!(input.is_empty());
     }
 
