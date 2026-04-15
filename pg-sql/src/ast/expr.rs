@@ -16,24 +16,24 @@ use crate::tokens::{keyword, literal, punct};
 /// single value: `'first' ' - next' 'third'`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct StringLitSeq {
-    pub parts: Seq<literal::StringLit, (), OptionalTrailing, NonEmpty>,
+pub struct StringLitSeq<'input> {
+    pub parts: Seq<literal::StringLit<'input>, (), OptionalTrailing, NonEmpty>,
 }
 
 /// Content inside IN parentheses: either a subquery or expression list.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum InContent {
+pub enum InContent<'input> {
     Subquery(Box<crate::ast::values::CompoundQuery>),
-    Exprs(Seq<Expr, punct::Comma>),
+    Exprs(Seq<Expr<'input>, punct::Comma>),
 }
 
 /// `IN (expr, ...)` or `IN (subquery)` postfix suffix.
-pub type InList = Surrounded<punct::LParen, InContent, punct::RParen>;
+pub type InList<'input> = Surrounded<punct::LParen, InContent<'input>, punct::RParen>;
 
 /// Parenthesized precision/scale for type names: `(10,2)` or `(3)`.
-pub type TypePrecision =
-    Surrounded<punct::LParen, Seq<literal::IntegerLit, punct::Comma>, punct::RParen>;
+pub type TypePrecision<'input> =
+    Surrounded<punct::LParen, Seq<literal::IntegerLit<'input>, punct::Comma>, punct::RParen>;
 
 /// Array type suffix: `[]`
 #[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
@@ -43,7 +43,7 @@ pub struct ArrayTypeSuffix(pub punct::LBracket, pub punct::RBracket);
 /// Type name for casts.
 #[derive(Debug, Clone, FormatTokens, PartialEq, Eq, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum TypeName {
+pub enum TypeName<'input> {
     Bool(keyword::Bool),
     Boolean(keyword::Boolean),
     Text(keyword::Text),
@@ -52,7 +52,7 @@ pub enum TypeName {
     Serial(keyword::Serial),
     Numeric(keyword::Numeric),
     Varchar(keyword::Varchar),
-    Ident(literal::Ident),
+    Ident(literal::Ident<'input>),
 }
 
 // --- Boolean test suffix structs ---
@@ -115,17 +115,17 @@ pub enum BoolTestKind {
 /// Uses AliasName for the table part to allow keywords like EXCLUDED, NEW, OLD.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct QualifiedRef {
-    pub table: literal::AliasName,
+pub struct QualifiedRef<'input> {
+    pub table: literal::AliasName<'input>,
     pub dot: punct::Dot,
-    pub column: literal::AliasName,
+    pub column: literal::AliasName<'input>,
 }
 
 /// Qualified wildcard: `table.*`
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct QualifiedWildcard {
-    pub table: literal::AliasName,
+pub struct QualifiedWildcard<'input> {
+    pub table: literal::AliasName<'input>,
     pub dot: punct::Dot,
     pub star: punct::Star,
 }
@@ -138,9 +138,9 @@ pub struct DistinctKw(pub keyword::Distinct);
 /// Window specification: `OVER window_name` or `OVER (inline_spec)`.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct WindowSpec {
+pub struct WindowSpec<'input> {
     pub _over: keyword::Over,
-    pub body: WindowSpecBody,
+    pub body: WindowSpecBody<'input>,
 }
 
 /// Body of an OVER clause.
@@ -150,9 +150,9 @@ pub struct WindowSpec {
 /// trivial.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub enum WindowSpecBody {
-    Inline(Surrounded<punct::LParen, InlineWindowSpec, punct::RParen>),
-    Named(literal::Ident),
+pub enum WindowSpecBody<'input> {
+    Inline(Surrounded<punct::LParen, InlineWindowSpec<'input>, punct::RParen>),
+    Named(literal::Ident<'input>),
 }
 
 /// Interior of an inline window spec (between the parens).
@@ -163,20 +163,20 @@ pub enum WindowSpecBody {
 /// because keywords are rejected by `literal::Ident`.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct InlineWindowSpec {
-    pub ref_name: Option<literal::Ident>,
-    pub partition_by: Option<WindowPartitionBy>,
+pub struct InlineWindowSpec<'input> {
+    pub ref_name: Option<literal::Ident<'input>>,
+    pub partition_by: Option<WindowPartitionBy<'input>>,
     pub order_by: Option<crate::ast::select::OrderByClause>,
-    pub frame: Option<WindowFrameClause>,
+    pub frame: Option<WindowFrameClause<'input>>,
 }
 
 /// PARTITION BY in window: `PARTITION BY expr, ...`
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct WindowPartitionBy {
+pub struct WindowPartitionBy<'input> {
     pub _partition: keyword::Partition,
     pub _by: keyword::By,
-    pub exprs: Seq<Expr, punct::Comma>,
+    pub exprs: Seq<Expr<'input>, punct::Comma>,
 }
 
 /// Frame unit: `ROWS | RANGE | GROUPS`.
@@ -195,29 +195,29 @@ pub enum WindowFrameUnit {
 /// (starts with `unit <bound>`). Longest-match-wins.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub enum WindowFrameClause {
-    Between(WindowFrameBetween),
-    Single(WindowFrameSingle),
+pub enum WindowFrameClause<'input> {
+    Between(WindowFrameBetween<'input>),
+    Single(WindowFrameSingle<'input>),
 }
 
 /// `unit BETWEEN start AND end [EXCLUDE ...]`
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct WindowFrameBetween {
+pub struct WindowFrameBetween<'input> {
     pub unit: WindowFrameUnit,
     pub _between: keyword::Between,
-    pub start: WindowFrameBound,
+    pub start: WindowFrameBound<'input>,
     pub _and: keyword::And,
-    pub end: WindowFrameBound,
+    pub end: WindowFrameBound<'input>,
     pub exclude: Option<WindowFrameExclude>,
 }
 
 /// `unit start [EXCLUDE ...]`
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct WindowFrameSingle {
+pub struct WindowFrameSingle<'input> {
     pub unit: WindowFrameUnit,
-    pub bound: WindowFrameBound,
+    pub bound: WindowFrameBound<'input>,
     pub exclude: Option<WindowFrameExclude>,
 }
 
@@ -229,12 +229,12 @@ pub struct WindowFrameSingle {
 /// expression and can't be confused with keyword-prefixed forms.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub enum WindowFrameBound {
+pub enum WindowFrameBound<'input> {
     UnboundedPreceding(UnboundedPreceding),
     UnboundedFollowing(UnboundedFollowing),
     CurrentRow(CurrentRow),
-    ExprPreceding(ExprPreceding),
-    ExprFollowing(ExprFollowing),
+    ExprPreceding(ExprPreceding<'input>),
+    ExprFollowing(ExprFollowing<'input>),
 }
 
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
@@ -260,15 +260,15 @@ pub struct CurrentRow {
 
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct ExprPreceding {
-    pub expr: Box<Expr>,
+pub struct ExprPreceding<'input> {
+    pub expr: Box<Expr<'input>>,
     pub _preceding: keyword::Preceding,
 }
 
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct ExprFollowing {
-    pub expr: Box<Expr>,
+pub struct ExprFollowing<'input> {
+    pub expr: Box<Expr<'input>>,
     pub _following: keyword::Following,
 }
 
@@ -309,16 +309,16 @@ pub struct NoOthers {
 /// longer than starting an expression.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum FuncArg {
-    Variadic(VariadicArg),
-    Plain(Box<Expr>),
+pub enum FuncArg<'input> {
+    Variadic(VariadicArg<'input>),
+    Plain(Box<Expr<'input>>),
 }
 
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct VariadicArg {
+pub struct VariadicArg<'input> {
     pub _variadic: keyword::Variadic,
-    pub value: Box<Expr>,
+    pub value: Box<Expr<'input>>,
 }
 
 /// `WITHIN GROUP (ORDER BY ...)` clause for ordered-set aggregate functions.
@@ -342,17 +342,17 @@ pub struct FilterClause {
 /// Function call: `name([*] [DISTINCT] args [ORDER BY ...]) [WITHIN GROUP (...)] [FILTER (...)] [OVER (...)]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct FuncCall {
-    pub name: literal::AliasName,
+pub struct FuncCall<'input> {
+    pub name: literal::AliasName<'input>,
     pub lparen: punct::LParen,
     pub star_arg: Option<punct::Star>,
     pub distinct: Option<DistinctKw>,
-    pub args: Seq<FuncArg, punct::Comma>,
+    pub args: Seq<FuncArg<'input>, punct::Comma>,
     pub order_by: Option<Box<crate::ast::select::OrderByClause>>,
     pub rparen: punct::RParen,
     pub within_group: Option<WithinGroupClause>,
     pub filter: Option<FilterClause>,
-    pub window: Option<WindowSpec>,
+    pub window: Option<WindowSpec<'input>>,
 }
 
 /// Content inside parentheses: either a subquery or a comma-separated expression list.
@@ -360,13 +360,13 @@ pub struct FuncCall {
 /// before trying to parse as a regular expression.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum ParenContent {
+pub enum ParenContent<'input> {
     Subquery(Box<crate::ast::values::CompoundQuery>),
-    Exprs(Seq<Expr, punct::Comma>),
+    Exprs(Seq<Expr<'input>, punct::Comma>),
 }
 
 /// Parenthesized expression: `(expr)`, `(expr, expr, ...)`, or `(SELECT/VALUES ...)`
-pub type ParenExpr = Surrounded<punct::LParen, ParenContent, punct::RParen>;
+pub type ParenExpr<'input> = Surrounded<punct::LParen, ParenContent<'input>, punct::RParen>;
 
 /// EXISTS subquery: `EXISTS (SELECT ...)`
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
@@ -379,10 +379,10 @@ pub struct ExistsExpr {
 /// ARRAY bracket constructor: `ARRAY[expr, ...]`
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct ArrayBracket {
+pub struct ArrayBracket<'input> {
     pub _array: PhantomData<keyword::Array>,
     pub lbracket: punct::LBracket,
-    pub elements: Seq<Expr, punct::Comma>,
+    pub elements: Seq<Expr<'input>, punct::Comma>,
     pub rbracket: punct::RBracket,
 }
 
@@ -400,44 +400,44 @@ pub struct ArraySubquery {
 /// Subquery (`ARRAY(`) because `[` is a different token than `(`.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub enum ArrayExpr {
-    Bracket(ArrayBracket),
+pub enum ArrayExpr<'input> {
+    Bracket(ArrayBracket<'input>),
     Subquery(ArraySubquery),
 }
 
 /// ROW constructor: `ROW(expr, ...)`
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct RowExpr {
+pub struct RowExpr<'input> {
     pub _row: keyword::Row,
-    pub values: Surrounded<punct::LParen, Seq<Expr, punct::Comma>, punct::RParen>,
+    pub values: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
 }
 
 /// Cast type with optional precision and zero-or-more array suffixes:
 /// `numeric(10,0)`, `integer[]`, `int4[][][]`.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct CastType {
-    pub base: TypeName,
-    pub precision: Option<TypePrecision>,
+pub struct CastType<'input> {
+    pub base: TypeName<'input>,
+    pub precision: Option<TypePrecision<'input>>,
     pub array_suffixes: Vec<ArrayTypeSuffix>,
 }
 
 /// NOT IN list: `expr NOT IN (val, ...)` suffix.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct NotInSuffix {
+pub struct NotInSuffix<'input> {
     pub _not: keyword::Not,
     pub _in: keyword::In,
-    pub list: InList,
+    pub list: InList<'input>,
 }
 
 /// Function-style type cast: `bool 'value'`, `text 'hello'`
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct TypeCastFunc {
-    pub type_name: TypeName,
-    pub value: literal::StringLit,
+pub struct TypeCastFunc<'input> {
+    pub type_name: TypeName<'input>,
+    pub value: literal::StringLit<'input>,
 }
 
 /// `WITH TIME ZONE` or `WITHOUT TIME ZONE` suffix for `TIMESTAMP`/`TIME`.
@@ -467,19 +467,19 @@ pub struct WithoutTimeZone {
 /// `TIMESTAMP [WITH|WITHOUT TIME ZONE] 'string'`.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct TimestampLit {
+pub struct TimestampLit<'input> {
     pub _timestamp: keyword::Timestamp,
     pub tz: Option<TimeZoneQualifier>,
-    pub value: literal::StringLit,
+    pub value: literal::StringLit<'input>,
 }
 
 /// `TIME [WITH|WITHOUT TIME ZONE] 'string'`.
 #[derive(FormatTokens, Parse, Visit, Debug, Clone)]
 #[parse(rules = SqlRules)]
-pub struct TimeLit {
+pub struct TimeLit<'input> {
     pub _time: keyword::Time,
     pub tz: Option<TimeZoneQualifier>,
-    pub value: literal::StringLit,
+    pub value: literal::StringLit<'input>,
 }
 
 // --- XML function atoms ---
@@ -496,43 +496,43 @@ pub struct TimeLit {
 /// A `name [AS alias]` argument to `xmlattributes` / `xmlforest`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct XmlNamedArg {
-    pub value: Box<Expr>,
-    pub alias: Option<XmlNamedArgAlias>,
+pub struct XmlNamedArg<'input> {
+    pub value: Box<Expr<'input>>,
+    pub alias: Option<XmlNamedArgAlias<'input>>,
 }
 
 /// `AS alias` suffix on an XML named argument.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct XmlNamedArgAlias {
+pub struct XmlNamedArgAlias<'input> {
     pub _as: PhantomData<keyword::As>,
-    pub name: literal::AliasName,
+    pub name: literal::AliasName<'input>,
 }
 
 /// `xmlattributes(expr [AS alias], ...)` — used as a positional argument
 /// to `xmlelement`, but also can be parsed standalone.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct XmlAttributes {
+pub struct XmlAttributes<'input> {
     pub _kw: PhantomData<keyword::XmlAttributesKw>,
-    pub args: Surrounded<punct::LParen, Seq<XmlNamedArg, punct::Comma>, punct::RParen>,
+    pub args: Surrounded<punct::LParen, Seq<XmlNamedArg<'input>, punct::Comma>, punct::RParen>,
 }
 
 /// Optional `, xmlattributes(...) [, content_exprs]` tail of `xmlelement`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct XmlElementAttrsTail {
+pub struct XmlElementAttrsTail<'input> {
     pub _comma: punct::Comma,
-    pub attrs: XmlAttributes,
-    pub content: Option<XmlElementContentTail>,
+    pub attrs: XmlAttributes<'input>,
+    pub content: Option<XmlElementContentTail<'input>>,
 }
 
 /// Optional `, content_exprs` tail of `xmlelement`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct XmlElementContentTail {
+pub struct XmlElementContentTail<'input> {
     pub _comma: punct::Comma,
-    pub exprs: Seq<Expr, punct::Comma>,
+    pub exprs: Seq<Expr<'input>, punct::Comma>,
 }
 
 /// Body of `xmlelement(NAME ident [, xmlattributes(...)] [, content_exprs])`.
@@ -542,59 +542,59 @@ pub struct XmlElementContentTail {
 /// just `,`. Both trail an `xmlelement(NAME ident` head.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum XmlElementTail {
-    WithAttrs(XmlElementAttrsTail),
-    WithContent(XmlElementContentTail),
+pub enum XmlElementTail<'input> {
+    WithAttrs(XmlElementAttrsTail<'input>),
+    WithContent(XmlElementContentTail<'input>),
 }
 
 /// Inner contents of an `xmlelement(...)` call.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct XmlElementInner {
+pub struct XmlElementInner<'input> {
     pub _name: PhantomData<keyword::NameKw>,
-    pub element_name: literal::AliasName,
-    pub tail: Option<XmlElementTail>,
+    pub element_name: literal::AliasName<'input>,
+    pub tail: Option<XmlElementTail<'input>>,
 }
 
 /// `xmlelement(NAME ident [, xmlattributes(...)] [, content_exprs])`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct XmlElement {
+pub struct XmlElement<'input> {
     pub _kw: PhantomData<keyword::XmlElementKw>,
-    pub inner: Surrounded<punct::LParen, XmlElementInner, punct::RParen>,
+    pub inner: Surrounded<punct::LParen, XmlElementInner<'input>, punct::RParen>,
 }
 
 /// `xmlforest(expr [AS alias], ...)`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct XmlForest {
+pub struct XmlForest<'input> {
     pub _kw: PhantomData<keyword::XmlForestKw>,
-    pub args: Surrounded<punct::LParen, Seq<XmlNamedArg, punct::Comma>, punct::RParen>,
+    pub args: Surrounded<punct::LParen, Seq<XmlNamedArg<'input>, punct::Comma>, punct::RParen>,
 }
 
 /// `xmlpi(NAME ident [, content])`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct XmlPi {
+pub struct XmlPi<'input> {
     pub _kw: PhantomData<keyword::XmlPiKw>,
-    pub inner: Surrounded<punct::LParen, XmlPiInner, punct::RParen>,
+    pub inner: Surrounded<punct::LParen, XmlPiInner<'input>, punct::RParen>,
 }
 
 /// Inner contents of an `xmlpi(...)` call.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct XmlPiInner {
+pub struct XmlPiInner<'input> {
     pub _name: PhantomData<keyword::NameKw>,
-    pub target: literal::AliasName,
-    pub content: Option<XmlPiContentTail>,
+    pub target: literal::AliasName<'input>,
+    pub content: Option<XmlPiContentTail<'input>>,
 }
 
 /// Optional `, content_expr` tail of `xmlpi`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct XmlPiContentTail {
+pub struct XmlPiContentTail<'input> {
     pub _comma: punct::Comma,
-    pub expr: Box<Expr>,
+    pub expr: Box<Expr<'input>>,
 }
 
 // --- SQL-standard string function atoms ---
@@ -614,8 +614,8 @@ pub enum TrimDir {
 /// `[chars] FROM source`: the optional chars-to-trim before `FROM`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TrimChars {
-    pub chars: Box<Expr>,
+pub struct TrimChars<'input> {
+    pub chars: Box<Expr<'input>>,
 }
 
 /// Inside of `TRIM(...)`. Forms:
@@ -623,46 +623,46 @@ pub struct TrimChars {
 ///   (a fully-positional `TRIM(src, chars)` form is left to ordinary FuncCall).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TrimInner {
+pub struct TrimInner<'input> {
     pub dir: Option<TrimDir>,
-    pub chars: Option<TrimChars>,
+    pub chars: Option<TrimChars<'input>>,
     pub _from: PhantomData<keyword::From>,
-    pub source: Box<Expr>,
+    pub source: Box<Expr<'input>>,
 }
 
 /// `TRIM([LEADING|TRAILING|BOTH] [chars] FROM source)`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TrimCall {
+pub struct TrimCall<'input> {
     pub _kw: PhantomData<keyword::TrimKw>,
-    pub inner: Surrounded<punct::LParen, TrimInner, punct::RParen>,
+    pub inner: Surrounded<punct::LParen, TrimInner<'input>, punct::RParen>,
 }
 
 /// `FOR len` suffix in `SUBSTRING(... FROM ... FOR ...)` / `OVERLAY(...)`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ForCount {
+pub struct ForCount<'input> {
     pub _for: PhantomData<keyword::For>,
-    pub count: Box<Expr>,
+    pub count: Box<Expr<'input>>,
 }
 
 /// `FROM start [FOR len]` form for SUBSTRING.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SubstringFromFor {
+pub struct SubstringFromFor<'input> {
     pub _from: PhantomData<keyword::From>,
-    pub start: Box<Expr>,
-    pub for_count: Option<ForCount>,
+    pub start: Box<Expr<'input>>,
+    pub for_count: Option<ForCount<'input>>,
 }
 
 /// `SIMILAR pattern ESCAPE escape` form for SUBSTRING.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SubstringSimilar {
+pub struct SubstringSimilar<'input> {
     pub _similar: PhantomData<keyword::Similar>,
-    pub pattern: Box<Expr>,
+    pub pattern: Box<Expr<'input>>,
     pub _escape: PhantomData<keyword::EscapeKw>,
-    pub escape: Box<Expr>,
+    pub escape: Box<Expr<'input>>,
 }
 
 /// Tail of a SUBSTRING call after the source expression.
@@ -671,79 +671,79 @@ pub struct SubstringSimilar {
 /// first tokens, so order is not strictly required, but listed by length.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum SubstringTail {
-    Similar(SubstringSimilar),
-    FromFor(SubstringFromFor),
+pub enum SubstringTail<'input> {
+    Similar(SubstringSimilar<'input>),
+    FromFor(SubstringFromFor<'input>),
 }
 
 /// Inner of `SUBSTRING(...)`: `source` followed by FROM/SIMILAR tail.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SubstringInner {
-    pub source: Box<Expr>,
-    pub tail: SubstringTail,
+pub struct SubstringInner<'input> {
+    pub source: Box<Expr<'input>>,
+    pub tail: SubstringTail<'input>,
 }
 
 /// `SUBSTRING(source FROM start [FOR len])` /
 /// `SUBSTRING(source SIMILAR pattern ESCAPE escape)`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SubstringCall {
+pub struct SubstringCall<'input> {
     pub _kw: PhantomData<keyword::SubstringKw>,
-    pub inner: Surrounded<punct::LParen, SubstringInner, punct::RParen>,
+    pub inner: Surrounded<punct::LParen, SubstringInner<'input>, punct::RParen>,
 }
 
 /// Inner of `POSITION(needle IN haystack)`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct PositionInner {
-    pub needle: Box<Expr>,
+pub struct PositionInner<'input> {
+    pub needle: Box<Expr<'input>>,
     pub _in: PhantomData<keyword::In>,
-    pub haystack: Box<Expr>,
+    pub haystack: Box<Expr<'input>>,
 }
 
 /// `POSITION(needle IN haystack)`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct PositionCall {
+pub struct PositionCall<'input> {
     pub _kw: PhantomData<keyword::PositionKw>,
-    pub inner: Surrounded<punct::LParen, PositionInner, punct::RParen>,
+    pub inner: Surrounded<punct::LParen, PositionInner<'input>, punct::RParen>,
 }
 
 /// Inner of `OVERLAY(source PLACING new FROM start [FOR len])`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct OverlayInner {
-    pub source: Box<Expr>,
+pub struct OverlayInner<'input> {
+    pub source: Box<Expr<'input>>,
     pub _placing: PhantomData<keyword::Placing>,
-    pub new: Box<Expr>,
+    pub new: Box<Expr<'input>>,
     pub _from: PhantomData<keyword::From>,
-    pub start: Box<Expr>,
-    pub for_count: Option<ForCount>,
+    pub start: Box<Expr<'input>>,
+    pub for_count: Option<ForCount<'input>>,
 }
 
 /// `OVERLAY(source PLACING new FROM start [FOR len])`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct OverlayCall {
+pub struct OverlayCall<'input> {
     pub _kw: PhantomData<keyword::OverlayKw>,
-    pub inner: Surrounded<punct::LParen, OverlayInner, punct::RParen>,
+    pub inner: Surrounded<punct::LParen, OverlayInner<'input>, punct::RParen>,
 }
 
 /// `UESCAPE 'c'` suffix that may follow a `U&'...'` literal.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct UescapeSuffix {
+pub struct UescapeSuffix<'input> {
     pub _uescape: PhantomData<keyword::Uescape>,
-    pub escape_char: literal::StringLit,
+    pub escape_char: literal::StringLit<'input>,
 }
 
 /// `U&'...'` unicode string literal with optional `UESCAPE 'c'` suffix.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct UnicodeStringLitWithEscape {
-    pub lit: literal::UnicodeStringLit,
-    pub uescape: Option<UescapeSuffix>,
+pub struct UnicodeStringLitWithEscape<'input> {
+    pub lit: literal::UnicodeStringLit<'input>,
+    pub uescape: Option<UescapeSuffix<'input>>,
 }
 
 // --- Pratt expression enum ---
@@ -751,82 +751,97 @@ pub struct UnicodeStringLitWithEscape {
 /// SQL expression with Pratt-derived parsing.
 #[derive(FormatTokens, Parse, Debug, Clone, Visit)]
 #[parse(rules = SqlRules, pratt)]
-pub enum Expr {
+pub enum Expr<'input> {
     // --- Prefix ---
     #[parse(prefix, bp = 15)]
-    Not(keyword::Not, Box<Expr>),
+    Not(keyword::Not, Box<Expr<'input>>),
     #[parse(prefix, bp = 12)]
-    Neg(punct::Minus, Box<Expr>),
+    Neg(punct::Minus, Box<Expr<'input>>),
 
     // --- Postfix ---
     /// Postgres-style cast: `expr::type`
     #[parse(postfix, bp = 20)]
-    Cast(Box<Expr>, punct::ColonColon, CastType),
+    Cast(Box<Expr<'input>>, punct::ColonColon, CastType<'input>),
     /// Array subscript: `expr[idx]`
     #[parse(postfix, bp = 20)]
-    Subscript(Box<Expr>, punct::LBracket, Box<Expr>, punct::RBracket),
+    Subscript(
+        Box<Expr<'input>>,
+        punct::LBracket,
+        Box<Expr<'input>>,
+        punct::RBracket,
+    ),
     /// `expr COLLATE "collation"` — collation specifier. Binds tighter than
     /// comparisons (bp 5) but looser than `::` cast (bp 20).
     #[parse(postfix, bp = 18)]
-    Collate(Box<Expr>, keyword::Collate, literal::Ident),
+    Collate(Box<Expr<'input>>, keyword::Collate, literal::Ident<'input>),
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
-    BoolTest(Box<Expr>, keyword::Is, BoolTestKind),
+    BoolTest(Box<Expr<'input>>, keyword::Is, BoolTestKind),
     /// NOT IN list: `expr NOT IN (val, ...)`
     #[parse(postfix, bp = 6)]
-    NotInExpr(Box<Expr>, NotInSuffix),
+    NotInExpr(Box<Expr<'input>>, NotInSuffix<'input>),
     /// `expr NOT ILIKE pattern`. Declared before `NotLike` so the longer
     /// `NOT ILIKE` is tried first (matters only if any rule shares a prefix;
     /// here `NOT ILIKE` vs `NOT LIKE` differ on the second token).
     #[parse(postfix, bp = 5, inner_bp = 6)]
-    NotIlike(Box<Expr>, keyword::Not, keyword::Ilike, Box<Expr>),
+    NotIlike(
+        Box<Expr<'input>>,
+        keyword::Not,
+        keyword::Ilike,
+        Box<Expr<'input>>,
+    ),
     /// `expr NOT LIKE pattern`. Must come before the `Not` prefix atom so
     /// longest-match-wins prefers the postfix form.
     #[parse(postfix, bp = 5, inner_bp = 6)]
-    NotLike(Box<Expr>, keyword::Not, keyword::Like, Box<Expr>),
+    NotLike(
+        Box<Expr<'input>>,
+        keyword::Not,
+        keyword::Like,
+        Box<Expr<'input>>,
+    ),
     /// `expr ILIKE pattern`
     #[parse(infix, bp = 5)]
-    Ilike(Box<Expr>, keyword::Ilike, Box<Expr>),
+    Ilike(Box<Expr<'input>>, keyword::Ilike, Box<Expr<'input>>),
     /// `expr LIKE pattern`
     #[parse(infix, bp = 5)]
-    Like(Box<Expr>, keyword::Like, Box<Expr>),
+    Like(Box<Expr<'input>>, keyword::Like, Box<Expr<'input>>),
     /// `expr !~* pattern` — POSIX case-insensitive negated regex match.
     #[parse(infix, bp = 5)]
-    RegexNotIMatch(Box<Expr>, punct::BangTildeStar, Box<Expr>),
+    RegexNotIMatch(Box<Expr<'input>>, punct::BangTildeStar, Box<Expr<'input>>),
     /// `expr ~* pattern` — POSIX case-insensitive regex match.
     #[parse(infix, bp = 5)]
-    RegexIMatch(Box<Expr>, punct::TildeStar, Box<Expr>),
+    RegexIMatch(Box<Expr<'input>>, punct::TildeStar, Box<Expr<'input>>),
     /// `expr !~ pattern` — POSIX negated regex match.
     #[parse(infix, bp = 5)]
-    RegexNotMatch(Box<Expr>, punct::BangTilde, Box<Expr>),
+    RegexNotMatch(Box<Expr<'input>>, punct::BangTilde, Box<Expr<'input>>),
     /// `expr ~ pattern` — POSIX regex match.
     #[parse(infix, bp = 5)]
-    RegexMatch(Box<Expr>, punct::Tilde, Box<Expr>),
+    RegexMatch(Box<Expr<'input>>, punct::Tilde, Box<Expr<'input>>),
     /// IN list: `expr IN (val, ...)`
     #[parse(postfix, bp = 6)]
-    InExpr(Box<Expr>, keyword::In, InList),
+    InExpr(Box<Expr<'input>>, keyword::In, InList<'input>),
     /// `expr NOT BETWEEN low AND high`. Declared before `BetweenExpr` so
     /// the longer `NOT BETWEEN` prefix wins disambiguation. `inner_bp = 3`
     /// keeps the low/high operands from swallowing the literal `AND` that
     /// separates them (the `AND` infix has `bp = 2`).
     #[parse(postfix, bp = 6, inner_bp = 3)]
     NotBetweenExpr(
-        Box<Expr>,
+        Box<Expr<'input>>,
         keyword::Not,
         keyword::Between,
-        Box<Expr>,
+        Box<Expr<'input>>,
         keyword::And,
-        Box<Expr>,
+        Box<Expr<'input>>,
     ),
     /// `expr BETWEEN low AND high`. See `NotBetweenExpr` for the
     /// `inner_bp` rationale.
     #[parse(postfix, bp = 6, inner_bp = 3)]
     BetweenExpr(
-        Box<Expr>,
+        Box<Expr<'input>>,
         keyword::Between,
-        Box<Expr>,
+        Box<Expr<'input>>,
         keyword::And,
-        Box<Expr>,
+        Box<Expr<'input>>,
     ),
 
     // --- Infix ---
@@ -838,37 +853,37 @@ pub enum Expr {
     // as Concat/Add/Sub (which is Postgres's convention for these ops).
     /// JSON path as text: `expr #>> path`
     #[parse(infix, bp = 10)]
-    JsonPathText(Box<Expr>, punct::HashArrowArrow, Box<Expr>),
+    JsonPathText(Box<Expr<'input>>, punct::HashArrowArrow, Box<Expr<'input>>),
     /// JSON path: `expr #> path`
     #[parse(infix, bp = 10)]
-    JsonPath(Box<Expr>, punct::HashArrow, Box<Expr>),
+    JsonPath(Box<Expr<'input>>, punct::HashArrow, Box<Expr<'input>>),
     /// JSON field as text: `expr ->> field`
     #[parse(infix, bp = 10)]
-    JsonFieldText(Box<Expr>, punct::ArrowArrow, Box<Expr>),
+    JsonFieldText(Box<Expr<'input>>, punct::ArrowArrow, Box<Expr<'input>>),
     /// JSON field: `expr -> field`
     #[parse(infix, bp = 10)]
-    JsonField(Box<Expr>, punct::Arrow, Box<Expr>),
+    JsonField(Box<Expr<'input>>, punct::Arrow, Box<Expr<'input>>),
     /// JSON any-key-exists: `expr ?| keys`
     #[parse(infix, bp = 10)]
-    JsonAnyKey(Box<Expr>, punct::QuestionPipe, Box<Expr>),
+    JsonAnyKey(Box<Expr<'input>>, punct::QuestionPipe, Box<Expr<'input>>),
     /// JSON all-keys-exist: `expr ?& keys`
     #[parse(infix, bp = 10)]
-    JsonAllKeys(Box<Expr>, punct::QuestionAmp, Box<Expr>),
+    JsonAllKeys(Box<Expr<'input>>, punct::QuestionAmp, Box<Expr<'input>>),
     /// Geometric intersect: `a ?# b`. Must precede `JsonKey` (`?`).
     #[parse(infix, bp = 5)]
-    Intersect(Box<Expr>, punct::QuestionHash, Box<Expr>),
+    Intersect(Box<Expr<'input>>, punct::QuestionHash, Box<Expr<'input>>),
     /// Geometric horizontal: `a ?- b`. Must precede `JsonKey` (`?`).
     #[parse(infix, bp = 5)]
-    Horizontal(Box<Expr>, punct::QuestionDash, Box<Expr>),
+    Horizontal(Box<Expr<'input>>, punct::QuestionDash, Box<Expr<'input>>),
     /// JSON key-exists: `expr ? key`
     #[parse(infix, bp = 10)]
-    JsonKey(Box<Expr>, punct::Question, Box<Expr>),
+    JsonKey(Box<Expr<'input>>, punct::Question, Box<Expr<'input>>),
     /// JSONB contains: `expr @> expr`
     #[parse(infix, bp = 10)]
-    JsonContains(Box<Expr>, punct::AtGt, Box<Expr>),
+    JsonContains(Box<Expr<'input>>, punct::AtGt, Box<Expr<'input>>),
     /// JSONB contained-by: `expr <@ expr`
     #[parse(infix, bp = 10)]
-    JsonContainedBy(Box<Expr>, punct::LtAt, Box<Expr>),
+    JsonContainedBy(Box<Expr<'input>>, punct::LtAt, Box<Expr<'input>>),
 
     // --- Postgres text-search / jsonpath / range / geometric 3-char operators ---
     //
@@ -880,89 +895,89 @@ pub enum Expr {
     // the trailing `|` / `#` dangling.
     /// Text-search / jsonb path match: `expr @@@ expr`.
     #[parse(infix, bp = 5)]
-    TsMatch3(Box<Expr>, punct::AtAtAt, Box<Expr>),
+    TsMatch3(Box<Expr<'input>>, punct::AtAtAt, Box<Expr<'input>>),
     /// Geometric strictly-below: `a <<| b`. Before `StrictlyLeft` (`<<`).
     #[parse(infix, bp = 5)]
-    StrictlyBelow(Box<Expr>, punct::LtLtPipe, Box<Expr>),
+    StrictlyBelow(Box<Expr<'input>>, punct::LtLtPipe, Box<Expr<'input>>),
     /// Inet is-subset-or-equal: `a <<= b`. Before `StrictlyLeft` (`<<`).
     #[parse(infix, bp = 5)]
-    SubsetEq(Box<Expr>, punct::LtLtEq, Box<Expr>),
+    SubsetEq(Box<Expr<'input>>, punct::LtLtEq, Box<Expr<'input>>),
     /// Distance: `a <-> b`. Before any `<` variant.
     #[parse(infix, bp = 10)]
-    Distance(Box<Expr>, punct::LtMinusGt, Box<Expr>),
+    Distance(Box<Expr<'input>>, punct::LtMinusGt, Box<Expr<'input>>),
     /// Inet is-superset-or-equal: `a >>= b`. Before `StrictlyRight` (`>>`).
     #[parse(infix, bp = 5)]
-    SupersetEq(Box<Expr>, punct::GtGtEq, Box<Expr>),
+    SupersetEq(Box<Expr<'input>>, punct::GtGtEq, Box<Expr<'input>>),
     /// Range adjacent: `a -|- b`. Before `Sub` (`-`).
     #[parse(infix, bp = 5)]
-    Adjacent(Box<Expr>, punct::MinusPipeMinus, Box<Expr>),
+    Adjacent(Box<Expr<'input>>, punct::MinusPipeMinus, Box<Expr<'input>>),
     /// Geometric strictly-above: `a |>> b`. Before `Concat` (`||`).
     #[parse(infix, bp = 5)]
-    StrictlyAbove(Box<Expr>, punct::PipeGtGt, Box<Expr>),
+    StrictlyAbove(Box<Expr<'input>>, punct::PipeGtGt, Box<Expr<'input>>),
     /// Geometric no-extend-below: `a |&> b`. Before `Concat` (`||`).
     #[parse(infix, bp = 5)]
-    NoExtendBelow(Box<Expr>, punct::PipeAmpGt, Box<Expr>),
+    NoExtendBelow(Box<Expr<'input>>, punct::PipeAmpGt, Box<Expr<'input>>),
     /// Geometric no-extend-above: `a &<| b`. Before `NoExtendRight` (`&<`).
     #[parse(infix, bp = 5)]
-    NoExtendAbove(Box<Expr>, punct::AmpLtPipe, Box<Expr>),
+    NoExtendAbove(Box<Expr<'input>>, punct::AmpLtPipe, Box<Expr<'input>>),
 
     // --- 2-char operators ---
     /// Text-search / jsonb path match: `expr @@ expr`.
     #[parse(infix, bp = 5)]
-    TsMatch(Box<Expr>, punct::AtAt, Box<Expr>),
+    TsMatch(Box<Expr<'input>>, punct::AtAt, Box<Expr<'input>>),
     /// Jsonpath exists: `expr @? path`.
     #[parse(infix, bp = 5)]
-    JsonPathExists(Box<Expr>, punct::AtQuestion, Box<Expr>),
+    JsonPathExists(Box<Expr<'input>>, punct::AtQuestion, Box<Expr<'input>>),
     /// Range / array overlap: `a && b`.
     #[parse(infix, bp = 10)]
-    Overlap(Box<Expr>, punct::AmpAmp, Box<Expr>),
+    Overlap(Box<Expr<'input>>, punct::AmpAmp, Box<Expr<'input>>),
     /// Range does-not-extend-right: `a &< b`.
     #[parse(infix, bp = 5)]
-    NoExtendRight(Box<Expr>, punct::AmpLt, Box<Expr>),
+    NoExtendRight(Box<Expr<'input>>, punct::AmpLt, Box<Expr<'input>>),
     /// Range does-not-extend-left: `a &> b`.
     #[parse(infix, bp = 5)]
-    NoExtendLeft(Box<Expr>, punct::AmpGt, Box<Expr>),
+    NoExtendLeft(Box<Expr<'input>>, punct::AmpGt, Box<Expr<'input>>),
     /// Range strictly-left-of: `a << b`.
     #[parse(infix, bp = 5)]
-    StrictlyLeft(Box<Expr>, punct::LtLt, Box<Expr>),
+    StrictlyLeft(Box<Expr<'input>>, punct::LtLt, Box<Expr<'input>>),
     /// Range strictly-right-of: `a >> b`.
     #[parse(infix, bp = 5)]
-    StrictlyRight(Box<Expr>, punct::GtGt, Box<Expr>),
+    StrictlyRight(Box<Expr<'input>>, punct::GtGt, Box<Expr<'input>>),
 
     #[parse(infix, bp = 1)]
-    Or(Box<Expr>, keyword::Or, Box<Expr>),
+    Or(Box<Expr<'input>>, keyword::Or, Box<Expr<'input>>),
     #[parse(infix, bp = 2)]
-    And(Box<Expr>, keyword::And, Box<Expr>),
+    And(Box<Expr<'input>>, keyword::And, Box<Expr<'input>>),
     #[parse(infix, bp = 5)]
-    BangEq(Box<Expr>, punct::BangEq, Box<Expr>),
+    BangEq(Box<Expr<'input>>, punct::BangEq, Box<Expr<'input>>),
     #[parse(infix, bp = 5)]
-    Neq(Box<Expr>, punct::Neq, Box<Expr>),
+    Neq(Box<Expr<'input>>, punct::Neq, Box<Expr<'input>>),
     #[parse(infix, bp = 5)]
-    Lte(Box<Expr>, punct::Lte, Box<Expr>),
+    Lte(Box<Expr<'input>>, punct::Lte, Box<Expr<'input>>),
     #[parse(infix, bp = 5)]
-    Gte(Box<Expr>, punct::Gte, Box<Expr>),
+    Gte(Box<Expr<'input>>, punct::Gte, Box<Expr<'input>>),
     #[parse(infix, bp = 5)]
-    Eq(Box<Expr>, punct::Eq, Box<Expr>),
+    Eq(Box<Expr<'input>>, punct::Eq, Box<Expr<'input>>),
     #[parse(infix, bp = 5)]
-    Lt(Box<Expr>, punct::Lt, Box<Expr>),
+    Lt(Box<Expr<'input>>, punct::Lt, Box<Expr<'input>>),
     #[parse(infix, bp = 5)]
-    Gt(Box<Expr>, punct::Gt, Box<Expr>),
+    Gt(Box<Expr<'input>>, punct::Gt, Box<Expr<'input>>),
     /// String concatenation: `expr || expr`
     #[parse(infix, bp = 10)]
-    Concat(Box<Expr>, punct::Concat, Box<Expr>),
+    Concat(Box<Expr<'input>>, punct::Concat, Box<Expr<'input>>),
     #[parse(infix, bp = 10)]
-    Add(Box<Expr>, punct::Plus, Box<Expr>),
+    Add(Box<Expr<'input>>, punct::Plus, Box<Expr<'input>>),
     #[parse(infix, bp = 10)]
-    Sub(Box<Expr>, punct::Minus, Box<Expr>),
+    Sub(Box<Expr<'input>>, punct::Minus, Box<Expr<'input>>),
     /// Multiplication: `expr * expr`
     #[parse(infix, bp = 11)]
-    Mul(Box<Expr>, punct::Star, Box<Expr>),
+    Mul(Box<Expr<'input>>, punct::Star, Box<Expr<'input>>),
     /// Division: `expr / expr`
     #[parse(infix, bp = 11)]
-    Div(Box<Expr>, punct::Slash, Box<Expr>),
+    Div(Box<Expr<'input>>, punct::Slash, Box<Expr<'input>>),
     /// Modulo: `expr % expr`
     #[parse(infix, bp = 11)]
-    Mod(Box<Expr>, punct::Percent, Box<Expr>),
+    Mod(Box<Expr<'input>>, punct::Percent, Box<Expr<'input>>),
 
     // --- Atoms ---
     /// EXISTS subquery: `EXISTS (SELECT ...)`
@@ -970,79 +985,79 @@ pub enum Expr {
     Exists(ExistsExpr),
     /// ARRAY constructor: `ARRAY[...]` or `ARRAY(...)`
     #[parse(atom)]
-    Array(ArrayExpr),
+    Array(ArrayExpr<'input>),
     /// ROW constructor: `ROW(...)`
     #[parse(atom)]
-    RowExpr(RowExpr),
+    RowExpr(RowExpr<'input>),
     /// Unicode string literal: `U&'...'` with optional `UESCAPE 'c'`. Must
     /// come before `CastFunc` and `StringLit` for the same reason as
     /// `EscapeStringLit`.
     #[parse(atom)]
-    UnicodeStringLit(UnicodeStringLitWithEscape),
+    UnicodeStringLit(UnicodeStringLitWithEscape<'input>),
     /// Escape string literal: `E'foo\n'`. Must come before `CastFunc` and
     /// `StringLit` — `CastFunc` is `TypeName StringLit` and would match `e`
     /// as a type name followed by the string literal.
     #[parse(atom)]
-    EscapeStringLit(literal::EscapeStringLit),
+    EscapeStringLit(literal::EscapeStringLit<'input>),
     /// `TIMESTAMP [WITH|WITHOUT TIME ZONE] 'string'`. Must come before `CastFunc`
     /// since `timestamp` is also an identifier.
     #[parse(atom)]
-    TimestampLit(TimestampLit),
+    TimestampLit(TimestampLit<'input>),
     /// `TIME [WITH|WITHOUT TIME ZONE] 'string'`. Must come before `CastFunc`.
     #[parse(atom)]
-    TimeLit(TimeLit),
+    TimeLit(TimeLit<'input>),
     /// Function-style type cast: `bool 't'` -- must come before ColumnRef
     /// since type keywords like `bool` overlap with identifiers
     #[parse(atom)]
-    CastFunc(TypeCastFunc),
+    CastFunc(TypeCastFunc<'input>),
     /// `xmlelement(NAME ident [, xmlattributes(...)] [, content])`. Must come
     /// before `Func` so `xmlelement(` is matched as the special form.
     #[parse(atom)]
-    XmlElement(XmlElement),
+    XmlElement(XmlElement<'input>),
     /// `xmlforest(expr [AS alias], ...)`. Before `Func` for the same reason.
     #[parse(atom)]
-    XmlForest(XmlForest),
+    XmlForest(XmlForest<'input>),
     /// `xmlattributes(expr [AS alias], ...)`. Before `Func`.
     #[parse(atom)]
-    XmlAttributes(XmlAttributes),
+    XmlAttributes(XmlAttributes<'input>),
     /// `xmlpi(NAME ident [, content])`. Before `Func`.
     #[parse(atom)]
-    XmlPi(XmlPi),
+    XmlPi(XmlPi<'input>),
     /// `TRIM([LEADING|TRAILING|BOTH] [chars] FROM source)`. Before `Func`
     /// since `trim` is also a valid function-call identifier.
     #[parse(atom)]
-    Trim(TrimCall),
+    Trim(TrimCall<'input>),
     /// `SUBSTRING(source FROM ... | SIMILAR ...)`. Before `Func`.
     #[parse(atom)]
-    Substring(SubstringCall),
+    Substring(SubstringCall<'input>),
     /// `POSITION(needle IN haystack)`. Before `Func`.
     #[parse(atom)]
-    Position(PositionCall),
+    Position(PositionCall<'input>),
     /// `OVERLAY(source PLACING new FROM start [FOR len])`. Before `Func`.
     #[parse(atom)]
-    Overlay(OverlayCall),
+    Overlay(OverlayCall<'input>),
     /// Function call: `func(args)` -- must come before ColumnRef
     #[parse(atom)]
-    Func(FuncCall),
+    Func(FuncCall<'input>),
     /// Qualified wildcard: `table.*` -- must come before QualRef and ColumnRef
     #[parse(atom)]
-    QualWild(QualifiedWildcard),
+    QualWild(QualifiedWildcard<'input>),
     /// Qualified column reference: `table.column` -- must come before ColumnRef
     #[parse(atom)]
-    QualRef(QualifiedRef),
+    QualRef(QualifiedRef<'input>),
     /// Parenthesized expression: `(expr)`
     #[parse(atom)]
-    Paren(ParenExpr),
+    Paren(ParenExpr<'input>),
     /// Numeric literal: `77.7` -- must come before IntegerLit for longest match
     #[parse(atom)]
-    NumericLit(literal::NumericLit),
+    NumericLit(literal::NumericLit<'input>),
     /// Integer literal: `42`
     #[parse(atom)]
-    IntegerLit(literal::IntegerLit),
+    IntegerLit(literal::IntegerLit<'input>),
     /// String literal sequence: `'hello'` or `'first' 'second' ...` —
     /// Postgres concatenates adjacent string literals into one.
     #[parse(atom)]
-    StringLit(StringLitSeq),
+    StringLit(StringLitSeq<'input>),
     /// Boolean true
     #[parse(atom)]
     BoolTrue(keyword::True),
@@ -1057,10 +1072,10 @@ pub enum Expr {
     Default(keyword::Default),
     /// Unqualified column reference: `f1` or `"Foo"`
     #[parse(atom)]
-    ColumnRef(literal::Ident),
+    ColumnRef(literal::Ident<'input>),
     /// psql client variable substitution: `:foo`, `:'foo'`, `:"foo"`.
     #[parse(atom)]
-    PsqlVar(literal::PsqlVar),
+    PsqlVar(literal::PsqlVar<'input>),
     /// Bare wildcard: `*`
     #[parse(atom)]
     Star(punct::Star),
