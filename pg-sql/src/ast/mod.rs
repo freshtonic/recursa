@@ -66,173 +66,326 @@ use self::{
 #[parse(rules = SqlRules)]
 pub enum Statement<'input> {
     // --- Multi-keyword statements (longest first_pattern first) ---
+    #[railroad(label = "WITH ..")]
     With(Box<WithStatement<'input>>),
+    #[railroad(label = "EXPLAIN ..")]
     Explain(Box<ExplainStmt<'input>>),
     // CREATE variants: multi-keyword before single-keyword
+    #[railroad(label = "CREATE .. FUNCTION ..")]
     CreateFunction(Box<CreateFunctionStmt<'input>>),
+    #[railroad(label = "CREATE .. PROCEDURE ..")]
     CreateProcedure(Box<CreateProcedureStmt<'input>>),
+    #[railroad(label = "CREATE TABLESPACE ..")]
     CreateTablespace(Box<CreateTablespaceStmt<'input>>),
+    #[railroad(label = "IMPORT FOREIGN SCHEMA ..")]
     ImportForeignSchema(ImportForeignSchemaStmt<'input>),
+    #[railroad(label = "CREATE CONSTRAINT ..")]
     CreateConstraintTrigger(CreateConstraintTriggerStmt<'input>),
+    #[railroad(label = "CREATE TRIGGER ..")]
     CreateTrigger(CreateTriggerStmt<'input>),
+    #[railroad(label = "CREATE EVENT TRIGGER ..")]
     CreateEventTrigger(CreateEventTriggerStmt<'input>),
+    #[railroad(label = "CREATE ACCESS METHOD ..")]
     CreateAccessMethod(CreateAccessMethodStmt<'input>),
+    #[railroad(label = "CREATE MATERIALIZED VIEW ..")]
     CreateMaterializedView(CreateMaterializedViewStmt<'input>),
+    #[railroad(label = "CREATE TEXT SEARCH ..")]
     CreateTextSearch(CreateTextSearchStmt<'input>),
+    #[railroad(label = "CREATE FOREIGN ..")]
     CreateForeign(CreateForeignStmt<'input>),
+    #[railroad(label = "CREATE INDEX ..")]
     CreateIndex(Box<CreateIndexStmt<'input>>),
+    #[railroad(label = "CREATE VIEW ..")]
     CreateView(Box<CreateViewStmt<'input>>),
+    #[railroad(label = "CREATE .. RULE ..")]
     CreateRule(CreateRuleStmt<'input>),
+    #[railroad(label = "CREATE .. GROUP ..")]
     CreateGroup(CreateGroupStmt<'input>),
+    #[railroad(label = "CREATE .. ROLE ..")]
     CreateRole(CreateRoleStmt<'input>),
+    #[railroad(label = "CREATE .. USER ..")]
     CreateUser(CreateUserStmt<'input>),
+    #[railroad(label = "CREATE .. SCHEMA ..")]
     CreateSchema(CreateSchemaStmt<'input>),
+    #[railroad(label = "CREATE .. SEQUENCE ..")]
     CreateSequence(CreateSequenceStmt<'input>),
+    #[railroad(label = "CREATE .. TYPE ..")]
     CreateType(CreateTypeStmt<'input>),
+    #[railroad(label = "CREATE .. DOMAIN ..")]
     CreateDomain(CreateDomainStmt<'input>),
+    #[railroad(label = "CREATE .. AGGREGATE ..")]
     CreateAggregate(CreateAggregateStmt<'input>),
+    #[railroad(label = "CREATE .. OPERATOR ..")]
     CreateOperator(CreateOperatorStmt<'input>),
+    #[railroad(label = "CREATE .. CAST ..")]
     CreateCast(CreateCastStmt<'input>),
+    #[railroad(label = "CREATE .. COLLATION ..")]
     CreateCollation(CreateCollationStmt<'input>),
+    #[railroad(label = "CREATE .. EXTENSION ..")]
     CreateExtension(CreateExtensionStmt<'input>),
+    #[railroad(label = "CREATE .. POLICY ..")]
     CreatePolicy(CreatePolicyStmt<'input>),
+    #[railroad(label = "CREATE .. STATISTICS ..")]
     CreateStatistics(CreateStatisticsStmt<'input>),
+    #[railroad(label = "CREATE .. PUBLICATION ..")]
     CreatePublication(CreatePublicationStmt<'input>),
+    #[railroad(label = "CREATE .. SUBSCRIPTION ..")]
     CreateSubscription(CreateSubscriptionStmt<'input>),
+    #[railroad(label = "CREATE .. CONVERSION ..")]
     CreateConversion(CreateConversionStmt<'input>),
+    #[railroad(label = "CREATE .. SERVER ..")]
     CreateServer(CreateServerStmt<'input>),
+    #[railroad(label = "CREATE .. LANGUAGE ..")]
     CreateLanguage(CreateLanguageStmt<'input>),
+    #[railroad(label = "CREATE .. DATABASE ..")]
     CreateDatabase(CreateDatabaseStmt<'input>),
+    #[railroad(label = "CREATE .. TABLE ..")]
     CreateTable(Box<CreateTableStmt<'input>>),
     // DROP variants
+    #[railroad(label = "DROP FUNCTION ..")]
     DropFunction(Box<DropFunctionStmt<'input>>),
+    #[railroad(label = "DROP PROCEDURE ..")]
     DropProcedure(Box<DropProcedureStmt<'input>>),
+    #[railroad(label = "DROP ROUTINE ..")]
     DropRoutine(Box<DropRoutineStmt<'input>>),
+    #[railroad(label = "DROP TABLESPACE ..")]
     DropTablespace(Box<DropTablespaceStmt<'input>>),
+    #[railroad(label = "DROP TRIGGER ..")]
     DropTrigger(DropTriggerStmt<'input>),
+    #[railroad(label = "DROP EVENT TRIGGER ..")]
     DropEventTrigger(DropEventTriggerStmt<'input>),
+    #[railroad(label = "DROP ACCESS METHOD ..")]
     DropAccessMethod(DropAccessMethodStmt<'input>),
+    #[railroad(label = "DROP MATERIALIZED VIEW ..")]
     DropMaterializedView(DropMaterializedViewStmt<'input>),
+    #[railroad(label = "DROP TEXT SEARCH ..")]
     DropTextSearch(DropTextSearchStmt<'input>),
+    #[railroad(label = "DROP FOREIGN ..")]
     DropForeign(DropForeignStmt<'input>),
+    #[railroad(label = "DROP OWNED ..")]
     DropOwned(DropOwnedStmt<'input>),
+    #[railroad(label = "DROP INDEX ..")]
     DropIndex(DropIndexStmt<'input>),
+    #[railroad(label = "DROP VIEW ..")]
     DropView(DropViewStmt<'input>),
+    #[railroad(label = "DROP RULE ..")]
     DropRule(DropRuleStmt<'input>),
+    #[railroad(label = "DROP GROUP ..")]
     DropGroup(DropGroupStmt<'input>),
+    #[railroad(label = "DROP ROLE ..")]
     DropRole(DropRoleStmt<'input>),
+    #[railroad(label = "DROP USER ..")]
     DropUser(DropUserStmt<'input>),
+    #[railroad(label = "DROP SCHEMA ..")]
     DropSchema(DropSchemaStmt<'input>),
+    #[railroad(label = "DROP SEQUENCE ..")]
     DropSequence(DropSequenceStmt<'input>),
+    #[railroad(label = "DROP TYPE ..")]
     DropType(DropTypeStmt<'input>),
+    #[railroad(label = "DROP DOMAIN ..")]
     DropDomain(DropDomainStmt<'input>),
+    #[railroad(label = "DROP AGGREGATE ..")]
     DropAggregate(DropAggregateStmt<'input>),
+    #[railroad(label = "DROP OPERATOR ..")]
     DropOperator(DropOperatorStmt<'input>),
+    #[railroad(label = "DROP CAST ..")]
     DropCast(DropCastStmt<'input>),
+    #[railroad(label = "DROP COLLATION ..")]
     DropCollation(DropCollationStmt<'input>),
+    #[railroad(label = "DROP EXTENSION ..")]
     DropExtension(DropExtensionStmt<'input>),
+    #[railroad(label = "DROP POLICY ..")]
     DropPolicy(DropPolicyStmt<'input>),
+    #[railroad(label = "DROP STATISTICS ..")]
     DropStatistics(DropStatisticsStmt<'input>),
+    #[railroad(label = "DROP PUBLICATION ..")]
     DropPublication(DropPublicationStmt<'input>),
+    #[railroad(label = "DROP SUBSCRIPTION ..")]
     DropSubscription(DropSubscriptionStmt<'input>),
+    #[railroad(label = "DROP CONVERSION ..")]
     DropConversion(DropConversionStmt<'input>),
+    #[railroad(label = "DROP SERVER ..")]
     DropServer(DropServerStmt<'input>),
+    #[railroad(label = "DROP LANGUAGE ..")]
     DropLanguage(DropLanguageStmt<'input>),
+    #[railroad(label = "DROP DATABASE ..")]
     DropDatabase(DropDatabaseStmt<'input>),
+    #[railroad(label = "DROP TABLE ..")]
     DropTable(Box<DropTableStmt<'input>>),
     // ALTER variants: multi-keyword before single-keyword
+    #[railroad(label = "ALTER DEFAULT PRIVILEGES ..")]
     AlterDefaultPrivileges(AlterDefaultPrivilegesStmt<'input>),
+    #[railroad(label = "ALTER FOREIGN ..")]
     AlterForeign(AlterForeignStmt<'input>),
+    #[railroad(label = "ALTER EVENT TRIGGER ..")]
     AlterEventTrigger(AlterEventTriggerStmt<'input>),
+    #[railroad(label = "ALTER MATERIALIZED VIEW ..")]
     AlterMaterializedView(AlterMaterializedViewStmt<'input>),
+    #[railroad(label = "ALTER TEXT SEARCH ..")]
     AlterTextSearch(AlterTextSearchStmt<'input>),
+    #[railroad(label = "ALTER TABLESPACE ..")]
     AlterTablespace(AlterTablespaceStmt<'input>),
+    #[railroad(label = "ALTER TABLE ..")]
     AlterTable(AlterTableStmt<'input>),
+    #[railroad(label = "ALTER RULE ..")]
     AlterRule(AlterRuleStmt<'input>),
+    #[railroad(label = "ALTER GROUP ..")]
     AlterGroup(AlterGroupStmt<'input>),
+    #[railroad(label = "ALTER ROLE ..")]
     AlterRole(AlterRoleStmt<'input>),
+    #[railroad(label = "ALTER USER ..")]
     AlterUser(AlterUserStmt<'input>),
+    #[railroad(label = "ALTER SCHEMA ..")]
     AlterSchema(AlterSchemaStmt<'input>),
+    #[railroad(label = "ALTER SEQUENCE ..")]
     AlterSequence(AlterSequenceStmt<'input>),
+    #[railroad(label = "ALTER TYPE ..")]
     AlterType(AlterTypeStmt<'input>),
+    #[railroad(label = "ALTER DOMAIN ..")]
     AlterDomain(AlterDomainStmt<'input>),
+    #[railroad(label = "ALTER AGGREGATE ..")]
     AlterAggregate(AlterAggregateStmt<'input>),
+    #[railroad(label = "ALTER OPERATOR ..")]
     AlterOperator(AlterOperatorStmt<'input>),
+    #[railroad(label = "ALTER COLLATION ..")]
     AlterCollation(AlterCollationStmt<'input>),
+    #[railroad(label = "ALTER EXTENSION ..")]
     AlterExtension(AlterExtensionStmt<'input>),
+    #[railroad(label = "ALTER POLICY ..")]
     AlterPolicy(AlterPolicyStmt<'input>),
+    #[railroad(label = "ALTER STATISTICS ..")]
     AlterStatistics(AlterStatisticsStmt<'input>),
+    #[railroad(label = "ALTER PUBLICATION ..")]
     AlterPublication(AlterPublicationStmt<'input>),
+    #[railroad(label = "ALTER SUBSCRIPTION ..")]
     AlterSubscription(AlterSubscriptionStmt<'input>),
+    #[railroad(label = "ALTER CONVERSION ..")]
     AlterConversion(AlterConversionStmt<'input>),
+    #[railroad(label = "ALTER SERVER ..")]
     AlterServer(AlterServerStmt<'input>),
+    #[railroad(label = "ALTER LANGUAGE ..")]
     AlterLanguage(AlterLanguageStmt<'input>),
+    #[railroad(label = "ALTER DATABASE ..")]
     AlterDatabase(AlterDatabaseStmt<'input>),
+    #[railroad(label = "ALTER INDEX ..")]
     AlterIndex(AlterIndexStmt<'input>),
+    #[railroad(label = "ALTER VIEW ..")]
     AlterView(AlterViewStmt<'input>),
+    #[railroad(label = "ALTER FUNCTION ..")]
     AlterFunction(AlterFunctionStmt<'input>),
     // CALL stored procedure
+    #[railroad(label = "CALL ..")]
     Call(CallStmt<'input>),
     // DML
+    #[railroad(label = "INSERT ..")]
     Insert(Box<InsertStmt<'input>>),
+    #[railroad(label = "UPDATE ..")]
     Update(Box<UpdateStmt<'input>>),
+    #[railroad(label = "MERGE ..")]
     Merge(Box<MergeStmt<'input>>),
+    #[railroad(label = "DELETE ..")]
     Delete(Box<DeleteStmt<'input>>),
     // Transaction control
+    #[railroad(label = "ROLLBACK ..")]
     Rollback(RollbackStmt<'input>),
+    #[railroad(label = "SAVEPOINT ..")]
     Savepoint(SavepointStmt<'input>),
+    #[railroad(label = "RELEASE ..")]
     Release(ReleaseStmt<'input>),
+    #[railroad(label = "START TRANSACTION ..")]
     StartTransaction(StartTransactionStmt),
+    #[railroad(label = "BEGIN ..")]
     Begin(BeginStmt),
+    #[railroad(label = "COMMIT ..")]
     Commit(CommitStmt<'input>),
+    #[railroad(label = "END ..")]
     End(EndStmt),
+    #[railroad(label = "ABORT ..")]
     Abort(AbortStmt),
     // PREPARE / EXECUTE / DEALLOCATE
+    #[railroad(label = "DEALLOCATE ..")]
     Deallocate(DeallocateStmt<'input>),
+    #[railroad(label = "PREPARE ..")]
     Prepare(PrepareStmt<'input>),
+    #[railroad(label = "EXECUTE ..")]
     Execute(ExecuteStmt<'input>),
     // Permissions
+    #[railroad(label = "GRANT ..")]
     Grant(GrantStmt<'input>),
+    #[railroad(label = "REVOKE ..")]
     Revoke(RevokeStmt<'input>),
     // Utility
+    #[railroad(label = "SECURITY LABEL ..")]
     SecurityLabel(SecurityLabelStmt<'input>),
+    #[railroad(label = "COMMENT ..")]
     Comment(CommentStmt<'input>),
+    #[railroad(label = "COPY ..")]
     Copy(CopyStmt<'input>),
+    #[railroad(label = "TRUNCATE ..")]
     Truncate(TruncateStmt<'input>),
+    #[railroad(label = "REINDEX ..")]
     Reindex(Box<ReindexStmt<'input>>),
+    #[railroad(label = "REFRESH ..")]
     Refresh(RefreshStmt<'input>),
+    #[railroad(label = "CLUSTER ..")]
     Cluster(ClusterStmt<'input>),
+    #[railroad(label = "CHECKPOINT")]
     Checkpoint(CheckpointStmt),
+    #[railroad(label = "VACUUM ..")]
     Vacuum(Box<VacuumStmt<'input>>),
+    #[railroad(label = "LOCK ..")]
     Lock(LockStmt<'input>),
+    #[railroad(label = "NOTIFY ..")]
     Notify(NotifyStmt<'input>),
+    #[railroad(label = "LISTEN ..")]
     Listen(ListenStmt<'input>),
+    #[railroad(label = "UNLISTEN ..")]
     Unlisten(UnlistenStmt<'input>),
+    #[railroad(label = "DISCARD ..")]
     Discard(DiscardStmt<'input>),
+    #[railroad(label = "REASSIGN ..")]
     Reassign(ReassignStmt<'input>),
+    #[railroad(label = "DO ..")]
     Do(Box<DoStmt<'input>>),
     // Cursor
+    #[railroad(label = "DECLARE ..")]
     Declare(DeclareStmt<'input>),
+    #[railroad(label = "FETCH ..")]
     Fetch(FetchStmt<'input>),
+    #[railroad(label = "CLOSE ..")]
     Close(CloseStmt<'input>),
+    #[railroad(label = "MOVE ..")]
     Move(MoveStmt<'input>),
     // Configuration
     // Multi-keyword SET variants must come before plain Set so
     // longest-match-wins picks the more specific form.
+    #[railroad(label = "SET CONSTRAINTS ..")]
     SetConstraints(SetConstraintsStmt<'input>),
+    #[railroad(label = "SET TRANSACTION ..")]
     SetTransaction(SetTransactionStmt),
+    #[railroad(label = "SET SESSION AUTHORIZATION ..")]
     SetSessionAuth(SetSessionAuthStmt<'input>),
+    #[railroad(label = "SET TIME ZONE ..")]
     SetTimeZone(SetTimeZoneStmt<'input>),
+    #[railroad(label = "SET ROLE ..")]
     SetRole(SetRoleStmt<'input>),
+    #[railroad(label = "SET ..")]
     Set(SetStmt<'input>),
+    #[railroad(label = "RESET ..")]
     Reset(ResetStmt<'input>),
+    #[railroad(label = "SHOW ..")]
     Show(ShowStmt<'input>),
+    #[railroad(label = "ANALYZE ..")]
     Analyze(AnalyzeStmt<'input>),
     // Query
+    #[railroad(label = "VALUES ..")]
     Values(Box<Subquery<'input>>),
+    #[railroad(label = "SELECT ..")]
     Select(Box<SelectStmt<'input>>),
+    #[railroad(label = "TABLE ..")]
     Table(TableStmt<'input>),
     /// Catch-all: consumes tokens until the next semicolon.
+    #[railroad(label = "<raw statement>")]
     Raw(RawStatement<'input>),
 }
 
