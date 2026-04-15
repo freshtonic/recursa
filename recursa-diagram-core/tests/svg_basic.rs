@@ -1,17 +1,24 @@
+//! Smoke tests for the rendered SVG.
+//!
+//! These tests no longer pin the exact pixel geometry: we delegate layout
+//! to the `railroad` crate, so the output shape (coordinates, connector
+//! paths, CSS classes) is that crate's concern. What we still own is the
+//! tree-to-tree translation from our `Node` IR into railroad's IR, so the
+//! tests focus on: (1) basic well-formedness, (2) every expected label
+//! appearing in the output, (3) relative ordering where it follows from
+//! our IR choices.
+
 use recursa_diagram_core::{
     layout::{Choice, Node, NonTerminal, OneOrMore, Optional, Sequence, Terminal},
     render,
 };
 
-/// Cheap well-formedness check: every `<tag>` opens must be balanced by a
-/// matching `</tag>` or self-close `/>`. This catches accidental unbalanced
-/// markup in the first-pass renderers without pulling in a full XML parser.
-///
-/// **Limitation:** counts-based — does NOT detect tag-name mismatches like
-/// `<a></b>`. Use for smoke-testing emission quantity only; rely on the
-/// snapshot fixture for structural correctness.
+/// Cheap well-formedness check: every `<tag>` open must be balanced by a
+/// matching `</tag>` or self-close `/>`. Counts-based; does NOT catch
+/// tag-name mismatches. Use as a smoke signal only — real structural
+/// correctness is covered by the snapshot test.
 fn assert_balanced_tags(svg: &str) {
-    // Strip XML comments `<!-- ... -->` so they don't confuse the counter.
+    // Strip XML comments first so `<!--` is not confused with an open tag.
     let mut stripped = String::with_capacity(svg.len());
     let mut rest = svg;
     while let Some(start) = rest.find("<!--") {
@@ -23,39 +30,19 @@ fn assert_balanced_tags(svg: &str) {
     stripped.push_str(rest);
     let s = stripped.as_str();
 
-    // Every `<` is either an opening tag, a self-closing tag, or a closing tag.
-    //   opens_total  = open_tags + close_tags
-    //   open_tags    = self_close + paired_opens
-    //   paired_opens = close_tags
-    // So opens_total == self_close + 2 * close_tags.
     let opens = s.matches('<').count();
     let self_close = s.matches("/>").count();
     let close = s.matches("</").count();
     assert_eq!(
         opens,
         self_close + 2 * close,
-        "unbalanced tags: opens={opens} self_close={self_close} close={close} svg={svg}"
+        "unbalanced tags: opens={opens} self_close={self_close} close={close}"
     );
 }
 
-/// Extract the `y="..."` attribute of the `<rect>` that immediately precedes
-/// the given label text. Returns the integer y value of the rect's top edge.
-///
-/// Searches for `>{label}<` so href attributes like `href="Foo.html"` don't
-/// match before the actual `<text>Foo</text>` element.
-fn rect_y_before_label(svg: &str, label: &str) -> i32 {
-    let needle = format!(">{label}<");
-    let label_pos = svg
-        .find(&needle)
-        .unwrap_or_else(|| panic!("label {label} not found (as >{label}<)"));
-    let prefix = &svg[..label_pos];
-    let rect_pos = prefix.rfind("<rect").expect("rect before label");
-    let rect_rest = &svg[rect_pos..];
-    // Find y=" then parse integer
-    let y_start = rect_rest.find(r#"y=""#).expect("y attr") + 3;
-    let y_rest = &rect_rest[y_start..];
-    let y_end = y_rest.find('"').expect("y close");
-    y_rest[..y_end].parse::<i32>().expect("y int")
+fn find_label(svg: &str, label: &str) -> usize {
+    svg.find(label)
+        .unwrap_or_else(|| panic!("label {label} not found in svg:\n{svg}"))
 }
 
 #[test]
@@ -63,8 +50,8 @@ fn terminal_svg_contains_text() {
     let svg = render(&Node::Terminal(Terminal::new("SELECT")));
     assert!(svg.starts_with("<svg"), "should be an svg: {svg}");
     assert!(svg.contains("SELECT"), "should contain the literal: {svg}");
-    assert!(svg.ends_with("</svg>"));
-    assert!(svg.contains("<!-- railroad -->"));
+    assert!(svg.trim_end().ends_with("</svg>"));
+    assert_balanced_tags(&svg);
 }
 
 #[test]
@@ -72,6 +59,7 @@ fn non_terminal_svg_without_href() {
     let svg = render(&Node::NonTerminal(NonTerminal::new("Expr", None)));
     assert!(svg.contains("Expr"));
     assert!(!svg.contains("<a "));
+    assert_balanced_tags(&svg);
 }
 
 #[test]
@@ -80,8 +68,13 @@ fn non_terminal_svg_with_href_wraps_in_anchor() {
         "Expr",
         Some("Expr.html".into()),
     )));
-    assert!(svg.contains(r#"<a xlink:href="Expr.html""#) || svg.contains(r#"<a href="Expr.html""#));
+    assert!(svg.contains("<a "), "expected anchor tag: {svg}");
+    assert!(
+        svg.contains("Expr.html"),
+        "expected href target in svg: {svg}"
+    );
     assert!(svg.contains("Expr"));
+    assert_balanced_tags(&svg);
 }
 
 #[test]
@@ -91,24 +84,25 @@ fn sequence_renders_children_in_order() {
         Node::NonTerminal(NonTerminal::new("Column", None)),
     ]));
     let svg = render(&seq);
-    let i_select = svg.find("SELECT").expect("SELECT present");
-    let i_column = svg.find("Column").expect("Column present");
+    assert_balanced_tags(&svg);
+    let i_select = find_label(&svg, "SELECT");
+    let i_column = find_label(&svg, "Column");
     assert!(i_select < i_column, "SELECT should appear before Column");
-    assert_eq!(
-        svg.matches("<path").count(),
-        1,
-        "expected exactly one connector between two children: {svg}"
-    );
 }
 
 #[test]
 fn terminal_text_is_xml_escaped() {
+    // We don't pin the exact escape form (`&apos;` vs `&#x27;` vary by
+    // library); we just require that the raw `<` and `&` are not present
+    // as active markup in the body.
     let svg = render(&Node::Terminal(Terminal::new("a<b&c\"'")));
     assert!(
-        svg.contains("a&lt;b&amp;c&quot;&apos;"),
-        "expected escaped text: {svg}"
+        !svg.contains("a<b"),
+        "raw < leaked into text content: {svg}"
     );
-    assert!(!svg.contains("a<b"), "raw < leaked through: {svg}");
+    assert!(svg.contains("&lt;"), "expected escaped <: {svg}");
+    assert!(svg.contains("&amp;"), "expected escaped &: {svg}");
+    assert_balanced_tags(&svg);
 }
 
 #[test]
@@ -117,104 +111,56 @@ fn non_terminal_href_is_escaped() {
         "X",
         Some("a&b.html".into()),
     )));
-    assert!(
-        svg.contains(r#"href="a&amp;b.html""#),
-        "expected escaped href: {svg}"
-    );
-}
-
-#[test]
-fn choice_default_branch_sits_on_baseline() {
-    // 3-branch choice with middle (index 1) as the default. The default branch
-    // must be rendered at the enclosing baseline; the other two must sit above
-    // and below it.
-    let branch_a = Node::Terminal(Terminal::new("AAA"));
-    let branch_b = Node::Terminal(Terminal::new("BBB"));
-    let branch_c = Node::Terminal(Terminal::new("CCC"));
-    let ch = Node::Choice(Choice::new(1, vec![branch_a, branch_b, branch_c]));
-    let svg = render(&ch);
+    assert!(svg.contains("a&amp;b.html"), "expected escaped href: {svg}");
     assert_balanced_tags(&svg);
-
-    let y_a = rect_y_before_label(&svg, "AAA");
-    let y_b = rect_y_before_label(&svg, "BBB");
-    let y_c = rect_y_before_label(&svg, "CCC");
-
-    // Baseline of the diagram = SVG_OUTER_PADDING (10) + root.up().
-    // With the middle branch on the baseline, its rect top edge is baseline - 11.
-    // The top branch sits above (smaller y); the bottom branch sits below.
-    assert!(
-        y_a < y_b,
-        "top branch must be above default: y_a={y_a} y_b={y_b}"
-    );
-    assert!(
-        y_c > y_b,
-        "bottom branch must be below default: y_c={y_c} y_b={y_b}"
-    );
-
-    // The default branch's rect top must be exactly `pad + (root.up() - 11)` =
-    // 10 + (root.up() - 11). root.up() is `default.up() + (above sum)`.
-    // We can compute it via the layout without re-deriving: for a single-level
-    // Choice with three identical-height branches and default_idx=1, the default
-    // branch's rect top is pad + default_up_offset - half = 10 + above - 0? Let's
-    // just assert the difference: (y_b - y_a) should equal the branch stride
-    // (branch height + vertical gap) = 22 + 10 = 32.
-    assert_eq!(y_b - y_a, 32, "branch stride should be box+gap");
-    assert_eq!(y_c - y_b, 32, "branch stride should be box+gap");
 }
 
 #[test]
 fn choice_emits_text_for_every_branch() {
+    // Default-branch handling: we move `default_idx` to the front when
+    // converting to the railroad crate's Choice, so the inline main-path
+    // branch is the one we declared as default. Verify that every branch's
+    // label still shows up in the output and that the default branch is
+    // emitted before the other branches in source order.
     let ch = Node::Choice(Choice::new(
-        0,
+        1,
         vec![
-            Node::Terminal(Terminal::new("ONE")),
-            Node::Terminal(Terminal::new("TWO")),
+            Node::Terminal(Terminal::new("AAA")),
+            Node::Terminal(Terminal::new("BBB")),
+            Node::Terminal(Terminal::new("CCC")),
         ],
     ));
     let svg = render(&ch);
     assert_balanced_tags(&svg);
-    assert!(svg.contains("ONE"));
-    assert!(svg.contains("TWO"));
+    let i_a = find_label(&svg, "AAA");
+    let i_b = find_label(&svg, "BBB");
+    let i_c = find_label(&svg, "CCC");
+    // Default (BBB) first, then the rest in original order (AAA, CCC).
+    assert!(
+        i_b < i_a && i_b < i_c,
+        "default branch BBB should be emitted first: a={i_a} b={i_b} c={i_c}"
+    );
+    assert!(i_a < i_c, "non-default branches preserve source order");
 }
 
 #[test]
-fn optional_renders_child_on_baseline_with_skip_rail_above() {
+fn optional_renders_child_label() {
     let opt = Node::Optional(Optional::new(Node::Terminal(Terminal::new("MAYBE"))));
     let svg = render(&opt);
     assert_balanced_tags(&svg);
     assert!(svg.contains("MAYBE"));
-
-    // The child's rect top is at (pad + root.up()) - 11. The skip rail path is
-    // emitted as a <path> element. At minimum we should see at least one path
-    // and the child's text on the main baseline row.
-    assert!(
-        svg.matches("<path").count() >= 1,
-        "expected skip-rail path(s): {svg}"
-    );
-
-    // Child rect y == pad + root.up() - 11. The main baseline equals
-    // pad + root.up(), i.e. 10 + (11 + 22 + 10) = 53, so rect top is 42.
-    let child_y = rect_y_before_label(&svg, "MAYBE");
-    assert_eq!(
-        child_y, 42,
-        "optional child should sit on main baseline, got rect y={child_y}: {svg}"
-    );
 }
 
 #[test]
-fn one_or_more_without_separator_has_loopback_path() {
+fn one_or_more_without_separator_renders_child() {
     let om = Node::OneOrMore(OneOrMore::new(Node::Terminal(Terminal::new("ITEM")), None));
     let svg = render(&om);
     assert_balanced_tags(&svg);
     assert!(svg.contains("ITEM"));
-    assert!(
-        svg.matches("<path").count() >= 1,
-        "expected loop-back path: {svg}"
-    );
 }
 
 #[test]
-fn one_or_more_with_separator_places_sep_below_child() {
+fn one_or_more_with_separator_emits_both_labels() {
     let om = Node::OneOrMore(OneOrMore::new(
         Node::Terminal(Terminal::new("COL")),
         Some(Node::Terminal(Terminal::new("COMMA"))),
@@ -223,89 +169,36 @@ fn one_or_more_with_separator_places_sep_below_child() {
     assert_balanced_tags(&svg);
     assert!(svg.contains("COL"));
     assert!(svg.contains("COMMA"));
-
-    let y_col = rect_y_before_label(&svg, "COL");
-    let y_comma = rect_y_before_label(&svg, "COMMA");
-    assert!(
-        y_comma > y_col,
-        "separator must render below child: y_col={y_col} y_comma={y_comma}"
-    );
 }
 
 #[test]
-fn wrapped_sequence_children_appear_in_different_rows() {
-    // Five wide-ish terminals with a tight max_width forces a wrap.
-    // Terminal("XXXX") width = 4*8 + 40 = 72. Two per row at max_width=160.
+fn wrapped_sequence_emits_every_child() {
+    // Wrapping is translated to a Stack-of-Sequences in the railroad crate;
+    // we only assert that every child label survives the conversion.
     let children: Vec<Node> = (0..5)
         .map(|i| Node::Terminal(Terminal::new(format!("X{i}"))))
         .collect();
     let seq = Node::Sequence(Sequence::wrapped(children, 160));
     let svg = render(&seq);
     assert_balanced_tags(&svg);
-
-    // Children in the same row share a y; a later row has a larger y.
-    let y0 = rect_y_before_label(&svg, "X0");
-    let y1 = rect_y_before_label(&svg, "X1");
-    let y2 = rect_y_before_label(&svg, "X2");
-    let y4 = rect_y_before_label(&svg, "X4");
-    assert_eq!(y0, y1, "X0 and X1 should share a row");
-    assert!(
-        y2 > y0,
-        "row 2 child X2 should sit below row 1 (y2={y2} y0={y0})"
-    );
-    assert!(
-        y4 > y2,
-        "row 3 child X4 should sit below row 2 (y4={y4} y2={y2})"
-    );
-}
-
-#[test]
-fn wrapped_sequence_emits_wrap_connector_between_rows() {
-    // Same shape as above; ensure we emit at least one extra <path> that is
-    // not just the inline connector between row-sibling children.
-    //
-    // A non-wrapped 5-child sequence emits 4 inline connector paths (one
-    // between each adjacent pair on the same row). A wrapped sequence on
-    // three rows emits: 1 (row0: X0-X1) + 1 (row1: X2-X3) + 0 (row2: X4 alone)
-    // = 2 inline connectors, plus 2 wrap connectors (row0->row1, row1->row2),
-    // plus entry/exit stubs. Assert strictly more paths than the inline-only
-    // count.
-    let children: Vec<Node> = (0..5)
-        .map(|i| Node::Terminal(Terminal::new(format!("X{i}"))))
-        .collect();
-    let seq = Node::Sequence(Sequence::wrapped(children, 160));
-    let svg = render(&seq);
-    let path_count = svg.matches("<path").count();
-    assert!(
-        path_count >= 4,
-        "expected wrap connector paths in addition to row connectors, got {path_count}: {svg}"
-    );
+    for i in 0..5 {
+        let label = format!("X{i}");
+        assert!(svg.contains(&label), "missing {label}: {svg}");
+    }
 }
 
 #[test]
 fn empty_sequence_renders_valid_wrapper() {
-    // Empty sequence: body width = CHOICE_RAIL_WIDTH (20, entry+exit stubs),
-    // body height = BOX_HEIGHT (22), up = down = BASELINE_OFFSET (11).
-    // With SVG_OUTER_PADDING (10) on each side:
-    //   total width  = 20 + 20 = 40
-    //   total height = 22 + 20 = 42
     let svg = render(&Node::Sequence(Sequence::new(vec![])));
     assert!(svg.starts_with("<svg"), "not an svg: {svg}");
-    assert!(svg.ends_with("</svg>"), "unclosed svg: {svg}");
-    assert!(svg.contains(r#"width="40""#), "unexpected width: {svg}");
-    assert!(svg.contains(r#"height="42""#), "unexpected height: {svg}");
-    assert_eq!(
-        svg.matches("<path").count(),
-        0,
-        "empty sequence should emit no connectors: {svg}"
-    );
+    assert!(svg.trim_end().ends_with("</svg>"), "unclosed svg: {svg}");
+    assert_balanced_tags(&svg);
 }
 
 #[test]
 fn empty_wrapped_sequence_matches_empty_new_sequence() {
     // Documents the empty-input contract: Sequence::wrapped(vec![], _)
-    // short-circuits to Sequence::new(vec![]) and must produce byte-for-byte
-    // identical output.
+    // short-circuits to Sequence::new(vec![]), which must render identically.
     let from_new = render(&Node::Sequence(Sequence::new(vec![])));
     let from_wrapped = render(&Node::Sequence(Sequence::wrapped(vec![], 1200)));
     assert_eq!(from_wrapped, from_new);

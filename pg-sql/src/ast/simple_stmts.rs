@@ -795,6 +795,7 @@ macro_rules! alter_stmts {
 }
 
 alter_stmts! {
+    Rule, AlterRuleStmt, Rule;
     Group, AlterGroupStmt, Group;
     Role, AlterRoleStmt, Role;
     User, AlterUserStmt, User;

@@ -60,6 +60,19 @@ pub enum TypeName<'input> {
     /// `DOUBLE PRECISION` — two-keyword type. Listed before `Ident` so the
     /// DOUBLE match isn't accidentally consumed as a plain identifier.
     DoublePrecision(DoublePrecisionType),
+    /// `TIMESTAMP` (optional `WITH/WITHOUT TIME ZONE` qualifier handled
+    /// at the `CastType` level so precision can sit between).
+    Timestamp(keyword::Timestamp),
+    /// `TIME` — same shape as `TIMESTAMP`.
+    Time(keyword::Time),
+    /// `INTERVAL` — qualifier (`YEAR TO MONTH` etc.) is currently not
+    /// modeled at the type level; only the bare keyword is consumed.
+    Interval(keyword::IntervalKw),
+    /// `BIT` and `BIT VARYING` (the optional `VARYING` modifier is handled
+    /// at the `CastType` level).
+    Bit(keyword::BitKw),
+    /// `CHARACTER` and `CHARACTER VARYING` — same shape as `BIT`.
+    Character(keyword::CharacterKw),
     Ident(literal::Ident<'input>),
 }
 
@@ -558,7 +571,13 @@ pub enum CaseExpr<'input> {
 #[parse(rules = SqlRules)]
 pub struct CastType<'input> {
     pub base: TypeName<'input>,
+    /// `VARYING` modifier (e.g., `BIT VARYING`, `CHARACTER VARYING`).
+    /// Always precedes the precision parens.
+    pub varying: Option<keyword::Varying>,
     pub precision: Option<TypePrecision<'input>>,
+    /// `WITH/WITHOUT TIME ZONE` qualifier on `TIME`/`TIMESTAMP` types.
+    /// Always follows the precision parens.
+    pub tz: Option<TimeZoneQualifier>,
     pub array_suffixes: Vec<ArrayTypeSuffix>,
 }
 
@@ -625,6 +644,8 @@ pub struct WithoutTimeZone {
 #[parse(rules = SqlRules)]
 pub struct TimestampLit<'input> {
     pub _timestamp: keyword::Timestamp,
+    /// Optional precision, e.g., `timestamp(6)`.
+    pub precision: Option<TypePrecision<'input>>,
     pub tz: Option<TimeZoneQualifier>,
     pub value: literal::StringLit<'input>,
 }
@@ -635,6 +656,8 @@ pub struct TimestampLit<'input> {
 #[parse(rules = SqlRules)]
 pub struct TimeLit<'input> {
     pub _time: keyword::Time,
+    /// Optional precision, e.g., `time(2)`.
+    pub precision: Option<TypePrecision<'input>>,
     pub tz: Option<TimeZoneQualifier>,
     pub value: literal::StringLit<'input>,
 }
@@ -955,6 +978,7 @@ pub struct SubstringSimilar<'input> {
 pub enum SubstringTail<'input> {
     Similar(SubstringSimilar<'input>),
     FromFor(SubstringFromFor<'input>),
+    For(ForCount<'input>),
 }
 
 /// Inner of `SUBSTRING(...)`: `source` followed by FROM/SIMILAR tail.
@@ -964,6 +988,45 @@ pub enum SubstringTail<'input> {
 pub struct SubstringInner<'input> {
     pub source: Box<Expr<'input>>,
     pub tail: SubstringTail<'input>,
+}
+
+/// `COLLATION FOR (expr)` — SQL-standard collation introspection.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CollationForCall<'input> {
+    pub _collation: keyword::Collation,
+    pub _for: keyword::For,
+    pub arg: Surrounded<punct::LParen, Box<Expr<'input>>, punct::RParen>,
+}
+
+/// `expr AS cast_type [COLLATE "c"]` — inner of `CAST(...)`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CastAsInner<'input> {
+    pub value: Box<Expr<'input>>,
+    pub _as: keyword::As,
+    pub target: CastType<'input>,
+    pub collate: Option<CollateSuffix<'input>>,
+}
+
+/// `COLLATE "name"` suffix appearing after a cast target type.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CollateSuffix<'input> {
+    pub _collate: keyword::Collate,
+    pub name: literal::Ident<'input>,
+}
+
+/// `CAST(expr AS type [COLLATE "c"])` — SQL-standard cast form.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CastCall<'input> {
+    pub _kw: keyword::Cast,
+    pub inner: Surrounded<punct::LParen, CastAsInner<'input>, punct::RParen>,
 }
 
 /// `SUBSTRING(source FROM start [FOR len])` /
@@ -1129,6 +1192,12 @@ pub enum Expr<'input> {
     /// Boolean test: `expr IS [NOT] TRUE/FALSE/UNKNOWN/NULL`
     #[parse(postfix, bp = 8)]
     BoolTest(Box<Expr<'input>>, keyword::Is, BoolTestKind),
+    /// Postgres `expr NOTNULL` postfix null test (synonym for `IS NOT NULL`).
+    #[parse(postfix, bp = 8)]
+    Notnull(Box<Expr<'input>>, keyword::Notnull),
+    /// Postgres `expr ISNULL` postfix null test (synonym for `IS NULL`).
+    #[parse(postfix, bp = 8)]
+    Isnull(Box<Expr<'input>>, keyword::Isnull),
     /// NOT IN list: `expr NOT IN (val, ...)`
     #[parse(postfix, bp = 6)]
     NotInExpr(Box<Expr<'input>>, NotInSuffix<'input>),
@@ -1403,6 +1472,12 @@ pub enum Expr<'input> {
     /// since `trim` is also a valid function-call identifier.
     #[parse(atom)]
     Trim(TrimCall<'input>),
+    /// `CAST(expr AS type [COLLATE "c"])`. Before `Func`.
+    #[parse(atom)]
+    CastCall(CastCall<'input>),
+    /// `COLLATION FOR (expr)`. Before `Func`.
+    #[parse(atom)]
+    CollationFor(CollationForCall<'input>),
     /// `SUBSTRING(source FROM ... | SIMILAR ...)`. Before `Func`.
     #[parse(atom)]
     Substring(SubstringCall<'input>),
@@ -1433,6 +1508,10 @@ pub enum Expr<'input> {
     /// Integer literal: `42`
     #[parse(atom)]
     IntegerLit(literal::IntegerLit<'input>),
+    /// Dollar-quoted string literal: `$$...$$` or `$tag$...$tag$`.
+    /// Listed before `StringLit` since it has a distinct prefix (`$`).
+    #[parse(atom)]
+    DollarStringLit(literal::DollarStringLit<'input>),
     /// String literal sequence: `'hello'` or `'first' 'second' ...` —
     /// Postgres concatenates adjacent string literals into one.
     #[parse(atom)]
@@ -1474,6 +1553,15 @@ mod tests {
         let mut input = Input::new("42");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::IntegerLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_dollar_string_literal_expr() {
+        // Regression: json.sql uses `$$'foo'$$::json` and similar.
+        let mut input = Input::new("$$''$$");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::DollarStringLit(_)));
         assert!(input.is_empty());
     }
 
@@ -1688,6 +1776,45 @@ mod tests {
     }
 
     #[test]
+    fn parse_notnull_isnull() {
+        let mut input = Input::new("x.c NOTNULL");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Notnull(..)));
+        assert!(input.is_empty());
+        let mut input = Input::new("x.c ISNULL");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::Isnull(..)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_collation_for() {
+        let mut input = Input::new("collation for ('foo')");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+        let mut input = Input::new("collation for ((SELECT a FROM t LIMIT 1))");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_cast_call() {
+        let mut input = Input::new("CAST('42' AS text COLLATE \"C\")");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+        let mut input = Input::new("CAST(b AS varchar)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_substring_for_only() {
+        let mut input = Input::new("substring(d FOR 30)");
+        let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
     fn parse_substring_similar_escape() {
         let mut input = Input::new("SUBSTRING('abcdefg' SIMILAR 'a#\"%#\"g' ESCAPE '#')");
         let _expr = Expr::parse::<SqlRules>(&mut input).unwrap();
@@ -1869,6 +1996,15 @@ mod tests {
     #[test]
     fn parse_timestamp_with_tz_literal() {
         let mut input = Input::new("timestamp with time zone '2001-12-27 04:05:06+08'");
+        let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(expr, Expr::TimestampLit(_)));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_timestamp_precision_without_tz_literal() {
+        // Regression: timestamp.sql uses `timestamp(2) without time zone 'now'`.
+        let mut input = Input::new("timestamp(2) without time zone 'now'");
         let expr = Expr::parse::<SqlRules>(&mut input).unwrap();
         assert!(matches!(expr, Expr::TimestampLit(_)));
         assert!(input.is_empty());

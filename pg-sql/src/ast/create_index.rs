@@ -171,8 +171,38 @@ pub struct CreateIndexStmt<'input> {
     pub columns:
         Surrounded<punct::LParen, Seq<IndexElem<'input>, punct::Comma>, punct::RParen>,
     pub include: Option<IncludeClause<'input>>,
+    pub nulls_distinct: Option<NullsDistinctClause>,
     pub with_storage: Option<WithStorage<'input>>,
     pub where_clause: Option<WhereClause<'input>>,
+}
+
+/// `NULLS [NOT] DISTINCT` modifier on a unique index.
+///
+/// Variant ordering: `NotDistinct` (`NULLS NOT DISTINCT`, longer) before
+/// `Distinct` (`NULLS DISTINCT`, shorter).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum NullsDistinctClause {
+    NotDistinct(NullsNotDistinct),
+    Distinct(NullsDistinct),
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NullsDistinct {
+    pub _nulls: PhantomData<keyword::Nulls>,
+    pub _distinct: PhantomData<keyword::Distinct>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NullsNotDistinct {
+    pub _nulls: PhantomData<keyword::Nulls>,
+    pub _not: PhantomData<keyword::Not>,
+    pub _distinct: PhantomData<keyword::Distinct>,
 }
 
 /// DROP INDEX statement:
@@ -197,6 +227,17 @@ mod tests {
     use recursa::{Input, Parse};
 
     use crate::ast::create_index::{CreateIndexStmt, DropIndexStmt};
+
+    #[test]
+    fn parse_create_unique_index_nulls_distinct() {
+        let mut input =
+            recursa::Input::new("CREATE UNIQUE INDEX i ON t (i) NULLS NOT DISTINCT");
+        let _stmt = CreateIndexStmt::parse::<crate::rules::SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+        let mut input = recursa::Input::new("CREATE UNIQUE INDEX i ON t (i) NULLS DISTINCT");
+        let _stmt = CreateIndexStmt::parse::<crate::rules::SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
     use crate::rules::SqlRules;
 
     #[test]

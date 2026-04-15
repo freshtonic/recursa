@@ -71,16 +71,38 @@ pub struct InheritedTable<'input> {
     pub alias: Option<literal::Ident<'input>>,
 }
 
-/// Table alias: `AS name [(col1, col2)]` or bare `name [(col1, col2)]`.
+/// `AS name [(col1, col2)]` table alias form.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TableAlias<'input> {
-    pub _as: Option<PhantomData<keyword::As>>,
+pub struct TableAliasWithAs<'input> {
+    pub _as: PhantomData<keyword::As>,
     pub name: literal::AliasName<'input>,
-    pub columns: Option<
-        Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
-    >,
+    pub columns:
+        Option<Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>>,
+}
+
+/// Bare `name [(col1, col2)]` table alias form. Bare alias names must not
+/// be reserved keywords (uses `Ident`, not `AliasName`), otherwise clauses
+/// like `FROM unnest(a) ORDER BY 1` would consume `ORDER` as an alias.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TableAliasBare<'input> {
+    pub name: literal::Ident<'input>,
+    pub columns:
+        Option<Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>>,
+}
+
+/// Table alias: `AS name [(col1, col2)]` or bare `name [(col1, col2)]`.
+///
+/// Variant ordering: `WithAs` (`AS`) before `Bare` (ident).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum TableAlias<'input> {
+    WithAs(TableAliasWithAs<'input>),
+    Bare(TableAliasBare<'input>),
 }
 
 /// Subquery in FROM: `(SELECT ...) AS alias`
@@ -91,7 +113,7 @@ pub struct SubqueryRef<'input> {
     pub _lparen: punct::LParen,
     pub query: Box<crate::ast::values::CompoundQuery<'input>>,
     pub _rparen: punct::RParen,
-    pub alias: TableAlias<'input>,
+    pub alias: Option<TableAlias<'input>>,
 }
 
 /// Parenthesized join tree in FROM: `(t1 CROSS JOIN t2) AS alias`.
@@ -442,13 +464,44 @@ pub struct LimitClause<'input> {
     pub count: Expr<'input>,
 }
 
-/// FOR UPDATE clause.
+/// FOR UPDATE / FOR SHARE / FOR NO KEY UPDATE / FOR KEY SHARE locking clause.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct ForUpdateClause {
     pub _for: PhantomData<keyword::For>,
+    pub mode: LockingMode,
+}
+
+/// Lock strength for `SELECT ... FOR ...` locking clauses.
+///
+/// Variant ordering: longer (`NO KEY UPDATE`, `KEY SHARE`) before shorter
+/// (`UPDATE`, `SHARE`) so longest-match wins.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum LockingMode {
+    NoKeyUpdate(NoKeyUpdate),
+    KeyShare(KeyShare),
+    Update(keyword::Update),
+    Share(keyword::Share),
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct NoKeyUpdate {
+    pub _no: PhantomData<keyword::No>,
+    pub _key: PhantomData<keyword::Key>,
     pub _update: PhantomData<keyword::Update>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct KeyShare {
+    pub _key: PhantomData<keyword::Key>,
+    pub _share: PhantomData<keyword::Share>,
 }
 
 /// GROUP BY clause: `GROUP BY item, ...` where each item is an expression
@@ -459,7 +512,18 @@ pub struct ForUpdateClause {
 pub struct GroupByClause<'input> {
     pub _group: PhantomData<keyword::Group>,
     pub _by: PhantomData<keyword::By>,
+    /// Optional `DISTINCT` / `ALL` modifier (Postgres 16+).
+    pub modifier: Option<GroupByModifier>,
     pub items: Seq<GroupByItem<'input>, punct::Comma>,
+}
+
+/// `GROUP BY [DISTINCT|ALL]` modifier.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum GroupByModifier {
+    Distinct(keyword::Distinct),
+    All(keyword::All),
 }
 
 /// `GROUPING SETS ( item, ... )`.
@@ -540,6 +604,51 @@ pub struct WindowClause<'input> {
     pub defs: Seq<WindowDef<'input>, punct::Comma, NoTrailing, NonEmpty>,
 }
 
+/// `INTO [TEMP|TEMPORARY|UNLOGGED] [TABLE] target` clause for the
+/// Postgres `SELECT ... INTO new_table` statement form.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SelectIntoClause<'input> {
+    pub _into: PhantomData<keyword::Into>,
+    pub temp: Option<crate::ast::create_table::TempKw>,
+    pub unlogged: Option<PhantomData<keyword::Unlogged>>,
+    pub _table: Option<PhantomData<keyword::Table>>,
+    pub target: crate::ast::common::QualifiedName<'input>,
+}
+
+/// `DISTINCT` or `DISTINCT ON (exprs)` qualifier on a SELECT.
+///
+/// Variant ordering: `On` (longer, starts with `DISTINCT ON`) before `All`
+/// (just `DISTINCT`).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum SelectDistinct<'input> {
+    On(SelectDistinctOn<'input>),
+    All(SelectDistinctAll),
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SelectDistinctOn<'input> {
+    pub _distinct: PhantomData<keyword::Distinct>,
+    pub _on: PhantomData<keyword::On>,
+    pub exprs: Surrounded<
+        punct::LParen,
+        Seq<crate::ast::expr::Expr<'input>, punct::Comma>,
+        punct::RParen,
+    >,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SelectDistinctAll {
+    pub _distinct: PhantomData<keyword::Distinct>,
+}
+
 /// SELECT statement.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
@@ -547,9 +656,11 @@ pub struct WindowClause<'input> {
 #[format_tokens(group(consistent))]
 pub struct SelectStmt<'input> {
     pub _select: PhantomData<keyword::Select>,
-    pub distinct: Option<PhantomData<keyword::Distinct>>,
+    pub distinct: Option<SelectDistinct<'input>>,
     #[format_tokens(group(consistent), indent, break(flat = " ", broken = "\n"))]
     pub items: Seq<SelectItem<'input>, punct::Comma>,
+    #[format_tokens(break(flat = " ", broken = "\n"))]
+    pub into: Option<SelectIntoClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
     pub from_clause: Option<FromClause<'input>>,
     #[format_tokens(break(flat = " ", broken = "\n"))]
@@ -942,10 +1053,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_group_by_distinct_modifier() {
+        // Regression: groupingsets.sql uses `GROUP BY DISTINCT ROLLUP(a, b), ROLLUP(a, c)`
+        // and `GROUP BY ALL ROLLUP(a, b), ROLLUP(a, c)`.
+        for src in [
+            "SELECT a FROM t GROUP BY DISTINCT ROLLUP(a, b), ROLLUP(a, c)",
+            "SELECT a FROM t GROUP BY ALL ROLLUP(a, b), ROLLUP(a, c)",
+        ] {
+            let mut input = Input::new(src);
+            SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+            assert!(input.is_empty(), "leftover for {src:?}");
+        }
+    }
+
+    #[test]
     fn parse_select_for_update() {
         let mut input = Input::new("SELECT f1 FROM t FOR UPDATE");
         let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(stmt.for_update.is_some());
         assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_select_locking_variants() {
+        // Regression: matview.sql uses `FOR SHARE`. Postgres also supports
+        // `FOR NO KEY UPDATE` and `FOR KEY SHARE`.
+        for src in [
+            "SELECT * FROM t FOR SHARE",
+            "SELECT * FROM t FOR NO KEY UPDATE",
+            "SELECT * FROM t FOR KEY SHARE",
+        ] {
+            let mut input = Input::new(src);
+            let stmt = SelectStmt::parse::<SqlRules>(&mut input).unwrap();
+            assert!(stmt.for_update.is_some(), "no locking clause: {src:?}");
+            assert!(input.is_empty(), "leftover for {src:?}");
+        }
     }
 }

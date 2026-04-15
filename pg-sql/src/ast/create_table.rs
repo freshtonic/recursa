@@ -232,16 +232,111 @@ pub struct NoInheritKw {
     pub _inherit: PhantomData<keyword::Inherit>,
 }
 
-/// GENERATED ALWAYS AS IDENTITY column constraint.
+/// GENERATED ALWAYS AS IDENTITY column constraint, with optional
+/// `(sequence_option ...)` parenthesized list (e.g. `START WITH 44`).
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct GeneratedIdentityConstraint(
-    PhantomData<keyword::Generated>,
-    PhantomData<keyword::Always>,
-    PhantomData<keyword::As>,
-    PhantomData<keyword::Identity>,
-);
+pub struct GeneratedIdentityConstraint<'input> {
+    pub _generated: PhantomData<keyword::Generated>,
+    pub _always: PhantomData<keyword::Always>,
+    pub _as: PhantomData<keyword::As>,
+    pub _identity: PhantomData<keyword::Identity>,
+    pub seq_options:
+        Option<Surrounded<punct::LParen, Vec<IdentitySeqOption<'input>>, punct::RParen>>,
+}
+
+/// One option inside an `IDENTITY ( ... )` sequence option list.
+///
+/// Variant ordering: longer multi-word forms first so longest-match-wins
+/// picks them.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum IdentitySeqOption<'input> {
+    StartWith(SeqOptStartWith<'input>),
+    IncrementBy(SeqOptIncrementBy<'input>),
+    MinValue(SeqOptMinValue<'input>),
+    NoMinValue(SeqOptNoMinValue),
+    MaxValue(SeqOptMaxValue<'input>),
+    NoMaxValue(SeqOptNoMaxValue),
+    Cache(SeqOptCache<'input>),
+    Cycle(SeqOptCycle),
+    NoCycle(SeqOptNoCycle),
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SeqOptStartWith<'input> {
+    pub _start: PhantomData<keyword::Start>,
+    pub _with: Option<PhantomData<keyword::With>>,
+    pub value: crate::ast::expr::Expr<'input>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SeqOptIncrementBy<'input> {
+    pub _increment: PhantomData<keyword::Increment>,
+    pub _by: Option<PhantomData<keyword::By>>,
+    pub value: crate::ast::expr::Expr<'input>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SeqOptMinValue<'input> {
+    pub _minvalue: PhantomData<keyword::Minvalue>,
+    pub value: crate::ast::expr::Expr<'input>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SeqOptNoMinValue {
+    pub _no: PhantomData<keyword::No>,
+    pub _minvalue: PhantomData<keyword::Minvalue>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SeqOptMaxValue<'input> {
+    pub _maxvalue: PhantomData<keyword::Maxvalue>,
+    pub value: crate::ast::expr::Expr<'input>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SeqOptNoMaxValue {
+    pub _no: PhantomData<keyword::No>,
+    pub _maxvalue: PhantomData<keyword::Maxvalue>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SeqOptCache<'input> {
+    pub _cache: PhantomData<keyword::Cache>,
+    pub value: crate::ast::expr::Expr<'input>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SeqOptCycle {
+    pub _cycle: PhantomData<keyword::Cycle>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SeqOptNoCycle {
+    pub _no: PhantomData<keyword::No>,
+    pub _cycle: PhantomData<keyword::Cycle>,
+}
 
 /// `GENERATED ALWAYS AS (expr) STORED` column constraint.
 #[railroad]
@@ -276,7 +371,7 @@ pub struct DefaultConstraint<'input> {
 #[parse(rules = SqlRules)]
 pub enum ColumnConstraintKind<'input> {
     GeneratedStored(GeneratedStoredConstraint<'input>),
-    GeneratedIdentity(GeneratedIdentityConstraint),
+    GeneratedIdentity(GeneratedIdentityConstraint<'input>),
     PrimaryKey(PrimaryKeyConstraint),
     NotNull(NotNullConstraint),
     Unique(UniqueConstraint),
@@ -511,6 +606,52 @@ pub struct ColumnsBody<'input> {
     pub inherits: Option<InheritsClause<'input>>,
     pub partition_by: Option<PartitionByClause<'input>>,
     pub with_storage: Option<crate::ast::create_index::WithStorage<'input>>,
+    pub on_commit: Option<OnCommitClause>,
+}
+
+/// `ON COMMIT { PRESERVE ROWS | DELETE ROWS | DROP }` for temp tables.
+///
+/// Variant ordering: distinct first tokens (`PRESERVE` / `DELETE` / `DROP`),
+/// so order is for clarity.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct OnCommitClause {
+    pub _on: PhantomData<keyword::On>,
+    pub _commit: PhantomData<keyword::Commit>,
+    pub action: OnCommitAction,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum OnCommitAction {
+    PreserveRows(OnCommitPreserveRows),
+    DeleteRows(OnCommitDeleteRows),
+    Drop(OnCommitDrop),
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct OnCommitPreserveRows {
+    pub _preserve: PhantomData<keyword::Preserve>,
+    pub _rows: PhantomData<keyword::Rows>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct OnCommitDeleteRows {
+    pub _delete: PhantomData<keyword::Delete>,
+    pub _rows: PhantomData<keyword::Rows>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct OnCommitDrop {
+    pub _drop: PhantomData<keyword::Drop>,
 }
 
 /// Partition-of table body: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
@@ -527,13 +668,54 @@ pub struct PartitionOfBody<'input> {
     pub with_storage: Option<crate::ast::create_index::WithStorage<'input>>,
 }
 
-/// AS-query table body: `AS SELECT ...`
+/// AS-query table body: `AS SELECT ... [WITH [NO] DATA]`.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct AsQueryBody<'input> {
     pub _as: PhantomData<keyword::As>,
     pub query: Box<crate::ast::Statement<'input>>,
+    pub with_data: Option<WithDataClause>,
+}
+
+/// `WITH DATA` or `WITH NO DATA` modifier on a CTAS query.
+///
+/// Variant ordering: `NoData` (`WITH NO DATA`, longer) before `Data`.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum WithDataClause {
+    NoData(WithNoData),
+    Data(WithData),
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct WithNoData {
+    pub _with: PhantomData<keyword::With>,
+    pub _no: PhantomData<keyword::No>,
+    pub _data: PhantomData<keyword::Data>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct WithData {
+    pub _with: PhantomData<keyword::With>,
+    pub _data: PhantomData<keyword::Data>,
+}
+
+/// `(col, col, ...) AS query [WITH [NO] DATA]` — CTAS with column list.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ColumnsAsQueryBody<'input> {
+    pub columns:
+        Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
+    pub _as: PhantomData<keyword::As>,
+    pub query: Box<crate::ast::Statement<'input>>,
+    pub with_data: Option<WithDataClause>,
 }
 
 /// The body of a CREATE TABLE statement after `CREATE [TEMP] TABLE name`.
@@ -546,6 +728,10 @@ pub struct AsQueryBody<'input> {
 pub enum CreateTableBody<'input> {
     AsQuery(AsQueryBody<'input>),
     PartitionOf(PartitionOfBody<'input>),
+    /// `(col, ...) AS query` — CTAS with explicit column list.
+    /// Listed before `Columns` so the `( ... ) AS` form wins over the
+    /// columns-only `( ... )` form via longer match.
+    ColumnsAsQuery(ColumnsAsQueryBody<'input>),
     Columns(ColumnsBody<'input>),
 }
 
@@ -575,7 +761,9 @@ impl<'input> CreateTableStmt<'input> {
     > {
         match &self.body {
             CreateTableBody::Columns(b) => Some(&b.columns),
-            CreateTableBody::PartitionOf(_) | CreateTableBody::AsQuery(_) => None,
+            CreateTableBody::PartitionOf(_)
+            | CreateTableBody::AsQuery(_)
+            | CreateTableBody::ColumnsAsQuery(_) => None,
         }
     }
 
@@ -600,6 +788,28 @@ mod tests {
     use crate::rules::SqlRules;
 
     #[test]
+    fn parse_create_table_identity_seq_options() {
+        let mut input = recursa::Input::new(
+            "CREATE TABLE t (id int GENERATED ALWAYS AS IDENTITY (START WITH 44))",
+        );
+        let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_temp_table_on_commit() {
+        for src in [
+            "CREATE TEMP TABLE t (a int) ON COMMIT PRESERVE ROWS",
+            "CREATE TEMP TABLE t (a int) ON COMMIT DELETE ROWS",
+            "CREATE TEMP TABLE t (a int) ON COMMIT DROP",
+        ] {
+            let mut input = recursa::Input::new(src);
+            let _stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+            assert!(input.is_empty(), "leftover for {src:?}");
+        }
+    }
+
+    #[test]
     fn parse_create_table_single_column() {
         let mut input = Input::new("CREATE TABLE BOOLTBL1 (f1 bool)");
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
@@ -614,6 +824,30 @@ mod tests {
         let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
         assert_eq!(stmt.name.text(), "BOOLTBL3");
         assert_eq!(stmt.items().unwrap().len(), 3);
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_ctas_with_column_list() {
+        // Regression: matview.sql uses `CREATE TABLE foo(a, b) AS VALUES(1, 10)`.
+        let mut input = Input::new("CREATE TABLE mvtest_foo(a, b) AS VALUES(1, 10)");
+        let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(matches!(
+            stmt.body,
+            super::CreateTableBody::ColumnsAsQuery(_)
+        ));
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_create_table_time_zone_types() {
+        // Regression: brin.sql brintest table uses `time without time zone`,
+        // `timestamp with time zone`, `bit varying(16)` as column types.
+        let mut input = Input::new(
+            "CREATE TABLE t (a time without time zone, b timestamp with time zone, c time with time zone, d timestamp without time zone, e bit varying(16), f bit(10), g character)",
+        );
+        let stmt = CreateTableStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert_eq!(stmt.items().unwrap().len(), 7);
         assert!(input.is_empty());
     }
 

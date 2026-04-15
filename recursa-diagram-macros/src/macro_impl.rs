@@ -36,6 +36,17 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     let node = build_node(&input, &attrs)?;
     let svg = render(&node);
+    // Rustdoc parses doc attributes as CommonMark. A raw `<svg>` is recognized
+    // as an HTML block, but HTML blocks terminate at the first blank line —
+    // and the railroad crate's default stylesheet contains blank lines inside
+    // its `<style>` element. Without this, rustdoc re-enters markdown mode
+    // partway through the SVG and wraps CSS rules in `<p>` tags, corrupting
+    // the diagram. Collapse blank lines so the SVG stays a single HTML block.
+    let svg = svg
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
     let doc = format!("\n\n{svg}\n\n");
 
     let body = strip_body(&input);

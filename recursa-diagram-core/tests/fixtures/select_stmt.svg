@@ -1,1 +1,113 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="606" height="106" viewBox="0 0 606 106"><!-- railroad --><style>.railroad rect{fill:none;stroke:currentColor;stroke-width:1} .railroad text{font-family:monospace;font-size:12px;fill:currentColor} .railroad path{stroke:currentColor;stroke-width:1;fill:none}</style><g class="railroad"><rect x="10" y="42" width="88" height="22" rx="11" ry="11"/><text x="54" y="57" text-anchor="middle">SELECT</text><path d="M98 53 h10"/><path d="M108 53 L118 53"/><path d="M118 53 L128 53"/><a href="identifier.html"><rect x="128" y="42" width="120" height="22"/><text x="188" y="57" text-anchor="middle">identifier</text></a><path d="M248 53 L258 53"/><path d="M118 53 Q128 53 128 85 L128 85"/><a href="expression.html"><rect x="128" y="74" width="120" height="22"/><text x="188" y="89" text-anchor="middle">expression</text></a><path d="M248 85 L248 85 Q258 85 258 53"/><path d="M258 53 L268 53"/><path d="M258 53 Q268 53 268 117 L212 117"/><rect x="164" y="106" width="48" height="22" rx="11" ry="11"/><text x="188" y="121" text-anchor="middle">,</text><path d="M164 117 L108 117 Q108 53 118 53"/><path d="M268 53 h10"/><path d="M278 53 L288 53"/><a href="FromClause.html"><rect x="288" y="42" width="120" height="22"/><text x="348" y="57" text-anchor="middle">FromClause</text></a><path d="M408 53 L418 53"/><path d="M278 53 Q288 53 288 21 L408 21 Q418 21 418 53"/><path d="M418 53 h10"/><path d="M428 53 L438 53"/><path d="M438 53 L448 53"/><rect x="448" y="42" width="128" height="22"/><text x="512" y="57" text-anchor="middle">WhereClause</text><path d="M576 53 L586 53"/><path d="M576 53 Q586 53 586 74 L438 74 Q438 53 448 53"/><path d="M586 53 L596 53"/><path d="M428 53 Q438 53 438 21 L586 21 Q596 21 596 53"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="railroad" viewBox="0 0 618 120">
+<style type="text/css">
+svg.railroad {
+background-color: hsl(30, 20%, 95%);
+background-size: 15px 15px;
+background-image: linear-gradient(to right, rgba(30, 30, 30, .05) 1px, transparent 1px),
+		  linear-gradient(to bottom, rgba(30, 30, 30, .05) 1px, transparent 1px);
+}
+
+svg.railroad rect.railroad_canvas {
+stroke-width: 0px;
+fill: none;
+}
+
+svg.railroad path {
+stroke-width: 3px;
+stroke: black;
+fill: none;
+}
+
+svg.railroad .debug {
+stroke-width: 1px;
+stroke: red;
+}
+
+svg.railroad text {
+font: 14px monospace;
+text-anchor: middle;
+}
+
+svg.railroad .nonterminal text {
+font-weight: bold;
+}
+
+svg.railroad text.comment {
+font: italic 12px monospace;
+}
+
+svg.railroad rect {
+stroke-width: 3px;
+stroke: black;
+fill:hsl(-290, 70%, 90%);
+}
+
+svg.railroad g.labeledbox > rect {
+stroke-width: 1px;
+stroke: grey;
+stroke-dasharray: 5px;
+fill:rgba(90, 90, 150, .1);
+}
+</style>
+<rect width="100%" height="100%" class="railroad_canvas"/>
+<g class="sequence">
+<g class="terminal">
+<rect x="10" y="23" height="22" width="68" rx="10" ry="10"/>
+<text x="44" y="39">
+SELECT</text>
+</g>
+<g class="repeat">
+<path d=" M 88 34 h 12 m 148 0 h 12 m -12 0 a 12 12 0 0 1 12 12 v 41 a 12 12 0 0 1 -12 12 m -28 0 h -120 m 63 0 l 5 -5 m 0 10 l -5 -5 m -63 0 a 12 12 0 0 1 -12 -12 v -41 a 12 12 0 0 1 12 -12"/>
+<g class="terminal">
+<rect x="220" y="88" height="22" width="28" rx="10" ry="10"/>
+<text x="234" y="104">
+,</text>
+</g>
+<g class="choice">
+<path d=" M 100 34 h 24 m 100 0 h 24"/>
+<a xlink:href="identifier.html" class="link">
+<g class="nonterminal">
+<rect x="124" y="23" height="22" width="100"/>
+<text x="174" y="39">
+identifier</text>
+</g>
+</a>
+<path d=" M 100 34 a 12 12 0 0 1 12 12 v 9 m 124 0 v -9 a 12 12 0 0 1 12 -12"/>
+<path d=" M 112 55 v 0 a 12 12 0 0 0 12 12 m 100 0 h 0 a 12 12 0 0 0 12 -12 v 0"/>
+<a xlink:href="expression.html" class="link">
+<g class="nonterminal">
+<rect x="124" y="56" height="22" width="100"/>
+<text x="174" y="72">
+expression</text>
+</g>
+</a>
+</g>
+</g>
+<g class="optional">
+<path d=" M 270 34 h 24 m -24 0 a 12 12 0 0 0 12 -12 v 0 a 12 12 0 0 1 12 -12 h 100 m -47 0 l -5 -5 m 0 10 l 5 -5 m 47 0 a 12 12 0 0 1 12 12 v 0 a 12 12 0 0 0 12 12 h -24"/>
+<a xlink:href="FromClause.html" class="link">
+<g class="nonterminal">
+<rect x="294" y="23" height="22" width="100"/>
+<text x="344" y="39">
+FromClause</text>
+</g>
+</a>
+</g>
+<g class="optional">
+<path d=" M 428 34 h 24 m -24 0 a 12 12 0 0 0 12 -12 v 0 a 12 12 0 0 1 12 -12 h 132 m -63 0 l -5 -5 m 0 10 l 5 -5 m 63 0 a 12 12 0 0 1 12 12 v 0 a 12 12 0 0 0 12 12 h -24"/>
+<g class="repeat">
+<path d=" M 452 34 h 12 m 108 0 h 12 m -12 0 a 12 12 0 0 1 12 12 v 0 a 12 12 0 0 1 -12 12 m 0 0 h -108 m 57 0 l 5 -5 m 0 10 l -5 -5 m -57 0 a 12 12 0 0 1 -12 -12 v 0 a 12 12 0 0 1 12 -12"/>
+<g>
+</g>
+<g class="nonterminal">
+<rect x="464" y="23" height="22" width="108"/>
+<text x="518" y="39">
+WhereClause</text>
+</g>
+</g>
+</g>
+<path d=" M 78 34 h 10"/>
+<path d=" M 260 34 h 10"/>
+<path d=" M 418 34 h 10"/>
+</g>
+</svg>

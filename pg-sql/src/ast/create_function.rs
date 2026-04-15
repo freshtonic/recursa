@@ -304,6 +304,7 @@ pub struct DropFunctionStmt<'input> {
     pub _drop: PhantomData<keyword::Drop>,
     pub _function: PhantomData<keyword::Function>,
     pub targets: Seq<DropFunctionTarget<'input>, punct::Comma>,
+    pub behavior: Option<crate::ast::common::DropBehavior>,
 }
 
 #[cfg(test)]
@@ -347,6 +348,13 @@ mod tests {
             "create function polyf(x anyelement) returns anyelement as $$ select x + 1 $$ language sql",
         );
         let _stmt = CreateFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn parse_drop_function_cascade() {
+        let mut input = Input::new("DROP FUNCTION int4_casttesttype(int4) CASCADE");
+        let _stmt = DropFunctionStmt::parse::<SqlRules>(&mut input).unwrap();
         assert!(input.is_empty());
     }
 

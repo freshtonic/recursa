@@ -188,6 +188,7 @@ pub mod keyword {
         // NOT NULL constraint -- Not already declared
         // GENERATED ALWAYS AS IDENTITY -- Generated, Always, Identity already declared
         No          => r"NO\b",
+        Data        => r"DATA\b",
         // Transaction control
         Rollback    => r"ROLLBACK\b",
         Savepoint   => r"SAVEPOINT\b",
@@ -366,6 +367,16 @@ pub mod keyword {
         PositionKw  => r"POSITION\b",
         OverlayKw   => r"OVERLAY\b",
         ExtractKw   => r"EXTRACT\b",
+        // Postgres postfix null tests: `expr NOTNULL` / `expr ISNULL`.
+        Notnull     => r"NOTNULL\b",
+        Isnull      => r"ISNULL\b",
+        // CREATE TEMP TABLE ... ON COMMIT clauses
+        Preserve    => r"PRESERVE\b",
+        // Sequence options for IDENTITY column / CREATE SEQUENCE
+        Increment   => r"INCREMENT\b",
+        Minvalue    => r"MINVALUE\b",
+        Maxvalue    => r"MAXVALUE\b",
+        Cache       => r"CACHE\b",
         Leading     => r"LEADING\b",
         Trailing    => r"TRAILING\b",
         BothKw      => r"BOTH\b",
@@ -418,6 +429,13 @@ pub mod keyword {
         SafeKw       => r"SAFE\b",
         UnsafeKw     => r"UNSAFE\b",
         RestrictedKw => r"RESTRICTED\b",
+        // Type-name modifiers used contextually inside column type positions.
+        // Not in SQL_KEYWORDS so they remain usable as identifiers elsewhere.
+        BitKw        => r"BIT\b",
+        Varying      => r"VARYING\b",
+        CharacterKw  => r"CHARACTER\b",
+        // SELECT FOR SHARE / FOR KEY SHARE / FOR NO KEY UPDATE locking clauses.
+        Share        => r"SHARE\b",
     }
 }
 
