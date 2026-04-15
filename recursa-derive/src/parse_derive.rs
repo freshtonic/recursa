@@ -87,6 +87,7 @@ pub fn derive_parse(input: DeriveInput) -> syn::Result<TokenStream> {
                     name,
                     attrs.pattern.as_ref().unwrap(),
                     &input.generics,
+                    &fields.unnamed[0].ty,
                     &attrs.postcondition,
                 )
             }
@@ -187,10 +188,23 @@ fn derive_scanner_unit(
     })
 }
 
+/// Detects whether a scanner-tuple field type is `Cow<...>` (any path ending
+/// in `Cow`). Used to decide whether to wrap the matched slice in
+/// `Cow::Borrowed` or pass it through as a `&str`.
+fn is_cow_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty
+        && let Some(seg) = type_path.path.segments.last()
+    {
+        return seg.ident == "Cow";
+    }
+    false
+}
+
 fn derive_scanner_tuple(
     name: &syn::Ident,
     pattern: &str,
     generics: &syn::Generics,
+    field_ty: &Type,
     postcondition: &Option<syn::Path>,
 ) -> syn::Result<TokenStream> {
     let anchored = format!(r"\A(?:{})", pattern);
@@ -199,12 +213,12 @@ fn derive_scanner_tuple(
     if let Some(lifetime) = generics.lifetimes().next() {
         let lt = &lifetime.lifetime;
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-        let parse_body = scanner_parse_body(
-            pattern,
-            &anchored,
-            quote! { #name(::std::borrow::Cow::Borrowed(matched)) },
-            postcondition,
-        );
+        let construct = if is_cow_type(field_ty) {
+            quote! { #name(::std::borrow::Cow::Borrowed(matched)) }
+        } else {
+            quote! { #name(matched) }
+        };
+        let parse_body = scanner_parse_body(pattern, &anchored, construct, postcondition);
 
         Ok(quote! {
             impl #impl_generics ::recursa_core::Parse<#lt> for #name #ty_generics #where_clause {

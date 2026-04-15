@@ -161,11 +161,19 @@ impl<T: 'static> Visit for std::marker::PhantomData<T> {
     }
 }
 
-// -- Leaf Visit impl for Cow<str> --
-// No-op traversal: borrowed string leaves don't participate in visitor
-// dispatch (they can't be 'static and so can't be TypeId targets).
+// -- Leaf Visit impls for string leaves --
+// No-op traversal: string leaves don't participate in visitor dispatch.
+// `Cow<'a, str>` is the canonical leaf for borrowed AST text; `String`
+// is kept for legacy / 'static AST fixtures.
 impl<'a> AsNodeKey for ::std::borrow::Cow<'a, str> {}
 impl<'a> Visit for ::std::borrow::Cow<'a, str> {
+    fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ::std::ops::ControlFlow<Break<V::Error>> {
+        ::std::ops::ControlFlow::Continue(())
+    }
+}
+
+impl AsNodeKey for String {}
+impl Visit for String {
     fn visit<V: TotalVisitor>(&self, _visitor: &mut V) -> ::std::ops::ControlFlow<Break<V::Error>> {
         ::std::ops::ControlFlow::Continue(())
     }
