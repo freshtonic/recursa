@@ -7,7 +7,9 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use recursa_diagram_core::layout::{Choice, NonTerminal, OneOrMore, Optional, Sequence, Terminal};
+use recursa_diagram_core::layout::{
+    Choice, NonTerminal, OneOrMore, Optional, Sequence, Terminal, Token,
+};
 use recursa_diagram_core::{layout::Node, render};
 use syn::parse::Parser;
 use syn::{
@@ -60,6 +62,14 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 #[derive(Debug, Default)]
 struct TypeAttrs {
     label: Option<String>,
+    /// Base URL prefix used to construct hrefs for fallthrough
+    /// `NonTerminal` references. When set, a field of type `Foo` is
+    /// rendered as a `NonTerminal` whose href is
+    /// `{crate_path}/{Foo}.html`. Without this, hrefs are omitted —
+    /// proc macros can't resolve the calling module path themselves,
+    /// so the user must supply one explicitly when they want clickable
+    /// navigation between productions in rustdoc output.
+    crate_path: Option<String>,
 }
 
 fn parse_type_attrs(attr: TokenStream) -> syn::Result<TypeAttrs> {
@@ -69,20 +79,37 @@ fn parse_type_attrs(attr: TokenStream) -> syn::Result<TypeAttrs> {
     }
     let nvs = Punctuated::<MetaNameValue, Comma>::parse_terminated.parse2(attr)?;
     for nv in nvs {
-        if nv.path.is_ident("label") {
-            if out.label.is_some() {
-                return Err(syn::Error::new_spanned(nv.path, "duplicate `label`"));
-            }
-            if let Expr::Lit(ExprLit {
-                lit: Lit::Str(s), ..
-            }) = nv.value
-            {
-                out.label = Some(s.value());
-            } else {
-                return Err(syn::Error::new_spanned(nv.value, "expected string literal"));
-            }
+        let key = if nv.path.is_ident("label") {
+            "label"
+        } else if nv.path.is_ident("crate_path") {
+            "crate_path"
         } else {
             return Err(syn::Error::new_spanned(nv.path, "unknown attribute key"));
+        };
+        let Expr::Lit(ExprLit {
+            lit: Lit::Str(s), ..
+        }) = nv.value
+        else {
+            return Err(syn::Error::new_spanned(nv.path, "expected string literal"));
+        };
+        match key {
+            "label" => {
+                if out.label.is_some() {
+                    return Err(syn::Error::new_spanned(nv.path, "duplicate `label`"));
+                }
+                out.label = Some(s.value());
+            }
+            "crate_path" => {
+                if out.crate_path.is_some() {
+                    return Err(syn::Error::new_spanned(nv.path, "duplicate `crate_path`"));
+                }
+                let mut v = s.value();
+                while v.ends_with('/') {
+                    v.pop();
+                }
+                out.crate_path = Some(v);
+            }
+            _ => unreachable!(),
         }
     }
     Ok(out)
@@ -92,6 +119,9 @@ fn build_node(input: &DeriveInput, attrs: &TypeAttrs) -> syn::Result<Node> {
     if let Some(label) = &attrs.label {
         return Ok(Node::Terminal(Terminal::new(label)));
     }
+    let cx = Ctx {
+        crate_path: attrs.crate_path.as_deref(),
+    };
     match &input.data {
         Data::Struct(s) => match &s.fields {
             // Bare `#[railroad]` on `struct Foo;` has nothing structural to
@@ -108,7 +138,7 @@ fn build_node(input: &DeriveInput, attrs: &TypeAttrs) -> syn::Result<Node> {
                 // nested row structures. We rebuild a wrapped Sequence from
                 // the children of the flat Sequence returned by
                 // `build_from_fields`.
-                let inner = build_from_fields(&s.fields)?;
+                let inner = build_from_fields(&s.fields, cx)?;
                 if let Node::Sequence(flat) = inner {
                     Ok(Node::Sequence(Sequence::wrapped(
                         flat.children,
@@ -128,17 +158,27 @@ fn build_node(input: &DeriveInput, attrs: &TypeAttrs) -> syn::Result<Node> {
             }
             // Per CLAUDE.md, recursa enum variants are single-field tuple
             // variants wrapping a `Parse`-implementing type. We recognise that
-            // shape by recursing into the inner type. Anything else (unit,
-            // multi-field tuple, named) is non-conforming, but we still produce
-            // a defensive `NonTerminal(VariantIdent)` rather than failing.
-            let children: Vec<Node> = e
-                .variants
-                .iter()
-                .map(|v| match &v.fields {
-                    Fields::Unnamed(u) if u.unnamed.len() == 1 => recognize(&u.unnamed[0].ty),
-                    _ => Node::NonTerminal(NonTerminal::new(v.ident.to_string(), None)),
-                })
-                .collect();
+            // shape by recursing into the inner type. A `#[railroad(label =
+            // "...")]` on the variant overrides the default rendering with a
+            // literal terminal carrying the supplied label. Anything else
+            // (unit, multi-field tuple, named) is non-conforming, but we
+            // still produce a defensive `NonTerminal(VariantIdent)` rather
+            // than failing.
+            let mut children: Vec<Node> = Vec::with_capacity(e.variants.len());
+            for v in &e.variants {
+                let variant_attrs = parse_variant_attrs(&v.attrs)?;
+                let node = if let Some(label) = variant_attrs.label {
+                    Node::Terminal(Terminal::new(label))
+                } else {
+                    match &v.fields {
+                        Fields::Unnamed(u) if u.unnamed.len() == 1 => {
+                            recognize(&u.unnamed[0].ty, cx)
+                        }
+                        _ => Node::NonTerminal(NonTerminal::new(v.ident.to_string(), None)),
+                    }
+                };
+                children.push(node);
+            }
             // Default to the first declared variant; we have no semantic
             // information to choose otherwise.
             Ok(Node::Choice(Choice::new(0, children)))
@@ -147,7 +187,14 @@ fn build_node(input: &DeriveInput, attrs: &TypeAttrs) -> syn::Result<Node> {
     }
 }
 
-fn build_from_fields(fields: &Fields) -> syn::Result<Node> {
+/// Carries type-level attribute context down through the recursive node
+/// builders. Currently only the optional `crate_path` for href resolution.
+#[derive(Clone, Copy)]
+struct Ctx<'a> {
+    crate_path: Option<&'a str>,
+}
+
+fn build_from_fields(fields: &Fields, cx: Ctx<'_>) -> syn::Result<Node> {
     let iter: Box<dyn Iterator<Item = &syn::Field>> = match fields {
         Fields::Named(n) => Box::new(n.named.iter()),
         Fields::Unnamed(u) => Box::new(u.unnamed.iter()),
@@ -159,7 +206,7 @@ fn build_from_fields(fields: &Fields) -> syn::Result<Node> {
         if field_attrs.skip {
             continue;
         }
-        children.push(node_for_field_type(&field.ty, &field_attrs));
+        children.push(node_for_field_type(&field.ty, &field_attrs, cx));
     }
     Ok(Node::Sequence(Sequence::new(children)))
 }
@@ -203,14 +250,50 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
     Ok(out)
 }
 
-fn node_for_field_type(ty: &Type, field_attrs: &FieldAttrs) -> Node {
+#[derive(Default)]
+struct VariantAttrs {
+    label: Option<String>,
+}
+
+fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
+    let mut out = VariantAttrs::default();
+    for a in attrs {
+        if !a.path().is_ident("railroad") {
+            continue;
+        }
+        a.parse_nested_meta(|meta| {
+            if meta.path.is_ident("label") {
+                if out.label.is_some() {
+                    return Err(meta.error("duplicate `label`"));
+                }
+                let s: LitStr = meta.value()?.parse()?;
+                out.label = Some(s.value());
+            } else {
+                return Err(meta.error("unknown key"));
+            }
+            Ok(())
+        })?;
+    }
+    Ok(out)
+}
+
+fn node_for_field_type(ty: &Type, field_attrs: &FieldAttrs, cx: Ctx<'_>) -> Node {
     if let Some(label) = &field_attrs.label {
         return Node::NonTerminal(NonTerminal::new(label, None));
     }
-    recognize(ty)
+    recognize(ty, cx)
 }
 
-fn recognize(ty: &Type) -> Node {
+fn recognize(ty: &Type, cx: Ctx<'_>) -> Node {
+    // Tuple types like `(keyword::If, keyword::Not, keyword::Exists)` are how
+    // multi-token keyword sequences are spelled in the AST. Render each
+    // element through `recognize` and wrap them in a flat `Sequence` so the
+    // diagram shows `IF NOT EXISTS` instead of the stringified
+    // `(IF, NOT, EXISTS)` that the fallthrough produces.
+    if let Type::Tuple(t) = ty {
+        let children: Vec<Node> = t.elems.iter().map(|e| recognize(e, cx)).collect();
+        return Node::Sequence(Sequence::new(children));
+    }
     // Direct reference to a `keyword::*` type (no PhantomData wrapper). Common
     // shape inside enum variants like `JoinType::Left(keyword::Left)`. We
     // render these as terminals with the uppercased last-segment ident, same
@@ -219,28 +302,36 @@ fn recognize(ty: &Type) -> Node {
         let label = type_label(ty).to_uppercase();
         return Node::Terminal(Terminal::new(label));
     }
+    // Punctuation/operator tokens live in `punct::*` (see `pg-sql/src/tokens.rs`).
+    // Render as `Token` so EXTRA_CSS in svg.rs colours them distinctly from
+    // SQL keywords. We use the punctuation's ident (`Comma`, `LParen`, ...)
+    // as the label rather than the underlying glyph since the latter is not
+    // available at macro-expansion time.
+    if is_punct_path(ty) {
+        return Node::Token(Token::new(type_label(ty)));
+    }
     if let Some((ident, args)) = outer_generic(ty) {
         match ident.to_string().as_str() {
             "Option" if args.len() == 1 => {
-                return Node::Optional(Optional::new(recognize(&args[0])));
+                return Node::Optional(Optional::new(recognize(&args[0], cx)));
             }
             "Seq" | "Punctuated" if args.len() == 2 => {
-                let child = recognize(&args[0]);
-                let sep = recognize(&args[1]);
+                let child = recognize(&args[0], cx);
+                let sep = recognize(&args[1], cx);
                 return Node::OneOrMore(OneOrMore::new(child, Some(sep)));
             }
             "Vec" if args.len() == 1 => {
-                return Node::OneOrMore(OneOrMore::new(recognize(&args[0]), None));
+                return Node::OneOrMore(OneOrMore::new(recognize(&args[0], cx), None));
             }
             "Surrounded" if args.len() == 3 => {
                 return Node::Sequence(Sequence::new(vec![
-                    recognize(&args[0]),
-                    recognize(&args[1]),
-                    recognize(&args[2]),
+                    recognize(&args[0], cx),
+                    recognize(&args[1], cx),
+                    recognize(&args[2], cx),
                 ]));
             }
             "Box" | "Rc" | "Arc" if args.len() == 1 => {
-                return recognize(&args[0]);
+                return recognize(&args[0], cx);
             }
             // `PhantomData<T>` is the convention pg-sql uses for keyword
             // markers: a parsed-and-discarded token that carries no runtime
@@ -258,19 +349,31 @@ fn recognize(ty: &Type) -> Node {
             _ => {}
         }
     }
-    // Hrefs are intentionally omitted: proc macros lack the calling module's
-    // context, so any path we construct is a guess. Most guesses produced 404s
-    // in the Phase 5 sweep. Reintroduce hrefs when rustdoc intra-doc-link
-    // resolution is available from inside proc macros, or when we add a
-    // configurable `#[railroad(href_root = "...")]` attribute.
+    // Fallthrough: treat as a reference to another production. When a
+    // `crate_path` was supplied via `#[railroad(crate_path = "...")]`, build
+    // an href like `{crate_path}/{TypeName}.html` so the rendered SVG box
+    // becomes a clickable link to the referenced type's rustdoc page.
     let name = type_label(ty);
-    Node::NonTerminal(NonTerminal::new(name, None))
+    let href = cx.crate_path.map(|base| format!("{base}/{name}.html"));
+    Node::NonTerminal(NonTerminal::new(name, href))
 }
 
 /// Detect a type path whose second-to-last segment is `keyword`, e.g.
 /// `keyword::Left`, `pg_sql::keyword::Drop`, or `crate::keyword::Where`.
 /// Used by `recognize` to render keyword references as literal terminals.
 fn is_keyword_path(ty: &Type) -> bool {
+    is_module_path(ty, "keyword")
+}
+
+/// Detect a type path whose second-to-last segment is `punct` (the
+/// pg-sql convention for punctuation/operator tokens — see
+/// `pg-sql/src/tokens.rs`'s `pub mod punct`). Used by `recognize` to
+/// render these as `Token` nodes.
+fn is_punct_path(ty: &Type) -> bool {
+    is_module_path(ty, "punct")
+}
+
+fn is_module_path(ty: &Type, module: &str) -> bool {
     let Type::Path(p) = ty else {
         return false;
     };
@@ -278,7 +381,7 @@ fn is_keyword_path(ty: &Type) -> bool {
     if segs.len() < 2 {
         return false;
     }
-    segs[segs.len() - 2].ident == "keyword"
+    segs[segs.len() - 2].ident == module
 }
 
 fn outer_generic(ty: &Type) -> Option<(&Ident, Vec<Type>)> {
@@ -314,6 +417,28 @@ fn type_label(ty: &Type) -> String {
 fn strip_body(input: &DeriveInput) -> TokenStream {
     let mut clone = input.clone();
     clone.attrs.retain(|a| !a.path().is_ident("railroad"));
+    // Also strip `#[railroad(...)]` attributes from fields and variants —
+    // they are macro-internal metadata and the compiler would otherwise
+    // reject them as unknown attributes on the emitted item.
+    let strip = |attrs: &mut Vec<Attribute>| attrs.retain(|a| !a.path().is_ident("railroad"));
+    match &mut clone.data {
+        Data::Struct(s) => match &mut s.fields {
+            Fields::Named(n) => n.named.iter_mut().for_each(|f| strip(&mut f.attrs)),
+            Fields::Unnamed(u) => u.unnamed.iter_mut().for_each(|f| strip(&mut f.attrs)),
+            Fields::Unit => {}
+        },
+        Data::Enum(e) => {
+            for v in &mut e.variants {
+                strip(&mut v.attrs);
+                match &mut v.fields {
+                    Fields::Named(n) => n.named.iter_mut().for_each(|f| strip(&mut f.attrs)),
+                    Fields::Unnamed(u) => u.unnamed.iter_mut().for_each(|f| strip(&mut f.attrs)),
+                    Fields::Unit => {}
+                }
+            }
+        }
+        Data::Union(_) => {}
+    }
     quote! { #clone }
 }
 
@@ -325,6 +450,151 @@ mod tests {
     fn node_for(tokens: TokenStream) -> Node {
         let input: DeriveInput = parse2(tokens).unwrap();
         build_node(&input, &TypeAttrs::default()).unwrap()
+    }
+
+    fn node_for_with(tokens: TokenStream, attrs: TypeAttrs) -> Node {
+        let input: DeriveInput = parse2(tokens).unwrap();
+        build_node(&input, &attrs).unwrap()
+    }
+
+    #[test]
+    fn tuple_type_renders_as_inline_sequence_of_keywords() {
+        // (keyword::If, keyword::Not, keyword::Exists) should become a
+        // three-element Sequence of Terminals — not the stringified
+        // NonTerminal `(If, Not, Exists)` produced by the fallthrough.
+        let node = node_for(quote! {
+            pub struct S { ine: (keyword::If, keyword::Not, keyword::Exists) }
+        });
+        match node {
+            Node::Sequence(outer) => match &outer.children[0] {
+                Node::Sequence(inner) => {
+                    assert_eq!(inner.children.len(), 3);
+                    let labels: Vec<_> = inner
+                        .children
+                        .iter()
+                        .map(|c| match c {
+                            Node::Terminal(t) => t.text.clone(),
+                            other => panic!("expected Terminal, got {other:?}"),
+                        })
+                        .collect();
+                    assert_eq!(labels, vec!["IF", "NOT", "EXISTS"]);
+                }
+                other => panic!("expected inner Sequence, got {other:?}"),
+            },
+            other => panic!("expected outer Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn punct_path_renders_as_token() {
+        // A `punct::Comma` field becomes a Token (rounded-rect rendered
+        // with the `terminal token` CSS class), distinct from a keyword.
+        let node = node_for(quote! { pub struct S { c: punct::Comma } });
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::Token(t) => assert_eq!(t.text, "Comma"),
+                other => panic!("expected Token, got {other:?}"),
+            },
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_path_adds_href_to_fallthrough_non_terminal() {
+        let node = node_for_with(
+            quote! { pub struct S { x: Foo } },
+            TypeAttrs {
+                label: None,
+                crate_path: Some("../foo".to_owned()),
+            },
+        );
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::NonTerminal(nt) => {
+                    assert_eq!(nt.text, "Foo");
+                    assert_eq!(nt.href.as_deref(), Some("../foo/Foo.html"));
+                }
+                other => panic!("expected NonTerminal, got {other:?}"),
+            },
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_path_does_not_add_href_to_keyword_or_token() {
+        // Keywords and tokens are literal text, not references — they
+        // should never get an href even when crate_path is supplied.
+        let node = node_for_with(
+            quote! { pub struct S { kw: keyword::Select, c: punct::Comma } },
+            TypeAttrs {
+                label: None,
+                crate_path: Some("../foo".to_owned()),
+            },
+        );
+        match node {
+            Node::Sequence(seq) => {
+                assert!(matches!(seq.children[0], Node::Terminal(_)));
+                assert!(matches!(seq.children[1], Node::Token(_)));
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn variant_label_overrides_inner_type_render() {
+        let node = node_for(quote! {
+            pub enum E {
+                #[railroad(label = "ASC")]
+                Asc(AscKw),
+                #[railroad(label = "DESC")]
+                Desc(DescKw),
+            }
+        });
+        match node {
+            Node::Choice(ch) => {
+                assert_eq!(ch.children.len(), 2);
+                let labels: Vec<_> = ch
+                    .children
+                    .iter()
+                    .map(|c| match c {
+                        Node::Terminal(t) => t.text.clone(),
+                        other => panic!("expected Terminal, got {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(labels, vec!["ASC", "DESC"]);
+            }
+            other => panic!("expected Choice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_crate_path_is_rejected() {
+        let attr: TokenStream = quote! { crate_path = "a", crate_path = "b" };
+        let err = parse_type_attrs(attr).expect_err("expected duplicate-crate_path error");
+        assert!(
+            err.to_string().contains("duplicate"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn variant_railroad_attrs_are_stripped_from_emitted_body() {
+        // The emitted item must not retain `#[railroad(...)]` on variants
+        // or fields, otherwise rustc rejects them as unknown attributes.
+        let item: TokenStream = quote! {
+            pub enum E {
+                #[railroad(label = "ASC")]
+                Asc(AscKw),
+            }
+        };
+        let out = expand(quote! {}, item).unwrap().to_string();
+        // The SVG embedded in the doc attribute legitimately contains the
+        // word "railroad" (class names), so look for the attribute syntax
+        // `# [railroad` which only appears as a leftover variant/field attr.
+        assert!(
+            !out.contains("# [railroad"),
+            "expected railroad attrs to be stripped from emitted body, got: {out}"
+        );
     }
 
     #[test]

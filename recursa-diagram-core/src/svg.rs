@@ -6,20 +6,46 @@
 
 use railroad::Node as RrNode;
 
-use crate::layout::{Choice, Node, NonTerminal, OneOrMore, Optional, Sequence, Terminal};
+use crate::layout::{Choice, Node, NonTerminal, OneOrMore, Optional, Sequence, Terminal, Token};
 
 type RrBox = Box<dyn RrNode>;
 
+/// Custom CSS appended after the railroad crate's default stylesheet.
+/// Adds colour distinctions for keyword vs token vs production:
+///
+/// - `.terminal` (keyword): default railroad colouring.
+/// - `.terminal.token`: punctuation/operator tokens — orange fill so
+///   they're visually distinct from keyword terminals.
+/// - `.non-terminal`: default railroad colouring (productions).
+const EXTRA_CSS: &str = r#"
+svg.railroad g.terminal.token rect { fill: #ffe7c2; stroke: #a0522d; }
+svg.railroad g.terminal.token text { fill: #5a2a00; }
+"#;
+
 /// Serialize a layout tree rooted at `root` into a self-contained SVG
-/// document produced by the `railroad` crate with its default stylesheet.
+/// document produced by the `railroad` crate with its default stylesheet
+/// plus our token-class overrides appended.
 pub fn render(root: &Node) -> String {
     let rr = to_railroad(root);
-    railroad::Diagram::with_default_css(rr).to_string()
+    let mut dia = railroad::Diagram::with_default_css(rr);
+    dia.add_css(EXTRA_CSS);
+    dia.to_string()
 }
 
 fn to_railroad(node: &Node) -> RrBox {
     match node {
         Node::Terminal(Terminal { text, .. }) => Box::new(railroad::Terminal::new(text.clone())),
+        Node::Token(Token { text, .. }) => {
+            // Render as a railroad Terminal (rounded-rect) but extend the
+            // CSS class list so EXTRA_CSS in `render()` can target it. The
+            // upstream Terminal::new always inserts `class = "terminal"`;
+            // we overwrite it with `terminal token` so both classes apply.
+            let mut t = railroad::Terminal::new(text.clone());
+            t.attr("class".to_owned())
+                .and_modify(|v| *v = "terminal token".to_owned())
+                .or_insert_with(|| "terminal token".to_owned());
+            Box::new(t)
+        }
         Node::NonTerminal(NonTerminal { text, href, .. }) => {
             let nt = railroad::NonTerminal::new(text.clone());
             match href {

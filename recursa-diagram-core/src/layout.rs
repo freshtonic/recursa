@@ -28,6 +28,7 @@ pub(crate) const WRAP_ROW_GAP: u32 = VERTICAL_GAP * 2;
 #[derive(Clone, Debug)]
 pub enum Node {
     Terminal(Terminal),
+    Token(Token),
     NonTerminal(NonTerminal),
     Sequence(Sequence),
     Choice(Choice),
@@ -39,6 +40,7 @@ impl Node {
     pub fn width(&self) -> u32 {
         match self {
             Node::Terminal(n) => n.width,
+            Node::Token(n) => n.width,
             Node::NonTerminal(n) => n.width,
             Node::Sequence(n) => n.width,
             Node::Choice(n) => n.width,
@@ -50,6 +52,7 @@ impl Node {
     pub fn height(&self) -> u32 {
         match self {
             Node::Terminal(n) => n.height,
+            Node::Token(n) => n.height,
             Node::NonTerminal(n) => n.height,
             Node::Sequence(n) => n.height,
             Node::Choice(n) => n.height,
@@ -61,6 +64,7 @@ impl Node {
     pub fn up(&self) -> u32 {
         match self {
             Node::Terminal(n) => n.up,
+            Node::Token(n) => n.up,
             Node::NonTerminal(n) => n.up,
             Node::Sequence(n) => n.up,
             Node::Choice(n) => n.up,
@@ -72,6 +76,7 @@ impl Node {
     pub fn down(&self) -> u32 {
         match self {
             Node::Terminal(n) => n.down,
+            Node::Token(n) => n.down,
             Node::NonTerminal(n) => n.down,
             Node::Sequence(n) => n.down,
             Node::Choice(n) => n.down,
@@ -94,6 +99,35 @@ impl Terminal {
     /// Construct a `Terminal` node whose width is derived from the text length
     /// using the monospace-font geometry constants (`CHAR_WIDTH`,
     /// `HORIZONTAL_PADDING`, `BOX_HEIGHT`). Render as a rounded-rect box.
+    pub fn new(text: impl Into<String>) -> Self {
+        let text = text.into();
+        let width = text.chars().count() as u32 * CHAR_WIDTH + 2 * HORIZONTAL_PADDING;
+        Self {
+            text,
+            width,
+            height: BOX_HEIGHT,
+            up: BASELINE_OFFSET,
+            down: BASELINE_OFFSET,
+        }
+    }
+}
+
+/// Punctuation/operator token (e.g. `,`, `(`, `=>`). Same rounded-rect
+/// shape as `Terminal` but rendered with a distinct CSS class so
+/// stylesheets can colour punctuation differently from SQL keywords.
+#[derive(Clone, Debug)]
+pub struct Token {
+    pub text: String,
+    pub width: u32,
+    pub height: u32,
+    pub up: u32,
+    pub down: u32,
+}
+
+impl Token {
+    /// Construct a `Token` node. Geometry matches `Terminal` since both
+    /// render as the same rounded-rect primitive in the underlying
+    /// railroad crate; only the CSS class differs.
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
         let width = text.chars().count() as u32 * CHAR_WIDTH + 2 * HORIZONTAL_PADDING;
