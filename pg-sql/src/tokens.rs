@@ -560,10 +560,10 @@ pub mod literal {
     }
 
     /// Postcondition: reject identifiers that are SQL keywords.
-    fn not_keyword(ident: &UnquotedIdent) -> Result<(), ParseError> {
+    fn not_keyword<'input>(ident: &UnquotedIdent<'input>) -> Result<(), ParseError> {
         if is_keyword(&ident.0) {
             Err(ParseError::new(
-                ident.0.clone(),
+                ident.0.to_string(),
                 0..ident.0.len(),
                 "identifier (not a keyword)",
             ))
@@ -573,7 +573,7 @@ pub mod literal {
     }
 
     /// Postcondition: reject identifiers that are SQL keywords.
-    fn ident_is_not_keyword(ident: &Ident) -> Result<(), ParseError> {
+    fn ident_is_not_keyword<'input>(ident: &Ident<'input>) -> Result<(), ParseError> {
         if let Ident::Unquoted(unquoted) = ident {
             return not_keyword(unquoted);
         }
@@ -584,11 +584,11 @@ pub mod literal {
     #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[parse(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*", postcondition = not_keyword)]
     #[visit(terminal)]
-    pub struct UnquotedIdent(pub String);
+    pub struct UnquotedIdent<'input>(pub ::std::borrow::Cow<'input, str>);
 
-    impl recursa::FormatTokens for UnquotedIdent {
+    impl<'input> recursa::FormatTokens for UnquotedIdent<'input> {
         fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
-            tokens.push(recursa::fmt::Token::String(self.0.clone()));
+            tokens.push(recursa::fmt::Token::String(self.0.as_ref().to_string()));
         }
     }
 
@@ -600,13 +600,13 @@ pub mod literal {
     #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[parse(postcondition = ident_is_not_keyword)]
     #[visit(terminal)]
-    pub enum Ident {
-        UnicodeQuoted(UnicodeQuotedIdent),
-        Quoted(QuotedIdent),
-        Unquoted(UnquotedIdent),
+    pub enum Ident<'input> {
+        UnicodeQuoted(UnicodeQuotedIdent<'input>),
+        Quoted(QuotedIdent<'input>),
+        Unquoted(UnquotedIdent<'input>),
     }
 
-    impl recursa::FormatTokens for Ident {
+    impl<'input> recursa::FormatTokens for Ident<'input> {
         fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
             match self {
                 Ident::UnicodeQuoted(u) => u.format_tokens(tokens),
@@ -616,7 +616,7 @@ pub mod literal {
         }
     }
 
-    impl Ident {
+    impl<'input> Ident<'input> {
         /// The raw text of the identifier.
         pub fn text(&self) -> &str {
             match self {
@@ -633,11 +633,11 @@ pub mod literal {
     #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[parse(pattern = r"[a-zA-Z_][a-zA-Z0-9_]*")]
     #[visit(terminal)]
-    pub struct BareAliasName(pub String);
+    pub struct BareAliasName<'input>(pub ::std::borrow::Cow<'input, str>);
 
-    impl recursa::FormatTokens for BareAliasName {
+    impl<'input> recursa::FormatTokens for BareAliasName<'input> {
         fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
-            tokens.push(recursa::fmt::Token::String(self.0.clone()));
+            tokens.push(recursa::fmt::Token::String(self.0.as_ref().to_string()));
         }
     }
 
@@ -648,12 +648,12 @@ pub mod literal {
     /// different first chars, so order is for clarity, not disambiguation.
     #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[visit(terminal)]
-    pub enum AliasName {
-        Quoted(QuotedIdent),
-        Bare(BareAliasName),
+    pub enum AliasName<'input> {
+        Quoted(QuotedIdent<'input>),
+        Bare(BareAliasName<'input>),
     }
 
-    impl AliasName {
+    impl<'input> AliasName<'input> {
         /// Raw text of the alias name (with quotes if quoted).
         pub fn text(&self) -> &str {
             match self {
@@ -663,7 +663,7 @@ pub mod literal {
         }
     }
 
-    impl recursa::FormatTokens for AliasName {
+    impl<'input> recursa::FormatTokens for AliasName<'input> {
         fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
             match self {
                 AliasName::Quoted(q) => q.format_tokens(tokens),
@@ -678,11 +678,11 @@ pub mod literal {
     #[derive(Parse, Visit, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[parse(pattern = r"[^\n]*")]
     #[visit(terminal)]
-    pub struct RestOfLine(pub String);
+    pub struct RestOfLine<'input>(pub ::std::borrow::Cow<'input, str>);
 
-    impl recursa::FormatTokens for RestOfLine {
+    impl<'input> recursa::FormatTokens for RestOfLine<'input> {
         fn format_tokens(&self, tokens: &mut Vec<recursa::fmt::Token>) {
-            tokens.push(recursa::fmt::Token::String(self.0.clone()));
+            tokens.push(recursa::fmt::Token::String(self.0.as_ref().to_string()));
         }
     }
 }
