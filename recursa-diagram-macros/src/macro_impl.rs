@@ -33,10 +33,42 @@ use syn::{
 const DEFAULT_MAX_WIDTH: u32 = 1200;
 
 pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
-    let input: DeriveInput = parse2(item)?;
     let attrs = parse_type_attrs(attr)?;
 
-    let node = build_node(&input, &attrs)?;
+    // `#[railroad]` accepts both struct/enum definitions (parsed as
+    // `DeriveInput`) and type aliases (parsed as `ItemType`). Type aliases
+    // expose only their RHS `Type`, which we can feed directly into
+    // `recognize` because it already knows how to handle the generic
+    // wrappers (`Surrounded`, `Seq`, ...) typically found on aliases.
+    //
+    // Try the richer `DeriveInput` path first so its better diagnostics
+    // surface for malformed structs/enums; only fall back to `ItemType`
+    // when the input clearly is not a struct/enum.
+    let (node, body) = match parse2::<DeriveInput>(item.clone()) {
+        Ok(input) => {
+            let node = build_node(&input, &attrs)?;
+            let body = strip_body(&input);
+            (node, body)
+        }
+        Err(derive_err) => match parse2::<syn::ItemType>(item) {
+            Ok(alias) => {
+                if let Some(label) = &attrs.label {
+                    let node = Node::Terminal(Terminal::new(label));
+                    let body = quote! { #alias };
+                    (node, body)
+                } else {
+                    let cx = Ctx {
+                        crate_path: attrs.crate_path.as_deref(),
+                    };
+                    let node = recognize(&alias.ty, cx);
+                    let body = quote! { #alias };
+                    (node, body)
+                }
+            }
+            Err(_) => return Err(derive_err),
+        },
+    };
+
     let svg = render(&node);
     // Rustdoc parses doc attributes as CommonMark. A raw `<svg>` is recognized
     // as an HTML block, but HTML blocks terminate at the first blank line —
@@ -50,8 +82,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         .collect::<Vec<_>>()
         .join("\n");
     let doc = format!("\n\n{svg}\n\n");
-
-    let body = strip_body(&input);
 
     Ok(quote! {
         #[doc = #doc]
@@ -304,11 +334,13 @@ fn recognize(ty: &Type, cx: Ctx<'_>) -> Node {
     }
     // Punctuation/operator tokens live in `punct::*` (see `pg-sql/src/tokens.rs`).
     // Render as `Token` so EXTRA_CSS in svg.rs colours them distinctly from
-    // SQL keywords. We use the punctuation's ident (`Comma`, `LParen`, ...)
-    // as the label rather than the underlying glyph since the latter is not
-    // available at macro-expansion time.
+    // SQL keywords. The label is the literal glyph (`,`, `(`, `=>`) looked up
+    // from `punct_glyph()`; if the ident is unknown we fall back to the ident
+    // itself so unfamiliar punctuation types still render visibly.
     if is_punct_path(ty) {
-        return Node::Token(Token::new(type_label(ty)));
+        let ident = type_label(ty);
+        let label = punct_glyph(&ident).unwrap_or(ident.as_str()).to_owned();
+        return Node::Token(Token::new(label));
     }
     if let Some((ident, args)) = outer_generic(ty) {
         match ident.to_string().as_str() {
@@ -371,6 +403,86 @@ fn is_keyword_path(ty: &Type) -> bool {
 /// render these as `Token` nodes.
 fn is_punct_path(ty: &Type) -> bool {
     is_module_path(ty, "punct")
+}
+
+/// Map a punctuation type ident (e.g. `Comma`, `LParen`, `FatArrow`) to its
+/// literal glyph as it should appear in the rendered diagram. Mirrors the
+/// `recursa::punctuation!` declarations in `pg-sql/src/tokens.rs`. Returns
+/// `None` for unknown idents so callers can fall back to the type name.
+///
+/// Hardcoded because proc macros run at compile time and cannot read const
+/// values (such as the literal stored in each generated punctuation type).
+/// Downstream crates whose punctuation set differs from pg-sql will need to
+/// extend this table.
+fn punct_glyph(ident: &str) -> Option<&'static str> {
+    Some(match ident {
+        "Semi" => ";",
+        "Comma" => ",",
+        "LParen" => "(",
+        "RParen" => ")",
+        "Star" => "*",
+        "Dot" => ".",
+        "Eq" => "=",
+        "FatArrow" => "=>",
+        "BangEq" => "!=",
+        "Neq" => "<>",
+        "LtLtEq" => "<<=",
+        "LtLtPipe" => "<<|",
+        "LtMinusGt" => "<->",
+        "LtLt" => "<<",
+        "Lte" => "<=",
+        "GtGtEq" => ">>=",
+        "GtGt" => ">>",
+        "Gte" => ">=",
+        "Lt" => "<",
+        "Gt" => ">",
+        "ColonColon" => "::",
+        "PsqlCrosstabview" => "\\crosstabview",
+        "PsqlGexec" => "\\gexec",
+        "PsqlGset" => "\\gset",
+        "PsqlGx" => "\\gx",
+        "PsqlG" => "\\g",
+        "BackSlash" => "\\",
+        "Plus" => "+",
+        "MinusPipeMinus" => "-|-",
+        "Minus" => "-",
+        "DollarNum" => "$",
+        "PipeGtGt" => "|>>",
+        "PipeAmpGt" => "|&>",
+        "Concat" => "||",
+        "Pipe" => "|",
+        "Slash" => "/",
+        "Percent" => "%",
+        "LBracket" => "[",
+        "RBracket" => "]",
+        "HashArrowArrow" => "#>>",
+        "HashArrow" => "#>",
+        "Pound" => "#",
+        "ArrowArrow" => "->>",
+        "Arrow" => "->",
+        "QuestionPipe" => "?|",
+        "QuestionAmp" => "?&",
+        "QuestionHash" => "?#",
+        "QuestionDash" => "?-",
+        "AtAtAt" => "@@@",
+        "AtAt" => "@@",
+        "AtQuestion" => "@?",
+        "AtGt" => "@>",
+        "LtAt" => "<@",
+        "Question" => "?",
+        "AmpLtPipe" => "&<|",
+        "AmpAmp" => "&&",
+        "AmpLt" => "&<",
+        "AmpGt" => "&>",
+        "Amp" => "&",
+        "BangTildeStar" => "!~*",
+        "TildeStar" => "~*",
+        "BangTilde" => "!~",
+        "TildeEq" => "~=",
+        "Tilde" => "~",
+        "Caret" => "^",
+        _ => return None,
+    })
 }
 
 fn is_module_path(ty: &Type, module: &str) -> bool {
@@ -486,17 +598,70 @@ mod tests {
     }
 
     #[test]
-    fn punct_path_renders_as_token() {
+    fn punct_path_renders_as_token_with_literal_glyph() {
         // A `punct::Comma` field becomes a Token (rounded-rect rendered
-        // with the `terminal token` CSS class), distinct from a keyword.
+        // with the `terminal token` CSS class) carrying the literal `,`
+        // glyph rather than the type ident.
         let node = node_for(quote! { pub struct S { c: punct::Comma } });
         match node {
             Node::Sequence(seq) => match &seq.children[0] {
-                Node::Token(t) => assert_eq!(t.text, "Comma"),
+                Node::Token(t) => assert_eq!(t.text, ","),
                 other => panic!("expected Token, got {other:?}"),
             },
             other => panic!("expected Sequence, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unknown_punct_ident_falls_back_to_type_name() {
+        // If a downstream crate adds a punct type the diagram macro doesn't
+        // know about, render the ident itself rather than dropping it.
+        let node = node_for(quote! { pub struct S { x: punct::SomeNewOp } });
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::Token(t) => assert_eq!(t.text, "SomeNewOp"),
+                other => panic!("expected Token, got {other:?}"),
+            },
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type_alias_renders_via_rhs_recognition() {
+        // `pub type Foo = Surrounded<LParen, X, RParen>` — the macro should
+        // accept it (alongside structs/enums) and render the RHS.
+        let item: TokenStream = quote! {
+            pub type ExplainOptions = Surrounded<punct::LParen, Foo, punct::RParen>;
+        };
+        let out = expand(quote! {}, item).unwrap().to_string();
+        // The original alias must survive in the output (so callers can
+        // still use the type) and the doc attribute must be present.
+        assert!(
+            out.contains("pub type ExplainOptions"),
+            "alias missing: {out}"
+        );
+        assert!(out.contains("# [doc ="), "doc attr missing: {out}");
+        // The literal `(` and `)` glyphs from punct::LParen/RParen should
+        // appear in the embedded SVG via Token nodes (rendered with the
+        // `terminal token` CSS class).
+        assert!(
+            out.contains("terminal token"),
+            "expected token class: {out}"
+        );
+        assert!(out.contains("(</text>"), "expected `(` glyph in svg: {out}");
+        assert!(out.contains(")</text>"), "expected `)` glyph in svg: {out}");
+    }
+
+    #[test]
+    fn type_alias_with_label_renders_terminal() {
+        let item: TokenStream = quote! {
+            #[railroad(label = "EXPLAIN OPTIONS")]
+            pub type ExplainOptions = Surrounded<punct::LParen, Foo, punct::RParen>;
+        };
+        let out = expand(quote! { label = "EXPLAIN OPTIONS" }, item)
+            .unwrap()
+            .to_string();
+        assert!(out.contains("EXPLAIN OPTIONS"), "label missing: {out}");
     }
 
     #[test]
