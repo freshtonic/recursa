@@ -64,6 +64,12 @@ pub enum CompoundQuery<'input> {
 pub struct CompoundParen<'input> {
     pub inner: Surrounded<punct::LParen, Box<CompoundQuery<'input>>, punct::RParen>,
     pub set_op: Option<SetOpCombiner<'input>>,
+    /// Optional trailing `ORDER BY ...` applied to the parenthesized query.
+    pub order_by: Option<Box<crate::ast::select::OrderByClause<'input>>>,
+    /// Optional trailing `LIMIT ...`.
+    pub limit: Option<Box<crate::ast::select::LimitClause<'input>>>,
+    /// Optional trailing `OFFSET ...`.
+    pub offset: Option<Box<crate::ast::select::OffsetClause<'input>>>,
 }
 
 /// A SELECT or VALUES body with optional set operation continuation.

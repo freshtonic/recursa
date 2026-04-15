@@ -82,7 +82,7 @@ pub enum SetSep {
 pub struct SetStmt<'input> {
     pub set: SET,
     pub scope: Option<SetScope>,
-    pub param: literal::AliasName<'input>,
+    pub param: crate::ast::common::QualifiedName<'input>,
     pub sep: SetSep,
     pub values: Seq<SetValue<'input>, punct::Comma>,
 }
@@ -197,7 +197,7 @@ pub enum ResetTarget<'input> {
     TimeZone((TIME, ZONE)),
     Role(ROLE),
     All(ALL),
-    Ident(literal::AliasName<'input>),
+    Ident(crate::ast::common::QualifiedName<'input>),
 }
 
 /// RESET statement: `RESET { param | ALL | ROLE | SESSION AUTHORIZATION | TIME ZONE }`.
@@ -223,7 +223,7 @@ pub enum ShowTarget<'input> {
     SessionAuthorization((SESSION, AUTHORIZATION)),
     TimeZone((TIME, ZONE)),
     All(ALL),
-    Param(literal::AliasName<'input>),
+    Param(crate::ast::common::QualifiedName<'input>),
 }
 
 /// SHOW statement: `SHOW { name | ALL | TIME ZONE | SESSION AUTHORIZATION | TRANSACTION ISOLATION LEVEL }`.
@@ -233,6 +233,15 @@ pub enum ShowTarget<'input> {
 pub struct ShowStmt<'input> {
     pub show: SHOW,
     pub target: ShowTarget<'input>,
+}
+
+/// LOAD statement: `LOAD 'filename'` — forces loading of a shared library.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct LoadStmt<'input> {
+    pub load: LOAD,
+    pub filename: literal::StringLit<'input>,
 }
 
 #[cfg(test)]
@@ -248,7 +257,7 @@ mod tests {
     fn parse_set_to() {
         let mut input = Input::new("SET enable_seqscan TO off");
         let stmt = SetStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.param.text(), "enable_seqscan");
+        assert_eq!(stmt.param.object(), "enable_seqscan");
         assert!(input.is_empty());
     }
 
@@ -256,7 +265,7 @@ mod tests {
     fn parse_set_eq() {
         let mut input = Input::new("SET enable_sort = false");
         let stmt = SetStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.param.text(), "enable_sort");
+        assert_eq!(stmt.param.object(), "enable_sort");
         assert!(input.is_empty());
     }
 

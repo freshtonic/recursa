@@ -285,7 +285,8 @@ pub mod keyword {
         NAME          => r"NAME\b",  // CREATE FUNCTION argument modes (Bundle 2)
         OUT         => r"OUT\b",
         INOUT       => r"INOUT\b",  // CREATE PROCEDURE / CALL (Bundle 3)
-        CALL        => r"CALL\b",  // CREATE TABLESPACE (Bundle 4)
+        CALL        => r"CALL\b",
+        LOAD        => r"LOAD\b",  // CREATE TABLESPACE (Bundle 4)
         TABLESPACE  => r"TABLESPACE\b",
         OWNER       => r"OWNER\b",
         LOCATION    => r"LOCATION\b",  // GENERATED ALWAYS AS (expr) STORED (Bundle 5)
@@ -605,6 +606,12 @@ pub mod literal {
         "SET",
         "WINDOW",
         "TABLESAMPLE",
+        // Window frame unit keywords. Must be reserved so they are not
+        // accidentally consumed as a window `ref_name` identifier, which
+        // would leave the frame clause unparseable.
+        "ROWS",
+        "RANGE",
+        "GROUPS",
     ];
 
     fn is_keyword(s: &str) -> bool {

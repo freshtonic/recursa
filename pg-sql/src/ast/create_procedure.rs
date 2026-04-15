@@ -4,7 +4,7 @@ use recursa::surrounded::Surrounded;
 use recursa::{FormatTokens, Parse, Visit};
 
 use crate::ast::create_function::{FuncOption, FuncParam};
-use crate::ast::expr::Expr;
+use crate::ast::expr::FuncArg;
 use crate::rules::SqlRules;
 use crate::tokens::{literal, punct};
 use crate::tokens::keyword::*;
@@ -44,7 +44,7 @@ pub struct DropProcedureStmt<'input> {
 pub struct CallStmt<'input> {
     pub call: CALL,
     pub name: literal::Ident<'input>,
-    pub args: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
+    pub args: Surrounded<punct::LParen, Seq<FuncArg<'input>, punct::Comma>, punct::RParen>,
 }
 
 #[cfg(test)]

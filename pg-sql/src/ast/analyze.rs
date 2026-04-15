@@ -18,7 +18,36 @@ use recursa_diagram::railroad;
 #[parse(rules = SqlRules)]
 pub struct AnalyzeStmt<'input> {
     pub analyze: ANALYZE,
-    pub target: Option<AnalyzeTarget<'input>>,
+    /// Optional `VERBOSE` keyword (legacy bareword form).
+    pub verbose: Option<VERBOSE>,
+    /// Optional parenthesized options list, e.g.
+    /// `(VERBOSE, SKIP_LOCKED, BUFFER_USAGE_LIMIT '512 kB')`.
+    pub options: Option<
+        Surrounded<punct::LParen, Seq<AnalyzeOption<'input>, punct::Comma>, punct::RParen>,
+    >,
+    pub targets: Option<Seq<AnalyzeTarget<'input>, punct::Comma>>,
+}
+
+/// One option inside the parenthesized `ANALYZE (...)` options list.
+///
+/// Each option is a keyword-ish name (so we use `AliasName` to tolerate
+/// identifiers that happen to collide with keywords) followed by an optional
+/// value (string literal, integer, or ON/OFF-style AliasName).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct AnalyzeOption<'input> {
+    pub name: literal::AliasName<'input>,
+    pub value: Option<AnalyzeOptionValue<'input>>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum AnalyzeOptionValue<'input> {
+    String(literal::StringLit<'input>),
+    Integer(literal::IntegerLit<'input>),
+    Name(literal::AliasName<'input>),
 }
 
 /// `table_name [(column, ...)]` target of an ANALYZE statement.
@@ -43,7 +72,7 @@ mod tests {
     fn parse_analyze() {
         let mut input = Input::new("ANALYZE onek2");
         let stmt = AnalyzeStmt::parse::<SqlRules>(&mut input).unwrap();
-        assert_eq!(stmt.target.unwrap().table_name.object(), "onek2");
+        assert_eq!(stmt.targets.unwrap().first().unwrap().table_name.object(), "onek2");
         assert!(input.is_empty());
     }
 

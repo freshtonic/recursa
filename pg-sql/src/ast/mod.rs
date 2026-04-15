@@ -40,7 +40,9 @@ use self::{
     insert::InsertStmt,
     merge::MergeStmt,
     select::SelectStmt,
-    set_reset::{ResetStmt, SetRoleStmt, SetSessionAuthStmt, SetStmt, SetTimeZoneStmt, ShowStmt},
+    set_reset::{
+        LoadStmt, ResetStmt, SetRoleStmt, SetSessionAuthStmt, SetStmt, SetTimeZoneStmt, ShowStmt,
+    },
     simple_stmts::*,
     update::UpdateStmt,
     values::{CompoundQuery, TableStmt},
@@ -227,6 +229,7 @@ pub enum Statement<'input> {
     Set(SetStmt<'input>),
     Reset(ResetStmt<'input>),
     Show(ShowStmt<'input>),
+    Load(LoadStmt<'input>),
     Analyze(AnalyzeStmt<'input>),
     // Query
     Values(Box<CompoundQuery<'input>>),
