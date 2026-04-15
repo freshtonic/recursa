@@ -60,18 +60,16 @@ pub trait AsNodeKey {
 pub trait Visit: Sized + AsNodeKey {
     fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<Break<V::Error>>;
 
-    fn downcast_ref<Target: Visit>(&self) -> Option<&Target>
+    fn downcast_ref<Target: Visit + 'static>(&self) -> Option<&Target>
     where
         Self: 'static,
-        Target: 'static,
     {
         (self as &dyn Any).downcast_ref::<Target>()
     }
 
-    fn is<Target: Visit>(&self) -> bool
+    fn is<Target: Visit + 'static>(&self) -> bool
     where
         Self: 'static,
-        Target: 'static,
     {
         (self as &dyn Any).is::<Target>()
     }
