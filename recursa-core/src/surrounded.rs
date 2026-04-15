@@ -35,6 +35,35 @@ impl<Open, Inner: Clone, Close> Clone for Surrounded<Open, Inner, Close> {
     }
 }
 
+// Equality, ordering, and hashing delegate to `inner`; the delimiter type
+// parameters live only in `PhantomData` and contribute no data.
+
+impl<Open, Inner: PartialEq, Close> PartialEq for Surrounded<Open, Inner, Close> {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl<Open, Inner: Eq, Close> Eq for Surrounded<Open, Inner, Close> {}
+
+impl<Open, Inner: PartialOrd, Close> PartialOrd for Surrounded<Open, Inner, Close> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.inner.partial_cmp(&other.inner)
+    }
+}
+
+impl<Open, Inner: Ord, Close> Ord for Surrounded<Open, Inner, Close> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.inner.cmp(&other.inner)
+    }
+}
+
+impl<Open, Inner: std::hash::Hash, Close> std::hash::Hash for Surrounded<Open, Inner, Close> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+    }
+}
+
 impl<Open, Inner, Close> Deref for Surrounded<Open, Inner, Close> {
     type Target = Inner;
 

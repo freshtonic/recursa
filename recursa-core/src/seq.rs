@@ -13,18 +13,23 @@ use crate::visitor::{AsNodeKey, Break, TotalVisitor, Visit};
 // -- Marker types --
 
 /// No trailing separator allowed. Last element has no separator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NoTrailing;
 
 /// Trailing separator is required. Every element must be followed by a separator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequiredTrailing;
 
 /// Trailing separator is optional. Last element may or may not have a separator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OptionalTrailing;
 
 /// Sequence may be empty (zero elements).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AllowEmpty;
 
 /// Sequence must have at least one element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NonEmpty;
 
 // -- Seq type --
@@ -108,6 +113,39 @@ impl<T: Clone, S, Trailing> Deref for Seq<T, S, Trailing, NonEmpty> {
 impl<T: fmt::Debug, S: fmt::Debug, Trailing, Empty> fmt::Debug for Seq<T, S, Trailing, Empty> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Seq").field("pairs", &self.pairs).finish()
+    }
+}
+
+// Equality, ordering, and hashing all delegate to the canonical `pairs`
+// representation (`elements` is derived from `pairs` and stays in sync).
+// Bounds are intentionally only on the data-bearing type parameters `T`/`S`;
+// the marker parameters `Trailing`/`Empty` live only in `PhantomData`.
+
+impl<T: PartialEq, S: PartialEq, Trailing, Empty> PartialEq for Seq<T, S, Trailing, Empty> {
+    fn eq(&self, other: &Self) -> bool {
+        self.pairs == other.pairs
+    }
+}
+
+impl<T: Eq, S: Eq, Trailing, Empty> Eq for Seq<T, S, Trailing, Empty> {}
+
+impl<T: PartialOrd, S: PartialOrd, Trailing, Empty> PartialOrd for Seq<T, S, Trailing, Empty> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.pairs.partial_cmp(&other.pairs)
+    }
+}
+
+impl<T: Ord, S: Ord, Trailing, Empty> Ord for Seq<T, S, Trailing, Empty> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.pairs.cmp(&other.pairs)
+    }
+}
+
+impl<T: std::hash::Hash, S: std::hash::Hash, Trailing, Empty> std::hash::Hash
+    for Seq<T, S, Trailing, Empty>
+{
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.pairs.hash(state);
     }
 }
 
