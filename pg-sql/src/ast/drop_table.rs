@@ -14,11 +14,11 @@ use crate::tokens::{keyword, punct};
 /// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct DropTableStmt {
+pub struct DropTableStmt<'input> {
     pub _drop: PhantomData<keyword::Drop>,
     pub _table: PhantomData<keyword::Table>,
     pub if_exists: Option<IfExistsKw>,
-    pub names: Seq<QualifiedName, punct::Comma>,
+    pub names: Seq<QualifiedName<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,
 }
 

@@ -30,10 +30,10 @@ pub struct UniqueConstraint(PhantomData<keyword::Unique>);
 /// come before single-word ones to satisfy longest-match.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum ReferentialAction {
+pub enum ReferentialAction<'input> {
     NoAction(NoActionKw),
-    SetNull(SetNullKw),
-    SetDefault(SetDefaultKw),
+    SetNull(SetNullKw<'input>),
+    SetDefault(SetDefaultKw<'input>),
     Cascade(PhantomData<keyword::Cascade>),
     Restrict(PhantomData<keyword::Restrict>),
 }
@@ -47,36 +47,40 @@ pub struct NoActionKw {
 
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SetNullKw {
+pub struct SetNullKw<'input> {
     pub _set: PhantomData<keyword::Set>,
     pub _null: PhantomData<keyword::Null>,
-    pub cols: Option<Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>>,
+    pub cols: Option<
+        Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
+    >,
 }
 
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct SetDefaultKw {
+pub struct SetDefaultKw<'input> {
     pub _set: PhantomData<keyword::Set>,
     pub _default: PhantomData<keyword::Default>,
-    pub cols: Option<Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>>,
+    pub cols: Option<
+        Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
+    >,
 }
 
 /// `ON DELETE <action>`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct OnDeleteAction {
+pub struct OnDeleteAction<'input> {
     pub _on: PhantomData<keyword::On>,
     pub _delete: PhantomData<keyword::Delete>,
-    pub action: ReferentialAction,
+    pub action: ReferentialAction<'input>,
 }
 
 /// `ON UPDATE <action>`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct OnUpdateAction {
+pub struct OnUpdateAction<'input> {
     pub _on: PhantomData<keyword::On>,
     pub _update: PhantomData<keyword::Update>,
-    pub action: ReferentialAction,
+    pub action: ReferentialAction<'input>,
 }
 
 /// Match type for a foreign key: `MATCH FULL | PARTIAL | SIMPLE`.
@@ -132,13 +136,19 @@ pub enum InitiallyMode {
 /// `REFERENCES table [(col, ...)] [MATCH ...] [ON DELETE ...] [ON UPDATE ...] [DEFERRABLE | NOT DEFERRABLE] [INITIALLY ...]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ReferencesConstraint {
+pub struct ReferencesConstraint<'input> {
     pub _references: PhantomData<keyword::References>,
-    pub table: literal::AliasName,
-    pub columns: Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+    pub table: literal::AliasName<'input>,
+    pub columns: Option<
+        Surrounded<
+            punct::LParen,
+            Seq<literal::AliasName<'input>, punct::Comma>,
+            punct::RParen,
+        >,
+    >,
     pub match_clause: Option<MatchClause>,
-    pub on_delete: Option<OnDeleteAction>,
-    pub on_update: Option<OnUpdateAction>,
+    pub on_delete: Option<OnDeleteAction<'input>>,
+    pub on_update: Option<OnUpdateAction<'input>>,
     pub deferrable: Option<DeferrableKind>,
     pub initially: Option<InitiallyClause>,
 }
@@ -146,9 +156,9 @@ pub struct ReferencesConstraint {
 /// `CHECK (expr) [NO INHERIT]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CheckConstraint {
+pub struct CheckConstraint<'input> {
     pub _check: PhantomData<keyword::Check>,
-    pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr, punct::RParen>,
+    pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr<'input>, punct::RParen>,
     pub no_inherit: Option<NoInheritKw>,
 }
 
@@ -172,20 +182,20 @@ pub struct GeneratedIdentityConstraint(
 /// `GENERATED ALWAYS AS (expr) STORED` column constraint.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct GeneratedStoredConstraint {
+pub struct GeneratedStoredConstraint<'input> {
     pub _generated: PhantomData<keyword::Generated>,
     pub _always: PhantomData<keyword::Always>,
     pub _as: PhantomData<keyword::As>,
-    pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr, punct::RParen>,
+    pub expr: Surrounded<punct::LParen, crate::ast::expr::Expr<'input>, punct::RParen>,
     pub _stored: PhantomData<keyword::Stored>,
 }
 
 /// DEFAULT expr column constraint.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct DefaultConstraint {
+pub struct DefaultConstraint<'input> {
     pub _default: PhantomData<keyword::Default>,
-    pub expr: crate::ast::expr::Expr,
+    pub expr: crate::ast::expr::Expr<'input>,
 }
 
 /// Column constraint kind (without the optional `CONSTRAINT name` prefix).
@@ -197,53 +207,53 @@ pub struct DefaultConstraint {
 /// - References, Unique, Default, Check all start with distinct keywords
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum ColumnConstraintKind {
-    GeneratedStored(GeneratedStoredConstraint),
+pub enum ColumnConstraintKind<'input> {
+    GeneratedStored(GeneratedStoredConstraint<'input>),
     GeneratedIdentity(GeneratedIdentityConstraint),
     PrimaryKey(PrimaryKeyConstraint),
     NotNull(NotNullConstraint),
     Unique(UniqueConstraint),
-    References(ReferencesConstraint),
-    Default(DefaultConstraint),
-    Check(CheckConstraint),
+    References(ReferencesConstraint<'input>),
+    Default(DefaultConstraint<'input>),
+    Check(CheckConstraint<'input>),
 }
 
 /// Optional `CONSTRAINT name` prefix shared by column-level and
 /// table-level constraints.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ConstraintNamePrefix {
+pub struct ConstraintNamePrefix<'input> {
     pub _constraint: PhantomData<keyword::Constraint>,
-    pub name: literal::Ident,
+    pub name: literal::Ident<'input>,
 }
 
 /// A column constraint with its optional `CONSTRAINT name` prefix.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ColumnConstraint {
-    pub name: Option<ConstraintNamePrefix>,
-    pub kind: ColumnConstraintKind,
+pub struct ColumnConstraint<'input> {
+    pub name: Option<ConstraintNamePrefix<'input>>,
+    pub kind: ColumnConstraintKind<'input>,
 }
 
 /// `COLLATE "name"` clause used after a column's type.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CollateClause {
+pub struct CollateClause<'input> {
     pub _collate: PhantomData<keyword::Collate>,
-    pub name: literal::Ident,
+    pub name: literal::Ident<'input>,
 }
 
 /// A column definition: `name type [COLLATE "..."] [constraints...]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ColumnDef {
-    pub name: literal::Ident,
-    pub type_name: crate::ast::expr::CastType,
-    pub collate: Option<CollateClause>,
-    pub constraints: Seq<ColumnConstraint, (), OptionalTrailing>,
+pub struct ColumnDef<'input> {
+    pub name: literal::Ident<'input>,
+    pub type_name: crate::ast::expr::CastType<'input>,
+    pub collate: Option<CollateClause<'input>>,
+    pub constraints: Seq<ColumnConstraint<'input>, (), OptionalTrailing>,
 }
 
-impl ColumnDef {
+impl<'input> ColumnDef<'input> {
     /// Returns true if any of this column's constraints is a PRIMARY KEY.
     pub fn primary_key(&self) -> bool {
         self.constraints
@@ -265,34 +275,37 @@ pub struct ConstraintAttrs {
 /// `PRIMARY KEY (col, ...)`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TablePrimaryKey {
+pub struct TablePrimaryKey<'input> {
     pub _primary: PhantomData<keyword::Primary>,
     pub _key: PhantomData<keyword::Key>,
-    pub columns: Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>,
+    pub columns:
+        Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     pub attrs: ConstraintAttrs,
 }
 
 /// `UNIQUE (col, ...)`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TableUnique {
+pub struct TableUnique<'input> {
     pub _unique: PhantomData<keyword::Unique>,
-    pub columns: Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>,
+    pub columns:
+        Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
     pub attrs: ConstraintAttrs,
 }
 
 /// `FOREIGN KEY (col, ...) REFERENCES table [(col, ...)] [MATCH ...] [ON ...] [DEFERRABLE ...] [INITIALLY ...]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TableForeignKey {
+pub struct TableForeignKey<'input> {
     pub _foreign: PhantomData<keyword::Foreign>,
     pub _key: PhantomData<keyword::Key>,
-    pub columns: Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>,
-    pub references: ReferencesConstraint,
+    pub columns:
+        Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
+    pub references: ReferencesConstraint<'input>,
 }
 
 /// Table-level `CHECK (expr) [NO INHERIT]`.
-pub type TableCheck = CheckConstraint;
+pub type TableCheck<'input> = CheckConstraint<'input>;
 
 /// A table-level constraint kind.
 ///
@@ -301,19 +314,19 @@ pub type TableCheck = CheckConstraint;
 /// is not strictly required for disambiguation.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum TableConstraintKind {
-    PrimaryKey(TablePrimaryKey),
-    ForeignKey(TableForeignKey),
-    Unique(TableUnique),
-    Check(TableCheck),
+pub enum TableConstraintKind<'input> {
+    PrimaryKey(TablePrimaryKey<'input>),
+    ForeignKey(TableForeignKey<'input>),
+    Unique(TableUnique<'input>),
+    Check(TableCheck<'input>),
 }
 
 /// A table-level constraint with optional `CONSTRAINT name` prefix.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct TableConstraint {
-    pub name: Option<ConstraintNamePrefix>,
-    pub kind: TableConstraintKind,
+pub struct TableConstraint<'input> {
+    pub name: Option<ConstraintNamePrefix<'input>>,
+    pub kind: TableConstraintKind<'input>,
 }
 
 /// One item in a CREATE TABLE column list: either a column definition or
@@ -325,9 +338,9 @@ pub struct TableConstraint {
 /// disambiguates cleanly, but declaration order prefers the longer match.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum ColumnOrConstraint {
-    Constraint(TableConstraint),
-    Column(ColumnDef),
+pub enum ColumnOrConstraint<'input> {
+    Constraint(TableConstraint<'input>),
+    Column(ColumnDef<'input>),
 }
 
 /// Optional TEMP or TEMPORARY keyword.
@@ -341,33 +354,37 @@ pub enum TempKw {
 /// INHERITS clause: `INHERITS (parent, ...)`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct InheritsClause {
+pub struct InheritsClause<'input> {
     pub _inherits: PhantomData<keyword::Inherits>,
-    pub parents: Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>,
+    pub parents:
+        Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
 }
 
 /// Column-based table body: `(cols_and_constraints) [INHERITS (...)] [PARTITION BY ...]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct ColumnsBody {
-    pub columns:
-        Surrounded<punct::LParen, Seq<ColumnOrConstraint, punct::Comma>, punct::RParen>,
-    pub inherits: Option<InheritsClause>,
-    pub partition_by: Option<PartitionByClause>,
-    pub with_storage: Option<crate::ast::create_index::WithStorage>,
+pub struct ColumnsBody<'input> {
+    pub columns: Surrounded<
+        punct::LParen,
+        Seq<ColumnOrConstraint<'input>, punct::Comma>,
+        punct::RParen,
+    >,
+    pub inherits: Option<InheritsClause<'input>>,
+    pub partition_by: Option<PartitionByClause<'input>>,
+    pub with_storage: Option<crate::ast::create_index::WithStorage<'input>>,
 }
 
 /// Partition-of table body: `PARTITION OF parent FOR VALUES IN (...) [PARTITION BY ...]`
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct PartitionOfBody {
+pub struct PartitionOfBody<'input> {
     pub _partition: PhantomData<keyword::Partition>,
     pub _of: PhantomData<keyword::Of>,
-    pub parent: literal::Ident,
-    pub for_values: Option<ForValuesClause>,
+    pub parent: literal::Ident<'input>,
+    pub for_values: Option<ForValuesClause<'input>>,
     pub default: Option<PhantomData<keyword::Default>>,
-    pub partition_by: Option<PartitionByClause>,
-    pub with_storage: Option<crate::ast::create_index::WithStorage>,
+    pub partition_by: Option<PartitionByClause<'input>>,
+    pub with_storage: Option<crate::ast::create_index::WithStorage<'input>>,
 }
 
 /// AS-query table body: `AS SELECT ...`
@@ -384,10 +401,10 @@ pub struct AsQueryBody {
 /// keywords; Columns starts with `(`. Longest-match-wins disambiguates.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum CreateTableBody {
+pub enum CreateTableBody<'input> {
     AsQuery(AsQueryBody),
-    PartitionOf(PartitionOfBody),
-    Columns(ColumnsBody),
+    PartitionOf(PartitionOfBody<'input>),
+    Columns(ColumnsBody<'input>),
 }
 
 /// ```sql
@@ -395,22 +412,23 @@ pub enum CreateTableBody {
 /// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CreateTableStmt {
+pub struct CreateTableStmt<'input> {
     pub _create: PhantomData<keyword::Create>,
     pub temp: Option<TempKw>,
     pub unlogged: Option<PhantomData<keyword::Unlogged>>,
     pub _table: PhantomData<keyword::Table>,
-    pub name: literal::Ident,
-    pub body: CreateTableBody,
+    pub name: literal::Ident<'input>,
+    pub body: CreateTableBody<'input>,
 }
 
-impl CreateTableStmt {
+impl<'input> CreateTableStmt<'input> {
     /// Returns all items (columns + table-level constraints) of a
     /// columns-based CREATE TABLE.
     pub fn items(
         &self,
-    ) -> Option<&Surrounded<punct::LParen, Seq<ColumnOrConstraint, punct::Comma>, punct::RParen>>
-    {
+    ) -> Option<
+        &Surrounded<punct::LParen, Seq<ColumnOrConstraint<'input>, punct::Comma>, punct::RParen>,
+    > {
         match &self.body {
             CreateTableBody::Columns(b) => Some(&b.columns),
             CreateTableBody::PartitionOf(_) | CreateTableBody::AsQuery(_) => None,
@@ -418,7 +436,7 @@ impl CreateTableStmt {
     }
 
     /// Returns only the column definitions (excluding table constraints).
-    pub fn column_defs(&self) -> Option<Vec<&ColumnDef>> {
+    pub fn column_defs(&self) -> Option<Vec<&ColumnDef<'input>>> {
         self.items().map(|s| {
             s.iter()
                 .filter_map(|item| match item {

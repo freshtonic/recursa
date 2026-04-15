@@ -33,17 +33,18 @@ pub struct IfExistsKw {
 /// CREATE VIEW statement.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CreateViewStmt {
+pub struct CreateViewStmt<'input> {
     pub _create: PhantomData<keyword::Create>,
     pub or_replace: Option<OrReplaceKw>,
     pub temp: Option<TempKw>,
     pub recursive: Option<PhantomData<keyword::Recursive>>,
     pub _view: PhantomData<keyword::View>,
-    pub name: literal::Ident,
-    pub columns:
-        Option<Surrounded<punct::LParen, Seq<literal::AliasName, punct::Comma>, punct::RParen>>,
+    pub name: literal::Ident<'input>,
+    pub columns: Option<
+        Surrounded<punct::LParen, Seq<literal::AliasName<'input>, punct::Comma>, punct::RParen>,
+    >,
     pub _as: PhantomData<keyword::As>,
-    pub query: CompoundQuery,
+    pub query: CompoundQuery<'input>,
 }
 
 /// DROP VIEW statement:
@@ -53,11 +54,11 @@ pub struct CreateViewStmt {
 /// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct DropViewStmt {
+pub struct DropViewStmt<'input> {
     pub _drop: PhantomData<keyword::Drop>,
     pub _view: PhantomData<keyword::View>,
     pub if_exists: Option<IfExistsKw>,
-    pub names: Seq<QualifiedName, punct::Comma>,
+    pub names: Seq<QualifiedName<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,
 }
 

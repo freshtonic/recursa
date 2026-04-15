@@ -30,37 +30,37 @@ pub struct IfNotExistsKw {
 /// identifiers and keywords are allowed in this position.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct UsingMethod {
+pub struct UsingMethod<'input> {
     pub _using: PhantomData<keyword::Using>,
-    pub method: literal::AliasName,
+    pub method: literal::AliasName<'input>,
 }
 
 /// A single opclass option: `name = value`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct OpclassOption {
-    pub name: literal::AliasName,
+pub struct OpclassOption<'input> {
+    pub name: literal::AliasName<'input>,
     pub _eq: punct::Eq,
-    pub value: Expr,
+    pub value: Expr<'input>,
 }
 
 /// Parenthesized opclass option list: `(name = value, ...)`.
-pub type OpclassOptions =
-    Surrounded<punct::LParen, Seq<OpclassOption, punct::Comma>, punct::RParen>;
+pub type OpclassOptions<'input> =
+    Surrounded<punct::LParen, Seq<OpclassOption<'input>, punct::Comma>, punct::RParen>;
 
 /// Opclass name plus optional options: `int4_ops [(opt = val, ...)]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct OpclassSpec {
-    pub name: literal::Ident,
-    pub options: Option<OpclassOptions>,
+pub struct OpclassSpec<'input> {
+    pub name: literal::Ident<'input>,
+    pub options: Option<OpclassOptions<'input>>,
 }
 
 /// A storage parameter entry: `name [= value]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct StorageParam {
-    pub name: literal::AliasName,
+pub struct StorageParam<'input> {
+    pub name: literal::AliasName<'input>,
     pub value: Option<StorageParamValue>,
 }
 
@@ -79,17 +79,19 @@ pub struct StorageParamValue {
 /// `WITH (name = value, ...)` storage parameters clause.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct WithStorage {
+pub struct WithStorage<'input> {
     pub _with: PhantomData<keyword::With>,
-    pub params: Surrounded<punct::LParen, Seq<StorageParam, punct::Comma>, punct::RParen>,
+    pub params:
+        Surrounded<punct::LParen, Seq<StorageParam<'input>, punct::Comma>, punct::RParen>,
 }
 
 /// `INCLUDE (col, ...)` covering-index clause.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IncludeClause {
+pub struct IncludeClause<'input> {
     pub _include: PhantomData<keyword::Include>,
-    pub columns: Surrounded<punct::LParen, Seq<literal::Ident, punct::Comma>, punct::RParen>,
+    pub columns:
+        Surrounded<punct::LParen, Seq<literal::Ident<'input>, punct::Comma>, punct::RParen>,
 }
 
 /// Index column target: a parenthesized expression, a bare function call
@@ -101,28 +103,28 @@ pub struct IncludeClause {
 ///   prefers the function call form.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum IndexTarget {
-    Expr(Surrounded<punct::LParen, Box<Expr>, punct::RParen>),
-    Func(Box<FuncCall>),
-    Col(literal::Ident),
+pub enum IndexTarget<'input> {
+    Expr(Surrounded<punct::LParen, Box<Expr<'input>>, punct::RParen>),
+    Func(Box<FuncCall<'input>>),
+    Col(literal::Ident<'input>),
 }
 
 /// `COLLATE "name"` on an index element.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IndexCollate {
+pub struct IndexCollate<'input> {
     pub _collate: PhantomData<keyword::Collate>,
-    pub name: literal::Ident,
+    pub name: literal::Ident<'input>,
 }
 
 /// An index element:
 /// `column_or_expr [COLLATE "name"] [opclass [(options)]] [ASC|DESC] [NULLS FIRST|LAST]`.
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct IndexElem {
-    pub target: IndexTarget,
-    pub collate: Option<IndexCollate>,
-    pub opclass: Option<OpclassSpec>,
+pub struct IndexElem<'input> {
+    pub target: IndexTarget<'input>,
+    pub collate: Option<IndexCollate<'input>>,
+    pub opclass: Option<OpclassSpec<'input>>,
     pub dir: Option<SortDir>,
     pub nulls: Option<NullsOrder>,
 }
@@ -140,20 +142,21 @@ pub struct IndexElem {
 /// The index name is optional (Postgres allows it to be omitted).
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct CreateIndexStmt {
+pub struct CreateIndexStmt<'input> {
     pub _create: PhantomData<keyword::Create>,
     pub unique: Option<PhantomData<keyword::Unique>>,
     pub _index: PhantomData<keyword::Index>,
     pub concurrently: Option<PhantomData<keyword::Concurrently>>,
     pub if_not_exists: Option<IfNotExistsKw>,
-    pub name: Option<literal::Ident>,
+    pub name: Option<literal::Ident<'input>>,
     pub _on: PhantomData<keyword::On>,
-    pub table_name: literal::Ident,
-    pub using: Option<UsingMethod>,
-    pub columns: Surrounded<punct::LParen, Seq<IndexElem, punct::Comma>, punct::RParen>,
-    pub include: Option<IncludeClause>,
-    pub with_storage: Option<WithStorage>,
-    pub where_clause: Option<WhereClause>,
+    pub table_name: literal::Ident<'input>,
+    pub using: Option<UsingMethod<'input>>,
+    pub columns:
+        Surrounded<punct::LParen, Seq<IndexElem<'input>, punct::Comma>, punct::RParen>,
+    pub include: Option<IncludeClause<'input>>,
+    pub with_storage: Option<WithStorage<'input>>,
+    pub where_clause: Option<WhereClause<'input>>,
 }
 
 /// DROP INDEX statement:
@@ -163,12 +166,12 @@ pub struct CreateIndexStmt {
 /// ```
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub struct DropIndexStmt {
+pub struct DropIndexStmt<'input> {
     pub _drop: PhantomData<keyword::Drop>,
     pub _index: PhantomData<keyword::Index>,
     pub concurrently: Option<PhantomData<keyword::Concurrently>>,
     pub if_exists: Option<IfExistsKw>,
-    pub names: Seq<literal::Ident, punct::Comma>,
+    pub names: Seq<literal::Ident<'input>, punct::Comma>,
     pub behavior: Option<DropBehavior>,
 }
 
