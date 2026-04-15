@@ -347,7 +347,13 @@ fn recognize(ty: &Type, cx: Ctx<'_>) -> Node {
             "Option" if args.len() == 1 => {
                 return Node::Optional(Optional::new(recognize(&args[0], cx)));
             }
-            "Seq" | "Punctuated" if args.len() == 2 => {
+            // `Seq` and `Punctuated` may carry trailing marker type
+            // parameters that affect parsing semantics (e.g.
+            // `Seq<T, Sep, NoTrailing, NonEmpty>`) but are irrelevant to
+            // the railroad diagram, which only needs the element and
+            // separator types. Accept any arity ≥ 2 and take the first
+            // two args.
+            "Seq" | "Punctuated" if args.len() >= 2 => {
                 let child = recognize(&args[0], cx);
                 let sep = recognize(&args[1], cx);
                 return Node::OneOrMore(OneOrMore::new(child, Some(sep)));
@@ -863,6 +869,33 @@ mod tests {
         let node = node_for(quote! { pub struct S { xs: Seq<Foo, Comma> } });
         match node {
             Node::Sequence(seq) => assert!(matches!(seq.children[0], Node::OneOrMore(_))),
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seq_with_trailing_marker_args_still_renders_as_one_or_more() {
+        // Real pg-sql AST shape: `Seq<T, Sep, NoTrailing, NonEmpty>`. The
+        // trailing marker types tune parsing semantics but are irrelevant
+        // to the diagram, which only needs the element and separator types.
+        // Before the fix this fell through to a stringified `Seq` non-terminal.
+        let node = node_for(quote! {
+            pub struct S { defs: Seq<WindowDef, Comma, NoTrailing, NonEmpty> }
+        });
+        match node {
+            Node::Sequence(seq) => match &seq.children[0] {
+                Node::OneOrMore(om) => {
+                    match om.child.as_ref() {
+                        Node::NonTerminal(nt) => assert_eq!(nt.text, "WindowDef"),
+                        other => panic!("expected NonTerminal child, got {other:?}"),
+                    }
+                    match om.separator.as_deref() {
+                        Some(Node::NonTerminal(nt)) => assert_eq!(nt.text, "Comma"),
+                        other => panic!("expected NonTerminal separator, got {other:?}"),
+                    }
+                }
+                other => panic!("expected OneOrMore, got {other:?}"),
+            },
             other => panic!("expected Sequence, got {other:?}"),
         }
     }
