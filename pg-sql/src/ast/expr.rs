@@ -973,11 +973,29 @@ pub enum Expr<'input> {
     /// `~` appears at the start of an operand.
     #[parse(prefix, bp = 12)]
     BitNot(punct::Tilde, Box<Expr<'input>>),
+    /// Absolute value: `@ expr` (Postgres unary `@` operator).
+    #[parse(prefix, bp = 12)]
+    Abs(punct::At, Box<Expr<'input>>),
+    /// Square root: `|/ expr` (Postgres unary `|/` operator).
+    #[parse(prefix, bp = 12)]
+    Sqrt(punct::PipeSlash, Box<Expr<'input>>),
+    /// Cube root: `||/ expr` (Postgres unary `||/` operator).
+    #[parse(prefix, bp = 12)]
+    Cbrt(punct::PipePipeSlash, Box<Expr<'input>>),
 
     // --- Postfix ---
     /// Postgres-style cast: `expr::type`
     #[parse(postfix, bp = 20)]
     Cast(Box<Expr<'input>>, punct::ColonColon, Box<CastType<'input>>),
+    /// Composite field-star access: `(expr).*` — expand a composite/record
+    /// value into its columns. Declared before `FieldAccess` so the longer
+    /// `.*` form wins.
+    #[parse(postfix, bp = 20)]
+    FieldStar(Box<Expr<'input>>, punct::Dot, punct::Star),
+    /// Composite field access: `(expr).field` — project one column from a
+    /// composite/record value.
+    #[parse(postfix, bp = 20)]
+    FieldAccess(Box<Expr<'input>>, punct::Dot, literal::AliasName<'input>),
     /// Array subscript: `expr[idx]`
     #[parse(postfix, bp = 20)]
     Subscript(

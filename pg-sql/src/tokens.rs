@@ -353,7 +353,17 @@ pub mod keyword {
         BIT        => r"BIT\b",
         VARYING      => r"VARYING\b",
         CHARACTER  => r"CHARACTER\b",  // SELECT FOR SHARE / FOR KEY SHARE / FOR NO KEY UPDATE locking clauses.
-        SHARE        => r"SHARE\b",}
+        SHARE        => r"SHARE\b",
+        // CREATE FUNCTION option keywords.
+        IMPORT    => r"IMPORT\b",
+        TABLESAMPLE => r"TABLESAMPLE\b",
+        DEFINER   => r"DEFINER\b",
+        INVOKER   => r"INVOKER\b",
+        LEAKPROOF => r"LEAKPROOF\b",
+        COST      => r"COST\b",
+        SUPPORT   => r"SUPPORT\b",
+        TRANSFORM => r"TRANSFORM\b",
+        EXTERNAL  => r"EXTERNAL\b",}
 }
 
 /// Punctuation
@@ -400,7 +410,12 @@ pub mod punct {
         // 3-char `|>>` and `|&>` before 2-char `||`.
         PipeGtGt       => r"\|>>", "|>>",
         PipeAmpGt      => r"\|&>", "|&>",
+        // Cube-root `||/` (prefix operator). Must come before `||`.
+        PipePipeSlash  => r"\|\|/", "||/",
         Concat     => r"\|\|",     "||",
+        // Square-root `|/` (prefix operator). Must come after `||/`/`||`
+        // and before bare `|`.
+        PipeSlash      => r"\|/",  "|/",
         // Single-char `|` (bitwise OR). Must be declared after `||` and
         // other `|`-prefixed operators so longest-match picks the longer form.
         Pipe       => r"\|",       "|",
@@ -425,6 +440,9 @@ pub mod punct {
         AtAt           => r"@@",       "@@",
         AtQuestion     => r"@\?",      "@?",
         AtGt           => r"@>",       "@>",
+        // Single-char `@` (prefix absolute-value operator). Declared after
+        // all longer `@`-prefixed operators so longest-match-wins.
+        At             => r"@",        "@",
         LtAt           => r"<@",       "<@",
         Question       => r"\?",       "?",
         // `&`-prefixed range/geometric operators. 3-char `&<|` before 2-char.
@@ -463,8 +481,11 @@ pub mod literal {
         //   123.45    .5    123.    1e10    1.5e-5    .5e10
         // Declared before IntegerLit so longest-match-wins picks the longer
         // literal when an exponent is present.
-        NumericLit => r"(?:[0-9]+\.[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+",
-        IntegerLit => r"[0-9]+",
+        // Digit groups allow `_` as a separator between digits (Postgres 16+).
+        // A digit group is `[0-9](?:_?[0-9])*` — starts with a digit, and
+        // every subsequent `_` must be followed by a digit.
+        NumericLit => r"(?:[0-9](?:_?[0-9])*\.(?:[0-9](?:_?[0-9])*)?|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*",
+        IntegerLit => r"[0-9](?:_?[0-9])*",
         // psql client variable substitution: `:foo` or `:'foo'` or `:"foo"`.
         // Treated as an opaque expression atom so SELECTs that reference
         // psql-set variables parse structurally.
@@ -564,6 +585,7 @@ pub mod literal {
         // be reserved to prevent being consumed as column/alias names.
         "SET",
         "WINDOW",
+        "TABLESAMPLE",
     ];
 
     fn is_keyword(s: &str) -> bool {
@@ -878,6 +900,20 @@ mod tests {
         let mut input = Input::new("4.4e131071");
         let lit = NumericLit::parse::<NoRules>(&mut input).unwrap();
         assert_eq!(lit.0, "4.4e131071");
+    }
+
+    #[test]
+    fn integer_literal_with_underscores() {
+        let mut input = Input::new("100_000_000_000_000");
+        let lit = IntegerLit::parse::<NoRules>(&mut input).unwrap();
+        assert_eq!(lit.0, "100_000_000_000_000");
+    }
+
+    #[test]
+    fn numeric_literal_with_underscores() {
+        let mut input = Input::new("1_234.567_89");
+        let lit = NumericLit::parse::<NoRules>(&mut input).unwrap();
+        assert_eq!(lit.0, "1_234.567_89");
     }
 
     #[test]
