@@ -72,6 +72,8 @@ pub enum Statement<'input> {
     CreateFunction(Box<CreateFunctionStmt<'input>>),
     CreateProcedure(Box<CreateProcedureStmt<'input>>),
     CreateTablespace(Box<CreateTablespaceStmt<'input>>),
+    ImportForeignSchema(ImportForeignSchemaStmt<'input>),
+    CreateConstraintTrigger(CreateConstraintTriggerStmt<'input>),
     CreateTrigger(CreateTriggerStmt<'input>),
     CreateEventTrigger(CreateEventTriggerStmt<'input>),
     CreateAccessMethod(CreateAccessMethodStmt<'input>),

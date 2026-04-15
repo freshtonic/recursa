@@ -204,7 +204,7 @@ pub struct PlainTableAliasBare<'input> {
 #[parse(rules = SqlRules)]
 pub struct ColumnDef<'input> {
     pub name: literal::AliasName<'input>,
-    pub type_name: crate::ast::expr::TypeName<'input>,
+    pub type_name: crate::ast::expr::CastType<'input>,
 }
 
 /// `[AS] alias (col type, ...)` or just `(col type, ...)` -- the
@@ -350,22 +350,66 @@ pub struct JoinSuffix<'input> {
     pub condition: Option<JoinCondition<'input>>,
 }
 
+/// TABLESAMPLE clause: `TABLESAMPLE method (args) [REPEATABLE (seed)]`.
+/// Attached to a single table reference (not to joined results).
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TableSampleClause<'input> {
+    pub tablesample: TABLESAMPLE,
+    pub method: literal::AliasName<'input>,
+    pub args: Surrounded<punct::LParen, Seq<Expr<'input>, punct::Comma>, punct::RParen>,
+    pub repeatable: Option<TableSampleRepeatable<'input>>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TableSampleRepeatable<'input> {
+    pub repeatable: REPEATABLE,
+    pub seed: Surrounded<punct::LParen, Expr<'input>, punct::RParen>,
+}
+
 /// A table reference that may have zero or more JOIN suffixes.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct TableRef<'input> {
     pub base: SimpleTableRef<'input>,
+    pub tablesample: Option<TableSampleClause<'input>>,
     pub joins: Seq<JoinSuffix<'input>, (), OptionalTrailing>,
 }
 
-/// WHERE clause: `WHERE expr`.
+/// WHERE-clause body: either a normal expression or the cursor-current
+/// row filter `CURRENT OF cursor_name` (used by positioned UPDATE/DELETE).
+///
+/// Variant ordering: `CurrentOf` must come before `Expr` since `CURRENT`
+/// is a specific keyword lead-in.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum WhereCondition<'input> {
+    CurrentOf(WhereCurrentOf<'input>),
+    Expr(Expr<'input>),
+}
+
+/// `CURRENT OF cursor_name` filter.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct WhereCurrentOf<'input> {
+    pub current: CURRENT,
+    pub of: OF,
+    pub cursor: literal::AliasName<'input>,
+}
+
+/// WHERE clause: `WHERE expr` or `WHERE CURRENT OF cursor`.
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct WhereClause<'input> {
     pub r#where: WHERE,
-    pub condition: Expr<'input>,
+    pub condition: WhereCondition<'input>,
 }
 
 /// USING operator in ORDER BY: `USING > | USING <`

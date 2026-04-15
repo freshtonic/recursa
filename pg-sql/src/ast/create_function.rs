@@ -27,24 +27,48 @@ pub enum ReturnType<'input> {
     Plain(TypeName<'input>),
 }
 
-/// LANGUAGE clause: `LANGUAGE name`.
+/// LANGUAGE clause: `LANGUAGE name` or `LANGUAGE 'name'`. Postgres accepts
+/// the language name as an identifier or as a single-quoted string literal.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum LanguageName<'input> {
+    Ident(literal::AliasName<'input>),
+    String(literal::StringLit<'input>),
+}
+
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
 pub struct LanguageOption<'input> {
     pub language: LANGUAGE,
-    pub name: literal::AliasName<'input>,
+    pub name: LanguageName<'input>,
 }
 
-/// Function body: either single-quoted string or dollar-quoted string.
+/// Function body: either single-quoted string, dollar-quoted string, or a
+/// psql client variable substitution (e.g., `AS :'regresslib'` for C-language
+/// shared libraries passed in via psql `\set`).
 ///
-/// Variant ordering: dollar-quoted before single-quoted (different first chars).
+/// Variant ordering: dollar-quoted before single-quoted before psql var
+/// (different first chars).
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
 #[parse(rules = SqlRules)]
-pub enum FuncBody<'input> {
+pub enum FuncBodyPart<'input> {
     Dollar(literal::DollarStringLit<'input>),
     String(literal::StringLit<'input>),
+    PsqlVar(literal::PsqlVar<'input>),
+}
+
+/// Full function body — `AS body [, symbol]`. The second comma-separated
+/// form is used for C-language functions where the first part names the
+/// shared object file and the second names the exported C symbol.
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct FuncBody<'input> {
+    pub obj_file: FuncBodyPart<'input>,
+    pub symbol: Option<(punct::Comma, FuncBodyPart<'input>)>,
 }
 
 /// Function return type name -- extends TypeName with additional types
@@ -239,7 +263,97 @@ pub enum FuncOption<'input> {
     Parallel(ParallelOption),
     Set(SetFuncOption<'input>),
     Language(LanguageOption<'input>),
+    /// `SECURITY DEFINER` / `SECURITY INVOKER`.
+    Security(SecurityOption),
+    /// `EXTERNAL SECURITY DEFINER` / `EXTERNAL SECURITY INVOKER` — older
+    /// SQL standard spelling, still accepted.
+    ExternalSecurity(ExternalSecurityOption),
+    /// `LEAKPROOF` / `NOT LEAKPROOF`.
+    Leakproof(LeakproofOption),
+    /// `WINDOW` — declares the function as a window function.
+    Window(WINDOW),
+    /// `COST numeric`.
+    Cost(CostOption<'input>),
+    /// `ROWS numeric`.
+    Rows(RowsOption<'input>),
+    /// `SUPPORT qualified_name` — planner support function.
+    Support(SupportOption<'input>),
+    /// `TRANSFORM FOR TYPE typ [, ...]`.
+    Transform(TransformOption<'input>),
     As(AsOption<'input>),
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum SecurityMode {
+    Definer(DEFINER),
+    Invoker(INVOKER),
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SecurityOption {
+    pub security: SECURITY,
+    pub mode: SecurityMode,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ExternalSecurityOption {
+    pub external: EXTERNAL,
+    pub inner: SecurityOption,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub enum LeakproofOption {
+    NotLeakproof((NOT, LEAKPROOF)),
+    Leakproof(LEAKPROOF),
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CostOption<'input> {
+    pub cost: COST,
+    pub value: Expr<'input>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct RowsOption<'input> {
+    pub rows: ROWS,
+    pub value: Expr<'input>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct SupportOption<'input> {
+    pub support: SUPPORT,
+    pub name: crate::ast::common::QualifiedName<'input>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TransformOption<'input> {
+    pub transform: TRANSFORM,
+    pub items: Seq<TransformForType<'input>, punct::Comma>,
+}
+
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct TransformForType<'input> {
+    pub r#for: FOR,
+    pub r#type: TYPE,
+    pub type_name: CastType<'input>,
 }
 
 /// CREATE [OR REPLACE] FUNCTION statement.

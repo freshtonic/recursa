@@ -619,6 +619,28 @@ pub struct CreateTriggerStmt<'input> {
     pub tail: Option<RawStatement<'input>>,
 }
 
+/// IMPORT FOREIGN SCHEMA ...
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct ImportForeignSchemaStmt<'input> {
+    pub import: IMPORT,
+    pub foreign: FOREIGN,
+    pub schema: SCHEMA,
+    pub tail: Option<RawStatement<'input>>,
+}
+
+/// CREATE CONSTRAINT TRIGGER ...
+#[railroad]
+#[derive(Debug, Clone, FormatTokens, Parse, Visit)]
+#[parse(rules = SqlRules)]
+pub struct CreateConstraintTriggerStmt<'input> {
+    pub create: CREATE,
+    pub constraint: CONSTRAINT,
+    pub trigger: TRIGGER,
+    pub tail: Option<RawStatement<'input>>,
+}
+
 /// DROP TRIGGER ...
 #[railroad]
 #[derive(Debug, Clone, FormatTokens, Parse, Visit)]
