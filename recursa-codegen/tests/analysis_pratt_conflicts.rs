@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use recursa_codegen::{
     AtomDescription, AtomExpression, ConflictRemedy, Declaration, DiagnosticCode,
     GrammarDescription, KindDescription, KindId, Location, ParseSite, PrattPosition, PrattVariant,
@@ -224,6 +226,13 @@ fn pratt_atom_prefix_conflict_has_a_canonical_snapshot() {
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
     assert_eq!(report.diagnostics[0].code, DiagnosticCode::PrattAtomOverlap);
+    let witness = &report.diagnostics[0].conflict.as_ref().unwrap().witness;
+    for proof in [witness.left, witness.right] {
+        assert!(report.proofs().chain(proof).all(|node| !matches!(
+            node.step,
+            recursa_codegen::ProvenanceStep::PrattExtender { .. }
+        )));
+    }
     assert_eq!(
         report.canonical_diagnostics(),
         concat!(
@@ -261,10 +270,12 @@ fn pratt_led_led_conflict_has_a_canonical_snapshot() {
             "  overlap: {OpShared}\n",
             "  witness: OpShared\n",
             "  left proof:\n",
+            "    - Pratt `E` admits infix extender `Plus` with lbp 10 and rbp 11\n",
             "    - `E` references `OpA` at `Plus`\n",
             "    - FIRST propagates through `OpA`\n",
             "    - kind `OpShared` is declared by atom `OpShared`\n",
             "  right proof:\n",
+            "    - Pratt `E` admits infix extender `Minus` with lbp 10 and rbp 11\n",
             "    - `E` references `OpB` at `Minus`\n",
             "    - FIRST propagates through `OpB`\n",
             "    - kind `OpShared` is declared by atom `OpShared`\n",
@@ -275,11 +286,52 @@ fn pratt_led_led_conflict_has_a_canonical_snapshot() {
 
 #[test]
 fn pratt_infix_postfix_conflict_has_a_canonical_snapshot() {
-    let report = analyze(led_led(true));
+    let grammar = led_led(true);
+    let pratt = TypeId::new((grammar.types.len() - 1) as u32);
+    let pratt_declaration = grammar.types[pratt.index()].declaration;
+    let TypeShape::Pratt { variants } = &grammar.types[pratt.index()].shape else {
+        unreachable!()
+    };
+    let expected = variants
+        .iter()
+        .filter(|variant| {
+            matches!(
+                variant.position,
+                PrattPosition::Infix { .. } | PrattPosition::Postfix { .. }
+            )
+        })
+        .map(|variant| (variant.declaration, variant.position))
+        .collect::<Vec<_>>();
+    let report = analyze(grammar);
 
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
     assert_eq!(report.diagnostics[0].code, DiagnosticCode::PrattLedOverlap);
+    let witness = &report.diagnostics[0].conflict.as_ref().unwrap().witness;
+    for (proof, (variant, position)) in [witness.left, witness.right].into_iter().zip(expected) {
+        assert!(report.proofs().chain(proof).any(|node| matches!(
+            node.step,
+            recursa_codegen::ProvenanceStep::PrattExtender {
+                pratt: actual_pratt,
+                pratt_declaration: actual_pratt_declaration,
+                variant: actual_variant,
+                position: actual_position,
+            } if actual_pratt == pratt
+                && actual_pratt_declaration == pratt_declaration
+                && actual_variant == variant
+                && actual_position == position
+        )));
+    }
+    let mut reachable = BTreeSet::from([witness.left, witness.right]);
+    let mut pending = reachable.iter().copied().collect::<Vec<_>>();
+    while let Some(proof) = pending.pop() {
+        if let Some(parent) = report.proofs().get(proof).unwrap().parent
+            && reachable.insert(parent)
+        {
+            pending.push(parent);
+        }
+    }
+    assert_eq!(reachable.len(), report.proofs().nodes().len());
     assert_eq!(
         report.canonical_diagnostics(),
         concat!(
@@ -289,10 +341,12 @@ fn pratt_infix_postfix_conflict_has_a_canonical_snapshot() {
             "  overlap: {OpShared}\n",
             "  witness: OpShared\n",
             "  left proof:\n",
+            "    - Pratt `E` admits infix extender `Plus` with lbp 10 and rbp 11\n",
             "    - `E` references `InfixOp` at `Plus`\n",
             "    - FIRST propagates through `InfixOp`\n",
             "    - kind `OpShared` is declared by atom `OpShared`\n",
             "  right proof:\n",
+            "    - Pratt `E` admits postfix extender `Bang` with bp 20\n",
             "    - `E` references `PostfixOp` at `Bang`\n",
             "    - FIRST propagates through `PostfixOp`\n",
             "    - kind `OpShared` is declared by atom `OpShared`\n",

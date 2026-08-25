@@ -1,6 +1,10 @@
 mod fixtures;
 
-use recursa_codegen::{AnalysisOutput, KindId, ProvenanceStep, TypeId, analyze};
+use std::collections::BTreeSet;
+
+use recursa_codegen::{
+    AnalysisOutput, AnalysisReport, KindId, ProofId, ProvenanceStep, TypeId, analyze,
+};
 
 use fixtures::{arith, json};
 
@@ -12,6 +16,62 @@ fn kinds(output: &AnalysisOutput, type_id: TypeId) -> Vec<u16> {
         .iter()
         .map(KindId::get)
         .collect()
+}
+
+fn returned_proof_roots(report: &AnalysisReport) -> BTreeSet<ProofId> {
+    let mut roots = BTreeSet::new();
+    if let Some(output) = &report.output {
+        for positions in output.first_provenance_by_type() {
+            for position in positions {
+                for kind in position.kinds().iter() {
+                    roots.insert(position.proof(kind).unwrap());
+                }
+            }
+        }
+        for positions in output.extender_provenance_by_type().iter().flatten() {
+            for position in positions {
+                for kind in position.kinds().iter() {
+                    roots.insert(position.proof(kind).unwrap());
+                }
+            }
+        }
+        for follow in output
+            .follow_by_type()
+            .iter()
+            .chain(output.follow_by_site())
+        {
+            roots.extend(
+                follow
+                    .kinds()
+                    .iter()
+                    .map(|kind| follow.proof(kind).unwrap()),
+            );
+            roots.extend(follow.eof_proof());
+        }
+    }
+    for diagnostic in &report.diagnostics {
+        if let Some(conflict) = &diagnostic.conflict {
+            roots.insert(conflict.witness.left);
+            roots.insert(conflict.witness.right);
+        }
+    }
+    roots
+}
+
+#[test]
+fn returned_proof_arena_contains_only_nodes_reachable_from_public_facts() {
+    let report = analyze(arith::grammar(false));
+    let mut reachable = returned_proof_roots(&report);
+    let mut pending = reachable.iter().copied().collect::<Vec<_>>();
+    while let Some(proof) = pending.pop() {
+        if let Some(parent) = report.proofs().get(proof).unwrap().parent
+            && reachable.insert(parent)
+        {
+            pending.push(parent);
+        }
+    }
+
+    assert_eq!(reachable.len(), report.proofs().nodes().len());
 }
 
 #[test]
@@ -34,6 +94,8 @@ fn analysis_succeeds_for_arith() {
     assert!(first.diagnostics.is_empty());
     assert_eq!(first.output, repeated.output);
     assert_eq!(first.output, shuffled.output);
+    assert_eq!(first.proofs(), repeated.proofs());
+    assert_eq!(first.proofs(), shuffled.proofs());
 }
 
 #[test]
@@ -94,6 +156,15 @@ fn computed_extenders_matches_accepted_arith_expr() {
             .chain(proof)
             .map(|node| &node.step)
             .collect::<Vec<_>>();
+        assert!(steps.iter().any(|step| matches!(
+            step,
+            ProvenanceStep::PrattExtender {
+                pratt,
+                position: recursa_codegen::PrattPosition::Infix { .. }
+                    | recursa_codegen::PrattPosition::Postfix { .. },
+                ..
+            } if *pratt == arith::EXPR
+        )));
         assert!(steps.iter().any(|step| matches!(
             step,
             ProvenanceStep::Reference { owner, .. } if *owner == arith::EXPR

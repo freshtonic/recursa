@@ -1,7 +1,10 @@
+use std::collections::BTreeSet;
+
 use recursa_codegen::{
     Alternative, AtomDescription, AtomExpression, ConflictRemedy, Declaration, DiagnosticCode,
-    GrammarDescription, KindDescription, KindId, KindSet, Location, ParseSite, ProvenanceStep,
-    SiteContainer, SourceId, TextPredicate, TypeDescription, TypeId, TypeShape, analyze,
+    GrammarDescription, KindDescription, KindId, KindSet, Location, ParseSite, ProofId,
+    ProvenanceStep, SiteContainer, SourceId, TextPredicate, TypeDescription, TypeId, TypeShape,
+    analyze,
 };
 
 struct Builder {
@@ -623,15 +626,27 @@ fn static_nullable_runs_check_each_required_boundary_and_skip_fully_nullable_tai
             .collect::<Vec<_>>(),
         [KindId::new(2)],
     );
-    assert!(
-        report
-            .proofs()
-            .nodes()
-            .iter()
-            .any(|node| matches!(node.step, ProvenanceStep::NullablePrefix { .. }))
-    );
     let fully_nullable = analyze(nullable_run(true));
     assert!(fully_nullable.output.is_some());
+    assert!(
+        fully_nullable
+            .output
+            .as_ref()
+            .unwrap()
+            .first_provenance_by_type()
+            .iter()
+            .flatten()
+            .flat_map(|position| {
+                position
+                    .kinds()
+                    .iter()
+                    .map(|kind| position.proof(kind).unwrap())
+            })
+            .any(|proof| fully_nullable
+                .proofs()
+                .chain(proof)
+                .any(|node| matches!(node.step, ProvenanceStep::NullablePrefix { .. })))
+    );
     assert!(
         fully_nullable
             .diagnostics
@@ -782,6 +797,58 @@ fn a_shorter_proof_that_arrives_later_replaces_the_first_path() {
             .iter()
             .any(|step| matches!(step, ProvenanceStep::TargetAdmission { .. }))
     );
+}
+
+#[test]
+fn losing_candidate_paths_are_not_retained_in_the_returned_arena() {
+    let (grammar, _, _) = delayed_shorter_proof();
+    let report = analyze(grammar);
+    let output = report.output.as_ref().unwrap();
+    let mut reachable = BTreeSet::<ProofId>::new();
+
+    for positions in output.first_provenance_by_type() {
+        for position in positions {
+            for kind in position.kinds().iter() {
+                reachable.insert(position.proof(kind).unwrap());
+            }
+        }
+    }
+    for positions in output.extender_provenance_by_type().iter().flatten() {
+        for position in positions {
+            for kind in position.kinds().iter() {
+                reachable.insert(position.proof(kind).unwrap());
+            }
+        }
+    }
+    for follow in output
+        .follow_by_type()
+        .iter()
+        .chain(output.follow_by_site())
+    {
+        reachable.extend(
+            follow
+                .kinds()
+                .iter()
+                .map(|kind| follow.proof(kind).unwrap()),
+        );
+        reachable.extend(follow.eof_proof());
+    }
+    for diagnostic in &report.diagnostics {
+        if let Some(conflict) = &diagnostic.conflict {
+            reachable.insert(conflict.witness.left);
+            reachable.insert(conflict.witness.right);
+        }
+    }
+
+    let mut pending = reachable.iter().copied().collect::<Vec<_>>();
+    while let Some(proof) = pending.pop() {
+        if let Some(parent) = report.proofs().get(proof).unwrap().parent
+            && reachable.insert(parent)
+        {
+            pending.push(parent);
+        }
+    }
+    assert_eq!(reachable.len(), report.proofs().nodes().len());
 }
 
 #[test]

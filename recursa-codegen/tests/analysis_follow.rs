@@ -855,6 +855,16 @@ fn pratt_follow_warnings_filter_extenders_by_site_min_bp() {
             .collect::<Vec<_>>(),
         [KindId::new(2)]
     );
+    let high_proof = high_warning.conflict.as_ref().unwrap().witness.left;
+    assert!(report.proofs().chain(high_proof).any(|node| matches!(
+        node.step,
+        recursa_codegen::ProvenanceStep::PrattExtender {
+            pratt,
+            pratt_declaration,
+            variant,
+            position: PrattPosition::Infix { lbp: 20, rbp: 21 },
+        } if pratt == expr && pratt_declaration == expr_decl && variant == high_decl
+    )));
     assert!(high_warning.primary.location.is_some());
     let output = report.output.as_ref().unwrap();
     assert_eq!(
