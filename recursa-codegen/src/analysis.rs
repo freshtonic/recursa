@@ -247,6 +247,26 @@ impl DiagnosticContext {
                 self.type_name(*owner),
                 self.declaration_name(*declaration),
             ),
+            ProvenanceStep::PrattExtender {
+                pratt,
+                variant,
+                position,
+                ..
+            } => match position {
+                PrattPosition::Infix { lbp, rbp } => format!(
+                    "Pratt `{}` admits infix extender `{}` with lbp {lbp} and rbp {rbp}",
+                    self.type_name(*pratt),
+                    self.declaration_name(*variant),
+                ),
+                PrattPosition::Postfix { bp } => format!(
+                    "Pratt `{}` admits postfix extender `{}` with bp {bp}",
+                    self.type_name(*pratt),
+                    self.declaration_name(*variant),
+                ),
+                PrattPosition::Atom | PrattPosition::Prefix { .. } => {
+                    unreachable!("only Pratt led variants are extenders")
+                }
+            },
             ProvenanceStep::TextPredicate { predicate, .. } => {
                 let predicate = self.text_predicates.get(predicate.index()).map_or_else(
                     || "<missing predicate>".to_owned(),
@@ -526,7 +546,7 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
             })
         })
         .collect();
-    AnalysisReport {
+    let mut report = AnalysisReport {
         diagnostics,
         output: (!has_errors).then_some(AnalysisOutput {
             first_by_type,
@@ -539,6 +559,61 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
         locations,
         proofs,
         diagnostic_context,
+    };
+    compact_report_proofs(&mut report);
+    report
+}
+
+fn compact_report_proofs(report: &mut AnalysisReport) {
+    let mut roots = Vec::new();
+    if let Some(output) = &report.output {
+        for positions in &output.first_provenance_by_type {
+            for position in positions {
+                roots.extend(position.proof_roots());
+            }
+        }
+        for positions in output.extender_provenance_by_type.iter().flatten() {
+            for position in positions {
+                roots.extend(position.proof_roots());
+            }
+        }
+        for follow in output.follow_by_type.iter().chain(&output.follow_by_site) {
+            roots.extend(follow.kinds.proof_roots());
+            roots.extend(follow.eof_proof);
+        }
+    }
+    for diagnostic in &report.diagnostics {
+        if let Some(conflict) = &diagnostic.conflict {
+            roots.extend([conflict.witness.left, conflict.witness.right]);
+        }
+    }
+
+    let remap = report.proofs.retain_reachable(roots);
+    if let Some(output) = &mut report.output {
+        for positions in &mut output.first_provenance_by_type {
+            for position in positions {
+                position.remap_proofs(&remap);
+            }
+        }
+        for positions in output.extender_provenance_by_type.iter_mut().flatten() {
+            for position in positions {
+                position.remap_proofs(&remap);
+            }
+        }
+        for follow in output
+            .follow_by_type
+            .iter_mut()
+            .chain(&mut output.follow_by_site)
+        {
+            follow.kinds.remap_proofs(&remap);
+            follow.eof_proof = follow.eof_proof.map(|proof| remap.get(proof));
+        }
+    }
+    for diagnostic in &mut report.diagnostics {
+        if let Some(conflict) = &mut diagnostic.conflict {
+            conflict.witness.left = remap.get(conflict.witness.left);
+            conflict.witness.right = remap.get(conflict.witness.right);
+        }
     }
 }
 
@@ -2509,19 +2584,60 @@ fn compute_extender_provenance(
             led.sort_by_key(|variant| declaration_source_key(variant.declaration, grammar));
             let mut positions = Vec::new();
             for variant in led {
-                let first = first_for_sites_provenance(
+                let extender = pratt_extender_provenance(
                     owner,
-                    &variant.sites,
+                    variant,
                     grammar,
                     semantic,
                     first_provenance,
                     proofs,
                 );
-                merge_provenanced_positions(&mut positions, &first.positions, proofs);
+                merge_provenanced_positions(&mut positions, &extender.positions, proofs);
             }
             Some(positions)
         })
         .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pratt_extender_provenance(
+    owner: TypeId,
+    variant: &crate::PrattVariant,
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    first_provenance: &[Vec<ProvenancedPosition>],
+    proofs: &mut ProofArena,
+) -> ProvenancedFirst {
+    let first = first_for_sites_provenance(
+        owner,
+        &variant.sites,
+        grammar,
+        semantic,
+        first_provenance,
+        proofs,
+    );
+    debug_assert!(is_pratt_led(variant.position));
+    let positions = first
+        .positions
+        .into_iter()
+        .map(|position| ProvenancedPosition {
+            kinds: wrap_provenance(
+                &position.kinds,
+                |_, _| ProvenanceStep::PrattExtender {
+                    pratt: owner,
+                    pratt_declaration: grammar.types[owner.index()].declaration,
+                    variant: variant.declaration,
+                    position: variant.position,
+                },
+                proofs,
+            ),
+            text_predicate: position.text_predicate,
+        })
+        .collect();
+    ProvenancedFirst {
+        positions,
+        nullable: first.nullable,
+    }
 }
 
 const fn is_pratt_nud(position: PrattPosition) -> bool {
@@ -3360,22 +3476,30 @@ fn detect_pratt_group_conflicts(
         for right_index in left_index + 1..variants.len() {
             let left = variants[left_index];
             let right = variants[right_index];
-            let left_first = first_for_sites_provenance(
-                owner,
-                &left.sites,
-                grammar,
-                semantic,
-                provenanced,
-                proofs,
-            );
-            let right_first = first_for_sites_provenance(
-                owner,
-                &right.sites,
-                grammar,
-                semantic,
-                provenanced,
-                proofs,
-            );
+            let left_first = if is_pratt_led(left.position) {
+                pratt_extender_provenance(owner, left, grammar, semantic, provenanced, proofs)
+            } else {
+                first_for_sites_provenance(
+                    owner,
+                    &left.sites,
+                    grammar,
+                    semantic,
+                    provenanced,
+                    proofs,
+                )
+            };
+            let right_first = if is_pratt_led(right.position) {
+                pratt_extender_provenance(owner, right, grammar, semantic, provenanced, proofs)
+            } else {
+                first_for_sites_provenance(
+                    owner,
+                    &right.sites,
+                    grammar,
+                    semantic,
+                    provenanced,
+                    proofs,
+                )
+            };
             if let Some(evidence) = overlap_evidence(
                 &left_first.positions,
                 &right_first.positions,
@@ -3718,9 +3842,9 @@ fn active_extender_provenance(
     variants.sort_by_key(|variant| declaration_source_key(variant.declaration, grammar));
     let mut positions = Vec::new();
     for variant in variants {
-        let first = first_for_sites_provenance(
+        let first = pratt_extender_provenance(
             type_id,
-            &variant.sites,
+            variant,
             grammar,
             semantic,
             first_provenance,

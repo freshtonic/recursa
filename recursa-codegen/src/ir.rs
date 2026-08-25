@@ -280,7 +280,7 @@ pub struct PrattVariant {
     pub sites: Vec<SiteId>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum PrattPosition {
     Atom,
     Prefix { bp: u8 },
