@@ -194,6 +194,7 @@ pub struct ParseSite {
     pub target: TypeId,
     pub declaration: DeclId,
     pub container: SiteContainer,
+    pub min_bp: u8,
 }
 
 impl ParseSite {
@@ -208,7 +209,13 @@ impl ParseSite {
             target,
             declaration,
             container,
+            min_bp: 0,
         }
+    }
+
+    pub const fn with_min_bp(mut self, min_bp: u8) -> Self {
+        self.min_bp = min_bp;
+        self
     }
 }
 

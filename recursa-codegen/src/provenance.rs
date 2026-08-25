@@ -40,6 +40,26 @@ pub enum ProvenanceStep {
         predicate: TextPredicateId,
         declaration: DeclId,
     },
+    EntryEof {
+        type_id: TypeId,
+        declaration: DeclId,
+    },
+    FollowSuffix {
+        owner: TypeId,
+        site: SiteId,
+        declaration: DeclId,
+    },
+    FollowPropagation {
+        owner: TypeId,
+        target: TypeId,
+        site: Option<SiteId>,
+        declaration: DeclId,
+    },
+    RepeatContinuation {
+        owner: TypeId,
+        site: SiteId,
+        declaration: DeclId,
+    },
 }
 
 impl ProvenanceStep {
@@ -52,7 +72,11 @@ impl ProvenanceStep {
             | Self::Reference { declaration, .. }
             | Self::FirstPropagation { declaration, .. }
             | Self::NullablePrefix { declaration, .. }
-            | Self::TextPredicate { declaration, .. } => *declaration,
+            | Self::TextPredicate { declaration, .. }
+            | Self::EntryEof { declaration, .. }
+            | Self::FollowSuffix { declaration, .. }
+            | Self::FollowPropagation { declaration, .. }
+            | Self::RepeatContinuation { declaration, .. } => *declaration,
         }
     }
 }

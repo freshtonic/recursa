@@ -11,7 +11,7 @@ mod kind_set;
 mod provenance;
 
 pub use analysis::{
-    AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition, analyze,
+    AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition, FollowFacts, analyze,
 };
 pub use diagnostic::{
     ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic, DiagnosticCode, DiagnosticLabel,

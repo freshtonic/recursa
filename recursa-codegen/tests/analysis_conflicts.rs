@@ -552,7 +552,14 @@ fn static_nullable_overlap_is_an_error_but_a_fully_nullable_tail_is_not() {
             "  remedy: make the nullable use site required or disambiguate the following site\n",
         ),
     );
-    assert!(analyze(nullable_tail(false)).diagnostics.is_empty());
+    let fully_nullable = analyze(nullable_tail(false));
+    assert!(fully_nullable.output.is_some());
+    assert!(
+        fully_nullable
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity == recursa_codegen::Severity::Warning)
+    );
 }
 
 #[test]
@@ -616,7 +623,14 @@ fn static_nullable_runs_check_each_required_boundary_and_skip_fully_nullable_tai
             .iter()
             .any(|node| matches!(node.step, ProvenanceStep::NullablePrefix { .. }))
     );
-    assert!(analyze(nullable_run(true)).diagnostics.is_empty());
+    let fully_nullable = analyze(nullable_run(true));
+    assert!(fully_nullable.output.is_some());
+    assert!(
+        fully_nullable
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity == recursa_codegen::Severity::Warning)
+    );
 }
 
 #[test]

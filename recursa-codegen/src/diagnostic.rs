@@ -15,6 +15,8 @@ pub enum DiagnosticCode {
     StaticUseSiteOverlap,
     PrattAtomOverlap,
     PrattLedOverlap,
+    NullableFollowOverlap,
+    PrattFollowOverlap,
 }
 
 impl DiagnosticCode {
@@ -27,6 +29,8 @@ impl DiagnosticCode {
             Self::StaticUseSiteOverlap => "RCA0201",
             Self::PrattAtomOverlap => "RCA0202",
             Self::PrattLedOverlap => "RCA0203",
+            Self::NullableFollowOverlap => "RCA0300",
+            Self::PrattFollowOverlap => "RCA0301",
         }
     }
 }
@@ -74,6 +78,13 @@ pub enum ConflictRemedy {
         left: DeclId,
         right: DeclId,
     },
+    ReviewNullableFollow {
+        site: SiteId,
+    },
+    ReviewPrattFollow {
+        site: SiteId,
+        min_bp: u8,
+    },
 }
 
 impl ConflictRemedy {
@@ -87,6 +98,12 @@ impl ConflictRemedy {
             }
             Self::DisambiguatePrattVariants { .. } => {
                 "make the Pratt variants start with disjoint kinds or text predicates"
+            }
+            Self::ReviewNullableFollow { .. } => {
+                "make the use site required or separate it from its possible caller FOLLOW"
+            }
+            Self::ReviewPrattFollow { .. } => {
+                "raise the site's minimum binding power or separate its caller FOLLOW from active extenders"
             }
         }
     }
@@ -197,5 +214,18 @@ impl Diagnostic {
             conflict: Some(evidence),
             conflict_remedy: Some(remedy),
         }
+    }
+
+    pub(crate) fn conflict_warning(
+        code: DiagnosticCode,
+        message: impl Into<String>,
+        primary: DiagnosticLabel,
+        secondary: DiagnosticLabel,
+        evidence: ConflictEvidence,
+        remedy: ConflictRemedy,
+    ) -> Self {
+        let mut diagnostic = Self::conflict(code, message, primary, secondary, evidence, remedy);
+        diagnostic.severity = Severity::Warning;
+        diagnostic
     }
 }
