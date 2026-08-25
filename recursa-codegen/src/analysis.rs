@@ -1,6 +1,8 @@
 use crate::{
-    AtomExpression, AtomId, Diagnostic, GrammarDescription, KindSet, Location, PrattPosition,
-    SiteContainer, SiteId, TextPredicateId, TypeId, TypeShape,
+    AtomExpression, AtomId, ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic,
+    DiagnosticCode, GrammarDescription, KindId, KindSet, Location, PrattPosition, ProofArena,
+    ProofId, ProvenanceStep, ProvenancedKindSet, SiteContainer, SiteId, TextPredicate,
+    TextPredicateId, TypeId, TypeShape,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -8,11 +10,42 @@ pub struct AnalysisReport {
     pub diagnostics: Vec<Diagnostic>,
     pub output: Option<AnalysisOutput>,
     locations: Vec<Location>,
+    proofs: ProofArena,
+    diagnostic_context: DiagnosticContext,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct DiagnosticContext {
+    kind_names: Vec<String>,
+    atom_names: Vec<String>,
+    declaration_names: Vec<String>,
+    type_names: Vec<String>,
+    text_predicates: Vec<TextPredicate>,
+}
+
+impl DiagnosticContext {
+    fn from_grammar(grammar: &GrammarDescription) -> Self {
+        Self {
+            kind_names: grammar.kinds.iter().map(|kind| kind.name.clone()).collect(),
+            atom_names: grammar.atoms.iter().map(|atom| atom.name.clone()).collect(),
+            declaration_names: grammar
+                .declarations
+                .iter()
+                .map(|declaration| declaration.name.clone())
+                .collect(),
+            type_names: grammar.types.iter().map(|ty| ty.name.clone()).collect(),
+            text_predicates: grammar.text_predicates.clone(),
+        }
+    }
 }
 
 impl AnalysisReport {
     pub fn locations(&self) -> &[Location] {
         &self.locations
+    }
+
+    pub fn proofs(&self) -> &ProofArena {
+        &self.proofs
     }
 
     pub fn canonical_diagnostics(&self) -> String {
@@ -40,12 +73,150 @@ impl AnalysisReport {
             for label in &diagnostic.secondary {
                 render_label(&mut rendered, "secondary", label, &self.locations);
             }
+            if let Some(conflict) = &diagnostic.conflict {
+                render_conflict(
+                    &mut rendered,
+                    conflict,
+                    &self.proofs,
+                    &self.diagnostic_context,
+                );
+            }
             if let Some(remedy) = &diagnostic.remedy {
+                writeln!(rendered, "  remedy: {}", remedy.canonical_text())
+                    .expect("writing to a String cannot fail");
+            }
+            if let Some(remedy) = &diagnostic.conflict_remedy {
                 writeln!(rendered, "  remedy: {}", remedy.canonical_text())
                     .expect("writing to a String cannot fail");
             }
         }
         rendered
+    }
+}
+
+fn render_conflict(
+    rendered: &mut String,
+    conflict: &ConflictEvidence,
+    proofs: &ProofArena,
+    context: &DiagnosticContext,
+) {
+    use std::fmt::Write as _;
+
+    let names = conflict
+        .overlap
+        .iter()
+        .map(|kind| context.kind_name(kind))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(rendered, "  overlap: {{{names}}}").expect("writing to a String cannot fail");
+    writeln!(
+        rendered,
+        "  witness: {}",
+        context.kind_name(conflict.witness.kind),
+    )
+    .expect("writing to a String cannot fail");
+    render_proof(
+        rendered,
+        "left proof",
+        conflict.witness.left,
+        proofs,
+        context,
+    );
+    render_proof(
+        rendered,
+        "right proof",
+        conflict.witness.right,
+        proofs,
+        context,
+    );
+}
+
+fn render_proof(
+    rendered: &mut String,
+    label: &str,
+    proof: ProofId,
+    proofs: &ProofArena,
+    context: &DiagnosticContext,
+) {
+    use std::fmt::Write as _;
+
+    writeln!(rendered, "  {label}:").expect("writing to a String cannot fail");
+    for node in proofs.chain(proof) {
+        writeln!(rendered, "    - {}", context.render_step(&node.step))
+            .expect("writing to a String cannot fail");
+    }
+}
+
+impl DiagnosticContext {
+    fn kind_name(&self, kind: KindId) -> &str {
+        self.kind_names
+            .get(kind.index())
+            .map_or("<missing kind>", String::as_str)
+    }
+
+    fn atom_name(&self, atom: AtomId) -> &str {
+        self.atom_names
+            .get(atom.index())
+            .map_or("<missing atom>", String::as_str)
+    }
+
+    fn declaration_name(&self, declaration: crate::DeclId) -> &str {
+        self.declaration_names
+            .get(declaration.index())
+            .map_or("<missing declaration>", String::as_str)
+    }
+
+    fn type_name(&self, type_id: TypeId) -> &str {
+        self.type_names
+            .get(type_id.index())
+            .map_or("<missing type>", String::as_str)
+    }
+
+    fn render_step(&self, step: &ProvenanceStep) -> String {
+        match step {
+            ProvenanceStep::DirectDeclaration { atom, kind, .. } => format!(
+                "kind `{}` is declared by atom `{}`",
+                self.kind_name(*kind),
+                self.atom_name(*atom),
+            ),
+            ProvenanceStep::CategoryMembership { category, .. } => {
+                format!("category `{}` includes it", self.atom_name(*category))
+            }
+            ProvenanceStep::ClassMembership { class, .. } => {
+                format!("class `{}` includes it", self.atom_name(*class))
+            }
+            ProvenanceStep::TargetAdmission { target, .. } => {
+                format!("target `{}` admits it", self.atom_name(*target))
+            }
+            ProvenanceStep::Reference {
+                owner,
+                target,
+                declaration,
+                ..
+            } => format!(
+                "`{}` references `{}` at `{}`",
+                self.type_name(*owner),
+                self.type_name(*target),
+                self.declaration_name(*declaration),
+            ),
+            ProvenanceStep::FirstPropagation { type_id, .. } => {
+                format!("FIRST propagates through `{}`", self.type_name(*type_id))
+            }
+            ProvenanceStep::NullablePrefix {
+                owner, declaration, ..
+            } => format!(
+                "nullable prefix of `{}` passes `{}`",
+                self.type_name(*owner),
+                self.declaration_name(*declaration),
+            ),
+            ProvenanceStep::TextPredicate { predicate, .. } => {
+                let predicate = self.text_predicates.get(predicate.index()).map_or_else(
+                    || "<missing predicate>".to_owned(),
+                    |value| format!("{value:?}"),
+                );
+                format!("text is refined by {predicate}")
+            }
+        }
     }
 }
 
@@ -77,6 +248,7 @@ fn render_label(
 pub struct AnalysisOutput {
     first_by_type: Vec<FirstFacts>,
     extenders_by_type: Vec<Option<ExtenderFacts>>,
+    first_provenance_by_type: Vec<Vec<ProvenancedKindSet>>,
 }
 
 impl AnalysisOutput {
@@ -96,6 +268,10 @@ impl AnalysisOutput {
 
     pub fn extenders_by_type(&self) -> &[Option<ExtenderFacts>] {
         &self.extenders_by_type
+    }
+
+    pub fn first_provenance_by_type(&self) -> &[Vec<ProvenancedKindSet>] {
+        &self.first_provenance_by_type
     }
 
     pub fn canonical_facts(&self) -> String {
@@ -151,12 +327,15 @@ pub struct FirstPosition {
 
 pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
     let locations = grammar.locations.clone();
+    let diagnostic_context = DiagnosticContext::from_grammar(&grammar);
     let diagnostics = validate(&grammar);
     if !diagnostics.is_empty() {
         return AnalysisReport {
             diagnostics,
             output: None,
             locations,
+            proofs: ProofArena::default(),
+            diagnostic_context,
         };
     }
 
@@ -168,16 +347,41 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
             diagnostics,
             output: None,
             locations,
+            proofs: ProofArena::default(),
+            diagnostic_context,
+        };
+    }
+    let (mut proofs, first_provenance) = compute_first_provenance(&grammar, &first_by_type);
+    let diagnostics = detect_conflicts(&grammar, &first_by_type, &first_provenance, &mut proofs);
+    if !diagnostics.is_empty() {
+        return AnalysisReport {
+            diagnostics,
+            output: None,
+            locations,
+            proofs,
+            diagnostic_context,
         };
     }
     let extenders_by_type = compute_extenders(&grammar, &first_by_type);
+    let first_provenance_by_type = first_provenance
+        .into_iter()
+        .map(|positions| {
+            positions
+                .into_iter()
+                .map(|position| position.kinds)
+                .collect()
+        })
+        .collect();
     AnalysisReport {
         diagnostics: Vec::new(),
         output: Some(AnalysisOutput {
             first_by_type,
             extenders_by_type,
+            first_provenance_by_type,
         }),
         locations,
+        proofs,
+        diagnostic_context,
     }
 }
 
@@ -851,6 +1055,667 @@ fn strongly_connected_indices(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
         }
     }
     tarjan.components
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProvenancedPosition {
+    kinds: ProvenancedKindSet,
+    text_predicate: Option<TextPredicateId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProvenancedFirst {
+    positions: Vec<ProvenancedPosition>,
+    nullable: bool,
+}
+
+fn compute_first_provenance(
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+) -> (ProofArena, Vec<Vec<ProvenancedPosition>>) {
+    let mut proofs = ProofArena::with_source_order(declaration_source_order(grammar));
+    let mut atom_cache = vec![None; grammar.atoms.len()];
+    let atom_provenance = (0..grammar.atoms.len())
+        .map(|index| {
+            expand_atom_provenance(
+                AtomId::new(index as u32),
+                grammar,
+                &mut atom_cache,
+                &mut proofs,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut positions = vec![Vec::new(); grammar.types.len()];
+    loop {
+        let previous = positions.clone();
+        for (index, description) in grammar.types.iter().enumerate() {
+            positions[index] = first_for_shape_provenance(
+                TypeId::new(index as u32),
+                description,
+                grammar,
+                semantic,
+                &atom_provenance,
+                &previous,
+                &mut proofs,
+            )
+            .positions;
+        }
+        if positions == previous {
+            break;
+        }
+    }
+
+    for (type_id, (semantic, provenanced)) in semantic.iter().zip(&positions).enumerate() {
+        assert_eq!(
+            semantic.positions.len(),
+            provenanced.len(),
+            "semantic and provenanced FIRST positions disagree for type {type_id}",
+        );
+        for (semantic, provenanced) in semantic.positions.iter().zip(provenanced) {
+            assert_eq!(semantic.text_predicate, provenanced.text_predicate);
+            assert_eq!(&semantic.kinds, provenanced.kinds.kinds());
+            for kind in semantic.kinds.iter() {
+                assert!(provenanced.kinds.proof(kind).is_some());
+            }
+        }
+    }
+    (proofs, positions)
+}
+
+fn declaration_source_order(grammar: &GrammarDescription) -> Vec<u32> {
+    let mut declarations = (0..grammar.declarations.len()).collect::<Vec<_>>();
+    declarations.sort_by_key(|index| {
+        let declaration = &grammar.declarations[*index];
+        let location = &grammar.locations[declaration.location.index()];
+        (
+            location.source,
+            location.range.start,
+            location.range.end,
+            crate::DeclId::new(*index as u32),
+        )
+    });
+    let mut order = vec![0; grammar.declarations.len()];
+    let mut previous_location = None;
+    let mut source_rank = 0;
+    for declaration in declarations {
+        let location_id = grammar.declarations[declaration].location;
+        let location = &grammar.locations[location_id.index()];
+        let location_key = (location.source, location.range.start, location.range.end);
+        if previous_location.is_some_and(|previous| previous != location_key) {
+            source_rank += 1;
+        }
+        order[declaration] = source_rank;
+        previous_location = Some(location_key);
+    }
+    order
+}
+
+fn expand_atom_provenance(
+    atom_id: AtomId,
+    grammar: &GrammarDescription,
+    cache: &mut [Option<ProvenancedKindSet>],
+    proofs: &mut ProofArena,
+) -> ProvenancedKindSet {
+    if let Some(cached) = &cache[atom_id.index()] {
+        return cached.clone();
+    }
+    let atom = &grammar.atoms[atom_id.index()];
+    let result = match &atom.expression {
+        AtomExpression::Kind(kind) => {
+            let proof = proofs.intern(
+                None,
+                ProvenanceStep::DirectDeclaration {
+                    atom: atom_id,
+                    kind: *kind,
+                    declaration: atom.declaration,
+                },
+            );
+            let mut result = ProvenancedKindSet::empty(grammar.kind_count);
+            result.insert(*kind, proof, proofs);
+            result
+        }
+        AtomExpression::Category(members) => {
+            let mut members = members.clone();
+            members.sort_unstable();
+            let mut result = ProvenancedKindSet::empty(grammar.kind_count);
+            for member in members {
+                let member = expand_atom_provenance(member, grammar, cache, proofs);
+                let wrapped = wrap_provenance(
+                    &member,
+                    |_, _| ProvenanceStep::CategoryMembership {
+                        category: atom_id,
+                        declaration: atom.declaration,
+                    },
+                    proofs,
+                );
+                result.merge(&wrapped, proofs);
+            }
+            result
+        }
+        AtomExpression::Class(members) => {
+            let mut members = members.clone();
+            members.sort_unstable();
+            let mut result = ProvenancedKindSet::empty(grammar.kind_count);
+            for member in members {
+                let member = expand_atom_provenance(member, grammar, cache, proofs);
+                let wrapped = wrap_provenance(
+                    &member,
+                    |_, _| ProvenanceStep::ClassMembership {
+                        class: atom_id,
+                        declaration: atom.declaration,
+                    },
+                    proofs,
+                );
+                result.merge(&wrapped, proofs);
+            }
+            result
+        }
+        AtomExpression::Target { base, admits } => {
+            let mut members = vec![*base];
+            members.extend(admits);
+            members.sort_unstable();
+            let mut result = ProvenancedKindSet::empty(grammar.kind_count);
+            for member in members {
+                let member = expand_atom_provenance(member, grammar, cache, proofs);
+                let wrapped = wrap_provenance(
+                    &member,
+                    |_, _| ProvenanceStep::TargetAdmission {
+                        target: atom_id,
+                        declaration: atom.declaration,
+                    },
+                    proofs,
+                );
+                result.merge(&wrapped, proofs);
+            }
+            result
+        }
+    };
+    cache[atom_id.index()] = Some(result.clone());
+    result
+}
+
+fn wrap_provenance(
+    source: &ProvenancedKindSet,
+    step: impl Fn(KindId, ProofId) -> ProvenanceStep,
+    proofs: &mut ProofArena,
+) -> ProvenancedKindSet {
+    let mut wrapped = ProvenancedKindSet::empty(source.kinds().kind_count());
+    for kind in source.kinds().iter() {
+        let parent = source.proof(kind).expect("FIRST bit has a proof");
+        let proof = proofs.intern(Some(parent), step(kind, parent));
+        wrapped.insert(kind, proof, proofs);
+    }
+    wrapped
+}
+
+#[allow(clippy::too_many_arguments)]
+fn first_for_shape_provenance(
+    owner: TypeId,
+    description: &crate::TypeDescription,
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    atom_provenance: &[ProvenancedKindSet],
+    previous: &[Vec<ProvenancedPosition>],
+    proofs: &mut ProofArena,
+) -> ProvenancedFirst {
+    let raw = match &description.shape {
+        TypeShape::Token {
+            atom,
+            text_predicate,
+        } => {
+            let kinds = if let Some(predicate) = text_predicate {
+                wrap_provenance(
+                    &atom_provenance[atom.index()],
+                    |_, _| ProvenanceStep::TextPredicate {
+                        predicate: *predicate,
+                        declaration: description.declaration,
+                    },
+                    proofs,
+                )
+            } else {
+                atom_provenance[atom.index()].clone()
+            };
+            ProvenancedFirst {
+                positions: vec![ProvenancedPosition {
+                    kinds,
+                    text_predicate: *text_predicate,
+                }],
+                nullable: false,
+            }
+        }
+        TypeShape::Alias { site } => {
+            first_for_sites_provenance(owner, &[*site], grammar, semantic, previous, proofs)
+        }
+        TypeShape::Sequence { sites } => {
+            first_for_sites_provenance(owner, sites, grammar, semantic, previous, proofs)
+        }
+        TypeShape::Enum { alternatives } => {
+            let mut alternatives = alternatives.iter().collect::<Vec<_>>();
+            alternatives.sort_by_key(|alternative| alternative.declaration);
+            let mut combined = ProvenancedFirst {
+                positions: Vec::new(),
+                nullable: false,
+            };
+            for alternative in alternatives {
+                let first = first_for_sites_provenance(
+                    owner,
+                    &alternative.sites,
+                    grammar,
+                    semantic,
+                    previous,
+                    proofs,
+                );
+                merge_provenanced_positions(&mut combined.positions, &first.positions, proofs);
+                combined.nullable |= first.nullable;
+            }
+            combined
+        }
+        TypeShape::Pratt { variants } => {
+            let mut variants = variants
+                .iter()
+                .filter(|variant| {
+                    matches!(
+                        variant.position,
+                        PrattPosition::Atom | PrattPosition::Prefix { .. }
+                    )
+                })
+                .collect::<Vec<_>>();
+            variants.sort_by_key(|variant| variant.declaration);
+            let mut positions = Vec::new();
+            for variant in variants {
+                let first = first_for_sites_provenance(
+                    owner,
+                    &variant.sites,
+                    grammar,
+                    semantic,
+                    previous,
+                    proofs,
+                );
+                merge_provenanced_positions(&mut positions, &first.positions, proofs);
+            }
+            ProvenancedFirst {
+                positions,
+                nullable: false,
+            }
+        }
+    };
+
+    let positions = raw
+        .positions
+        .into_iter()
+        .map(|position| ProvenancedPosition {
+            kinds: wrap_provenance(
+                &position.kinds,
+                |_, _| ProvenanceStep::FirstPropagation {
+                    type_id: owner,
+                    declaration: description.declaration,
+                },
+                proofs,
+            ),
+            text_predicate: position.text_predicate,
+        })
+        .collect();
+    ProvenancedFirst {
+        positions,
+        nullable: raw.nullable,
+    }
+}
+
+fn first_for_sites_provenance(
+    owner: TypeId,
+    sites: &[SiteId],
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    provenanced: &[Vec<ProvenancedPosition>],
+    proofs: &mut ProofArena,
+) -> ProvenancedFirst {
+    let mut positions = Vec::new();
+    let mut nullable = true;
+    let mut nullable_prefix: Vec<SiteId> = Vec::new();
+    for site_id in sites {
+        let site = &grammar.sites[site_id.index()];
+        for position in &provenanced[site.target.index()] {
+            let mut kinds = wrap_provenance(
+                &position.kinds,
+                |_, _| ProvenanceStep::Reference {
+                    owner,
+                    target: site.target,
+                    site: *site_id,
+                    declaration: site.declaration,
+                },
+                proofs,
+            );
+            for prefix_id in nullable_prefix.iter().rev() {
+                let prefix = &grammar.sites[prefix_id.index()];
+                kinds = wrap_provenance(
+                    &kinds,
+                    |_, _| ProvenanceStep::NullablePrefix {
+                        owner,
+                        site: *prefix_id,
+                        declaration: prefix.declaration,
+                    },
+                    proofs,
+                );
+            }
+            merge_provenanced_position(
+                &mut positions,
+                ProvenancedPosition {
+                    kinds,
+                    text_predicate: position.text_predicate,
+                },
+                proofs,
+            );
+        }
+        if !site_nullable(site, &semantic[site.target.index()]) {
+            nullable = false;
+            break;
+        }
+        nullable_prefix.push(*site_id);
+    }
+    ProvenancedFirst {
+        positions,
+        nullable,
+    }
+}
+
+fn merge_provenanced_positions(
+    into: &mut Vec<ProvenancedPosition>,
+    from: &[ProvenancedPosition],
+    proofs: &ProofArena,
+) {
+    for position in from {
+        merge_provenanced_position(into, position.clone(), proofs);
+    }
+}
+
+fn merge_provenanced_position(
+    into: &mut Vec<ProvenancedPosition>,
+    position: ProvenancedPosition,
+    proofs: &ProofArena,
+) {
+    if let Some(existing) = into
+        .iter_mut()
+        .find(|existing| existing.text_predicate == position.text_predicate)
+    {
+        existing.kinds.merge(&position.kinds, proofs);
+    } else {
+        into.push(position);
+    }
+    into.sort_by_key(|position| {
+        position
+            .text_predicate
+            .map_or(0, |id| u64::from(id.get()) + 1)
+    });
+}
+
+fn detect_conflicts(
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    provenanced: &[Vec<ProvenancedPosition>],
+    proofs: &mut ProofArena,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (index, description) in grammar.types.iter().enumerate() {
+        let owner = TypeId::new(index as u32);
+        match &description.shape {
+            TypeShape::Enum { alternatives } => {
+                let mut alternatives = alternatives.iter().collect::<Vec<_>>();
+                alternatives.sort_by_key(|alternative| alternative.declaration);
+                for left_index in 0..alternatives.len() {
+                    for right_index in left_index + 1..alternatives.len() {
+                        let left = alternatives[left_index];
+                        let right = alternatives[right_index];
+                        let left_first = first_for_sites_provenance(
+                            owner,
+                            &left.sites,
+                            grammar,
+                            semantic,
+                            provenanced,
+                            proofs,
+                        );
+                        let right_first = first_for_sites_provenance(
+                            owner,
+                            &right.sites,
+                            grammar,
+                            semantic,
+                            provenanced,
+                            proofs,
+                        );
+                        if let Some(evidence) = overlap_evidence(
+                            &left_first.positions,
+                            &right_first.positions,
+                            grammar,
+                            proofs,
+                        ) {
+                            diagnostics.push(Diagnostic::conflict(
+                                DiagnosticCode::EnumFirstOverlap,
+                                format!(
+                                    "enum `{}` has alternatives with overlapping FIRST sets",
+                                    description.name,
+                                ),
+                                declaration_label(
+                                    left.declaration,
+                                    grammar,
+                                    "this alternative can start with the witness kind",
+                                ),
+                                declaration_label(
+                                    right.declaration,
+                                    grammar,
+                                    "this alternative can start with the same kind",
+                                ),
+                                evidence,
+                                ConflictRemedy::DisambiguateAlternatives {
+                                    left: left.declaration,
+                                    right: right.declaration,
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+            TypeShape::Sequence { sites } => detect_static_conflicts_for_sites(
+                owner,
+                sites,
+                grammar,
+                semantic,
+                provenanced,
+                proofs,
+                &mut diagnostics,
+            ),
+            TypeShape::Pratt { variants } => {
+                let mut variants = variants.iter().collect::<Vec<_>>();
+                variants.sort_by_key(|variant| variant.declaration);
+                for variant in variants {
+                    detect_static_conflicts_for_sites(
+                        owner,
+                        &variant.sites,
+                        grammar,
+                        semantic,
+                        provenanced,
+                        proofs,
+                        &mut diagnostics,
+                    );
+                }
+            }
+            TypeShape::Alias { .. } | TypeShape::Token { .. } => {}
+        }
+    }
+    diagnostics.sort_by_key(|diagnostic| diagnostic_source_key(diagnostic, grammar));
+    diagnostics
+}
+
+#[allow(clippy::too_many_arguments)]
+fn detect_static_conflicts_for_sites(
+    owner: TypeId,
+    sites: &[SiteId],
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    provenanced: &[Vec<ProvenancedPosition>],
+    proofs: &mut ProofArena,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for index in 0..sites.len().saturating_sub(1) {
+        let site_id = sites[index];
+        let site = &grammar.sites[site_id.index()];
+        if !site_nullable(site, &semantic[site.target.index()]) {
+            continue;
+        }
+        let tail = first_for_sites_provenance(
+            owner,
+            &sites[index + 1..],
+            grammar,
+            semantic,
+            provenanced,
+            proofs,
+        );
+        if tail.nullable {
+            continue;
+        }
+        let current =
+            first_for_sites_provenance(owner, &[site_id], grammar, semantic, provenanced, proofs);
+        if let Some(evidence) =
+            overlap_evidence(&current.positions, &tail.positions, grammar, proofs)
+        {
+            let tail_site = sites[index + 1];
+            diagnostics.push(Diagnostic::conflict(
+                DiagnosticCode::StaticUseSiteOverlap,
+                format!(
+                    "nullable use site in `{}` overlaps its required tail",
+                    grammar.types[owner.index()].name,
+                ),
+                declaration_label(
+                    site.declaration,
+                    grammar,
+                    "this use site is nullable and can consume the witness kind",
+                ),
+                declaration_label(
+                    grammar.sites[tail_site.index()].declaration,
+                    grammar,
+                    "the following required tail can start with the same kind",
+                ),
+                evidence,
+                ConflictRemedy::MakeSiteRequired { site: site_id },
+            ));
+        }
+    }
+}
+
+fn declaration_label(
+    declaration: crate::DeclId,
+    grammar: &GrammarDescription,
+    message: impl Into<String>,
+) -> crate::DiagnosticLabel {
+    crate::DiagnosticLabel::located(grammar.declarations[declaration.index()].location, message)
+}
+
+fn overlap_evidence(
+    left: &[ProvenancedPosition],
+    right: &[ProvenancedPosition],
+    grammar: &GrammarDescription,
+    proofs: &ProofArena,
+) -> Option<ConflictEvidence> {
+    let mut overlap = KindSet::empty(grammar.kind_count);
+    let mut witnesses = vec![None; grammar.kind_count];
+    for left_position in left {
+        for right_position in right {
+            if !predicates_overlap(
+                left_position.text_predicate,
+                right_position.text_predicate,
+                &grammar.text_predicates,
+            ) {
+                continue;
+            }
+            let intersection = left_position
+                .kinds
+                .kinds()
+                .intersection(right_position.kinds.kinds())
+                .expect("positions have the grammar width");
+            overlap.union_assign(&intersection);
+            for kind in intersection.iter() {
+                let pair = (
+                    left_position.kinds.proof(kind).expect("bit has proof"),
+                    right_position.kinds.proof(kind).expect("bit has proof"),
+                );
+                let slot = &mut witnesses[kind.index()];
+                if slot.is_none_or(|current| proof_pair_is_better(pair, current, proofs)) {
+                    *slot = Some(pair);
+                }
+            }
+        }
+    }
+    let kind = overlap.iter().min_by(|left_kind, right_kind| {
+        let left_pair = witnesses[left_kind.index()].expect("overlap kind has proof pair");
+        let right_pair = witnesses[right_kind.index()].expect("overlap kind has proof pair");
+        compare_proof_pairs(left_pair, right_pair, proofs).then_with(|| left_kind.cmp(right_kind))
+    })?;
+    let (left, right) = witnesses[kind.index()].expect("overlap kind has proof pair");
+    Some(ConflictEvidence {
+        overlap,
+        witness: ConflictWitness { kind, left, right },
+    })
+}
+
+fn proof_pair_is_better(
+    candidate: (ProofId, ProofId),
+    current: (ProofId, ProofId),
+    proofs: &ProofArena,
+) -> bool {
+    compare_proof_pairs(candidate, current, proofs).is_lt()
+}
+
+fn compare_proof_pairs(
+    left: (ProofId, ProofId),
+    right: (ProofId, ProofId),
+    proofs: &ProofArena,
+) -> std::cmp::Ordering {
+    let left_hops = proofs.get(left.0).expect("valid proof").rank.hops
+        + proofs.get(left.1).expect("valid proof").rank.hops;
+    let right_hops = proofs.get(right.0).expect("valid proof").rank.hops
+        + proofs.get(right.1).expect("valid proof").rank.hops;
+    left_hops
+        .cmp(&right_hops)
+        .then_with(|| proofs.compare(left.0, right.0))
+        .then_with(|| proofs.compare(left.1, right.1))
+}
+
+fn predicates_overlap(
+    left: Option<TextPredicateId>,
+    right: Option<TextPredicateId>,
+    predicates: &[TextPredicate],
+) -> bool {
+    let Some(left) = left else {
+        return true;
+    };
+    let Some(right) = right else {
+        return true;
+    };
+    let left = &predicates[left.index()];
+    let right = &predicates[right.index()];
+    match (left, right) {
+        (TextPredicate::Any, _) | (_, TextPredicate::Any) => true,
+        (TextPredicate::Exact(left), TextPredicate::Exact(right)) => text_eq(left, right),
+        (TextPredicate::Exact(exact), TextPredicate::OneOf(options))
+        | (TextPredicate::OneOf(options), TextPredicate::Exact(exact)) => {
+            options.iter().any(|option| text_eq(exact, option))
+        }
+        (TextPredicate::Exact(exact), TextPredicate::NotIn(excluded))
+        | (TextPredicate::NotIn(excluded), TextPredicate::Exact(exact)) => {
+            !excluded.iter().any(|value| text_eq(exact, value))
+        }
+        (TextPredicate::OneOf(left), TextPredicate::OneOf(right)) => left
+            .iter()
+            .any(|left| right.iter().any(|right| text_eq(left, right))),
+        (TextPredicate::OneOf(options), TextPredicate::NotIn(excluded))
+        | (TextPredicate::NotIn(excluded), TextPredicate::OneOf(options)) => options
+            .iter()
+            .any(|option| !excluded.iter().any(|value| text_eq(option, value))),
+        (TextPredicate::NotIn(_), TextPredicate::NotIn(_)) => true,
+    }
+}
+
+fn text_eq(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
 }
 
 fn compute_extenders(

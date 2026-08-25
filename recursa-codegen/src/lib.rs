@@ -8,11 +8,15 @@ mod diagnostic;
 mod ids;
 mod ir;
 mod kind_set;
+mod provenance;
 
 pub use analysis::{
     AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition, analyze,
 };
-pub use diagnostic::{Diagnostic, DiagnosticCode, DiagnosticLabel, Remedy, Severity};
+pub use diagnostic::{
+    ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic, DiagnosticCode, DiagnosticLabel,
+    Remedy, Severity,
+};
 pub use ids::{
     AtomId, DeclId, KindId, LocationId, ProofId, SiteId, SourceId, TextPredicateId, TypeId,
 };
@@ -22,3 +26,6 @@ pub use ir::{
     TypeDescription, TypeShape,
 };
 pub use kind_set::{KindSet, KindSetError, KindSetIter};
+pub use provenance::{
+    ProofArena, ProofChain, ProofNode, ProofRank, ProvenanceStep, ProvenancedKindSet,
+};

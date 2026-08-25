@@ -27,7 +27,7 @@ fn representative_grammar() -> GrammarDescription {
         number_decl,
         AtomExpression::Kind(number_kind),
     ));
-    let _comma_atom = grammar.push_atom(AtomDescription::new(
+    let comma_atom = grammar.push_atom(AtomDescription::new(
         "COMMA",
         comma_decl,
         AtomExpression::Kind(comma_kind),
@@ -41,6 +41,14 @@ fn representative_grammar() -> GrammarDescription {
             text_predicate: None,
         },
     ));
+    let comma = grammar.push_type(TypeDescription::new(
+        "Comma",
+        comma_decl,
+        TypeShape::Token {
+            atom: comma_atom,
+            text_predicate: None,
+        },
+    ));
     let list = grammar.next_type_id();
     let optional_item = grammar.push_site(ParseSite::new(
         list,
@@ -48,14 +56,18 @@ fn representative_grammar() -> GrammarDescription {
         item_decl,
         SiteContainer::Optional,
     ));
-    let required_item =
-        grammar.push_site(ParseSite::new(list, item, item_decl, SiteContainer::Direct));
+    let required_comma = grammar.push_site(ParseSite::new(
+        list,
+        comma,
+        comma_decl,
+        SiteContainer::Direct,
+    ));
     assert_eq!(
         grammar.push_type(TypeDescription::new(
             "List",
             list_decl,
             TypeShape::Sequence {
-                sites: vec![optional_item, required_item],
+                sites: vec![optional_item, required_comma],
             },
         )),
         list,
@@ -165,7 +177,7 @@ fn normalized_grammar_produces_first_and_nullable_facts() {
     assert!(report.diagnostics.is_empty());
     let output = report.output.expect("a clean grammar has semantic output");
     let item = output.first(recursa_codegen::TypeId::new(0)).unwrap();
-    let list = output.first(recursa_codegen::TypeId::new(1)).unwrap();
+    let list = output.first(recursa_codegen::TypeId::new(2)).unwrap();
 
     assert_eq!(item.positions.len(), 1);
     assert_eq!(
@@ -176,7 +188,7 @@ fn normalized_grammar_produces_first_and_nullable_facts() {
     assert_eq!(list.positions.len(), 1);
     assert_eq!(
         list.positions[0].kinds.iter().collect::<Vec<_>>(),
-        [KindId::new(0)]
+        [KindId::new(0), KindId::new(1)]
     );
     assert!(!list.nullable);
 }
@@ -223,7 +235,7 @@ fn nullable_sites_and_text_predicates_survive_the_analysis_seam() {
         panic!("fixture item is a token type");
     };
     *text_predicate = Some(predicate);
-    let TypeShape::Sequence { sites } = &mut grammar.types[1].shape else {
+    let TypeShape::Sequence { sites } = &mut grammar.types[2].shape else {
         panic!("fixture list is a sequence type");
     };
     sites.truncate(1);
@@ -233,7 +245,7 @@ fn nullable_sites_and_text_predicates_survive_the_analysis_seam() {
     assert!(report.diagnostics.is_empty());
     let output = report.output.unwrap();
     let item = output.first(recursa_codegen::TypeId::new(0)).unwrap();
-    let list = output.first(recursa_codegen::TypeId::new(1)).unwrap();
+    let list = output.first(recursa_codegen::TypeId::new(2)).unwrap();
     assert_eq!(item.positions[0].text_predicate, Some(predicate));
     assert!(list.nullable);
 }
