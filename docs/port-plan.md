@@ -53,22 +53,30 @@ Carried over from the spike plan, plus lessons from this design phase:
   implementation was renamed to `freshtonic/recursa-old` — locally
   `~/projects/recursa-old` — to free the name.) The new repo is a Cargo
   workspace holding **all `recursa-*` crates**: `recursa` (the facade
-  users depend on), `recursa-core` (runtime), the grammar macro /
-  codegen crates, `recursa-test` (A11), and `recursa-explorer` (A13) —
-  exact proc-macro crate split is an implementation detail. Grammar
+  users depend on), `recursa-core` (runtime), the build analyzer / codegen
+  and structural loader crates, `recursa-test` (A11), and
+  `recursa-explorer` (A13) — the exact proc-macro crate split is an
+  implementation detail. Grammar
   crates join the same workspace as they land (the six spike grammars at
   M3–M4; pg-sql with its vendored Postgres corpus and oracle crates at
   M7, mirroring the recursa-old layout).
-- **M0b — macro-scale spike.** Generate a synthetic ~1300-type grammar;
-  measure attribute-macro expansion time, `cargo check` time, and
-  rust-analyzer latency. Answers api-design OQ2 with numbers. Go/no-go on
-  the A4 clean path; if no-go, adopt the documented fallback
-  (`RECURSA_EMIT_DIR`-persistent emission) *now*, not at M7.
-- **M0c — MSRV.** Verify `proc_macro::Span::local_file()` on stable 1.88
-  and fix the workspace MSRV (api-design OQ1).
+- **M0b — 1,300-type build-output/Node proof.** Retain the accepted
+  [prototype](https://github.com/freshtonic/recursa/tree/a24c3c8/recursa-codegen/prototypes/build-output-node-seam)
+  and [measurements](https://github.com/freshtonic/recursa/blob/a24c3c8/recursa-codegen/prototypes/build-output-node-seam/RESULTS.md)
+  as reproducible evidence. It proves one manifest-relative build analyzer,
+  one structural root loader, declaration-local `Node` loading, ordinary
+  module ownership, Cargo/rustfmt/rust-analyzer behavior, and the accepted
+  performance budget at representative scale. It is manually run evidence,
+  not a per-pull-request gate.
+- **M0c — MSRV and CI.** Fix the workspace MSRV at Rust 1.88. On pull
+  requests and pushes to `main`, run workspace/all-target tests on 1.88 and
+  stable all-feature tests, rustfmt, and warning-free clippy. Use read-only
+  permissions and cancel superseded branch runs.
 
-**Exit:** the private `freshtonic/recursa` workspace exists with CI
-scaffolding; OQ1/OQ2 answered in `api-design.md`; A4 mechanism committed.
+**Exit:** the private `freshtonic/recursa` workspace exists with enforced
+Rust 1.88/stable CI; the stable build-output/Node contract and its accepted
+evidence are canonical in `api-design.md`. No production scanner, loader,
+derive, or emitter stub is required before M3/M4.
 
 ### M1 — Runtime core (≈ 1–2 weeks)
 
@@ -100,41 +108,61 @@ lattice.
 nine negative snapshot classes — ported and green under the kind-set
 model.
 
-### M3 — Grammar macro, front half (≈ 2 weeks)
+### M3 — Build analyzer, front half (≈ 2 weeks)
 
-The source-scanning front end (the "one large missing piece"):
+Implement the single whole-tree semantic authority behind
+`recursa_codegen::generate(root)`:
 
-- Module-tree loader: `Span::local_file()`, `mod`/`#[path]` resolution,
-  `include_bytes!` dependency tracking.
-- `tokens!` interpretation (one parser — C2) + inline
-  definition/reference unification ("strings define, idents refer"),
-  conflict detection, derived lexer priority.
-- Lowering to `GrammarDescription`: `#[tok]`/`#[kwd]`/`#[sep]`/
-  `#[surrounded]`/`#[trailing]` desugar, Pratt attributes, targets,
-  lookahead.
+- Resolve one manifest-relative grammar root across ordinary, inline, private,
+  and `#[path]` modules. Emit Cargo invalidation for discovered files and
+  declared external-module candidates; specify and test exotic nested
+  `#[path]` behavior.
+- Interpret the root `grammar!` configuration, the `tokens!` DSL, and
+  helper attributes exactly once. Unify inline definitions/references
+  ("strings define, idents refer"), detect conflicts, and derive lexer priority.
+- Lower to the source-independent M2 `GrammarDescription`:
+  `#[tok]`/`#[kwd]`/`#[sep]`/`#[surrounded]`/`#[trailing]`,
+  Pratt attributes, targets, and lookahead.
+- Map M2 locations back to deterministic physical `path:line:column`
+  coordinates, retain structured diagnostics, and render the collected result
+  once at the build boundary.
+- Return a typed aggregated result for `build.rs` to propagate; do not panic
+  or terminate inside the library.
 
-**Exit:** the six spike grammars, re-expressed as annotated modules,
-lower to descriptions equal to the spike's hand-built ones (differential
-test against `src/descriptions/`).
+**Exit:** the six spike grammars, expressed as ordinary selected module trees,
+lower to descriptions equal to the spike's hand-built ones; edit,
+delete/restore, and candidate creation all invalidate correctly.
 
-### M4 — Emission, nested mode (≈ 2 weeks)
+### M4 — Build output and Node loading (≈ 2 weeks)
 
-The back half, adapted from the spike's `codegen.rs`:
+Implement one versioned logical generated root in uncommitted `OUT_DIR`:
 
-- Token machinery (`TokenKind`, `lex()`, `post_lex`, literal/target
-  structs — real structs, C4), `GrammarInfo` tables, bitset-width
-  selection (internal), and the automatic keyword/identifier lexing merge
-  (word-shaped keywords lexed via the identifier rule + generated keyword
-  table, no per-keyword DFA entries — A2).
-- `Parse` bodies: inlined trivial combinators, shared `Seq` machinery,
-  LL(k)/kind-set dispatchers, span-block population.
-- Derive-stack application — including derived-default `Pretty` impls
-  (A12 layers 0–2: lex-safe spacing table, parse-fact spacing, structural
-  layout groups) — `RECURSA_EMIT_DIR` debug dump, railroad diagrams.
+- Publish complete output atomically only after successful analysis. Warnings
+  coexist with output; hard errors leave no emittable result and stale output
+  cannot compile.
+- Make `grammar!` a unique structural root loader before Node-bearing
+  declarations. It establishes generated scope but does not interpret config.
+- Make `#[derive(recursa::Node)]` the explicit membership anchor and
+  declaration-local keyed loader. Preserve private nested types and sibling
+  duplicate names with fully qualified build-local keys.
+- Emit the deterministic registry, token machinery (`TokenKind`, `lex()`,
+  `post_lex`, literals/targets, keyword merge), `GrammarInfo`, field-aware
+  `Parse` bodies, dispatchers, configured trait plans, Pretty defaults,
+  diagrams, and explicit public exports.
+- Keep filenames, internal shards, hidden names, numeric indices, and the
+  loader protocol private. Missing keys, malformed output, and version
+  mismatch are deterministic compile failures; there is no runtime fallback.
+- Offer optional formatted debug dumps as non-authoritative output. Do not
+  restore checked-in megafiles, persistent-emission correctness paths, or
+  drift gates.
+- Re-run the M0 representative-scale budget, including Cargo and interactive
+  rust-analyzer edit behavior, before exit.
 
-**Exit:** all six spike grammars parse via macro-generated code; the
-spike's full test suite (167 tests) green under the new API.
+**Exit:** all six spike grammars parse via build-generated, declaration-local
+Node behavior; the spike's full test suite (167 tests) is green under the new
+API and the M0 performance contract still passes.
 
+### M5 — Diagnostics to the A8 bar (≈ 1–1.5 weeks)
 ### M5 — Diagnostics to the A8 bar (≈ 1–1.5 weeks)
 
 Wire the A8 catalogue to real diagnostics: witnesses, provenance chains,
@@ -176,7 +204,8 @@ runtime parse errors** (same subjective-bar check-in as M5).
 - Write the **mechanical rewriter** (syn-based) for the C4 edit: keyword/
   punctuation fields → attributes, `Surrounded`/`Seq*` → attributes +
   `Vec`/`Vec1`, `rules = SqlRules` removal, attribute-stack deletion.
-- Restructure `ast/**` + `tokens.rs` under `#[recursa::grammar]`;
+- Restructure `ast/**` + `tokens.rs` under one selected grammar root, add
+  `Node` membership, and add the explicit build generation entry;
   `soft_keywords` → categories/flags/targets; the five hand-written
   `Parse` impls → `targets` entries; `pg_lex` → `post_lex` hook.
 - Delete `src/generated/`, the `__firstset` prelude, xtask codegen
@@ -230,9 +259,9 @@ backtrack valve are the insurance on that assumption.
   report tooling; run against the pg-sql corpus and publish the numbers.
 - **`recursa-test` extraction** (A11): the corpus/differential harness
   generalized out of pg-sql into a reusable crate.
-- Macro-crate compile hygiene: feature-gate diagrams and the debug
-  formatter so the mandatory dependency path stays lean; cold-build time
-  in the CI budget.
+- Build-analyzer and loader compile hygiene: feature-gate diagrams and the
+  debug formatter so the mandatory dependency path stays lean; keep
+  cold-build time in the M0 budget.
 - MSRV + semver policy (including the logos re-export contract, A5),
   CI matrix (tests, ui-test snapshots, macro build-time budget from M0b,
   bench smoke run, scheduled fuzz job), release wiring.
@@ -258,7 +287,7 @@ Additive work, deliberately not gating production readiness:
 |---|---|
 | M0 de-risk | 1 wk |
 | M1–M2 runtime + analysis | 2–3 wk |
-| M3–M5 grammar macro + diagnostics | 5–5.5 wk |
+| M3–M5 build integration, emission + diagnostics | 5–5.5 wk |
 | M6 runtime robustness + round-trip | 2–3 wk |
 | M7–M8 pg-sql port + benchmarks | 2.5–5 wk |
 | M9 hardening + DX | 2–3 wk |
