@@ -385,35 +385,69 @@ fn validate_decl(
 }
 
 fn validate_atom_cycles(grammar: &GrammarDescription, diagnostics: &mut Vec<Diagnostic>) {
-    fn visit(atom: AtomId, grammar: &GrammarDescription, state: &mut [u8]) -> Option<AtomId> {
-        if atom.index() >= grammar.atoms.len() {
-            return None;
+    let adjacency = grammar
+        .atoms
+        .iter()
+        .map(|atom| {
+            atom.expression
+                .references()
+                .into_iter()
+                .filter(|reference| reference.index() < grammar.atoms.len())
+                .map(AtomId::index)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut cycle_diagnostics = Vec::new();
+    for mut component in strongly_connected_indices(&adjacency) {
+        component.sort_unstable();
+        let recursive = component.len() > 1
+            || adjacency[component[0]]
+                .iter()
+                .any(|target| *target == component[0]);
+        if !recursive {
+            continue;
         }
-        match state[atom.index()] {
-            1 => return Some(atom),
-            2 => return None,
-            _ => {}
-        }
-        state[atom.index()] = 1;
-        for reference in grammar.atoms[atom.index()].expression.references() {
-            if let Some(cycle) = visit(reference, grammar, state) {
-                return Some(cycle);
-            }
-        }
-        state[atom.index()] = 2;
-        None
-    }
 
-    let mut state = vec![0; grammar.atoms.len()];
-    for index in 0..grammar.atoms.len() {
-        if let Some(atom) = visit(AtomId::new(index as u32), grammar, &mut state) {
-            diagnostics.push(Diagnostic::invalid_grammar(format!(
-                "atom {} participates in a membership cycle",
-                atom.get(),
-            )));
-            break;
-        }
+        let names = component
+            .iter()
+            .map(|index| format!("`{}`", grammar.atoms[*index].name))
+            .collect::<Vec<_>>();
+        let message = if names.len() == 1 {
+            format!("atom {} forms a membership cycle", names[0])
+        } else {
+            format!("atoms {} form a membership cycle", names.join(", "))
+        };
+        let first = &grammar.atoms[component[0]];
+        let mut diagnostic = Diagnostic::invalid_grammar(message.clone());
+        diagnostic.primary = grammar
+            .declarations
+            .get(first.declaration.index())
+            .map_or_else(
+                || crate::DiagnosticLabel::unlocated(message.clone()),
+                |declaration| {
+                    crate::DiagnosticLabel::located(declaration.location, message.clone())
+                },
+            );
+        diagnostic.secondary = component[1..]
+            .iter()
+            .map(|index| {
+                let atom = &grammar.atoms[*index];
+                let message = format!("`{}` participates in this membership cycle", atom.name);
+                grammar
+                    .declarations
+                    .get(atom.declaration.index())
+                    .map_or_else(
+                        || crate::DiagnosticLabel::unlocated(message.clone()),
+                        |declaration| {
+                            crate::DiagnosticLabel::located(declaration.location, message.clone())
+                        },
+                    )
+            })
+            .collect();
+        cycle_diagnostics.push(diagnostic);
     }
+    cycle_diagnostics.sort_by_key(|diagnostic| diagnostic_source_key(diagnostic, grammar));
+    diagnostics.extend(cycle_diagnostics);
 }
 
 fn sites_of(shape: &TypeShape) -> Vec<SiteId> {
@@ -741,14 +775,30 @@ fn diagnostic_source_key(
 }
 
 fn strongly_connected_components(edges: &[Vec<FirstCornerEdge>]) -> Vec<Vec<TypeId>> {
+    let adjacency = edges
+        .iter()
+        .map(|outgoing| outgoing.iter().map(|edge| edge.to.index()).collect())
+        .collect::<Vec<Vec<_>>>();
+    strongly_connected_indices(&adjacency)
+        .into_iter()
+        .map(|component| {
+            component
+                .into_iter()
+                .map(|index| TypeId::new(index as u32))
+                .collect()
+        })
+        .collect()
+}
+
+fn strongly_connected_indices(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
     struct Tarjan<'a> {
-        edges: &'a [Vec<FirstCornerEdge>],
+        edges: &'a [Vec<usize>],
         next_index: usize,
         indices: Vec<Option<usize>>,
         lowlinks: Vec<usize>,
         stack: Vec<usize>,
         on_stack: Vec<bool>,
-        components: Vec<Vec<TypeId>>,
+        components: Vec<Vec<usize>>,
     }
 
     impl Tarjan<'_> {
@@ -760,10 +810,7 @@ fn strongly_connected_components(edges: &[Vec<FirstCornerEdge>]) -> Vec<Vec<Type
             self.stack.push(vertex);
             self.on_stack[vertex] = true;
 
-            let targets = self.edges[vertex]
-                .iter()
-                .map(|edge| edge.to.index())
-                .collect::<Vec<_>>();
+            let targets = self.edges[vertex].clone();
             for target in targets {
                 if self.indices[target].is_none() {
                     self.connect(target);
@@ -779,7 +826,7 @@ fn strongly_connected_components(edges: &[Vec<FirstCornerEdge>]) -> Vec<Vec<Type
                 loop {
                     let member = self.stack.pop().expect("root remains on Tarjan stack");
                     self.on_stack[member] = false;
-                    component.push(TypeId::new(member as u32));
+                    component.push(member);
                     if member == vertex {
                         break;
                     }
