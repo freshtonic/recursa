@@ -4,8 +4,8 @@
 //! Design: see the recursa-spike repo, docs/api-design.md.
 
 pub use recursa_core::{
-    ExpectedAtomId, FollowSet, GrammarInfo, Input, LexResult, OffsetOverflow, Parse, ParseError,
-    Span, TokenKind, TokenRecord,
+    ExpectedAtomId, FollowSet, FollowSetError, GrammarInfo, Input, LexResult, OffsetOverflow,
+    Parse, ParseError, ParseErrorKind, Span, TokenKind, TokenRecord,
 };
 
 /// Runtime operations reserved for Recursa-generated code.

@@ -92,4 +92,13 @@ impl<'i, A> Input<'i, A> {
     pub fn is_eof(&self) -> bool {
         self.cursor >= self.records.len()
     }
+
+    pub(crate) fn checkpoint(&self) -> usize {
+        self.cursor
+    }
+
+    pub(crate) fn rewind(&mut self, cursor: usize) {
+        assert!(cursor <= self.records.len(), "checkpoint is outside input");
+        self.cursor = cursor;
+    }
 }
