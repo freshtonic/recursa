@@ -374,3 +374,50 @@ fn independent_structural_failures_are_collected_before_recursion_analysis() {
         ],
     );
 }
+
+#[test]
+fn independent_atom_membership_cycles_are_each_reported_once() {
+    let mut grammar = GrammarDescription::new("atom-cycles", 0, 1);
+    let a_decl = declaration(&mut grammar, "A", 10);
+    let b_decl = declaration(&mut grammar, "B", 12);
+    let c_decl = declaration(&mut grammar, "C", 20);
+    let d_decl = declaration(&mut grammar, "D", 22);
+    grammar.push_atom(AtomDescription::new(
+        "A",
+        a_decl,
+        AtomExpression::Category(vec![recursa_codegen::AtomId::new(1)]),
+    ));
+    grammar.push_atom(AtomDescription::new(
+        "B",
+        b_decl,
+        AtomExpression::Class(vec![recursa_codegen::AtomId::new(0)]),
+    ));
+    grammar.push_atom(AtomDescription::new(
+        "C",
+        c_decl,
+        AtomExpression::Category(vec![recursa_codegen::AtomId::new(3)]),
+    ));
+    grammar.push_atom(AtomDescription::new(
+        "D",
+        d_decl,
+        AtomExpression::Class(vec![recursa_codegen::AtomId::new(2)]),
+    ));
+
+    let first = analyze(grammar.clone());
+    let repeated = analyze(grammar);
+
+    assert!(first.output.is_none());
+    assert_eq!(first.diagnostics, repeated.diagnostics);
+    assert_eq!(first.diagnostics.len(), 2);
+    assert_eq!(
+        first
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "atoms `A`, `B` form a membership cycle",
+            "atoms `C`, `D` form a membership cycle",
+        ],
+    );
+}
