@@ -12,7 +12,7 @@ mod kind_set;
 pub use analysis::{
     AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition, analyze,
 };
-pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};
+pub use diagnostic::{Diagnostic, DiagnosticCode, DiagnosticLabel, Remedy, Severity};
 pub use ids::{
     AtomId, DeclId, KindId, LocationId, ProofId, SiteId, SourceId, TextPredicateId, TypeId,
 };

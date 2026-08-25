@@ -1,12 +1,76 @@
 use crate::{
-    AtomExpression, AtomId, Diagnostic, GrammarDescription, KindSet, PrattPosition, SiteContainer,
-    SiteId, TextPredicateId, TypeId, TypeShape,
+    AtomExpression, AtomId, Diagnostic, GrammarDescription, KindSet, Location, PrattPosition,
+    SiteContainer, SiteId, TextPredicateId, TypeId, TypeShape,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnalysisReport {
     pub diagnostics: Vec<Diagnostic>,
     pub output: Option<AnalysisOutput>,
+    locations: Vec<Location>,
+}
+
+impl AnalysisReport {
+    pub fn locations(&self) -> &[Location] {
+        &self.locations
+    }
+
+    pub fn canonical_diagnostics(&self) -> String {
+        use std::fmt::Write as _;
+
+        let mut rendered = String::new();
+        for diagnostic in &self.diagnostics {
+            let severity = match diagnostic.severity {
+                crate::Severity::Error => "error",
+                crate::Severity::Warning => "warning",
+            };
+            writeln!(
+                rendered,
+                "{severity}[{}]: {}",
+                diagnostic.code.as_str(),
+                diagnostic.message,
+            )
+            .expect("writing to a String cannot fail");
+            render_label(
+                &mut rendered,
+                "primary",
+                &diagnostic.primary,
+                &self.locations,
+            );
+            for label in &diagnostic.secondary {
+                render_label(&mut rendered, "secondary", label, &self.locations);
+            }
+            if let Some(remedy) = &diagnostic.remedy {
+                writeln!(rendered, "  remedy: {}", remedy.canonical_text())
+                    .expect("writing to a String cannot fail");
+            }
+        }
+        rendered
+    }
+}
+
+fn render_label(
+    rendered: &mut String,
+    style: &str,
+    label: &crate::DiagnosticLabel,
+    locations: &[Location],
+) {
+    use std::fmt::Write as _;
+
+    if let Some(location) = label.location.and_then(|id| locations.get(id.index())) {
+        writeln!(
+            rendered,
+            "  {style} source[{}] {}..{}: {}",
+            location.source.get(),
+            location.range.start,
+            location.range.end,
+            label.message,
+        )
+        .expect("writing to a String cannot fail");
+    } else {
+        writeln!(rendered, "  {style} <normalized input>: {}", label.message)
+            .expect("writing to a String cannot fail");
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,16 +150,26 @@ pub struct FirstPosition {
 }
 
 pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
+    let locations = grammar.locations.clone();
     let diagnostics = validate(&grammar);
     if !diagnostics.is_empty() {
         return AnalysisReport {
             diagnostics,
             output: None,
+            locations,
         };
     }
 
     let atom_kinds = expand_atoms(&grammar);
     let first_by_type = compute_first(&grammar, &atom_kinds);
+    let diagnostics = detect_left_recursion(&grammar, &first_by_type);
+    if !diagnostics.is_empty() {
+        return AnalysisReport {
+            diagnostics,
+            output: None,
+            locations,
+        };
+    }
     let extenders_by_type = compute_extenders(&grammar, &first_by_type);
     AnalysisReport {
         diagnostics: Vec::new(),
@@ -103,6 +177,7 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
             first_by_type,
             extenders_by_type,
         }),
+        locations,
     }
 }
 
@@ -504,6 +579,231 @@ fn first_facts(positions: Vec<FirstPosition>, nullable: bool, kind_count: usize)
         positions,
         nullable,
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FirstCornerEdge {
+    from: TypeId,
+    to: TypeId,
+    declaration: crate::DeclId,
+}
+
+fn detect_left_recursion(grammar: &GrammarDescription, first: &[FirstFacts]) -> Vec<Diagnostic> {
+    let edges: Vec<Vec<FirstCornerEdge>> = grammar
+        .types
+        .iter()
+        .enumerate()
+        .map(|(index, description)| {
+            first_corner_edges(
+                TypeId::new(index as u32),
+                &description.shape,
+                grammar,
+                first,
+            )
+        })
+        .collect();
+    let mut diagnostics = Vec::new();
+    for mut component in strongly_connected_components(&edges) {
+        component.sort_unstable();
+        let recursive = component.len() > 1
+            || edges[component[0].index()]
+                .iter()
+                .any(|edge| edge.to == component[0]);
+        if !recursive {
+            continue;
+        }
+
+        let mut in_component = vec![false; grammar.types.len()];
+        for type_id in &component {
+            in_component[type_id.index()] = true;
+        }
+        let mut internal_edges = component
+            .iter()
+            .flat_map(|type_id| edges[type_id.index()].iter().copied())
+            .filter(|edge| in_component[edge.to.index()])
+            .collect::<Vec<_>>();
+        internal_edges.sort_by_key(|edge| edge_source_key(*edge, grammar));
+
+        let names = component
+            .iter()
+            .map(|type_id| format!("`{}`", grammar.types[type_id.index()].name))
+            .collect::<Vec<_>>();
+        let message = if names.len() == 1 {
+            format!("type {} forms a left-recursive cycle", names[0])
+        } else {
+            format!("types {} form a left-recursive cycle", names.join(", "))
+        };
+        let labels = internal_edges
+            .iter()
+            .map(|edge| {
+                let location = grammar.declarations[edge.declaration.index()].location;
+                let from = &grammar.types[edge.from.index()].name;
+                let to = &grammar.types[edge.to.index()].name;
+                crate::DiagnosticLabel::located(
+                    location,
+                    format!("`{from}` reaches `{to}` before consuming a token"),
+                )
+            })
+            .collect::<Vec<_>>();
+        diagnostics.push(Diagnostic::left_recursion(message, component, labels));
+    }
+    diagnostics.sort_by_key(|diagnostic| diagnostic_source_key(diagnostic, grammar));
+    diagnostics
+}
+
+fn first_corner_edges(
+    owner: TypeId,
+    shape: &TypeShape,
+    grammar: &GrammarDescription,
+    first: &[FirstFacts],
+) -> Vec<FirstCornerEdge> {
+    match shape {
+        TypeShape::Token { .. } => Vec::new(),
+        TypeShape::Alias { site } => first_corner_edges_for_sites(owner, &[*site], grammar, first),
+        TypeShape::Sequence { sites } => first_corner_edges_for_sites(owner, sites, grammar, first),
+        TypeShape::Enum { alternatives } => alternatives
+            .iter()
+            .flat_map(|alternative| {
+                first_corner_edges_for_sites(owner, &alternative.sites, grammar, first)
+            })
+            .collect(),
+        TypeShape::Pratt { variants } => variants
+            .iter()
+            .filter(|variant| {
+                matches!(
+                    variant.position,
+                    PrattPosition::Atom | PrattPosition::Prefix { .. }
+                )
+            })
+            .flat_map(|variant| first_corner_edges_for_sites(owner, &variant.sites, grammar, first))
+            .collect(),
+    }
+}
+
+fn first_corner_edges_for_sites(
+    owner: TypeId,
+    sites: &[SiteId],
+    grammar: &GrammarDescription,
+    first: &[FirstFacts],
+) -> Vec<FirstCornerEdge> {
+    let mut edges = Vec::new();
+    for site_id in sites {
+        let site = &grammar.sites[site_id.index()];
+        edges.push(FirstCornerEdge {
+            from: owner,
+            to: site.target,
+            declaration: site.declaration,
+        });
+        if !site_nullable(site, &first[site.target.index()]) {
+            break;
+        }
+    }
+    edges
+}
+
+fn edge_source_key(
+    edge: FirstCornerEdge,
+    grammar: &GrammarDescription,
+) -> (u32, u32, u32, u32, u32) {
+    let location_id = grammar.declarations[edge.declaration.index()].location;
+    let location = &grammar.locations[location_id.index()];
+    (
+        location.source.get(),
+        location.range.start,
+        location.range.end,
+        edge.from.get(),
+        edge.to.get(),
+    )
+}
+
+fn diagnostic_source_key(
+    diagnostic: &Diagnostic,
+    grammar: &GrammarDescription,
+) -> (u32, u32, u32, crate::DiagnosticCode, String) {
+    let (source, start, end) = diagnostic
+        .primary
+        .location
+        .and_then(|id| grammar.locations.get(id.index()))
+        .map_or((u32::MAX, u32::MAX, u32::MAX), |location| {
+            (
+                location.source.get(),
+                location.range.start,
+                location.range.end,
+            )
+        });
+    (
+        source,
+        start,
+        end,
+        diagnostic.code,
+        diagnostic.message.clone(),
+    )
+}
+
+fn strongly_connected_components(edges: &[Vec<FirstCornerEdge>]) -> Vec<Vec<TypeId>> {
+    struct Tarjan<'a> {
+        edges: &'a [Vec<FirstCornerEdge>],
+        next_index: usize,
+        indices: Vec<Option<usize>>,
+        lowlinks: Vec<usize>,
+        stack: Vec<usize>,
+        on_stack: Vec<bool>,
+        components: Vec<Vec<TypeId>>,
+    }
+
+    impl Tarjan<'_> {
+        fn connect(&mut self, vertex: usize) {
+            let index = self.next_index;
+            self.next_index += 1;
+            self.indices[vertex] = Some(index);
+            self.lowlinks[vertex] = index;
+            self.stack.push(vertex);
+            self.on_stack[vertex] = true;
+
+            let targets = self.edges[vertex]
+                .iter()
+                .map(|edge| edge.to.index())
+                .collect::<Vec<_>>();
+            for target in targets {
+                if self.indices[target].is_none() {
+                    self.connect(target);
+                    self.lowlinks[vertex] = self.lowlinks[vertex].min(self.lowlinks[target]);
+                } else if self.on_stack[target] {
+                    self.lowlinks[vertex] = self.lowlinks[vertex]
+                        .min(self.indices[target].expect("visited vertex has an index"));
+                }
+            }
+
+            if self.lowlinks[vertex] == self.indices[vertex].expect("vertex has an index") {
+                let mut component = Vec::new();
+                loop {
+                    let member = self.stack.pop().expect("root remains on Tarjan stack");
+                    self.on_stack[member] = false;
+                    component.push(TypeId::new(member as u32));
+                    if member == vertex {
+                        break;
+                    }
+                }
+                self.components.push(component);
+            }
+        }
+    }
+
+    let mut tarjan = Tarjan {
+        edges,
+        next_index: 0,
+        indices: vec![None; edges.len()],
+        lowlinks: vec![0; edges.len()],
+        stack: Vec::new(),
+        on_stack: vec![false; edges.len()],
+        components: Vec::new(),
+    };
+    for vertex in 0..edges.len() {
+        if tarjan.indices[vertex].is_none() {
+            tarjan.connect(vertex);
+        }
+    }
+    tarjan.components
 }
 
 fn compute_extenders(
