@@ -185,6 +185,39 @@ fn depth_three_led_pratt(max_lookahead: usize) -> GrammarDescription {
     builder.grammar
 }
 
+fn empty_pratt() -> GrammarDescription {
+    let mut builder = Builder::new("empty-pratt", &["Unused"]);
+    let left = builder.sequence("LeftEmpty", &[]);
+    let right = builder.sequence("RightEmpty", &[]);
+    builder.pratt(
+        "E",
+        &[
+            ("Left", left, PrattPosition::Atom),
+            ("Right", right, PrattPosition::Atom),
+        ],
+    );
+    builder.grammar
+}
+
+fn nullable_prefix_pratt(max_lookahead: usize) -> GrammarDescription {
+    let mut builder =
+        Builder::with_lookahead("nullable-prefix-pratt", &["A", "B", "C"], max_lookahead);
+    let empty = builder.sequence("Empty", &[]);
+    let a = builder.token("A", 0);
+    let b = builder.token("B", 1);
+    let c = builder.token("C", 2);
+    let left = builder.sequence("Left", &[empty, a, b]);
+    let right = builder.sequence("Right", &[empty, a, c]);
+    builder.pratt(
+        "E",
+        &[
+            ("Left", left, PrattPosition::Atom),
+            ("Right", right, PrattPosition::Atom),
+        ],
+    );
+    builder.grammar
+}
+
 #[test]
 fn pratt_variants_use_configured_first_k_to_resolve_a_shared_prefix() {
     let canonical = shared_prefix_pratt(1);
@@ -240,6 +273,43 @@ fn pratt_led_variants_report_and_honor_a_depth_three_decision() {
     ));
 
     let sufficient = analyze(depth_three_led_pratt(3));
+    assert!(sufficient.diagnostics.is_empty());
+    assert!(sufficient.output.is_some());
+}
+
+#[test]
+fn empty_pratt_variants_report_end_of_alternative_ambiguity() {
+    let report = analyze(empty_pratt());
+    assert!(report.output.is_none());
+    assert_eq!(report.diagnostics.len(), 1);
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.code, DiagnosticCode::PrattAtomOverlap);
+    assert!(diagnostic.conflict.is_none());
+    assert!(diagnostic.lookahead.as_ref().unwrap().end_of_alternative);
+    assert!(diagnostic.primary.message.contains("can end"));
+    assert!(diagnostic.secondary[0].message.contains("can also end"));
+    assert!(matches!(
+        diagnostic.conflict_remedy,
+        Some(ConflictRemedy::RestructurePrattSharedPrefix { .. })
+    ));
+    assert!(
+        report
+            .canonical_diagnostics()
+            .contains("shared prefix: <end>")
+    );
+}
+
+#[test]
+fn nullable_prefixes_do_not_hide_a_pratt_tail_decision() {
+    let exhausted = analyze(nullable_prefix_pratt(1));
+    let diagnostic = &exhausted.diagnostics[0];
+    assert_eq!(diagnostic.code, DiagnosticCode::PrattAtomOverlap);
+    assert_eq!(
+        diagnostic.lookahead.as_ref().unwrap().sufficient_depth,
+        Some(2),
+    );
+
+    let sufficient = analyze(nullable_prefix_pratt(2));
     assert!(sufficient.diagnostics.is_empty());
     assert!(sufficient.output.is_some());
 }
@@ -325,7 +395,7 @@ fn pratt_atom_atom_conflict_has_a_canonical_snapshot() {
     assert_eq!(report.diagnostics[0].code, DiagnosticCode::PrattAtomOverlap);
     assert!(matches!(
         report.diagnostics[0].conflict_remedy,
-        Some(ConflictRemedy::DisambiguatePrattVariants { .. })
+        Some(ConflictRemedy::RestructurePrattSharedPrefix { .. })
     ));
     assert_eq!(
         report.diagnostics[0]
@@ -353,7 +423,7 @@ fn pratt_atom_atom_conflict_has_a_canonical_snapshot() {
             "    - kind `AmbiguousKind` is declared by atom `AmbiguousKind`\n",
             "  shared prefix: AmbiguousKind\n",
             "  lookahead: no finite depth separates this shared prefix\n",
-            "  remedy: make the Pratt variants start with disjoint kinds or text predicates\n",
+            "  remedy: restructure the Pratt variants into a shared-prefix type\n",
         ),
     );
 }
@@ -422,7 +492,7 @@ fn pratt_led_led_conflict_has_a_canonical_snapshot() {
             "    - kind `OpShared` is declared by atom `OpShared`\n",
             "  shared prefix: OpShared\n",
             "  lookahead: no finite depth separates this shared prefix\n",
-            "  remedy: make the Pratt variants start with disjoint kinds or text predicates\n",
+            "  remedy: restructure the Pratt variants into a shared-prefix type\n",
         ),
     );
 }
