@@ -1,1 +1,32 @@
-//! Grammar analysis and code emission (FIRST/FOLLOW, dispatch, Parse impls).
+//! Source-independent grammar analysis.
+//!
+//! M2 accepts a normalized [`GrammarDescription`]. Rust source discovery,
+//! attribute parsing, and Rust emission belong to later stages.
+
+mod analysis;
+mod diagnostic;
+mod ids;
+mod ir;
+mod kind_set;
+mod provenance;
+
+pub use analysis::{
+    AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition, FirstSequence,
+    FollowFacts, analyze, disambiguation_depth,
+};
+pub use diagnostic::{
+    ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic, DiagnosticCode, DiagnosticLabel,
+    LookaheadWitnessPosition, Remedy, Severity, SharedPrefixEvidence,
+};
+pub use ids::{
+    AtomId, DeclId, KindId, LocationId, ProofId, SiteId, SourceId, TextPredicateId, TypeId,
+};
+pub use ir::{
+    Alternative, AtomDescription, AtomExpression, Declaration, GrammarDescription, KindDescription,
+    Location, ParseSite, PrattPosition, PrattVariant, SiteContainer, TextPredicate,
+    TypeDescription, TypeShape,
+};
+pub use kind_set::{KindSet, KindSetError, KindSetIter};
+pub use provenance::{
+    ProofArena, ProofChain, ProofNode, ProofRank, ProvenanceStep, ProvenancedKindSet,
+};

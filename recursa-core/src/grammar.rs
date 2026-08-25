@@ -1,0 +1,204 @@
+use std::borrow::Cow;
+use std::fmt;
+
+/// Erased identity of a token kind in one grammar.
+pub type TokenKind = u16;
+
+/// Erased identity of a symbolic expectation in one grammar.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ExpectedAtomId(pub u32);
+
+/// Static names and distinguished kinds for one generated grammar.
+#[derive(Debug, Eq, PartialEq)]
+pub struct GrammarInfo {
+    pub name: &'static str,
+    pub kind_names: &'static [&'static str],
+    pub atom_names: &'static [&'static str],
+    pub lexical_error_kind: TokenKind,
+}
+
+impl GrammarInfo {
+    pub fn kind_name(&self, kind: TokenKind) -> Option<&'static str> {
+        self.kind_names.get(usize::from(kind)).copied()
+    }
+
+    pub fn atom_name(&self, atom: ExpectedAtomId) -> Option<&'static str> {
+        usize::try_from(atom.0)
+            .ok()
+            .and_then(|index| self.atom_names.get(index))
+            .copied()
+    }
+}
+
+/// Dynamic caller FOLLOW supplied to every generated parser.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FollowSet {
+    pub(crate) kind_count: u32,
+    pub(crate) kinds: Cow<'static, [u64]>,
+    pub(crate) expected: Cow<'static, [ExpectedAtomId]>,
+}
+
+impl FollowSet {
+    pub(crate) const fn from_static(
+        kind_count: u32,
+        kinds: &'static [u64],
+        expected: &'static [ExpectedAtomId],
+    ) -> Self {
+        assert!(kind_count <= u16::MAX as u32 + 1);
+        let word_count = (kind_count as usize).div_ceil(64);
+        assert!(kinds.len() == word_count);
+
+        let tail_bits = kind_count % 64;
+        if tail_bits != 0 {
+            let tail_mask = u64::MAX >> (64 - tail_bits);
+            assert!(kinds[word_count - 1] & !tail_mask == 0);
+        }
+
+        let mut atom_index = 1;
+        while atom_index < expected.len() {
+            assert!(expected[atom_index - 1].0 < expected[atom_index].0);
+            atom_index += 1;
+        }
+
+        Self {
+            kind_count,
+            kinds: Cow::Borrowed(kinds),
+            expected: Cow::Borrowed(expected),
+        }
+    }
+
+    /// Whether this set contains `kind`.
+    pub fn contains(&self, kind: TokenKind) -> bool {
+        if u32::from(kind) >= self.kind_count {
+            return false;
+        }
+        let word = usize::from(kind) / 64;
+        let bit = usize::from(kind) % 64;
+        self.kinds
+            .get(word)
+            .is_some_and(|value| value & (1_u64 << bit) != 0)
+    }
+
+    /// Symbolic expectations carried for diagnostics.
+    pub fn expected(&self) -> &[ExpectedAtomId] {
+        &self.expected
+    }
+
+    /// Combines two sets of the same grammar width into owned storage.
+    pub fn union(&self, other: &Self) -> Result<Self, FollowSetError> {
+        if self.kind_count != other.kind_count {
+            return Err(FollowSetError::WidthMismatch {
+                left: self.kind_count,
+                right: other.kind_count,
+            });
+        }
+
+        let kinds = self
+            .kinds
+            .iter()
+            .zip(other.kinds.iter())
+            .map(|(left, right)| left | right)
+            .collect();
+
+        let mut expected = Vec::with_capacity(self.expected.len() + other.expected.len());
+        let mut left = self.expected.iter().copied().peekable();
+        let mut right = other.expected.iter().copied().peekable();
+        while let (Some(left_atom), Some(right_atom)) = (left.peek(), right.peek()) {
+            match left_atom.cmp(right_atom) {
+                std::cmp::Ordering::Less => expected.push(left.next().unwrap()),
+                std::cmp::Ordering::Greater => expected.push(right.next().unwrap()),
+                std::cmp::Ordering::Equal => {
+                    expected.push(left.next().unwrap());
+                    right.next();
+                }
+            }
+        }
+        expected.extend(left);
+        expected.extend(right);
+
+        Ok(Self {
+            kind_count: self.kind_count,
+            kinds: Cow::Owned(kinds),
+            expected: Cow::Owned(expected),
+        })
+    }
+}
+
+/// A runtime FOLLOW operation combined sets from different grammar widths.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FollowSetError {
+    WidthMismatch { left: u32, right: u32 },
+}
+
+impl fmt::Display for FollowSetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WidthMismatch { left, right } => {
+                write!(formatter, "FOLLOW widths differ: {left} and {right}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FollowSetError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn static_follow_sets_reject_invalid_width_tails_and_atoms() {
+        assert!(std::panic::catch_unwind(|| FollowSet::from_static(65, &[0], &[])).is_err());
+        assert!(std::panic::catch_unwind(|| FollowSet::from_static(65, &[0, 0b10], &[])).is_err());
+        assert!(
+            std::panic::catch_unwind(|| FollowSet::from_static(
+                1,
+                &[0],
+                &[ExpectedAtomId(2), ExpectedAtomId(2)],
+            ))
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| FollowSet::from_static(
+                1,
+                &[0],
+                &[ExpectedAtomId(2), ExpectedAtomId(1)],
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn borrowed_constants_union_into_owned_deterministic_storage() {
+        let left = FollowSet::from_static(3, &[0b001], &[ExpectedAtomId(0), ExpectedAtomId(2)]);
+        let right = FollowSet::from_static(3, &[0b100], &[ExpectedAtomId(1), ExpectedAtomId(2)]);
+
+        assert!(matches!(left.kinds, Cow::Borrowed(_)));
+        assert!(matches!(left.expected, Cow::Borrowed(_)));
+
+        let union = left.union(&right).unwrap();
+
+        assert!(matches!(union.kinds, Cow::Owned(_)));
+        assert!(matches!(union.expected, Cow::Owned(_)));
+        assert_eq!(&*union.kinds, &[0b101]);
+        assert_eq!(
+            &*union.expected,
+            &[ExpectedAtomId(0), ExpectedAtomId(1), ExpectedAtomId(2)]
+        );
+        assert_eq!(right.union(&left).unwrap(), union);
+    }
+
+    #[test]
+    fn union_rejects_different_exact_widths() {
+        let left = FollowSet::from_static(65, &[0, 0], &[]);
+        let right = FollowSet::from_static(127, &[0, 0], &[]);
+
+        assert_eq!(
+            left.union(&right),
+            Err(FollowSetError::WidthMismatch {
+                left: 65,
+                right: 127,
+            })
+        );
+    }
+}
