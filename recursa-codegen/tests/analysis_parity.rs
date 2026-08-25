@@ -1,6 +1,6 @@
 mod fixtures;
 
-use recursa_codegen::{AnalysisOutput, KindId, TypeId, analyze};
+use recursa_codegen::{AnalysisOutput, KindId, ProvenanceStep, TypeId, analyze};
 
 use fixtures::{arith, json};
 
@@ -68,7 +68,8 @@ fn computed_first_matches_accepted_arith_expr() {
 
 #[test]
 fn computed_extenders_matches_accepted_arith_expr() {
-    let output = analyze(arith::grammar(false)).output.unwrap();
+    let report = analyze(arith::grammar(false));
+    let output = report.output.as_ref().unwrap();
 
     assert_eq!(
         output
@@ -80,6 +81,28 @@ fn computed_extenders_matches_accepted_arith_expr() {
             .collect::<Vec<_>>(),
         [arith::PLUS, arith::MINUS, arith::STAR, arith::SLASH],
     );
+    let provenanced = output.extender_provenance(arith::EXPR).unwrap();
+    assert_eq!(provenanced.len(), 1);
+    assert_eq!(
+        provenanced[0].kinds(),
+        output.extenders(arith::EXPR).unwrap().kinds()
+    );
+    for kind in provenanced[0].kinds().iter() {
+        let proof = provenanced[0].proof(kind).unwrap();
+        let steps = report
+            .proofs()
+            .chain(proof)
+            .map(|node| &node.step)
+            .collect::<Vec<_>>();
+        assert!(steps.iter().any(|step| matches!(
+            step,
+            ProvenanceStep::Reference { owner, .. } if *owner == arith::EXPR
+        )));
+        assert!(matches!(
+            steps.last(),
+            Some(ProvenanceStep::DirectDeclaration { .. })
+        ));
+    }
 }
 
 #[test]
@@ -88,9 +111,19 @@ fn non_pratt_arith_types_have_no_extenders_entry() {
 
     assert!(output.extenders(arith::PLUS_TOK).is_none());
     assert!(output.extenders(arith::INT_LIT_TOK).is_none());
+    assert!(output.extender_provenance(arith::PLUS_TOK).is_none());
+    assert!(output.extender_provenance(arith::INT_LIT_TOK).is_none());
     assert_eq!(
         output
             .extenders_by_type()
+            .iter()
+            .filter(|facts| facts.is_some())
+            .count(),
+        1,
+    );
+    assert_eq!(
+        output
+            .extender_provenance_by_type()
             .iter()
             .filter(|facts| facts.is_some())
             .count(),

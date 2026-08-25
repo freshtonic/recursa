@@ -13,6 +13,8 @@ pub enum DiagnosticCode {
     LeftRecursion,
     EnumFirstOverlap,
     StaticUseSiteOverlap,
+    PrattAtomOverlap,
+    PrattLedOverlap,
 }
 
 impl DiagnosticCode {
@@ -23,6 +25,8 @@ impl DiagnosticCode {
             Self::LeftRecursion => "RCA0100",
             Self::EnumFirstOverlap => "RCA0200",
             Self::StaticUseSiteOverlap => "RCA0201",
+            Self::PrattAtomOverlap => "RCA0202",
+            Self::PrattLedOverlap => "RCA0203",
         }
     }
 }
@@ -58,8 +62,18 @@ pub enum Remedy {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConflictRemedy {
-    DisambiguateAlternatives { left: DeclId, right: DeclId },
-    MakeSiteRequired { site: SiteId },
+    DisambiguateAlternatives {
+        left: DeclId,
+        right: DeclId,
+    },
+    MakeSiteRequired {
+        site: SiteId,
+    },
+    DisambiguatePrattVariants {
+        pratt: TypeId,
+        left: DeclId,
+        right: DeclId,
+    },
 }
 
 impl ConflictRemedy {
@@ -70,6 +84,9 @@ impl ConflictRemedy {
             }
             Self::MakeSiteRequired { .. } => {
                 "make the nullable use site required or disambiguate the following site"
+            }
+            Self::DisambiguatePrattVariants { .. } => {
+                "make the Pratt variants start with disjoint kinds or text predicates"
             }
         }
     }
