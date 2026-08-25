@@ -142,6 +142,36 @@ fn valid_pratt_led_recursion_is_accepted() {
 }
 
 #[test]
+fn arithmetic_pratt_operand_sites_carry_binding_power_thresholds() {
+    let grammar = arith::grammar(false);
+    let recursa_codegen::TypeShape::Pratt { variants } = &grammar.types[arith::EXPR.index()].shape
+    else {
+        panic!("Expr is Pratt");
+    };
+    let neg = variants
+        .iter()
+        .find(|variant| {
+            matches!(
+                variant.position,
+                recursa_codegen::PrattPosition::Prefix { .. }
+            )
+        })
+        .unwrap();
+    let add = variants
+        .iter()
+        .find(|variant| {
+            matches!(
+                variant.position,
+                recursa_codegen::PrattPosition::Infix { lbp: 10, rbp: 11 }
+            )
+        })
+        .unwrap();
+
+    assert_eq!(grammar.sites[neg.sites[1].index()].min_bp, 30);
+    assert_eq!(grammar.sites[add.sites[1].index()].min_bp, 11);
+}
+
+#[test]
 fn arith_canonical_facts_are_stable_and_sorted() {
     let output = analyze(arith::grammar(false)).output.unwrap();
 

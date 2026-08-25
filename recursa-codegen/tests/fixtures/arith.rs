@@ -64,7 +64,16 @@ pub fn grammar(reverse_variants: bool) -> GrammarDescription {
             position,
             PrattPosition::Prefix { .. } | PrattPosition::Infix { .. }
         ) {
-            sites.push(builder.site(EXPR, EXPR, declaration, SiteContainer::Boxed));
+            let min_bp = match position {
+                PrattPosition::Prefix { bp } => bp,
+                PrattPosition::Infix { rbp, .. } => rbp,
+                _ => unreachable!("guarded Pratt operand position"),
+            };
+            let operand = builder.grammar.push_site(
+                recursa_codegen::ParseSite::new(EXPR, EXPR, declaration, SiteContainer::Boxed)
+                    .with_min_bp(min_bp),
+            );
+            sites.push(operand);
         }
         if name == "Paren" {
             sites.push(builder.site(EXPR, EXPR, declaration, SiteContainer::Boxed));

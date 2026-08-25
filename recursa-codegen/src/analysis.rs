@@ -216,6 +216,34 @@ impl DiagnosticContext {
                 );
                 format!("text is refined by {predicate}")
             }
+            ProvenanceStep::EntryEof { type_id, .. } => {
+                format!("entry `{}` is followed by EOF", self.type_name(*type_id))
+            }
+            ProvenanceStep::FollowSuffix {
+                owner, declaration, ..
+            } => format!(
+                "suffix of `{}` follows `{}`",
+                self.type_name(*owner),
+                self.declaration_name(*declaration),
+            ),
+            ProvenanceStep::FollowPropagation {
+                owner,
+                target,
+                declaration,
+                ..
+            } => format!(
+                "FOLLOW of `{}` propagates to `{}` at `{}`",
+                self.type_name(*owner),
+                self.type_name(*target),
+                self.declaration_name(*declaration),
+            ),
+            ProvenanceStep::RepeatContinuation {
+                owner, declaration, ..
+            } => format!(
+                "repetition in `{}` continues after `{}`",
+                self.type_name(*owner),
+                self.declaration_name(*declaration),
+            ),
         }
     }
 }
@@ -250,6 +278,8 @@ pub struct AnalysisOutput {
     extenders_by_type: Vec<Option<ExtenderFacts>>,
     first_provenance_by_type: Vec<Vec<ProvenancedKindSet>>,
     extender_provenance_by_type: Vec<Option<Vec<ProvenancedKindSet>>>,
+    follow_by_type: Vec<FollowFacts>,
+    follow_by_site: Vec<FollowFacts>,
 }
 
 impl AnalysisOutput {
@@ -283,6 +313,22 @@ impl AnalysisOutput {
 
     pub fn extender_provenance_by_type(&self) -> &[Option<Vec<ProvenancedKindSet>>] {
         &self.extender_provenance_by_type
+    }
+
+    pub fn follow(&self, type_id: TypeId) -> Option<&FollowFacts> {
+        self.follow_by_type.get(type_id.index())
+    }
+
+    pub fn follow_site(&self, site_id: SiteId) -> Option<&FollowFacts> {
+        self.follow_by_site.get(site_id.index())
+    }
+
+    pub fn follow_by_type(&self) -> &[FollowFacts] {
+        &self.follow_by_type
+    }
+
+    pub fn follow_by_site(&self) -> &[FollowFacts] {
+        &self.follow_by_site
     }
 
     pub fn canonical_facts(&self) -> String {
@@ -322,6 +368,30 @@ impl FirstFacts {
 pub struct ExtenderFacts {
     kinds: KindSet,
     pub positions: Vec<FirstPosition>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FollowFacts {
+    kinds: ProvenancedKindSet,
+    eof_proof: Option<ProofId>,
+}
+
+impl FollowFacts {
+    pub fn kinds(&self) -> &KindSet {
+        self.kinds.kinds()
+    }
+
+    pub const fn eof(&self) -> bool {
+        self.eof_proof.is_some()
+    }
+
+    pub const fn eof_proof(&self) -> Option<ProofId> {
+        self.eof_proof
+    }
+
+    pub fn proof(&self, kind: KindId) -> Option<ProofId> {
+        self.kinds.proof(kind)
+    }
 }
 
 impl ExtenderFacts {
@@ -366,16 +436,23 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
     let (mut proofs, first_provenance) = compute_first_provenance(&grammar, &first_by_type);
     let extender_provenance =
         compute_extender_provenance(&grammar, &first_by_type, &first_provenance, &mut proofs);
-    let diagnostics = detect_conflicts(&grammar, &first_by_type, &first_provenance, &mut proofs);
-    if !diagnostics.is_empty() {
-        return AnalysisReport {
-            diagnostics,
-            output: None,
-            locations,
-            proofs,
-            diagnostic_context,
-        };
-    }
+    let mut diagnostics =
+        detect_conflicts(&grammar, &first_by_type, &first_provenance, &mut proofs);
+    let (follow_by_type, follow_by_site, follow_positions_by_site) =
+        compute_follow(&grammar, &first_by_type, &first_provenance, &mut proofs);
+    let warnings = detect_follow_conflicts(
+        &grammar,
+        &first_by_type,
+        &first_provenance,
+        &follow_positions_by_site,
+        &diagnostics,
+        &mut proofs,
+    );
+    diagnostics.extend(warnings);
+    diagnostics.sort_by_key(|diagnostic| diagnostic_source_key(diagnostic, &grammar));
+    let has_errors = diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == crate::Severity::Error);
     let first_provenance_by_type = first_provenance
         .into_iter()
         .map(|positions| {
@@ -397,12 +474,14 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
         })
         .collect();
     AnalysisReport {
-        diagnostics: Vec::new(),
-        output: Some(AnalysisOutput {
+        diagnostics,
+        output: (!has_errors).then_some(AnalysisOutput {
             first_by_type,
             extenders_by_type,
             first_provenance_by_type,
             extender_provenance_by_type,
+            follow_by_type,
+            follow_by_site,
         }),
         locations,
         proofs,
@@ -996,7 +1075,7 @@ fn declaration_source_key(
 fn diagnostic_source_key(
     diagnostic: &Diagnostic,
     grammar: &GrammarDescription,
-) -> (u32, u32, u32, crate::DiagnosticCode, String) {
+) -> (u32, u32, u32, crate::DiagnosticCode, u16, String) {
     let (source, start, end) = diagnostic
         .primary
         .location
@@ -1013,6 +1092,10 @@ fn diagnostic_source_key(
         start,
         end,
         diagnostic.code,
+        diagnostic
+            .conflict
+            .as_ref()
+            .map_or(u16::MAX, |conflict| conflict.witness.kind.get()),
         diagnostic.message.clone(),
     )
 }
@@ -1488,6 +1571,635 @@ fn merge_provenanced_position(
     });
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SemanticFollow {
+    kinds: KindSet,
+    eof: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProvenancedFollow {
+    positions: Vec<ProvenancedPosition>,
+    eof_proof: Option<ProofId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct FollowEdge {
+    from: TypeId,
+    to: TypeId,
+    site: Option<SiteId>,
+    declaration: crate::DeclId,
+}
+
+fn site_sequences<'a>(shape: &'a TypeShape, grammar: &GrammarDescription) -> Vec<&'a [SiteId]> {
+    let mut sequences = match shape {
+        TypeShape::Token { .. } => Vec::new(),
+        TypeShape::Alias { site } => vec![std::slice::from_ref(site)],
+        TypeShape::Sequence { sites } => vec![sites.as_slice()],
+        TypeShape::Enum { alternatives } => alternatives
+            .iter()
+            .map(|alternative| alternative.sites.as_slice())
+            .collect(),
+        TypeShape::Pratt { variants } => variants
+            .iter()
+            .map(|variant| variant.sites.as_slice())
+            .collect(),
+    };
+    sequences.sort_by_key(|sites| {
+        sites
+            .iter()
+            .map(|site| declaration_source_key(grammar.sites[site.index()].declaration, grammar))
+            .collect::<Vec<_>>()
+    });
+    sequences
+}
+
+fn empty_semantic_follow(grammar: &GrammarDescription) -> SemanticFollow {
+    SemanticFollow {
+        kinds: KindSet::empty(grammar.kind_count),
+        eof: false,
+    }
+}
+
+fn empty_provenanced_follow() -> ProvenancedFollow {
+    ProvenancedFollow {
+        positions: Vec::new(),
+        eof_proof: None,
+    }
+}
+
+fn compute_follow(
+    grammar: &GrammarDescription,
+    first: &[FirstFacts],
+    first_provenance: &[Vec<ProvenancedPosition>],
+    proofs: &mut ProofArena,
+) -> (Vec<FollowFacts>, Vec<FollowFacts>, Vec<ProvenancedFollow>) {
+    let reachable = reachable_types(grammar);
+    let mut semantic_by_type = vec![empty_semantic_follow(grammar); grammar.types.len()];
+    let mut semantic_by_site = vec![empty_semantic_follow(grammar); grammar.sites.len()];
+    let mut edges = Vec::new();
+
+    let mut entries = grammar.entry_types.clone();
+    entries.sort_unstable();
+    entries.dedup();
+    for entry in &entries {
+        semantic_by_type[entry.index()].eof = true;
+    }
+
+    for (owner_index, description) in grammar.types.iter().enumerate() {
+        if !reachable[owner_index] {
+            continue;
+        }
+        let owner = TypeId::new(owner_index as u32);
+        for sites in site_sequences(&description.shape, grammar) {
+            collect_semantic_follow_for_sites(
+                owner,
+                sites,
+                grammar,
+                first,
+                &mut semantic_by_type,
+                &mut semantic_by_site,
+                &mut edges,
+            );
+        }
+    }
+    edges.sort_unstable();
+    edges.dedup();
+    propagate_semantic_follow(&edges, &mut semantic_by_type, &mut semantic_by_site);
+
+    let mut provenanced_by_type = vec![empty_provenanced_follow(); grammar.types.len()];
+    let mut provenanced_by_site = vec![empty_provenanced_follow(); grammar.sites.len()];
+    for entry in entries {
+        let declaration = grammar.types[entry.index()].declaration;
+        provenanced_by_type[entry.index()].eof_proof = Some(proofs.intern(
+            None,
+            ProvenanceStep::EntryEof {
+                type_id: entry,
+                declaration,
+            },
+        ));
+    }
+    for (owner_index, description) in grammar.types.iter().enumerate() {
+        if !reachable[owner_index] {
+            continue;
+        }
+        let owner = TypeId::new(owner_index as u32);
+        for sites in site_sequences(&description.shape, grammar) {
+            collect_provenanced_follow_for_sites(
+                owner,
+                sites,
+                grammar,
+                first,
+                first_provenance,
+                &mut provenanced_by_type,
+                &mut provenanced_by_site,
+                proofs,
+            );
+        }
+    }
+    propagate_provenanced_follow(
+        &edges,
+        &mut provenanced_by_type,
+        &mut provenanced_by_site,
+        proofs,
+    );
+
+    for (index, (semantic, provenanced)) in semantic_by_type
+        .iter()
+        .zip(&provenanced_by_type)
+        .enumerate()
+    {
+        let provenanced_kinds = kinds_for_positions(&provenanced.positions, grammar, proofs);
+        assert_eq!(
+            &semantic.kinds,
+            provenanced_kinds.kinds(),
+            "semantic and provenanced FOLLOW disagree for type {index}",
+        );
+        assert_eq!(
+            semantic.eof,
+            provenanced.eof_proof.is_some(),
+            "semantic and provenanced EOF disagree for type {index}",
+        );
+    }
+    for (index, (semantic, provenanced)) in semantic_by_site
+        .iter()
+        .zip(&provenanced_by_site)
+        .enumerate()
+    {
+        let provenanced_kinds = kinds_for_positions(&provenanced.positions, grammar, proofs);
+        assert_eq!(
+            &semantic.kinds,
+            provenanced_kinds.kinds(),
+            "semantic and provenanced FOLLOW disagree for site {index}",
+        );
+        assert_eq!(
+            semantic.eof,
+            provenanced.eof_proof.is_some(),
+            "semantic and provenanced EOF disagree for site {index}",
+        );
+    }
+
+    let by_type = provenanced_by_type
+        .iter()
+        .map(|follow| FollowFacts {
+            kinds: kinds_for_positions(&follow.positions, grammar, proofs),
+            eof_proof: follow.eof_proof,
+        })
+        .collect();
+    let by_site = provenanced_by_site
+        .iter()
+        .map(|follow| FollowFacts {
+            kinds: kinds_for_positions(&follow.positions, grammar, proofs),
+            eof_proof: follow.eof_proof,
+        })
+        .collect();
+    (by_type, by_site, provenanced_by_site)
+}
+
+fn reachable_types(grammar: &GrammarDescription) -> Vec<bool> {
+    let mut reachable = vec![false; grammar.types.len()];
+    let mut pending = grammar.entry_types.clone();
+    pending.sort_unstable_by(|left, right| right.cmp(left));
+    pending.dedup();
+    while let Some(type_id) = pending.pop() {
+        if std::mem::replace(&mut reachable[type_id.index()], true) {
+            continue;
+        }
+        for site_id in sites_of(&grammar.types[type_id.index()].shape) {
+            let site = &grammar.sites[site_id.index()];
+            pending.push(site.target);
+            if let SiteContainer::Repeat {
+                separator: Some(separator),
+                ..
+            } = site.container
+            {
+                pending.push(separator);
+            }
+        }
+        pending.sort_unstable_by(|left, right| right.cmp(left));
+        pending.dedup();
+    }
+    reachable
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_semantic_follow_for_sites(
+    owner: TypeId,
+    sites: &[SiteId],
+    grammar: &GrammarDescription,
+    first: &[FirstFacts],
+    by_type: &mut [SemanticFollow],
+    by_site: &mut [SemanticFollow],
+    edges: &mut Vec<FollowEdge>,
+) {
+    for (index, site_id) in sites.iter().copied().enumerate() {
+        let site = &grammar.sites[site_id.index()];
+        let suffix = first_for_sites(&sites[index + 1..], grammar, first);
+        by_site[site_id.index()].kinds.union_assign(&suffix.kinds);
+        by_type[site.target.index()]
+            .kinds
+            .union_assign(&suffix.kinds);
+        if suffix.nullable {
+            edges.push(FollowEdge {
+                from: owner,
+                to: site.target,
+                site: Some(site_id),
+                declaration: site.declaration,
+            });
+        }
+
+        let SiteContainer::Repeat { separator, .. } = site.container else {
+            continue;
+        };
+        if let Some(separator) = separator {
+            by_type[site.target.index()]
+                .kinds
+                .union_assign(first[separator.index()].kinds());
+            by_site[site_id.index()]
+                .kinds
+                .union_assign(first[separator.index()].kinds());
+            if first[separator.index()].nullable {
+                by_type[site.target.index()]
+                    .kinds
+                    .union_assign(first[site.target.index()].kinds());
+                by_site[site_id.index()]
+                    .kinds
+                    .union_assign(first[site.target.index()].kinds());
+            }
+            by_type[separator.index()]
+                .kinds
+                .union_assign(first[site.target.index()].kinds());
+            if first[site.target.index()].nullable {
+                by_type[separator.index()]
+                    .kinds
+                    .union_assign(first[separator.index()].kinds());
+                by_type[separator.index()].kinds.union_assign(&suffix.kinds);
+                if suffix.nullable {
+                    edges.push(FollowEdge {
+                        from: owner,
+                        to: separator,
+                        site: None,
+                        declaration: site.declaration,
+                    });
+                }
+            }
+        } else {
+            let repeated_first = first[site.target.index()].kinds().clone();
+            by_type[site.target.index()]
+                .kinds
+                .union_assign(&repeated_first);
+            by_site[site_id.index()].kinds.union_assign(&repeated_first);
+        }
+    }
+}
+
+fn propagate_semantic_follow(
+    edges: &[FollowEdge],
+    by_type: &mut [SemanticFollow],
+    by_site: &mut [SemanticFollow],
+) {
+    let (components, component_of) = follow_component_order(by_type.len(), edges);
+    for component in components {
+        let component_id = component_of[component[0]];
+        loop {
+            let previous = by_type.to_vec();
+            for edge in edges.iter().filter(|edge| {
+                component_of[edge.from.index()] == component_id
+                    && component_of[edge.to.index()] == component_id
+            }) {
+                apply_semantic_follow_edge(*edge, &previous, by_type, by_site);
+            }
+            if component
+                .iter()
+                .all(|member| by_type[*member] == previous[*member])
+            {
+                break;
+            }
+        }
+        let previous = by_type.to_vec();
+        for edge in edges.iter().filter(|edge| {
+            component_of[edge.from.index()] == component_id
+                && component_of[edge.to.index()] != component_id
+        }) {
+            apply_semantic_follow_edge(*edge, &previous, by_type, by_site);
+        }
+    }
+}
+
+fn apply_semantic_follow_edge(
+    edge: FollowEdge,
+    source_facts: &[SemanticFollow],
+    by_type: &mut [SemanticFollow],
+    by_site: &mut [SemanticFollow],
+) {
+    let source = &source_facts[edge.from.index()];
+    by_type[edge.to.index()].kinds.union_assign(&source.kinds);
+    by_type[edge.to.index()].eof |= source.eof;
+    if let Some(site) = edge.site {
+        by_site[site.index()].kinds.union_assign(&source.kinds);
+        by_site[site.index()].eof |= source.eof;
+    }
+}
+
+fn follow_component_order(
+    node_count: usize,
+    edges: &[FollowEdge],
+) -> (Vec<Vec<usize>>, Vec<usize>) {
+    let mut adjacency = vec![Vec::new(); node_count];
+    for edge in edges {
+        adjacency[edge.from.index()].push(edge.to.index());
+    }
+    for targets in &mut adjacency {
+        targets.sort_unstable();
+        targets.dedup();
+    }
+    let mut components = strongly_connected_indices(&adjacency);
+    for component in &mut components {
+        component.sort_unstable();
+    }
+    components.sort_by_key(|component| component[0]);
+    let mut component_of = vec![0; node_count];
+    for (component_id, component) in components.iter().enumerate() {
+        for member in component {
+            component_of[*member] = component_id;
+        }
+    }
+    let mut outgoing = vec![Vec::new(); components.len()];
+    let mut indegree = vec![0; components.len()];
+    for edge in edges {
+        let from = component_of[edge.from.index()];
+        let to = component_of[edge.to.index()];
+        if from != to {
+            outgoing[from].push(to);
+        }
+    }
+    for targets in &mut outgoing {
+        targets.sort_unstable();
+        targets.dedup();
+        for target in targets.iter().copied() {
+            indegree[target] += 1;
+        }
+    }
+    let mut ready = (0..components.len())
+        .filter(|component| indegree[*component] == 0)
+        .collect::<Vec<_>>();
+    ready.sort_by_key(|component| components[*component][0]);
+    let mut ordered = Vec::with_capacity(components.len());
+    while !ready.is_empty() {
+        let component = ready.remove(0);
+        ordered.push(components[component].clone());
+        for target in outgoing[component].iter().copied() {
+            indegree[target] -= 1;
+            if indegree[target] == 0 {
+                ready.push(target);
+                ready.sort_by_key(|candidate| components[*candidate][0]);
+            }
+        }
+    }
+    debug_assert_eq!(ordered.len(), components.len());
+    (ordered, component_of)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_provenanced_follow_for_sites(
+    owner: TypeId,
+    sites: &[SiteId],
+    grammar: &GrammarDescription,
+    first: &[FirstFacts],
+    first_provenance: &[Vec<ProvenancedPosition>],
+    by_type: &mut [ProvenancedFollow],
+    by_site: &mut [ProvenancedFollow],
+    proofs: &mut ProofArena,
+) {
+    for (index, site_id) in sites.iter().copied().enumerate() {
+        let site = &grammar.sites[site_id.index()];
+        let suffix = first_for_sites_provenance(
+            owner,
+            &sites[index + 1..],
+            grammar,
+            first,
+            first_provenance,
+            proofs,
+        );
+        let suffix_positions = wrap_follow_positions(
+            &suffix.positions,
+            |_, _| ProvenanceStep::FollowSuffix {
+                owner,
+                site: site_id,
+                declaration: site.declaration,
+            },
+            proofs,
+        );
+        merge_provenanced_positions(
+            &mut by_site[site_id.index()].positions,
+            &suffix_positions,
+            proofs,
+        );
+        merge_provenanced_positions(
+            &mut by_type[site.target.index()].positions,
+            &suffix_positions,
+            proofs,
+        );
+
+        let SiteContainer::Repeat { separator, .. } = site.container else {
+            continue;
+        };
+        if let Some(separator) = separator {
+            let separator_positions = wrap_follow_positions(
+                &first_provenance[separator.index()],
+                |_, _| ProvenanceStep::RepeatContinuation {
+                    owner,
+                    site: site_id,
+                    declaration: site.declaration,
+                },
+                proofs,
+            );
+            merge_provenanced_positions(
+                &mut by_type[site.target.index()].positions,
+                &separator_positions,
+                proofs,
+            );
+            merge_provenanced_positions(
+                &mut by_site[site_id.index()].positions,
+                &separator_positions,
+                proofs,
+            );
+            if first[separator.index()].nullable {
+                let repeated_target_positions = wrap_follow_positions(
+                    &first_provenance[site.target.index()],
+                    |_, _| ProvenanceStep::RepeatContinuation {
+                        owner,
+                        site: site_id,
+                        declaration: site.declaration,
+                    },
+                    proofs,
+                );
+                merge_provenanced_positions(
+                    &mut by_type[site.target.index()].positions,
+                    &repeated_target_positions,
+                    proofs,
+                );
+                merge_provenanced_positions(
+                    &mut by_site[site_id.index()].positions,
+                    &repeated_target_positions,
+                    proofs,
+                );
+            }
+            let target_positions = wrap_follow_positions(
+                &first_provenance[site.target.index()],
+                |_, _| ProvenanceStep::RepeatContinuation {
+                    owner,
+                    site: site_id,
+                    declaration: site.declaration,
+                },
+                proofs,
+            );
+            merge_provenanced_positions(
+                &mut by_type[separator.index()].positions,
+                &target_positions,
+                proofs,
+            );
+            if first[site.target.index()].nullable {
+                merge_provenanced_positions(
+                    &mut by_type[separator.index()].positions,
+                    &separator_positions,
+                    proofs,
+                );
+                merge_provenanced_positions(
+                    &mut by_type[separator.index()].positions,
+                    &suffix_positions,
+                    proofs,
+                );
+            }
+        } else {
+            let target_positions = wrap_follow_positions(
+                &first_provenance[site.target.index()],
+                |_, _| ProvenanceStep::RepeatContinuation {
+                    owner,
+                    site: site_id,
+                    declaration: site.declaration,
+                },
+                proofs,
+            );
+            merge_provenanced_positions(
+                &mut by_type[site.target.index()].positions,
+                &target_positions,
+                proofs,
+            );
+            merge_provenanced_positions(
+                &mut by_site[site_id.index()].positions,
+                &target_positions,
+                proofs,
+            );
+        }
+    }
+}
+
+fn wrap_follow_positions(
+    source: &[ProvenancedPosition],
+    step: impl Fn(KindId, ProofId) -> ProvenanceStep + Copy,
+    proofs: &mut ProofArena,
+) -> Vec<ProvenancedPosition> {
+    source
+        .iter()
+        .map(|position| ProvenancedPosition {
+            kinds: wrap_provenance(&position.kinds, step, proofs),
+            text_predicate: position.text_predicate,
+        })
+        .collect()
+}
+
+fn propagate_provenanced_follow(
+    edges: &[FollowEdge],
+    by_type: &mut [ProvenancedFollow],
+    by_site: &mut [ProvenancedFollow],
+    proofs: &mut ProofArena,
+) {
+    let (components, component_of) = follow_component_order(by_type.len(), edges);
+    for component in components {
+        let component_id = component_of[component[0]];
+        loop {
+            let previous = by_type.to_vec();
+            for edge in edges.iter().filter(|edge| {
+                component_of[edge.from.index()] == component_id
+                    && component_of[edge.to.index()] == component_id
+            }) {
+                apply_provenanced_follow_edge(*edge, &previous, by_type, by_site, proofs);
+            }
+            if component
+                .iter()
+                .all(|member| by_type[*member] == previous[*member])
+            {
+                break;
+            }
+        }
+        let previous = by_type.to_vec();
+        for edge in edges.iter().filter(|edge| {
+            component_of[edge.from.index()] == component_id
+                && component_of[edge.to.index()] != component_id
+        }) {
+            apply_provenanced_follow_edge(*edge, &previous, by_type, by_site, proofs);
+        }
+    }
+}
+
+fn apply_provenanced_follow_edge(
+    edge: FollowEdge,
+    source_facts: &[ProvenancedFollow],
+    by_type: &mut [ProvenancedFollow],
+    by_site: &mut [ProvenancedFollow],
+    proofs: &mut ProofArena,
+) {
+    let source = &source_facts[edge.from.index()];
+    let propagated = wrap_follow_positions(
+        &source.positions,
+        |_, _| ProvenanceStep::FollowPropagation {
+            owner: edge.from,
+            target: edge.to,
+            site: edge.site,
+            declaration: edge.declaration,
+        },
+        proofs,
+    );
+    merge_provenanced_positions(&mut by_type[edge.to.index()].positions, &propagated, proofs);
+    if let Some(site) = edge.site {
+        merge_provenanced_positions(&mut by_site[site.index()].positions, &propagated, proofs);
+    }
+    if let Some(parent) = source.eof_proof {
+        let proof = proofs.intern(
+            Some(parent),
+            ProvenanceStep::FollowPropagation {
+                owner: edge.from,
+                target: edge.to,
+                site: edge.site,
+                declaration: edge.declaration,
+            },
+        );
+        merge_eof_proof(&mut by_type[edge.to.index()].eof_proof, proof, proofs);
+        if let Some(site) = edge.site {
+            merge_eof_proof(&mut by_site[site.index()].eof_proof, proof, proofs);
+        }
+    }
+}
+
+fn merge_eof_proof(slot: &mut Option<ProofId>, proof: ProofId, proofs: &ProofArena) {
+    if slot.is_none_or(|current| proofs.compare(proof, current).is_lt()) {
+        *slot = Some(proof);
+    }
+}
+
+fn kinds_for_positions(
+    positions: &[ProvenancedPosition],
+    grammar: &GrammarDescription,
+    proofs: &ProofArena,
+) -> ProvenancedKindSet {
+    let mut kinds = ProvenancedKindSet::empty(grammar.kind_count);
+    for position in positions {
+        kinds.merge(&position.kinds, proofs);
+    }
+    kinds
+}
+
 fn compute_extender_provenance(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
@@ -1846,9 +2558,233 @@ fn declaration_label(
     crate::DiagnosticLabel::located(grammar.declarations[declaration.index()].location, message)
 }
 
+fn detect_follow_conflicts(
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    first_provenance: &[Vec<ProvenancedPosition>],
+    follow_by_site: &[ProvenancedFollow],
+    static_diagnostics: &[Diagnostic],
+    proofs: &mut ProofArena,
+) -> Vec<Diagnostic> {
+    let mut excluded_by_declaration =
+        vec![KindSet::empty(grammar.kind_count); grammar.declarations.len()];
+    for diagnostic in static_diagnostics {
+        let (Some(ConflictRemedy::MakeSiteRequired { site }), Some(conflict)) =
+            (&diagnostic.conflict_remedy, &diagnostic.conflict)
+        else {
+            continue;
+        };
+        let declaration = grammar.sites[site.index()].declaration;
+        excluded_by_declaration[declaration.index()].union_assign(&conflict.overlap);
+    }
+
+    let mut sites = (0..grammar.sites.len())
+        .map(|index| SiteId::new(index as u32))
+        .collect::<Vec<_>>();
+    sites.sort_by_key(|site| {
+        declaration_source_key(grammar.sites[site.index()].declaration, grammar)
+    });
+    let mut diagnostics = Vec::new();
+    for site_id in sites {
+        let site = &grammar.sites[site_id.index()];
+        let follow = &follow_by_site[site_id.index()].positions;
+        if follow.is_empty() {
+            continue;
+        }
+
+        if site_nullable(site, &semantic[site.target.index()])
+            && let Some(evidence) = overlap_evidence_excluding(
+                &first_provenance[site.target.index()],
+                follow,
+                &excluded_by_declaration[site.declaration.index()],
+                grammar,
+                proofs,
+            )
+        {
+            let secondary_declaration =
+                follow_source_declaration(evidence.witness.right, site.declaration, proofs);
+            diagnostics.push(Diagnostic::conflict_warning(
+                DiagnosticCode::NullableFollowOverlap,
+                format!(
+                    "nullable use site in `{}` may consume a caller FOLLOW kind",
+                    grammar.types[site.owner.index()].name,
+                ),
+                declaration_label(
+                    site.declaration,
+                    grammar,
+                    "this nullable use site can consume the witness kind",
+                ),
+                declaration_label(
+                    secondary_declaration,
+                    grammar,
+                    "the same kind can follow this use site",
+                ),
+                evidence,
+                ConflictRemedy::ReviewNullableFollow { site: site_id },
+            ));
+        }
+
+        let active = active_extender_provenance(
+            site.target,
+            site.min_bp,
+            grammar,
+            semantic,
+            first_provenance,
+            proofs,
+        );
+        if !active.is_empty()
+            && let Some(evidence) = overlap_evidence_excluding(
+                &active,
+                follow,
+                &excluded_by_declaration[site.declaration.index()],
+                grammar,
+                proofs,
+            )
+        {
+            let secondary_declaration =
+                follow_source_declaration(evidence.witness.right, site.declaration, proofs);
+            diagnostics.push(Diagnostic::conflict_warning(
+                DiagnosticCode::PrattFollowOverlap,
+                format!(
+                    "Pratt use site in `{}` may consume an active extender from caller FOLLOW",
+                    grammar.types[site.owner.index()].name,
+                ),
+                declaration_label(
+                    site.declaration,
+                    grammar,
+                    "this Pratt use site admits the witness extender",
+                ),
+                declaration_label(
+                    secondary_declaration,
+                    grammar,
+                    "the same kind can follow this Pratt use site",
+                ),
+                evidence,
+                ConflictRemedy::ReviewPrattFollow {
+                    site: site_id,
+                    min_bp: site.min_bp,
+                },
+            ));
+        }
+    }
+    aggregate_follow_diagnostics(diagnostics, grammar, proofs)
+}
+
+fn aggregate_follow_diagnostics(
+    diagnostics: Vec<Diagnostic>,
+    grammar: &GrammarDescription,
+    proofs: &ProofArena,
+) -> Vec<Diagnostic> {
+    let mut aggregated: Vec<Diagnostic> = Vec::new();
+    for diagnostic in diagnostics {
+        let site = match &diagnostic.conflict_remedy {
+            Some(ConflictRemedy::ReviewNullableFollow { site })
+            | Some(ConflictRemedy::ReviewPrattFollow { site, .. }) => *site,
+            _ => unreachable!("FOLLOW diagnostics have a typed FOLLOW remedy"),
+        };
+        let declaration = grammar.sites[site.index()].declaration;
+        if let Some(existing) = aggregated.iter_mut().find(|existing| {
+            if existing.code != diagnostic.code {
+                return false;
+            }
+            let existing_site = match &existing.conflict_remedy {
+                Some(ConflictRemedy::ReviewNullableFollow { site })
+                | Some(ConflictRemedy::ReviewPrattFollow { site, .. }) => *site,
+                _ => return false,
+            };
+            grammar.sites[existing_site.index()].declaration == declaration
+        }) {
+            let incoming = diagnostic.conflict.expect("FOLLOW warning has evidence");
+            let existing_conflict = existing
+                .conflict
+                .as_mut()
+                .expect("FOLLOW warning has evidence");
+            existing_conflict.overlap.union_assign(&incoming.overlap);
+            let incoming_pair = (incoming.witness.left, incoming.witness.right);
+            let existing_pair = (
+                existing_conflict.witness.left,
+                existing_conflict.witness.right,
+            );
+            if compare_proof_pairs(incoming_pair, existing_pair, proofs)
+                .then_with(|| incoming.witness.kind.cmp(&existing_conflict.witness.kind))
+                .is_lt()
+            {
+                existing_conflict.witness = incoming.witness;
+            }
+        } else {
+            aggregated.push(diagnostic);
+        }
+    }
+    aggregated.sort_by_key(|diagnostic| diagnostic_source_key(diagnostic, grammar));
+    aggregated
+}
+
+fn follow_source_declaration(
+    proof: ProofId,
+    site_declaration: crate::DeclId,
+    proofs: &ProofArena,
+) -> crate::DeclId {
+    proofs
+        .chain(proof)
+        .map(|node| node.step.declaration())
+        .find(|declaration| *declaration != site_declaration)
+        .unwrap_or(site_declaration)
+}
+
+fn active_extender_provenance(
+    type_id: TypeId,
+    min_bp: u8,
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    first_provenance: &[Vec<ProvenancedPosition>],
+    proofs: &mut ProofArena,
+) -> Vec<ProvenancedPosition> {
+    let TypeShape::Pratt { variants } = &grammar.types[type_id.index()].shape else {
+        return Vec::new();
+    };
+    let mut variants = variants
+        .iter()
+        .filter(|variant| match variant.position {
+            PrattPosition::Infix { lbp, .. } => lbp >= min_bp,
+            PrattPosition::Postfix { bp } => bp >= min_bp,
+            PrattPosition::Atom | PrattPosition::Prefix { .. } => false,
+        })
+        .collect::<Vec<_>>();
+    variants.sort_by_key(|variant| declaration_source_key(variant.declaration, grammar));
+    let mut positions = Vec::new();
+    for variant in variants {
+        let first = first_for_sites_provenance(
+            type_id,
+            &variant.sites,
+            grammar,
+            semantic,
+            first_provenance,
+            proofs,
+        );
+        merge_provenanced_positions(&mut positions, &first.positions, proofs);
+    }
+    positions
+}
+
 fn overlap_evidence(
     left: &[ProvenancedPosition],
     right: &[ProvenancedPosition],
+    grammar: &GrammarDescription,
+    proofs: &ProofArena,
+) -> Option<ConflictEvidence> {
+    overlap_evidence_excluding(
+        left,
+        right,
+        &KindSet::empty(grammar.kind_count),
+        grammar,
+        proofs,
+    )
+}
+
+fn overlap_evidence_excluding(
+    left: &[ProvenancedPosition],
+    right: &[ProvenancedPosition],
+    excluded: &KindSet,
     grammar: &GrammarDescription,
     proofs: &ProofArena,
 ) -> Option<ConflictEvidence> {
@@ -1867,7 +2803,9 @@ fn overlap_evidence(
                 .kinds
                 .kinds()
                 .intersection(right_position.kinds.kinds())
-                .expect("positions have the grammar width");
+                .expect("positions have the grammar width")
+                .difference(excluded)
+                .expect("excluded kinds have the grammar width");
             overlap.union_assign(&intersection);
             for kind in intersection.iter() {
                 let pair = (
