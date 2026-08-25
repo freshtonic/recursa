@@ -11,11 +11,12 @@ mod kind_set;
 mod provenance;
 
 pub use analysis::{
-    AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition, FollowFacts, analyze,
+    AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition, FirstSequence,
+    FollowFacts, analyze, disambiguation_depth,
 };
 pub use diagnostic::{
     ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic, DiagnosticCode, DiagnosticLabel,
-    Remedy, Severity,
+    LookaheadWitnessPosition, Remedy, Severity, SharedPrefixEvidence,
 };
 pub use ids::{
     AtomId, DeclId, KindId, LocationId, ProofId, SiteId, SourceId, TextPredicateId, TypeId,

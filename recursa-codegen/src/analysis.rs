@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
 use crate::{
     AtomExpression, AtomId, ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic,
     DiagnosticCode, GrammarDescription, KindId, KindSet, Location, PrattPosition, ProofArena,
@@ -81,6 +83,9 @@ impl AnalysisReport {
                     &self.diagnostic_context,
                 );
             }
+            if let Some(lookahead) = &diagnostic.lookahead {
+                render_shared_prefix(&mut rendered, lookahead, &self.diagnostic_context);
+            }
             if let Some(remedy) = &diagnostic.remedy {
                 writeln!(rendered, "  remedy: {}", remedy.canonical_text())
                     .expect("writing to a String cannot fail");
@@ -91,6 +96,39 @@ impl AnalysisReport {
             }
         }
         rendered
+    }
+}
+
+fn render_shared_prefix(
+    rendered: &mut String,
+    evidence: &crate::SharedPrefixEvidence,
+    context: &DiagnosticContext,
+) {
+    use std::fmt::Write as _;
+
+    let mut witness = evidence
+        .witness
+        .iter()
+        .map(|position| context.kind_name(position.kind).to_owned())
+        .collect::<Vec<_>>();
+    if evidence.end_of_alternative {
+        witness.push("<end>".to_owned());
+    }
+    let witness = witness.join(" ");
+    writeln!(rendered, "  shared prefix: {witness}").expect("writing to a String cannot fail");
+    if let Some(depth) = evidence.sufficient_depth {
+        writeln!(
+            rendered,
+            "  lookahead: configured depth {} is exhausted; depth {depth} disambiguates",
+            evidence.configured_depth,
+        )
+        .expect("writing to a String cannot fail");
+    } else {
+        writeln!(
+            rendered,
+            "  lookahead: no finite depth separates this shared prefix",
+        )
+        .expect("writing to a String cannot fail");
     }
 }
 
@@ -355,6 +393,7 @@ impl AnalysisOutput {
 pub struct FirstFacts {
     kinds: KindSet,
     pub positions: Vec<FirstPosition>,
+    pub sequences: Vec<FirstSequence>,
     pub nullable: bool,
 }
 
@@ -406,6 +445,12 @@ pub struct FirstPosition {
     pub text_predicate: Option<TextPredicateId>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FirstSequence {
+    pub positions: Vec<FirstPosition>,
+    ends: bool,
+}
+
 pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
     let locations = grammar.locations.clone();
     let diagnostic_context = DiagnosticContext::from_grammar(&grammar);
@@ -436,8 +481,16 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
     let (mut proofs, first_provenance) = compute_first_provenance(&grammar, &first_by_type);
     let extender_provenance =
         compute_extender_provenance(&grammar, &first_by_type, &first_provenance, &mut proofs);
-    let mut diagnostics =
-        detect_conflicts(&grammar, &first_by_type, &first_provenance, &mut proofs);
+    let mut static_conflict_kinds_by_declaration =
+        vec![KindSet::empty(grammar.kind_count); grammar.declarations.len()];
+    let mut diagnostics = detect_conflicts(
+        &grammar,
+        &first_by_type,
+        &first_provenance,
+        &atom_kinds,
+        &mut proofs,
+        &mut static_conflict_kinds_by_declaration,
+    );
     let (follow_by_type, follow_by_site, follow_positions_by_site) =
         compute_follow(&grammar, &first_by_type, &first_provenance, &mut proofs);
     let warnings = detect_follow_conflicts(
@@ -445,7 +498,7 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
         &first_by_type,
         &first_provenance,
         &follow_positions_by_site,
-        &diagnostics,
+        &static_conflict_kinds_by_declaration,
         &mut proofs,
     );
     diagnostics.extend(warnings);
@@ -815,9 +868,15 @@ fn compute_first(grammar: &GrammarDescription, atom_kinds: &[KindSet]) -> Vec<Fi
             facts[index] = first_for_shape(&description.shape, grammar, atom_kinds, &previous);
         }
         if facts == previous {
-            return facts;
+            break;
         }
     }
+
+    let sequences = compute_first_sequences(grammar, atom_kinds, &facts, grammar.max_lookahead);
+    for (facts, sequences) in facts.iter_mut().zip(sequences) {
+        facts.sequences = sequences;
+    }
+    facts
 }
 
 fn first_for_shape(
@@ -836,6 +895,7 @@ fn first_for_shape(
                 kinds: atom_kinds[atom.index()].clone(),
                 text_predicate: *text_predicate,
             }],
+            sequences: Vec::new(),
             nullable: false,
         },
         TypeShape::Alias { site } => first_for_sites(&[*site], grammar, facts),
@@ -919,8 +979,235 @@ fn first_facts(positions: Vec<FirstPosition>, nullable: bool, kind_count: usize)
     FirstFacts {
         kinds,
         positions,
+        sequences: Vec::new(),
         nullable,
     }
+}
+
+fn compute_first_sequences(
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+    semantic: &[FirstFacts],
+    max_depth: usize,
+) -> Vec<Vec<FirstSequence>> {
+    let mut sequences = vec![Vec::new(); grammar.types.len()];
+    loop {
+        let previous = sequences.clone();
+        for (index, description) in grammar.types.iter().enumerate() {
+            sequences[index] = first_sequences_for_shape(
+                &description.shape,
+                grammar,
+                atom_kinds,
+                semantic,
+                &previous,
+                max_depth,
+            );
+        }
+        if sequences == previous {
+            return sequences;
+        }
+    }
+}
+
+fn first_sequences_for_shape(
+    shape: &TypeShape,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+    semantic: &[FirstFacts],
+    previous: &[Vec<FirstSequence>],
+    max_depth: usize,
+) -> Vec<FirstSequence> {
+    let mut sequences = match shape {
+        TypeShape::Token {
+            atom,
+            text_predicate,
+        } => vec![FirstSequence {
+            positions: vec![FirstPosition {
+                kinds: atom_kinds[atom.index()].clone(),
+                text_predicate: *text_predicate,
+            }],
+            ends: true,
+        }],
+        TypeShape::Alias { site } => {
+            first_sequences_for_sites(&[*site], grammar, semantic, previous, max_depth)
+        }
+        TypeShape::Sequence { sites } => {
+            first_sequences_for_sites(sites, grammar, semantic, previous, max_depth)
+        }
+        TypeShape::Enum { alternatives } => alternatives
+            .iter()
+            .flat_map(|alternative| {
+                first_sequences_for_sites(
+                    &alternative.sites,
+                    grammar,
+                    semantic,
+                    previous,
+                    max_depth,
+                )
+            })
+            .collect(),
+        TypeShape::Pratt { variants } => variants
+            .iter()
+            .filter(|variant| {
+                matches!(
+                    variant.position,
+                    PrattPosition::Atom | PrattPosition::Prefix { .. }
+                )
+            })
+            .flat_map(|variant| {
+                first_sequences_for_sites(&variant.sites, grammar, semantic, previous, max_depth)
+            })
+            .collect(),
+    };
+    sort_dedup_first_sequences(&mut sequences);
+    sequences
+}
+
+fn first_sequences_for_sites(
+    sites: &[SiteId],
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    previous: &[Vec<FirstSequence>],
+    max_depth: usize,
+) -> Vec<FirstSequence> {
+    let mut combined = vec![FirstSequence {
+        positions: Vec::new(),
+        ends: true,
+    }];
+    for site_id in sites {
+        let site = &grammar.sites[site_id.index()];
+        let choices = sequences_for_site(site, semantic, previous, max_depth);
+        combined = concatenate_sequence_choices(&combined, &choices, max_depth);
+    }
+    sort_dedup_first_sequences(&mut combined);
+    combined
+}
+
+fn sequences_for_site(
+    site: &crate::ParseSite,
+    semantic: &[FirstFacts],
+    previous: &[Vec<FirstSequence>],
+    max_depth: usize,
+) -> Vec<FirstSequence> {
+    let target = &previous[site.target.index()];
+    let mut sequences = match &site.container {
+        SiteContainer::Direct | SiteContainer::Boxed => target.clone(),
+        SiteContainer::Optional => with_empty_sequence(target.clone()),
+        SiteContainer::Repeat {
+            at_least_one,
+            separator,
+        } => repeat_sequences(
+            target,
+            separator.map(|id| previous[id.index()].as_slice()),
+            *at_least_one,
+            max_depth,
+        ),
+    }
+    .into_iter()
+    .filter(|sequence| {
+        !sequence.positions.is_empty() || site_nullable(site, &semantic[site.target.index()])
+    })
+    .collect::<Vec<_>>();
+    sort_dedup_first_sequences(&mut sequences);
+    sequences
+}
+
+fn with_empty_sequence(mut sequences: Vec<FirstSequence>) -> Vec<FirstSequence> {
+    sequences.push(FirstSequence {
+        positions: Vec::new(),
+        ends: true,
+    });
+    sort_dedup_first_sequences(&mut sequences);
+    sequences
+}
+
+fn repeat_sequences(
+    target: &[FirstSequence],
+    separator: Option<&[FirstSequence]>,
+    at_least_one: bool,
+    max_depth: usize,
+) -> Vec<FirstSequence> {
+    let mut result = if at_least_one {
+        target.to_vec()
+    } else {
+        with_empty_sequence(target.to_vec())
+    };
+    let mut frontier = target.to_vec();
+    loop {
+        let before = result.clone();
+        let continuation = if let Some(separator) = separator {
+            concatenate_sequence_choices(separator, target, max_depth)
+        } else {
+            target.to_vec()
+        };
+        frontier = concatenate_sequence_choices(&frontier, &continuation, max_depth);
+        result.extend(frontier.iter().cloned());
+        sort_dedup_first_sequences(&mut result);
+        if result == before
+            || frontier
+                .iter()
+                .all(|sequence| sequence.positions.len() >= max_depth)
+        {
+            return result;
+        }
+    }
+}
+
+fn concatenate_sequence_choices(
+    prefixes: &[FirstSequence],
+    suffixes: &[FirstSequence],
+    max_depth: usize,
+) -> Vec<FirstSequence> {
+    let mut combined = Vec::new();
+    for prefix in prefixes {
+        if !prefix.ends {
+            combined.push(prefix.clone());
+            continue;
+        }
+        for suffix in suffixes {
+            let mut positions = prefix.positions.clone();
+            let combined_length = positions.len().saturating_add(suffix.positions.len());
+            positions.extend(
+                suffix
+                    .positions
+                    .iter()
+                    .take(max_depth - positions.len())
+                    .cloned(),
+            );
+            combined.push(FirstSequence {
+                positions,
+                ends: suffix.ends && combined_length <= max_depth,
+            });
+        }
+    }
+    sort_dedup_first_sequences(&mut combined);
+    combined
+}
+
+fn sort_dedup_first_sequences(sequences: &mut Vec<FirstSequence>) {
+    sequences.sort_by(compare_first_sequences);
+    sequences.dedup();
+}
+
+fn compare_first_sequences(left: &FirstSequence, right: &FirstSequence) -> std::cmp::Ordering {
+    left.positions
+        .iter()
+        .zip(&right.positions)
+        .find_map(|(left, right)| {
+            let ordering = left
+                .kinds
+                .kind_count()
+                .cmp(&right.kinds.kind_count())
+                .then_with(|| left.kinds.words().cmp(right.kinds.words()))
+                .then_with(|| left.text_predicate.cmp(&right.text_predicate));
+            (!ordering.is_eq()).then_some(ordering)
+        })
+        .unwrap_or_else(|| {
+            left.positions
+                .len()
+                .cmp(&right.positions.len())
+                .then_with(|| right.ends.cmp(&left.ends))
+        })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2248,11 +2535,637 @@ const fn is_pratt_led(position: PrattPosition) -> bool {
     )
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum DecisionItem {
+    Type(TypeId),
+    Site(SiteId),
+    RepeatTail {
+        target: TypeId,
+        separator: Option<TypeId>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct DecisionState(Vec<DecisionItem>);
+
+impl DecisionState {
+    fn from_sites(sites: &[SiteId]) -> Self {
+        Self(sites.iter().copied().map(DecisionItem::Site).collect())
+    }
+
+    fn consuming_site_and_tail(site: &crate::ParseSite, tail: &[SiteId]) -> Self {
+        let mut items = match site.container {
+            SiteContainer::Direct | SiteContainer::Boxed | SiteContainer::Optional => {
+                vec![DecisionItem::Type(site.target)]
+            }
+            SiteContainer::Repeat { separator, .. } => vec![
+                DecisionItem::Type(site.target),
+                DecisionItem::RepeatTail {
+                    target: site.target,
+                    separator,
+                },
+            ],
+        };
+        items.extend(tail.iter().copied().map(DecisionItem::Site));
+        Self(items)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum PairedDecisionState {
+    Residual(DecisionState, DecisionState),
+    End,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum DecisionWitness {
+    Token(crate::LookaheadWitnessPosition),
+    End,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DecisionTransition {
+    position: FirstPosition,
+    next: DecisionState,
+    minimum_stack_depth: usize,
+}
+
+#[derive(Default)]
+struct DecisionFrontier {
+    can_end: bool,
+    transitions: Vec<DecisionTransition>,
+}
+
+struct DecisionOutcome {
+    sufficient_depth: Option<usize>,
+    witness: Vec<crate::LookaheadWitnessPosition>,
+    end_of_alternative: bool,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct DecisionParent {
+    state: PairedDecisionState,
+    left_minimum_stack_depth: usize,
+    right_minimum_stack_depth: usize,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct PairedDecisionSuccessor {
+    state: PairedDecisionState,
+    witness: DecisionWitness,
+    left_minimum_stack_depth: usize,
+    right_minimum_stack_depth: usize,
+}
+
+fn analyze_decision(
+    left: DecisionState,
+    right: DecisionState,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+) -> DecisionOutcome {
+    let start = paired_residual(left, right, grammar);
+    let graph = build_decision_product(start.clone(), grammar, atom_kinds);
+    let sufficient_depth = if decision_graph_has_cycle(&start, &graph) {
+        None
+    } else {
+        Some(longest_decision_path(&start, &graph, &mut BTreeMap::new()) + 1)
+    };
+    let witness_path =
+        decision_witness_at_depth(&start, &graph, grammar.max_lookahead).unwrap_or_default();
+    let end_of_alternative = witness_path
+        .iter()
+        .any(|witness| matches!(witness, DecisionWitness::End));
+    let witness = witness_path
+        .into_iter()
+        .filter_map(|witness| match witness {
+            DecisionWitness::Token(position) => Some(position),
+            DecisionWitness::End => None,
+        })
+        .collect();
+    DecisionOutcome {
+        sufficient_depth,
+        witness,
+        end_of_alternative,
+    }
+}
+
+fn build_decision_product(
+    start: PairedDecisionState,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+) -> BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>> {
+    let mut graph = BTreeMap::new();
+    let mut parents = BTreeMap::from([(start.clone(), Vec::new())]);
+    let mut queue = VecDeque::from([start]);
+    while let Some(state) = queue.pop_front() {
+        let mut successors = Vec::new();
+        for successor in paired_decision_successors(&state, grammar, atom_kinds) {
+            let pumped = pumping_ancestor(&state, &successor, &parents);
+            if pumped.is_none() {
+                let parent = DecisionParent {
+                    state: state.clone(),
+                    left_minimum_stack_depth: successor.left_minimum_stack_depth,
+                    right_minimum_stack_depth: successor.right_minimum_stack_depth,
+                };
+                let incoming = parents.entry(successor.state.clone()).or_default();
+                if incoming.binary_search(&parent).is_err() {
+                    incoming.push(parent);
+                    incoming.sort();
+                    // A new derivation to an existing residual can establish a
+                    // boundary-safe pumping proof that its first derivation did
+                    // not. Revisit that residual with the expanded parent graph.
+                    queue.push_back(successor.state.clone());
+                }
+            }
+            successors.push((pumped.unwrap_or(successor.state), successor.witness));
+        }
+        graph.insert(state, successors);
+    }
+    graph
+}
+
+fn pumping_ancestor(
+    current: &PairedDecisionState,
+    successor: &PairedDecisionSuccessor,
+    parents: &BTreeMap<PairedDecisionState, Vec<DecisionParent>>,
+) -> Option<PairedDecisionState> {
+    let mut visited = BTreeSet::new();
+    let mut queue = VecDeque::from([current]);
+    while let Some(candidate) = queue.pop_front() {
+        if !visited.insert(candidate) {
+            continue;
+        }
+        if paired_residual_self_embeds(candidate, &successor.state)
+            && path_preserves_continuations(candidate, current, successor, parents)
+        {
+            return Some(candidate.clone());
+        }
+        if let Some(incoming) = parents.get(candidate) {
+            queue.extend(incoming.iter().map(|parent| &parent.state));
+        }
+    }
+    None
+}
+
+fn paired_residual_self_embeds(
+    ancestor: &PairedDecisionState,
+    successor: &PairedDecisionState,
+) -> bool {
+    let (
+        PairedDecisionState::Residual(ancestor_left, ancestor_right),
+        PairedDecisionState::Residual(successor_left, successor_right),
+    ) = (ancestor, successor)
+    else {
+        return false;
+    };
+    residual_self_embeds(ancestor_left, successor_left)
+        && residual_self_embeds(ancestor_right, successor_right)
+        && (ancestor_left.0.len() < successor_left.0.len()
+            || ancestor_right.0.len() < successor_right.0.len())
+}
+
+fn residual_self_embeds(ancestor: &DecisionState, successor: &DecisionState) -> bool {
+    let Some((active, continuation)) = ancestor.0.split_first() else {
+        return false;
+    };
+    successor.0.first() == Some(active)
+        && successor.0.len() >= ancestor.0.len()
+        && successor.0.ends_with(continuation)
+}
+
+fn path_preserves_continuations(
+    ancestor: &PairedDecisionState,
+    current: &PairedDecisionState,
+    successor: &PairedDecisionSuccessor,
+    parents: &BTreeMap<PairedDecisionState, Vec<DecisionParent>>,
+) -> bool {
+    let PairedDecisionState::Residual(ancestor_left, ancestor_right) = ancestor else {
+        return false;
+    };
+    let left_continuation = &ancestor_left.0[1..];
+    let right_continuation = &ancestor_right.0[1..];
+    if successor.left_minimum_stack_depth <= left_continuation.len()
+        || successor.right_minimum_stack_depth <= right_continuation.len()
+    {
+        return false;
+    }
+    let mut visited = BTreeSet::new();
+    let mut queue = VecDeque::from([current]);
+    while let Some(state) = queue.pop_front() {
+        if !visited.insert(state) {
+            continue;
+        }
+        if state == ancestor {
+            return true;
+        }
+        let PairedDecisionState::Residual(left, right) = state else {
+            continue;
+        };
+        if !left.0.ends_with(left_continuation) || !right.0.ends_with(right_continuation) {
+            continue;
+        }
+        for parent in parents.get(state).into_iter().flatten() {
+            if parent.left_minimum_stack_depth > left_continuation.len()
+                && parent.right_minimum_stack_depth > right_continuation.len()
+            {
+                queue.push_back(&parent.state);
+            }
+        }
+    }
+    false
+}
+
+fn paired_decision_successors(
+    state: &PairedDecisionState,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+) -> Vec<PairedDecisionSuccessor> {
+    if matches!(state, PairedDecisionState::End) {
+        return vec![PairedDecisionSuccessor {
+            state: PairedDecisionState::End,
+            witness: DecisionWitness::End,
+            left_minimum_stack_depth: 0,
+            right_minimum_stack_depth: 0,
+        }];
+    }
+    let PairedDecisionState::Residual(left, right) = state else {
+        unreachable!()
+    };
+    let left = decision_frontier(left, grammar, atom_kinds);
+    let right = decision_frontier(right, grammar, atom_kinds);
+    let mut successors = Vec::new();
+    if left.can_end && right.can_end {
+        successors.push(PairedDecisionSuccessor {
+            state: PairedDecisionState::End,
+            witness: DecisionWitness::End,
+            left_minimum_stack_depth: 0,
+            right_minimum_stack_depth: 0,
+        });
+    }
+    for left in &left.transitions {
+        for right in &right.transitions {
+            if !predicates_overlap(
+                left.position.text_predicate,
+                right.position.text_predicate,
+                &grammar.text_predicates,
+            ) {
+                continue;
+            }
+            let intersection = left
+                .position
+                .kinds
+                .intersection(&right.position.kinds)
+                .expect("decision positions have the grammar width");
+            let Some(kind) = intersection.iter().next() else {
+                continue;
+            };
+            successors.push(PairedDecisionSuccessor {
+                state: paired_residual(left.next.clone(), right.next.clone(), grammar),
+                witness: DecisionWitness::Token(crate::LookaheadWitnessPosition {
+                    kind,
+                    left_text_predicate: left.position.text_predicate,
+                    right_text_predicate: right.position.text_predicate,
+                }),
+                left_minimum_stack_depth: left.minimum_stack_depth,
+                right_minimum_stack_depth: right.minimum_stack_depth,
+            });
+        }
+    }
+    successors.sort();
+    successors.dedup();
+    successors
+}
+
+fn paired_residual(
+    mut left: DecisionState,
+    mut right: DecisionState,
+    grammar: &GrammarDescription,
+) -> PairedDecisionState {
+    while left.0.len() == right.0.len()
+        && left.0.len() > 1
+        && right.0.len() > 1
+        && left
+            .0
+            .last()
+            .zip(right.0.last())
+            .is_some_and(|(left, right)| decision_items_equivalent(left, right, grammar))
+    {
+        left.0.pop();
+        right.0.pop();
+    }
+    PairedDecisionState::Residual(left, right)
+}
+
+fn decision_items_equivalent(
+    left: &DecisionItem,
+    right: &DecisionItem,
+    grammar: &GrammarDescription,
+) -> bool {
+    match (left, right) {
+        (DecisionItem::Type(left), DecisionItem::Type(right)) => left == right,
+        (DecisionItem::Site(left), DecisionItem::Site(right)) => {
+            let left = &grammar.sites[left.index()];
+            let right = &grammar.sites[right.index()];
+            left.target == right.target && left.container == right.container
+        }
+        (
+            DecisionItem::RepeatTail {
+                target: left_target,
+                separator: left_separator,
+            },
+            DecisionItem::RepeatTail {
+                target: right_target,
+                separator: right_separator,
+            },
+        ) => left_target == right_target && left_separator == right_separator,
+        _ => false,
+    }
+}
+
+fn decision_frontier(
+    start: &DecisionState,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+) -> DecisionFrontier {
+    let mut frontier = DecisionFrontier::default();
+    let mut best_minimum_depth = BTreeMap::from([(start.clone(), start.0.len())]);
+    let mut queue = VecDeque::from([(start.clone(), start.0.len())]);
+    while let Some((state, minimum_stack_depth)) = queue.pop_front() {
+        if best_minimum_depth.get(&state) != Some(&minimum_stack_depth) {
+            continue;
+        }
+        let Some((first, rest)) = state.0.split_first() else {
+            frontier.can_end = true;
+            continue;
+        };
+        match first {
+            DecisionItem::Type(type_id) => {
+                let description = &grammar.types[type_id.index()];
+                match &description.shape {
+                    TypeShape::Token {
+                        atom,
+                        text_predicate,
+                    } => frontier.transitions.push(DecisionTransition {
+                        position: FirstPosition {
+                            kinds: atom_kinds[atom.index()].clone(),
+                            text_predicate: *text_predicate,
+                        },
+                        next: DecisionState(rest.to_vec()),
+                        minimum_stack_depth,
+                    }),
+                    TypeShape::Alias { site } => queue_decision_expansion(
+                        vec![DecisionItem::Site(*site)],
+                        rest,
+                        minimum_stack_depth,
+                        &mut best_minimum_depth,
+                        &mut queue,
+                    ),
+                    TypeShape::Sequence { sites } => queue_decision_expansion(
+                        sites.iter().copied().map(DecisionItem::Site).collect(),
+                        rest,
+                        minimum_stack_depth,
+                        &mut best_minimum_depth,
+                        &mut queue,
+                    ),
+                    TypeShape::Enum { alternatives } => {
+                        for alternative in alternatives {
+                            queue_decision_expansion(
+                                alternative
+                                    .sites
+                                    .iter()
+                                    .copied()
+                                    .map(DecisionItem::Site)
+                                    .collect(),
+                                rest,
+                                minimum_stack_depth,
+                                &mut best_minimum_depth,
+                                &mut queue,
+                            );
+                        }
+                    }
+                    TypeShape::Pratt { variants } => {
+                        for variant in variants.iter().filter(|variant| {
+                            matches!(
+                                variant.position,
+                                PrattPosition::Atom | PrattPosition::Prefix { .. }
+                            )
+                        }) {
+                            queue_decision_expansion(
+                                variant
+                                    .sites
+                                    .iter()
+                                    .copied()
+                                    .map(DecisionItem::Site)
+                                    .collect(),
+                                rest,
+                                minimum_stack_depth,
+                                &mut best_minimum_depth,
+                                &mut queue,
+                            );
+                        }
+                    }
+                }
+            }
+            DecisionItem::Site(site_id) => {
+                let site = &grammar.sites[site_id.index()];
+                match site.container {
+                    SiteContainer::Direct | SiteContainer::Boxed => queue_decision_expansion(
+                        vec![DecisionItem::Type(site.target)],
+                        rest,
+                        minimum_stack_depth,
+                        &mut best_minimum_depth,
+                        &mut queue,
+                    ),
+                    SiteContainer::Optional => {
+                        queue_decision_expansion(
+                            Vec::new(),
+                            rest,
+                            minimum_stack_depth,
+                            &mut best_minimum_depth,
+                            &mut queue,
+                        );
+                        queue_decision_expansion(
+                            vec![DecisionItem::Type(site.target)],
+                            rest,
+                            minimum_stack_depth,
+                            &mut best_minimum_depth,
+                            &mut queue,
+                        );
+                    }
+                    SiteContainer::Repeat {
+                        at_least_one,
+                        separator,
+                    } => {
+                        if !at_least_one {
+                            queue_decision_expansion(
+                                Vec::new(),
+                                rest,
+                                minimum_stack_depth,
+                                &mut best_minimum_depth,
+                                &mut queue,
+                            );
+                        }
+                        queue_decision_expansion(
+                            vec![
+                                DecisionItem::Type(site.target),
+                                DecisionItem::RepeatTail {
+                                    target: site.target,
+                                    separator,
+                                },
+                            ],
+                            rest,
+                            minimum_stack_depth,
+                            &mut best_minimum_depth,
+                            &mut queue,
+                        );
+                    }
+                }
+            }
+            DecisionItem::RepeatTail { target, separator } => {
+                queue_decision_expansion(
+                    Vec::new(),
+                    rest,
+                    minimum_stack_depth,
+                    &mut best_minimum_depth,
+                    &mut queue,
+                );
+                let mut expansion = Vec::new();
+                if let Some(separator) = separator {
+                    expansion.push(DecisionItem::Type(*separator));
+                }
+                expansion.extend([
+                    DecisionItem::Type(*target),
+                    DecisionItem::RepeatTail {
+                        target: *target,
+                        separator: *separator,
+                    },
+                ]);
+                queue_decision_expansion(
+                    expansion,
+                    rest,
+                    minimum_stack_depth,
+                    &mut best_minimum_depth,
+                    &mut queue,
+                );
+            }
+        }
+    }
+    frontier.transitions.sort_by(|left, right| {
+        compare_first_positions(&left.position, &right.position)
+            .then_with(|| left.next.cmp(&right.next))
+            .then_with(|| right.minimum_stack_depth.cmp(&left.minimum_stack_depth))
+    });
+    frontier
+        .transitions
+        .dedup_by(|left, right| left.position == right.position && left.next == right.next);
+    frontier
+}
+
+fn queue_decision_expansion(
+    mut expansion: Vec<DecisionItem>,
+    rest: &[DecisionItem],
+    minimum_stack_depth: usize,
+    best_minimum_depth: &mut BTreeMap<DecisionState, usize>,
+    queue: &mut VecDeque<(DecisionState, usize)>,
+) {
+    expansion.extend_from_slice(rest);
+    let state = DecisionState(expansion);
+    let minimum_stack_depth = minimum_stack_depth.min(state.0.len());
+    if best_minimum_depth
+        .get(&state)
+        .is_none_or(|best| *best < minimum_stack_depth)
+    {
+        best_minimum_depth.insert(state.clone(), minimum_stack_depth);
+        queue.push_back((state, minimum_stack_depth));
+    }
+}
+
+fn compare_first_positions(left: &FirstPosition, right: &FirstPosition) -> std::cmp::Ordering {
+    left.kinds
+        .kind_count()
+        .cmp(&right.kinds.kind_count())
+        .then_with(|| left.kinds.words().cmp(right.kinds.words()))
+        .then_with(|| left.text_predicate.cmp(&right.text_predicate))
+}
+
+fn decision_graph_has_cycle(
+    start: &PairedDecisionState,
+    graph: &BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>>,
+) -> bool {
+    fn visit(
+        state: &PairedDecisionState,
+        graph: &BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>>,
+        visiting: &mut BTreeSet<PairedDecisionState>,
+        visited: &mut BTreeSet<PairedDecisionState>,
+    ) -> bool {
+        if visiting.contains(state) {
+            return true;
+        }
+        if !visited.insert(state.clone()) {
+            return false;
+        }
+        visiting.insert(state.clone());
+        let cyclic = graph[state]
+            .iter()
+            .any(|(successor, _)| visit(successor, graph, visiting, visited));
+        visiting.remove(state);
+        cyclic
+    }
+    visit(start, graph, &mut BTreeSet::new(), &mut BTreeSet::new())
+}
+
+fn longest_decision_path(
+    state: &PairedDecisionState,
+    graph: &BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>>,
+    memo: &mut BTreeMap<PairedDecisionState, usize>,
+) -> usize {
+    if let Some(length) = memo.get(state) {
+        return *length;
+    }
+    let length = graph[state]
+        .iter()
+        .map(|(successor, _)| 1 + longest_decision_path(successor, graph, memo))
+        .max()
+        .unwrap_or(0);
+    memo.insert(state.clone(), length);
+    length
+}
+
+fn decision_witness_at_depth(
+    start: &PairedDecisionState,
+    graph: &BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>>,
+    depth: usize,
+) -> Option<Vec<DecisionWitness>> {
+    let mut frontier = BTreeMap::from([(start.clone(), Vec::new())]);
+    for _ in 0..depth {
+        let mut next = BTreeMap::new();
+        for (state, path) in frontier {
+            for (successor, witness) in &graph[&state] {
+                let mut candidate = path.clone();
+                if !matches!(candidate.last(), Some(DecisionWitness::End)) {
+                    candidate.push(witness.clone());
+                }
+                let slot = next.entry(successor.clone()).or_insert(candidate.clone());
+                if candidate < *slot {
+                    *slot = candidate;
+                }
+            }
+        }
+        if next.is_empty() {
+            return None;
+        }
+        frontier = next;
+    }
+    frontier.into_values().min()
+}
+
 fn detect_conflicts(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
     provenanced: &[Vec<ProvenancedPosition>],
+    atom_kinds: &[KindSet],
     proofs: &mut ProofArena,
+    static_conflict_kinds_by_declaration: &mut [KindSet],
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     for (index, description) in grammar.types.iter().enumerate() {
@@ -2281,35 +3194,61 @@ fn detect_conflicts(
                             provenanced,
                             proofs,
                         );
-                        if let Some(evidence) = overlap_evidence(
+                        let decision = analyze_decision(
+                            DecisionState::from_sites(&left.sites),
+                            DecisionState::from_sites(&right.sites),
+                            grammar,
+                            atom_kinds,
+                        );
+                        if decision
+                            .sufficient_depth
+                            .is_some_and(|depth| depth <= grammar.max_lookahead)
+                        {
+                            continue;
+                        }
+                        let evidence = overlap_evidence(
                             &left_first.positions,
                             &right_first.positions,
                             grammar,
                             proofs,
-                        ) {
-                            diagnostics.push(Diagnostic::conflict(
-                                DiagnosticCode::EnumFirstOverlap,
-                                format!(
-                                    "enum `{}` has alternatives with overlapping FIRST sets",
-                                    description.name,
-                                ),
-                                declaration_label(
-                                    left.declaration,
-                                    grammar,
-                                    "this alternative can start with the witness kind",
-                                ),
-                                declaration_label(
-                                    right.declaration,
-                                    grammar,
-                                    "this alternative can start with the same kind",
-                                ),
-                                evidence,
-                                ConflictRemedy::DisambiguateAlternatives {
-                                    left: left.declaration,
-                                    right: right.declaration,
-                                },
-                            ));
-                        }
+                        );
+                        let sufficient_depth = decision.sufficient_depth;
+                        let remedy = sufficient_depth.map_or(
+                            ConflictRemedy::RestructureSharedPrefix {
+                                left: left.declaration,
+                                right: right.declaration,
+                            },
+                            |sufficient| ConflictRemedy::RaiseMaxLookahead {
+                                configured: grammar.max_lookahead,
+                                sufficient,
+                            },
+                        );
+                        let mut diagnostic = Diagnostic::shared_prefix_conflict(
+                            DiagnosticCode::EnumFirstOverlap,
+                            format!(
+                                "enum `{}` has alternatives with an unresolved shared prefix",
+                                description.name,
+                            ),
+                            declaration_label(
+                                left.declaration,
+                                grammar,
+                                "this alternative can start with the witness kind",
+                            ),
+                            declaration_label(
+                                right.declaration,
+                                grammar,
+                                "this alternative can start with the same kind",
+                            ),
+                            evidence,
+                            remedy,
+                        );
+                        diagnostic.lookahead = Some(crate::SharedPrefixEvidence {
+                            configured_depth: grammar.max_lookahead,
+                            sufficient_depth,
+                            witness: decision.witness,
+                            end_of_alternative: decision.end_of_alternative,
+                        });
+                        diagnostics.push(diagnostic);
                     }
                 }
             }
@@ -2319,8 +3258,10 @@ fn detect_conflicts(
                 grammar,
                 semantic,
                 provenanced,
+                atom_kinds,
                 proofs,
                 &mut diagnostics,
+                static_conflict_kinds_by_declaration,
             ),
             TypeShape::Pratt { variants } => {
                 detect_pratt_conflicts(
@@ -2343,8 +3284,10 @@ fn detect_conflicts(
                         grammar,
                         semantic,
                         provenanced,
+                        atom_kinds,
                         proofs,
                         &mut diagnostics,
+                        static_conflict_kinds_by_declaration,
                     );
                 }
             }
@@ -2501,8 +3444,10 @@ fn detect_static_conflicts_for_sites(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
     provenanced: &[Vec<ProvenancedPosition>],
+    atom_kinds: &[KindSet],
     proofs: &mut ProofArena,
     diagnostics: &mut Vec<Diagnostic>,
+    static_conflict_kinds_by_declaration: &mut [KindSet],
 ) {
     for index in 0..sites.len().saturating_sub(1) {
         let site_id = sites[index];
@@ -2521,13 +3466,36 @@ fn detect_static_conflicts_for_sites(
         if tail.nullable {
             continue;
         }
+        let tail_sites = &sites[index + 1..];
+        let decision = analyze_decision(
+            DecisionState::consuming_site_and_tail(site, tail_sites),
+            DecisionState::from_sites(tail_sites),
+            grammar,
+            atom_kinds,
+        );
+        if decision
+            .sufficient_depth
+            .is_some_and(|depth| depth <= grammar.max_lookahead)
+        {
+            continue;
+        }
+        let sufficient_depth = decision.sufficient_depth;
         let current =
             first_for_sites_provenance(owner, &[site_id], grammar, semantic, provenanced, proofs);
         if let Some(evidence) =
             overlap_evidence(&current.positions, &tail.positions, grammar, proofs)
         {
+            static_conflict_kinds_by_declaration[site.declaration.index()]
+                .union_assign(&evidence.overlap);
             let tail_site = sites[index + 1];
-            diagnostics.push(Diagnostic::conflict(
+            let remedy = sufficient_depth.map_or(
+                ConflictRemedy::MakeSiteRequired { site: site_id },
+                |sufficient| ConflictRemedy::RaiseMaxLookahead {
+                    configured: grammar.max_lookahead,
+                    sufficient,
+                },
+            );
+            let mut diagnostic = Diagnostic::conflict(
                 DiagnosticCode::StaticUseSiteOverlap,
                 format!(
                     "nullable use site in `{}` overlaps its required tail",
@@ -2544,8 +3512,17 @@ fn detect_static_conflicts_for_sites(
                     "the following required tail can start with the same kind",
                 ),
                 evidence,
-                ConflictRemedy::MakeSiteRequired { site: site_id },
-            ));
+                remedy,
+            );
+            if let Some(sufficient_depth) = sufficient_depth {
+                diagnostic.lookahead = Some(crate::SharedPrefixEvidence {
+                    configured_depth: grammar.max_lookahead,
+                    sufficient_depth: Some(sufficient_depth),
+                    witness: decision.witness,
+                    end_of_alternative: decision.end_of_alternative,
+                });
+            }
+            diagnostics.push(diagnostic);
         }
     }
 }
@@ -2563,21 +3540,9 @@ fn detect_follow_conflicts(
     semantic: &[FirstFacts],
     first_provenance: &[Vec<ProvenancedPosition>],
     follow_by_site: &[ProvenancedFollow],
-    static_diagnostics: &[Diagnostic],
+    static_conflict_kinds_by_declaration: &[KindSet],
     proofs: &mut ProofArena,
 ) -> Vec<Diagnostic> {
-    let mut excluded_by_declaration =
-        vec![KindSet::empty(grammar.kind_count); grammar.declarations.len()];
-    for diagnostic in static_diagnostics {
-        let (Some(ConflictRemedy::MakeSiteRequired { site }), Some(conflict)) =
-            (&diagnostic.conflict_remedy, &diagnostic.conflict)
-        else {
-            continue;
-        };
-        let declaration = grammar.sites[site.index()].declaration;
-        excluded_by_declaration[declaration.index()].union_assign(&conflict.overlap);
-    }
-
     let mut sites = (0..grammar.sites.len())
         .map(|index| SiteId::new(index as u32))
         .collect::<Vec<_>>();
@@ -2596,7 +3561,7 @@ fn detect_follow_conflicts(
             && let Some(evidence) = overlap_evidence_excluding(
                 &first_provenance[site.target.index()],
                 follow,
-                &excluded_by_declaration[site.declaration.index()],
+                &static_conflict_kinds_by_declaration[site.declaration.index()],
                 grammar,
                 proofs,
             )
@@ -2636,7 +3601,7 @@ fn detect_follow_conflicts(
             && let Some(evidence) = overlap_evidence_excluding(
                 &active,
                 follow,
-                &excluded_by_declaration[site.declaration.index()],
+                &static_conflict_kinds_by_declaration[site.declaration.index()],
                 grammar,
                 proofs,
             )
@@ -2889,6 +3854,49 @@ fn predicates_overlap(
     }
 }
 
+pub fn disambiguation_depth(
+    left: &[FirstSequence],
+    right: &[FirstSequence],
+    predicates: &[TextPredicate],
+    max_depth: usize,
+) -> Option<usize> {
+    (1..=max_depth).find(|depth| {
+        !left.iter().any(|left| {
+            right
+                .iter()
+                .any(|right| first_sequences_overlap_within(left, right, predicates, *depth))
+        })
+    })
+}
+
+fn first_sequences_overlap_within(
+    left: &FirstSequence,
+    right: &FirstSequence,
+    predicates: &[TextPredicate],
+    depth: usize,
+) -> bool {
+    let left_length = left.positions.len().min(depth);
+    let right_length = right.positions.len().min(depth);
+    if left_length != right_length {
+        return false;
+    }
+    if left_length < depth && left.ends != right.ends {
+        return false;
+    }
+    left.positions
+        .iter()
+        .zip(&right.positions)
+        .take(left_length)
+        .all(|(left, right)| {
+            !left
+                .kinds
+                .intersection(&right.kinds)
+                .expect("FIRST positions have the grammar width")
+                .is_empty()
+                && predicates_overlap(left.text_predicate, right.text_predicate, predicates)
+        })
+}
+
 fn text_eq(left: &str, right: &str) -> bool {
     left.eq_ignore_ascii_case(right)
 }
@@ -2930,4 +3938,48 @@ fn render_kind_set(set: &KindSet) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!("{{{members}}}")
+}
+
+#[cfg(test)]
+mod decision_product_tests {
+    use super::*;
+
+    #[test]
+    fn nullable_epsilon_expansion_cannot_pump_through_a_protected_continuation() {
+        let empty = TypeId::new(0);
+        let left = TypeId::new(1);
+        let right = TypeId::new(2);
+        let left_tail = TypeId::new(3);
+        let right_tail = TypeId::new(4);
+        let ancestor = PairedDecisionState::Residual(
+            DecisionState(vec![DecisionItem::Type(empty), DecisionItem::Type(left)]),
+            DecisionState(vec![DecisionItem::Type(empty), DecisionItem::Type(right)]),
+        );
+        let successor = PairedDecisionSuccessor {
+            state: PairedDecisionState::Residual(
+                DecisionState(vec![
+                    DecisionItem::Type(empty),
+                    DecisionItem::Type(left_tail),
+                    DecisionItem::Type(left),
+                ]),
+                DecisionState(vec![
+                    DecisionItem::Type(empty),
+                    DecisionItem::Type(right_tail),
+                    DecisionItem::Type(right),
+                ]),
+            ),
+            witness: DecisionWitness::Token(crate::LookaheadWitnessPosition {
+                kind: KindId::new(0),
+                left_text_predicate: None,
+                right_text_predicate: None,
+            }),
+            // The epsilon closure popped E and inspected Left/Right before
+            // recreating E. Depth one is therefore the protected boundary.
+            left_minimum_stack_depth: 1,
+            right_minimum_stack_depth: 1,
+        };
+        let parents = BTreeMap::from([(ancestor.clone(), Vec::new())]);
+
+        assert_eq!(pumping_ancestor(&ancestor, &successor, &parents), None);
+    }
 }
