@@ -3517,52 +3517,54 @@ fn detect_pratt_group_conflicts(
             {
                 continue;
             }
-            if let Some(evidence) = overlap_evidence(
+            let evidence = overlap_evidence(
                 &left_first.positions,
                 &right_first.positions,
                 grammar,
                 proofs,
-            ) {
-                let left_position = pratt_position_name(left.position);
-                let right_position = pratt_position_name(right.position);
-                let remedy = decision.sufficient_depth.map_or(
-                    ConflictRemedy::DisambiguatePrattVariants {
-                        pratt: owner,
-                        left: left.declaration,
-                        right: right.declaration,
-                    },
-                    |sufficient| ConflictRemedy::RaiseMaxLookahead {
-                        configured: grammar.max_lookahead,
-                        sufficient,
-                    },
-                );
-                let mut diagnostic = Diagnostic::shared_prefix_conflict(
-                    code,
-                    format!(
-                        "Pratt `{owner_name}` has overlapping {}",
-                        pratt_overlap_name(left.position, right.position),
-                    ),
-                    declaration_label(
-                        left.declaration,
-                        grammar,
-                        format!("this {left_position} variant can start with the witness kind"),
-                    ),
-                    declaration_label(
-                        right.declaration,
-                        grammar,
-                        format!("this {right_position} variant can start with the same kind"),
-                    ),
-                    Some(evidence),
-                    remedy,
-                );
-                diagnostic.lookahead = Some(crate::SharedPrefixEvidence {
-                    configured_depth: grammar.max_lookahead,
-                    sufficient_depth: decision.sufficient_depth,
-                    witness: decision.witness,
-                    end_of_alternative: decision.end_of_alternative,
-                });
-                diagnostics.push(diagnostic);
-            }
+            );
+            let left_position = pratt_position_name(left.position);
+            let right_position = pratt_position_name(right.position);
+            let remedy = decision.sufficient_depth.map_or(
+                ConflictRemedy::RestructurePrattSharedPrefix {
+                    pratt: owner,
+                    left: left.declaration,
+                    right: right.declaration,
+                },
+                |sufficient| ConflictRemedy::RaiseMaxLookahead {
+                    configured: grammar.max_lookahead,
+                    sufficient,
+                },
+            );
+            let (left_label, right_label) = if evidence.is_some() {
+                (
+                    format!("this {left_position} variant can start with the witness kind"),
+                    format!("this {right_position} variant can start with the same kind"),
+                )
+            } else {
+                (
+                    format!("this {left_position} variant can end at this decision point"),
+                    format!("this {right_position} variant can also end here"),
+                )
+            };
+            let mut diagnostic = Diagnostic::shared_prefix_conflict(
+                code,
+                format!(
+                    "Pratt `{owner_name}` has overlapping {}",
+                    pratt_overlap_name(left.position, right.position),
+                ),
+                declaration_label(left.declaration, grammar, left_label),
+                declaration_label(right.declaration, grammar, right_label),
+                evidence,
+                remedy,
+            );
+            diagnostic.lookahead = Some(crate::SharedPrefixEvidence {
+                configured_depth: grammar.max_lookahead,
+                sufficient_depth: decision.sufficient_depth,
+                witness: decision.witness,
+                end_of_alternative: decision.end_of_alternative,
+            });
+            diagnostics.push(diagnostic);
         }
     }
 }

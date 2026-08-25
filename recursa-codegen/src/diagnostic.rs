@@ -86,6 +86,11 @@ pub enum ConflictRemedy {
         left: DeclId,
         right: DeclId,
     },
+    RestructurePrattSharedPrefix {
+        pratt: TypeId,
+        left: DeclId,
+        right: DeclId,
+    },
     ReviewNullableFollow {
         site: SiteId,
     },
@@ -113,6 +118,9 @@ impl ConflictRemedy {
             }
             Self::DisambiguatePrattVariants { .. } => {
                 "make the Pratt variants start with disjoint kinds or text predicates".to_owned()
+            }
+            Self::RestructurePrattSharedPrefix { .. } => {
+                "restructure the Pratt variants into a shared-prefix type".to_owned()
             }
             Self::ReviewNullableFollow { .. } => {
                 "make the use site required or separate it from its possible caller FOLLOW"
