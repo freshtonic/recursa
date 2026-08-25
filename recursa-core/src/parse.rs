@@ -1,19 +1,87 @@
 use std::fmt;
 
-use crate::{FollowSet, Input};
+use crate::{ExpectedAtomId, FollowSet, GrammarInfo, Input, Span, TokenKind};
 
 /// A low-level parse failure.
-///
-/// Its structured diagnostic fields are added with the symbolic-failure
-/// runtime slice; this type exists now to complete the stable Parse contract.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParseError {
-    _private: (),
+    kind: ParseErrorKind,
+    span: Span,
+    found: Option<TokenKind>,
+    expected: Vec<ExpectedAtomId>,
+    grammar: &'static GrammarInfo,
+}
+
+/// Classification of a low-level parse failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParseErrorKind {
+    UnexpectedToken,
+    UnexpectedEof,
+    LexicalError,
+}
+
+impl ParseError {
+    pub(crate) fn unexpected<A>(input: &Input<'_, A>, expected: &FollowSet) -> Self {
+        let (kind, span, found) = match input.peek(0) {
+            Some(record) if record.kind == input.grammar().lexical_error_kind => {
+                (ParseErrorKind::LexicalError, record.span, Some(record.kind))
+            }
+            Some(record) => (
+                ParseErrorKind::UnexpectedToken,
+                record.span,
+                Some(record.kind),
+            ),
+            None => {
+                let position = input.byte_position();
+                let span = Span::new(position, position)
+                    .expect("lexing input must fit Recursa's checked span range");
+                (ParseErrorKind::UnexpectedEof, span, None)
+            }
+        };
+
+        Self {
+            kind,
+            span,
+            found,
+            expected: expected.expected().to_vec(),
+            grammar: input.grammar(),
+        }
+    }
+
+    pub fn kind(&self) -> ParseErrorKind {
+        self.kind
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+
+    pub fn found(&self) -> Option<TokenKind> {
+        self.found
+    }
+
+    pub fn expected(&self) -> &[ExpectedAtomId] {
+        &self.expected
+    }
+
+    pub fn grammar(&self) -> &'static GrammarInfo {
+        self.grammar
+    }
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("parse failed")
+        match self.kind {
+            ParseErrorKind::UnexpectedEof => formatter.write_str("unexpected end of input"),
+            ParseErrorKind::LexicalError => formatter.write_str("lexical error"),
+            ParseErrorKind::UnexpectedToken => {
+                let found = self
+                    .found
+                    .and_then(|kind| self.grammar.kind_name(kind))
+                    .unwrap_or("unknown token");
+                write!(formatter, "unexpected {found}")
+            }
+        }
     }
 }
 

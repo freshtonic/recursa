@@ -5,9 +5,9 @@ mod input;
 mod parse;
 mod span;
 
-pub use grammar::{ExpectedAtomId, FollowSet, GrammarInfo, TokenKind};
+pub use grammar::{ExpectedAtomId, FollowSet, FollowSetError, GrammarInfo, TokenKind};
 pub use input::{Input, LexResult, TokenRecord};
-pub use parse::{Parse, ParseError};
+pub use parse::{Parse, ParseError, ParseErrorKind};
 pub use span::{OffsetOverflow, Span};
 
 /// Runtime operations reserved for Recursa-generated code.
@@ -17,7 +17,11 @@ pub use span::{OffsetOverflow, Span};
 /// Recursa runtime.
 #[doc(hidden)]
 pub mod __private {
-    use crate::{ExpectedAtomId, FollowSet};
+    use crate::{ExpectedAtomId, FollowSet, Input, ParseError};
+
+    /// Opaque cursor state used by generated speculative parsing.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct Checkpoint(usize);
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
     pub const fn follow_set(
@@ -26,5 +30,20 @@ pub mod __private {
         expected: &'static [ExpectedAtomId],
     ) -> FollowSet {
         FollowSet::from_static(kind_count, kinds, expected)
+    }
+
+    /// Creates the structured failure at the current generated-parser cursor.
+    pub fn unexpected<A>(input: &Input<'_, A>, expected: &FollowSet) -> ParseError {
+        ParseError::unexpected(input, expected)
+    }
+
+    /// Captures the current generated-parser cursor.
+    pub fn checkpoint<A>(input: &Input<'_, A>) -> Checkpoint {
+        Checkpoint(input.checkpoint())
+    }
+
+    /// Restores a cursor captured from this lexing result.
+    pub fn rewind<A>(input: &mut Input<'_, A>, checkpoint: Checkpoint) {
+        input.rewind(checkpoint.0);
     }
 }
