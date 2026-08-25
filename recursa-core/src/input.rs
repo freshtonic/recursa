@@ -40,6 +40,7 @@ impl<'src> LexResult<'src> {
             cursor: 0,
             grammar,
             builder,
+            capture_spans: false,
         }
     }
 }
@@ -51,6 +52,7 @@ pub struct Input<'i, A = ()> {
     cursor: usize,
     grammar: &'static GrammarInfo,
     builder: A,
+    capture_spans: bool,
 }
 
 impl<'i, A> Input<'i, A> {
@@ -100,5 +102,59 @@ impl<'i, A> Input<'i, A> {
     pub(crate) fn rewind(&mut self, cursor: usize) {
         assert!(cursor <= self.records.len(), "checkpoint is outside input");
         self.cursor = cursor;
+    }
+
+    pub(crate) fn captures_spans(&self) -> bool {
+        self.capture_spans
+    }
+
+    pub(crate) fn consumed_end(&self) -> usize {
+        if self.cursor == 0 {
+            return self.byte_position();
+        }
+        self.records[self.cursor - 1].span.end() as usize
+    }
+
+    pub(crate) fn with_span_capture<R>(&mut self, operation: impl FnOnce(&mut Self) -> R) -> R {
+        let previous = self.capture_spans;
+        self.capture_spans = true;
+        let result = operation(self);
+        self.capture_spans = previous;
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static GRAMMAR: GrammarInfo = GrammarInfo {
+        name: "capture-test",
+        kind_names: &[],
+        atom_names: &[],
+        lexical_error_kind: 0,
+    };
+
+    #[test]
+    fn span_capture_is_nested_and_restored_after_success_or_error() {
+        let lexed = LexResult::new("", vec![]);
+        let mut input = lexed.input(&GRAMMAR);
+        assert!(!input.captures_spans());
+
+        let success: Result<(), ()> = input.with_span_capture(|input| {
+            assert!(input.captures_spans());
+            input.with_span_capture(|nested| assert!(nested.captures_spans()));
+            assert!(input.captures_spans());
+            Ok(())
+        });
+        assert_eq!(success, Ok(()));
+        assert!(!input.captures_spans());
+
+        let failure: Result<(), ()> = input.with_span_capture(|input| {
+            assert!(input.captures_spans());
+            Err(())
+        });
+        assert_eq!(failure, Err(()));
+        assert!(!input.captures_spans());
     }
 }
