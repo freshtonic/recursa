@@ -249,6 +249,7 @@ pub struct AnalysisOutput {
     first_by_type: Vec<FirstFacts>,
     extenders_by_type: Vec<Option<ExtenderFacts>>,
     first_provenance_by_type: Vec<Vec<ProvenancedKindSet>>,
+    extender_provenance_by_type: Vec<Option<Vec<ProvenancedKindSet>>>,
 }
 
 impl AnalysisOutput {
@@ -272,6 +273,16 @@ impl AnalysisOutput {
 
     pub fn first_provenance_by_type(&self) -> &[Vec<ProvenancedKindSet>] {
         &self.first_provenance_by_type
+    }
+
+    pub fn extender_provenance(&self, type_id: TypeId) -> Option<&[ProvenancedKindSet]> {
+        self.extender_provenance_by_type
+            .get(type_id.index())
+            .and_then(Option::as_deref)
+    }
+
+    pub fn extender_provenance_by_type(&self) -> &[Option<Vec<ProvenancedKindSet>>] {
+        &self.extender_provenance_by_type
     }
 
     pub fn canonical_facts(&self) -> String {
@@ -351,7 +362,10 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
             diagnostic_context,
         };
     }
+    let extenders_by_type = compute_extenders(&grammar, &first_by_type);
     let (mut proofs, first_provenance) = compute_first_provenance(&grammar, &first_by_type);
+    let extender_provenance =
+        compute_extender_provenance(&grammar, &first_by_type, &first_provenance, &mut proofs);
     let diagnostics = detect_conflicts(&grammar, &first_by_type, &first_provenance, &mut proofs);
     if !diagnostics.is_empty() {
         return AnalysisReport {
@@ -362,7 +376,6 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
             diagnostic_context,
         };
     }
-    let extenders_by_type = compute_extenders(&grammar, &first_by_type);
     let first_provenance_by_type = first_provenance
         .into_iter()
         .map(|positions| {
@@ -372,12 +385,24 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
                 .collect()
         })
         .collect();
+    let extender_provenance_by_type = extender_provenance
+        .into_iter()
+        .map(|positions| {
+            positions.map(|positions| {
+                positions
+                    .into_iter()
+                    .map(|position| position.kinds)
+                    .collect()
+            })
+        })
+        .collect();
     AnalysisReport {
         diagnostics: Vec::new(),
         output: Some(AnalysisOutput {
             first_by_type,
             extenders_by_type,
             first_provenance_by_type,
+            extender_provenance_by_type,
         }),
         locations,
         proofs,
@@ -954,6 +979,20 @@ fn edge_source_key(
     )
 }
 
+fn declaration_source_key(
+    declaration: crate::DeclId,
+    grammar: &GrammarDescription,
+) -> (u32, u32, u32, crate::DeclId) {
+    let location_id = grammar.declarations[declaration.index()].location;
+    let location = &grammar.locations[location_id.index()];
+    (
+        location.source.get(),
+        location.range.start,
+        location.range.end,
+        declaration,
+    )
+}
+
 fn diagnostic_source_key(
     diagnostic: &Diagnostic,
     grammar: &GrammarDescription,
@@ -1321,7 +1360,7 @@ fn first_for_shape_provenance(
                     )
                 })
                 .collect::<Vec<_>>();
-            variants.sort_by_key(|variant| variant.declaration);
+            variants.sort_by_key(|variant| declaration_source_key(variant.declaration, grammar));
             let mut positions = Vec::new();
             for variant in variants {
                 let first = first_for_sites_provenance(
@@ -1449,6 +1488,54 @@ fn merge_provenanced_position(
     });
 }
 
+fn compute_extender_provenance(
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    first_provenance: &[Vec<ProvenancedPosition>],
+    proofs: &mut ProofArena,
+) -> Vec<Option<Vec<ProvenancedPosition>>> {
+    grammar
+        .types
+        .iter()
+        .enumerate()
+        .map(|(index, description)| {
+            let TypeShape::Pratt { variants } = &description.shape else {
+                return None;
+            };
+            let owner = TypeId::new(index as u32);
+            let mut led = variants
+                .iter()
+                .filter(|variant| is_pratt_led(variant.position))
+                .collect::<Vec<_>>();
+            led.sort_by_key(|variant| declaration_source_key(variant.declaration, grammar));
+            let mut positions = Vec::new();
+            for variant in led {
+                let first = first_for_sites_provenance(
+                    owner,
+                    &variant.sites,
+                    grammar,
+                    semantic,
+                    first_provenance,
+                    proofs,
+                );
+                merge_provenanced_positions(&mut positions, &first.positions, proofs);
+            }
+            Some(positions)
+        })
+        .collect()
+}
+
+const fn is_pratt_nud(position: PrattPosition) -> bool {
+    matches!(position, PrattPosition::Atom | PrattPosition::Prefix { .. })
+}
+
+const fn is_pratt_led(position: PrattPosition) -> bool {
+    matches!(
+        position,
+        PrattPosition::Infix { .. } | PrattPosition::Postfix { .. }
+    )
+}
+
 fn detect_conflicts(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
@@ -1524,8 +1611,19 @@ fn detect_conflicts(
                 &mut diagnostics,
             ),
             TypeShape::Pratt { variants } => {
+                detect_pratt_conflicts(
+                    owner,
+                    &description.name,
+                    variants,
+                    grammar,
+                    semantic,
+                    provenanced,
+                    proofs,
+                    &mut diagnostics,
+                );
                 let mut variants = variants.iter().collect::<Vec<_>>();
-                variants.sort_by_key(|variant| variant.declaration);
+                variants
+                    .sort_by_key(|variant| declaration_source_key(variant.declaration, grammar));
                 for variant in variants {
                     detect_static_conflicts_for_sites(
                         owner,
@@ -1543,6 +1641,145 @@ fn detect_conflicts(
     }
     diagnostics.sort_by_key(|diagnostic| diagnostic_source_key(diagnostic, grammar));
     diagnostics
+}
+
+#[allow(clippy::too_many_arguments)]
+fn detect_pratt_conflicts(
+    owner: TypeId,
+    owner_name: &str,
+    variants: &[crate::PrattVariant],
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    provenanced: &[Vec<ProvenancedPosition>],
+    proofs: &mut ProofArena,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut nud = variants
+        .iter()
+        .filter(|variant| is_pratt_nud(variant.position))
+        .collect::<Vec<_>>();
+    nud.sort_by_key(|variant| declaration_source_key(variant.declaration, grammar));
+    detect_pratt_group_conflicts(
+        owner,
+        owner_name,
+        &nud,
+        DiagnosticCode::PrattAtomOverlap,
+        grammar,
+        semantic,
+        provenanced,
+        proofs,
+        diagnostics,
+    );
+
+    let mut led = variants
+        .iter()
+        .filter(|variant| is_pratt_led(variant.position))
+        .collect::<Vec<_>>();
+    led.sort_by_key(|variant| declaration_source_key(variant.declaration, grammar));
+    detect_pratt_group_conflicts(
+        owner,
+        owner_name,
+        &led,
+        DiagnosticCode::PrattLedOverlap,
+        grammar,
+        semantic,
+        provenanced,
+        proofs,
+        diagnostics,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn detect_pratt_group_conflicts(
+    owner: TypeId,
+    owner_name: &str,
+    variants: &[&crate::PrattVariant],
+    code: DiagnosticCode,
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    provenanced: &[Vec<ProvenancedPosition>],
+    proofs: &mut ProofArena,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for left_index in 0..variants.len() {
+        for right_index in left_index + 1..variants.len() {
+            let left = variants[left_index];
+            let right = variants[right_index];
+            let left_first = first_for_sites_provenance(
+                owner,
+                &left.sites,
+                grammar,
+                semantic,
+                provenanced,
+                proofs,
+            );
+            let right_first = first_for_sites_provenance(
+                owner,
+                &right.sites,
+                grammar,
+                semantic,
+                provenanced,
+                proofs,
+            );
+            if let Some(evidence) = overlap_evidence(
+                &left_first.positions,
+                &right_first.positions,
+                grammar,
+                proofs,
+            ) {
+                let left_position = pratt_position_name(left.position);
+                let right_position = pratt_position_name(right.position);
+                diagnostics.push(Diagnostic::conflict(
+                    code,
+                    format!(
+                        "Pratt `{owner_name}` has overlapping {}",
+                        pratt_overlap_name(left.position, right.position),
+                    ),
+                    declaration_label(
+                        left.declaration,
+                        grammar,
+                        format!("this {left_position} variant can start with the witness kind"),
+                    ),
+                    declaration_label(
+                        right.declaration,
+                        grammar,
+                        format!("this {right_position} variant can start with the same kind"),
+                    ),
+                    evidence,
+                    ConflictRemedy::DisambiguatePrattVariants {
+                        pratt: owner,
+                        left: left.declaration,
+                        right: right.declaration,
+                    },
+                ));
+            }
+        }
+    }
+}
+
+const fn pratt_position_name(position: PrattPosition) -> &'static str {
+    match position {
+        PrattPosition::Atom => "atom",
+        PrattPosition::Prefix { .. } => "prefix",
+        PrattPosition::Infix { .. } => "infix",
+        PrattPosition::Postfix { .. } => "postfix",
+    }
+}
+
+const fn pratt_overlap_name(left: PrattPosition, right: PrattPosition) -> &'static str {
+    match (left, right) {
+        (PrattPosition::Atom, PrattPosition::Atom) => "atom variants",
+        (PrattPosition::Prefix { .. }, PrattPosition::Prefix { .. }) => "prefix variants",
+        (PrattPosition::Atom, PrattPosition::Prefix { .. })
+        | (PrattPosition::Prefix { .. }, PrattPosition::Atom) => "atom and prefix variants",
+        (PrattPosition::Infix { .. }, PrattPosition::Infix { .. }) => "led variants",
+        (PrattPosition::Postfix { .. }, PrattPosition::Postfix { .. }) => "postfix variants",
+        (PrattPosition::Infix { .. }, PrattPosition::Postfix { .. })
+        | (PrattPosition::Postfix { .. }, PrattPosition::Infix { .. }) => {
+            "infix and postfix variants"
+        }
+        _ => "Pratt variants",
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

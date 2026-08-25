@@ -327,31 +327,20 @@ fn delayed_shorter_proof() -> (GrammarDescription, TypeId, TypeId) {
         owner,
         long,
         long_decl,
-        SiteContainer::Direct,
+        SiteContainer::Optional,
     ));
     let short_site = builder.grammar.push_site(ParseSite::new(
         owner,
         short_alias,
         short_decl,
-        SiteContainer::Direct,
+        SiteContainer::Optional,
     ));
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(
             "Expr",
             owner_decl,
-            TypeShape::Pratt {
-                variants: vec![
-                    recursa_codegen::PrattVariant {
-                        declaration: long_decl,
-                        position: recursa_codegen::PrattPosition::Atom,
-                        sites: vec![long_site],
-                    },
-                    recursa_codegen::PrattVariant {
-                        declaration: short_decl,
-                        position: recursa_codegen::PrattPosition::Atom,
-                        sites: vec![short_site],
-                    },
-                ],
+            TypeShape::Sequence {
+                sites: vec![long_site, short_site],
             },
         )),
         owner,
