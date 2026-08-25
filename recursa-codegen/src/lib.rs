@@ -9,7 +9,9 @@ mod ids;
 mod ir;
 mod kind_set;
 
-pub use analysis::{AnalysisOutput, AnalysisReport, FirstFacts, FirstPosition, analyze};
+pub use analysis::{
+    AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition, analyze,
+};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};
 pub use ids::{
     AtomId, DeclId, KindId, LocationId, ProofId, SiteId, SourceId, TextPredicateId, TypeId,

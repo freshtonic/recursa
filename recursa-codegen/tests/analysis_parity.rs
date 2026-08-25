@@ -1,0 +1,218 @@
+mod fixtures;
+
+use recursa_codegen::{AnalysisOutput, KindId, TypeId, analyze};
+
+use fixtures::{arith, json};
+
+fn kinds(output: &AnalysisOutput, type_id: TypeId) -> Vec<u16> {
+    output
+        .first(type_id)
+        .unwrap()
+        .kinds()
+        .iter()
+        .map(KindId::get)
+        .collect()
+}
+
+#[test]
+fn analysis_succeeds_for_arith() {
+    let canonical = arith::grammar(false);
+    let reordered = arith::grammar(true);
+    assert_eq!(canonical.kinds, reordered.kinds);
+    assert_eq!(canonical.declarations, reordered.declarations);
+    assert_eq!(canonical.types.len(), reordered.types.len());
+    for (index, (left, right)) in canonical.types.iter().zip(&reordered.types).enumerate() {
+        assert_eq!(TypeId::new(index as u32).index(), index);
+        assert_eq!(left.name, right.name);
+        assert_eq!(left.declaration, right.declaration);
+    }
+
+    let first = analyze(canonical);
+    let repeated = analyze(arith::grammar(false));
+    let shuffled = analyze(reordered);
+
+    assert!(first.diagnostics.is_empty());
+    assert_eq!(first.output, repeated.output);
+    assert_eq!(first.output, shuffled.output);
+}
+
+#[test]
+fn computed_first_matches_accepted_arith_token_wrappers() {
+    let report = analyze(arith::grammar(false));
+    let output = report.output.unwrap();
+    for (type_id, kind) in [
+        (arith::PLUS_TOK, arith::PLUS),
+        (arith::MINUS_TOK, arith::MINUS),
+        (arith::STAR_TOK, arith::STAR),
+        (arith::SLASH_TOK, arith::SLASH),
+        (arith::LPAREN_TOK, arith::LPAREN),
+        (arith::RPAREN_TOK, arith::RPAREN),
+        (arith::INT_LIT_TOK, arith::INT_LIT),
+        (arith::IDENT_TOK, arith::IDENT),
+    ] {
+        assert_eq!(kinds(&output, type_id), [kind]);
+        assert!(!output.first(type_id).unwrap().nullable);
+    }
+}
+
+#[test]
+fn computed_first_matches_accepted_arith_expr() {
+    let output = analyze(arith::grammar(false)).output.unwrap();
+
+    assert_eq!(
+        kinds(&output, arith::EXPR),
+        [arith::MINUS, arith::LPAREN, arith::INT_LIT, arith::IDENT],
+    );
+    assert!(!output.first(arith::EXPR).unwrap().nullable);
+}
+
+#[test]
+fn computed_extenders_matches_accepted_arith_expr() {
+    let output = analyze(arith::grammar(false)).output.unwrap();
+
+    assert_eq!(
+        output
+            .extenders(arith::EXPR)
+            .unwrap()
+            .kinds()
+            .iter()
+            .map(KindId::get)
+            .collect::<Vec<_>>(),
+        [arith::PLUS, arith::MINUS, arith::STAR, arith::SLASH],
+    );
+}
+
+#[test]
+fn non_pratt_arith_types_have_no_extenders_entry() {
+    let output = analyze(arith::grammar(false)).output.unwrap();
+
+    assert!(output.extenders(arith::PLUS_TOK).is_none());
+    assert!(output.extenders(arith::INT_LIT_TOK).is_none());
+    assert_eq!(
+        output
+            .extenders_by_type()
+            .iter()
+            .filter(|facts| facts.is_some())
+            .count(),
+        1,
+    );
+}
+
+#[test]
+fn valid_pratt_led_recursion_is_accepted() {
+    let report = analyze(arith::grammar(false));
+
+    assert!(report.diagnostics.is_empty());
+    assert!(report.output.is_some());
+}
+
+#[test]
+fn arith_canonical_facts_are_stable_and_sorted() {
+    let output = analyze(arith::grammar(false)).output.unwrap();
+
+    assert_eq!(
+        output.canonical_facts(),
+        concat!(
+            "type[0] FIRST={0} NULLABLE=false EXTENDERS=-\n",
+            "type[1] FIRST={1} NULLABLE=false EXTENDERS=-\n",
+            "type[2] FIRST={2} NULLABLE=false EXTENDERS=-\n",
+            "type[3] FIRST={3} NULLABLE=false EXTENDERS=-\n",
+            "type[4] FIRST={4} NULLABLE=false EXTENDERS=-\n",
+            "type[5] FIRST={5} NULLABLE=false EXTENDERS=-\n",
+            "type[6] FIRST={6} NULLABLE=false EXTENDERS=-\n",
+            "type[7] FIRST={7} NULLABLE=false EXTENDERS=-\n",
+            "type[8] FIRST={1,4,6,7} NULLABLE=false EXTENDERS={0,1,2,3}\n",
+        ),
+    );
+}
+
+#[test]
+fn arith_expr_contains_atom_starters_and_prefix_minus() {
+    let output = analyze(arith::grammar(false)).output.unwrap();
+
+    assert_eq!(
+        kinds(&output, arith::EXPR),
+        [arith::MINUS, arith::LPAREN, arith::INT_LIT, arith::IDENT],
+    );
+}
+
+#[test]
+fn analysis_succeeds_for_json() {
+    let report = analyze(json::grammar());
+
+    assert!(report.diagnostics.is_empty());
+    assert!(report.output.is_some());
+}
+
+#[test]
+fn json_has_no_left_recursion_diagnostic() {
+    let report = analyze(json::grammar());
+
+    assert!(report.diagnostics.is_empty());
+}
+
+#[test]
+fn computed_first_matches_accepted_json_value() {
+    let output = analyze(json::grammar()).output.unwrap();
+
+    assert_eq!(kinds(&output, json::VALUE), [0, 2, 6, 7, 8, 9, 10]);
+    assert!(!output.first(json::VALUE).unwrap().nullable);
+}
+
+#[test]
+fn computed_first_matches_accepted_json_object() {
+    let output = analyze(json::grammar()).output.unwrap();
+
+    assert_eq!(kinds(&output, json::OBJECT), [0]);
+    assert!(!output.first(json::OBJECT).unwrap().nullable);
+}
+
+#[test]
+fn computed_first_matches_accepted_json_array() {
+    let output = analyze(json::grammar()).output.unwrap();
+
+    assert_eq!(kinds(&output, json::ARRAY), [2]);
+    assert!(!output.first(json::ARRAY).unwrap().nullable);
+}
+
+#[test]
+fn computed_first_matches_accepted_json_member() {
+    let output = analyze(json::grammar()).output.unwrap();
+
+    assert_eq!(kinds(&output, json::MEMBER), [6]);
+    assert!(!output.first(json::MEMBER).unwrap().nullable);
+}
+
+#[test]
+fn json_has_no_extenders() {
+    let output = analyze(json::grammar()).output.unwrap();
+
+    assert!(output.extenders_by_type().iter().all(Option::is_none));
+}
+
+#[test]
+fn nullable_is_false_for_every_json_type() {
+    let output = analyze(json::grammar()).output.unwrap();
+
+    assert!(output.first_by_type().iter().all(|facts| !facts.nullable));
+}
+
+#[test]
+fn json_value_first_is_the_union_of_each_variant() {
+    let output = analyze(json::grammar()).output.unwrap();
+    let mut variant_union = recursa_codegen::KindSet::empty(11);
+    for type_id in [
+        json::OBJECT,
+        json::ARRAY,
+        json::STRING_LITERAL,
+        json::NUMBER_LITERAL,
+        json::BOOL_LITERAL,
+        TypeId::new(10),
+    ] {
+        variant_union = variant_union
+            .union(output.first(type_id).unwrap().kinds())
+            .unwrap();
+    }
+
+    assert_eq!(output.first(json::VALUE).unwrap().kinds(), &variant_union);
+}

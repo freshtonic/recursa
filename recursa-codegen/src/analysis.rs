@@ -12,6 +12,7 @@ pub struct AnalysisReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnalysisOutput {
     first_by_type: Vec<FirstFacts>,
+    extenders_by_type: Vec<Option<ExtenderFacts>>,
 }
 
 impl AnalysisOutput {
@@ -22,12 +23,60 @@ impl AnalysisOutput {
     pub fn first_by_type(&self) -> &[FirstFacts] {
         &self.first_by_type
     }
+
+    pub fn extenders(&self, type_id: TypeId) -> Option<&ExtenderFacts> {
+        self.extenders_by_type
+            .get(type_id.index())
+            .and_then(Option::as_ref)
+    }
+
+    pub fn extenders_by_type(&self) -> &[Option<ExtenderFacts>] {
+        &self.extenders_by_type
+    }
+
+    pub fn canonical_facts(&self) -> String {
+        use std::fmt::Write as _;
+
+        let mut rendered = String::new();
+        for (index, first) in self.first_by_type.iter().enumerate() {
+            let extenders = self.extenders_by_type[index]
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), |facts| render_kind_set(&facts.kinds));
+            writeln!(
+                rendered,
+                "type[{index}] FIRST={} NULLABLE={} EXTENDERS={extenders}",
+                render_kind_set(&first.kinds),
+                first.nullable,
+            )
+            .expect("writing to a String cannot fail");
+        }
+        rendered
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FirstFacts {
+    kinds: KindSet,
     pub positions: Vec<FirstPosition>,
     pub nullable: bool,
+}
+
+impl FirstFacts {
+    pub fn kinds(&self) -> &KindSet {
+        &self.kinds
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExtenderFacts {
+    kinds: KindSet,
+    pub positions: Vec<FirstPosition>,
+}
+
+impl ExtenderFacts {
+    pub fn kinds(&self) -> &KindSet {
+        &self.kinds
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,9 +96,13 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
 
     let atom_kinds = expand_atoms(&grammar);
     let first_by_type = compute_first(&grammar, &atom_kinds);
+    let extenders_by_type = compute_extenders(&grammar, &first_by_type);
     AnalysisReport {
         diagnostics: Vec::new(),
-        output: Some(AnalysisOutput { first_by_type }),
+        output: Some(AnalysisOutput {
+            first_by_type,
+            extenders_by_type,
+        }),
     }
 }
 
@@ -337,10 +390,7 @@ fn expand_atoms(grammar: &GrammarDescription) -> Vec<KindSet> {
 }
 
 fn compute_first(grammar: &GrammarDescription, atom_kinds: &[KindSet]) -> Vec<FirstFacts> {
-    let empty = || FirstFacts {
-        positions: Vec::new(),
-        nullable: false,
-    };
+    let empty = || first_facts(Vec::new(), false, grammar.kind_count);
     let mut facts = vec![empty(); grammar.types.len()];
     loop {
         let previous = facts.clone();
@@ -364,6 +414,7 @@ fn first_for_shape(
             atom,
             text_predicate,
         } => FirstFacts {
+            kinds: atom_kinds[atom.index()].clone(),
             positions: vec![FirstPosition {
                 kinds: atom_kinds[atom.index()].clone(),
                 text_predicate: *text_predicate,
@@ -373,16 +424,14 @@ fn first_for_shape(
         TypeShape::Alias { site } => first_for_sites(&[*site], grammar, facts),
         TypeShape::Sequence { sites } => first_for_sites(sites, grammar, facts),
         TypeShape::Enum { alternatives } => {
-            let mut result = FirstFacts {
-                positions: Vec::new(),
-                nullable: false,
-            };
+            let mut positions = Vec::new();
+            let mut nullable = false;
             for alternative in alternatives {
                 let alternative = first_for_sites(&alternative.sites, grammar, facts);
-                merge_positions(&mut result.positions, &alternative.positions);
-                result.nullable |= alternative.nullable;
+                merge_positions(&mut positions, &alternative.positions);
+                nullable |= alternative.nullable;
             }
-            result
+            first_facts(positions, nullable, grammar.kind_count)
         }
         TypeShape::Pratt { variants } => {
             let mut positions = Vec::new();
@@ -395,10 +444,7 @@ fn first_for_shape(
                     merge_positions(&mut positions, &variant.positions);
                 }
             }
-            FirstFacts {
-                positions,
-                nullable: false,
-            }
+            first_facts(positions, false, grammar.kind_count)
         }
     }
 }
@@ -419,10 +465,7 @@ fn first_for_sites(
             break;
         }
     }
-    FirstFacts {
-        positions,
-        nullable,
-    }
+    first_facts(positions, nullable, grammar.kind_count)
 }
 
 fn site_nullable(site: &crate::ParseSite, target: &FirstFacts) -> bool {
@@ -449,4 +492,55 @@ fn merge_positions(into: &mut Vec<FirstPosition>, from: &[FirstPosition]) {
             .text_predicate
             .map_or(0, |id| u64::from(id.get()) + 1)
     });
+}
+
+fn first_facts(positions: Vec<FirstPosition>, nullable: bool, kind_count: usize) -> FirstFacts {
+    let mut kinds = KindSet::empty(kind_count);
+    for position in &positions {
+        kinds.union_assign(&position.kinds);
+    }
+    FirstFacts {
+        kinds,
+        positions,
+        nullable,
+    }
+}
+
+fn compute_extenders(
+    grammar: &GrammarDescription,
+    first: &[FirstFacts],
+) -> Vec<Option<ExtenderFacts>> {
+    grammar
+        .types
+        .iter()
+        .map(|description| {
+            let TypeShape::Pratt { variants } = &description.shape else {
+                return None;
+            };
+            let mut positions = Vec::new();
+            for variant in variants {
+                if matches!(
+                    variant.position,
+                    PrattPosition::Infix { .. } | PrattPosition::Postfix { .. }
+                ) {
+                    let variant = first_for_sites(&variant.sites, grammar, first);
+                    merge_positions(&mut positions, &variant.positions);
+                }
+            }
+            let facts = first_facts(positions, false, grammar.kind_count);
+            Some(ExtenderFacts {
+                kinds: facts.kinds,
+                positions: facts.positions,
+            })
+        })
+        .collect()
+}
+
+fn render_kind_set(set: &KindSet) -> String {
+    let members = set
+        .iter()
+        .map(|kind| kind.get().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{{members}}}")
 }
