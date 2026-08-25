@@ -14,8 +14,12 @@ struct Builder {
 
 impl Builder {
     fn new(name: &str, kinds: &[&str]) -> Self {
+        Self::with_lookahead(name, kinds, 1)
+    }
+
+    fn with_lookahead(name: &str, kinds: &[&str], max_lookahead: usize) -> Self {
         let mut builder = Self {
-            grammar: GrammarDescription::new(name, kinds.len(), 1),
+            grammar: GrammarDescription::new(name, kinds.len(), max_lookahead),
             next_byte: 0,
             atoms: Vec::new(),
         };
@@ -52,6 +56,31 @@ impl Builder {
 
     fn token(&mut self, name: &str, kind: usize) -> TypeId {
         self.token_with_atom(name, self.atoms[kind], None)
+    }
+
+    fn sequence(&mut self, name: &str, targets: &[TypeId]) -> TypeId {
+        let owner = self.grammar.next_type_id();
+        let declaration = self.declaration(name);
+        let sites = targets
+            .iter()
+            .map(|target| {
+                self.grammar.push_site(ParseSite::new(
+                    owner,
+                    *target,
+                    declaration,
+                    SiteContainer::Direct,
+                ))
+            })
+            .collect();
+        assert_eq!(
+            self.grammar.push_type(TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Sequence { sites },
+            )),
+            owner,
+        );
+        owner
     }
 
     fn token_with_atom(
@@ -113,6 +142,106 @@ impl Builder {
         );
         owner
     }
+}
+
+fn shared_prefix_pratt(max_lookahead: usize) -> GrammarDescription {
+    let mut builder = Builder::with_lookahead("pratt-first-k", &["A", "B", "C"], max_lookahead);
+    let a = builder.token("A", 0);
+    let b = builder.token("B", 1);
+    let c = builder.token("C", 2);
+    let ab = builder.sequence("AB", &[a, b]);
+    let ac = builder.sequence("AC", &[a, c]);
+    builder.pratt(
+        "E",
+        &[
+            ("AB", ab, PrattPosition::Atom),
+            ("AC", ac, PrattPosition::Atom),
+        ],
+    );
+    builder.grammar
+}
+
+fn depth_three_led_pratt(max_lookahead: usize) -> GrammarDescription {
+    let mut builder = Builder::with_lookahead(
+        "pratt-led-first-k",
+        &["Atom", "A", "B", "C", "D"],
+        max_lookahead,
+    );
+    let atom = builder.token("Atom", 0);
+    let a = builder.token("A", 1);
+    let b = builder.token("B", 2);
+    let c = builder.token("C", 3);
+    let d = builder.token("D", 4);
+    let abc = builder.sequence("ABC", &[a, b, c]);
+    let abd = builder.sequence("ABD", &[a, b, d]);
+    builder.pratt(
+        "E",
+        &[
+            ("Lit", atom, PrattPosition::Atom),
+            ("ABC", abc, PrattPosition::Infix { lbp: 10, rbp: 11 }),
+            ("ABD", abd, PrattPosition::Infix { lbp: 10, rbp: 11 }),
+        ],
+    );
+    builder.grammar
+}
+
+#[test]
+fn pratt_variants_use_configured_first_k_to_resolve_a_shared_prefix() {
+    let canonical = shared_prefix_pratt(1);
+    let mut reordered = canonical.clone();
+    let TypeShape::Pratt { variants } = &mut reordered.types.last_mut().unwrap().shape else {
+        panic!("fixture ends in a Pratt type");
+    };
+    variants.reverse();
+    let exhausted = analyze(canonical);
+    let repeated = analyze(reordered);
+    assert_eq!(exhausted.diagnostics, repeated.diagnostics);
+    assert_eq!(
+        exhausted.canonical_diagnostics(),
+        repeated.canonical_diagnostics()
+    );
+    let diagnostic = &exhausted.diagnostics[0];
+    assert_eq!(diagnostic.code, DiagnosticCode::PrattAtomOverlap);
+    assert_eq!(
+        diagnostic.lookahead.as_ref().unwrap().sufficient_depth,
+        Some(2),
+    );
+    assert!(matches!(
+        diagnostic.conflict_remedy,
+        Some(ConflictRemedy::RaiseMaxLookahead {
+            configured: 1,
+            sufficient: 2,
+        })
+    ));
+
+    let sufficient = analyze(shared_prefix_pratt(2));
+    assert!(sufficient.diagnostics.is_empty());
+    assert!(sufficient.output.is_some());
+}
+
+#[test]
+fn pratt_led_variants_report_and_honor_a_depth_three_decision() {
+    let exhausted = analyze(depth_three_led_pratt(2));
+    let diagnostic = exhausted
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == DiagnosticCode::PrattLedOverlap)
+        .expect("depth-two led conflict");
+    assert_eq!(
+        diagnostic.lookahead.as_ref().unwrap().sufficient_depth,
+        Some(3),
+    );
+    assert!(matches!(
+        diagnostic.conflict_remedy,
+        Some(ConflictRemedy::RaiseMaxLookahead {
+            configured: 2,
+            sufficient: 3,
+        })
+    ));
+
+    let sufficient = analyze(depth_three_led_pratt(3));
+    assert!(sufficient.diagnostics.is_empty());
+    assert!(sufficient.output.is_some());
 }
 
 fn atom_atom() -> GrammarDescription {
@@ -199,6 +328,14 @@ fn pratt_atom_atom_conflict_has_a_canonical_snapshot() {
         Some(ConflictRemedy::DisambiguatePrattVariants { .. })
     ));
     assert_eq!(
+        report.diagnostics[0]
+            .lookahead
+            .as_ref()
+            .unwrap()
+            .sufficient_depth,
+        None,
+    );
+    assert_eq!(
         report.canonical_diagnostics(),
         concat!(
             "error[RCA0202]: Pratt `E` has overlapping atom variants\n",
@@ -214,6 +351,8 @@ fn pratt_atom_atom_conflict_has_a_canonical_snapshot() {
             "    - `E` references `TokB` at `B`\n",
             "    - FIRST propagates through `TokB`\n",
             "    - kind `AmbiguousKind` is declared by atom `AmbiguousKind`\n",
+            "  shared prefix: AmbiguousKind\n",
+            "  lookahead: no finite depth separates this shared prefix\n",
             "  remedy: make the Pratt variants start with disjoint kinds or text predicates\n",
         ),
     );
@@ -249,7 +388,9 @@ fn pratt_atom_prefix_conflict_has_a_canonical_snapshot() {
             "    - `E` references `SharedTokAgain` at `Neg`\n",
             "    - FIRST propagates through `SharedTokAgain`\n",
             "    - kind `Shared` is declared by atom `Shared`\n",
-            "  remedy: make the Pratt variants start with disjoint kinds or text predicates\n",
+            "  shared prefix: Shared\n",
+            "  lookahead: configured depth 1 is exhausted; depth 2 disambiguates\n",
+            "  remedy: raise max_lookahead from 1 to 2\n",
         ),
     );
 }
@@ -279,6 +420,8 @@ fn pratt_led_led_conflict_has_a_canonical_snapshot() {
             "    - `E` references `OpB` at `Minus`\n",
             "    - FIRST propagates through `OpB`\n",
             "    - kind `OpShared` is declared by atom `OpShared`\n",
+            "  shared prefix: OpShared\n",
+            "  lookahead: no finite depth separates this shared prefix\n",
             "  remedy: make the Pratt variants start with disjoint kinds or text predicates\n",
         ),
     );
@@ -350,7 +493,9 @@ fn pratt_infix_postfix_conflict_has_a_canonical_snapshot() {
             "    - `E` references `PostfixOp` at `Bang`\n",
             "    - FIRST propagates through `PostfixOp`\n",
             "    - kind `OpShared` is declared by atom `OpShared`\n",
-            "  remedy: make the Pratt variants start with disjoint kinds or text predicates\n",
+            "  shared prefix: OpShared\n",
+            "  lookahead: configured depth 1 is exhausted; depth 2 disambiguates\n",
+            "  remedy: raise max_lookahead from 1 to 2\n",
         ),
     );
 }
