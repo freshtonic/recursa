@@ -3387,6 +3387,7 @@ fn detect_conflicts(
                     grammar,
                     semantic,
                     provenanced,
+                    atom_kinds,
                     proofs,
                     &mut diagnostics,
                 );
@@ -3422,6 +3423,7 @@ fn detect_pratt_conflicts(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
     provenanced: &[Vec<ProvenancedPosition>],
+    atom_kinds: &[KindSet],
     proofs: &mut ProofArena,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -3438,6 +3440,7 @@ fn detect_pratt_conflicts(
         grammar,
         semantic,
         provenanced,
+        atom_kinds,
         proofs,
         diagnostics,
     );
@@ -3455,6 +3458,7 @@ fn detect_pratt_conflicts(
         grammar,
         semantic,
         provenanced,
+        atom_kinds,
         proofs,
         diagnostics,
     );
@@ -3469,6 +3473,7 @@ fn detect_pratt_group_conflicts(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
     provenanced: &[Vec<ProvenancedPosition>],
+    atom_kinds: &[KindSet],
     proofs: &mut ProofArena,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -3500,6 +3505,18 @@ fn detect_pratt_group_conflicts(
                     proofs,
                 )
             };
+            let decision = analyze_decision(
+                DecisionState::from_sites(&left.sites),
+                DecisionState::from_sites(&right.sites),
+                grammar,
+                atom_kinds,
+            );
+            if decision
+                .sufficient_depth
+                .is_some_and(|depth| depth <= grammar.max_lookahead)
+            {
+                continue;
+            }
             if let Some(evidence) = overlap_evidence(
                 &left_first.positions,
                 &right_first.positions,
@@ -3508,7 +3525,18 @@ fn detect_pratt_group_conflicts(
             ) {
                 let left_position = pratt_position_name(left.position);
                 let right_position = pratt_position_name(right.position);
-                diagnostics.push(Diagnostic::conflict(
+                let remedy = decision.sufficient_depth.map_or(
+                    ConflictRemedy::DisambiguatePrattVariants {
+                        pratt: owner,
+                        left: left.declaration,
+                        right: right.declaration,
+                    },
+                    |sufficient| ConflictRemedy::RaiseMaxLookahead {
+                        configured: grammar.max_lookahead,
+                        sufficient,
+                    },
+                );
+                let mut diagnostic = Diagnostic::shared_prefix_conflict(
                     code,
                     format!(
                         "Pratt `{owner_name}` has overlapping {}",
@@ -3524,13 +3552,16 @@ fn detect_pratt_group_conflicts(
                         grammar,
                         format!("this {right_position} variant can start with the same kind"),
                     ),
-                    evidence,
-                    ConflictRemedy::DisambiguatePrattVariants {
-                        pratt: owner,
-                        left: left.declaration,
-                        right: right.declaration,
-                    },
-                ));
+                    Some(evidence),
+                    remedy,
+                );
+                diagnostic.lookahead = Some(crate::SharedPrefixEvidence {
+                    configured_depth: grammar.max_lookahead,
+                    sufficient_depth: decision.sufficient_depth,
+                    witness: decision.witness,
+                    end_of_alternative: decision.end_of_alternative,
+                });
+                diagnostics.push(diagnostic);
             }
         }
     }
