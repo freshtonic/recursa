@@ -97,6 +97,6 @@ pub trait Parse<'i, A = ()>: Sized {
         input: &mut Input<'i, A>,
         follow: &FollowSet,
     ) -> Result<Self::Out, ParseError> {
-        Self::parse(input, follow)
+        input.with_span_capture(|input| Self::parse(input, follow))
     }
 }
