@@ -1,4 +1,4 @@
-use crate::{DeclId, KindId, KindSet, LocationId, ProofId, SiteId, TypeId};
+use crate::{DeclId, KindId, KindSet, LocationId, ProofId, SiteId, TextPredicateId, TypeId};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Severity {
@@ -70,6 +70,14 @@ pub enum ConflictRemedy {
         left: DeclId,
         right: DeclId,
     },
+    RaiseMaxLookahead {
+        configured: usize,
+        sufficient: usize,
+    },
+    RestructureSharedPrefix {
+        left: DeclId,
+        right: DeclId,
+    },
     MakeSiteRequired {
         site: SiteId,
     },
@@ -88,22 +96,31 @@ pub enum ConflictRemedy {
 }
 
 impl ConflictRemedy {
-    pub(crate) const fn canonical_text(&self) -> &'static str {
+    pub(crate) fn canonical_text(&self) -> String {
         match self {
             Self::DisambiguateAlternatives { .. } => {
-                "make the alternatives start with disjoint kinds or text predicates"
+                "make the alternatives start with disjoint kinds or text predicates".to_owned()
+            }
+            Self::RaiseMaxLookahead {
+                configured,
+                sufficient,
+            } => format!("raise max_lookahead from {configured} to {sufficient}"),
+            Self::RestructureSharedPrefix { .. } => {
+                "restructure the alternatives into a shared-prefix type".to_owned()
             }
             Self::MakeSiteRequired { .. } => {
-                "make the nullable use site required or disambiguate the following site"
+                "make the nullable use site required or disambiguate the following site".to_owned()
             }
             Self::DisambiguatePrattVariants { .. } => {
-                "make the Pratt variants start with disjoint kinds or text predicates"
+                "make the Pratt variants start with disjoint kinds or text predicates".to_owned()
             }
             Self::ReviewNullableFollow { .. } => {
                 "make the use site required or separate it from its possible caller FOLLOW"
+                    .to_owned()
             }
             Self::ReviewPrattFollow { .. } => {
                 "raise the site's minimum binding power or separate its caller FOLLOW from active extenders"
+                    .to_owned()
             }
         }
     }
@@ -120,6 +137,21 @@ pub struct ConflictWitness {
 pub struct ConflictEvidence {
     pub overlap: KindSet,
     pub witness: ConflictWitness,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct LookaheadWitnessPosition {
+    pub kind: KindId,
+    pub left_text_predicate: Option<TextPredicateId>,
+    pub right_text_predicate: Option<TextPredicateId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedPrefixEvidence {
+    pub configured_depth: usize,
+    pub sufficient_depth: Option<usize>,
+    pub witness: Vec<LookaheadWitnessPosition>,
+    pub end_of_alternative: bool,
 }
 
 impl Remedy {
@@ -143,6 +175,7 @@ pub struct Diagnostic {
     pub secondary: Vec<DiagnosticLabel>,
     pub remedy: Option<Remedy>,
     pub conflict: Option<ConflictEvidence>,
+    pub lookahead: Option<SharedPrefixEvidence>,
     pub conflict_remedy: Option<ConflictRemedy>,
 }
 
@@ -157,6 +190,7 @@ impl Diagnostic {
             secondary: Vec::new(),
             remedy: Some(Remedy::CorrectGrammar),
             conflict: None,
+            lookahead: None,
             conflict_remedy: None,
         }
     }
@@ -171,6 +205,7 @@ impl Diagnostic {
             secondary: Vec::new(),
             remedy: Some(Remedy::CorrectReference),
             conflict: None,
+            lookahead: None,
             conflict_remedy: None,
         }
     }
@@ -192,6 +227,7 @@ impl Diagnostic {
             secondary: labels.collect(),
             remedy: Some(Remedy::BreakLeftRecursion { cycle }),
             conflict: None,
+            lookahead: None,
             conflict_remedy: None,
         }
     }
@@ -204,6 +240,17 @@ impl Diagnostic {
         evidence: ConflictEvidence,
         remedy: ConflictRemedy,
     ) -> Self {
+        Self::shared_prefix_conflict(code, message, primary, secondary, Some(evidence), remedy)
+    }
+
+    pub(crate) fn shared_prefix_conflict(
+        code: DiagnosticCode,
+        message: impl Into<String>,
+        primary: DiagnosticLabel,
+        secondary: DiagnosticLabel,
+        evidence: Option<ConflictEvidence>,
+        remedy: ConflictRemedy,
+    ) -> Self {
         Self {
             code,
             severity: Severity::Error,
@@ -211,7 +258,8 @@ impl Diagnostic {
             primary,
             secondary: vec![secondary],
             remedy: None,
-            conflict: Some(evidence),
+            conflict: evidence,
+            lookahead: None,
             conflict_remedy: Some(remedy),
         }
     }

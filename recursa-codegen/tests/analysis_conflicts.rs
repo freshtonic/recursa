@@ -468,7 +468,7 @@ fn target_keyword_overlap_retains_symbolic_proof_chains() {
     );
     assert!(matches!(
         diagnostic.conflict_remedy,
-        Some(ConflictRemedy::DisambiguateAlternatives { .. })
+        Some(ConflictRemedy::RestructureSharedPrefix { .. })
     ));
     assert!(report.canonical_diagnostics().contains("FORMAT"));
     assert!(report.canonical_diagnostics().contains("UNRESERVED"));
@@ -476,7 +476,7 @@ fn target_keyword_overlap_retains_symbolic_proof_chains() {
     assert_eq!(
         report.canonical_diagnostics(),
         concat!(
-            "error[RCA0200]: enum `Choice` has alternatives with overlapping FIRST sets\n",
+            "error[RCA0200]: enum `Choice` has alternatives with an unresolved shared prefix\n",
             "  primary source[0] 18..19: this alternative can start with the witness kind\n",
             "  secondary source[0] 20..21: this alternative can start with the same kind\n",
             "  overlap: {Format}\n",
@@ -492,7 +492,9 @@ fn target_keyword_overlap_retains_symbolic_proof_chains() {
             "    - `Choice` references `FORMAT` at `Choice::1`\n",
             "    - FIRST propagates through `FORMAT`\n",
             "    - kind `Format` is declared by atom `Format`\n",
-            "  remedy: make the alternatives start with disjoint kinds or text predicates\n",
+            "  shared prefix: Format\n",
+            "  lookahead: no finite depth separates this shared prefix\n",
+            "  remedy: restructure the alternatives into a shared-prefix type\n",
         ),
     );
 }
@@ -531,7 +533,10 @@ fn static_nullable_overlap_is_an_error_but_a_fully_nullable_tail_is_not() {
     );
     assert!(matches!(
         report.diagnostics[0].conflict_remedy,
-        Some(ConflictRemedy::MakeSiteRequired { .. })
+        Some(ConflictRemedy::RaiseMaxLookahead {
+            configured: 1,
+            sufficient: 2,
+        })
     ));
     assert_eq!(
         report.canonical_diagnostics(),
@@ -549,7 +554,9 @@ fn static_nullable_overlap_is_an_error_but_a_fully_nullable_tail_is_not() {
             "    - `Container` references `Token` at `tail`\n",
             "    - FIRST propagates through `Token`\n",
             "    - kind `Token` is declared by atom `Token`\n",
-            "  remedy: make the nullable use site required or disambiguate the following site\n",
+            "  shared prefix: Token\n",
+            "  lookahead: configured depth 1 is exhausted; depth 2 disambiguates\n",
+            "  remedy: raise max_lookahead from 1 to 2\n",
         ),
     );
     let fully_nullable = analyze(nullable_tail(false));
@@ -812,12 +819,12 @@ fn singleton_enum_overlap_matches_the_spike_scalar_baseline() {
     assert_eq!(conflict.witness.kind, KindId::new(0));
     assert!(matches!(
         diagnostic.conflict_remedy,
-        Some(ConflictRemedy::DisambiguateAlternatives { .. })
+        Some(ConflictRemedy::RestructureSharedPrefix { .. })
     ));
     assert_eq!(
         report.canonical_diagnostics(),
         concat!(
-            "error[RCA0200]: enum `Choice` has alternatives with overlapping FIRST sets\n",
+            "error[RCA0200]: enum `Choice` has alternatives with an unresolved shared prefix\n",
             "  primary source[0] 8..9: this alternative can start with the witness kind\n",
             "  secondary source[0] 10..11: this alternative can start with the same kind\n",
             "  overlap: {K}\n",
@@ -830,7 +837,9 @@ fn singleton_enum_overlap_matches_the_spike_scalar_baseline() {
             "    - `Choice` references `Right` at `Choice::1`\n",
             "    - FIRST propagates through `Right`\n",
             "    - kind `K` is declared by atom `K`\n",
-            "  remedy: make the alternatives start with disjoint kinds or text predicates\n",
+            "  shared prefix: K\n",
+            "  lookahead: no finite depth separates this shared prefix\n",
+            "  remedy: restructure the alternatives into a shared-prefix type\n",
         ),
     );
 }
