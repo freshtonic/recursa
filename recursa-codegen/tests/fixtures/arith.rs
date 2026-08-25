@@ -59,10 +59,21 @@ pub fn grammar(reverse_variants: bool) -> GrammarDescription {
     for (name, target, position) in variants {
         let declaration = builder.declaration(name);
         let site = builder.site(EXPR, target, declaration, SiteContainer::Direct);
+        let mut sites = vec![site];
+        if matches!(
+            position,
+            PrattPosition::Prefix { .. } | PrattPosition::Infix { .. }
+        ) {
+            sites.push(builder.site(EXPR, EXPR, declaration, SiteContainer::Boxed));
+        }
+        if name == "Paren" {
+            sites.push(builder.site(EXPR, EXPR, declaration, SiteContainer::Boxed));
+            sites.push(builder.site(EXPR, RPAREN_TOK, declaration, SiteContainer::Direct));
+        }
         pratt_variants.push(PrattVariant {
             declaration,
             position,
-            sites: vec![site],
+            sites,
         });
     }
     if reverse_variants {

@@ -100,7 +100,9 @@ fn non_pratt_arith_types_have_no_extenders_entry() {
 
 #[test]
 fn valid_pratt_led_recursion_is_accepted() {
-    let report = analyze(arith::grammar(false));
+    let grammar = arith::grammar(false);
+    assert!(grammar.sites.iter().any(|site| site.target == arith::EXPR));
+    let report = analyze(grammar);
 
     assert!(report.diagnostics.is_empty());
     assert!(report.output.is_some());
