@@ -1,4 +1,4 @@
-use crate::{LocationId, TypeId};
+use crate::{DeclId, KindId, KindSet, LocationId, ProofId, SiteId, TypeId};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Severity {
@@ -11,6 +11,8 @@ pub enum DiagnosticCode {
     InvalidGrammar,
     InvalidReference,
     LeftRecursion,
+    EnumFirstOverlap,
+    StaticUseSiteOverlap,
 }
 
 impl DiagnosticCode {
@@ -19,6 +21,8 @@ impl DiagnosticCode {
             Self::InvalidGrammar => "RCA0001",
             Self::InvalidReference => "RCA0002",
             Self::LeftRecursion => "RCA0100",
+            Self::EnumFirstOverlap => "RCA0200",
+            Self::StaticUseSiteOverlap => "RCA0201",
         }
     }
 }
@@ -52,6 +56,38 @@ pub enum Remedy {
     BreakLeftRecursion { cycle: Vec<TypeId> },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConflictRemedy {
+    DisambiguateAlternatives { left: DeclId, right: DeclId },
+    MakeSiteRequired { site: SiteId },
+}
+
+impl ConflictRemedy {
+    pub(crate) const fn canonical_text(&self) -> &'static str {
+        match self {
+            Self::DisambiguateAlternatives { .. } => {
+                "make the alternatives start with disjoint kinds or text predicates"
+            }
+            Self::MakeSiteRequired { .. } => {
+                "make the nullable use site required or disambiguate the following site"
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConflictWitness {
+    pub kind: KindId,
+    pub left: ProofId,
+    pub right: ProofId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConflictEvidence {
+    pub overlap: KindSet,
+    pub witness: ConflictWitness,
+}
+
 impl Remedy {
     pub(crate) const fn canonical_text(&self) -> &'static str {
         match self {
@@ -72,6 +108,8 @@ pub struct Diagnostic {
     pub primary: DiagnosticLabel,
     pub secondary: Vec<DiagnosticLabel>,
     pub remedy: Option<Remedy>,
+    pub conflict: Option<ConflictEvidence>,
+    pub conflict_remedy: Option<ConflictRemedy>,
 }
 
 impl Diagnostic {
@@ -84,6 +122,8 @@ impl Diagnostic {
             message,
             secondary: Vec::new(),
             remedy: Some(Remedy::CorrectGrammar),
+            conflict: None,
+            conflict_remedy: None,
         }
     }
 
@@ -96,6 +136,8 @@ impl Diagnostic {
             message,
             secondary: Vec::new(),
             remedy: Some(Remedy::CorrectReference),
+            conflict: None,
+            conflict_remedy: None,
         }
     }
 
@@ -115,6 +157,28 @@ impl Diagnostic {
             primary,
             secondary: labels.collect(),
             remedy: Some(Remedy::BreakLeftRecursion { cycle }),
+            conflict: None,
+            conflict_remedy: None,
+        }
+    }
+
+    pub(crate) fn conflict(
+        code: DiagnosticCode,
+        message: impl Into<String>,
+        primary: DiagnosticLabel,
+        secondary: DiagnosticLabel,
+        evidence: ConflictEvidence,
+        remedy: ConflictRemedy,
+    ) -> Self {
+        Self {
+            code,
+            severity: Severity::Error,
+            message: message.into(),
+            primary,
+            secondary: vec![secondary],
+            remedy: None,
+            conflict: Some(evidence),
+            conflict_remedy: Some(remedy),
         }
     }
 }
