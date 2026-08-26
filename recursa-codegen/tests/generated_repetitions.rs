@@ -176,6 +176,7 @@ fn run_fixture_doc(package: &TempDir) -> Output {
         .arg("--no-deps")
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
         .env("RUSTDOCFLAGS", "-D rustdoc::broken_intra_doc_links")
         .env("CARGO_TARGET_DIR", package.path().join("target"))
         .output()

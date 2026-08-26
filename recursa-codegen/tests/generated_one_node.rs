@@ -203,56 +203,178 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
 }
 
 #[test]
-fn debug_directory_changes_rerun_generation_without_changing_compiled_output() {
-    let package = scaffold_fixture();
-    assert_success(&run_fixture(&package));
-    let selected = find_selected_generation(&target_dir(&package));
-    let selector = fs::read_to_string(&selected).unwrap();
-    let identity = selector
-        .lines()
-        .next()
-        .and_then(|line| line.strip_prefix("// recursa-generation:"))
-        .unwrap()
-        .to_owned();
-    let generation = selected
-        .parent()
-        .unwrap()
-        .join("recursa-generations")
-        .join(&identity);
-    let root = fs::read(generation.join("root.rs")).unwrap();
-    let node = fs::read(generation.join("node-0.rs")).unwrap();
+fn debug_emission_preserves_compiled_semantics_for_every_capability_combination() {
+    for (name, diagrams, explorer) in [
+        ("core", false, false),
+        ("diagrams", true, false),
+        ("explorer", false, true),
+        ("combined", true, true),
+    ] {
+        let package = scaffold_fixture();
+        configure_capabilities(&package, diagrams, explorer);
+        assert_success(&run_fixture(&package));
+        let selected = find_selected_generation(&target_dir(&package));
+        let selector = fs::read_to_string(&selected).unwrap();
+        let identity = selector
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("// recursa-generation:"))
+            .unwrap()
+            .to_owned();
+        let generation = selected
+            .parent()
+            .unwrap()
+            .join("recursa-generations")
+            .join(&identity);
+        let compiled = read_generation_files(&generation);
 
-    let first_destination = tempfile::tempdir().unwrap();
-    assert_success(&run_fixture_with_debug(&package, first_destination.path()));
-    assert_eq!(fs::read_to_string(&selected).unwrap(), selector);
-    assert_eq!(fs::read(generation.join("root.rs")).unwrap(), root);
-    assert_eq!(fs::read(generation.join("node-0.rs")).unwrap(), node);
-    let first_index = find_one_debug_index(first_destination.path());
+        let destination = tempfile::tempdir().unwrap();
+        assert_success(&run_fixture_with_debug(&package, destination.path()));
+        assert_eq!(
+            fs::read_to_string(&selected).unwrap(),
+            selector,
+            "{name}: debug environment changed the selected identity or handshake"
+        );
+        assert_eq!(
+            read_generation_files(&generation),
+            compiled,
+            "{name}: debug environment changed authoritative compiled payload"
+        );
 
-    let second_destination = tempfile::tempdir().unwrap();
-    assert_success(&run_fixture_with_debug(&package, second_destination.path()));
-    assert_eq!(fs::read_to_string(&selected).unwrap(), selector);
-    let second_index = find_one_debug_index(second_destination.path());
-    assert_eq!(
-        fs::read_to_string(&first_index).unwrap(),
-        fs::read_to_string(&second_index).unwrap(),
-        "the destination is not part of deterministic debug content"
-    );
+        let index_path = find_one_debug_index(destination.path());
+        let index = fs::read_to_string(&index_path).unwrap();
+        let bundle = index_path.parent().unwrap();
+        assert_eq!(index.matches("root\t").count(), 1, "{name}: one root view");
+        assert_eq!(
+            index.matches("node\t").count(),
+            compiled
+                .iter()
+                .filter(|(file, _)| file.starts_with("node-") && file.ends_with(".rs"))
+                .count(),
+            "{name}: every compiled Node shard has one logical view"
+        );
+        assert_eq!(
+            index.contains("capability\tdiagrams:aggregate\t"),
+            diagrams,
+            "{name}: diagram fragment selection"
+        );
+        assert_eq!(
+            index.contains("capability\texplorer:static-schema\t"),
+            explorer,
+            "{name}: explorer schema fragment selection"
+        );
+        assert_eq!(
+            index.contains("capability\texplorer:lexer\t"),
+            explorer,
+            "{name}: explorer lexer fragment selection"
+        );
+        for line in index.lines().skip(2) {
+            let private_name = line.split('\t').nth(2).expect("indexed private filename");
+            let source = fs::read_to_string(bundle.join(private_name)).unwrap();
+            let parsed = syn::parse_file(&source).expect("every logical output is parseable Rust");
+            assert_eq!(
+                prettyplease::unparse(&parsed),
+                source,
+                "{name}: every logical output is deterministically formatted"
+            );
+        }
 
-    let bundle = first_index.parent().unwrap();
-    fs::write(bundle.join("root.rs"), "human inspection notes").unwrap();
-    fs::write(bundle.join("extra-notes.txt"), "temporary notes").unwrap();
-    assert_success(&run_fixture_with_debug(&package, first_destination.path()));
-    assert_eq!(fs::read_to_string(&selected).unwrap(), selector);
-    assert!(!bundle.join("extra-notes.txt").exists());
-    syn::parse_file(&fs::read_to_string(bundle.join("root.rs")).unwrap())
-        .expect("a rerun replaces human edits instead of loading them");
+        if name == "core" {
+            let second_destination = tempfile::tempdir().unwrap();
+            assert_success(&run_fixture_with_debug(&package, second_destination.path()));
+            assert_eq!(
+                fs::read_to_string(find_one_debug_index(second_destination.path())).unwrap(),
+                index,
+                "the destination is not part of deterministic debug content"
+            );
 
-    for line in fs::read_to_string(&first_index).unwrap().lines().skip(2) {
-        let private_name = line.split('\t').nth(2).expect("indexed private filename");
-        syn::parse_file(&fs::read_to_string(bundle.join(private_name)).unwrap())
-            .expect("every indexed logical output is parseable Rust");
+            fs::write(bundle.join("root.rs"), "human inspection notes").unwrap();
+            fs::write(bundle.join("extra-notes.txt"), "temporary notes").unwrap();
+            assert_success(&run_fixture_with_debug(&package, destination.path()));
+            assert_eq!(fs::read_to_string(&selected).unwrap(), selector);
+            assert!(!bundle.join("extra-notes.txt").exists());
+            syn::parse_file(&fs::read_to_string(bundle.join("root.rs")).unwrap())
+                .expect("a rerun replaces human edits instead of loading them");
+        }
     }
+}
+
+fn configure_capabilities(package: &TempDir, diagrams: bool, explorer: bool) {
+    let mut features = Vec::new();
+    let grammar = package.path().join("src/grammar.rs");
+    let mut source = fs::read_to_string(&grammar).expect("read capability matrix grammar");
+    source = source
+        .replace("module = crate::r#type", "module = crate::grammar")
+        .replace("pub struct r#match", "pub struct Root");
+    let library = package.path().join("src/lib.rs");
+    let library_source = fs::read_to_string(&library)
+        .expect("read capability matrix library")
+        .replace("pub mod r#type", "pub mod grammar");
+    fs::write(library, library_source).expect("configure capability matrix library");
+    let main = package.path().join("src/main.rs");
+    let main_source = fs::read_to_string(&main)
+        .expect("read capability matrix consumer")
+        .replace("r#type as grammar", "grammar")
+        .replace("grammar::r#match", "grammar::Root")
+        .replace("Some(\"type\")", "Some(\"grammar\")");
+    fs::write(main, main_source).expect("configure capability matrix consumer");
+    if diagrams {
+        source = source.replacen(
+            "    module = crate::grammar,\n",
+            "    module = crate::grammar,\n    diagrams,\n",
+            1,
+        );
+        features.push("\"diagrams\"");
+    }
+    if explorer {
+        source = source.replacen(
+            "    module = crate::grammar,\n",
+            "    module = crate::grammar,\n    derives(Visit),\n",
+            1,
+        );
+        features.push("\"explorer\"");
+    }
+    fs::write(grammar, source).expect("configure capability matrix grammar");
+    if features.is_empty() {
+        return;
+    }
+
+    let manifest_path = package.path().join("Cargo.toml");
+    let manifest = fs::read_to_string(&manifest_path).expect("read capability matrix manifest");
+    let features = features.join(", ");
+    let manifest = manifest
+        .lines()
+        .map(|line| {
+            if line.starts_with("recursa = { path = ")
+                || line.starts_with("recursa-codegen = { path = ")
+            {
+                format!(
+                    "{}, features = [{features}] }}",
+                    line.trim_end_matches(" }")
+                )
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(manifest_path, format!("{manifest}\n"))
+        .expect("configure capability matrix manifest");
+}
+
+fn read_generation_files(generation: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut files = fs::read_dir(generation)
+        .expect("read authoritative Generation")
+        .map(|entry| {
+            let path = entry.expect("read authoritative entry").path();
+            (
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                fs::read(path).expect("read authoritative payload"),
+            )
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
 }
 
 fn scaffold_fixture() -> TempDir {
