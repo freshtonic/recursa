@@ -86,6 +86,7 @@ pub(crate) struct SourceModel {
     pub(crate) token_definitions: Vec<TokenDefinition>,
     pub(crate) lexer_records: Vec<NonTokenLexerRecord>,
     pub(crate) token_uses: Vec<TokenUse>,
+    pub(crate) post_lex: Option<syn::Path>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -517,6 +518,7 @@ impl SourceModelBuilder<'_> {
                 token_definitions: self.tokens.definitions,
                 lexer_records: self.tokens.lexer_records,
                 token_uses: self.tokens.uses,
+                post_lex: self.tokens.post_lex,
             },
         });
         SourceModelReport {
@@ -880,6 +882,7 @@ struct TokenCatalog {
     central_content: Vec<CentralContentDefinition>,
     lexer_records: Vec<NonTokenLexerRecord>,
     uses: Vec<TokenUse>,
+    post_lex: Option<syn::Path>,
 }
 
 struct CentralContentDefinition {
@@ -976,6 +979,9 @@ impl TokenCatalog {
         origin: SourceOrigin,
         syntax: CentralTokensSyntax,
     ) {
+        if self.post_lex.is_none() {
+            self.post_lex = syntax.post_lex.clone();
+        }
         for fixed in syntax.fixed {
             self.define_fixed(
                 resolved,
@@ -1979,6 +1985,7 @@ struct CentralTokensSyntax {
     fixed: Vec<CentralFixedSyntax>,
     content: Vec<CentralContentSyntax>,
     non_token_lexer_records: Vec<CentralNonTokenLexerRecordSyntax>,
+    post_lex: Option<syn::Path>,
 }
 
 struct CentralNonTokenLexerRecordSyntax {
@@ -2003,6 +2010,7 @@ impl Parse for CentralTokensSyntax {
         let mut fixed = Vec::new();
         let mut content = Vec::new();
         let mut non_token_lexer_records = Vec::new();
+        let mut post_lex = None;
         while !input.is_empty() {
             let section = syn::Ident::parse_any(input)?;
             if input.peek(Token![=]) {
@@ -2012,6 +2020,10 @@ impl Parse for CentralTokensSyntax {
                         pattern: input.parse()?,
                         outcome: NonTokenLexerOutcome::NonEmitting,
                     });
+                } else if section == "post_lex" {
+                    if post_lex.replace(input.parse()?).is_some() {
+                        return Err(syn::Error::new(section.span(), "duplicate post_lex hook"));
+                    }
                 } else {
                     input.parse::<syn::Expr>()?;
                 }
@@ -2075,6 +2087,7 @@ impl Parse for CentralTokensSyntax {
             fixed,
             content,
             non_token_lexer_records,
+            post_lex,
         })
     }
 }

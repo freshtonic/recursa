@@ -25,6 +25,7 @@ fn main() {
     assert_eq!(errors[0].text(), "@");
 
     let alternative_source = String::from("sElEcT");
+    grammar::reset_post_lex_calls();
     let mut alternative = grammar::LexBuilder::new(&alternative_source);
     alternative
         .append(
@@ -40,8 +41,36 @@ fn main() {
     assert_eq!(classified.kind(), grammar::TokenKind::SELECT);
     assert_eq!(classified.text(), "sElEcT");
     assert_eq!(alternative.errors().count(), 0);
+    assert_eq!(grammar::post_lex_calls(), 1);
 
+    let mut invalid = grammar::LexBuilder::new("abcd");
+    invalid
+        .append(
+            grammar::TokenKind::WordText,
+            recursa::Span::new(2, 4).unwrap(),
+        )
+        .unwrap();
+    assert!(
+        invalid
+            .append(
+                grammar::TokenKind::WordText,
+                recursa::Span::new(0, 1).unwrap(),
+            )
+            .is_err()
+    );
+    let mut invalid_utf8 = grammar::LexBuilder::new("é");
+    assert!(
+        invalid_utf8
+            .append(
+                grammar::TokenKind::WordText,
+                recursa::Span::new(1, 2).unwrap(),
+            )
+            .is_err()
+    );
+
+    grammar::reset_post_lex_calls();
     let callback_lexed = grammar::lex("~emit ~as ~skip ~error ~tail");
+    assert_eq!(grammar::post_lex_calls(), 1);
     let callback_tokens = callback_lexed.tokens().collect::<Vec<_>>();
     assert_eq!(callback_tokens.len(), 3);
     assert_eq!(
@@ -62,6 +91,23 @@ fn main() {
     assert_eq!(
         callback_errors[0].span(),
         recursa::Span::new(16, 22).unwrap()
+    );
+
+    let repaired = grammar::lex(":NULL ':TRUE' !=--comment\n!=-");
+    let repaired = repaired.tokens().collect::<Vec<_>>();
+    assert_eq!(
+        repaired.iter().map(|token| token.kind()).collect::<Vec<_>>(),
+        [
+            grammar::TokenKind::COLON,
+            grammar::TokenKind::NULL,
+            grammar::TokenKind::QuotedText,
+            grammar::TokenKind::NOT_EQUAL,
+            grammar::TokenKind::LEGIT_NOT_EQUAL,
+        ]
+    );
+    assert_eq!(
+        repaired.iter().map(|token| token.text()).collect::<Vec<_>>(),
+        [":", "NULL", "':TRUE'", "!=", "!=-",]
     );
 
     println!("lexing-ok");
