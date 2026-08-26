@@ -60,7 +60,7 @@ fn returned_proof_roots(report: &AnalysisReport) -> BTreeSet<ProofId> {
 
 #[test]
 fn returned_proof_arena_contains_only_nodes_reachable_from_public_facts() {
-    let report = analyze(arith::grammar(false));
+    let report = analyze(&arith::grammar(false));
     let mut reachable = returned_proof_roots(&report);
     let mut pending = reachable.iter().copied().collect::<Vec<_>>();
     while let Some(proof) = pending.pop() {
@@ -87,9 +87,9 @@ fn analysis_succeeds_for_arith() {
         assert_eq!(left.declaration, right.declaration);
     }
 
-    let first = analyze(canonical);
-    let repeated = analyze(arith::grammar(false));
-    let shuffled = analyze(reordered);
+    let first = analyze(&canonical);
+    let repeated = analyze(&arith::grammar(false));
+    let shuffled = analyze(&reordered);
 
     assert!(first.diagnostics.is_empty());
     assert_eq!(first.output, repeated.output);
@@ -100,7 +100,7 @@ fn analysis_succeeds_for_arith() {
 
 #[test]
 fn computed_first_matches_accepted_arith_token_wrappers() {
-    let report = analyze(arith::grammar(false));
+    let report = analyze(&arith::grammar(false));
     let output = report.output.unwrap();
     for (type_id, kind) in [
         (arith::PLUS_TOK, arith::PLUS),
@@ -119,7 +119,7 @@ fn computed_first_matches_accepted_arith_token_wrappers() {
 
 #[test]
 fn computed_first_matches_accepted_arith_expr() {
-    let output = analyze(arith::grammar(false)).output.unwrap();
+    let output = analyze(&arith::grammar(false)).output.unwrap();
 
     assert_eq!(
         kinds(&output, arith::EXPR),
@@ -130,7 +130,7 @@ fn computed_first_matches_accepted_arith_expr() {
 
 #[test]
 fn computed_extenders_matches_accepted_arith_expr() {
-    let report = analyze(arith::grammar(false));
+    let report = analyze(&arith::grammar(false));
     let output = report.output.as_ref().unwrap();
 
     assert_eq!(
@@ -178,7 +178,7 @@ fn computed_extenders_matches_accepted_arith_expr() {
 
 #[test]
 fn non_pratt_arith_types_have_no_extenders_entry() {
-    let output = analyze(arith::grammar(false)).output.unwrap();
+    let output = analyze(&arith::grammar(false)).output.unwrap();
 
     assert!(output.extenders(arith::PLUS_TOK).is_none());
     assert!(output.extenders(arith::INT_LIT_TOK).is_none());
@@ -206,7 +206,7 @@ fn non_pratt_arith_types_have_no_extenders_entry() {
 fn valid_pratt_led_recursion_is_accepted() {
     let grammar = arith::grammar(false);
     assert!(grammar.sites.iter().any(|site| site.target == arith::EXPR));
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
 
     assert!(report.diagnostics.is_empty());
     assert!(report.output.is_some());
@@ -244,7 +244,7 @@ fn arithmetic_pratt_operand_sites_carry_binding_power_thresholds() {
 
 #[test]
 fn arith_canonical_facts_are_stable_and_sorted() {
-    let output = analyze(arith::grammar(false)).output.unwrap();
+    let output = analyze(&arith::grammar(false)).output.unwrap();
 
     assert_eq!(
         output.canonical_facts(),
@@ -264,7 +264,7 @@ fn arith_canonical_facts_are_stable_and_sorted() {
 
 #[test]
 fn arith_expr_contains_atom_starters_and_prefix_minus() {
-    let output = analyze(arith::grammar(false)).output.unwrap();
+    let output = analyze(&arith::grammar(false)).output.unwrap();
 
     assert_eq!(
         kinds(&output, arith::EXPR),
@@ -274,7 +274,7 @@ fn arith_expr_contains_atom_starters_and_prefix_minus() {
 
 #[test]
 fn analysis_succeeds_for_json() {
-    let report = analyze(json::grammar());
+    let report = analyze(&json::grammar());
 
     assert!(report.diagnostics.is_empty());
     assert!(report.output.is_some());
@@ -282,14 +282,14 @@ fn analysis_succeeds_for_json() {
 
 #[test]
 fn json_has_no_left_recursion_diagnostic() {
-    let report = analyze(json::grammar());
+    let report = analyze(&json::grammar());
 
     assert!(report.diagnostics.is_empty());
 }
 
 #[test]
 fn computed_first_matches_accepted_json_value() {
-    let output = analyze(json::grammar()).output.unwrap();
+    let output = analyze(&json::grammar()).output.unwrap();
 
     assert_eq!(kinds(&output, json::VALUE), [0, 2, 6, 7, 8, 9, 10]);
     assert!(!output.first(json::VALUE).unwrap().nullable);
@@ -297,7 +297,7 @@ fn computed_first_matches_accepted_json_value() {
 
 #[test]
 fn computed_first_matches_accepted_json_object() {
-    let output = analyze(json::grammar()).output.unwrap();
+    let output = analyze(&json::grammar()).output.unwrap();
 
     assert_eq!(kinds(&output, json::OBJECT), [0]);
     assert!(!output.first(json::OBJECT).unwrap().nullable);
@@ -305,7 +305,7 @@ fn computed_first_matches_accepted_json_object() {
 
 #[test]
 fn computed_first_matches_accepted_json_array() {
-    let output = analyze(json::grammar()).output.unwrap();
+    let output = analyze(&json::grammar()).output.unwrap();
 
     assert_eq!(kinds(&output, json::ARRAY), [2]);
     assert!(!output.first(json::ARRAY).unwrap().nullable);
@@ -313,7 +313,7 @@ fn computed_first_matches_accepted_json_array() {
 
 #[test]
 fn computed_first_matches_accepted_json_member() {
-    let output = analyze(json::grammar()).output.unwrap();
+    let output = analyze(&json::grammar()).output.unwrap();
 
     assert_eq!(kinds(&output, json::MEMBER), [6]);
     assert!(!output.first(json::MEMBER).unwrap().nullable);
@@ -321,21 +321,21 @@ fn computed_first_matches_accepted_json_member() {
 
 #[test]
 fn json_has_no_extenders() {
-    let output = analyze(json::grammar()).output.unwrap();
+    let output = analyze(&json::grammar()).output.unwrap();
 
     assert!(output.extenders_by_type().iter().all(Option::is_none));
 }
 
 #[test]
 fn nullable_is_false_for_every_json_type() {
-    let output = analyze(json::grammar()).output.unwrap();
+    let output = analyze(&json::grammar()).output.unwrap();
 
     assert!(output.first_by_type().iter().all(|facts| !facts.nullable));
 }
 
 #[test]
 fn json_value_first_is_the_union_of_each_variant() {
-    let output = analyze(json::grammar()).output.unwrap();
+    let output = analyze(&json::grammar()).output.unwrap();
     let mut variant_union = recursa_codegen::KindSet::empty(11);
     for type_id in [
         json::OBJECT,

@@ -472,10 +472,10 @@ pub struct FirstSequence {
     ends: bool,
 }
 
-pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
+pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
     let locations = grammar.locations.clone();
-    let diagnostic_context = DiagnosticContext::from_grammar(&grammar);
-    let diagnostics = validate(&grammar);
+    let diagnostic_context = DiagnosticContext::from_grammar(grammar);
+    let diagnostics = validate(grammar);
     if !diagnostics.is_empty() {
         return AnalysisReport {
             diagnostics,
@@ -486,9 +486,9 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
         };
     }
 
-    let atom_kinds = expand_atoms(&grammar);
-    let first_by_type = compute_first(&grammar, &atom_kinds);
-    let diagnostics = detect_left_recursion(&grammar, &first_by_type);
+    let atom_kinds = expand_atoms(grammar);
+    let first_by_type = compute_first(grammar, &atom_kinds);
+    let diagnostics = detect_left_recursion(grammar, &first_by_type);
     if !diagnostics.is_empty() {
         return AnalysisReport {
             diagnostics,
@@ -498,14 +498,14 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
             diagnostic_context,
         };
     }
-    let extenders_by_type = compute_extenders(&grammar, &first_by_type);
-    let (mut proofs, first_provenance) = compute_first_provenance(&grammar, &first_by_type);
+    let extenders_by_type = compute_extenders(grammar, &first_by_type);
+    let (mut proofs, first_provenance) = compute_first_provenance(grammar, &first_by_type);
     let extender_provenance =
-        compute_extender_provenance(&grammar, &first_by_type, &first_provenance, &mut proofs);
+        compute_extender_provenance(grammar, &first_by_type, &first_provenance, &mut proofs);
     let mut static_conflict_kinds_by_declaration =
         vec![KindSet::empty(grammar.kind_count); grammar.declarations.len()];
     let mut diagnostics = detect_conflicts(
-        &grammar,
+        grammar,
         &first_by_type,
         &first_provenance,
         &atom_kinds,
@@ -513,9 +513,9 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
         &mut static_conflict_kinds_by_declaration,
     );
     let (follow_by_type, follow_by_site, follow_positions_by_site) =
-        compute_follow(&grammar, &first_by_type, &first_provenance, &mut proofs);
+        compute_follow(grammar, &first_by_type, &first_provenance, &mut proofs);
     let warnings = detect_follow_conflicts(
-        &grammar,
+        grammar,
         &first_by_type,
         &first_provenance,
         &follow_positions_by_site,
@@ -523,7 +523,7 @@ pub fn analyze(grammar: GrammarDescription) -> AnalysisReport {
         &mut proofs,
     );
     diagnostics.extend(warnings);
-    diagnostics.sort_by_key(|diagnostic| diagnostic_source_key(diagnostic, &grammar));
+    diagnostics.sort_by_key(|diagnostic| diagnostic_source_key(diagnostic, grammar));
     let has_errors = diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == crate::Severity::Error);

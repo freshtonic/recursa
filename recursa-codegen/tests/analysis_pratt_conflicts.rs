@@ -231,8 +231,8 @@ fn pratt_variants_use_configured_first_k_to_resolve_a_shared_prefix() {
         panic!("fixture ends in a Pratt type");
     };
     variants.reverse();
-    let exhausted = analyze(canonical);
-    let repeated = analyze(reordered);
+    let exhausted = analyze(&canonical);
+    let repeated = analyze(&reordered);
     assert_eq!(exhausted.diagnostics, repeated.diagnostics);
     assert_eq!(
         exhausted.canonical_diagnostics(),
@@ -252,14 +252,14 @@ fn pratt_variants_use_configured_first_k_to_resolve_a_shared_prefix() {
         })
     ));
 
-    let sufficient = analyze(shared_prefix_pratt(2));
+    let sufficient = analyze(&shared_prefix_pratt(2));
     assert!(sufficient.diagnostics.is_empty());
     assert!(sufficient.output.is_some());
 }
 
 #[test]
 fn pratt_led_variants_report_and_honor_a_depth_three_decision() {
-    let exhausted = analyze(depth_three_led_pratt(2));
+    let exhausted = analyze(&depth_three_led_pratt(2));
     let diagnostic = exhausted
         .diagnostics
         .iter()
@@ -277,14 +277,14 @@ fn pratt_led_variants_report_and_honor_a_depth_three_decision() {
         })
     ));
 
-    let sufficient = analyze(depth_three_led_pratt(3));
+    let sufficient = analyze(&depth_three_led_pratt(3));
     assert!(sufficient.diagnostics.is_empty());
     assert!(sufficient.output.is_some());
 }
 
 #[test]
 fn empty_pratt_variants_report_end_of_alternative_ambiguity() {
-    let report = analyze(empty_pratt());
+    let report = analyze(&empty_pratt());
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
     let diagnostic = &report.diagnostics[0];
@@ -306,7 +306,7 @@ fn empty_pratt_variants_report_end_of_alternative_ambiguity() {
 
 #[test]
 fn nullable_prefixes_do_not_hide_a_pratt_tail_decision() {
-    let exhausted = analyze(nullable_prefix_pratt(1));
+    let exhausted = analyze(&nullable_prefix_pratt(1));
     let diagnostic = &exhausted.diagnostics[0];
     assert_eq!(diagnostic.code, DiagnosticCode::PrattAtomOverlap);
     assert_eq!(
@@ -314,7 +314,7 @@ fn nullable_prefixes_do_not_hide_a_pratt_tail_decision() {
         Some(2),
     );
 
-    let sufficient = analyze(nullable_prefix_pratt(2));
+    let sufficient = analyze(&nullable_prefix_pratt(2));
     assert!(sufficient.diagnostics.is_empty());
     assert!(sufficient.output.is_some());
 }
@@ -393,7 +393,7 @@ fn predicate_pratt(
 
 #[test]
 fn pratt_atom_atom_conflict_has_a_canonical_snapshot() {
-    let report = analyze(atom_atom());
+    let report = analyze(&atom_atom());
 
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
@@ -435,7 +435,7 @@ fn pratt_atom_atom_conflict_has_a_canonical_snapshot() {
 
 #[test]
 fn pratt_atom_prefix_conflict_has_a_canonical_snapshot() {
-    let report = analyze(atom_prefix());
+    let report = analyze(&atom_prefix());
 
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
@@ -472,7 +472,7 @@ fn pratt_atom_prefix_conflict_has_a_canonical_snapshot() {
 
 #[test]
 fn pratt_led_led_conflict_has_a_canonical_snapshot() {
-    let report = analyze(led_led(false));
+    let report = analyze(&led_led(false));
 
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
@@ -520,7 +520,7 @@ fn pratt_infix_postfix_conflict_has_a_canonical_snapshot() {
         })
         .map(|variant| (variant.declaration, variant.position))
         .collect::<Vec<_>>();
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
 
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
@@ -595,7 +595,7 @@ fn pratt_conflicts_use_complete_symbolic_intersections_and_text_refinements() {
             ("Right", right, PrattPosition::Atom),
         ],
     );
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     let conflict = report.diagnostics[0].conflict.as_ref().unwrap();
     assert_eq!(
         conflict.overlap.iter().collect::<Vec<_>>(),
@@ -618,7 +618,7 @@ fn pratt_conflicts_use_complete_symbolic_intersections_and_text_refinements() {
             ("From", from, PrattPosition::Atom),
         ],
     );
-    assert!(analyze(refined.grammar).diagnostics.is_empty());
+    assert!(analyze(&refined.grammar).diagnostics.is_empty());
 }
 
 #[test]
@@ -648,14 +648,14 @@ fn pratt_nud_and_led_predicate_matrices_respect_refinements() {
         PrattPosition::Postfix { bp: 20 },
     );
 
-    assert!(analyze(disjoint_nud).diagnostics.is_empty());
+    assert!(analyze(&disjoint_nud).diagnostics.is_empty());
     assert_eq!(
-        analyze(overlapping_nud).diagnostics[0].code,
+        analyze(&overlapping_nud).diagnostics[0].code,
         DiagnosticCode::PrattAtomOverlap
     );
-    assert!(analyze(disjoint_led).diagnostics.is_empty());
+    assert!(analyze(&disjoint_led).diagnostics.is_empty());
     assert_eq!(
-        analyze(overlapping_led).diagnostics[0].code,
+        analyze(&overlapping_led).diagnostics[0].code,
         DiagnosticCode::PrattLedOverlap
     );
 }
@@ -676,11 +676,11 @@ fn prefix_prefix_and_postfix_postfix_use_their_pratt_conflict_families() {
     );
 
     assert_eq!(
-        analyze(prefix).diagnostics[0].code,
+        analyze(&prefix).diagnostics[0].code,
         DiagnosticCode::PrattAtomOverlap
     );
     assert_eq!(
-        analyze(postfix).diagnostics[0].code,
+        analyze(&postfix).diagnostics[0].code,
         DiagnosticCode::PrattLedOverlap
     );
 }
@@ -721,8 +721,8 @@ fn independent_pratt_conflicts_are_collected_in_source_order_and_deterministical
             variants.reverse();
         }
     }
-    let first = analyze(canonical);
-    let repeated = analyze(reordered);
+    let first = analyze(&canonical);
+    let repeated = analyze(&reordered);
 
     assert_eq!(first.diagnostics, repeated.diagnostics);
     assert_eq!(first.proofs(), repeated.proofs());

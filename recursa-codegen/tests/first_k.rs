@@ -167,7 +167,7 @@ fn shared_create_prefix_disambiguates_at_depth_two() {
     let create_view = builder.sequence("CreateView", &[create, view]);
     let statement = builder.choice("Statement", &[create_table, create_view]);
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     assert!(report.diagnostics.is_empty());
     let output = report.output.expect("depth two separates the alternatives");
     assert_eq!(
@@ -190,7 +190,7 @@ fn depth_three_grammar(max_lookahead: usize) -> GrammarDescription {
 
 #[test]
 fn exhausted_depth_reports_the_computable_sufficient_depth() {
-    let report = analyze(depth_three_grammar(2));
+    let report = analyze(&depth_three_grammar(2));
     assert!(report.output.is_none());
     let diagnostic = &report.diagnostics[0];
     assert_eq!(diagnostic.code, DiagnosticCode::EnumFirstOverlap);
@@ -221,7 +221,7 @@ fn exhausted_depth_reports_the_computable_sufficient_depth() {
             .contains("remedy: raise max_lookahead from 2 to 3")
     );
 
-    let report = analyze(depth_three_grammar(3));
+    let report = analyze(&depth_three_grammar(3));
     assert!(report.diagnostics.is_empty());
     assert!(report.output.is_some());
 }
@@ -259,7 +259,7 @@ fn nullable_leading_tokens_produce_all_symbolic_first_two_sequences() {
         &[print_statement, read_statement, set_statement],
     );
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     assert!(report.diagnostics.is_empty());
     let output = report
         .output
@@ -293,7 +293,7 @@ fn internal_text_predicates_separate_a_shared_kind_at_depth_two() {
     let view_statement = builder.sequence("ViewStatement", &[command, view]);
     builder.choice("Statement", &[table_statement, view_statement]);
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     assert!(report.diagnostics.is_empty());
     assert!(report.output.is_some());
 }
@@ -317,7 +317,7 @@ fn first_k_positions_keep_partial_kind_sets_symbolic() {
     let right = builder.sequence("RightSequence", &[right, y]);
     let choice = builder.choice("Choice", &[left, right]);
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     assert!(report.diagnostics.is_empty());
     let output = report.output.expect("second position separates overlap");
     assert_eq!(
@@ -335,7 +335,7 @@ fn an_unequal_length_prefix_is_separated_by_end_of_alternative() {
     builder.choice("Choice", &[a, ab]);
 
     let predicates = builder.grammar.text_predicates.clone();
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     assert!(report.diagnostics.is_empty());
     let output = report.output.unwrap();
     assert_eq!(
@@ -367,7 +367,7 @@ fn a_repeated_shared_prefix_recommends_restructuring() {
     let right = builder.sequence_with("Right", &[(x, repeated), (b, ContainerShape::Direct)]);
     builder.choice("Choice", &[left, right]);
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     let diagnostic = &report.diagnostics[0];
     let lookahead = diagnostic.lookahead.as_ref().expect("lookahead evidence");
     assert_eq!(lookahead.configured_depth, 3);
@@ -388,7 +388,7 @@ fn a_repeated_shared_prefix_recommends_restructuring() {
 fn disambiguation_depth_returns_the_first_separating_position() {
     let grammar = depth_three_grammar(3);
     let predicates = grammar.text_predicates.clone();
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
     let output = report.output.expect("depth three succeeds");
 
     assert_eq!(
@@ -416,7 +416,7 @@ fn every_pair_of_three_shared_prefix_alternatives_is_diagnosed() {
     let abe = builder.sequence("Abe", &[a, b, e]);
     builder.choice("Choice", &[abc, abd, abe]);
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     assert_eq!(report.diagnostics.len(), 3);
     assert!(report.diagnostics.iter().all(|diagnostic| {
         diagnostic
@@ -439,8 +439,8 @@ fn shuffled_depth_three(reverse: bool, max_lookahead: usize) -> GrammarDescripti
 
 #[test]
 fn first_k_sequences_witnesses_and_rendering_ignore_construction_order() {
-    let forward_success = analyze(shuffled_depth_three(false, 3));
-    let reverse_success = analyze(shuffled_depth_three(true, 3));
+    let forward_success = analyze(&shuffled_depth_three(false, 3));
+    let reverse_success = analyze(&shuffled_depth_three(true, 3));
     let forward_output = forward_success.output.unwrap();
     let reverse_output = reverse_success.output.unwrap();
     assert_eq!(
@@ -448,8 +448,8 @@ fn first_k_sequences_witnesses_and_rendering_ignore_construction_order() {
         reverse_output.first(TypeId::new(6)).unwrap().sequences,
     );
 
-    let forward_error = analyze(shuffled_depth_three(false, 2));
-    let reverse_error = analyze(shuffled_depth_three(true, 2));
+    let forward_error = analyze(&shuffled_depth_three(false, 2));
+    let reverse_error = analyze(&shuffled_depth_three(true, 2));
     assert_eq!(forward_error.diagnostics, reverse_error.diagnostics);
     assert_eq!(
         forward_error.canonical_diagnostics(),
@@ -459,7 +459,7 @@ fn first_k_sequences_witnesses_and_rendering_ignore_construction_order() {
 
 #[test]
 fn lookahead_can_disambiguate_a_nullable_use_site_from_its_tail() {
-    let report = analyze(nullable_tail_prefix(2));
+    let report = analyze(&nullable_tail_prefix(2));
     assert!(report.diagnostics.is_empty());
     assert!(report.output.is_some());
 }
@@ -484,7 +484,7 @@ fn nullable_tail_prefix(max_lookahead: usize) -> GrammarDescription {
 
 #[test]
 fn nullable_use_site_reports_a_sufficient_higher_depth() {
-    let report = analyze(nullable_tail_prefix(1));
+    let report = analyze(&nullable_tail_prefix(1));
     let diagnostic = &report.diagnostics[0];
     assert_eq!(diagnostic.code, DiagnosticCode::StaticUseSiteOverlap);
     assert_eq!(
@@ -517,7 +517,7 @@ fn long_finite_prefix(max_lookahead: usize, shared: usize) -> GrammarDescription
 
 #[test]
 fn a_long_finite_prefix_reports_its_exact_sufficient_depth() {
-    let report = analyze(long_finite_prefix(2, 40));
+    let report = analyze(&long_finite_prefix(2, 40));
     let diagnostic = &report.diagnostics[0];
     let lookahead = diagnostic.lookahead.as_ref().unwrap();
     assert_eq!(lookahead.sufficient_depth, Some(41));
@@ -529,7 +529,7 @@ fn a_long_finite_prefix_reports_its_exact_sufficient_depth() {
         })
     ));
 
-    let report = analyze(long_finite_prefix(41, 40));
+    let report = analyze(&long_finite_prefix(41, 40));
     assert!(report.diagnostics.is_empty());
     assert!(report.output.is_some());
 }
@@ -552,7 +552,7 @@ fn consuming_optional_prefix(max_lookahead: usize) -> GrammarDescription {
 
 #[test]
 fn nullable_decision_compares_consuming_plus_tail_against_skipping_tail() {
-    let report = analyze(consuming_optional_prefix(2));
+    let report = analyze(&consuming_optional_prefix(2));
     assert_eq!(
         report.diagnostics[0]
             .lookahead
@@ -562,7 +562,7 @@ fn nullable_decision_compares_consuming_plus_tail_against_skipping_tail() {
         Some(3),
     );
 
-    let report = analyze(consuming_optional_prefix(3));
+    let report = analyze(&consuming_optional_prefix(3));
     assert!(report.diagnostics.is_empty());
     assert!(report.output.is_some());
 }
@@ -577,7 +577,7 @@ fn empty_alternatives() -> GrammarDescription {
 
 #[test]
 fn empty_derivations_have_structured_end_of_alternative_evidence() {
-    let report = analyze(empty_alternatives());
+    let report = analyze(&empty_alternatives());
     assert!(report.output.is_none());
     let diagnostic = &report.diagnostics[0];
     let lookahead = diagnostic.lookahead.as_ref().unwrap();
@@ -703,7 +703,7 @@ fn right_recursive_shared_prefix() -> GrammarDescription {
 
 #[test]
 fn unequal_recursive_tails_are_pumped_as_an_unbounded_shared_prefix() {
-    let report = analyze(right_recursive_shared_prefix());
+    let report = analyze(&right_recursive_shared_prefix());
     let diagnostic = report
         .diagnostics
         .iter()
@@ -859,7 +859,7 @@ fn nullable_prefix_before_recursive_alternatives(max_lookahead: usize) -> Gramma
 
 #[test]
 fn pumping_does_not_cross_a_nullable_protected_continuation() {
-    let report = analyze(nullable_prefix_before_recursive_alternatives(1));
+    let report = analyze(&nullable_prefix_before_recursive_alternatives(1));
     let diagnostic = report
         .diagnostics
         .iter()
@@ -870,7 +870,7 @@ fn pumping_does_not_cross_a_nullable_protected_continuation() {
         Some(2),
     );
 
-    let report = analyze(nullable_prefix_before_recursive_alternatives(2));
+    let report = analyze(&nullable_prefix_before_recursive_alternatives(2));
     assert!(report.diagnostics.is_empty());
     assert!(report.output.is_some());
 }
@@ -934,7 +934,7 @@ fn compressed_finite_prefix_ignores_an_unrelated_recursive_branch() {
     let right = builder.sequence("Right", &right);
     builder.choice("Choice", &[left, right]);
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     let diagnostic = report
         .diagnostics
         .iter()

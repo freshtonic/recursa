@@ -459,7 +459,7 @@ fn source_ranked_members(equal_source: bool) -> (GrammarDescription, recursa_cod
 
 #[test]
 fn target_keyword_overlap_retains_symbolic_proof_chains() {
-    let report = analyze(target_keyword_collision(false));
+    let report = analyze(&target_keyword_collision(false));
 
     assert!(report.output.is_none());
     let diagnostic = &report.diagnostics[0];
@@ -525,7 +525,7 @@ fn target_keyword_overlap_retains_symbolic_proof_chains() {
 
 #[test]
 fn partial_target_intersection_is_complete_and_has_a_canonical_witness() {
-    let report = analyze(partially_overlapping_targets());
+    let report = analyze(&partially_overlapping_targets());
     let conflict = report.diagnostics[0].conflict.as_ref().unwrap();
 
     assert_eq!(
@@ -537,13 +537,13 @@ fn partial_target_intersection_is_complete_and_has_a_canonical_witness() {
 
 #[test]
 fn disjoint_kinds_and_refined_text_predicates_do_not_conflict() {
-    assert!(analyze(refined_or_disjoint(true)).diagnostics.is_empty());
-    assert!(analyze(refined_or_disjoint(false)).diagnostics.is_empty());
+    assert!(analyze(&refined_or_disjoint(true)).diagnostics.is_empty());
+    assert!(analyze(&refined_or_disjoint(false)).diagnostics.is_empty());
 }
 
 #[test]
 fn static_nullable_overlap_is_an_error_but_a_fully_nullable_tail_is_not() {
-    let report = analyze(nullable_tail(true));
+    let report = analyze(&nullable_tail(true));
 
     assert!(report.output.is_none());
     assert_eq!(
@@ -583,7 +583,7 @@ fn static_nullable_overlap_is_an_error_but_a_fully_nullable_tail_is_not() {
             "  remedy: raise max_lookahead from 1 to 2\n",
         ),
     );
-    let fully_nullable = analyze(nullable_tail(false));
+    let fully_nullable = analyze(&nullable_tail(false));
     assert!(fully_nullable.output.is_some());
     assert!(
         fully_nullable
@@ -595,8 +595,8 @@ fn static_nullable_overlap_is_an_error_but_a_fully_nullable_tail_is_not() {
 
 #[test]
 fn provenance_and_witnesses_are_deterministic_under_member_reordering() {
-    let canonical = analyze(target_keyword_collision(false));
-    let reordered = analyze(target_keyword_collision(true));
+    let canonical = analyze(&target_keyword_collision(false));
+    let reordered = analyze(&target_keyword_collision(true));
 
     assert_eq!(canonical.diagnostics, reordered.diagnostics);
     assert_eq!(canonical.proofs(), reordered.proofs());
@@ -608,7 +608,7 @@ fn provenance_and_witnesses_are_deterministic_under_member_reordering() {
 
 #[test]
 fn every_first_membership_has_exactly_one_proof() {
-    let report = analyze(refined_or_disjoint(true));
+    let report = analyze(&refined_or_disjoint(true));
     let output = report.output.unwrap();
 
     for provenanced in output.first_provenance_by_type().iter().flatten() {
@@ -624,7 +624,7 @@ fn every_first_membership_has_exactly_one_proof() {
 
 #[test]
 fn static_nullable_runs_check_each_required_boundary_and_skip_fully_nullable_tails() {
-    let report = analyze(nullable_run(false));
+    let report = analyze(&nullable_run(false));
 
     assert_eq!(report.diagnostics.len(), 2);
     assert_eq!(
@@ -647,7 +647,7 @@ fn static_nullable_runs_check_each_required_boundary_and_skip_fully_nullable_tai
             .collect::<Vec<_>>(),
         [KindId::new(2)],
     );
-    let fully_nullable = analyze(nullable_run(true));
+    let fully_nullable = analyze(&nullable_run(true));
     assert!(fully_nullable.output.is_some());
     assert!(
         fully_nullable
@@ -738,7 +738,7 @@ fn text_predicate_overlap_matrix_refines_shared_kinds() {
     ];
 
     for (left, right, expected_overlap) in cases {
-        let report = analyze(predicate_pair(left, right));
+        let report = analyze(&predicate_pair(left, right));
         assert_eq!(
             !report.diagnostics.is_empty(),
             expected_overlap,
@@ -749,14 +749,14 @@ fn text_predicate_overlap_matrix_refines_shared_kinds() {
 
 #[test]
 fn exact_text_predicates_use_their_explicit_equivalence() {
-    let sensitive = analyze(predicate_pair_with_equivalence(
+    let sensitive = analyze(&predicate_pair_with_equivalence(
         Some(TextPredicate::Exact("SELECT".into())),
         Some(TextPredicate::Exact("select".into())),
         TextEquivalence::Sensitive,
     ));
     assert!(sensitive.diagnostics.is_empty());
 
-    let ascii_insensitive = analyze(predicate_pair_with_equivalence(
+    let ascii_insensitive = analyze(&predicate_pair_with_equivalence(
         Some(TextPredicate::Exact("SELECT".into())),
         Some(TextPredicate::Exact("select".into())),
         TextEquivalence::AsciiInsensitive,
@@ -767,14 +767,14 @@ fn exact_text_predicates_use_their_explicit_equivalence() {
         DiagnosticCode::EnumFirstOverlap,
     );
 
-    let sensitive_set = analyze(predicate_pair_with_equivalence(
+    let sensitive_set = analyze(&predicate_pair_with_equivalence(
         Some(TextPredicate::OneOf(vec!["SELECT".into()])),
         Some(TextPredicate::NotIn(vec!["select".into()])),
         TextEquivalence::Sensitive,
     ));
     assert_eq!(sensitive_set.diagnostics.len(), 1);
 
-    let ascii_insensitive_set = analyze(predicate_pair_with_equivalence(
+    let ascii_insensitive_set = analyze(&predicate_pair_with_equivalence(
         Some(TextPredicate::OneOf(vec!["SELECT".into()])),
         Some(TextPredicate::NotIn(vec!["select".into()])),
         TextEquivalence::AsciiInsensitive,
@@ -784,9 +784,9 @@ fn exact_text_predicates_use_their_explicit_equivalence() {
 
 #[test]
 fn disjoint_targets_are_accepted_and_text_predicates_have_proofs() {
-    assert!(analyze(disjoint_targets()).diagnostics.is_empty());
+    assert!(analyze(&disjoint_targets()).diagnostics.is_empty());
 
-    let report = analyze(refined_or_disjoint(false));
+    let report = analyze(&refined_or_disjoint(false));
     let output = report.output.as_ref().unwrap();
     let proof = output.first_provenance_by_type()[0][0]
         .proof(KindId::new(0))
@@ -814,13 +814,13 @@ fn disjoint_targets_are_accepted_and_text_predicates_have_proofs() {
 
 #[test]
 fn enum_alternative_and_category_member_order_do_not_change_results() {
-    let canonical = analyze(target_keyword_collision(false));
+    let canonical = analyze(&target_keyword_collision(false));
     let mut reordered_grammar = target_keyword_collision(true);
     let TypeShape::Enum { alternatives } = &mut reordered_grammar.types[2].shape else {
         panic!("fixture root is an enum");
     };
     alternatives.reverse();
-    let reordered = analyze(reordered_grammar);
+    let reordered = analyze(&reordered_grammar);
 
     assert_eq!(canonical.diagnostics, reordered.diagnostics);
     assert_eq!(canonical.proofs(), reordered.proofs());
@@ -833,7 +833,7 @@ fn enum_alternative_and_category_member_order_do_not_change_results() {
 #[test]
 fn a_shorter_proof_that_arrives_later_replaces_the_first_path() {
     let (grammar, owner, short_alias) = delayed_shorter_proof();
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
     let output = report.output.as_ref().unwrap();
     let proof = output.first_provenance_by_type()[owner.index()][0]
         .proof(KindId::new(0))
@@ -858,7 +858,7 @@ fn a_shorter_proof_that_arrives_later_replaces_the_first_path() {
 #[test]
 fn losing_candidate_paths_are_not_retained_in_the_returned_arena() {
     let (grammar, _, _) = delayed_shorter_proof();
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
     let output = report.output.as_ref().unwrap();
     let mut reachable = BTreeSet::<ProofId>::new();
 
@@ -909,7 +909,7 @@ fn losing_candidate_paths_are_not_retained_in_the_returned_arena() {
 
 #[test]
 fn partial_overlap_witnesses_end_at_the_canonical_direct_declarations() {
-    let report = analyze(partially_overlapping_targets());
+    let report = analyze(&partially_overlapping_targets());
     let witness = &report.diagnostics[0].conflict.as_ref().unwrap().witness;
 
     assert!(matches!(
@@ -930,7 +930,7 @@ fn partial_overlap_witnesses_end_at_the_canonical_direct_declarations() {
 
 #[test]
 fn singleton_enum_overlap_matches_the_spike_scalar_baseline() {
-    let report = analyze(singleton_enum_overlap());
+    let report = analyze(&singleton_enum_overlap());
     let diagnostic = &report.diagnostics[0];
     let conflict = diagnostic.conflict.as_ref().unwrap();
 
@@ -970,7 +970,7 @@ fn singleton_enum_overlap_matches_the_spike_scalar_baseline() {
 #[test]
 fn equal_hop_proofs_prefer_physical_source_order_over_insertion_order() {
     let (grammar, expected_atom) = source_ranked_members(false);
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
     let proof = report.output.as_ref().unwrap().first_provenance_by_type()[0][0]
         .proof(KindId::new(0))
         .unwrap();
@@ -984,7 +984,7 @@ fn equal_hop_proofs_prefer_physical_source_order_over_insertion_order() {
 #[test]
 fn equal_hop_equal_source_proofs_use_typed_identity_as_the_final_tie_break() {
     let (grammar, expected_atom) = source_ranked_members(true);
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
     let proof = report.output.as_ref().unwrap().first_provenance_by_type()[0][0]
         .proof(KindId::new(0))
         .unwrap();

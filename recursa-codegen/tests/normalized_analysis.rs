@@ -188,7 +188,7 @@ fn recursive_grammar() -> GrammarDescription {
 
 #[test]
 fn normalized_grammar_produces_first_and_nullable_facts() {
-    let report = analyze(representative_grammar());
+    let report = analyze(&representative_grammar());
 
     assert!(
         report.diagnostics.is_empty(),
@@ -218,7 +218,7 @@ fn invalid_normalized_reference_returns_diagnostics_without_output() {
     let mut grammar = representative_grammar();
     grammar.entry_types.push(recursa_codegen::TypeId::new(99));
 
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
 
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
@@ -227,7 +227,7 @@ fn invalid_normalized_reference_returns_diagnostics_without_output() {
 
 #[test]
 fn first_fixed_point_converges_for_a_recursive_normalized_grammar() {
-    let report = analyze(recursive_grammar());
+    let report = analyze(&recursive_grammar());
 
     assert!(report.diagnostics.is_empty());
     let output = report.output.unwrap();
@@ -260,7 +260,7 @@ fn nullable_sites_and_text_predicates_survive_the_analysis_seam() {
     };
     sites.truncate(1);
 
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
 
     assert!(report.diagnostics.is_empty());
     let output = report.output.unwrap();
@@ -286,7 +286,7 @@ fn recursive_container_shape_preserves_box_placement_and_optional_vec1_cardinali
     };
     sites.truncate(1);
 
-    let report = analyze(grammar.clone());
+    let report = analyze(&grammar);
 
     assert!(
         report
@@ -330,7 +330,7 @@ fn unsupported_container_cardinality_is_rejected_before_analysis() {
         let mut grammar = representative_grammar();
         grammar.sites[0].container = shape;
 
-        let report = analyze(grammar);
+        let report = analyze(&grammar);
 
         assert!(report.output.is_none());
         assert_eq!(report.diagnostics.len(), 1);
@@ -380,7 +380,7 @@ fn every_supported_container_cardinality_reaches_first_and_nullable_analysis() {
         };
         sites.truncate(1);
 
-        let report = analyze(grammar.clone());
+        let report = analyze(&grammar);
 
         assert_eq!(grammar.sites[0].container, shape);
         let output = report
