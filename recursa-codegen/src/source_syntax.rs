@@ -157,6 +157,55 @@ pub(crate) struct GrammarConfigSyntax {
     pub(crate) spans: CaptureMode,
     pub(crate) derives: Vec<Path>,
     pub(crate) diagrams: bool,
+    pub(crate) pretty: PrettyDefaults,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PrettyDefaults {
+    pub(crate) max_width: usize,
+    pub(crate) indent: usize,
+}
+
+impl Default for PrettyDefaults {
+    fn default() -> Self {
+        Self {
+            max_width: 88,
+            indent: 2,
+        }
+    }
+}
+
+impl Parse for PrettyDefaults {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut max_width = None;
+        let mut indent = None;
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            let value: LitInt = input.parse()?;
+            let parsed = value.base10_parse::<usize>()?;
+            if key == "max_width" {
+                reject_duplicate(&max_width, key.span(), "max_width Pretty")?;
+                max_width = Some(parsed);
+            } else if key == "indent" {
+                reject_duplicate(&indent, key.span(), "indent Pretty")?;
+                indent = Some(parsed);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("unsupported Pretty setting `{key}`"),
+                ));
+            }
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
+            }
+        }
+        let defaults = Self::default();
+        Ok(Self {
+            max_width: max_width.unwrap_or(defaults.max_width),
+            indent: indent.unwrap_or(defaults.indent),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -263,6 +312,37 @@ mod capture_tests {
             .unwrap_err();
         assert_eq!(duplicate.to_string(), "duplicate diagrams setting");
     }
+
+    #[test]
+    fn pretty_defaults_are_typed_and_caller_configuration_is_retained() {
+        let defaults: GrammarConfigSyntax =
+            syn::parse_str("module = crate").expect("default configuration parses");
+        assert_eq!(defaults.pretty.max_width, 88);
+        assert_eq!(defaults.pretty.indent, 2);
+
+        let configured: GrammarConfigSyntax =
+            syn::parse_str("module = crate, pretty(max_width = 44, indent = 4)")
+                .expect("Pretty configuration parses");
+        assert_eq!(configured.pretty.max_width, 44);
+        assert_eq!(configured.pretty.indent, 4);
+    }
+
+    #[test]
+    fn duplicate_or_unknown_pretty_settings_are_rejected() {
+        let duplicate = syn::parse_str::<GrammarConfigSyntax>(
+            "module = crate, pretty(max_width = 44, max_width = 88)",
+        )
+        .unwrap_err();
+        assert_eq!(duplicate.to_string(), "duplicate max_width Pretty setting");
+
+        let unknown =
+            syn::parse_str::<GrammarConfigSyntax>("module = crate, pretty(tab_width = 4)")
+                .unwrap_err();
+        assert_eq!(
+            unknown.to_string(),
+            "unsupported Pretty setting `tab_width`"
+        );
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -281,6 +361,7 @@ impl Parse for GrammarConfigSyntax {
         let mut spans = None;
         let mut derives = None;
         let mut diagrams = false;
+        let mut pretty = None;
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
             if key == "derives" {
@@ -297,6 +378,11 @@ impl Parse for GrammarConfigSyntax {
                     return Err(syn::Error::new(key.span(), "duplicate diagrams setting"));
                 }
                 diagrams = true;
+            } else if key == "pretty" {
+                reject_duplicate(&pretty, key.span(), "pretty")?;
+                let content;
+                syn::parenthesized!(content in input);
+                pretty = Some(content.parse()?);
             } else {
                 input.parse::<Token![=]>()?;
                 if key == "module" {
@@ -349,6 +435,7 @@ impl Parse for GrammarConfigSyntax {
             spans: spans.unwrap_or(CaptureMode::Optional),
             derives: derives.unwrap_or_default(),
             diagrams,
+            pretty: pretty.unwrap_or_default(),
         })
     }
 }

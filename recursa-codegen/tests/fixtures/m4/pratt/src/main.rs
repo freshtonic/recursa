@@ -78,6 +78,38 @@ fn parse(source: &str) -> recursa::Parsed<'_, grammar::Expr<'_>> {
     parsed
 }
 
+fn name(text: &'static str) -> grammar::Expr<'static> {
+    grammar::Expr::Name(grammar::Name {
+        value: grammar::NameText::new(text),
+    })
+}
+
+fn assert_pretty_pratt_parentheses() {
+    let multiply_after_add = grammar::Expr::Multiply(
+        Box::new(grammar::Expr::Add(Box::new(name("a")), Box::new(name("b")))),
+        Box::new(name("c")),
+    );
+    assert_eq!(multiply_after_add.render(), "(a + b) * c");
+
+    let left_nested_power = grammar::Expr::Power(
+        Box::new(grammar::Expr::Power(Box::new(name("a")), Box::new(name("b")))),
+        Box::new(name("c")),
+    );
+    assert_eq!(left_nested_power.render(), "(a ^ b) ^ c");
+
+    let right_nested_power = grammar::Expr::Power(
+        Box::new(name("a")),
+        Box::new(grammar::Expr::Power(Box::new(name("b")), Box::new(name("c")))),
+    );
+    assert_eq!(right_nested_power.render(), "a ^ b ^ c");
+
+    for expression in [multiply_after_add, left_nested_power, right_nested_power] {
+        let formatted = expression.render();
+        let reparsed = parse(&formatted);
+        assert_eq!(reparsed.render(), formatted, "pretty output is idempotent");
+    }
+}
+
 fn main() {
     fn assert_traits<T>()
     where
@@ -96,6 +128,7 @@ fn main() {
     fn assert_arbitrary<T: for<'arbitrary> recursa::Arbitrary<'arbitrary>>() {}
     assert_traits::<grammar::Expr<'static>>();
     assert_arbitrary::<grammar::Expr<'static>>();
+    assert_pretty_pratt_parentheses();
 
     let lexed = grammar::lex("alpha + 12");
     assert_eq!(

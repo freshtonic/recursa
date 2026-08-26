@@ -143,8 +143,8 @@ fn main() {
         record.root().span(),
         Some(recursa::Span::new(0, 15).unwrap())
     );
-    assert_eq!(record.root().render(), "ReCoRd : alpha 42");
-    assert_eq!(record.render(), "ReCoRd : alpha 42");
+    assert_eq!(record.root().render(), "ReCoRd: alpha 42");
+    assert_eq!(record.render(), "ReCoRd: alpha 42");
     assert_eq!(
         record.root().label().span(),
         Some(recursa::Span::new(7, 12).unwrap())
@@ -237,7 +237,7 @@ fn main() {
     assert_eq!(visit_borrowed_record(&second_source), 1);
 
     let spaced = parse_spanned!(grammar::Record<'_>, "ReCoRd  : alpha   42");
-    assert_eq!(spaced.render(), "ReCoRd : alpha 42");
+    assert_eq!(spaced.render(), "ReCoRd: alpha 42");
 
     let mut arbitrary_input = recursa::__private::arbitrary::Unstructured::new(&[0; 64]);
     let arbitrary_record =
@@ -254,7 +254,7 @@ fn main() {
     let mut forwarded_hash = std::collections::hash_map::DefaultHasher::new();
     forwarded_a.hash(&mut forwarded_hash);
     assert_ne!(forwarded_hash.finish(), 0);
-    assert_eq!(forwarded_a.render(), "RECORD : alpha 42");
+    assert_eq!(forwarded_a.render(), "RECORD: alpha 42");
 
     struct MutationCounter(usize);
     impl<'input> recursa::TotalVisitorMut<grammar::__RecursaVisitEventsMut<'input>>
@@ -289,7 +289,10 @@ fn main() {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     detached.hash(&mut hasher);
     assert_ne!(hasher.finish(), 0);
-    assert_eq!(recursa::Parsed::synthetic(cloned.clone()).render(), "RECORD : alpha 42");
+    assert_eq!(
+        recursa::Parsed::synthetic(cloned.clone()).render(),
+        "RECORD: alpha 42"
+    );
     let mut order = OrderedMutator(Vec::new());
     assert!(recursa::VisitMut::visit_mut(&mut detached, &mut order).is_continue());
     assert_eq!(

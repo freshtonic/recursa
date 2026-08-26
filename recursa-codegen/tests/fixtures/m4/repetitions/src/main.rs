@@ -1,4 +1,4 @@
-use recursa::{HasSpan as _, NodeView as _};
+use recursa::{HasSpan as _, NodeView as _, Pretty as _};
 use recursa_generated_repetitions::grammar;
 
 macro_rules! parse_spanned {
@@ -231,6 +231,11 @@ fn assert_repetition_behavior() {
     assert!(empty.into_ast().values.is_empty());
 
     let many = parse_spanned!(grammar::Many<'_>, "many same,same,");
+    assert_eq!(many.render(), "many same, same");
+    assert_eq!(
+        many.render_with(recursa::PrettyConfig::new(10, 2)),
+        "many same,\nsame"
+    );
     let values = many.root().values();
     assert_eq!(values.len(), 2);
     assert_eq!(values.span(), recursa::Span::new(5, 15).ok());
