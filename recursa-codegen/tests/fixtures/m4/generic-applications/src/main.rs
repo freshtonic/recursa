@@ -66,6 +66,7 @@ fn main() {
         assert_pretty::<grammar::OptionalOnly<T>>();
         assert_pretty::<grammar::Aliased<T>>();
         assert_pretty::<grammar::Chain<T>>();
+        assert_pretty::<grammar::Separated<T>>();
         assert_pretty::<grammar::Wrap<T>>();
         assert_pretty::<grammar::AliasLifetimeRoot<'static, T>>();
     }
@@ -104,6 +105,23 @@ fn main() {
         .expect("cross-module alias lifetime is rebound at its use site");
     assert!(alias_input.is_eof());
     assert_eq!(parsed.render(), "({7, marker})");
+
+    let separated = grammar::lex("[One] aNd [TWO]");
+    let mut separated_input = separated.input();
+    let separated = grammar::SeparatorAudit::parse_spanned(&mut separated_input)
+        .expect("ASCII-insensitive word-separated generic application parses");
+    assert!(separated_input.is_eof());
+    let separated = separated.into_ast().separated;
+    assert_eq!(separated.values[0].value.text(), "One");
+    assert_eq!(separated.values[1].value.text(), "TWO");
+    assert_eq!(separated.render(), "[One]AND [TWO]");
+
+    let rendered = separated.render();
+    let reparsed = grammar::lex(&rendered);
+    let mut reparsed_input = reparsed.input();
+    grammar::SeparatorAudit::parse_spanned(&mut reparsed_input)
+        .expect("canonical word-separated Pretty output reparses");
+    assert!(reparsed_input.is_eof());
 
     println!("generic-applications-ok");
 }

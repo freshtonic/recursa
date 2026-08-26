@@ -3,7 +3,7 @@ recursa::grammar! {
     diagrams,
     derives(Debug, Clone, PartialEq, Pretty, serde::Serialize, serde::Deserialize),
     spans = optional,
-    keyword_matching = sensitive,
+    keyword_matching = ascii_insensitive,
     max_lookahead = 1,
 }
 
@@ -13,6 +13,7 @@ recursa::tokens! {
         IS => "is",
         NOT => "not",
         EXISTS => "exists",
+        AND => "and",
     }
     punctuation {
         MINUS => "-",
@@ -46,6 +47,13 @@ pub struct Atom<T> {
 #[derive(recursa::Node)]
 pub struct Wrap<T> {
     pub value: T,
+}
+
+#[derive(recursa::Node)]
+pub struct Separated<T> {
+    #[tok(LBRACKET, this, RBRACKET)]
+    #[sep(AND)]
+    pub values: Vec<T>,
 }
 
 #[derive(recursa::Node)]
@@ -115,6 +123,11 @@ pub struct AuditRoot<'outer> {
     pub integer_chain: Chain<Integer<'outer>>,
     pub name_chain: Chain<Name<'outer>>,
     pub pair: Pair<'outer, 'outer>,
+}
+
+#[derive(recursa::Node)]
+pub struct SeparatorAudit<'input> {
+    pub separated: Separated<Name<'input>>,
 }
 
 #[derive(recursa::Node)]
