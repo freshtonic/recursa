@@ -609,6 +609,31 @@ fn fixed_lexical_pattern(spelling: &str, equivalence: crate::TextEquivalence) ->
         .collect()
 }
 
+fn fixed_pretty_spellings(
+    fixed: &FixedTokenDefinition,
+    equivalence: crate::TextEquivalence,
+) -> Vec<String> {
+    let mut spellings = vec![fixed.spelling.clone()];
+    if equivalence == crate::TextEquivalence::AsciiInsensitive && is_word_shaped(&fixed.spelling) {
+        let canonical = fixed.spelling.to_ascii_uppercase();
+        if canonical != fixed.spelling {
+            spellings.push(canonical);
+        }
+    }
+    spellings
+}
+
+fn fixed_pair_crosses_pattern(left: &str, right: &str, lexical_pattern: &str) -> bool {
+    right
+        .char_indices()
+        .skip(1)
+        .map(|(index, _)| index)
+        .chain(std::iter::once(right.len()))
+        .any(|right_end| {
+            pattern_matches_entire(lexical_pattern, &format!("{left}{}", &right[..right_end]))
+        })
+}
+
 fn pattern_may_emit_xid(pattern: &str) -> bool {
     let Ok(hir) = regex_syntax::Parser::new().parse(pattern) else {
         return true;
@@ -657,11 +682,19 @@ fn pattern_then_fixed_intersects_pattern(
     let mut seen = BTreeSet::from([(pattern_start, lexical_start)]);
     let mut frontier = VecDeque::from([(pattern_start, lexical_start)]);
     while let Some((pattern_state, lexical_state)) = frontier.pop_front() {
-        if dfa_accepts_state(&pattern_dfa, pattern_state)
-            && dfa_advance(&lexical_dfa, lexical_state, fixed.as_bytes())
-                .is_some_and(|state| dfa_accepts_state(&lexical_dfa, state))
-        {
-            return true;
+        if dfa_accepts_state(&pattern_dfa, pattern_state) {
+            let mut lexical_state = lexical_state;
+            for &byte in fixed.as_bytes() {
+                lexical_state = lexical_dfa.next_state(lexical_state, byte);
+                if lexical_dfa.is_dead_state(lexical_state)
+                    || lexical_dfa.is_quit_state(lexical_state)
+                {
+                    break;
+                }
+                if dfa_accepts_state(&lexical_dfa, lexical_state) {
+                    return true;
+                }
+            }
         }
         for byte in u8::MIN..=u8::MAX {
             let pattern_next = pattern_dfa.next_state(pattern_state, byte);
@@ -700,26 +733,42 @@ fn fixed_then_pattern_intersects_pattern(
     let Some(lexical_start) = dfa_advance(&lexical_dfa, lexical_start, fixed.as_bytes()) else {
         return false;
     };
-    let mut seen = BTreeSet::from([(pattern_start, lexical_start)]);
-    let mut frontier = VecDeque::from([(pattern_start, lexical_start)]);
-    while let Some((pattern_state, lexical_state)) = frontier.pop_front() {
-        if dfa_accepts_state(&pattern_dfa, pattern_state)
-            && dfa_accepts_state(&lexical_dfa, lexical_state)
-        {
+    type BoundaryState = (
+        regex_automata::util::primitives::StateID,
+        Option<regex_automata::util::primitives::StateID>,
+        bool,
+    );
+    let start: BoundaryState = (pattern_start, Some(lexical_start), false);
+    let mut seen = BTreeSet::from([start]);
+    let mut frontier = VecDeque::from([start]);
+    while let Some((pattern_state, lexical_state, crossed_match)) = frontier.pop_front() {
+        if crossed_match && dfa_accepts_state(&pattern_dfa, pattern_state) {
             return true;
         }
         for byte in u8::MIN..=u8::MAX {
             let pattern_next = pattern_dfa.next_state(pattern_state, byte);
-            let lexical_next = lexical_dfa.next_state(lexical_state, byte);
-            if pattern_dfa.is_dead_state(pattern_next)
-                || pattern_dfa.is_quit_state(pattern_next)
-                || lexical_dfa.is_dead_state(lexical_next)
-                || lexical_dfa.is_quit_state(lexical_next)
-                || !seen.insert((pattern_next, lexical_next))
-            {
+            if pattern_dfa.is_dead_state(pattern_next) || pattern_dfa.is_quit_state(pattern_next) {
                 continue;
             }
-            frontier.push_back((pattern_next, lexical_next));
+            let (lexical_next, crossed_match) = if crossed_match {
+                (None, true)
+            } else {
+                let Some(lexical_state) = lexical_state else {
+                    continue;
+                };
+                let lexical_next = lexical_dfa.next_state(lexical_state, byte);
+                if lexical_dfa.is_dead_state(lexical_next)
+                    || lexical_dfa.is_quit_state(lexical_next)
+                {
+                    continue;
+                }
+                let crossed_match = dfa_accepts_state(&lexical_dfa, lexical_next);
+                ((!crossed_match).then_some(lexical_next), crossed_match)
+            };
+            let next = (pattern_next, lexical_next, crossed_match);
+            if seen.insert(next) {
+                frontier.push_back(next);
+            }
         }
     }
     false
@@ -811,25 +860,37 @@ pub(crate) fn materialized_pretty_boundary_changes_lexing(
         .collect::<Vec<_>>();
     match (left, right) {
         (MaterializedPrettyBoundary::Regex(pattern), MaterializedPrettyBoundary::Fixed(_)) => {
-            lexical_patterns.iter().any(|lexical_pattern| {
-                pattern_then_fixed_intersects_pattern(
-                    pattern,
-                    &right_fixed.expect("fixed right boundary").spelling,
-                    lexical_pattern,
-                )
-            })
+            fixed_pretty_spellings(right_fixed.expect("fixed right boundary"), equivalence)
+                .iter()
+                .any(|right| {
+                    lexical_patterns.iter().any(|lexical_pattern| {
+                        pattern_then_fixed_intersects_pattern(pattern, right, lexical_pattern)
+                    })
+                })
         }
         (MaterializedPrettyBoundary::Fixed(_), MaterializedPrettyBoundary::Regex(pattern)) => {
-            lexical_patterns.iter().any(|lexical_pattern| {
-                fixed_then_pattern_intersects_pattern(
-                    &left_fixed.expect("fixed left boundary").spelling,
-                    pattern,
-                    lexical_pattern,
-                )
+            fixed_pretty_spellings(left_fixed.expect("fixed left boundary"), equivalence)
+                .iter()
+                .any(|left| {
+                    lexical_patterns.iter().any(|lexical_pattern| {
+                        fixed_then_pattern_intersects_pattern(left, pattern, lexical_pattern)
+                    })
+                })
+        }
+        (MaterializedPrettyBoundary::Fixed(_), MaterializedPrettyBoundary::Fixed(_)) => {
+            let left =
+                fixed_pretty_spellings(left_fixed.expect("fixed left boundary"), equivalence);
+            let right =
+                fixed_pretty_spellings(right_fixed.expect("fixed right boundary"), equivalence);
+            left.iter().any(|left| {
+                right.iter().any(|right| {
+                    lexical_patterns
+                        .iter()
+                        .any(|pattern| fixed_pair_crosses_pattern(left, right, pattern))
+                })
             })
         }
-        (MaterializedPrettyBoundary::Fixed(_), MaterializedPrettyBoundary::Fixed(_))
-        | (MaterializedPrettyBoundary::Regex(_), MaterializedPrettyBoundary::Regex(_)) => false,
+        (MaterializedPrettyBoundary::Regex(_), MaterializedPrettyBoundary::Regex(_)) => false,
     }
 }
 
@@ -1829,11 +1890,14 @@ impl SourceModelBuilder<'_> {
                     .pretty_lexical_patterns()
                     .iter()
                     .any(|lexical_pattern| {
-                        pattern_then_fixed_intersects_pattern(
-                            pattern,
-                            &right_fixed.spelling,
-                            lexical_pattern,
+                        fixed_pretty_spellings(
+                            right_fixed,
+                            self.resolved.configuration.syntax.text_equivalence,
                         )
+                        .iter()
+                        .any(|right| {
+                            pattern_then_fixed_intersects_pattern(pattern, right, lexical_pattern)
+                        })
                     })
                 {
                     diagnostics.push(SourceModelDiagnostic {
@@ -1864,11 +1928,14 @@ impl SourceModelBuilder<'_> {
                     .pretty_lexical_patterns()
                     .iter()
                     .any(|lexical_pattern| {
-                        fixed_then_pattern_intersects_pattern(
-                            &left_fixed.spelling,
-                            pattern,
-                            lexical_pattern,
+                        fixed_pretty_spellings(
+                            left_fixed,
+                            self.resolved.configuration.syntax.text_equivalence,
                         )
+                        .iter()
+                        .any(|left| {
+                            fixed_then_pattern_intersects_pattern(left, pattern, lexical_pattern)
+                        })
                     })
                 {
                     diagnostics.push(SourceModelDiagnostic {
@@ -1906,14 +1973,28 @@ impl SourceModelBuilder<'_> {
             return;
         }
 
-        let combined = format!("{}{}", left_fixed.spelling, right_fixed.spelling);
+        let equivalence = self.resolved.configuration.syntax.text_equivalence;
+        let left_spellings = fixed_pretty_spellings(left_fixed, equivalence);
+        let right_spellings = fixed_pretty_spellings(right_fixed, equivalence);
         if let Some(longer) = self.tokens.definitions.iter().find_map(|definition| {
             let TokenDefinitionKind::Fixed(candidate) = &definition.kind else {
                 return None;
             };
-            (candidate.spelling.len() > left_fixed.spelling.len()
-                && combined.starts_with(&candidate.spelling))
-            .then_some(candidate)
+            let candidate_spellings = fixed_pretty_spellings(candidate, equivalence);
+            left_spellings
+                .iter()
+                .any(|left| {
+                    right_spellings.iter().any(|right| {
+                        candidate_spellings.iter().any(|candidate| {
+                            fixed_pair_crosses_pattern(
+                                left,
+                                right,
+                                &regex_syntax::escape(candidate),
+                            )
+                        })
+                    })
+                })
+                .then_some(candidate)
         }) {
             diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InvalidConfiguration,
@@ -1926,38 +2007,19 @@ impl SourceModelBuilder<'_> {
             return;
         }
 
-        let pattern = self
-            .tokens
-            .definitions
-            .iter()
-            .find_map(|definition| match &definition.kind {
-                TokenDefinitionKind::Content(content)
-                    if pattern_matches_entire(&content.pattern, &combined) =>
-                {
-                    Some(content.pattern.as_str())
-                }
-                TokenDefinitionKind::LexicalBase(base)
-                    if pattern_matches_entire(&base.pattern, &combined) =>
-                {
-                    Some(base.pattern.as_str())
-                }
-                TokenDefinitionKind::Fixed(_)
-                | TokenDefinitionKind::Content(_)
-                | TokenDefinitionKind::LexicalBase(_) => None,
-            })
-            .or_else(|| {
-                self.tokens
-                    .lexer_records
+        let pattern = self.pretty_lexical_patterns().into_iter().find(|pattern| {
+            left_spellings.iter().any(|left| {
+                right_spellings
                     .iter()
-                    .find(|record| pattern_matches_entire(&record.pattern, &combined))
-                    .map(|record| record.pattern.as_str())
-            });
+                    .any(|right| fixed_pair_crosses_pattern(left, right, pattern))
+            })
+        });
         if let Some(pattern) = pattern {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::InvalidConfiguration,
                 sites: vec![left_site.clone(), right_site.clone()],
                 message: format!(
-                    "Pretty spacing would suppress a lexer-required boundary between `{}` and `{}`; lexical pattern `{pattern}` would change tokenization",
+                        "Pretty spacing would suppress a lexer-required boundary between `{}` and `{}`; lexical pattern `{pattern}` would change tokenization",
                     left_fixed.spelling, right_fixed.spelling,
                 ),
             });
@@ -6042,6 +6104,8 @@ recursa::tokens! { punctuation { LPAREN => "(", RPAREN => ")", WHOLE => "()" } }
             ":",
             r"[A-Za-z:]+"
         ));
+        assert!(pattern_then_fixed_intersects_pattern("a", "bc", "ab"));
+        assert!(fixed_then_pattern_intersects_pattern("a", "bc", "ab"));
     }
 
     #[test]
@@ -6063,6 +6127,54 @@ struct Lexeme<'input> {
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
                 && diagnostic.message.contains("lexical pattern")
+        }));
+    }
+
+    #[test]
+    fn pretty_spacing_checks_crossing_prefixes_from_callback_lexical_rules() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { SUFFIX => "+c" }
+    lexer_tokens { MERGED => r"a\+" with crate::extend_merged }
+}
+#[derive(recursa::Node)]
+struct Prefix<'input> { #[lex(pattern = "a")] value: PrefixText<'input> }
+#[derive(recursa::Node)] #[tok(SUFFIX)] struct Suffix;
+#[derive(recursa::Node)] struct Root<'input> { left: Prefix<'input>, right: Suffix }
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("lexer boundary")
+        }));
+    }
+
+    #[test]
+    fn ascii_insensitive_pretty_boundaries_check_canonical_fixed_spelling() {
+        let report = model(
+            r#"
+recursa::grammar! {
+    module = crate,
+    derives(Pretty),
+    keyword_matching = ascii_insensitive,
+}
+recursa::tokens! {
+    keywords { WORD => "word" }
+    punctuation { COLON => ":" }
+    lexer_tokens { UPPER_MERGED => r"WORD:" }
+}
+#[derive(recursa::Node)] #[tok(WORD, COLON)] struct Root;
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains(r#"lexical pattern `WORD:`"#)
         }));
     }
 
