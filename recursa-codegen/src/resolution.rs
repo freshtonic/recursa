@@ -328,6 +328,8 @@ pub(crate) enum ResolutionDiagnosticKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolutionDiagnostic {
     pub(crate) kind: ResolutionDiagnosticKind,
+    pub(crate) module: Option<ModuleId>,
+    pub(crate) logical_module: Option<Vec<String>>,
     pub(crate) path: PathBuf,
     pub(crate) range: Option<Range<u32>>,
     pub(crate) message: String,
@@ -617,6 +619,7 @@ impl Resolver<'_> {
                     Err(error) => {
                         self.push_site_diagnostic(
                             ResolutionDiagnosticKind::InvalidConfiguration,
+                            inclusion.id,
                             inclusion.source,
                             Some(error.range),
                             error.message,
@@ -680,6 +683,7 @@ impl Resolver<'_> {
                         self.cfg,
                         &mut self.diagnostics,
                         &self.tree,
+                        inclusion.id,
                         inclusion.source,
                     );
                     let mut fields = Vec::new();
@@ -836,6 +840,7 @@ impl Resolver<'_> {
         if self.binding_by_name.contains_key(&key) {
             self.push_site_diagnostic(
                 ResolutionDiagnosticKind::DuplicateDeclaration,
+                binding.module,
                 binding.source,
                 Some(binding.range),
                 format!(
@@ -945,6 +950,7 @@ impl Resolver<'_> {
             if self.binding_by_name.contains_key(&key) {
                 self.push_site_diagnostic(
                     ResolutionDiagnosticKind::TokenBindingCollision,
+                    binding.module,
                     binding.source,
                     Some(binding.range),
                     format!(
@@ -1068,6 +1074,7 @@ impl Resolver<'_> {
                 let directive = self.import_directives[import.index()].clone();
                 self.push_site_diagnostic(
                     ResolutionDiagnosticKind::DuplicateExplicitImport,
+                    directive.module,
                     directive.source,
                     Some(directive.range),
                     format!("repeated explicit import of semantic name `{name}`"),
@@ -1125,6 +1132,7 @@ impl Resolver<'_> {
         {
             self.push_site_diagnostic(
                 ResolutionDiagnosticKind::ExternalPath,
+                directive.module,
                 directive.source,
                 Some(directive.range.clone()),
                 "external re-export graphs are outside the closed semantic catalog".to_owned(),
@@ -1136,6 +1144,7 @@ impl Resolver<'_> {
         if self.import_visibility_exceeds_target(directive, &import_resolution) {
             self.push_site_diagnostic(
                 ResolutionDiagnosticKind::InaccessibleReexport,
+                directive.module,
                 directive.source,
                 Some(directive.range.clone()),
                 "import visibility exceeds the terminal binding's visibility".to_owned(),
@@ -1312,6 +1321,7 @@ impl Resolver<'_> {
         };
         self.push_site_diagnostic(
             kind,
+            directive.module,
             directive.source,
             Some(directive.range.clone()),
             format!("explicit import `{name}` collides with an existing binding"),
@@ -1343,6 +1353,7 @@ impl Resolver<'_> {
             {
                 self.push_site_diagnostic(
                     ResolutionDiagnosticKind::AmbiguousImport,
+                    directive.module,
                     directive.source,
                     Some(directive.range),
                     message,
@@ -1379,13 +1390,20 @@ impl Resolver<'_> {
                         directive.names.join("::")
                     );
                 }
-                self.push_site_diagnostic(kind, directive.source, Some(directive.range), message);
+                self.push_site_diagnostic(
+                    kind,
+                    directive.module,
+                    directive.source,
+                    Some(directive.range),
+                    message,
+                );
                 continue;
             }
             match self.resolve_import_target(&directive) {
                 Err((ResolutionDiagnosticKind::Inaccessible, message)) => {
                     self.push_site_diagnostic(
                         ResolutionDiagnosticKind::InaccessibleReexport,
+                        directive.module,
                         directive.source,
                         Some(directive.range),
                         message,
@@ -1394,6 +1412,7 @@ impl Resolver<'_> {
                 Err((ResolutionDiagnosticKind::InaccessibleTokenBinding, message)) => {
                     self.push_site_diagnostic(
                         ResolutionDiagnosticKind::InaccessibleTokenBinding,
+                        directive.module,
                         directive.source,
                         Some(directive.range),
                         message,
@@ -1402,6 +1421,7 @@ impl Resolver<'_> {
                 Err((ResolutionDiagnosticKind::AmbiguousImport, message)) => {
                     self.push_site_diagnostic(
                         ResolutionDiagnosticKind::AmbiguousImport,
+                        directive.module,
                         directive.source,
                         Some(directive.range),
                         message,
@@ -1410,6 +1430,7 @@ impl Resolver<'_> {
                 Err((kind, message)) if !matches!(directive.visibility, Visibility::Inherited) => {
                     self.push_site_diagnostic(
                         kind,
+                        directive.module,
                         directive.source,
                         Some(directive.range),
                         message,
@@ -1417,6 +1438,7 @@ impl Resolver<'_> {
                 }
                 Err((kind, message)) => self.push_site_diagnostic(
                     kind,
+                    directive.module,
                     directive.source,
                     Some(directive.range),
                     message,
@@ -1427,6 +1449,7 @@ impl Resolver<'_> {
                     } else {
                         ResolutionDiagnosticKind::UnsupportedDeclaration
                     },
+                    directive.module,
                     directive.source,
                     Some(directive.range),
                     "import did not produce a usable semantic binding".to_owned(),
@@ -1755,6 +1778,7 @@ impl Resolver<'_> {
             if self.visibility_scope(&binding).is_none() {
                 self.push_site_diagnostic(
                     ResolutionDiagnosticKind::InvalidVisibility,
+                    binding.module,
                     binding.source,
                     Some(binding.range),
                     format!(
@@ -1777,6 +1801,7 @@ impl Resolver<'_> {
             {
                 self.push_site_diagnostic(
                     ResolutionDiagnosticKind::InvalidVisibility,
+                    directive.module,
                     directive.source,
                     Some(directive.range),
                     "glob import visibility is not an enclosing selected module".to_owned(),
@@ -1891,7 +1916,7 @@ impl Resolver<'_> {
                         Some((target, trace))
                     }
                     Err((kind, message)) => {
-                        self.push_site_diagnostic(kind, source, Some(path_range), message);
+                        self.push_site_diagnostic(kind, module, source, Some(path_range), message);
                         None
                     }
                 };
@@ -2265,12 +2290,15 @@ impl Resolver<'_> {
     fn push_site_diagnostic(
         &mut self,
         kind: ResolutionDiagnosticKind,
+        module: ModuleId,
         source: SourceId,
         range: Option<Range<u32>>,
         message: String,
     ) {
         self.diagnostics.push(ResolutionDiagnostic {
             kind,
+            module: Some(module),
+            logical_module: Some(self.tree.inclusions[module.index()].logical_path.clone()),
             path: self.tree.files[source.index()].path.clone(),
             range,
             message,
@@ -2316,6 +2344,8 @@ fn find_grammar_config(
                 Err(error) => {
                     diagnostics.push(ResolutionDiagnostic {
                         kind: ResolutionDiagnosticKind::InvalidConfiguration,
+                        module: Some(inclusion.id),
+                        logical_module: Some(inclusion.logical_path.clone()),
                         path: tree.files[inclusion.source.index()].path.clone(),
                         range: Some(error.range),
                         message: error.message,
@@ -2334,6 +2364,8 @@ fn find_grammar_config(
                 Ok(syntax) if syntax.facade_explicit || macro_root == "recursa" => {
                     diagnostics.push(ResolutionDiagnostic {
                         kind: ResolutionDiagnosticKind::InvalidGrammarConfig,
+                        module: Some(inclusion.id),
+                        logical_module: Some(inclusion.logical_path.clone()),
                         path: tree.files[inclusion.source.index()].path.clone(),
                         range: Some(span_range(item.mac.path.span())),
                         message: "grammar invocation must use the configured facade mapping"
@@ -2344,6 +2376,8 @@ fn find_grammar_config(
                 Err(_) if macro_root != "recursa" => {}
                 Err(error) => diagnostics.push(ResolutionDiagnostic {
                     kind: ResolutionDiagnosticKind::InvalidGrammarConfig,
+                    module: Some(inclusion.id),
+                    logical_module: Some(inclusion.logical_path.clone()),
                     path: tree.files[inclusion.source.index()].path.clone(),
                     range: Some(span_range(error.span())),
                     message: error.to_string(),
@@ -2357,6 +2391,8 @@ fn find_grammar_config(
         }
         diagnostics.push(ResolutionDiagnostic {
             kind: ResolutionDiagnosticKind::MissingGrammarConfig,
+            module: Some(tree.inclusions[0].id),
+            logical_module: Some(tree.inclusions[0].logical_path.clone()),
             path: tree.files[tree.inclusions[0].source.index()].path.clone(),
             range: None,
             message: "expected one active grammar configuration".to_owned(),
@@ -2367,6 +2403,8 @@ fn find_grammar_config(
         for (inclusion, item, _) in configurations.iter().skip(1) {
             diagnostics.push(ResolutionDiagnostic {
                 kind: ResolutionDiagnosticKind::MultipleGrammarConfigs,
+                module: Some(inclusion.id),
+                logical_module: Some(inclusion.logical_path.clone()),
                 path: tree.files[inclusion.source.index()].path.clone(),
                 range: Some(span_range(item.mac.path.span())),
                 message: "multiple active grammar configurations".to_owned(),
@@ -2382,6 +2420,8 @@ fn find_grammar_config(
         None => {
             diagnostics.push(ResolutionDiagnostic {
                 kind: ResolutionDiagnosticKind::InvalidGrammarConfig,
+                module: Some(inclusion.id),
+                logical_module: Some(inclusion.logical_path.clone()),
                 path: tree.files[inclusion.source.index()].path.clone(),
                 range: Some(span_range(syntax.module.span())),
                 message: "module anchor must be `crate` or a path below `crate`".to_owned(),
@@ -2468,6 +2508,7 @@ fn configured_node_body(
     cfg: &CargoCfgSnapshot,
     diagnostics: &mut Vec<ResolutionDiagnostic>,
     tree: &DiscoveredModuleTree,
+    module: ModuleId,
     source: SourceId,
 ) -> ConfiguredNodeBody {
     fn configured_fields(
@@ -2475,6 +2516,7 @@ fn configured_node_body(
         cfg: &CargoCfgSnapshot,
         diagnostics: &mut Vec<ResolutionDiagnostic>,
         tree: &DiscoveredModuleTree,
+        module: ModuleId,
         source: SourceId,
     ) -> Vec<ConfiguredNodeField> {
         fields
@@ -2485,6 +2527,8 @@ fn configured_node_body(
                 Err(error) => {
                     diagnostics.push(ResolutionDiagnostic {
                         kind: ResolutionDiagnosticKind::InvalidConfiguration,
+                        module: Some(module),
+                        logical_module: Some(tree.inclusions[module.index()].logical_path.clone()),
                         path: tree.files[source.index()].path.clone(),
                         range: Some(error.range),
                         message: error.message,
@@ -2498,7 +2542,14 @@ fn configured_node_body(
     match item {
         Item::Struct(item) => ConfiguredNodeBody::Struct {
             unit: matches!(item.fields, syn::Fields::Unit),
-            fields: configured_fields(item.fields.iter().cloned(), cfg, diagnostics, tree, source),
+            fields: configured_fields(
+                item.fields.iter().cloned(),
+                cfg,
+                diagnostics,
+                tree,
+                module,
+                source,
+            ),
         },
         Item::Enum(item) => ConfiguredNodeBody::Enum {
             variants: item
@@ -2514,6 +2565,7 @@ fn configured_node_body(
                             cfg,
                             diagnostics,
                             tree,
+                            module,
                             source,
                         ),
                     }),
@@ -2521,6 +2573,10 @@ fn configured_node_body(
                     Err(error) => {
                         diagnostics.push(ResolutionDiagnostic {
                             kind: ResolutionDiagnosticKind::InvalidConfiguration,
+                            module: Some(module),
+                            logical_module: Some(
+                                tree.inclusions[module.index()].logical_path.clone(),
+                            ),
                             path: tree.files[source.index()].path.clone(),
                             range: Some(error.range),
                             message: error.message,
@@ -2769,6 +2825,7 @@ mod tests {
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
+    use crate::m3::{M3Input, analyze_source_tree};
     use crate::source_syntax::CargoCfgSnapshot;
 
     fn write(package: &Path, relative: &str, source: &str) {
@@ -2799,6 +2856,280 @@ mod tests {
 
     fn resolve(package: &TempDir, source: &str) -> super::ResolutionReport {
         resolve_with_cfg(package, source, &CargoCfgSnapshot::default())
+    }
+
+    fn assert_m3_codes(package: &TempDir, source: &str, expected: &[&str]) {
+        write(package.path(), "grammar/root.rs", source);
+        let mut cargo = Vec::new();
+        let error = analyze_source_tree(
+            M3Input::new(
+                package.path(),
+                Path::new("grammar/root.rs"),
+                RustEdition::Rust2024,
+                CargoCfgSnapshot::default(),
+            ),
+            &mut cargo,
+        )
+        .expect_err("fixture must fail before generation");
+        assert_eq!(
+            error
+                .diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.code().as_str())
+                .collect::<Vec<_>>(),
+            expected,
+        );
+    }
+
+    #[test]
+    fn rca1015_reports_a_missing_grammar_configuration() {
+        assert_m3_codes(&TempDir::new().unwrap(), "struct Root;", &["RCA1015"]);
+    }
+
+    #[test]
+    fn rca1016_reports_multiple_active_grammar_configurations() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            concat!(
+                "recursa::grammar! { module = crate }\n",
+                "recursa::grammar! { module = crate }\n",
+            ),
+            &["RCA1016"],
+        );
+    }
+
+    #[test]
+    fn rca1017_reports_an_invalid_grammar_configuration() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            "recursa::grammar! { module = self::sql }",
+            &["RCA1017"],
+        );
+    }
+
+    #[test]
+    fn rca2002_reports_invalid_item_configuration() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            concat!(
+                "recursa::grammar! { module = crate }\n",
+                "#[cfg()] struct Root;\n",
+            ),
+            &["RCA2002"],
+        );
+    }
+
+    #[test]
+    fn rca2003_reports_duplicate_type_namespace_declarations() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            concat!(
+                "recursa::grammar! { module = crate }\n",
+                "struct Duplicate;\n",
+                "struct Duplicate;\n",
+            ),
+            &["RCA2003"],
+        );
+    }
+
+    #[test]
+    fn rca2004_reports_a_duplicate_explicit_import() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+mod source { #[derive(recursa::Node)] pub struct Leaf { this: Self } }
+mod consumer {
+    use super::source::Leaf;
+    use super::source::Leaf;
+    #[derive(recursa::Node)] struct Root { value: Leaf }
+}
+"#,
+            &["RCA2004"],
+        );
+    }
+
+    #[test]
+    fn rca2005_reports_an_import_collision() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+mod source { #[derive(recursa::Node)] pub struct Leaf { this: Self } }
+mod consumer {
+    use super::source::Leaf as Root;
+    #[derive(recursa::Node)] struct Root { this: Self }
+}
+"#,
+            &["RCA2005"],
+        );
+    }
+
+    #[test]
+    fn rca2006_reports_an_ambiguous_import_used_by_a_node() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+mod one { #[derive(recursa::Node)] pub struct Shared { this: Self } }
+mod two { #[derive(recursa::Node)] pub struct Shared { this: Self } }
+mod consumer {
+    use super::one::*;
+    use super::two::*;
+    #[derive(recursa::Node)] struct Root { value: Shared }
+}
+"#,
+            &["RCA2006"],
+        );
+    }
+
+    #[test]
+    fn rca2007_reports_an_inaccessible_reexport() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+mod parent {
+    #[derive(recursa::Node)] struct Private { this: Self }
+    pub mod exports { pub use super::Private; }
+}
+"#,
+            &["RCA2007"],
+        );
+    }
+
+    #[test]
+    fn rca2008_reports_a_content_token_binding_collision() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+#[derive(recursa::Node)] struct Ident { this: Self }
+#[derive(recursa::Node)] struct Definition {
+    #[lex(pattern = r".+")] value: Ident,
+}
+"#,
+            &["RCA2008"],
+        );
+    }
+
+    #[test]
+    fn rca2009_reports_an_inaccessible_content_token_binding() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+mod tokens {
+    #[derive(recursa::Node)]
+    struct Definition { #[lex(pattern = r".+")] value: Ident }
+}
+mod consumer {
+    #[derive(recursa::Node)] struct Root { value: super::tokens::Ident }
+}
+"#,
+            &["RCA2009"],
+        );
+    }
+
+    #[test]
+    fn rca2010_reports_a_visibility_outside_the_selected_tree() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+#[derive(recursa::Node)]
+pub(in crate::outside) struct Root { this: Self }
+"#,
+            &["RCA2010"],
+        );
+    }
+
+    #[test]
+    fn rca2011_reports_an_unsupported_local_declaration() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+struct Vec;
+#[derive(recursa::Node)] struct Root { value: Vec }
+"#,
+            &["RCA2011"],
+        );
+    }
+
+    #[test]
+    fn rca2012_reports_an_unresolved_grammar_semantic_reference() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+#[derive(recursa::Node)] struct Root { value: Missing }
+"#,
+            &["RCA2012"],
+        );
+    }
+
+    #[test]
+    fn rca2013_reports_an_inaccessible_local_declaration() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+mod left { #[derive(recursa::Node)] struct Private { this: Self } }
+mod right {
+    #[derive(recursa::Node)] struct Root { value: super::left::Private }
+}
+"#,
+            &["RCA2013"],
+        );
+    }
+
+    #[test]
+    fn rca2014_reports_a_reference_above_the_selected_root_anchor() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+#[derive(recursa::Node)] struct Root { value: super::Root }
+"#,
+            &["RCA2014"],
+        );
+    }
+
+    #[test]
+    fn rca2015_reports_a_crate_path_outside_the_selected_root_anchor() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+#[derive(recursa::Node)] struct Root { value: crate::outside::Thing }
+"#,
+            &["RCA2015"],
+        );
+    }
+
+    #[test]
+    fn rca2016_reports_an_external_path() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+#[derive(recursa::Node)] struct Root { value: dependency::Thing }
+"#,
+            &["RCA2016"],
+        );
+    }
+
+    #[test]
+    fn rca2017_reports_a_leading_external_path() {
+        assert_m3_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! { module = crate::sql }
+#[derive(recursa::Node)] struct Root { value: ::std::vec::Vec }
+"#,
+            &["RCA2017"],
+        );
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub enum DiagnosticCode {
     PrattLedOverlap,
     NullableFollowOverlap,
     PrattFollowOverlap,
+    InternalAnalysisInvariant,
 }
 
 impl DiagnosticCode {
@@ -31,6 +32,7 @@ impl DiagnosticCode {
             Self::PrattLedOverlap => "RCA0203",
             Self::NullableFollowOverlap => "RCA0300",
             Self::PrattFollowOverlap => "RCA0301",
+            Self::InternalAnalysisInvariant => "RCA9104",
         }
     }
 }
@@ -62,6 +64,7 @@ pub enum Remedy {
     CorrectGrammar,
     CorrectReference,
     BreakLeftRecursion { cycle: Vec<TypeId> },
+    ReportInternalFailure,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -170,6 +173,9 @@ impl Remedy {
             Self::BreakLeftRecursion { .. } => {
                 "express recursive branches as Pratt led variants or move recursion after a required token"
             }
+            Self::ReportInternalFailure => {
+                "report this internal invariant failure with the authored grammar"
+            }
         }
     }
 }
@@ -212,6 +218,21 @@ impl Diagnostic {
             message,
             secondary: Vec::new(),
             remedy: Some(Remedy::CorrectReference),
+            conflict: None,
+            lookahead: None,
+            conflict_remedy: None,
+        }
+    }
+
+    pub(crate) fn internal_analysis_invariant(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self {
+            code: DiagnosticCode::InternalAnalysisInvariant,
+            severity: Severity::Error,
+            primary: DiagnosticLabel::unlocated(message.clone()),
+            message,
+            secondary: Vec::new(),
+            remedy: Some(Remedy::ReportInternalFailure),
             conflict: None,
             lookahead: None,
             conflict_remedy: None,

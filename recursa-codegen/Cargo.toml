@@ -10,7 +10,7 @@ repository.workspace = true
 proc-macro2 = { version = "1", features = ["span-locations"] }
 regex-automata = "0.4"
 regex-syntax = "0.8"
-syn = { version = "2", features = ["extra-traits", "full", "parsing"] }
+syn = { version = "2", features = ["extra-traits", "full", "parsing", "visit"] }
 unicode-ident = "1"
 
 [dev-dependencies]

@@ -12,7 +12,7 @@ use syn::GenericParam;
 use crate::lexical::{
     LexicalDiagnostic, LexicalPlan, TokenDefinitionKindCorrelation, kind_label, plan_lexical,
 };
-use crate::lowering::{NodeId, RustEdition, TokenUseId};
+use crate::lowering::{NodeId, TokenUseId};
 use crate::resolution::{
     CatalogType, ContentTokenId, GenericParameterId, ResolutionTraceId, ResolvedFieldId,
     ResolvedGenericArgument, ResolvedNode, ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind,
@@ -20,10 +20,12 @@ use crate::resolution::{
 };
 use crate::source_model::{
     DeclaredRepetition, GrammarElement, NodeBody, Separator, SourceModel, SourceModeledGrammar,
+    SourcePrattPosition, SourcePrattVariant,
 };
 use crate::{
     AtomDescription, AtomExpression, ContainerShape, DeclId, Declaration, GrammarDescription,
-    KindDescription, Location, ParseSite, SiteId, SourceId, TypeDescription, TypeId, TypeShape,
+    KindDescription, Location, ParseSite, PrattPosition, RepeatSeparator, SiteId, SourceId,
+    TypeDescription, TypeId, TypeShape,
 };
 
 macro_rules! materialization_id {
@@ -68,7 +70,7 @@ pub(crate) struct LoweringMap {
     pub(crate) content_targets: Vec<ContentTargetTypeCorrelation>,
     pub(crate) applications: Vec<ApplicationTypeCorrelation>,
     pub(crate) variants: Vec<VariantAlternativeCorrelation>,
-    pub(crate) fields: Vec<MaterializedFieldSiteCorrelation>,
+    pub(crate) fields: Vec<MaterializedFieldCorrelation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,10 +93,16 @@ pub(crate) struct ApplicationTypeCorrelation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MaterializedFieldSiteCorrelation {
+pub(crate) struct MaterializedFieldCorrelation {
     pub(crate) application: MaterializedApplicationId,
     pub(crate) field: ResolvedFieldId,
-    pub(crate) lowered: SiteId,
+    pub(crate) lowered: MaterializedFieldLowering,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MaterializedFieldLowering {
+    ParseSite(SiteId),
+    PrattLhs { owner: TypeId, variant: DeclId },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,21 +125,59 @@ pub(crate) enum MaterializedNodeBody {
     Struct(Vec<MaterializedElement>),
     Presence(Vec<MaterializedElement>),
     Enum(Vec<MaterializedVariant>),
+    Pratt(Vec<MaterializedPrattVariant>),
 }
 
 impl MaterializedNodeBody {
-    fn elements(&self) -> impl Iterator<Item = &MaterializedElement> {
-        let direct = match self {
-            Self::Struct(elements) | Self::Presence(elements) => elements.as_slice(),
-            Self::Enum(_) => &[],
-        };
-        let variants = match self {
-            Self::Enum(variants) => variants.as_slice(),
-            Self::Struct(_) | Self::Presence(_) => &[],
-        };
-        direct
-            .iter()
-            .chain(variants.iter().flat_map(|variant| variant.elements.iter()))
+    fn parsed_elements(&self) -> impl Iterator<Item = &MaterializedElement> {
+        let mut elements = Vec::new();
+        match self {
+            Self::Struct(direct) | Self::Presence(direct) => elements.extend(direct),
+            Self::Enum(variants) => {
+                elements.extend(variants.iter().flat_map(|variant| &variant.elements));
+            }
+            Self::Pratt(variants) => {
+                elements.extend(
+                    variants
+                        .iter()
+                        .flat_map(MaterializedPrattVariant::parsed_elements),
+                );
+            }
+        }
+        elements.into_iter()
+    }
+
+    fn fields(&self) -> impl Iterator<Item = MaterializedFieldView<'_>> {
+        let mut fields = Vec::new();
+        match self {
+            Self::Struct(elements) | Self::Presence(elements) => {
+                fields.extend(elements.iter().filter_map(MaterializedFieldView::parsed));
+            }
+            Self::Enum(variants) => {
+                fields.extend(variants.iter().flat_map(|variant| {
+                    variant
+                        .elements
+                        .iter()
+                        .filter_map(MaterializedFieldView::parsed)
+                }));
+            }
+            Self::Pratt(variants) => {
+                for variant in variants {
+                    match variant {
+                        MaterializedPrattVariant::Nud(nud) => {
+                            fields
+                                .extend(nud.body.iter().filter_map(MaterializedFieldView::parsed));
+                        }
+                        MaterializedPrattVariant::Led(led) => {
+                            fields.push(MaterializedFieldView::PrattLhs(&led.lhs));
+                            fields
+                                .extend(led.tail.iter().filter_map(MaterializedFieldView::parsed));
+                        }
+                    }
+                }
+            }
+        }
+        fields.into_iter()
     }
 }
 
@@ -140,6 +186,68 @@ pub(crate) struct MaterializedVariant {
     pub(crate) resolved_variant: ResolvedVariantId,
     pub(crate) name: String,
     pub(crate) elements: Vec<MaterializedElement>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MaterializedPrattVariant {
+    Nud(MaterializedPrattNud),
+    Led(MaterializedPrattLed),
+}
+
+impl MaterializedPrattVariant {
+    fn common(&self) -> &MaterializedPrattCommon {
+        match self {
+            Self::Nud(variant) => &variant.common,
+            Self::Led(variant) => &variant.common,
+        }
+    }
+
+    fn parsed_elements(&self) -> std::slice::Iter<'_, MaterializedElement> {
+        match self {
+            Self::Nud(variant) => variant.body.iter(),
+            Self::Led(variant) => variant.tail.iter(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializedPrattCommon {
+    pub(crate) resolved_variant: ResolvedVariantId,
+    pub(crate) name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializedPrattNud {
+    pub(crate) common: MaterializedPrattCommon,
+    pub(crate) position: MaterializedPrattNudPosition,
+    pub(crate) body: Vec<MaterializedElement>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MaterializedPrattNudPosition {
+    Atom,
+    Prefix { bp: u8 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializedPrattLed {
+    pub(crate) common: MaterializedPrattCommon,
+    pub(crate) position: MaterializedPrattLedPosition,
+    pub(crate) lhs: MaterializedPrattLhs,
+    pub(crate) tail: Vec<MaterializedElement>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MaterializedPrattLedPosition {
+    Infix { lbp: u8, rbp: u8 },
+    Postfix { bp: u8 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializedPrattLhs {
+    pub(crate) field: ResolvedFieldId,
+    pub(crate) owner: MaterializedNodeUse,
+    pub(crate) trace: MaterializationTrace,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -155,10 +263,44 @@ pub(crate) enum MaterializedElement {
     },
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum MaterializedFieldView<'a> {
+    Parsed {
+        field: ResolvedFieldId,
+        ty: &'a ClosedType,
+        trace: &'a MaterializationTrace,
+        separator: Option<&'a Separator>,
+    },
+    PrattLhs(&'a MaterializedPrattLhs),
+}
+
+impl<'a> MaterializedFieldView<'a> {
+    fn parsed(element: &'a MaterializedElement) -> Option<Self> {
+        match element {
+            MaterializedElement::SemanticField {
+                field,
+                ty,
+                trace,
+                separator,
+            } => Some(Self::Parsed {
+                field: *field,
+                ty,
+                trace,
+                separator: separator.as_ref(),
+            }),
+            MaterializedElement::FixedToken { .. } => None,
+        }
+    }
+}
+
 impl MaterializedNodeApplication {
-    pub(crate) fn fields(&self) -> impl Iterator<Item = &MaterializedElement> {
+    pub(crate) fn fields(&self) -> impl Iterator<Item = MaterializedFieldView<'_>> {
+        self.body.fields()
+    }
+
+    pub(crate) fn parsed_fields(&self) -> impl Iterator<Item = &MaterializedElement> {
         self.body
-            .elements()
+            .parsed_elements()
             .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
     }
 }
@@ -198,12 +340,12 @@ pub(crate) enum MaterializationTraceStep {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum MaterializationDiagnosticKind {
-    UnsupportedEdition,
     OpenApplication,
     ConstGeneric,
     UnsupportedType,
     InvalidArguments,
     InvalidContainer,
+    InvalidPrattShape,
     AliasCycle,
     NonRegularRecursion,
 }
@@ -211,6 +353,8 @@ pub(crate) enum MaterializationDiagnosticKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MaterializationDiagnostic {
     pub(crate) kind: MaterializationDiagnosticKind,
+    pub(crate) module: Option<crate::lowering::ModuleId>,
+    pub(crate) logical_module: Option<Vec<String>>,
     pub(crate) path: PathBuf,
     pub(crate) range: Option<Range<u32>>,
     pub(crate) message: String,
@@ -277,7 +421,7 @@ struct EvaluationEnvironment {
 
 struct Materializer {
     source_modeled: SourceModeledGrammar,
-    lexical_plan: LexicalPlan,
+    lexical_plan: Option<LexicalPlan>,
     application_by_key: BTreeMap<ApplicationKey, MaterializedApplicationId>,
     applications: Vec<MaterializedNodeApplication>,
     diagnostics: Vec<MaterializationDiagnostic>,
@@ -287,26 +431,25 @@ struct Materializer {
 
 pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> MaterializationReport {
     let lexical = plan_lexical(&source_modeled);
-    let Some(lexical_plan) = lexical.plan else {
-        return MaterializationReport {
-            lexical_diagnostics: lexical.diagnostics,
-            diagnostics: Vec::new(),
-            lowered: None,
-        };
-    };
     let materializer = Materializer {
         source_modeled,
-        lexical_plan,
+        lexical_plan: lexical.plan,
         application_by_key: BTreeMap::new(),
         applications: Vec::new(),
         diagnostics: Vec::new(),
         active_aliases: Vec::new(),
         active_applications: Vec::new(),
     };
-    materializer.run()
+    materializer.run(lexical.diagnostics)
 }
 
 impl Materializer {
+    fn lexical_plan(&self) -> &LexicalPlan {
+        self.lexical_plan
+            .as_ref()
+            .expect("M2 projection runs only after successful lexical planning")
+    }
+
     fn resolved(&self) -> &ResolvedSourceGrammar {
         self.source_modeled.resolved()
     }
@@ -316,7 +459,7 @@ impl Materializer {
     }
 
     fn kind_for_definition(&self, definition: crate::lowering::TokenDefinitionId) -> crate::KindId {
-        self.lexical_plan
+        self.lexical_plan()
             .lowering_map
             .token_definitions
             .iter()
@@ -326,15 +469,7 @@ impl Materializer {
             .expect("every source token definition has a lexical KindId correlation")
     }
 
-    fn run(mut self) -> MaterializationReport {
-        if self.resolved().build_inputs.discovery.edition != RustEdition::Rust2024 {
-            self.diagnostics.push(MaterializationDiagnostic {
-                kind: MaterializationDiagnosticKind::UnsupportedEdition,
-                path: self.resolved().build_inputs.discovery.selected_root.clone(),
-                range: None,
-                message: "M3 materialization currently supports only Rust 2024".to_owned(),
-            });
-        }
+    fn run(mut self, lexical_diagnostics: Vec<LexicalDiagnostic>) -> MaterializationReport {
         let seeds = self
             .resolved()
             .nodes
@@ -352,8 +487,15 @@ impl Materializer {
         }
         if !self.diagnostics.is_empty() {
             return MaterializationReport {
-                lexical_diagnostics: Vec::new(),
+                lexical_diagnostics,
                 diagnostics: std::mem::take(&mut self.diagnostics),
+                lowered: None,
+            };
+        }
+        if !lexical_diagnostics.is_empty() {
+            return MaterializationReport {
+                lexical_diagnostics,
+                diagnostics: Vec::new(),
                 lowered: None,
             };
         }
@@ -363,7 +505,9 @@ impl Materializer {
             diagnostics: Vec::new(),
             lowered: Some(LoweredGrammar {
                 source_modeled: self.source_modeled,
-                lexical_plan: self.lexical_plan,
+                lexical_plan: self
+                    .lexical_plan
+                    .expect("successful lexical planning precedes M2 projection"),
                 applications: self.applications,
                 grammar,
                 lowering_map,
@@ -513,11 +657,232 @@ impl Materializer {
                         })
                         .collect(),
                 ),
+                NodeBody::Pratt(variants) => MaterializedNodeBody::Pratt(
+                    variants
+                        .into_iter()
+                        .filter_map(|variant| {
+                            self.materialize_pratt_variant(variant, &current_use, &environment)
+                        })
+                        .collect(),
+                ),
             };
         self.applications[id.index()].body = body;
         let popped = self.active_applications.pop();
         debug_assert!(popped.is_some_and(|application| application.node == node_id));
         Some(id)
+    }
+
+    fn materialize_pratt_variant(
+        &mut self,
+        variant: SourcePrattVariant,
+        current_application: &MaterializedNodeUse,
+        environment: &EvaluationEnvironment,
+    ) -> Option<MaterializedPrattVariant> {
+        let common = MaterializedPrattCommon {
+            resolved_variant: variant.common.resolved_variant,
+            name: variant.common.name,
+        };
+        let mut elements =
+            self.materialize_elements(&variant.common.elements, current_application, environment);
+        match variant.position {
+            SourcePrattPosition::Atom => {
+                Some(MaterializedPrattVariant::Nud(MaterializedPrattNud {
+                    common,
+                    position: MaterializedPrattNudPosition::Atom,
+                    body: elements,
+                }))
+            }
+            SourcePrattPosition::Prefix { bp } => {
+                if !self.validate_single_pratt_operand(
+                    common.resolved_variant,
+                    current_application,
+                    &elements,
+                    "prefix",
+                ) {
+                    return None;
+                }
+                Some(MaterializedPrattVariant::Nud(MaterializedPrattNud {
+                    common,
+                    position: MaterializedPrattNudPosition::Prefix { bp },
+                    body: elements,
+                }))
+            }
+            SourcePrattPosition::Infix { lbp, rbp } => {
+                let lhs = self.take_pratt_lhs(
+                    common.resolved_variant,
+                    current_application,
+                    &mut elements,
+                )?;
+                if !self.validate_single_pratt_operand(
+                    common.resolved_variant,
+                    current_application,
+                    &elements,
+                    "infix rhs",
+                ) {
+                    return None;
+                }
+                Some(MaterializedPrattVariant::Led(MaterializedPrattLed {
+                    common,
+                    position: MaterializedPrattLedPosition::Infix { lbp, rbp },
+                    lhs,
+                    tail: elements,
+                }))
+            }
+            SourcePrattPosition::Postfix { bp } => {
+                let lhs = self.take_pratt_lhs(
+                    common.resolved_variant,
+                    current_application,
+                    &mut elements,
+                )?;
+                Some(MaterializedPrattVariant::Led(MaterializedPrattLed {
+                    common,
+                    position: MaterializedPrattLedPosition::Postfix { bp },
+                    lhs,
+                    tail: elements,
+                }))
+            }
+        }
+    }
+
+    fn validate_single_pratt_operand(
+        &mut self,
+        variant: ResolvedVariantId,
+        current_application: &MaterializedNodeUse,
+        elements: &[MaterializedElement],
+        role: &str,
+    ) -> bool {
+        let semantic = elements
+            .iter()
+            .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
+            .collect::<Vec<_>>();
+        if semantic.len() != 1 {
+            let (source, range) = self.resolved_variant_site(variant);
+            self.push_diagnostic(
+                source,
+                Some(range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                format!(
+                    "a Pratt {role} requires exactly one Box<Self> operand; found {} semantic fields",
+                    semantic.len(),
+                ),
+            );
+            return false;
+        }
+        if exact_pratt_self_operand(semantic[0], current_application) {
+            return true;
+        }
+        let MaterializedElement::SemanticField { field, .. } = semantic[0] else {
+            unreachable!("Pratt operand selection contains only semantic fields")
+        };
+        let resolved_field = self.resolved_field(*field).clone();
+        self.push_diagnostic(
+            resolved_field.ty.source,
+            Some(resolved_field.range),
+            MaterializationDiagnosticKind::InvalidPrattShape,
+            format!("a Pratt {role} operand must be an authored Box<Self> for this application"),
+        );
+        false
+    }
+
+    fn resolved_variant_site(&self, variant: ResolvedVariantId) -> (SourceId, Range<u32>) {
+        self.resolved()
+            .nodes
+            .iter()
+            .find_map(|node| match &node.body {
+                crate::resolution::ResolvedNodeBody::Enum { variants } => variants
+                    .iter()
+                    .find(|candidate| candidate.id == variant)
+                    .map(|variant| (node.source, variant.range.clone())),
+                crate::resolution::ResolvedNodeBody::Struct { .. } => None,
+            })
+            .expect("source Pratt variant has a resolved identity")
+    }
+
+    fn take_pratt_lhs(
+        &mut self,
+        variant: ResolvedVariantId,
+        current_application: &MaterializedNodeUse,
+        elements: &mut Vec<MaterializedElement>,
+    ) -> Option<MaterializedPrattLhs> {
+        let (variant_source, resolved_variant) = self
+            .resolved()
+            .nodes
+            .iter()
+            .find_map(|node| match &node.body {
+                crate::resolution::ResolvedNodeBody::Enum { variants } => variants
+                    .iter()
+                    .find(|candidate| candidate.id == variant)
+                    .map(|variant| (node.source, variant)),
+                crate::resolution::ResolvedNodeBody::Struct { .. } => None,
+            })
+            .map(|(source, variant)| (source, variant.clone()))
+            .expect("source Pratt variant has a resolved identity");
+        let Some(lhs_field) = resolved_variant.fields.first().copied() else {
+            self.push_diagnostic(
+                variant_source,
+                Some(resolved_variant.range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                "a Pratt led variant requires a first Box<Self> field for its implicit lhs"
+                    .to_owned(),
+            );
+            return None;
+        };
+        let Some(index) = elements.iter().position(|element| {
+            matches!(element, MaterializedElement::SemanticField { field, .. } if *field == lhs_field)
+        }) else {
+            self.push_diagnostic(
+                variant_source,
+                Some(resolved_variant.range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                "a Pratt led variant requires a materializable first Box<Self> field".to_owned(),
+            );
+            return None;
+        };
+        if elements[..index]
+            .iter()
+            .any(|element| matches!(element, MaterializedElement::FixedToken { .. }))
+        {
+            let resolved_field = self.resolved_field(lhs_field).clone();
+            self.push_diagnostic(
+                resolved_field.ty.source,
+                Some(resolved_field.range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                "fixed syntax before the implicit Pratt lhs cannot be consumed by a led variant"
+                    .to_owned(),
+            );
+            return None;
+        }
+        let MaterializedElement::SemanticField {
+            field,
+            ty,
+            trace,
+            separator,
+        } = elements.remove(index)
+        else {
+            unreachable!("the selected Pratt lhs element is semantic")
+        };
+        if !exact_pratt_self_parts(&ty, &trace, separator.as_ref(), current_application) {
+            let resolved_field = self.resolved_field(field).clone();
+            self.push_diagnostic(
+                resolved_field.ty.source,
+                Some(resolved_field.range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                "the first field of a Pratt led variant must be an authored Box<Self> for this application"
+                    .to_owned(),
+            );
+            return None;
+        }
+        let ClosedType::Boxed(inner) = ty else {
+            unreachable!("validated Pratt lhs is boxed")
+        };
+        let ClosedType::Node(owner) = *inner else {
+            unreachable!("validated Pratt lhs targets the owning Node")
+        };
+        Some(MaterializedPrattLhs {
+            field,
+            owner,
+            trace,
+        })
     }
 
     fn materialize_elements(
@@ -989,7 +1354,7 @@ impl Materializer {
                 .module_anchor
                 .segments
                 .join("::"),
-            self.lexical_plan.token_kinds.len(),
+            self.lexical_plan().token_kinds.len(),
             self.resolved().build_inputs.max_lookahead,
             self.resolved().build_inputs.text_equivalence,
         );
@@ -1000,11 +1365,11 @@ impl Materializer {
             .len()
             .try_into()
             .expect("source count overflow");
-        let mut kind_atoms = Vec::with_capacity(self.lexical_plan.token_kinds.len());
+        let mut kind_atoms = Vec::with_capacity(self.lexical_plan().token_kinds.len());
         let mut fixed_types = BTreeMap::new();
-        for kind_plan in &self.lexical_plan.token_kinds {
+        for kind_plan in &self.lexical_plan().token_kinds {
             let source_definition = self
-                .lexical_plan
+                .lexical_plan()
                 .lowering_map
                 .token_definitions
                 .iter()
@@ -1044,7 +1409,7 @@ impl Materializer {
             }
         }
         let mut content_types = BTreeMap::new();
-        for target in &self.lexical_plan.parser_targets {
+        for target in &self.lexical_plan().parser_targets {
             let source_definition =
                 &self.source_model().token_definitions[target.definition.index()];
             let site = &source_definition.definition_sites[0];
@@ -1115,6 +1480,7 @@ impl Materializer {
                         &fixed_types,
                         &content_types,
                         &mut field_correlations,
+                        0,
                     ),
                 },
                 MaterializedNodeBody::Enum(variants) => TypeShape::Enum {
@@ -1157,7 +1523,102 @@ impl Materializer {
                                     &fixed_types,
                                     &content_types,
                                     &mut field_correlations,
+                                    0,
                                 ),
+                            }
+                        })
+                        .collect(),
+                },
+                MaterializedNodeBody::Pratt(variants) => TypeShape::Pratt {
+                    variants: variants
+                        .iter()
+                        .map(|variant| {
+                            let common = variant.common();
+                            let source_variant = self
+                                .source_model()
+                                .nodes
+                                .iter()
+                                .find(|node| node.resolved_node == application.node)
+                                .expect("materialized Node belongs to source model")
+                                .pratt_variants()
+                                .iter()
+                                .find(|source_variant| {
+                                    source_variant.common.resolved_variant
+                                        == common.resolved_variant
+                                })
+                                .expect("typed Pratt variant belongs to materialized Node");
+                            let location = grammar.push_location(Location::new(
+                                source_variant.common.site.source,
+                                source_variant.common.site.range.clone(),
+                            ));
+                            let declaration = grammar.push_declaration(Declaration::new(
+                                format!("{}::{}", application.display_name, common.name),
+                                location,
+                            ));
+                            variant_correlations.push(VariantAlternativeCorrelation {
+                                application: application.id,
+                                variant: common.resolved_variant,
+                                lowered: declaration,
+                            });
+                            match variant {
+                                MaterializedPrattVariant::Nud(nud) => {
+                                    let (position, min_bp) = match nud.position {
+                                        MaterializedPrattNudPosition::Atom => {
+                                            (PrattPosition::Atom, 0)
+                                        }
+                                        MaterializedPrattNudPosition::Prefix { bp } => {
+                                            (PrattPosition::Prefix { bp }, bp)
+                                        }
+                                    };
+                                    crate::PrattVariant {
+                                        declaration,
+                                        position,
+                                        sites: self.project_elements(
+                                            &mut grammar,
+                                            application,
+                                            owner,
+                                            &nud.body,
+                                            terminal_type_count,
+                                            &fixed_types,
+                                            &content_types,
+                                            &mut field_correlations,
+                                            min_bp,
+                                        ),
+                                    }
+                                }
+                                MaterializedPrattVariant::Led(led) => {
+                                    field_correlations.push(MaterializedFieldCorrelation {
+                                        application: application.id,
+                                        field: led.lhs.field,
+                                        lowered: MaterializedFieldLowering::PrattLhs {
+                                            owner,
+                                            variant: declaration,
+                                        },
+                                    });
+                                    let (position, min_bp) = match led.position {
+                                        MaterializedPrattLedPosition::Infix { lbp, rbp } => {
+                                            (PrattPosition::Infix { lbp, rbp }, rbp)
+                                        }
+                                        MaterializedPrattLedPosition::Postfix { bp } => {
+                                            (PrattPosition::Postfix { bp }, 0)
+                                        }
+                                    };
+                                    crate::PrattVariant {
+                                        declaration,
+                                        position,
+                                        sites: self.project_elements(
+                                            &mut grammar,
+                                            application,
+                                            owner,
+                                            &led.tail,
+                                            terminal_type_count,
+                                            &fixed_types,
+                                            &content_types,
+                                            &mut field_correlations,
+                                            min_bp,
+                                        ),
+                                    }
+                                }
                             }
                         })
                         .collect(),
@@ -1186,7 +1647,7 @@ impl Materializer {
                         lowered: source.id,
                     })
                     .collect(),
-                token_definitions: self.lexical_plan.lowering_map.token_definitions.clone(),
+                token_definitions: self.lexical_plan().lowering_map.token_definitions.clone(),
                 content_targets: content_types
                     .iter()
                     .map(|(semantic, lowered)| ContentTargetTypeCorrelation {
@@ -1211,7 +1672,8 @@ impl Materializer {
         terminal_type_count: usize,
         fixed_types: &BTreeMap<crate::KindId, TypeId>,
         content_types: &BTreeMap<ContentTokenId, TypeId>,
-        field_correlations: &mut Vec<MaterializedFieldSiteCorrelation>,
+        field_correlations: &mut Vec<MaterializedFieldCorrelation>,
+        recursive_min_bp: u8,
     ) -> Vec<SiteId> {
         elements
             .iter()
@@ -1252,7 +1714,10 @@ impl Materializer {
                     let separator_type = separator.as_ref().map(|separator| {
                         let token_use =
                             &self.source_model().token_uses[separator.token_use.index()];
-                        fixed_types[&self.kind_for_definition(token_use.definition)]
+                        RepeatSeparator::new(
+                            fixed_types[&self.kind_for_definition(token_use.definition)],
+                            separator.optional_trailing,
+                        )
                     });
                     let (terminal, container) = terminal_and_container(ty, separator_type);
                     let target = match terminal {
@@ -1263,12 +1728,15 @@ impl Materializer {
                         ),
                         Terminal::ContentToken(token) => content_types[&token],
                     };
-                    let site =
-                        grammar.push_site(ParseSite::new(owner, target, declaration, container));
-                    field_correlations.push(MaterializedFieldSiteCorrelation {
+                    let mut parse_site = ParseSite::new(owner, target, declaration, container);
+                    if is_recursive_pratt_operand(ty, application.id) {
+                        parse_site = parse_site.with_min_bp(recursive_min_bp);
+                    }
+                    let site = grammar.push_site(parse_site);
+                    field_correlations.push(MaterializedFieldCorrelation {
                         application: application.id,
                         field: *field,
-                        lowered: site,
+                        lowered: MaterializedFieldLowering::ParseSite(site),
                     });
                     site
                 }
@@ -1312,7 +1780,13 @@ impl Materializer {
         kind: MaterializationDiagnosticKind,
         message: String,
     ) {
-        self.push_diagnostic(node.source, Some(node.range.clone()), kind, message);
+        self.push_diagnostic_in_module(
+            Some(node.module),
+            node.source,
+            Some(node.range.clone()),
+            kind,
+            message,
+        );
     }
 
     fn push_invalid_arguments(&mut self, ty: &ResolvedType, name: &str) {
@@ -1331,8 +1805,29 @@ impl Materializer {
         kind: MaterializationDiagnosticKind,
         message: String,
     ) {
+        let module = self
+            .active_applications
+            .last()
+            .map(|application| self.resolved().nodes[application.node.index()].module);
+        self.push_diagnostic_in_module(module, source, range, kind, message);
+    }
+
+    fn push_diagnostic_in_module(
+        &mut self,
+        module: Option<crate::lowering::ModuleId>,
+        source: crate::SourceId,
+        range: Option<Range<u32>>,
+        kind: MaterializationDiagnosticKind,
+        message: String,
+    ) {
         self.diagnostics.push(MaterializationDiagnostic {
             kind,
+            module,
+            logical_module: module.map(|module| {
+                self.resolved().tree.inclusions[module.index()]
+                    .logical_path
+                    .clone()
+            }),
             path: self.resolved().tree.files[source.index()].path.clone(),
             range,
             message,
@@ -1373,9 +1868,57 @@ enum Terminal {
     ContentToken(ContentTokenId),
 }
 
+fn exact_pratt_self_operand(
+    element: &MaterializedElement,
+    current_application: &MaterializedNodeUse,
+) -> bool {
+    let MaterializedElement::SemanticField {
+        ty,
+        trace,
+        separator,
+        ..
+    } = element
+    else {
+        return false;
+    };
+    exact_pratt_self_parts(ty, trace, separator.as_ref(), current_application)
+}
+
+fn exact_pratt_self_parts(
+    ty: &ClosedType,
+    trace: &MaterializationTrace,
+    separator: Option<&Separator>,
+    current_application: &MaterializedNodeUse,
+) -> bool {
+    let ClosedType::Boxed(inner) = ty else {
+        return false;
+    };
+    let ClosedType::Node(owner) = inner.as_ref() else {
+        return false;
+    };
+    separator.is_none()
+        && owner == current_application
+        && trace
+            .steps
+            .contains(&MaterializationTraceStep::SelfApplication(
+                current_application.application,
+            ))
+}
+
+fn is_recursive_pratt_operand(ty: &ClosedType, owner: MaterializedApplicationId) -> bool {
+    match ty {
+        ClosedType::Node(node) => node.application == owner,
+        ClosedType::Boxed(inner)
+        | ClosedType::Optional(inner)
+        | ClosedType::ZeroOrMore(inner)
+        | ClosedType::OneOrMore(inner) => is_recursive_pratt_operand(inner, owner),
+        ClosedType::ContentToken(_) => false,
+    }
+}
+
 fn terminal_and_container(
     ty: &ClosedType,
-    separator: Option<TypeId>,
+    separator: Option<RepeatSeparator>,
 ) -> (Terminal, ContainerShape) {
     match ty {
         ClosedType::Node(node) => (Terminal::Node(node.application), ContainerShape::Direct),
@@ -1390,11 +1933,25 @@ fn terminal_and_container(
         }
         ClosedType::ZeroOrMore(inner) => {
             let (terminal, shape) = terminal_and_container(inner, None);
-            (terminal, ContainerShape::zero_or_more(shape, separator))
+            (
+                terminal,
+                ContainerShape::repeated_with_separator(
+                    shape,
+                    crate::RepetitionCardinality::ZeroOrMore,
+                    separator,
+                ),
+            )
         }
         ClosedType::OneOrMore(inner) => {
             let (terminal, shape) = terminal_and_container(inner, None);
-            (terminal, ContainerShape::one_or_more(shape, separator))
+            (
+                terminal,
+                ContainerShape::repeated_with_separator(
+                    shape,
+                    crate::RepetitionCardinality::OneOrMore,
+                    separator,
+                ),
+            )
         }
     }
 }
@@ -1408,14 +1965,16 @@ mod tests {
 
     use super::{
         ClosedType, MaterializationDiagnosticKind, MaterializationTraceStep, MaterializedElement,
-        MaterializedNodeApplication, materialize,
+        MaterializedFieldLowering, MaterializedFieldView, MaterializedNodeApplication,
+        MaterializedNodeBody, MaterializedPrattLed, MaterializedPrattLedPosition,
+        MaterializedPrattNud, MaterializedPrattNudPosition, MaterializedPrattVariant, materialize,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
     use crate::resolution::{ResolutionInput, resolve_local_semantics};
     use crate::source_model::{SourceModelInput, lower_source_model};
     use crate::source_syntax::CargoCfgSnapshot;
-    use crate::{AtomExpression, KindSet, TypeShape};
+    use crate::{AtomExpression, ContainerShape, KindSet, TypeShape};
 
     fn resolve_report(source: &str) -> crate::resolution::ResolutionReport {
         let package = TempDir::new().unwrap();
@@ -1474,6 +2033,15 @@ mod tests {
             }),
         )
         .unwrap()
+    }
+
+    fn assert_code(
+        diagnostic: &super::MaterializationDiagnostic,
+        kind: MaterializationDiagnosticKind,
+        code: &str,
+    ) {
+        assert_eq!(diagnostic.kind, kind);
+        assert_eq!(crate::m3::materialization_code(diagnostic.kind), code);
     }
 
     #[test]
@@ -1604,7 +2172,7 @@ struct Root {
         application: &MaterializedNodeApplication,
     ) -> Vec<(&ClosedType, &super::MaterializationTrace)> {
         application
-            .fields()
+            .parsed_fields()
             .map(|element| match element {
                 MaterializedElement::SemanticField { ty, trace, .. } => (ty, trace),
                 MaterializedElement::FixedToken { .. } => unreachable!("filtered semantic field"),
@@ -1851,6 +2419,11 @@ recursa::grammar! { module = crate::invalid }
                 .collect::<Vec<_>>(),
             [MaterializationDiagnosticKind::InvalidContainer; 5],
         );
+        assert!(
+            invalid_containers.diagnostics.iter().all(|diagnostic| {
+                crate::m3::materialization_code(diagnostic.kind) == "RCA3206"
+            })
+        );
 
         let unsupported = materialize(resolve(
             r#"
@@ -1879,6 +2452,14 @@ recursa::grammar! { module = crate::invalid }
                 MaterializationDiagnosticKind::ConstGeneric,
             ],
         );
+        assert_eq!(
+            unsupported
+                .diagnostics
+                .iter()
+                .map(|diagnostic| crate::m3::materialization_code(diagnostic.kind))
+                .collect::<Vec<_>>(),
+            ["RCA3202", "RCA3204", "RCA3204", "RCA3203"],
+        );
 
         let aliases = materialize(resolve(
             r#"
@@ -1888,9 +2469,10 @@ type B = A;
 #[derive(recursa::Node)] struct Root { value: A }
 "#,
         ));
-        assert_eq!(
-            aliases.diagnostics[0].kind,
+        assert_code(
+            &aliases.diagnostics[0],
             MaterializationDiagnosticKind::AliasCycle,
+            "RCA3207",
         );
 
         let default_cycle = materialize(resolve(
@@ -1913,9 +2495,23 @@ recursa::grammar! { module = crate::invalid }
 #[derive(recursa::Node)] struct Root { value: Growing<Leaf> }
 "#,
         ));
-        assert_eq!(
-            changing.diagnostics[0].kind,
+        assert_code(
+            &changing.diagnostics[0],
             MaterializationDiagnosticKind::NonRegularRecursion,
+            "RCA3208",
+        );
+
+        let invalid_arguments = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::invalid }
+#[derive(recursa::Node)] struct Leaf;
+#[derive(recursa::Node)] struct Root { value: Option<Leaf, Leaf> }
+"#,
+        ));
+        assert_code(
+            &invalid_arguments.diagnostics[0],
+            MaterializationDiagnosticKind::InvalidArguments,
+            "RCA3205",
         );
 
         for source in [
@@ -2118,6 +2714,377 @@ enum Choice {
     }
 
     #[test]
+    fn all_atom_pratt_remains_pratt_in_m2() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::atoms }
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {
+    #[tok("INT")]
+    Int,
+    #[tok("NAME")]
+    Name,
+}
+"#,
+        ));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.unwrap();
+        let expr = lowered
+            .applications
+            .iter()
+            .find(|application| application.display_name == "atoms::Expr")
+            .unwrap();
+        let correlation = lowered
+            .lowering_map
+            .applications
+            .iter()
+            .find(|correlation| correlation.application == expr.id)
+            .unwrap();
+        let TypeShape::Pratt { variants } =
+            &lowered.grammar.types[correlation.lowered.index()].shape
+        else {
+            panic!("#[pratt] must not collapse to an ordinary enum")
+        };
+        assert_eq!(
+            variants
+                .iter()
+                .map(|variant| variant.position)
+                .collect::<Vec<_>>(),
+            [crate::PrattPosition::Atom, crate::PrattPosition::Atom],
+        );
+    }
+
+    #[test]
+    fn materializes_pratt_nud_led_thresholds_and_typed_lhs_correlations() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::arith }
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {
+    #[tok("INT")]
+    Int,
+    #[parse(prefix, bp = 30)]
+    #[tok("-")]
+    Neg(Box<Self>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok("+")]
+    Add(Box<Self>, Box<Self>),
+    #[parse(postfix, bp = 40)]
+    #[tok("!")]
+    Factorial(Box<Self>),
+}
+"#,
+        ));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.unwrap();
+        let expr = lowered
+            .applications
+            .iter()
+            .find(|application| application.display_name == "arith::Expr")
+            .unwrap();
+        let MaterializedNodeBody::Pratt(materialized_variants) = &expr.body else {
+            panic!("materialized Expr is Pratt")
+        };
+        assert!(matches!(
+            materialized_variants[0],
+            MaterializedPrattVariant::Nud(MaterializedPrattNud {
+                position: MaterializedPrattNudPosition::Atom,
+                ..
+            })
+        ));
+        assert!(matches!(
+            materialized_variants[1],
+            MaterializedPrattVariant::Nud(MaterializedPrattNud {
+                position: MaterializedPrattNudPosition::Prefix { bp: 30 },
+                ..
+            })
+        ));
+        let MaterializedPrattVariant::Led(infix) = &materialized_variants[2] else {
+            panic!("Add is a typed led variant")
+        };
+        assert_eq!(
+            infix.position,
+            MaterializedPrattLedPosition::Infix { lbp: 10, rbp: 11 },
+        );
+        assert_eq!(infix.lhs.owner.application, expr.id);
+        assert_eq!(
+            infix
+                .tail
+                .iter()
+                .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
+                .count(),
+            1,
+        );
+        assert!(matches!(
+            materialized_variants[3],
+            MaterializedPrattVariant::Led(MaterializedPrattLed {
+                position: MaterializedPrattLedPosition::Postfix { bp: 40 },
+                ..
+            })
+        ));
+        assert_eq!(
+            expr.fields().count(),
+            4,
+            "the all-field seam includes both implicit led lhs fields",
+        );
+        assert_eq!(
+            expr.fields()
+                .filter(|field| matches!(field, MaterializedFieldView::PrattLhs(_)))
+                .count(),
+            2,
+        );
+        let expr_type = lowered
+            .lowering_map
+            .applications
+            .iter()
+            .find(|correlation| correlation.application == expr.id)
+            .unwrap()
+            .lowered;
+        let TypeShape::Pratt { variants } = &lowered.grammar.types[expr_type.index()].shape else {
+            panic!("Expr is Pratt")
+        };
+        assert_eq!(
+            variants
+                .iter()
+                .map(|variant| variant.position)
+                .collect::<Vec<_>>(),
+            [
+                crate::PrattPosition::Atom,
+                crate::PrattPosition::Prefix { bp: 30 },
+                crate::PrattPosition::Infix { lbp: 10, rbp: 11 },
+                crate::PrattPosition::Postfix { bp: 40 },
+            ],
+        );
+        let prefix_recursive = variants[1]
+            .sites
+            .iter()
+            .map(|site| &lowered.grammar.sites[site.index()])
+            .find(|site| site.target == expr_type)
+            .unwrap();
+        assert_eq!(prefix_recursive.min_bp, 30);
+        let infix_recursive = variants[2]
+            .sites
+            .iter()
+            .map(|site| &lowered.grammar.sites[site.index()])
+            .find(|site| site.target == expr_type)
+            .unwrap();
+        assert_eq!(infix_recursive.min_bp, 11);
+        assert_eq!(
+            lowered
+                .lowering_map
+                .fields
+                .iter()
+                .filter(|correlation| matches!(
+                    correlation.lowered,
+                    MaterializedFieldLowering::PrattLhs { owner, .. } if owner == expr_type
+                ))
+                .count(),
+            2,
+        );
+        let lhs_variants = lowered
+            .lowering_map
+            .fields
+            .iter()
+            .filter_map(|correlation| match correlation.lowered {
+                MaterializedFieldLowering::PrattLhs { variant, .. } => Some(variant),
+                MaterializedFieldLowering::ParseSite(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lhs_variants,
+            [variants[2].declaration, variants[3].declaration],
+        );
+        assert_eq!(
+            lowered
+                .lowering_map
+                .fields
+                .iter()
+                .filter(|correlation| matches!(
+                    correlation.lowered,
+                    MaterializedFieldLowering::ParseSite(_)
+                ))
+                .count(),
+            2,
+        );
+        assert_eq!(variants[2].sites.len(), 2, "lhs is not an M2 parse site");
+        assert_eq!(variants[3].sites.len(), 1, "lhs is not an M2 parse site");
+    }
+
+    #[test]
+    fn rejects_missing_unboxed_and_foreign_pratt_lhs_fields() {
+        for invalid_variant in [
+            r#"#[parse(infix, lbp = 1, rbp = 2)] Missing"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] Unboxed(Self, Box<Self>)"#,
+            r#"#[parse(postfix, bp = 3)] Foreign(Box<Leaf>)"#,
+        ] {
+            let source = format!(
+                r#"
+recursa::grammar! {{ module = crate::invalid }}
+#[derive(recursa::Node)]
+struct Leaf;
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {{ {invalid_variant} }}
+"#,
+            );
+            let report = materialize(resolve(&source));
+            assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
+            assert!(report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
+            }));
+            let diagnostic = report
+                .diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
+                })
+                .unwrap();
+            assert_eq!(crate::m3::materialization_code(diagnostic.kind), "RCA3209");
+        }
+    }
+
+    #[test]
+    fn rejects_prefix_and_infix_without_exact_recursive_operand_shapes() {
+        let invalid_variants = [
+            r#"#[parse(prefix, bp = 1)] Unit"#,
+            r#"#[parse(prefix, bp = 1)] Unboxed(Self)"#,
+            r#"#[parse(prefix, bp = 1)] Foreign(Box<Leaf>)"#,
+            r#"#[parse(prefix, bp = 1)] Multiple(Box<Self>, Box<Self>)"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] OnlyLhs(Box<Self>)"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] ForeignRhs(Box<Self>, Box<Leaf>)"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] MultipleRhs(Box<Self>, Box<Self>, Box<Self>)"#,
+        ];
+        for invalid_variant in invalid_variants {
+            let source = format!(
+                r#"
+recursa::grammar! {{ module = crate::invalid }}
+#[derive(recursa::Node)]
+struct Leaf;
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {{ {invalid_variant} }}
+"#,
+            );
+            let report = materialize(resolve(&source));
+            assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
+            assert!(report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
+            }));
+        }
+    }
+
+    #[test]
+    fn rejects_named_and_lifetime_mismatched_pratt_self_operands() {
+        let invalid_variants = [
+            r#"#[parse(prefix, bp = 1)] Named(Box<Expr<'input>>)"#,
+            r#"#[parse(prefix, bp = 1)] Static(Box<Expr<'static>>)"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] NamedLhs(Box<Expr<'input>>, Box<Self>)"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] NamedRhs(Box<Self>, Box<Expr<'input>>)"#,
+            r#"#[parse(infix, lbp = 1, rbp = 2)] StaticRhs(Box<Self>, Box<Expr<'static>>)"#,
+        ];
+        for invalid_variant in invalid_variants {
+            let source = format!(
+                r#"
+recursa::grammar! {{ module = crate::invalid }}
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {{ {invalid_variant} }}
+"#,
+            );
+            let report = materialize(resolve(&source));
+            assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
+            assert!(report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
+            }));
+        }
+    }
+
+    #[test]
+    fn rejects_fixed_syntax_attached_to_the_implicit_pratt_lhs() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::invalid }
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {
+    #[parse(infix, lbp = 1, rbp = 2)]
+    #[tok("+")]
+    Invalid(#[tok("(", this, ")")] Box<Self>, Box<Self>),
+}
+"#,
+        ));
+
+        assert!(report.lowered.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
+                && diagnostic.message.contains("implicit Pratt lhs")
+        }));
+    }
+
+    #[test]
+    fn preserves_fixed_syntax_attached_to_prefix_and_infix_rhs_operands() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::valid }
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {
+    #[tok("ATOM")]
+    Atom,
+    #[parse(prefix, bp = 3)]
+    #[tok("!")]
+    Prefix(#[tok("(", this, ")")] Box<Self>),
+    #[parse(infix, lbp = 1, rbp = 2)]
+    #[tok("+")]
+    Infix(
+        #[tok(this, "~")] Box<Self>,
+        #[tok("[", this, "]")] Box<Self>,
+    ),
+}
+"#,
+        ));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report
+            .lowered
+            .expect("valid interleaved syntax materializes");
+        let expr = lowered
+            .applications
+            .iter()
+            .find(|application| application.display_name == "valid::Expr")
+            .unwrap();
+        let MaterializedNodeBody::Pratt(variants) = &expr.body else {
+            panic!("Expr is Pratt")
+        };
+        let MaterializedPrattVariant::Nud(prefix) = &variants[1] else {
+            panic!("Prefix is nud")
+        };
+        assert_eq!(
+            prefix
+                .body
+                .iter()
+                .filter(|element| matches!(element, MaterializedElement::FixedToken { .. }))
+                .count(),
+            3,
+        );
+        let MaterializedPrattVariant::Led(infix) = &variants[2] else {
+            panic!("Infix is led")
+        };
+        assert_eq!(
+            infix
+                .tail
+                .iter()
+                .filter(|element| matches!(element, MaterializedElement::FixedToken { .. }))
+                .count(),
+            4,
+        );
+    }
+
+    #[test]
     fn separator_metadata_reaches_the_normalized_repeat_and_is_repeat_only() {
         let report = materialize(resolve(
             r#"
@@ -2147,6 +3114,21 @@ struct Root { #[sep(",", trailing)] values: NonEmpty<Leaf> }
             panic!("root is a sequence")
         };
         let site = &lowered.grammar.sites[sites[0].index()];
+        let ContainerShape::Optional(optional) = &site.container else {
+            panic!("NonEmpty alias keeps optional cardinality")
+        };
+        let ContainerShape::Boxed(boxed) = optional.as_ref() else {
+            panic!("NonEmpty alias keeps Box placement")
+        };
+        let ContainerShape::Repeat {
+            cardinality: crate::RepetitionCardinality::OneOrMore,
+            separator: Some(separator),
+            ..
+        } = boxed.as_ref()
+        else {
+            panic!("NonEmpty alias keeps one-or-more cardinality")
+        };
+        assert!(separator.optional_trailing);
         let mut separators = Vec::new();
         site.container
             .visit_separators(&mut |separator| separators.push(separator));
@@ -2154,7 +3136,7 @@ struct Root { #[sep(",", trailing)] values: NonEmpty<Leaf> }
         let MaterializedElement::SemanticField {
             separator: Some(separator),
             ..
-        } = root.fields().next().unwrap()
+        } = root.parsed_fields().next().unwrap()
         else {
             panic!("root field retains separator metadata")
         };
@@ -2171,6 +3153,60 @@ recursa::grammar! { module = crate::lists }
         assert_eq!(
             invalid.diagnostics[0].kind,
             MaterializationDiagnosticKind::InvalidContainer,
+        );
+    }
+
+    #[test]
+    fn normalized_repeats_keep_cardinality_and_optional_trailing_separately() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::lists }
+#[derive(recursa::Node)] struct Leaf { #[lex(pattern = "x")] text: Text }
+#[derive(recursa::Node)]
+struct Root {
+    #[sep(",")]
+    zero_or_more: Vec<Leaf>,
+    #[sep(";", trailing)]
+    one_or_more: recursa::Vec1<Leaf>,
+}
+"#,
+        ));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.unwrap();
+        let root = lowered
+            .applications
+            .iter()
+            .find(|application| application.display_name == "lists::Root")
+            .unwrap();
+        let root_type = lowered
+            .lowering_map
+            .applications
+            .iter()
+            .find(|correlation| correlation.application == root.id)
+            .unwrap()
+            .lowered;
+        let TypeShape::Sequence { sites } = &lowered.grammar.types[root_type.index()].shape else {
+            panic!("Root is a sequence")
+        };
+        let repetitions = sites
+            .iter()
+            .map(|site| &lowered.grammar.sites[site.index()].container)
+            .map(|container| match container {
+                ContainerShape::Repeat {
+                    cardinality,
+                    separator: Some(separator),
+                    ..
+                } => (*cardinality, separator.optional_trailing),
+                _ => panic!("separated field is a normalized repeat"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            repetitions,
+            [
+                (crate::RepetitionCardinality::ZeroOrMore, false),
+                (crate::RepetitionCardinality::OneOrMore, true),
+            ],
         );
     }
 }

@@ -113,6 +113,7 @@ pub(crate) enum NodeBody {
     Struct(Vec<GrammarElement>),
     Presence(Vec<GrammarElement>),
     Enum(Vec<Variant>),
+    Pratt(Vec<SourcePrattVariant>),
 }
 
 impl Node {
@@ -121,20 +122,28 @@ impl Node {
             NodeBody::Struct(_) => NodeShape::Struct,
             NodeBody::Presence(_) => NodeShape::Presence,
             NodeBody::Enum(_) => NodeShape::Enum,
+            NodeBody::Pratt(_) => NodeShape::Pratt,
         }
     }
 
     pub(crate) fn elements(&self) -> &[GrammarElement] {
         match &self.body {
             NodeBody::Struct(elements) | NodeBody::Presence(elements) => elements,
-            NodeBody::Enum(_) => &[],
+            NodeBody::Enum(_) | NodeBody::Pratt(_) => &[],
         }
     }
 
     pub(crate) fn variants(&self) -> &[Variant] {
         match &self.body {
             NodeBody::Enum(variants) => variants,
-            NodeBody::Struct(_) | NodeBody::Presence(_) => &[],
+            NodeBody::Struct(_) | NodeBody::Presence(_) | NodeBody::Pratt(_) => &[],
+        }
+    }
+
+    pub(crate) fn pratt_variants(&self) -> &[SourcePrattVariant] {
+        match &self.body {
+            NodeBody::Pratt(variants) => variants,
+            NodeBody::Struct(_) | NodeBody::Presence(_) | NodeBody::Enum(_) => &[],
         }
     }
 }
@@ -144,15 +153,21 @@ pub(crate) struct Variant {
     pub(crate) resolved_variant: ResolvedVariantId,
     pub(crate) name: String,
     pub(crate) elements: Vec<GrammarElement>,
-    pub(crate) pratt_role: Option<PrattRole>,
     pub(crate) site: SourceSite,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SourcePrattVariant {
+    pub(crate) common: Variant,
+    pub(crate) position: SourcePrattPosition,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PrattRole {
-    Prefix,
-    Infix,
-    Postfix,
+pub(crate) enum SourcePrattPosition {
+    Atom,
+    Prefix { bp: u8 },
+    Infix { lbp: u8, rbp: u8 },
+    Postfix { bp: u8 },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -203,6 +218,7 @@ pub(crate) enum ConfiguredTraitOwnership {
 pub(crate) enum NodeShape {
     Struct,
     Enum,
+    Pratt,
     Presence,
 }
 
@@ -350,6 +366,7 @@ pub(crate) enum TokenUseRole {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SourceSite {
     pub(crate) module: ModuleId,
+    pub(crate) logical_module: Vec<String>,
     pub(crate) source: crate::SourceId,
     pub(crate) path: PathBuf,
     pub(crate) range: Range<u32>,
@@ -440,7 +457,7 @@ enum TokenAttachment {
     Field,
     Variant,
     PrattVariant {
-        role: Option<PrattRole>,
+        position: SourcePrattPosition,
         second_field_attachment: Option<usize>,
     },
 }
@@ -568,6 +585,19 @@ impl SourceModelBuilder<'_> {
             let configured = &node.metas;
             let body = match &node.body {
                 ResolvedNodeBody::Struct { unit } => {
+                    reject_pratt_marker(
+                        &self.resolved,
+                        origin,
+                        configured,
+                        false,
+                        &mut self.diagnostics,
+                    );
+                    reject_pratt_roles_off_pratt(
+                        &self.resolved,
+                        origin,
+                        configured,
+                        &mut self.diagnostics,
+                    );
                     let field_ids = node.fields.iter().map(|field| field.id).collect::<Vec<_>>();
                     let fields = self.lower_fields(origin, &field_ids).into_elements();
                     let elements = PositionalTokenPlanner::lower(
@@ -609,46 +639,101 @@ impl SourceModelBuilder<'_> {
                                 .to_owned(),
                         });
                     }
-                    let is_pratt = configured.iter().any(|meta| meta.path().is_ident("pratt"));
-                    NodeBody::Enum(
-                        resolved_variants
-                            .iter()
-                            .map(|variant| {
-                                let pratt_role = PrattRole::from_attributes(
-                                    &self.resolved,
-                                    origin,
-                                    &variant.metas,
-                                    is_pratt,
-                                    &mut self.diagnostics,
-                                );
-                                let body = self.lower_fields(origin, &variant.fields);
-                                let second_field_attachment = body.second_attachment_start();
-                                let elements = PositionalTokenPlanner::lower(
-                                    &self.resolved,
-                                    &mut self.tokens,
-                                    &mut self.diagnostics,
-                                    origin,
-                                    &variant.metas,
-                                    body.into_elements(),
-                                    if is_pratt {
+                    reject_pratt_roles_off_pratt(
+                        &self.resolved,
+                        origin,
+                        configured,
+                        &mut self.diagnostics,
+                    );
+                    let is_pratt = reject_pratt_marker(
+                        &self.resolved,
+                        origin,
+                        configured,
+                        true,
+                        &mut self.diagnostics,
+                    );
+                    if is_pratt {
+                        NodeBody::Pratt(
+                            resolved_variants
+                                .iter()
+                                .map(|variant| {
+                                    reject_pratt_marker(
+                                        &self.resolved,
+                                        origin,
+                                        &variant.metas,
+                                        false,
+                                        &mut self.diagnostics,
+                                    );
+                                    let position = SourcePrattPosition::from_attributes(
+                                        &self.resolved,
+                                        origin,
+                                        &variant.metas,
+                                        &mut self.diagnostics,
+                                    );
+                                    let body = self.lower_fields(origin, &variant.fields);
+                                    let second_field_attachment = body.second_attachment_start();
+                                    let elements = PositionalTokenPlanner::lower(
+                                        &self.resolved,
+                                        &mut self.tokens,
+                                        &mut self.diagnostics,
+                                        origin,
+                                        &variant.metas,
+                                        body.into_elements(),
                                         TokenAttachment::PrattVariant {
-                                            role: pratt_role,
+                                            position,
                                             second_field_attachment,
-                                        }
-                                    } else {
-                                        TokenAttachment::Variant
-                                    },
-                                );
-                                Variant {
-                                    resolved_variant: variant.id,
-                                    name: variant.ident.clone(),
-                                    elements: reassign_element_ids(elements),
-                                    pratt_role,
-                                    site: self.site(origin, variant.range.clone()),
-                                }
-                            })
-                            .collect(),
-                    )
+                                        },
+                                    );
+                                    SourcePrattVariant {
+                                        common: Variant {
+                                            resolved_variant: variant.id,
+                                            name: variant.ident.clone(),
+                                            elements: reassign_element_ids(elements),
+                                            site: self.site(origin, variant.range.clone()),
+                                        },
+                                        position,
+                                    }
+                                })
+                                .collect(),
+                        )
+                    } else {
+                        NodeBody::Enum(
+                            resolved_variants
+                                .iter()
+                                .map(|variant| {
+                                    reject_pratt_marker(
+                                        &self.resolved,
+                                        origin,
+                                        &variant.metas,
+                                        false,
+                                        &mut self.diagnostics,
+                                    );
+                                    reject_pratt_roles_off_pratt(
+                                        &self.resolved,
+                                        origin,
+                                        &variant.metas,
+                                        &mut self.diagnostics,
+                                    );
+                                    let body = self.lower_fields(origin, &variant.fields);
+                                    let elements = PositionalTokenPlanner::lower(
+                                        &self.resolved,
+                                        &mut self.tokens,
+                                        &mut self.diagnostics,
+                                        origin,
+                                        &variant.metas,
+                                        body.into_elements(),
+                                        TokenAttachment::Variant,
+                                    );
+                                    Variant {
+                                        resolved_variant: variant.id,
+                                        name: variant.ident.clone(),
+                                        elements: reassign_element_ids(elements),
+                                        site: self.site(origin, variant.range.clone()),
+                                    }
+                                })
+                                .collect(),
+                        )
+                    }
                 }
             };
             let configured_traits = self.trait_planner.node_plan(
@@ -680,6 +765,19 @@ impl SourceModelBuilder<'_> {
             let field = &resolved_field.syntax;
             let field_configured = &resolved_field.metas;
             let site = self.site(origin, span_range(field.span()));
+            reject_pratt_marker(
+                &self.resolved,
+                origin,
+                field_configured,
+                false,
+                &mut self.diagnostics,
+            );
+            reject_pratt_roles_off_pratt(
+                &self.resolved,
+                origin,
+                field_configured,
+                &mut self.diagnostics,
+            );
             self.tokens.lower_content_definition(
                 &self.resolved,
                 &self.semantic_facts,
@@ -1467,14 +1565,14 @@ impl PositionalTokenPlanner {
     ) -> Vec<GrammarElement> {
         match attachment {
             TokenAttachment::PrattVariant {
-                role: Some(PrattRole::Postfix),
+                position: SourcePrattPosition::Postfix { .. },
                 ..
             } => {
                 body.extend(fixed);
                 body
             }
             TokenAttachment::PrattVariant {
-                role: Some(PrattRole::Infix),
+                position: SourcePrattPosition::Infix { .. },
                 second_field_attachment,
             } => {
                 let insertion = second_field_attachment.unwrap_or(body.len());
@@ -1485,7 +1583,7 @@ impl PositionalTokenPlanner {
             | TokenAttachment::Field
             | TokenAttachment::Variant
             | TokenAttachment::PrattVariant {
-                role: None | Some(PrattRole::Prefix),
+                position: SourcePrattPosition::Atom | SourcePrattPosition::Prefix { .. },
                 ..
             } => {
                 fixed.extend(body);
@@ -1518,23 +1616,19 @@ impl PositionalTokenPlanner {
     }
 }
 
-impl PrattRole {
+impl SourcePrattPosition {
     fn from_attributes(
         resolved: &ResolvedSourceGrammar,
         origin: SourceOrigin,
         metas: &[Meta],
-        is_pratt: bool,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
-    ) -> Option<Self> {
-        if !is_pratt {
-            return None;
-        }
+    ) -> Self {
         let parse_metas = metas
             .iter()
             .filter(|meta| meta.path().is_ident("parse"))
             .collect::<Vec<_>>();
         if parse_metas.is_empty() {
-            return None;
+            return Self::Atom;
         }
         if parse_metas.len() > 1 {
             diagnostics.push(SourceModelDiagnostic {
@@ -1546,7 +1640,7 @@ impl PrattRole {
                 message: "a Pratt variant accepts at most one #[parse(...)] operator role"
                     .to_owned(),
             });
-            return None;
+            return Self::Atom;
         }
         let meta = parse_metas[0];
         let Meta::List(list) = meta else {
@@ -1555,20 +1649,95 @@ impl PrattRole {
                 sites: vec![source_site(resolved, origin, span_range(meta.span()))],
                 message: "a Pratt #[parse] role must use parentheses".to_owned(),
             });
-            return None;
+            return Self::Atom;
         };
         match syn::parse2::<PrattSyntax>(list.tokens.clone()) {
-            Ok(syntax) => Some(syntax.role),
+            Ok(syntax) => syntax.position,
             Err(error) => {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
                     sites: vec![source_site(resolved, origin, span_range(error.span()))],
                     message: error.to_string(),
                 });
-                None
+                Self::Atom
             }
         }
     }
+}
+
+fn reject_pratt_marker(
+    resolved: &ResolvedSourceGrammar,
+    origin: SourceOrigin,
+    metas: &[Meta],
+    enum_body: bool,
+    diagnostics: &mut Vec<SourceModelDiagnostic>,
+) -> bool {
+    let pratt_metas = metas
+        .iter()
+        .filter(|meta| meta.path().is_ident("pratt"))
+        .collect::<Vec<_>>();
+    if pratt_metas.is_empty() {
+        return false;
+    }
+    if !enum_body {
+        diagnostics.push(SourceModelDiagnostic {
+            kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
+            sites: pratt_metas
+                .iter()
+                .map(|meta| source_site(resolved, origin, span_range(meta.span())))
+                .collect(),
+            message: "#[pratt] is valid only on an enum Node".to_owned(),
+        });
+        return false;
+    }
+    if pratt_metas.len() > 1 || !matches!(pratt_metas[0], Meta::Path(_)) {
+        diagnostics.push(SourceModelDiagnostic {
+            kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
+            sites: pratt_metas
+                .iter()
+                .map(|meta| source_site(resolved, origin, span_range(meta.span())))
+                .collect(),
+            message: "a Pratt enum requires exactly one marker-form #[pratt]".to_owned(),
+        });
+    }
+    true
+}
+
+fn reject_pratt_roles_off_pratt(
+    resolved: &ResolvedSourceGrammar,
+    origin: SourceOrigin,
+    metas: &[Meta],
+    diagnostics: &mut Vec<SourceModelDiagnostic>,
+) {
+    let parse_metas = metas
+        .iter()
+        .filter(|meta| is_pratt_role_meta(meta))
+        .collect::<Vec<_>>();
+    if !parse_metas.is_empty() {
+        diagnostics.push(SourceModelDiagnostic {
+            kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
+            sites: parse_metas
+                .iter()
+                .map(|meta| source_site(resolved, origin, span_range(meta.span())))
+                .collect(),
+            message: "Pratt #[parse(...)] roles are valid only on variants of a #[pratt] enum"
+                .to_owned(),
+        });
+    }
+}
+
+fn is_pratt_role_meta(meta: &Meta) -> bool {
+    let Meta::List(list) = meta else {
+        return false;
+    };
+    if !list.path.is_ident("parse") {
+        return false;
+    }
+    matches!(
+        list.tokens.clone().into_iter().next(),
+        Some(proc_macro2::TokenTree::Ident(role))
+            if role == "prefix" || role == "infix" || role == "postfix"
+    )
 }
 
 fn reject_misplaced_content_declarations(
@@ -1594,6 +1763,9 @@ fn source_site(
 ) -> SourceSite {
     SourceSite {
         module: origin.module,
+        logical_module: resolved.tree.inclusions[origin.module.index()]
+            .logical_path
+            .clone(),
         source: origin.source,
         path: resolved.tree.files[origin.source.index()].path.clone(),
         range,
@@ -1933,32 +2105,73 @@ enum FixedTokenSyntax {
 }
 
 struct PrattSyntax {
-    role: PrattRole,
+    position: SourcePrattPosition,
 }
 
 impl Parse for PrattSyntax {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let role = syn::Ident::parse_any(input)?;
-        let role = if role == "prefix" {
-            PrattRole::Prefix
-        } else if role == "infix" {
-            PrattRole::Infix
-        } else if role == "postfix" {
-            PrattRole::Postfix
-        } else {
+        let role_name = role.to_string();
+        if !matches!(role_name.as_str(), "prefix" | "infix" | "postfix") {
             return Err(syn::Error::new(
                 role.span(),
                 "Pratt role must be prefix, infix, or postfix",
             ));
-        };
+        }
+        let mut bp = None;
+        let mut lbp = None;
+        let mut rbp = None;
         while !input.is_empty() {
             input.parse::<Token![,]>()?;
             if input.is_empty() {
                 break;
             }
-            input.parse::<Meta>()?;
+            let key = syn::Ident::parse_any(input)?;
+            input.parse::<Token![=]>()?;
+            let value: syn::LitInt = input.parse()?;
+            let value = value.base10_parse::<u8>().map_err(|_| {
+                syn::Error::new(
+                    value.span(),
+                    "Pratt binding power must be a u8 from 0 to 255",
+                )
+            })?;
+            let slot = if key == "bp" {
+                &mut bp
+            } else if key == "lbp" {
+                &mut lbp
+            } else if key == "rbp" {
+                &mut rbp
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("unsupported Pratt binding-power setting `{key}`"),
+                ));
+            };
+            if slot.replace(value).is_some() {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("duplicate Pratt binding-power setting `{key}`"),
+                ));
+            }
         }
-        Ok(Self { role })
+        let position = match role_name.as_str() {
+            "prefix" if lbp.is_none() && rbp.is_none() => SourcePrattPosition::Prefix {
+                bp: bp.ok_or_else(|| input.error("prefix Pratt variant requires bp"))?,
+            },
+            "infix" if bp.is_none() => SourcePrattPosition::Infix {
+                lbp: lbp.ok_or_else(|| input.error("infix Pratt variant requires lbp"))?,
+                rbp: rbp.ok_or_else(|| input.error("infix Pratt variant requires rbp"))?,
+            },
+            "postfix" if lbp.is_none() && rbp.is_none() => SourcePrattPosition::Postfix {
+                bp: bp.ok_or_else(|| input.error("postfix Pratt variant requires bp"))?,
+            },
+            "prefix" | "postfix" => {
+                return Err(input.error("prefix and postfix Pratt variants accept only bp"));
+            }
+            "infix" => return Err(input.error("infix Pratt variants accept only lbp and rbp")),
+            _ => unreachable!("role spelling validated above"),
+        };
+        Ok(Self { position })
     }
 }
 
@@ -2236,6 +2449,15 @@ fn normalize_source_order(nodes: &mut [Node], tokens: &mut TokenCatalog) {
                     assign_ordered_elements(&mut variant.elements, &mut next_element, &use_remap);
                 }
             }
+            NodeBody::Pratt(variants) => {
+                for variant in variants {
+                    assign_ordered_elements(
+                        &mut variant.common.elements,
+                        &mut next_element,
+                        &use_remap,
+                    );
+                }
+            }
         }
     }
 }
@@ -2277,8 +2499,9 @@ mod tests {
 
     use super::{
         ConfiguredTraitOwnership, ConfiguredTraitRecipe, ContentTextStorage, DeclaredRepetition,
-        GrammarElement, GrammarElementKind, NodeShape, SourceModelDiagnosticKind, SourceModelInput,
-        TokenDefinitionKind, TokenUseRole, lower_source_model,
+        GrammarElement, GrammarElementKind, NodeBody, NodeShape, SourceModelDiagnosticKind,
+        SourceModelInput, SourcePrattPosition, TokenDefinitionKind, TokenUseRole,
+        lower_source_model,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
@@ -2322,6 +2545,15 @@ mod tests {
 
     fn completed(report: super::SourceModelReport) -> super::SourceModel {
         report.source_modeled.unwrap().source_model
+    }
+
+    fn assert_code(report: &super::SourceModelReport, kind: SourceModelDiagnosticKind, code: &str) {
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.kind == kind)
+            .unwrap_or_else(|| panic!("missing {kind:?} in {:?}", report.diagnostics));
+        assert_eq!(crate::m3::source_model_code(diagnostic.kind), code);
     }
 
     #[test]
@@ -2599,6 +2831,21 @@ struct Legacy;
         assert!(kinds.contains(&SourceModelDiagnosticKind::InvalidPrattTokenPlacement));
         assert!(kinds.contains(&SourceModelDiagnosticKind::MultipleThisAnchors));
         assert!(kinds.contains(&SourceModelDiagnosticKind::UnsupportedFixedSyntax));
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::MultipleThisAnchors,
+            "RCA3104",
+        );
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::UnsupportedFixedSyntax,
+            "RCA3113",
+        );
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
+            "RCA3115",
+        );
     }
 
     #[test]
@@ -2610,6 +2857,11 @@ recursa::grammar! { module = crate, derives(Debug, Default) }
 #[derive(recursa::Node, Debug)]
 #[node(derive(Clone), omit(Clone))]
 struct Root;
+
+#[derive(recursa::Node)]
+#[node(derive(Clone))]
+#[node(derive(Eq))]
+struct InvalidDelta;
 "#,
         );
 
@@ -2620,8 +2872,29 @@ struct Root;
             .map(|diagnostic| diagnostic.kind)
             .collect::<Vec<_>>();
         assert!(kinds.contains(&SourceModelDiagnosticKind::UnsupportedConfiguredTrait));
+        assert!(kinds.contains(&SourceModelDiagnosticKind::InvalidTraitDelta));
         assert!(kinds.contains(&SourceModelDiagnosticKind::ConflictingTraitDelta));
         assert!(kinds.contains(&SourceModelDiagnosticKind::ConfiguredOrdinaryDeriveConflict));
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::UnsupportedConfiguredTrait,
+            "RCA3107",
+        );
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::InvalidTraitDelta,
+            "RCA3108",
+        );
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::ConflictingTraitDelta,
+            "RCA3109",
+        );
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::ConfiguredOrdinaryDeriveConflict,
+            "RCA3116",
+        );
     }
 
     #[test]
@@ -2656,6 +2929,16 @@ struct Misplaced;
             diagnostic.kind == SourceModelDiagnosticKind::InvalidContentToken
                 && diagnostic.message.contains("field")
         }));
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::InvalidContentToken,
+            "RCA3110",
+        );
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::ContentDisplayOverride,
+            "RCA3111",
+        );
     }
 
     #[test]
@@ -2798,11 +3081,18 @@ struct Later;
             .nodes
             .iter()
             .flat_map(|node| {
-                node.elements().iter().chain(
-                    node.variants()
-                        .iter()
-                        .flat_map(|variant| variant.elements.iter()),
-                )
+                node.elements()
+                    .iter()
+                    .chain(
+                        node.variants()
+                            .iter()
+                            .flat_map(|variant| variant.elements.iter()),
+                    )
+                    .chain(
+                        node.pratt_variants()
+                            .iter()
+                            .flat_map(|variant| variant.common.elements.iter()),
+                    )
             })
             .map(|element| element.id().index())
             .collect::<Vec<_>>();
@@ -2887,6 +3177,7 @@ struct Root { value: Leaf }
 #[derive(recursa::Node)] struct Leaf;
 "#,
                 SourceModelDiagnosticKind::MultipleTokenSequences,
+                "RCA3102",
             ),
             (
                 r#"
@@ -2897,6 +3188,7 @@ struct Root { value: Leaf }
 #[derive(recursa::Node)] struct Leaf;
 "#,
                 SourceModelDiagnosticKind::EmptyTokenSequence,
+                "RCA3103",
             ),
             (
                 r#"
@@ -2906,6 +3198,7 @@ recursa::grammar! { module = crate }
 struct Root;
 "#,
                 SourceModelDiagnosticKind::EmptyThisAnchor,
+                "RCA3105",
             ),
             (
                 r#"
@@ -2915,6 +3208,7 @@ recursa::grammar! { module = crate }
 enum Root { Variant }
 "#,
                 SourceModelDiagnosticKind::InvalidTokenPlacement,
+                "RCA3114",
             ),
             (
                 r#"
@@ -2924,10 +3218,52 @@ recursa::grammar! { module = crate }
 struct Root;
 "#,
                 SourceModelDiagnosticKind::UnresolvedFixedToken,
+                "RCA3106",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+#[pratt]
+enum Root { #[tok(this, this)] Group(Box<Self>) }
+"#,
+                SourceModelDiagnosticKind::MultipleThisAnchors,
+                "RCA3104",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+#[kwd("OLD")]
+struct Root;
+"#,
+                SourceModelDiagnosticKind::UnsupportedFixedSyntax,
+                "RCA3113",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+#[pratt]
+enum Root { #[parse(prefix)] Prefix(Box<Self>) }
+"#,
+                SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
+                "RCA3115",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)] struct Leaf;
+#[derive(recursa::Node)]
+struct Root { #[sep] values: Vec<Leaf> }
+"#,
+                SourceModelDiagnosticKind::InvalidSeparator,
+                "RCA3112",
             ),
         ];
 
-        for (source, expected) in cases {
+        let mut emitted_codes = Vec::new();
+        for (source, expected, code) in cases {
             let report = model(source);
             assert!(report.source_modeled.is_none());
             assert!(
@@ -2938,7 +3274,56 @@ struct Root;
                 "missing {expected:?} in {:?}",
                 report.diagnostics,
             );
+            assert_code(&report, expected, code);
+            emitted_codes.push(crate::m3::source_model_code(expected));
         }
+
+        assert_eq!(
+            emitted_codes,
+            [
+                "RCA3102", "RCA3103", "RCA3105", "RCA3114", "RCA3106", "RCA3104", "RCA3113",
+                "RCA3115", "RCA3112",
+            ],
+        );
+
+        let package = TempDir::new().unwrap();
+        let root = package.path().join("grammar.rs");
+        fs::write(
+            &root,
+            r#"
+recursa::grammar! { module = crate }
+#[cfg_attr(feature = "strict", cfg(unknown_source_cfg))]
+#[derive(recursa::Node)]
+struct Root;
+"#,
+        )
+        .unwrap();
+        let relaxed = CargoCfgSnapshot::default();
+        let discovery = discover_module_tree(DiscoveryInput {
+            manifest_dir: package.path(),
+            selected_root: Path::new("grammar.rs"),
+            edition: RustEdition::Rust2024,
+            cfg: &relaxed,
+        });
+        assert!(discovery.diagnostics.is_empty());
+        let resolution = resolve_local_semantics(ResolutionInput {
+            discovery_inputs: discovery.discovery_inputs,
+            tree: discovery.tree.unwrap(),
+            cfg: &relaxed,
+        });
+        assert!(resolution.diagnostics.is_empty());
+        let strict = CargoCfgSnapshot::default().with_value("feature", "strict");
+        let report = lower_source_model(SourceModelInput {
+            resolved: resolution.resolved.unwrap(),
+            cfg: &strict,
+        });
+
+        assert!(report.source_modeled.is_none());
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::InvalidConfiguration,
+            "RCA3101",
+        );
     }
 
     #[test]
@@ -2959,7 +3344,8 @@ enum Expr {
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         assert_eq!(
-            completed(report).nodes[0].variants()[0]
+            completed(report).nodes[0].pratt_variants()[0]
+                .common
                 .elements
                 .iter()
                 .map(|element| element.kind())
@@ -3027,8 +3413,6 @@ struct Root<Word> {
 
     #[test]
     fn pratt_roles_are_retained_and_place_anchorless_tokens() {
-        use super::PrattRole;
-
         let report = model(
             r#"
 recursa::grammar! { module = crate }
@@ -3053,22 +3437,23 @@ enum Expr {
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         let model = completed(report);
-        let variants = model.nodes[0].variants();
+        let variants = model.nodes[0].pratt_variants();
         assert_eq!(
             variants
                 .iter()
-                .map(|variant| variant.pratt_role)
+                .map(|variant| variant.position)
                 .collect::<Vec<_>>(),
             [
-                Some(PrattRole::Prefix),
-                Some(PrattRole::Infix),
-                Some(PrattRole::Postfix),
+                SourcePrattPosition::Prefix { bp: 30 },
+                SourcePrattPosition::Infix { lbp: 20, rbp: 21 },
+                SourcePrattPosition::Postfix { bp: 40 },
             ],
         );
         let roles = variants
             .iter()
             .map(|variant| {
                 variant
+                    .common
                     .elements
                     .iter()
                     .map(|element| element.kind())
@@ -3174,7 +3559,50 @@ enum Expr {
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         let model = completed(report);
-        assert_eq!(model.nodes[0].variants()[0].pratt_role, None);
+        let NodeBody::Pratt(variants) = &model.nodes[0].body else {
+            panic!("#[pratt] must remain a distinct source-model shape")
+        };
+        assert_eq!(variants[0].position, SourcePrattPosition::Atom);
+    }
+
+    #[test]
+    fn pratt_positions_retain_exact_u8_binding_powers() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {
+    #[tok("ATOM")]
+    Atom,
+    #[parse(prefix, bp = 0)]
+    Prefix(Box<Self>),
+    #[parse(infix, lbp = 254, rbp = 255)]
+    Infix(Box<Self>, Box<Self>),
+    #[parse(postfix, bp = 37)]
+    Postfix(Box<Self>),
+}
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let model = completed(report);
+        let NodeBody::Pratt(variants) = &model.nodes[0].body else {
+            panic!("#[pratt] must remain a distinct source-model shape")
+        };
+        assert_eq!(
+            variants
+                .iter()
+                .map(|variant| variant.position)
+                .collect::<Vec<_>>(),
+            [
+                SourcePrattPosition::Atom,
+                SourcePrattPosition::Prefix { bp: 0 },
+                SourcePrattPosition::Infix { lbp: 254, rbp: 255 },
+                SourcePrattPosition::Postfix { bp: 37 },
+            ],
+        );
     }
 
     #[test]
@@ -3195,7 +3623,8 @@ enum Expr {
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         let model = completed(report);
-        let rendered = model.nodes[0].variants()[0]
+        let rendered = model.nodes[0].pratt_variants()[0]
+            .common
             .elements
             .iter()
             .map(|element| match element {
@@ -3238,6 +3667,103 @@ enum Expr {
                 })
                 .count(),
             2,
+        );
+    }
+
+    #[test]
+    fn rejects_misplaced_and_non_exact_pratt_attributes() {
+        let invalid_roles = [
+            "prefix",
+            "prefix, bp = 1, bp = 2",
+            "prefix, lbp = 1",
+            "infix, lbp = 1",
+            "infix, lbp = 1, rbp = 2, bp = 3",
+            "postfix, bp = 256",
+            "postfix, bp = 1, unknown = 2",
+        ];
+        for role in invalid_roles {
+            let source = format!(
+                r#"
+recursa::grammar! {{ module = crate }}
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {{
+    #[parse({role})]
+    Invalid(Box<Self>),
+}}
+"#,
+            );
+            let report = model(&source);
+            assert!(report.source_modeled.is_none(), "accepted #[parse({role})]");
+            assert!(report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind == SourceModelDiagnosticKind::InvalidPrattTokenPlacement
+            }));
+        }
+
+        for source in [
+            r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+#[pratt]
+struct NotAnEnum;
+"#,
+            r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+enum NotPratt {
+    #[parse(prefix, bp = 1)]
+    Variant,
+}
+"#,
+            r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+#[pratt(unexpected)]
+enum InvalidMarker { Atom }
+"#,
+        ] {
+            let report = model(source);
+            assert!(report.source_modeled.is_none());
+            assert!(report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind == SourceModelDiagnosticKind::InvalidPrattTokenPlacement
+            }));
+        }
+    }
+
+    #[test]
+    fn rejects_pratt_markers_and_roles_on_variants_and_fields_only() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+#[parse(skip)]
+struct FutureNodeParseForm {
+    #[parse(prefix, bp = 1)]
+    misplaced_role: Leaf,
+    #[pratt]
+    misplaced_marker: Leaf,
+}
+#[derive(recursa::Node)]
+enum Choice {
+    #[pratt]
+    MisplacedMarker,
+}
+#[derive(recursa::Node)]
+struct Leaf;
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert_eq!(
+            report
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.kind == SourceModelDiagnosticKind::InvalidPrattTokenPlacement
+                })
+                .count(),
+            3,
+            "node-level future #[parse] forms must not be classified as Pratt roles",
         );
     }
 }
