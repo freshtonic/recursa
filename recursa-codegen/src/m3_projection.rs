@@ -8,7 +8,9 @@ use std::fmt::Write as _;
 use crate::decision_plan::{ExpectedRecipe, FollowRecipe};
 use crate::ir::ContainerCardinality;
 use crate::m3::AnalyzedGrammar;
-use crate::materialization::{LoweredGrammar, MaterializedFieldLowering};
+use crate::materialization::{
+    AttachmentUnitCorrelation, LoweredGrammar, MaterializedFieldLowering,
+};
 use crate::resolution::ResolvedNodeBody;
 use crate::source_model::TokenDefinitionKind;
 use crate::{FirstPosition, GrammarDescription, KindSet, PrattPosition, SiteId, TypeShape};
@@ -101,7 +103,7 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
             rendered,
             "type {} = {}",
             description.name,
-            render_shape(owner, &description.shape, grammar),
+            render_shape(owner, &description.shape, lowered),
         )
         .expect("writing to a String cannot fail");
     }
@@ -117,7 +119,7 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
             rendered,
             "type {} = {}",
             description.name,
-            render_shape(correlation.lowered, &description.shape, grammar),
+            render_shape(correlation.lowered, &description.shape, lowered),
         )
         .expect("writing to a String cannot fail");
     }
@@ -129,7 +131,7 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
             MaterializedFieldLowering::ParseSite(site) => {
                 let site =
                     projected_field_site(lowered, correlation.application, correlation.field, site);
-                format!("parse-site({})", projected_site_name(site, grammar))
+                format!("parse-site({})", projected_site_name(site, lowered))
             }
             MaterializedFieldLowering::PrattLhs { owner, variant } => format!(
                 "pratt-lhs(owner={}, variant={})",
@@ -145,7 +147,9 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
         .types
         .iter()
         .enumerate()
-        .filter(|(_, description)| !is_attachment_type(description))
+        .filter(|(index, _)| {
+            attachment_for_unit(crate::TypeId::new(*index as u32), lowered).is_none()
+        })
         .map(|(index, description)| (description.name.as_str(), index))
         .collect::<Vec<_>>();
     facts.sort_unstable();
@@ -180,25 +184,25 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
         .enumerate()
     {
         let site = SiteId::new(index as u32);
-        if let Some((outer, _)) = attachment_outer_for_inner(site, grammar) {
-            if direct_attachment_unit(outer, grammar).is_some() {
+        if let Some((attachment, _)) = attachment_outer_for_inner(site, lowered) {
+            if direct_attachment_unit(attachment.outer, lowered).is_some() {
                 continue;
             }
             writeln!(
                 rendered,
                 "follow {} {}",
-                projected_site_name(site, grammar),
+                projected_site_name(site, lowered),
                 render_follow_recipe(recipe, grammar),
             )
             .expect("writing to a String cannot fail");
             continue;
         }
-        if let Some(inner) = direct_attachment_unit(site, grammar) {
+        if let Some(inner) = direct_attachment_unit(site, lowered) {
             for inner_site in inner {
                 writeln!(
                     rendered,
                     "follow {} {}",
-                    projected_site_name(*inner_site, grammar),
+                    projected_site_name(*inner_site, lowered),
                     render_follow_recipe(
                         &output.decisions().follow_recipes_by_site()[inner_site.index()],
                         grammar,
@@ -210,21 +214,21 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
             writeln!(
                 rendered,
                 "follow {} {}",
-                semantic_site_name(site, grammar),
+                projected_site_name(site, lowered),
                 render_follow_recipe(recipe, grammar),
             )
             .expect("writing to a String cannot fail");
         }
     }
     for machine in output.decisions().container_machines() {
-        if let Some((outer, _)) = attachment_outer_for_inner(machine.site(), grammar) {
-            if direct_attachment_unit(outer, grammar).is_some() {
+        if let Some((attachment, _)) = attachment_outer_for_inner(machine.site(), lowered) {
+            if direct_attachment_unit(attachment.outer, lowered).is_some() {
                 continue;
             }
-            render_container_machine(&mut rendered, machine, grammar, true);
+            render_container_machine(&mut rendered, machine, lowered, true);
             continue;
         }
-        if let Some(inner) = direct_attachment_unit(machine.site(), grammar) {
+        if let Some(inner) = direct_attachment_unit(machine.site(), lowered) {
             for inner_site in inner {
                 let inner_machine = output
                     .decisions()
@@ -232,25 +236,25 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
                     .iter()
                     .find(|candidate| candidate.site() == *inner_site)
                     .expect("attachment unit site has a frozen container machine");
-                render_container_machine(&mut rendered, inner_machine, grammar, true);
+                render_container_machine(&mut rendered, inner_machine, lowered, true);
             }
             continue;
         }
-        render_container_machine(&mut rendered, machine, grammar, false);
+        render_container_machine(&mut rendered, machine, lowered, false);
     }
 
     rendered.push_str("\n[failures]\n");
     for edge in output.decisions().failure_edges() {
         if let Some(site) = edge.site()
-            && let Some((outer, _)) = attachment_outer_for_inner(site, grammar)
+            && let Some((attachment, _)) = attachment_outer_for_inner(site, lowered)
         {
-            if direct_attachment_unit(outer, grammar).is_none() {
-                render_failure_edge(&mut rendered, edge, grammar, true);
+            if direct_attachment_unit(attachment.outer, lowered).is_none() {
+                render_failure_edge(&mut rendered, edge, lowered, true);
             }
             continue;
         }
         if let Some(site) = edge.site()
-            && let Some(inner) = direct_attachment_unit(site, grammar)
+            && let Some(inner) = direct_attachment_unit(site, lowered)
         {
             for inner_site in inner {
                 for inner_edge in output
@@ -259,53 +263,39 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
                     .iter()
                     .filter(|candidate| candidate.site() == Some(*inner_site))
                 {
-                    render_failure_edge(&mut rendered, inner_edge, grammar, true);
+                    render_failure_edge(&mut rendered, inner_edge, lowered, true);
                 }
             }
             continue;
         }
-        render_failure_edge(&mut rendered, edge, grammar, false);
+        render_failure_edge(&mut rendered, edge, lowered, false);
     }
     rendered
 }
 
 fn projected_field_site(
     lowered: &LoweredGrammar,
-    application: crate::materialization::MaterializedApplicationId,
-    field: crate::resolution::ResolvedFieldId,
+    _application: crate::materialization::MaterializedApplicationId,
+    _field: crate::resolution::ResolvedFieldId,
     outer: SiteId,
 ) -> SiteId {
-    let Some(inner) = direct_attachment_unit(outer, &lowered.grammar) else {
+    let Some(attachment) = attachment_for_outer(outer, lowered) else {
         return outer;
     };
-    let before = lowered.applications[application.index()]
-        .parsed_fields()
-        .find_map(|element| match element {
-            crate::materialization::MaterializedElement::SemanticField {
-                field: candidate,
-                attachment: Some(attachment),
-                ..
-            } if *candidate == field => Some(attachment.before.len()),
-            _ => None,
-        })
-        .expect("an attachment field correlation retains materialized attachment syntax");
-    inner[before]
+    attachment.sites[attachment.semantic_index]
 }
 
 fn render_container_machine(
     rendered: &mut String,
     machine: &crate::decision_plan::ContainerMachine,
-    grammar: &GrammarDescription,
-    projected_attachment: bool,
+    lowered: &LoweredGrammar,
+    _projected_attachment: bool,
 ) {
+    let grammar = &lowered.grammar;
     writeln!(
         rendered,
         "container {} {:?} element=[{}] separator={} separator-first=[{}] trailing={} stop={}",
-        if projected_attachment {
-            projected_site_name(machine.site(), grammar)
-        } else {
-            semantic_site_name(machine.site(), grammar)
-        },
+        projected_site_name(machine.site(), lowered),
         machine.operation(),
         render_positions(machine.element_first(), grammar),
         machine
@@ -334,23 +324,17 @@ fn render_container_machine(
 fn render_failure_edge(
     rendered: &mut String,
     edge: &crate::decision_plan::FailureEdge,
-    grammar: &GrammarDescription,
-    projected_attachment: bool,
+    lowered: &LoweredGrammar,
+    _projected_attachment: bool,
 ) {
-    let site_name = edge.site().map_or_else(
-        || "-".to_owned(),
-        |site| {
-            if projected_attachment {
-                projected_site_name(site, grammar)
-            } else {
-                semantic_site_name(site, grammar)
-            }
-        },
-    );
+    let grammar = &lowered.grammar;
+    let site_name = edge
+        .site()
+        .map_or_else(|| "-".to_owned(), |site| projected_site_name(site, lowered));
     writeln!(
         rendered,
         "failure {} {} {:?} expected={}",
-        projected_owner_name(edge.owner(), grammar),
+        projected_owner_name(edge.owner(), lowered),
         site_name,
         edge.kind(),
         render_expected(edge.expected(), grammar),
@@ -427,7 +411,8 @@ pub(crate) fn canonical_fixture_projection(name: &str, analyzed: &AnalyzedGramma
     rendered
 }
 
-fn render_shape(owner: crate::TypeId, shape: &TypeShape, grammar: &GrammarDescription) -> String {
+fn render_shape(owner: crate::TypeId, shape: &TypeShape, lowered: &LoweredGrammar) -> String {
+    let grammar = &lowered.grammar;
     match shape {
         TypeShape::Token {
             atom,
@@ -441,13 +426,13 @@ fn render_shape(owner: crate::TypeId, shape: &TypeShape, grammar: &GrammarDescri
             ),
         ),
         TypeShape::Alias { site } => {
-            format!("alias({})", render_site(*site, grammar))
+            format!("alias({})", render_site(*site, lowered))
         }
         TypeShape::Sequence { sites } => format!(
             "sequence({})",
             sites
                 .iter()
-                .flat_map(|site| render_projected_sites(*site, grammar))
+                .flat_map(|site| render_projected_sites(*site, lowered))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -461,7 +446,7 @@ fn render_shape(owner: crate::TypeId, shape: &TypeShape, grammar: &GrammarDescri
                     alternative
                         .sites
                         .iter()
-                        .flat_map(|site| render_projected_sites(*site, grammar))
+                        .flat_map(|site| render_projected_sites(*site, lowered))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ))
@@ -479,7 +464,7 @@ fn render_shape(owner: crate::TypeId, shape: &TypeShape, grammar: &GrammarDescri
                     variant
                         .sites
                         .iter()
-                        .flat_map(|site| render_projected_sites(*site, grammar))
+                        .flat_map(|site| render_projected_sites(*site, lowered))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ))
@@ -493,19 +478,20 @@ fn render_shape(owner: crate::TypeId, shape: &TypeShape, grammar: &GrammarDescri
     )
 }
 
-fn render_projected_sites(site: SiteId, grammar: &GrammarDescription) -> Vec<String> {
-    direct_attachment_unit(site, grammar).map_or_else(
-        || vec![render_site(site, grammar)],
+fn render_projected_sites(site: SiteId, lowered: &LoweredGrammar) -> Vec<String> {
+    direct_attachment_unit(site, lowered).map_or_else(
+        || vec![render_site(site, lowered)],
         |inner| {
             inner
                 .iter()
-                .map(|inner| render_site(*inner, grammar))
+                .map(|inner| render_site(*inner, lowered))
                 .collect()
         },
     )
 }
 
-fn render_site(site: SiteId, grammar: &GrammarDescription) -> String {
+fn render_site(site: SiteId, lowered: &LoweredGrammar) -> String {
+    let grammar = &lowered.grammar;
     let site_id = site;
     let site = &grammar.sites[site_id.index()];
     let semantics = site
@@ -520,13 +506,11 @@ fn render_site(site: SiteId, grammar: &GrammarDescription) -> String {
         ContainerCardinality::OptionalOneOrMore => "optional-one-or-more",
     };
     let target = &grammar.types[site.target.index()];
-    let target_name = if is_attachment_type(target) {
-        let TypeShape::Sequence { sites } = &target.shape else {
-            unreachable!("attachment types are synthetic sequences")
-        };
+    let target_name = if let Some(attachment) = attachment_for_unit(site.target, lowered) {
         format!(
             "attachment({})",
-            sites
+            attachment
+                .sites
                 .iter()
                 .map(
                     |site| grammar.types[grammar.sites[site.index()].target.index()]
@@ -541,8 +525,8 @@ fn render_site(site: SiteId, grammar: &GrammarDescription) -> String {
     };
     format!(
         "{}:{} target={} cardinality={} separator={} min_bp={}",
-        projected_site_name(site_id, grammar),
-        projected_owner_name(site.owner, grammar),
+        projected_site_name(site_id, lowered),
+        projected_owner_name(site.owner, lowered),
         target_name,
         cardinality,
         semantics.separator.map_or("-", |separator| {
@@ -652,75 +636,118 @@ fn declaration_name(id: crate::DeclId, grammar: &GrammarDescription) -> &str {
     &grammar.declarations[id.index()].name
 }
 
-fn is_attachment_type(description: &crate::TypeDescription) -> bool {
-    description.name.ends_with("::__recursa_attachment")
+fn attachment_for_unit(
+    unit: crate::TypeId,
+    lowered: &LoweredGrammar,
+) -> Option<&AttachmentUnitCorrelation> {
+    lowered
+        .lowering_map
+        .attachments
+        .iter()
+        .find(|attachment| attachment.unit == unit)
 }
 
-fn direct_attachment_unit(site: SiteId, grammar: &GrammarDescription) -> Option<&[SiteId]> {
-    let site = &grammar.sites[site.index()];
-    if site
+fn attachment_for_outer(
+    outer: SiteId,
+    lowered: &LoweredGrammar,
+) -> Option<&AttachmentUnitCorrelation> {
+    lowered
+        .lowering_map
+        .attachments
+        .iter()
+        .find(|attachment| attachment.outer == outer)
+}
+
+fn direct_attachment_unit<'a>(site: SiteId, lowered: &'a LoweredGrammar) -> Option<&'a [SiteId]> {
+    let parsed = &lowered.grammar.sites[site.index()];
+    if parsed
         .container
         .semantics()
         .is_none_or(|semantics| semantics.cardinality != ContainerCardinality::One)
     {
         return None;
     }
-    let target = &grammar.types[site.target.index()];
-    if !is_attachment_type(target) {
-        return None;
-    }
-    let TypeShape::Sequence { sites } = &target.shape else {
-        unreachable!("attachment types are synthetic sequences")
-    };
-    Some(sites)
+    attachment_for_outer(site, lowered).map(|attachment| attachment.sites.as_slice())
 }
 
-fn attachment_outer_for_inner(
+fn attachment_outer_for_inner<'a>(
     site: SiteId,
-    grammar: &GrammarDescription,
-) -> Option<(SiteId, usize)> {
-    let owner = grammar.sites[site.index()].owner;
-    is_attachment_type(&grammar.types[owner.index()]).then(|| {
-        let outer = grammar
-            .sites
-            .iter()
-            .enumerate()
-            .find(|(_, candidate)| candidate.target == owner)
-            .map(|(index, _)| SiteId::new(index as u32))
-            .expect("an attachment unit has one authored outer site");
-        let TypeShape::Sequence { sites } = &grammar.types[owner.index()].shape else {
-            unreachable!("attachment types are synthetic sequences")
-        };
-        let index = sites
-            .iter()
-            .position(|candidate| *candidate == site)
-            .expect("attachment owner contains its inner site");
-        (outer, index)
-    })
-}
-
-fn projected_site_name(site: SiteId, grammar: &GrammarDescription) -> String {
-    let Some((outer, inner_index)) = attachment_outer_for_inner(site, grammar) else {
-        return semantic_site_name(site, grammar);
-    };
-    let outer_name = semantic_site_name(outer, grammar);
-    let Some((prefix, index)) = outer_name.rsplit_once("::element") else {
-        return format!("{outer_name}::attachment-element{inner_index}");
-    };
-    let base = index.parse::<usize>().unwrap_or(0);
-    format!("{prefix}::element{}", base + inner_index)
-}
-
-fn projected_owner_name(owner: crate::TypeId, grammar: &GrammarDescription) -> &str {
-    if !is_attachment_type(&grammar.types[owner.index()]) {
-        return &grammar.types[owner.index()].name;
-    }
-    grammar
-        .sites
+    lowered: &'a LoweredGrammar,
+) -> Option<(&'a AttachmentUnitCorrelation, usize)> {
+    lowered
+        .lowering_map
+        .attachments
         .iter()
-        .find(|site| site.target == owner)
-        .map(|site| grammar.types[site.owner.index()].name.as_str())
-        .expect("an attachment unit has one authored owner")
+        .find_map(|attachment| {
+            attachment
+                .sites
+                .iter()
+                .position(|candidate| *candidate == site)
+                .map(|index| (attachment, index))
+        })
+}
+
+fn projected_site_name(site: SiteId, lowered: &LoweredGrammar) -> String {
+    let (authored, inner_offset) = attachment_outer_for_inner(site, lowered)
+        .map_or((site, 0), |(attachment, index)| (attachment.outer, index));
+    let grammar = &lowered.grammar;
+    for description in &grammar.types {
+        match &description.shape {
+            TypeShape::Sequence { sites } => {
+                if let Some(index) = expanded_site_index(sites, authored, lowered) {
+                    return format!("{}::element{}", description.name, index + inner_offset);
+                }
+            }
+            TypeShape::Enum { alternatives } => {
+                for alternative in alternatives {
+                    if let Some(index) = expanded_site_index(&alternative.sites, authored, lowered)
+                    {
+                        return format!(
+                            "{}::element{}",
+                            declaration_name(alternative.declaration, grammar),
+                            index + inner_offset,
+                        );
+                    }
+                }
+            }
+            TypeShape::Pratt { variants } => {
+                for variant in variants {
+                    if let Some(index) = expanded_site_index(&variant.sites, authored, lowered) {
+                        return format!(
+                            "{}::element{}",
+                            declaration_name(variant.declaration, grammar),
+                            index + inner_offset,
+                        );
+                    }
+                }
+            }
+            TypeShape::Token { .. } | TypeShape::Alias { .. } => {}
+        }
+    }
+    semantic_site_name(site, grammar)
+}
+
+fn expanded_site_index(
+    siblings: &[SiteId],
+    target: SiteId,
+    lowered: &LoweredGrammar,
+) -> Option<usize> {
+    let mut ordinal = 0;
+    for site in siblings {
+        if *site == target {
+            return Some(ordinal);
+        }
+        ordinal += direct_attachment_unit(*site, lowered).map_or(1, <[SiteId]>::len);
+    }
+    None
+}
+
+fn projected_owner_name(owner: crate::TypeId, lowered: &LoweredGrammar) -> &str {
+    let grammar = &lowered.grammar;
+    let Some(attachment) = attachment_for_unit(owner, lowered) else {
+        return &grammar.types[owner.index()].name;
+    };
+    &grammar.types[grammar.sites[attachment.outer.index()].owner.index()].name
 }
 
 fn semantic_site_name(site: SiteId, grammar: &GrammarDescription) -> String {
