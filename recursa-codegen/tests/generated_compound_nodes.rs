@@ -140,20 +140,20 @@ fn diagrams_are_published_in_aggregate_and_declaration_local_rustdoc() {
     assert!(
         aggregate
             .1
-            .contains("Pair ::= \"pair\" grammar::Label Option&lt;grammar::Count&gt;"),
+            .contains("Pair ::= \"PAIR\" grammar::Label Option&lt;grammar::Count&gt;"),
         "tuple fields must use referenced frozen terminal names:\n{}",
         aggregate.1,
     );
     assert!(
         aggregate.1.contains(
-            "ManyLabels ::= \"left\" Vec&lt;grammar::Label&gt; separated by \":\" (optional trailing \":\")"
+            "ManyLabels ::= \"LEFT\" Vec&lt;grammar::Label&gt; separated by \":\" (optional trailing \":\")"
         ),
         "zero-or-more separator semantics must be rendered:\n{}",
         aggregate.1,
     );
     assert!(
         aggregate.1.contains(
-            "SomeCounts ::= \"right\" Option&lt;Vec1&lt;grammar::Count&gt;&gt; separated by \":\""
+            "SomeCounts ::= \"RIGHT\" Option&lt;Vec1&lt;grammar::Count&gt;&gt; separated by \":\""
         ),
         "OptionalOneOrMore semantics must remain distinct:\n{}",
         aggregate.1,

@@ -29,6 +29,51 @@ fn repeated_generation_of_the_pratt_grammar_is_deterministic() {
     assert_eq!(first.len(), 1, "one semantic Generation is published");
 }
 
+#[test]
+fn pratt_diagrams_render_frozen_roles_binding_powers_and_operands() {
+    let package = scaffold_fixture();
+    configure_diagrams(&package);
+
+    let output = run_fixture_doc(&package);
+    assert_success(&output);
+
+    let docs = rendered_rustdoc(&package);
+    let expression = docs
+        .iter()
+        .find(|(path, source)| {
+            path.ends_with("grammar/enum.Expr.html") && source.contains("RECURSA_NODE_DIAGRAM")
+        })
+        .expect("Pratt expression documentation page");
+    assert!(
+        expression
+            .1
+            .contains("atom Paren(\"(\" grammar::Expr \")\")"),
+        "atom operands must come from the frozen materialized body:\n{}",
+        expression.1,
+    );
+    assert!(
+        expression
+            .1
+            .contains("prefix(bp=35) Neg(\"-\" grammar::Expr)"),
+        "prefix role and binding power must be rendered:\n{}",
+        expression.1,
+    );
+    assert!(
+        expression
+            .1
+            .contains("postfix(bp=40) Factorial(grammar::Expr \"!\")"),
+        "postfix lhs placement and binding power must be rendered:\n{}",
+        expression.1,
+    );
+    assert!(
+        expression
+            .1
+            .contains("infix(lbp=30, rbp=30) Power(grammar::Expr \"^\" grammar::Expr)"),
+        "infix lhs, tail, and binding powers must be rendered:\n{}",
+        expression.1,
+    );
+}
+
 fn scaffold_fixture() -> TempDir {
     let package = tempfile::tempdir().expect("temporary Pratt grammar package");
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -81,6 +126,72 @@ fn run_fixture(package: &TempDir) -> Output {
         .env("CARGO_TARGET_DIR", target_dir(package))
         .output()
         .expect("run Pratt grammar fixture")
+}
+
+fn run_fixture_doc(package: &TempDir) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    Command::new(cargo)
+        .arg("doc")
+        .arg("--offline")
+        .arg("--quiet")
+        .arg("--locked")
+        .arg("--no-deps")
+        .current_dir(package.path())
+        .env_remove("RECURSA_GENERATION")
+        .env("RUSTDOCFLAGS", "-D rustdoc::broken_intra_doc_links")
+        .env("CARGO_TARGET_DIR", target_dir(package))
+        .output()
+        .expect("render Pratt grammar fixture documentation")
+}
+
+fn configure_diagrams(package: &TempDir) {
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read Pratt grammar");
+    fs::write(
+        grammar,
+        source.replace(
+            "    module = crate::grammar,",
+            "    module = crate::grammar,\n    diagrams,",
+        ),
+    )
+    .expect("request Pratt diagrams");
+
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read Pratt manifest");
+    let source = source
+        .replace(
+            "features = [\"arbitrary\", \"serde\"]",
+            "features = [\"arbitrary\", \"serde\", \"diagrams\"]",
+        )
+        .replace(
+            "recursa-codegen = { path = \"",
+            "recursa-codegen = { features = [\"diagrams\"], path = \"",
+        );
+    fs::write(manifest, source).expect("enable Pratt diagram capabilities");
+}
+
+fn rendered_rustdoc(package: &TempDir) -> Vec<(PathBuf, String)> {
+    let mut rendered = Vec::new();
+    collect_rendered_rustdoc(&target_dir(package).join("doc"), &mut rendered);
+    rendered
+}
+
+fn collect_rendered_rustdoc(root: &Path, rendered: &mut Vec<(PathBuf, String)>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rendered_rustdoc(&path, rendered);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "html")
+        {
+            let source = fs::read_to_string(&path).expect("read rendered rustdoc page");
+            rendered.push((path, source));
+        }
+    }
 }
 
 fn target_dir(package: &TempDir) -> PathBuf {
