@@ -4,12 +4,14 @@ mod grammar;
 mod input;
 mod output;
 mod parse;
+mod parsed;
 mod span;
 
 pub use grammar::{ExpectedAtomId, FollowSet, FollowSetError, GrammarInfo, TokenKind};
 pub use input::{Input, LexResult, TokenRecord};
 pub use output::{HasSpan, SpanBlock, Vec1};
 pub use parse::{Parse, ParseError, ParseErrorKind};
+pub use parsed::{Node, NodeView, Parsed};
 pub use span::{OffsetOverflow, Span};
 
 /// Runtime operations reserved for Recursa-generated code.
@@ -20,6 +22,11 @@ pub use span::{OffsetOverflow, Span};
 #[doc(hidden)]
 pub mod __private {
     use crate::{ExpectedAtomId, FollowSet, Input, ParseError, Span, SpanBlock};
+
+    pub use crate::parsed::{
+        CapturePolicy, ContentText, NodeViewFactory, Occurrence, Parse, ParseContext, ParsedNode,
+        ViewCursor, parse, parse_spanned,
+    };
 
     /// Opaque cursor state used by generated speculative parsing.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
