@@ -1282,6 +1282,9 @@ fn diagram_production(
                 .collect::<Result<Vec<_>, String>>()?;
             alternatives.join(" | ")
         }
+        (NodeBodyPlan::Pratt(pratt), MaterializedNodeBody::Pratt(materialized)) => {
+            diagram_pratt_production(pratt, materialized, lowered)?
+        }
         _ => {
             return Err(format!(
                 "Node `{}` diagram and materialized shapes disagree",
@@ -1290,6 +1293,131 @@ fn diagram_production(
         }
     };
     Ok(format!("{} ::= {right}", node.ident.unraw()))
+}
+
+#[cfg(feature = "diagrams")]
+fn diagram_pratt_production(
+    pratt: &PrattParsePlan,
+    materialized: &[MaterializedPrattVariant],
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Result<String, String> {
+    if pratt.expected_nud_count + pratt.expected_led_count != materialized.len() {
+        return Err("a Pratt diagram lost a frozen materialized variant".to_owned());
+    }
+    let mut alternatives = Vec::with_capacity(materialized.len());
+    for (source_index, materialized) in materialized.iter().enumerate() {
+        let (position, variant, sequence) = match materialized {
+            MaterializedPrattVariant::Nud(materialized) => {
+                let branch = unique_pratt_nud(pratt, source_index)?;
+                validate_pratt_position(Some(branch.position), materialized)?;
+                validate_diagram_variant_name(&branch.variant, &materialized.common.name)?;
+                let sequence =
+                    diagram_sequence(&branch.variant.elements, &materialized.body, lowered)?;
+                (branch.position, &branch.variant, sequence)
+            }
+            MaterializedPrattVariant::Led(materialized) => {
+                let branch = unique_pratt_led(pratt, source_index)?;
+                validate_pratt_led_position(Some(branch.position), materialized)?;
+                validate_diagram_variant_name(&branch.variant, &materialized.common.name)?;
+                let lhs = diagram_pratt_lhs(&branch.lhs, materialized, lowered)?;
+                let tail = diagram_sequence(&branch.variant.elements, &materialized.tail, lowered)?;
+                let sequence = if tail == "ε" {
+                    lhs
+                } else {
+                    format!("{lhs} {tail}")
+                };
+                (branch.position, &branch.variant, sequence)
+            }
+        };
+        let role = diagram_pratt_role(position);
+        let name = variant.ident.unraw();
+        alternatives.push(if sequence == "ε" {
+            format!("{role} {name}")
+        } else {
+            format!("{role} {name}({sequence})")
+        });
+    }
+    Ok(alternatives.join(" | "))
+}
+
+#[cfg(feature = "diagrams")]
+fn unique_pratt_nud(
+    pratt: &PrattParsePlan,
+    source_index: usize,
+) -> Result<&PrattNudParsePlan, String> {
+    let mut matching = pratt
+        .nud
+        .iter()
+        .filter(|branch| branch.source_index == source_index);
+    let branch = matching
+        .next()
+        .ok_or_else(|| "a Pratt diagram lacks its frozen nud branch".to_owned())?;
+    if matching.next().is_some() {
+        return Err("a Pratt diagram has duplicate frozen nud branches".to_owned());
+    }
+    Ok(branch)
+}
+
+#[cfg(feature = "diagrams")]
+fn unique_pratt_led(
+    pratt: &PrattParsePlan,
+    source_index: usize,
+) -> Result<&PrattLedParsePlan, String> {
+    let mut matching = pratt
+        .led
+        .iter()
+        .filter(|branch| branch.source_index == source_index);
+    let branch = matching
+        .next()
+        .ok_or_else(|| "a Pratt diagram lacks its frozen led branch".to_owned())?;
+    if matching.next().is_some() {
+        return Err("a Pratt diagram has duplicate frozen led branches".to_owned());
+    }
+    Ok(branch)
+}
+
+#[cfg(feature = "diagrams")]
+fn validate_diagram_variant_name(
+    variant: &VariantParsePlan,
+    materialized_name: &str,
+) -> Result<(), String> {
+    if variant.ident.unraw() == materialized_name {
+        Ok(())
+    } else {
+        Err("a Pratt diagram variant name diverges from materialized source".to_owned())
+    }
+}
+
+#[cfg(feature = "diagrams")]
+fn diagram_pratt_lhs(
+    lhs: &ElementParsePlan,
+    materialized: &MaterializedPrattLed,
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Result<String, String> {
+    let ElementParseKind::Semantic {
+        container,
+        pratt_min_bp,
+        ..
+    } = &lhs.kind
+    else {
+        return Err("a Pratt diagram lhs is not a frozen semantic element".to_owned());
+    };
+    if pratt_min_bp.is_some() {
+        return Err("a Pratt diagram lhs unexpectedly has a minimum binding power".to_owned());
+    }
+    let terminal =
+        diagram_terminal_name(&ClosedType::Node(materialized.lhs.owner.clone()), lowered)?;
+    diagram_semantic_element(&terminal, None, container)
+}
+
+#[cfg(feature = "diagrams")]
+fn diagram_pratt_role(position: PrattPosition) -> String {
+    match position {
+        PrattPosition::Atom => "atom".to_owned(),
+        PrattPosition::Prefix { bp } => format!("prefix(bp={bp})"),
+        PrattPosition::Infix { lbp, rbp } => format!("infix(lbp={lbp}, rbp={rbp})"),
+        PrattPosition::Postfix { bp } => format!("postfix(bp={bp})"),
+    }
 }
 
 #[cfg(feature = "diagrams")]
