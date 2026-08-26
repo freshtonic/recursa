@@ -16,11 +16,11 @@ fn m4_matrix_distinguishes_executable_green_evidence_from_pending_dependencies()
     assert_eq!(rows.len(), 16);
     assert_eq!(
         rows.values().filter(|row| row.status == "Green").count(),
-        14,
+        16,
     );
     assert_eq!(
         rows.values().filter(|row| row.status == "Pending").count(),
-        2,
+        0,
     );
 
     for (id, row) in &rows {
@@ -59,6 +59,8 @@ fn m4_matrix_distinguishes_executable_green_evidence_from_pending_dependencies()
             "M4-LEGACY-RUNTIME-CSKW",
             "M4-PRETTY-ROUNDTRIP",
             "M4-EXPLORER",
+            "M4-DEBUG-BUNDLE",
+            "M4-FULL-FUNCTIONAL-MATRIX",
         ]),
     );
 
@@ -67,18 +69,18 @@ fn m4_matrix_distinguishes_executable_green_evidence_from_pending_dependencies()
         .filter(|(_, row)| row.status == "Pending")
         .map(|(id, _)| *id)
         .collect::<BTreeSet<_>>();
-    assert_eq!(
-        pending,
-        BTreeSet::from(["M4-DEBUG-BUNDLE", "M4-FULL-FUNCTIONAL-MATRIX",]),
-    );
+    assert!(pending.is_empty());
     assert_eq!(
         rows["M4-EXPLORER"].evidence,
         "`cargo test -p recursa-codegen --test generated_compound_nodes explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples --locked && cargo test -p recursa-codegen --test generated_generic_applications explorer_adapters_are_generated_for_each_closed_generic_application --locked`",
     );
-    assert_eq!(rows["M4-DEBUG-BUNDLE"].evidence, "Pending on #74.");
+    assert_eq!(
+        rows["M4-DEBUG-BUNDLE"].evidence,
+        "`cargo test -p recursa-codegen --test generated_one_node debug_emission_preserves_compiled_semantics_for_every_capability_combination --locked`",
+    );
     assert_eq!(
         rows["M4-FULL-FUNCTIONAL-MATRIX"].evidence,
-        "Pending on #74.",
+        "`cargo test -p recursa-codegen --test m4_functional_matrix --locked`",
     );
 }
 

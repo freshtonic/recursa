@@ -121,14 +121,9 @@ fn every_successor_reference_is_an_executable_test_or_a_named_typed_gate() {
         }
     }
 
-    assert_eq!(
-        pending_identities,
-        BTreeSet::from([
-            "tests/codegen_arith.rs::codegen_emits_full_arith_grammar",
-            "tests/codegen_json.rs::codegen_emits_full_json_grammar",
-            "tests/codegen_toy.rs::codegen_emits_full_toy_grammar",
-        ]),
-        "only the three generated-code debug-bundle identities may remain pending",
+    assert!(
+        pending_identities.is_empty(),
+        "every legacy identity must resolve to Green executable evidence",
     );
 }
 
