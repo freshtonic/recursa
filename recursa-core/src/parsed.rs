@@ -695,6 +695,10 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         ParseError::unexpected(self.input, expected)
     }
 
+    pub fn unexpected_at(&self, distance: usize, expected: &FollowSet) -> ParseError {
+        ParseError::unexpected_at(self.input, expected, distance)
+    }
+
     pub fn next_is(&self, expected: &FollowSet) -> bool {
         self.peek(0)
             .is_some_and(|record| expected.contains(record.kind))
@@ -752,7 +756,7 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
     pub fn finish_with_children<T>(
         &self,
         value: T,
-        span: Span,
+        span: Option<Span>,
         children: impl IntoIterator<Item = Occurrence>,
     ) -> Result<ParsedNode<T>, ParseError> {
         let occurrence = self
@@ -761,10 +765,16 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
                 self.input.source(),
                 self.policy,
                 self.request,
-                Some(span),
+                span,
                 children,
             )
-            .map_err(|()| ParseError::invalid_token_span(self.input, span, None))?;
+            .map_err(|()| {
+                ParseError::invalid_token_span(
+                    self.input,
+                    span.expect("only a concrete invalid span can fail validation"),
+                    None,
+                )
+            })?;
         Ok(ParsedNode { value, occurrence })
     }
 
@@ -772,20 +782,20 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
     pub fn finish_with_children_policy<T>(
         &self,
         value: T,
-        span: Span,
+        span: Option<Span>,
         policy: CapturePolicy,
         children: impl IntoIterator<Item = Occurrence>,
     ) -> Result<ParsedNode<T>, ParseError> {
         let occurrence = self
             .provenance
-            .finish(
-                self.input.source(),
-                policy,
-                self.request,
-                Some(span),
-                children,
-            )
-            .map_err(|()| ParseError::invalid_token_span(self.input, span, None))?;
+            .finish(self.input.source(), policy, self.request, span, children)
+            .map_err(|()| {
+                ParseError::invalid_token_span(
+                    self.input,
+                    span.expect("only a concrete invalid span can fail validation"),
+                    None,
+                )
+            })?;
         Ok(ParsedNode { value, occurrence })
     }
 

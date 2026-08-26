@@ -98,7 +98,11 @@ impl<'i, A> Input<'i, A> {
     }
 
     pub(crate) fn byte_position(&self) -> usize {
-        self.peek(0)
+        self.byte_position_at(0)
+    }
+
+    pub(crate) fn byte_position_at(&self, distance: usize) -> usize {
+        self.peek(distance)
             .map_or(self.source.len(), |record| record.span.start() as usize)
     }
 

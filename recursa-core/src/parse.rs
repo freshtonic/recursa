@@ -24,7 +24,15 @@ pub enum ParseErrorKind {
 
 impl ParseError {
     pub(crate) fn unexpected<A>(input: &Input<'_, A>, expected: &FollowSet) -> Self {
-        let (kind, span, found) = match input.peek(0) {
+        Self::unexpected_at(input, expected, 0)
+    }
+
+    pub(crate) fn unexpected_at<A>(
+        input: &Input<'_, A>,
+        expected: &FollowSet,
+        distance: usize,
+    ) -> Self {
+        let (kind, span, found) = match input.peek(distance) {
             Some(record) if record.kind == input.grammar().lexical_error_kind => {
                 (ParseErrorKind::LexicalError, record.span, Some(record.kind))
             }
@@ -34,7 +42,7 @@ impl ParseError {
                 Some(record.kind),
             ),
             None => {
-                let position = input.byte_position();
+                let position = input.byte_position_at(distance);
                 let span = Span::new(position, position)
                     .expect("lexing input must fit Recursa's checked span range");
                 (ParseErrorKind::UnexpectedEof, span, None)

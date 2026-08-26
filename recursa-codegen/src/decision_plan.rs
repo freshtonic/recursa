@@ -37,6 +37,57 @@ impl DispatchSequence {
     }
 }
 
+/// One terminal choice in a frozen dispatch trie.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DispatchTerminal {
+    declaration: DeclId,
+    on_caller_follow: bool,
+}
+
+impl DispatchTerminal {
+    pub const fn declaration(self) -> DeclId {
+        self.declaration
+    }
+
+    pub const fn on_caller_follow(self) -> bool {
+        self.on_caller_follow
+    }
+}
+
+/// One already-discriminated edge in a frozen dispatch trie.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DispatchTrieEdge {
+    position: FirstPosition,
+    next: DispatchTrieNode,
+}
+
+impl DispatchTrieEdge {
+    pub const fn position(&self) -> &FirstPosition {
+        &self.position
+    }
+
+    pub const fn next(&self) -> &DispatchTrieNode {
+        &self.next
+    }
+}
+
+/// A frozen dispatch-trie node produced by M2.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DispatchTrieNode {
+    terminal: Option<DispatchTerminal>,
+    edges: Vec<DispatchTrieEdge>,
+}
+
+impl DispatchTrieNode {
+    pub const fn terminal(&self) -> Option<DispatchTerminal> {
+        self.terminal
+    }
+
+    pub fn edges(&self) -> &[DispatchTrieEdge] {
+        &self.edges
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DispatchBranch {
     declaration: DeclId,
@@ -66,6 +117,7 @@ pub struct DispatchPlan {
     branches: Vec<DispatchBranch>,
     required_lookahead: usize,
     on_caller_follow: Option<DeclId>,
+    trie: DispatchTrieNode,
 }
 
 impl DispatchPlan {
@@ -87,6 +139,10 @@ impl DispatchPlan {
 
     pub const fn on_caller_follow(&self) -> Option<DeclId> {
         self.on_caller_follow
+    }
+
+    pub const fn trie(&self) -> &DispatchTrieNode {
+        &self.trie
     }
 
     pub fn canonical_facts(&self, grammar: &GrammarDescription) -> String {
@@ -788,13 +844,94 @@ fn dispatch_plan<'a>(
             .any(|sequence| sequence.positions.is_empty() && sequence.on_caller_follow)
             .then_some(branch.declaration)
     });
+    let trie = freeze_dispatch_trie(&branches);
     DispatchPlan {
         owner,
         kind,
         branches,
         required_lookahead,
         on_caller_follow,
+        trie,
     }
+}
+
+fn freeze_dispatch_trie(branches: &[DispatchBranch]) -> DispatchTrieNode {
+    let mut root = DispatchTrieNode::default();
+    for branch in branches {
+        'sequence: for sequence in &branch.sequences {
+            let mut node = &mut root;
+            for position in &sequence.positions {
+                if let Some(terminal) = node.terminal.filter(|terminal| !terminal.on_caller_follow)
+                {
+                    assert_eq!(
+                        terminal.declaration, branch.declaration,
+                        "validated dispatch cannot extend another branch's terminal"
+                    );
+                    continue 'sequence;
+                }
+                let edge_index = node
+                    .edges
+                    .iter()
+                    .position(|edge| edge.position == *position);
+                let edge = if let Some(index) = edge_index {
+                    &mut node.edges[index]
+                } else {
+                    node.edges.push(DispatchTrieEdge {
+                        position: position.clone(),
+                        next: DispatchTrieNode::default(),
+                    });
+                    node.edges.last_mut().expect("the inserted edge exists")
+                };
+                node = &mut edge.next;
+            }
+            let terminal = DispatchTerminal {
+                declaration: branch.declaration,
+                on_caller_follow: sequence.on_caller_follow,
+            };
+            match &mut node.terminal {
+                Some(existing) => {
+                    assert_eq!(
+                        existing.declaration, terminal.declaration,
+                        "validated dispatch cannot map one prefix to two terminals"
+                    );
+                    if !terminal.on_caller_follow {
+                        assert!(
+                            node.edges.iter().all(|edge| trie_targets_declaration(
+                                &edge.next,
+                                terminal.declaration
+                            )),
+                            "validated dispatch cannot shadow another branch"
+                        );
+                        existing.on_caller_follow = false;
+                        node.edges.clear();
+                    }
+                }
+                None => {
+                    if !terminal.on_caller_follow {
+                        assert!(
+                            node.edges.iter().all(|edge| trie_targets_declaration(
+                                &edge.next,
+                                terminal.declaration
+                            )),
+                            "validated dispatch cannot shadow another branch"
+                        );
+                        node.edges.clear();
+                    }
+                    node.terminal = Some(terminal);
+                }
+            }
+        }
+    }
+    root
+}
+
+fn trie_targets_declaration(node: &DispatchTrieNode, declaration: DeclId) -> bool {
+    node.terminal
+        .is_none_or(|terminal| terminal.declaration == declaration)
+        && node
+            .edges
+            .iter()
+            .all(|edge| trie_targets_declaration(&edge.next, declaration))
 }
 
 fn required_dispatch_lookahead(branches: &[DispatchBranch], grammar: &GrammarDescription) -> usize {
@@ -1339,6 +1476,13 @@ mod tests {
         wrong_depth.dispatches[0].required_lookahead += 1;
         assert_eq!(
             wrong_depth.validate(&grammar, output.first_by_type()),
+            Err(DecisionInvariant::DispatchProductMismatch),
+        );
+
+        let mut wrong_trie = products.clone();
+        wrong_trie.dispatches[0].trie.edges.pop();
+        assert_eq!(
+            wrong_trie.validate(&grammar, output.first_by_type()),
             Err(DecisionInvariant::DispatchProductMismatch),
         );
 
