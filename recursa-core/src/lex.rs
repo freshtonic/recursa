@@ -1,5 +1,6 @@
 use regex_automata::meta::Regex;
 use regex_automata::{Anchored, Input as RegexInput};
+use std::fmt;
 
 use crate::{LexResult, Span, TokenKind, TokenRecord};
 
@@ -10,7 +11,75 @@ pub struct LexRule {
     pub pattern: &'static str,
     pub kind: TokenKind,
     pub skip: bool,
+    pub callback: Option<for<'source> fn(&mut LexContext<'source>) -> LexAction>,
+    pub fixed: bool,
+    pub priority: u32,
 }
+
+/// Backend-independent state exposed to one generated lexer-callback shim.
+#[doc(hidden)]
+pub struct LexContext<'source> {
+    source: &'source str,
+    start: usize,
+    end: usize,
+}
+
+impl<'source> LexContext<'source> {
+    pub fn source(&self) -> &'source str {
+        self.source
+    }
+
+    pub const fn start(&self) -> usize {
+        self.start
+    }
+
+    pub const fn end(&self) -> usize {
+        self.end
+    }
+
+    pub fn slice(&self) -> &'source str {
+        &self.source[self.start..self.end]
+    }
+
+    pub fn remainder(&self) -> &'source str {
+        &self.source[self.end..]
+    }
+
+    pub fn bump(&mut self, bytes: usize) -> Result<(), LexBumpError> {
+        let Some(end) = self.end.checked_add(bytes) else {
+            return Err(LexBumpError);
+        };
+        if end > self.source.len() || !self.source.is_char_boundary(end) {
+            return Err(LexBumpError);
+        }
+        self.end = end;
+        Ok(())
+    }
+}
+
+/// One erased callback decision after a generated typed shim has run.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LexAction {
+    Emit,
+    EmitAs(TokenKind),
+    Skip,
+    Error,
+}
+
+/// A callback attempted to advance outside the remaining source or between
+/// UTF-8 code units.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LexBumpError;
+
+impl fmt::Display for LexBumpError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("lexer callback bump is outside the remaining UTF-8 source")
+    }
+}
+
+impl std::error::Error for LexBumpError {}
 
 /// Executes a small generated lexical rule table.
 ///
@@ -37,29 +106,50 @@ pub fn lex<'input>(
         let remaining = &source[offset..];
         let selected = compiled
             .iter()
-            .enumerate()
-            .filter_map(|(priority, (matcher, rule))| {
+            .filter_map(|(matcher, rule)| {
                 matcher
                     .find(RegexInput::new(remaining).anchored(Anchored::Yes))
                     .filter(|found| found.start() == 0 && found.end() > 0)
-                    .map(|found| (found.end(), priority, *rule))
+                    .map(|found| (found.end(), *rule))
             })
-            .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)));
+            .max_by_key(|(length, rule)| (*length, rule.fixed, rule.priority));
 
-        let (length, kind, skip) = selected.map_or_else(
+        let (end, emitted_kind) = selected.map_or_else(
             || {
                 let length = remaining
                     .chars()
                     .next()
                     .expect("offset is before source end")
                     .len_utf8();
-                (length, lexical_error_kind, false)
+                (offset + length, Some(lexical_error_kind))
             },
-            |(length, _, rule)| (length, rule.kind, rule.skip),
+            |(length, rule)| {
+                let mut context = LexContext {
+                    source,
+                    start: offset,
+                    end: offset + length,
+                };
+                let action = rule.callback.map_or_else(
+                    || {
+                        if rule.skip {
+                            LexAction::Skip
+                        } else {
+                            LexAction::Emit
+                        }
+                    },
+                    |callback| callback(&mut context),
+                );
+                let kind = match action {
+                    LexAction::Emit => Some(rule.kind),
+                    LexAction::EmitAs(kind) => Some(kind),
+                    LexAction::Skip => None,
+                    LexAction::Error => Some(lexical_error_kind),
+                };
+                (context.end, kind)
+            },
         );
-        let end = offset + length;
         let span = Span::new(offset, end).expect("source accepted by LexResult fits checked spans");
-        if !skip {
+        if let Some(kind) = emitted_kind {
             records.push(TokenRecord { kind, span });
         }
         offset = end;

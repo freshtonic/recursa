@@ -14,7 +14,7 @@ use syn::{GenericArgument, GenericParam, Generics, Ident, PathArguments, Type, V
 use crate::TypeShape;
 use crate::build_diagnostic::{BuildReport, DiagnosticStage, GenerateError};
 use crate::decision_plan::{ContainerOperation, DispatchKind, FollowRecipe};
-use crate::lexical::{KeywordRecognition, LexicalMatcher, TokenKindIdentity};
+use crate::lexical::{KeywordRecognition, LexicalMatcher, LexicalPriority, TokenKindIdentity};
 use crate::lowering::ModuleId;
 use crate::m3::{CargoOutput, M3Input, analyze_source_tree, internal_generate_error};
 use crate::materialization::{
@@ -317,6 +317,9 @@ struct LexRulePlan {
     pattern: String,
     kind: u16,
     skip: bool,
+    callback: Option<syn::Path>,
+    fixed: bool,
+    priority: u32,
 }
 
 #[derive(Clone)]
@@ -476,6 +479,15 @@ impl EmissionPlan {
                     .try_into()
                     .map_err(|_| "generated token kind exceeds runtime width".to_owned())?,
                 skip: false,
+                callback: match &lowered.lexical_plan.token_kinds[rule.kind.index()].identity {
+                    TokenKindIdentity::ContentBase(base) => base.callback.clone(),
+                    TokenKindIdentity::Fixed(_) => None,
+                },
+                fixed: matches!(rule.priority, LexicalPriority::Fixed),
+                priority: match rule.priority {
+                    LexicalPriority::Fixed => 0,
+                    LexicalPriority::Pattern { authored } => authored.unwrap_or(0),
+                },
             };
             if !lexical_rules.iter().any(|existing| {
                 existing.pattern == planned.pattern && existing.kind == planned.kind
@@ -494,6 +506,9 @@ impl EmissionPlan {
                 pattern,
                 kind: 0,
                 skip: true,
+                callback: None,
+                fixed: false,
+                priority: 0,
             });
         }
         let keyword_classifiers =
@@ -574,8 +589,15 @@ impl EmissionPlan {
         }
         for rule in &lexical_rules {
             canonical.push_str(&format!(
-                ";rule={:?}:{}:{}",
-                rule.pattern, rule.kind, rule.skip
+                ";rule={:?}:{}:{}:{}:{}:{}",
+                rule.pattern,
+                rule.kind,
+                rule.skip,
+                rule.callback
+                    .as_ref()
+                    .map_or_else(|| "-".to_owned(), crate::source_syntax::path_text,),
+                rule.fixed,
+                rule.priority,
             ));
         }
         for classifier in &keyword_classifiers {
@@ -1467,6 +1489,48 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let patterns = plan.lexical_rules.iter().map(|rule| &rule.pattern);
     let kinds = plan.lexical_rules.iter().map(|rule| rule.kind);
     let skips = plan.lexical_rules.iter().map(|rule| rule.skip);
+    let fixed = plan.lexical_rules.iter().map(|rule| rule.fixed);
+    let priorities = plan.lexical_rules.iter().map(|rule| rule.priority);
+    let callbacks = plan.lexical_rules.iter().enumerate().map(|(index, rule)| {
+        if rule.callback.is_some() {
+            let shim = format_ident!("__recursa_lex_callback_{index}");
+            quote!(Some(#shim))
+        } else {
+            quote!(None)
+        }
+    });
+    let callback_shims = plan
+        .lexical_rules
+        .iter()
+        .enumerate()
+        .filter_map(|(index, rule)| {
+            let callback = rule.callback.as_ref()?;
+            let shim = format_ident!("__recursa_lex_callback_{index}");
+            Some(quote! {
+                fn #shim(
+                    context: &mut #facade::__private::LexContext<'_>,
+                ) -> #facade::__private::LexAction {
+                    let initial_end = context.end();
+                    let mut typed = LexContext {
+                        source: context.source(),
+                        start: context.start(),
+                        end: initial_end,
+                    };
+                    let action = #callback(&mut typed);
+                    context
+                        .bump(typed.end - initial_end)
+                        .expect("generated typed callback context validated its bump");
+                    match action {
+                        LexAction::Emit => #facade::__private::LexAction::Emit,
+                        LexAction::EmitAs(kind) => {
+                            #facade::__private::LexAction::EmitAs(__recursa_raw_kind(kind))
+                        }
+                        LexAction::Skip => #facade::__private::LexAction::Skip,
+                        LexAction::Error => #facade::__private::LexAction::Error,
+                    }
+                }
+            })
+        });
     let empty_words = vec![0_u64; kind_count.div_ceil(64)];
     let token_starts = plan.tokens.iter().enumerate().map(|(index, token)| {
         let name = format_ident!("__RECURSA_TOKEN_START_{index}");
@@ -1520,6 +1584,9 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                     pattern: #patterns,
                     kind: #kinds,
                     skip: #skips,
+                    callback: #callbacks,
+                    fixed: #fixed,
+                    priority: #priorities,
                 }
             ),*
         ];
@@ -1529,6 +1596,70 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             #(#kind_variants,)*
             LexicalError,
         }
+
+        /// The complete set of decisions a lexer callback can make.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum LexAction {
+            /// Emit the rule's declared token kind.
+            Emit,
+            /// Emit a different named kind from this grammar.
+            EmitAs(TokenKind),
+            /// Consume the matched source without emitting a record.
+            Skip,
+            /// Emit this grammar's lexical-error record.
+            Error,
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct LexBumpError {
+            _private: (),
+        }
+
+        impl ::core::fmt::Display for LexBumpError {
+            fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                formatter.write_str(
+                    "lexer callback bump is outside the remaining UTF-8 source",
+                )
+            }
+        }
+
+        impl ::std::error::Error for LexBumpError {}
+
+        /// Backend-independent access to one callback's current match.
+        pub struct LexContext<'source> {
+            source: &'source str,
+            start: usize,
+            end: usize,
+        }
+
+        impl<'source> LexContext<'source> {
+            /// The complete source slice currently claimed by this callback.
+            pub fn slice(&self) -> &str {
+                &self.source[self.start..self.end]
+            }
+
+            /// Source following the callback's current slice.
+            pub fn remainder(&self) -> &str {
+                &self.source[self.end..]
+            }
+
+            /// Extends the current slice by a validated byte count.
+            ///
+            /// Failure leaves the slice unchanged. Bumps may not exceed the
+            /// source or end between UTF-8 code units.
+            pub fn bump(&mut self, bytes: usize) -> Result<(), LexBumpError> {
+                let Some(end) = self.end.checked_add(bytes) else {
+                    return Err(LexBumpError { _private: () });
+                };
+                if end > self.source.len() || !self.source.is_char_boundary(end) {
+                    return Err(LexBumpError { _private: () });
+                }
+                self.end = end;
+                Ok(())
+            }
+        }
+
+        #(#callback_shims)*
 
         fn __recursa_raw_kind(kind: TokenKind) -> u16 {
             match kind {
@@ -1542,6 +1673,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             mut records: Vec<#facade::__private::TokenRecord>,
         ) -> #facade::__private::LexResult<'input> {
             for record in &mut records {
+                let _ = &record;
                 #(#keyword_classifiers)*
             }
             #facade::__private::LexResult::new(source, records)
