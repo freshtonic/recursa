@@ -7818,7 +7818,6 @@ fn render_node_pretty(
                                 container,
                                 separator.as_deref(),
                                 *top_level_break,
-                                *opaque_provenance,
                                 pretty,
                             )
                         };
@@ -7900,7 +7899,6 @@ fn render_node_pretty(
                                             container,
                                             separator.as_deref(),
                                             *top_level_break,
-                                            *opaque_provenance,
                                             pretty,
                                         )
                                     };
@@ -7950,7 +7948,6 @@ fn render_pretty_semantic(
     container: &PlannedContainer,
     separator: Option<&str>,
     top_level_break: bool,
-    _opaque_provenance: bool,
     pretty: &PrettyHints,
 ) -> proc_macro2::TokenStream {
     let render_value = if matches!(container, PlannedContainer::Repeated { .. }) {
