@@ -47,8 +47,8 @@ fn pratt_diagrams_render_frozen_roles_binding_powers_and_operands() {
     assert!(
         expression
             .1
-            .contains("atom Paren(\"(\" grammar::Expr \")\")"),
-        "atom operands must come from the frozen materialized body:\n{}",
+            .contains("atom Paren(\"[\" grammar::Expr \"]\")"),
+        "attached grouping tokens must come from the frozen materialized body:\n{}",
         expression.1,
     );
     assert!(

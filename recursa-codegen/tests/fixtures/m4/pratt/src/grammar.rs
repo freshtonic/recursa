@@ -10,8 +10,11 @@ recursa::tokens! {
     ignore = r"[ \t\n\r]+",
     keywords {
         IS => "IS",
-        NOT => "NOT",
+        KW_NOT => "NOT",
+        NEVER => "NEVER",
         EXISTS => "EXISTS",
+        HAS => "HAS",
+        NULL => "NULL",
     }
     punctuation {
         PLUS => "+",
@@ -19,6 +22,7 @@ recursa::tokens! {
         STAR => "*",
         CARET => "^",
         BANG => "!",
+        DOUBLE_COLON => "::", spacing = tight,
         GROUP_OPEN => "[",
         GROUP_CLOSE => "]",
     }
@@ -64,12 +68,20 @@ pub enum Expr<'input> {
     Add(Box<Self>, Box<Self>),
 
     #[parse(prefix, bp = 35)]
-    #[tok(NOT, EXISTS)]
+    #[tok(NEVER, EXISTS)]
     NotExists(Box<Self>),
 
     #[parse(infix, lbp = 5, rbp = 6)]
-    #[tok(IS, NOT)]
+    #[tok(IS, KW_NOT)]
     IsNot(Box<Self>, Box<Self>),
+
+    #[parse(infix, lbp = 25, rbp = 26)]
+    #[tok(DOUBLE_COLON)]
+    Cast(Box<Self>, Box<Self>),
+
+    #[parse(postfix, bp = 40)]
+    #[tok(HAS, NULL)]
+    IsNull(Box<Self>),
 }
 
 #[derive(recursa::Node)]

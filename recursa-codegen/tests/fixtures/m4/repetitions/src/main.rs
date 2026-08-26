@@ -193,10 +193,19 @@ fn assert_capture_configuration(mode: CaptureMode) {
     );
 
     let mixed = parse_spanned!(grammar::MixedMany, "mixed off,on,off,on");
-    assert_eq!(mixed.render(), "mixed off,\non,\noff,\non");
+    assert_eq!(mixed.render(), "mixed off, on, off, on");
     let values = mixed.root().values();
     assert_eq!(values.len(), 4);
     assert_eq!(values.get(0).unwrap().span(), None);
+
+    let program = parse_spanned!(grammar::MixedProgram, "off;on;off");
+    assert_eq!(program.render(), "off;\non;\noff");
+
+    let choices = parse_spanned!(grammar::OrdinaryChoices, "off on off");
+    assert_eq!(choices.render(), "off on off");
+
+    let duplicates = parse_spanned!(grammar::DuplicateList, "on on on");
+    assert_eq!(duplicates.render(), "on on on");
     assert_eq!(
         values.get(1).unwrap().span(),
         recursa::Span::new(10, 12).ok()

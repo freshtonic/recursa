@@ -67,7 +67,7 @@ fn expect_error<T>(result: Result<T, recursa::ParseError>) -> recursa::ParseErro
 
 fn parse(source: &str) -> recursa::Parsed<'_, grammar::Expr<'_>> {
     let lexed = grammar::lex(source);
-    assert!(lexed.errors().next().is_none());
+    assert!(lexed.errors().next().is_none(), "lex errors in {source:?}");
     let mut input = lexed.input();
     let parsed = grammar::Expr::parse_spanned(&mut input).expect("expression parses");
     assert!(
@@ -115,15 +115,27 @@ fn assert_pretty_multi_token_operators() {
     assert_eq!(infix.render(), "a IS NOT b");
 
     let prefix = grammar::Expr::NotExists(Box::new(name("a")));
-    assert_eq!(prefix.render(), "NOT EXISTS a");
+    assert_eq!(prefix.render(), "NEVER EXISTS a");
 
     let formatted = parse("a IS NOT b").render();
     assert_eq!(formatted, "a IS NOT b");
     assert_eq!(parse(&formatted).render(), formatted);
 
-    let formatted = parse("NOT EXISTS a").render();
-    assert_eq!(formatted, "NOT EXISTS a");
+    let formatted = parse("NEVER EXISTS a").render();
+    assert_eq!(formatted, "NEVER EXISTS a");
     assert_eq!(parse(&formatted).render(), formatted);
+
+    let punctuation_prefix = grammar::Expr::Neg(Box::new(name("a")));
+    assert_eq!(punctuation_prefix.render(), "-a");
+
+    let punctuation_postfix = grammar::Expr::Factorial(Box::new(name("a")));
+    assert_eq!(punctuation_postfix.render(), "a!");
+
+    let tight_infix = grammar::Expr::Cast(Box::new(name("a")), Box::new(name("b")));
+    assert_eq!(tight_infix.render(), "a::b");
+
+    let word_postfix = grammar::Expr::IsNull(Box::new(name("a")));
+    assert_eq!(word_postfix.render(), "a HAS NULL");
 }
 
 fn main() {
@@ -221,7 +233,7 @@ fn main() {
         _ => panic!("rbp = lbp must be right associative"),
     }
 
-    let unary = parse("-x! + (2)");
+    let unary = parse("-x! + [2]");
     let root = unary.root();
     assert_eq!(root.span(), Some(recursa::Span::new(0, 9).unwrap()));
     assert_eq!(root.span_elements().len(), 3);
@@ -244,31 +256,33 @@ fn main() {
     assert_eq!(
         error.expected().collect::<Vec<_>>(),
         [
+            "fixed:NEVER",
             "fixed:-",
-            "fixed:(",
+            "fixed:[",
             "content:\"[0-9]+\":callback=-:priority=None",
             "content:\"[A-Za-z_][A-Za-z0-9_]*\":callback=-:priority=None",
         ]
     );
 
-    let missing_close = grammar::lex("(1 + 2");
+    let missing_close = grammar::lex("[1 + 2");
     let mut input = missing_close.input();
     let error = expect_error(grammar::Expr::parse(&mut input));
     assert_eq!(error.kind(), ParseErrorKind::UnexpectedEof);
     assert_eq!(error.span(), recursa::Span::new(6, 6).unwrap());
-    assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:)"]);
+    assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:]"]);
 
-    let wrong_rhs = grammar::lex("1 + )");
+    let wrong_rhs = grammar::lex("1 + ]");
     let mut input = wrong_rhs.input();
     let error = expect_error(grammar::Expr::parse(&mut input));
     assert_eq!(error.kind(), ParseErrorKind::UnexpectedToken);
     assert_eq!(error.span(), recursa::Span::new(4, 5).unwrap());
-    assert_eq!(error.found(), Some("fixed:)"));
+    assert_eq!(error.found(), Some("fixed:]"));
     assert_eq!(
         error.expected().collect::<Vec<_>>(),
         [
+            "fixed:NEVER",
             "fixed:-",
-            "fixed:(",
+            "fixed:[",
             "content:\"[0-9]+\":callback=-:priority=None",
             "content:\"[A-Za-z_][A-Za-z0-9_]*\":callback=-:priority=None",
         ]
@@ -289,7 +303,7 @@ fn main() {
     assert_eq!(error.found(), Some("fixed:*"));
     assert_eq!(
         error.expected().collect::<Vec<_>>(),
-        ["fixed:*", "fixed:^", "fixed:!"]
+        ["fixed:HAS", "fixed:*", "fixed:^", "fixed:!", "fixed:::"]
     );
 
     println!("pratt-ok");

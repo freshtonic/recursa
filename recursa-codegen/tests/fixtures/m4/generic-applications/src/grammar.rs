@@ -135,6 +135,7 @@ pub struct SeparatorAudit<'input> {
 pub enum Expr<'input> {
     Integer(Atom<Integer<'input>>),
     Name(Atom<Name<'input>>),
+    Paren(#[tok(LPAREN, this, RPAREN)] Box<Self>),
 
     #[parse(prefix, bp = 20)]
     #[tok(MINUS)]
