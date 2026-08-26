@@ -1,0 +1,12 @@
+[package]
+name = "recursa-legacy-cskw"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+build = "build.rs"
+
+[dependencies]
+recursa.workspace = true
+
+[build-dependencies]
+recursa-codegen.workspace = true

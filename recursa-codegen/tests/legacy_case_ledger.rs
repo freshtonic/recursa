@@ -123,8 +123,8 @@ fn every_successor_reference_is_an_executable_test_or_a_named_typed_gate() {
 
     assert_eq!(
         pending_identities.len(),
-        84,
-        "the independent phase leaves 81 runtime cases and 3 generated-source cases explicitly pending",
+        19,
+        "the pre-#68 phase leaves 16 generic arithmetic cases and 3 generated-source cases explicitly pending",
     );
     assert!(
         pending_identities
@@ -134,7 +134,7 @@ fn every_successor_reference_is_an_executable_test_or_a_named_typed_gate() {
     assert!(
         pending_identities
             .iter()
-            .any(|identity| identity.starts_with("tests/toy.rs::")),
+            .any(|identity| identity.starts_with("tests/arith.rs::")),
     );
 }
 
