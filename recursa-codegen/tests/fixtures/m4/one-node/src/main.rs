@@ -3,11 +3,23 @@ use recursa_generated_one_node::r#type as grammar;
 
 fn assert_token_kind_value<T: Copy + Eq + std::hash::Hash + std::fmt::Debug>() {}
 
+fn parse_with_capability<T, I>(input: &mut I) -> Result<T::Output, recursa::ParseError>
+where
+    T: recursa::Parse<I>,
+{
+    T::parse(input)
+}
+
 fn main() {
     assert_token_kind_value::<grammar::TokenKind>();
     assert!(option_env!("RECURSA_GENERATION").is_none());
+    assert_eq!(
+        grammar::grammar_info().name().split("::").next(),
+        Some("type")
+    );
     let source = String::from("alpha");
     let lexed = grammar::lex(&source);
+    assert_eq!(lexed.source(), "alpha");
     let token = lexed.tokens().next().expect("one generated token");
     assert_eq!(token.kind(), grammar::TokenKind::WordText);
     assert_eq!(token.text(), "alpha");
@@ -15,17 +27,27 @@ fn main() {
     assert_eq!(lexed.tokens().count(), 1);
 
     let mut input = lexed.input();
-    let parsed = grammar::r#match::parse(&mut input).expect("generated parse succeeds");
+    let parsed = parse_with_capability::<grammar::r#match<'_>, _>(&mut input)
+        .expect("generated Parse capability succeeds");
     assert_eq!(parsed.root().value().text.text(), "alpha");
     assert!(std::ptr::eq(
         parsed.root().value().text.text().as_ptr(),
         source.as_ptr(),
     ));
     assert_eq!(parsed.root().span(), None);
+    assert_eq!(parsed.root().text().span(), None);
     assert_eq!(input.cursor(), 1);
     assert!(input.is_eof());
     let ast = parsed.into_ast();
     assert_eq!(ast.text.text(), "alpha");
+
+    let synthetic = recursa::Parsed::synthetic(grammar::r#match {
+        text: grammar::WordText::new(String::from("owned")),
+    });
+    assert_eq!(synthetic.source(), None);
+    assert_eq!(synthetic.root().span(), None);
+    assert_eq!(synthetic.root().text().span(), None);
+    assert_eq!(synthetic.root().value().text.text(), "owned");
 
     let spanned = grammar::lex("beta");
     let mut spanned_input = spanned.input();
@@ -35,6 +57,17 @@ fn main() {
         spanned.root().span(),
         Some(recursa::Span::new(0, 4).unwrap())
     );
+    assert_eq!(
+        spanned.root().text().span(),
+        Some(recursa::Span::new(0, 4).unwrap())
+    );
+
+    let builder_lexed = grammar::lex("gamma");
+    let mut builder_input = builder_lexed.input_with_builder(41_u32);
+    let builder_parsed = parse_with_capability::<grammar::r#match<'_>, _>(&mut builder_input)
+        .expect("the Parse capability supports a builder-mediated input");
+    assert_eq!(builder_parsed.root().value().text.text(), "gamma");
+    assert_eq!(*builder_input.builder(), 41);
 
     let empty = grammar::lex("");
     let mut empty_input = empty.input();

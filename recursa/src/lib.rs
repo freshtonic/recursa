@@ -1,12 +1,10 @@
 //! Recursa — an AST-first parser generator. The AST is the grammar.
 //!
-//! Facade crate: re-exports the supported grammar-erased runtime surface.
-//! Design: see the recursa-spike repo, docs/api-design.md.
+//! This facade exports the common runtime contracts and authoring macros.
+//! Grammar-bound lexical and input types are generated in each grammar module.
 
 pub use recursa_core::{
-    ExpectedAtomId, FollowSet, FollowSetError, GrammarInfo, HasSpan, Input, LexResult, Node,
-    NodeView, OffsetOverflow, Parse, ParseError, ParseErrorKind, Parsed, Span, SpanBlock,
-    TokenKind, TokenRecord, Vec1,
+    HasSpan, Node, NodeView, OffsetOverflow, Parse, ParseError, ParseErrorKind, Parsed, Span, Vec1,
 };
 pub use recursa_macros::{Node, grammar, tokens};
 
