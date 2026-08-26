@@ -41,5 +41,28 @@ fn main() {
     assert_eq!(classified.text(), "sElEcT");
     assert_eq!(alternative.errors().count(), 0);
 
+    let callback_lexed = grammar::lex("~emit ~as ~skip ~error ~tail");
+    let callback_tokens = callback_lexed.tokens().collect::<Vec<_>>();
+    assert_eq!(callback_tokens.len(), 3);
+    assert_eq!(
+        callback_tokens[0].kind(),
+        grammar::TokenKind::CallbackText
+    );
+    assert_eq!(callback_tokens[0].text(), "~emit");
+    assert_eq!(callback_tokens[1].kind(), grammar::TokenKind::SELECT);
+    assert_eq!(callback_tokens[1].text(), "~as");
+    assert_eq!(
+        callback_tokens[2].kind(),
+        grammar::TokenKind::CallbackText
+    );
+    assert_eq!(callback_tokens[2].text(), "~tail");
+    let callback_errors = callback_lexed.errors().collect::<Vec<_>>();
+    assert_eq!(callback_errors.len(), 1);
+    assert_eq!(callback_errors[0].text(), "~error");
+    assert_eq!(
+        callback_errors[0].span(),
+        recursa::Span::new(16, 22).unwrap()
+    );
+
     println!("lexing-ok");
 }

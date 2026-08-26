@@ -27,7 +27,7 @@ pub use span::{OffsetOverflow, Span};
 pub mod __private {
     pub use crate::grammar::{ExpectedAtomId, FollowSet, FollowSetError, GrammarInfo, TokenKind};
     pub use crate::input::{Input, LexResult, TokenRecord};
-    pub use crate::lex::{LexRule, lex};
+    pub use crate::lex::{LexAction, LexBumpError, LexContext, LexRule, lex};
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     pub use crate::parsed::{
         CapturePolicy, ContentText, ElementMetadata, GeneratedParse as Parse, NodeViewFactory,
