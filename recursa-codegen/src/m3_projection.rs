@@ -658,7 +658,7 @@ fn attachment_for_outer(
         .find(|attachment| attachment.outer == outer)
 }
 
-fn direct_attachment_unit<'a>(site: SiteId, lowered: &'a LoweredGrammar) -> Option<&'a [SiteId]> {
+fn direct_attachment_unit(site: SiteId, lowered: &LoweredGrammar) -> Option<&[SiteId]> {
     let parsed = &lowered.grammar.sites[site.index()];
     if parsed
         .container
@@ -670,10 +670,10 @@ fn direct_attachment_unit<'a>(site: SiteId, lowered: &'a LoweredGrammar) -> Opti
     attachment_for_outer(site, lowered).map(|attachment| attachment.sites.as_slice())
 }
 
-fn attachment_outer_for_inner<'a>(
+fn attachment_outer_for_inner(
     site: SiteId,
-    lowered: &'a LoweredGrammar,
-) -> Option<(&'a AttachmentUnitCorrelation, usize)> {
+    lowered: &LoweredGrammar,
+) -> Option<(&AttachmentUnitCorrelation, usize)> {
     lowered
         .lowering_map
         .attachments
