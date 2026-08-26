@@ -201,8 +201,8 @@ struct PrettyPrattBehavior {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PrettyPrattGrouping {
-    open: PrettyAttachedFixedBehavior,
-    close: PrettyAttachedFixedBehavior,
+    before: Vec<PrettyAttachedFixedBehavior>,
+    after: Vec<PrettyAttachedFixedBehavior>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2430,8 +2430,8 @@ fn pretty_pratt_grouping(
                     if matches!(&element.kind, ElementParseKind::Semantic { terminal_node: Some(node), .. } if *node == owner) =>
                 {
                     Some(PrettyPrattGrouping {
-                        open: attachment.before.first()?.clone(),
-                        close: attachment.after.last()?.clone(),
+                        before: attachment.before.clone(),
+                        after: attachment.after.clone(),
                     })
                 }
                 ([open, semantic, close], [PrettyElementBehavior::Fixed { spelling: open_spelling, spacing: open_spacing, rendering: open_rendering, .. }, PrettyElementBehavior::Semantic { .. }, PrettyElementBehavior::Fixed { spelling: close_spelling, spacing: close_spacing, rendering: close_rendering, .. }])
@@ -2440,16 +2440,16 @@ fn pretty_pratt_grouping(
                         && matches!(close.kind, ElementParseKind::Fixed { .. }) =>
                 {
                     Some(PrettyPrattGrouping {
-                        open: PrettyAttachedFixedBehavior {
+                        before: vec![PrettyAttachedFixedBehavior {
                             spelling: open_spelling.clone(),
                             spacing: *open_spacing,
                             rendering: *open_rendering,
-                        },
-                        close: PrettyAttachedFixedBehavior {
+                        }],
+                        after: vec![PrettyAttachedFixedBehavior {
                             spelling: close_spelling.clone(),
                             spacing: *close_spacing,
                             rendering: *close_rendering,
-                        },
+                        }],
                     })
                 }
                 _ => None,
@@ -2860,16 +2860,8 @@ fn authoritative_pretty_pratt_grouping(
                 ],
             ) if is_recursive(semantic)? => {
                 return Ok(Some(PrettyPrattGrouping {
-                    open: attachment
-                        .before
-                        .first()
-                        .ok_or_else(|| "a Pratt grouping attachment lacks an opener".to_owned())?
-                        .clone(),
-                    close: attachment
-                        .after
-                        .last()
-                        .ok_or_else(|| "a Pratt grouping attachment lacks a closer".to_owned())?
-                        .clone(),
+                    before: attachment.before.clone(),
+                    after: attachment.after.clone(),
                 }));
             }
             (
@@ -2895,16 +2887,16 @@ fn authoritative_pretty_pratt_grouping(
                 ],
             ) if is_recursive(semantic)? => {
                 return Ok(Some(PrettyPrattGrouping {
-                    open: PrettyAttachedFixedBehavior {
+                    before: vec![PrettyAttachedFixedBehavior {
                         spelling: open_spelling.clone(),
                         spacing: *open_spacing,
                         rendering: *open_rendering,
-                    },
-                    close: PrettyAttachedFixedBehavior {
+                    }],
+                    after: vec![PrettyAttachedFixedBehavior {
                         spelling: close_spelling.clone(),
                         spacing: *close_spacing,
                         rendering: *close_rendering,
-                    },
+                    }],
                 }));
             }
             _ => {}
@@ -8177,18 +8169,22 @@ fn render_pratt_node_pretty(
                 .map_or_else(|| quote!(false), |entry| quote!(#entry < min_bp));
             let exit = pratt_variant.parenthesization.exit_rbp;
             let group_open = pratt_behavior.grouping.as_ref().map(|grouping| {
-                render_pretty_synthetic_fixed(
-                    plan,
-                    &grouping.open.spelling,
-                    grouping.open.rendering,
-                )
+                grouping
+                    .before
+                    .iter()
+                    .map(|fixed| {
+                        render_pretty_synthetic_fixed(plan, &fixed.spelling, fixed.rendering)
+                    })
+                    .collect::<proc_macro2::TokenStream>()
             });
             let group_close = pratt_behavior.grouping.as_ref().map(|grouping| {
-                render_pretty_synthetic_fixed(
-                    plan,
-                    &grouping.close.spelling,
-                    grouping.close.rendering,
-                )
+                grouping
+                    .after
+                    .iter()
+                    .map(|fixed| {
+                        render_pretty_synthetic_fixed(plan, &fixed.spelling, fixed.rendering)
+                    })
+                    .collect::<proc_macro2::TokenStream>()
             });
             quote! {
                 #pattern => {
@@ -11850,21 +11846,18 @@ struct B;
             behavior(plan).applications.clear();
         });
         reject(package.path(), plan.clone(), |plan| {
-            pratt(plan)
-                .grouping
-                .as_mut()
-                .expect("grouping")
-                .open
-                .spelling
-                .push('!');
+            let grouping = pratt(plan).grouping.as_mut().expect("grouping");
+            assert_eq!(grouping.before.len(), 2);
+            grouping.before[1].spelling.push('!');
         });
         reject(package.path(), plan.clone(), |plan| {
-            pratt(plan)
-                .grouping
-                .as_mut()
-                .expect("grouping")
-                .close
-                .rendering = PrettyFixedRendering::Word;
+            let grouping = pratt(plan).grouping.as_mut().expect("grouping");
+            assert_eq!(grouping.after.len(), 2);
+            grouping.after.remove(0);
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            pratt(plan).grouping.as_mut().expect("grouping").after[1].rendering =
+                PrettyFixedRendering::Punctuation;
         });
         reject(package.path(), plan.clone(), |plan| {
             pratt(plan).variants[0].parenthesization.entry_lbp = Some(1);

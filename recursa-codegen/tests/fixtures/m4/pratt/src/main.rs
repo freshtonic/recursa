@@ -89,13 +89,19 @@ fn assert_pretty_pratt_parentheses() {
         Box::new(grammar::Expr::Add(Box::new(name("a")), Box::new(name("b")))),
         Box::new(name("c")),
     );
-    assert_eq!(multiply_after_add.render(), "[a + b] * c");
+    assert_eq!(
+        multiply_after_add.render(),
+        "BEGIN GROUP a + b END GROUP * c"
+    );
 
     let left_nested_power = grammar::Expr::Power(
         Box::new(grammar::Expr::Power(Box::new(name("a")), Box::new(name("b")))),
         Box::new(name("c")),
     );
-    assert_eq!(left_nested_power.render(), "[a ^ b] ^ c");
+    assert_eq!(
+        left_nested_power.render(),
+        "BEGIN GROUP a ^ b END GROUP ^ c"
+    );
 
     let right_nested_power = grammar::Expr::Power(
         Box::new(name("a")),
@@ -261,6 +267,7 @@ fn main() {
         error.expected().collect::<Vec<_>>(),
         [
             "fixed:NEVER",
+            "fixed:BEGIN",
             "fixed:-",
             "fixed:[",
             "content:\"[0-9]+\":callback=-:priority=None",
@@ -285,6 +292,7 @@ fn main() {
         error.expected().collect::<Vec<_>>(),
         [
             "fixed:NEVER",
+            "fixed:BEGIN",
             "fixed:-",
             "fixed:[",
             "content:\"[0-9]+\":callback=-:priority=None",
