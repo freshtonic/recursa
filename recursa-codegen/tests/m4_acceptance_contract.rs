@@ -71,6 +71,10 @@ fn m4_matrix_distinguishes_executable_green_evidence_from_pending_dependencies()
         .collect::<BTreeSet<_>>();
     assert!(pending.is_empty());
     assert_eq!(
+        rows["M4-LEDGER"].evidence,
+        "`cargo test -p recursa-codegen --lib --test legacy_case_ledger --test analysis_parity --test analysis_diagnostics --test analysis_conflicts --test analysis_pratt_conflicts --locked`",
+    );
+    assert_eq!(
         rows["M4-EXPLORER"].evidence,
         "`cargo test -p recursa-codegen --test generated_compound_nodes explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples --locked && cargo test -p recursa-codegen --test generated_generic_applications explorer_adapters_are_generated_for_each_closed_generic_application --locked`",
     );
