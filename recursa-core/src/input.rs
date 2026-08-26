@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::{GrammarInfo, Span, TokenKind};
 
 /// One lexed token: an erased kind and its byte span.
@@ -19,24 +21,18 @@ impl<'src> LexResult<'src> {
         Self { source, records }
     }
 
-    pub fn input<'i>(&'i self, grammar: &'static GrammarInfo) -> Input<'i>
-    where
-        'src: 'i,
-    {
+    pub fn input(&self, grammar: &'static GrammarInfo) -> Input<'src> {
         self.input_with_builder(grammar, ())
     }
 
-    pub fn input_with_builder<'i, A>(
-        &'i self,
+    pub fn input_with_builder<A>(
+        &self,
         grammar: &'static GrammarInfo,
         builder: A,
-    ) -> Input<'i, A>
-    where
-        'src: 'i,
-    {
+    ) -> Input<'src, A> {
         Input {
             source: self.source,
-            records: &self.records,
+            records: Cow::Owned(self.records.clone()),
             cursor: 0,
             grammar,
             builder,
@@ -52,10 +48,10 @@ impl<'src> LexResult<'src> {
     }
 }
 
-/// A cursor over a borrowed lexing result plus parse-session state.
+/// A source-borrowing cursor with owned token records and parse-session state.
 pub struct Input<'i, A = ()> {
     source: &'i str,
-    records: &'i [TokenRecord],
+    records: Cow<'i, [TokenRecord]>,
     cursor: usize,
     grammar: &'static GrammarInfo,
     builder: A,
@@ -86,6 +82,10 @@ impl<'i, A> Input<'i, A> {
         let record = self.peek(0)?;
         self.cursor += 1;
         Some(record)
+    }
+
+    pub(crate) fn record(&self, index: usize) -> Option<TokenRecord> {
+        self.records.get(index).copied()
     }
 
     pub fn cursor(&self) -> usize {

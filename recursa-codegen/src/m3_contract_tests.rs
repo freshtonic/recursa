@@ -381,9 +381,9 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
     ProducerEvidence {
         codes: &["RCA9105"],
         producer_source: "src/m3.rs",
-        test_source: "src/generation.rs",
+        test_source: "src/generation_compound.rs",
         test_name: "emission_failures_use_the_registered_m4_code_and_preserve_detail",
-        command: "cargo test -p recursa-codegen generation::tests::emission_failures_use_the_registered_m4_code_and_preserve_detail --locked",
+        command: "cargo test -p recursa-codegen generation_compound::tests::emission_failures_use_the_registered_m4_code_and_preserve_detail --locked",
     },
 ];
 

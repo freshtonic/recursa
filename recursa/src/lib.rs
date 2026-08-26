@@ -4,7 +4,8 @@
 //! Grammar-bound lexical and input types are generated in each grammar module.
 
 pub use recursa_core::{
-    HasSpan, Node, NodeView, OffsetOverflow, Parse, ParseError, ParseErrorKind, Parsed, Span, Vec1,
+    ElementMetadata, ElementRole, ElementView, Elements, HasSpan, Node, NodeView, OffsetOverflow,
+    Parse, ParseError, ParseErrorKind, Parsed, Span, Vec1,
 };
 pub use recursa_macros::{Node, grammar, tokens};
 

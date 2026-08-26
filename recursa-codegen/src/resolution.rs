@@ -102,6 +102,7 @@ pub(crate) struct ResolvedNode {
     pub(crate) module: ModuleId,
     pub(crate) source: SourceId,
     pub(crate) ident: String,
+    pub(crate) visibility: Visibility,
     pub(crate) key: NodeKey,
     pub(crate) range: Range<u32>,
     pub(crate) generics: syn::Generics,
@@ -112,14 +113,22 @@ pub(crate) struct ResolvedNode {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ResolvedNodeBody {
-    Struct { unit: bool },
+    Struct { style: ResolvedFieldStyle },
     Enum { variants: Vec<ResolvedNodeVariant> },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResolvedFieldStyle {
+    Named,
+    Unnamed,
+    Unit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedNodeVariant {
     pub(crate) id: ResolvedVariantId,
     pub(crate) ident: String,
+    pub(crate) style: ResolvedFieldStyle,
     pub(crate) range: Range<u32>,
     pub(crate) metas: Vec<Meta>,
     pub(crate) fields: Vec<ResolvedFieldId>,
@@ -438,6 +447,7 @@ struct ConfiguredNodeField {
 
 struct ConfiguredNodeVariant {
     ident: String,
+    style: ResolvedFieldStyle,
     range: Range<u32>,
     metas: Vec<Meta>,
     fields: Vec<ConfiguredNodeField>,
@@ -445,7 +455,7 @@ struct ConfiguredNodeVariant {
 
 enum ConfiguredNodeBody {
     Struct {
-        unit: bool,
+        style: ResolvedFieldStyle,
         fields: Vec<ConfiguredNodeField>,
     },
     Enum {
@@ -689,7 +699,7 @@ impl Resolver<'_> {
                     let mut fields = Vec::new();
                     let body = match configured_body {
                         ConfiguredNodeBody::Struct {
-                            unit,
+                            style,
                             fields: configured_fields,
                         } => {
                             fields.extend(
@@ -697,7 +707,7 @@ impl Resolver<'_> {
                                     .into_iter()
                                     .map(|field| self.register_node_field(field)),
                             );
-                            ResolvedNodeBody::Struct { unit }
+                            ResolvedNodeBody::Struct { style }
                         }
                         ConfiguredNodeBody::Enum { variants } => ResolvedNodeBody::Enum {
                             variants: variants
@@ -719,6 +729,7 @@ impl Resolver<'_> {
                                     ResolvedNodeVariant {
                                         id: variant_id,
                                         ident: variant.ident,
+                                        style: variant.style,
                                         range: variant.range,
                                         metas: variant.metas,
                                         fields: field_ids,
@@ -749,6 +760,7 @@ impl Resolver<'_> {
                             module: inclusion.id,
                             source: inclusion.source,
                             ident: name.clone(),
+                            visibility: visibility.clone(),
                             key: NodeKey { segments: key },
                             range: span_range(ident.span()),
                             generics,
@@ -2541,7 +2553,7 @@ fn configured_node_body(
 
     match item {
         Item::Struct(item) => ConfiguredNodeBody::Struct {
-            unit: matches!(item.fields, syn::Fields::Unit),
+            style: resolved_field_style(&item.fields),
             fields: configured_fields(
                 item.fields.iter().cloned(),
                 cfg,
@@ -2558,6 +2570,7 @@ fn configured_node_body(
                 .filter_map(|variant| match configured_metas(&variant.attrs, cfg) {
                     Ok(Some(metas)) => Some(ConfiguredNodeVariant {
                         ident: variant.ident.unraw().to_string(),
+                        style: resolved_field_style(&variant.fields),
                         range: span_range(variant.ident.span()),
                         metas,
                         fields: configured_fields(
@@ -2587,6 +2600,14 @@ fn configured_node_body(
                 .collect(),
         },
         _ => unreachable!("only struct and enum Nodes reach configured_node_body"),
+    }
+}
+
+fn resolved_field_style(fields: &syn::Fields) -> ResolvedFieldStyle {
+    match fields {
+        syn::Fields::Named(_) => ResolvedFieldStyle::Named,
+        syn::Fields::Unnamed(_) => ResolvedFieldStyle::Unnamed,
+        syn::Fields::Unit => ResolvedFieldStyle::Unit,
     }
 }
 
@@ -2826,8 +2847,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        CatalogType, ResolutionDiagnosticKind, ResolutionInput, SemanticOwner, SemanticTarget,
-        resolve_local_semantics,
+        CatalogType, ResolutionDiagnosticKind, ResolutionInput, ResolvedFieldStyle,
+        ResolvedNodeBody, SemanticOwner, SemanticTarget, resolve_local_semantics,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
@@ -3196,6 +3217,101 @@ mod branch {
                 .resolutions
                 .iter()
                 .all(|resolution| { !resolved.traces[resolution.trace.index()].steps.is_empty() })
+        );
+    }
+
+    #[test]
+    fn preserves_node_visibility_and_every_authored_field_style() {
+        let package = TempDir::new().unwrap();
+        let report = resolve(
+            &package,
+            r#"
+recursa::grammar! { module = crate::grammar }
+
+#[derive(recursa::Node)]
+pub struct Named { value: Leaf }
+
+#[derive(recursa::Node)]
+pub(crate) struct Tuple(Leaf);
+
+#[derive(recursa::Node)]
+struct Unit;
+
+#[derive(recursa::Node)]
+pub enum Choice {
+    Named { value: Leaf },
+    Tuple(Leaf),
+    EmptyNamed {},
+    EmptyTuple(),
+    Unit,
+}
+
+#[derive(recursa::Node)]
+struct Leaf;
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let resolved = report.resolved.unwrap();
+        let named = resolved
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Named")
+            .unwrap();
+        let tuple = resolved
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Tuple")
+            .unwrap();
+        let unit = resolved
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Unit")
+            .unwrap();
+        let choice = resolved
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Choice")
+            .unwrap();
+
+        assert_eq!(named.visibility, syn::parse_quote!(pub));
+        assert_eq!(tuple.visibility, syn::parse_quote!(pub(crate)));
+        assert_eq!(unit.visibility, syn::Visibility::Inherited);
+        assert_eq!(choice.visibility, syn::parse_quote!(pub));
+        assert!(matches!(
+            named.body,
+            ResolvedNodeBody::Struct {
+                style: ResolvedFieldStyle::Named
+            }
+        ));
+        assert!(matches!(
+            tuple.body,
+            ResolvedNodeBody::Struct {
+                style: ResolvedFieldStyle::Unnamed
+            }
+        ));
+        assert!(matches!(
+            unit.body,
+            ResolvedNodeBody::Struct {
+                style: ResolvedFieldStyle::Unit
+            }
+        ));
+
+        let ResolvedNodeBody::Enum { variants } = &choice.body else {
+            panic!("Choice remains an enum")
+        };
+        assert_eq!(
+            variants
+                .iter()
+                .map(|variant| (variant.ident.as_str(), variant.style))
+                .collect::<Vec<_>>(),
+            [
+                ("Named", ResolvedFieldStyle::Named),
+                ("Tuple", ResolvedFieldStyle::Unnamed),
+                ("EmptyNamed", ResolvedFieldStyle::Named),
+                ("EmptyTuple", ResolvedFieldStyle::Unnamed),
+                ("Unit", ResolvedFieldStyle::Unit),
+            ]
         );
     }
 

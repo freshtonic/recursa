@@ -52,6 +52,132 @@ struct OccurrenceNode {
     children: Box<[OccurrenceNode]>,
 }
 
+/// Authored role of one generated grammar element.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ElementRole {
+    /// A fixed keyword or punctuation occurrence with no semantic AST field.
+    FixedToken,
+    /// A semantic field stored in the authored AST shape.
+    SemanticField,
+}
+
+/// Static metadata shared by every occurrence of one generated element.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ElementMetadata {
+    pub(crate) name: Option<&'static str>,
+    pub(crate) role: ElementRole,
+}
+
+impl ElementMetadata {
+    /// The authored field name or canonical fixed spelling, when one exists.
+    pub const fn name(self) -> Option<&'static str> {
+        self.name
+    }
+
+    /// Whether this element is fixed syntax or a semantic field.
+    pub const fn role(self) -> ElementRole {
+        self.role
+    }
+}
+
+/// One source-ordered element occurrence of a concrete Node view.
+#[derive(Clone, Copy)]
+pub struct ElementView<'view> {
+    metadata: &'static ElementMetadata,
+    cursor: ViewCursor<'view>,
+    index: usize,
+}
+
+impl ElementView<'_> {
+    /// Static metadata for this grammar element.
+    pub const fn metadata(self) -> &'static ElementMetadata {
+        self.metadata
+    }
+
+    /// Zero-based position in the active authored element sequence.
+    pub const fn index(self) -> usize {
+        self.index
+    }
+
+    /// Authored field name or generated fixed-element name.
+    pub const fn name(self) -> Option<&'static str> {
+        self.metadata.name()
+    }
+
+    /// Whether this occurrence represents fixed syntax or a semantic field.
+    pub const fn role(self) -> ElementRole {
+        self.metadata.role()
+    }
+}
+
+impl crate::output::span_seal::Sealed for ElementView<'_> {}
+
+impl HasSpan for ElementView<'_> {
+    fn span(&self) -> Option<Span> {
+        self.cursor.span()
+    }
+}
+
+/// Exact-size iterator over the active source-ordered elements of a Node view.
+pub struct Elements<'view> {
+    metadata: &'static [ElementMetadata],
+    cursor: ViewCursor<'view>,
+    index: usize,
+}
+
+impl<'view> Elements<'view> {
+    fn empty() -> Self {
+        Self {
+            metadata: &[],
+            cursor: ViewCursor::absent(),
+            index: 0,
+        }
+    }
+
+    /// Number of active grammar elements remaining in this iterator.
+    pub const fn len(&self) -> usize {
+        self.metadata.len().saturating_sub(self.index)
+    }
+
+    /// Whether this iterator has no active grammar elements remaining.
+    pub const fn is_empty(&self) -> bool {
+        self.index >= self.metadata.len()
+    }
+
+    /// Returns one active element by authored position.
+    pub fn get(&self, index: usize) -> Option<ElementView<'view>> {
+        let metadata = self.metadata.get(index)?;
+        Some(ElementView {
+            metadata,
+            cursor: self.cursor.child(index),
+            index,
+        })
+    }
+}
+
+impl<'view> Iterator for Elements<'view> {
+    type Item = ElementView<'view>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let metadata = self.metadata.get(self.index)?;
+        let cursor = self.cursor.child(self.index);
+        self.index += 1;
+        Some(ElementView {
+            metadata,
+            cursor,
+            index: self.index - 1,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.metadata.len().saturating_sub(self.index);
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for Elements<'_> {}
+impl std::iter::FusedIterator for Elements<'_> {}
+
 impl OccurrenceNode {
     fn is_captured(&self) -> bool {
         self.span.is_some() || self.children.iter().any(Self::is_captured)
@@ -99,6 +225,11 @@ pub trait NodeView: HasSpan {
 
     /// The semantic value at this occurrence.
     fn value(&self) -> &Self::Value;
+
+    /// Active grammar elements in authored source order.
+    fn span_elements(&self) -> Elements<'_> {
+        Elements::empty()
+    }
 }
 
 mod node_seal {
@@ -148,7 +279,7 @@ pub struct ViewCursor<'view> {
     occurrence: Option<&'view OccurrenceNode>,
 }
 
-impl ViewCursor<'_> {
+impl<'view> ViewCursor<'view> {
     fn absent() -> Self {
         Self { occurrence: None }
     }
@@ -164,6 +295,15 @@ impl ViewCursor<'_> {
             occurrence: self
                 .occurrence
                 .and_then(|occurrence| occurrence.children.get(index)),
+        }
+    }
+
+    /// Binds this occurrence cursor to generated static element metadata.
+    pub fn elements(self, metadata: &'static [ElementMetadata]) -> Elements<'view> {
+        Elements {
+            metadata,
+            cursor: self,
+            index: 0,
         }
     }
 }
@@ -263,6 +403,18 @@ impl CapturePolicy {
 #[doc(hidden)]
 pub struct Occurrence {
     node: OccurrenceNode,
+}
+
+impl Occurrence {
+    /// Represents an authored element that has no active occurrence.
+    pub fn absent() -> Self {
+        Self {
+            node: OccurrenceNode {
+                span: None,
+                children: Box::new([]),
+            },
+        }
+    }
 }
 
 /// Move-owned semantic value and occurrence produced by recursive generated parsing.
@@ -367,12 +519,52 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         self.input.advance()
     }
 
+    pub fn cursor(&self) -> usize {
+        self.input.cursor()
+    }
+
+    pub fn consumed_span_from(&self, start: usize) -> Option<Span> {
+        let end = self.input.cursor();
+        let first = self.input.record(start)?;
+        let last = self.input.record(end.checked_sub(1)?)?;
+        Span::new(first.span.start() as usize, last.span.end() as usize).ok()
+    }
+
     pub fn follow(&self) -> &FollowSet {
         self.follow
     }
 
     pub fn unexpected(&self, expected: &FollowSet) -> ParseError {
         ParseError::unexpected(self.input, expected)
+    }
+
+    pub fn next_is(&self, expected: &FollowSet) -> bool {
+        self.peek(0)
+            .is_some_and(|record| expected.contains(record.kind))
+    }
+
+    /// Consumes one fixed element and returns its occurrence provenance.
+    pub fn parse_fixed(
+        &mut self,
+        expected: &FollowSet,
+        policy: CapturePolicy,
+    ) -> Result<Occurrence, ParseError> {
+        let Some(record) = self.peek(0) else {
+            return Err(self.unexpected(expected));
+        };
+        if !expected.contains(record.kind) {
+            return Err(self.unexpected(expected));
+        }
+        self.advance();
+        self.provenance
+            .finish(
+                self.input.source(),
+                policy,
+                self.request,
+                record.span,
+                std::iter::empty(),
+            )
+            .map_err(|()| ParseError::invalid_token_span(self.input, record.span, None))
     }
 
     pub fn matched_text(&self, record: TokenRecord) -> Result<ContentText<'input>, ParseError> {
@@ -622,6 +814,31 @@ mod tests {
                 span: Span::new(0, source.len()).unwrap(),
             }],
         )
+    }
+
+    #[test]
+    fn elements_length_tracks_the_remaining_iterator_items() {
+        static METADATA: [ElementMetadata; 2] = [
+            ElementMetadata {
+                name: Some("fixed"),
+                role: ElementRole::FixedToken,
+            },
+            ElementMetadata {
+                name: Some("field"),
+                role: ElementRole::SemanticField,
+            },
+        ];
+        let mut elements = ViewCursor::absent().elements(&METADATA);
+
+        assert_eq!(elements.len(), 2);
+        assert!(!elements.is_empty());
+        assert_eq!(elements.next().unwrap().name(), Some("fixed"));
+        assert_eq!(elements.len(), 1);
+        assert!(!elements.is_empty());
+        assert_eq!(elements.next().unwrap().name(), Some("field"));
+        assert_eq!(elements.len(), 0);
+        assert!(elements.is_empty());
+        assert!(elements.next().is_none());
     }
 
     #[test]
