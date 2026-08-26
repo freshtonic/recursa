@@ -259,8 +259,15 @@ pub(crate) enum MaterializedElement {
         field: ResolvedFieldId,
         ty: ClosedType,
         trace: MaterializationTrace,
+        attachment: Option<MaterializedFixedAttachment>,
         separator: Option<Separator>,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializedFixedAttachment {
+    pub(crate) before: Vec<TokenUseId>,
+    pub(crate) after: Vec<TokenUseId>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -282,6 +289,7 @@ impl<'a> MaterializedFieldView<'a> {
                 ty,
                 trace,
                 separator,
+                ..
             } => Some(Self::Parsed {
                 field: *field,
                 ty,
@@ -364,6 +372,16 @@ pub(crate) struct MaterializationDiagnostic {
 struct ApplicationKey {
     node: NodeId,
     arguments: Vec<Vec<TypeIdentityAtom>>,
+}
+
+#[derive(Clone)]
+struct AttachmentUnitProjection {
+    id: TypeId,
+    application: MaterializedApplicationId,
+    field: ResolvedFieldId,
+    ty: ClosedType,
+    attachment: MaterializedFixedAttachment,
+    recursive_min_bp: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -856,11 +874,35 @@ impl Materializer {
             field,
             ty,
             trace,
+            attachment,
             separator,
         } = elements.remove(index)
         else {
             unreachable!("the selected Pratt lhs element is semantic")
         };
+        if attachment
+            .as_ref()
+            .is_some_and(|attachment| !attachment.before.is_empty())
+        {
+            let resolved_field = self.resolved_field(lhs_field).clone();
+            self.push_diagnostic(
+                resolved_field.ty.source,
+                Some(resolved_field.range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                "fixed syntax before the implicit Pratt lhs cannot be consumed by a led variant"
+                    .to_owned(),
+            );
+            return None;
+        }
+        if let Some(attachment) = attachment {
+            elements.splice(
+                index..index,
+                attachment
+                    .after
+                    .into_iter()
+                    .map(|token_use| MaterializedElement::FixedToken { token_use }),
+            );
+        }
         if !exact_pratt_self_parts(&ty, &trace, separator.as_ref(), current_application) {
             let resolved_field = self.resolved_field(field).clone();
             self.push_diagnostic(
@@ -901,6 +943,7 @@ impl Materializer {
                 }
                 GrammarElement::SemanticField {
                     resolved_field,
+                    attachment,
                     separator,
                     ..
                 } => {
@@ -962,6 +1005,20 @@ impl Materializer {
                         trace: MaterializationTrace {
                             steps: evaluated.trace,
                         },
+                        attachment: attachment.as_ref().map(|attachment| {
+                            MaterializedFixedAttachment {
+                                before: attachment
+                                    .before
+                                    .iter()
+                                    .map(|fixed| fixed.token_use)
+                                    .collect(),
+                                after: attachment
+                                    .after
+                                    .iter()
+                                    .map(|fixed| fixed.token_use)
+                                    .collect(),
+                            }
+                        }),
                         separator: separator.clone(),
                     });
                 }
@@ -1441,6 +1498,11 @@ impl Materializer {
             content_types.insert(target.semantic, ty);
         }
         let terminal_type_count = grammar.types.len();
+        let attachment_units = self.attachment_unit_projections(terminal_type_count);
+        let attachment_types = attachment_units
+            .iter()
+            .map(|unit| ((unit.application, unit.field), unit.id))
+            .collect::<BTreeMap<_, _>>();
         let applications = self
             .applications
             .iter()
@@ -1482,6 +1544,7 @@ impl Materializer {
                         terminal_type_count,
                         &fixed_types,
                         &content_types,
+                        &attachment_types,
                         &mut field_correlations,
                         0,
                     ),
@@ -1525,6 +1588,7 @@ impl Materializer {
                                     terminal_type_count,
                                     &fixed_types,
                                     &content_types,
+                                    &attachment_types,
                                     &mut field_correlations,
                                     0,
                                 ),
@@ -1584,6 +1648,7 @@ impl Materializer {
                                             terminal_type_count,
                                             &fixed_types,
                                             &content_types,
+                                            &attachment_types,
                                             &mut field_correlations,
                                             min_bp,
                                         ),
@@ -1617,6 +1682,7 @@ impl Materializer {
                                             terminal_type_count,
                                             &fixed_types,
                                             &content_types,
+                                            &attachment_types,
                                             &mut field_correlations,
                                             min_bp,
                                         ),
@@ -1636,6 +1702,32 @@ impl Materializer {
                 owner,
             );
             grammar.entry_types.push(owner);
+        }
+        for unit in &attachment_units {
+            assert_eq!(grammar.types.len(), unit.id.index());
+            let sites = self.project_attachment_unit(
+                &mut grammar,
+                unit,
+                terminal_type_count,
+                &fixed_types,
+                &content_types,
+            );
+            let application = &self.applications[unit.application.index()];
+            let field = self.resolved_field(unit.field);
+            let location =
+                grammar.push_location(Location::new(field.ty.source, field.range.clone()));
+            let declaration = grammar.push_declaration(Declaration::new(
+                format!("{}::__recursa_attachment", application.display_name),
+                location,
+            ));
+            assert_eq!(
+                grammar.push_type(TypeDescription::new(
+                    format!("{}::__recursa_attachment", application.display_name),
+                    declaration,
+                    TypeShape::Sequence { sites },
+                )),
+                unit.id,
+            );
         }
         (
             grammar,
@@ -1665,6 +1757,138 @@ impl Materializer {
         )
     }
 
+    fn attachment_unit_projections(
+        &self,
+        terminal_type_count: usize,
+    ) -> Vec<AttachmentUnitProjection> {
+        let mut units = Vec::new();
+        let mut collect = |application: &MaterializedNodeApplication,
+                           elements: &[MaterializedElement],
+                           recursive_min_bp: u8| {
+            for element in elements {
+                let MaterializedElement::SemanticField {
+                    field,
+                    ty,
+                    attachment: Some(attachment),
+                    ..
+                } = element
+                else {
+                    continue;
+                };
+                let id = TypeId::new(
+                    (terminal_type_count + self.applications.len() + units.len())
+                        .try_into()
+                        .expect("M2 attachment type ID overflow"),
+                );
+                units.push(AttachmentUnitProjection {
+                    id,
+                    application: application.id,
+                    field: *field,
+                    ty: ty.clone(),
+                    attachment: attachment.clone(),
+                    recursive_min_bp,
+                });
+            }
+        };
+        for application in &self.applications {
+            match &application.body {
+                MaterializedNodeBody::Struct(elements)
+                | MaterializedNodeBody::Presence(elements) => collect(application, elements, 0),
+                MaterializedNodeBody::Enum(variants) => {
+                    for variant in variants {
+                        collect(application, &variant.elements, 0);
+                    }
+                }
+                MaterializedNodeBody::Pratt(variants) => {
+                    for variant in variants {
+                        match variant {
+                            MaterializedPrattVariant::Nud(nud) => {
+                                let min_bp = match nud.position {
+                                    MaterializedPrattNudPosition::Atom => 0,
+                                    MaterializedPrattNudPosition::Prefix { bp } => bp,
+                                };
+                                collect(application, &nud.body, min_bp);
+                            }
+                            MaterializedPrattVariant::Led(led) => {
+                                let min_bp = match led.position {
+                                    MaterializedPrattLedPosition::Infix { rbp, .. } => rbp,
+                                    MaterializedPrattLedPosition::Postfix { .. } => 0,
+                                };
+                                collect(application, &led.tail, min_bp);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        units
+    }
+
+    fn project_attachment_unit(
+        &self,
+        grammar: &mut GrammarDescription,
+        unit: &AttachmentUnitProjection,
+        terminal_type_count: usize,
+        fixed_types: &BTreeMap<crate::KindId, TypeId>,
+        content_types: &BTreeMap<ContentTokenId, TypeId>,
+    ) -> Vec<SiteId> {
+        let application = &self.applications[unit.application.index()];
+        let mut sites = Vec::new();
+        let push_fixed =
+            |grammar: &mut GrammarDescription, sites: &mut Vec<SiteId>, token_use: TokenUseId| {
+                let token_use = &self.source_model().token_uses[token_use.index()];
+                let location = grammar.push_location(Location::new(
+                    token_use.site.source,
+                    token_use.site.range.clone(),
+                ));
+                let declaration = grammar.push_declaration(Declaration::new(
+                    format!(
+                        "{}::__recursa_attachment_element{}",
+                        application.display_name,
+                        sites.len()
+                    ),
+                    location,
+                ));
+                sites.push(grammar.push_site(ParseSite::new(
+                    unit.id,
+                    fixed_types[&self.kind_for_definition(token_use.definition)],
+                    declaration,
+                    ContainerShape::Direct,
+                )));
+            };
+        for token_use in &unit.attachment.before {
+            push_fixed(grammar, &mut sites, *token_use);
+        }
+        let field = self.resolved_field(unit.field);
+        let location = grammar.push_location(Location::new(field.ty.source, field.range.clone()));
+        let declaration = grammar.push_declaration(Declaration::new(
+            format!(
+                "{}::__recursa_attachment_element{}",
+                application.display_name,
+                sites.len()
+            ),
+            location,
+        ));
+        let (terminal, _) = terminal_and_container(&unit.ty, None);
+        let target = match terminal {
+            Terminal::Node(application) => TypeId::new(
+                (terminal_type_count + application.index())
+                    .try_into()
+                    .expect("M2 type ID overflow"),
+            ),
+            Terminal::ContentToken(token) => content_types[&token],
+        };
+        let mut semantic = ParseSite::new(unit.id, target, declaration, ContainerShape::Direct);
+        if is_recursive_pratt_operand(&unit.ty, unit.application) {
+            semantic = semantic.with_min_bp(unit.recursive_min_bp);
+        }
+        sites.push(grammar.push_site(semantic));
+        for token_use in &unit.attachment.after {
+            push_fixed(grammar, &mut sites, *token_use);
+        }
+        sites
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn project_elements(
         &self,
@@ -1675,6 +1899,7 @@ impl Materializer {
         terminal_type_count: usize,
         fixed_types: &BTreeMap<crate::KindId, TypeId>,
         content_types: &BTreeMap<ContentTokenId, TypeId>,
+        attachment_types: &BTreeMap<(MaterializedApplicationId, ResolvedFieldId), TypeId>,
         field_correlations: &mut Vec<MaterializedFieldCorrelation>,
         recursive_min_bp: u8,
     ) -> Vec<SiteId> {
@@ -1702,6 +1927,7 @@ impl Materializer {
                 MaterializedElement::SemanticField {
                     field,
                     ty,
+                    attachment,
                     separator,
                     ..
                 } => {
@@ -1723,7 +1949,7 @@ impl Materializer {
                         )
                     });
                     let (terminal, container) = terminal_and_container(ty, separator_type);
-                    let target = match terminal {
+                    let semantic_target = match terminal {
                         Terminal::Node(application) => TypeId::new(
                             (terminal_type_count + application.index())
                                 .try_into()
@@ -1731,6 +1957,9 @@ impl Materializer {
                         ),
                         Terminal::ContentToken(token) => content_types[&token],
                     };
+                    let target = attachment.as_ref().map_or(semantic_target, |_| {
+                        attachment_types[&(application.id, *field)]
+                    });
                     let mut parse_site = ParseSite::new(owner, target, declaration, container);
                     if is_recursive_pratt_operand(ty, application.id) {
                         parse_site = parse_site.with_min_bp(recursive_min_bp);
@@ -3072,7 +3301,21 @@ enum Expr {
                 .iter()
                 .filter(|element| matches!(element, MaterializedElement::FixedToken { .. }))
                 .count(),
-            3,
+            1,
+        );
+        let MaterializedElement::SemanticField {
+            attachment: Some(prefix_attachment),
+            ..
+        } = &prefix.body[1]
+        else {
+            panic!("prefix operand retains its fixed attachment")
+        };
+        assert_eq!(
+            (
+                prefix_attachment.before.len(),
+                prefix_attachment.after.len()
+            ),
+            (1, 1),
         );
         let MaterializedPrattVariant::Led(infix) = &variants[2] else {
             panic!("Infix is led")
@@ -3083,8 +3326,116 @@ enum Expr {
                 .iter()
                 .filter(|element| matches!(element, MaterializedElement::FixedToken { .. }))
                 .count(),
-            4,
+            2,
         );
+        let MaterializedElement::SemanticField {
+            attachment: Some(infix_attachment),
+            ..
+        } = infix.tail.last().unwrap()
+        else {
+            panic!("infix rhs retains its fixed attachment")
+        };
+        assert_eq!(
+            (infix_attachment.before.len(), infix_attachment.after.len()),
+            (1, 1),
+        );
+    }
+
+    #[test]
+    fn projects_field_attachments_as_private_m2_sequence_units() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::attached }
+#[derive(recursa::Node)]
+#[tok("LEAF")]
+struct Leaf;
+#[derive(recursa::Node)]
+struct Root {
+    #[tok("[", this, "]")]
+    value: Option<Leaf>,
+}
+"#,
+        ));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.expect("attachment grammar materializes");
+        let root = lowered
+            .applications
+            .iter()
+            .find(|application| application.display_name == "attached::Root")
+            .unwrap();
+        let root_type = lowered
+            .lowering_map
+            .applications
+            .iter()
+            .find(|correlation| correlation.application == root.id)
+            .unwrap()
+            .lowered;
+        let TypeShape::Sequence { sites: root_sites } =
+            &lowered.grammar.types[root_type.index()].shape
+        else {
+            panic!("Root is a sequence")
+        };
+        assert_eq!(
+            root_sites.len(),
+            1,
+            "the attachment is one authored field site"
+        );
+        let outer = &lowered.grammar.sites[root_sites[0].index()];
+        assert!(matches!(outer.container, ContainerShape::Optional(_)));
+        let attachment_type = outer.target;
+        assert!(
+            !lowered.grammar.entry_types.contains(&attachment_type),
+            "the attachment unit is not an authored entry type",
+        );
+        let TypeShape::Sequence { sites: unit_sites } =
+            &lowered.grammar.types[attachment_type.index()].shape
+        else {
+            panic!("attachment target is a synthetic sequence")
+        };
+        assert_eq!(unit_sites.len(), 3, "fixed-before, field, fixed-after");
+        assert!(unit_sites.iter().all(|site| matches!(
+            lowered.grammar.sites[site.index()].container,
+            ContainerShape::Direct
+        )));
+        let analysis = crate::analyze(&lowered.grammar);
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:?}",
+            analysis.diagnostics
+        );
+        let projection =
+            crate::m3_projection::canonical_semantic_projection(&crate::m3::AnalyzedGrammar {
+                lowered: lowered.clone(),
+                analysis: analysis.clone(),
+            });
+        assert!(
+            !projection.contains("__recursa_attachment"),
+            "private attachment units do not become semantic/debug identities",
+        );
+        assert!(
+            projection.contains("target=attachment("),
+            "non-direct attachment decisions remain visible anonymously",
+        );
+        let output = analysis.output.unwrap();
+        assert_eq!(
+            output.first(attachment_type).unwrap().kinds(),
+            output
+                .first(lowered.grammar.sites[unit_sites[0].index()].target)
+                .unwrap()
+                .kinds(),
+            "FIRST for the field container begins at its attached fixed prefix",
+        );
+        assert!(!output.first(attachment_type).unwrap().nullable);
+        let field = root.parsed_fields().next().unwrap();
+        let MaterializedElement::SemanticField {
+            attachment: Some(attachment),
+            ..
+        } = field
+        else {
+            panic!("materialization retains the attachment")
+        };
+        assert_eq!((attachment.before.len(), attachment.after.len()), (1, 1));
     }
 
     #[test]

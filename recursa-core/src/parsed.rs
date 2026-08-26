@@ -188,6 +188,7 @@ pub struct Repeated<'view, T: Node, U> {
     values: &'view [U],
     cursor: ViewCursor<'view>,
     project: fn(&U) -> &T,
+    attached_semantic_child: Option<usize>,
     marker: PhantomData<&'view T>,
 }
 
@@ -198,6 +199,23 @@ impl<'view, T: Node, U> Repeated<'view, T, U> {
             values,
             cursor,
             project,
+            attached_semantic_child: None,
+            marker: PhantomData,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn new_attached(
+        values: &'view [U],
+        cursor: ViewCursor<'view>,
+        project: fn(&U) -> &T,
+        semantic_child: usize,
+    ) -> Self {
+        Self {
+            values,
+            cursor,
+            project,
+            attached_semantic_child: Some(semantic_child),
             marker: PhantomData,
         }
     }
@@ -214,9 +232,13 @@ impl<'view, T: Node, U> Repeated<'view, T, U> {
     where
         T: 'view,
     {
-        self.values
-            .get(index)
-            .map(|value| (self.project)(value).__view(self.cursor.child(index)))
+        self.values.get(index).map(|value| {
+            let cursor = self.cursor.child(index);
+            let cursor = self
+                .attached_semantic_child
+                .map_or(cursor, |child| cursor.child(child));
+            (self.project)(value).__view(cursor)
+        })
     }
 
     pub fn iter(&self) -> RepeatedIter<'view, T, U>
@@ -227,6 +249,7 @@ impl<'view, T: Node, U> Repeated<'view, T, U> {
             values: self.values.iter(),
             cursor: self.cursor,
             project: self.project,
+            attached_semantic_child: self.attached_semantic_child,
             index: 0,
             marker: PhantomData,
         }
@@ -246,6 +269,7 @@ pub struct RepeatedIter<'view, T: Node, U> {
     values: std::slice::Iter<'view, U>,
     cursor: ViewCursor<'view>,
     project: fn(&U) -> &T,
+    attached_semantic_child: Option<usize>,
     index: usize,
     marker: PhantomData<&'view T>,
 }
@@ -257,7 +281,11 @@ impl<'view, T: Node + 'view, U> Iterator for RepeatedIter<'view, T, U> {
         let value = self.values.next()?;
         let index = self.index;
         self.index += 1;
-        Some((self.project)(value).__view(self.cursor.child(index)))
+        let cursor = self.cursor.child(index);
+        let cursor = self
+            .attached_semantic_child
+            .map_or(cursor, |child| cursor.child(child));
+        Some((self.project)(value).__view(cursor))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
