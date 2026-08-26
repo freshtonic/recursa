@@ -184,10 +184,62 @@ enum PrettyTokenBehavior {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PrettyNodeBehavior {
+    node: NodeId,
+    applications: Vec<MaterializedApplicationId>,
     pretty: PrettyHints,
     variant_pretty: Vec<PrettyHints>,
     variant_layouts: Vec<PrettySequenceLayout>,
     variants: Vec<Vec<PrettyElementBehavior>>,
+    pratt: Option<PrettyPrattBehavior>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PrettyPrattBehavior {
+    grouping: Option<PrettyPrattGrouping>,
+    variants: Vec<PrettyPrattVariantBehavior>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PrettyPrattGrouping {
+    open: PrettyAttachedFixedBehavior,
+    close: PrettyAttachedFixedBehavior,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PrettyPrattVariantBehavior {
+    parenthesization: PrettyPrattParenthesization,
+    operands: Vec<PrettyPrattOperandBehavior>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PrettyPrattParenthesization {
+    entry_lbp: Option<u16>,
+    exit_rbp: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PrettyPrattOperandBehavior {
+    Ordinary,
+    Recursive {
+        owner: NodeId,
+        applications: Vec<MaterializedApplicationId>,
+        minimum: PrettyPrattMinimum,
+        next: PrettyPrattNext,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrettyPrattMinimum {
+    Zero,
+    Inner,
+    Binding(u16),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrettyPrattNext {
+    None,
+    Inner,
+    Binding(u16),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -202,11 +254,13 @@ enum PrettyElementBehavior {
         spelling: String,
         spacing: PrettySpacing,
         rendering: PrettyFixedRendering,
+        soft_break_before: bool,
+        soft_break_after: bool,
     },
     Semantic {
         repetition: Option<PrettyRepetitionBehavior>,
         attachment: Option<PrettyAttachmentBehavior>,
-        opaque_provenance: bool,
+        provenance: PrettyProvenanceBehavior,
         pretty: PrettyHints,
         presence: PrettyPresence,
     },
@@ -226,6 +280,12 @@ enum PrettyPresence {
     Always,
     Optional,
     NonEmpty,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrettyProvenanceBehavior {
+    Structured,
+    Opaque,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -293,6 +353,7 @@ struct RenderInstrumentation {
 
 #[derive(Clone, Debug)]
 struct NodeParsePlan {
+    node: NodeId,
     semantic_key: String,
     module: ModuleId,
     ident: Ident,
@@ -341,15 +402,6 @@ struct PrattParsePlan {
     nud_failure: PlannedFollow,
     nud_selection_follow: ExpectedSet,
     caller_follow_guard: Option<Vec<PrattGuardBranchPlan>>,
-    grouping: Option<PrattGroupingPlan>,
-}
-
-#[derive(Clone, Debug)]
-struct PrattGroupingPlan {
-    open: String,
-    open_rendering: PrettyFixedRendering,
-    close: String,
-    close_rendering: PrettyFixedRendering,
 }
 
 #[derive(Clone, Debug)]
@@ -455,6 +507,7 @@ enum ElementParseKind {
     Semantic {
         field: FieldPlan,
         terminal: Box<Type>,
+        terminal_node: Option<NodeId>,
         terminal_application: Option<MaterializedApplicationId>,
         wrappers: Vec<FieldWrapper>,
         container: Box<PlannedContainer>,
@@ -2186,7 +2239,7 @@ fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBehavior {
             .map(|variant| variant.pretty.clone())
             .collect(),
     };
-    let variants = match &node.body {
+    let mut variants = match &node.body {
         NodeBodyPlan::Struct { elements, .. } => vec![emitted_pretty_elements(elements)],
         NodeBodyPlan::Enum { variants, .. } => variants
             .iter()
@@ -2201,12 +2254,207 @@ fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBehavior {
         .iter()
         .map(|elements| pretty_sequence_layout(elements))
         .collect();
+    let applications = node
+        .parse_applications
+        .iter()
+        .map(|application| application.application)
+        .collect::<Vec<_>>();
+    let pratt = match &node.body {
+        NodeBodyPlan::Pratt(pratt) => Some(emitted_pretty_pratt_behavior(
+            node,
+            pratt,
+            &applications,
+            &mut variants,
+        )),
+        NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
+    };
     PrettyNodeBehavior {
+        node: node.node,
+        applications,
         pretty: node.pretty.clone(),
         variant_pretty,
         variant_layouts,
         variants,
+        pratt,
     }
+}
+
+fn emitted_pretty_pratt_behavior(
+    node: &NodeParsePlan,
+    pratt: &PrattParsePlan,
+    applications: &[MaterializedApplicationId],
+    variants: &mut [Vec<PrettyElementBehavior>],
+) -> PrettyPrattBehavior {
+    let declaration_variants = trait_variants(&node.body);
+    let mut positions = vec![None; declaration_variants.len()];
+    for branch in &pratt.nud {
+        positions[branch.source_index] = Some(branch.position);
+    }
+    for branch in &pratt.led {
+        positions[branch.source_index] = Some(branch.position);
+    }
+    let variant_behaviors = declaration_variants
+        .iter()
+        .zip(variants.iter_mut())
+        .zip(positions.iter().copied())
+        .map(|((variant, elements), position)| {
+            let position = position.expect("every Pratt source variant has a typed position");
+            apply_pretty_pratt_fixed_layout(position, &variant.elements, elements);
+            let mut semantic_index = 0;
+            let operands = variant
+                .elements
+                .iter()
+                .filter_map(|element| {
+                    let ElementParseKind::Semantic { terminal_node, .. } = &element.kind else {
+                        return None;
+                    };
+                    let current = semantic_index;
+                    semantic_index += 1;
+                    Some(if *terminal_node == Some(node.node) {
+                        pretty_recursive_operand(node.node, applications, position, current)
+                    } else {
+                        PrettyPrattOperandBehavior::Ordinary
+                    })
+                })
+                .collect();
+            PrettyPrattVariantBehavior {
+                parenthesization: pretty_pratt_parenthesization(position),
+                operands,
+            }
+        })
+        .collect();
+    PrettyPrattBehavior {
+        grouping: pretty_pratt_grouping(node.node, &declaration_variants, variants, &positions),
+        variants: variant_behaviors,
+    }
+}
+
+fn pretty_pratt_parenthesization(position: PrattPosition) -> PrettyPrattParenthesization {
+    let (entry_lbp, exit_rbp) = match position {
+        PrattPosition::Atom => (None, 256),
+        PrattPosition::Prefix { bp } => (None, u16::from(bp)),
+        PrattPosition::Infix { lbp, rbp } => (Some(u16::from(lbp)), u16::from(rbp)),
+        PrattPosition::Postfix { bp } => (Some(u16::from(bp)), 256),
+    };
+    PrettyPrattParenthesization {
+        entry_lbp,
+        exit_rbp,
+    }
+}
+
+fn pretty_recursive_operand(
+    owner: NodeId,
+    applications: &[MaterializedApplicationId],
+    position: PrattPosition,
+    semantic_index: usize,
+) -> PrettyPrattOperandBehavior {
+    let (minimum, next) = match position {
+        PrattPosition::Atom => (PrettyPrattMinimum::Zero, PrettyPrattNext::None),
+        PrattPosition::Prefix { bp } => (
+            PrettyPrattMinimum::Binding(u16::from(bp)),
+            PrettyPrattNext::Inner,
+        ),
+        PrattPosition::Postfix { bp } => (
+            PrettyPrattMinimum::Inner,
+            PrettyPrattNext::Binding(u16::from(bp)),
+        ),
+        PrattPosition::Infix { lbp, .. } if semantic_index == 0 => (
+            PrettyPrattMinimum::Inner,
+            PrettyPrattNext::Binding(u16::from(lbp)),
+        ),
+        PrattPosition::Infix { rbp, .. } => (
+            PrettyPrattMinimum::Binding(u16::from(rbp)),
+            PrettyPrattNext::Inner,
+        ),
+    };
+    PrettyPrattOperandBehavior::Recursive {
+        owner,
+        applications: applications.to_vec(),
+        minimum,
+        next,
+    }
+}
+
+fn apply_pretty_pratt_fixed_layout(
+    position: PrattPosition,
+    elements: &[ElementParsePlan],
+    behaviors: &mut [PrettyElementBehavior],
+) {
+    for (index, behavior) in behaviors.iter_mut().enumerate() {
+        let PrettyElementBehavior::Fixed {
+            spacing,
+            rendering,
+            soft_break_before,
+            soft_break_after,
+            ..
+        } = behavior
+        else {
+            continue;
+        };
+        let run_start =
+            index == 0 || matches!(elements[index - 1].kind, ElementParseKind::Semantic { .. });
+        let run_end = index + 1 == elements.len()
+            || matches!(elements[index + 1].kind, ElementParseKind::Semantic { .. });
+        if matches!(position, PrattPosition::Prefix { .. })
+            && run_end
+            && *spacing == PrettySpacing::Auto
+            && *rendering == PrettyFixedRendering::Punctuation
+        {
+            *rendering = PrettyFixedRendering::Opening;
+        }
+        *soft_break_before = matches!(position, PrattPosition::Infix { .. })
+            && run_start
+            && *spacing == PrettySpacing::Auto;
+        *soft_break_after = matches!(position, PrattPosition::Infix { .. })
+            && run_end
+            && *spacing == PrettySpacing::Auto;
+    }
+}
+
+fn pretty_pratt_grouping(
+    owner: NodeId,
+    declaration_variants: &[VariantParsePlan],
+    behaviors: &[Vec<PrettyElementBehavior>],
+    positions: &[Option<PrattPosition>],
+) -> Option<PrettyPrattGrouping> {
+    declaration_variants
+        .iter()
+        .zip(behaviors)
+        .zip(positions)
+        .find_map(|((variant, behavior), position)| {
+            if !matches!(position, Some(PrattPosition::Atom)) {
+                return None;
+            }
+            match (variant.elements.as_slice(), behavior.as_slice()) {
+                ([element], [PrettyElementBehavior::Semantic { attachment: Some(attachment), .. }])
+                    if matches!(&element.kind, ElementParseKind::Semantic { terminal_node: Some(node), .. } if *node == owner) =>
+                {
+                    Some(PrettyPrattGrouping {
+                        open: attachment.before.first()?.clone(),
+                        close: attachment.after.last()?.clone(),
+                    })
+                }
+                ([open, semantic, close], [PrettyElementBehavior::Fixed { spelling: open_spelling, spacing: open_spacing, rendering: open_rendering, .. }, PrettyElementBehavior::Semantic { .. }, PrettyElementBehavior::Fixed { spelling: close_spelling, spacing: close_spacing, rendering: close_rendering, .. }])
+                    if matches!(&semantic.kind, ElementParseKind::Semantic { terminal_node: Some(node), .. } if *node == owner)
+                        && matches!(open.kind, ElementParseKind::Fixed { .. })
+                        && matches!(close.kind, ElementParseKind::Fixed { .. }) =>
+                {
+                    Some(PrettyPrattGrouping {
+                        open: PrettyAttachedFixedBehavior {
+                            spelling: open_spelling.clone(),
+                            spacing: *open_spacing,
+                            rendering: *open_rendering,
+                        },
+                        close: PrettyAttachedFixedBehavior {
+                            spelling: close_spelling.clone(),
+                            spacing: *close_spacing,
+                            rendering: *close_rendering,
+                        },
+                    })
+                }
+                _ => None,
+            }
+        })
 }
 
 fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBehavior> {
@@ -2219,6 +2467,8 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
                 spelling: spelling.clone(),
                 spacing: *spacing,
                 rendering: pretty_fixed_rendering(spelling, *spacing),
+                soft_break_before: false,
+                soft_break_after: false,
             },
             ElementParseKind::Semantic {
                 container,
@@ -2265,7 +2515,11 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
                         after,
                     }
                 }),
-                opaque_provenance: *opaque_provenance,
+                provenance: if *opaque_provenance {
+                    PrettyProvenanceBehavior::Opaque
+                } else {
+                    PrettyProvenanceBehavior::Structured
+                },
                 pretty: pretty.clone(),
                 presence: pretty_presence(wrappers),
             },
@@ -2427,7 +2681,7 @@ fn authoritative_pretty_node_behavior(
             .map(|variant| variant.common.pretty.clone())
             .collect(),
     };
-    let variants = match &source_node.body {
+    let mut variants = match &source_node.body {
         SourceNodeBody::Struct(elements) | SourceNodeBody::Presence(elements) => {
             vec![authoritative_pretty_elements(
                 lowered,
@@ -2450,12 +2704,213 @@ fn authoritative_pretty_node_behavior(
         .iter()
         .map(|elements| pretty_sequence_layout(elements))
         .collect();
+    let applications = lowered
+        .applications
+        .iter()
+        .filter(|application| application.node == resolved_node.id)
+        .map(|application| application.id)
+        .collect::<Vec<_>>();
+    let pratt = match &source_node.body {
+        SourceNodeBody::Pratt(source_variants) => Some(authoritative_pretty_pratt_behavior(
+            lowered,
+            resolved_node,
+            source_variants,
+            &applications,
+            &mut variants,
+        )?),
+        SourceNodeBody::Struct(_) | SourceNodeBody::Presence(_) | SourceNodeBody::Enum(_) => None,
+    };
     Ok(PrettyNodeBehavior {
+        node: resolved_node.id,
+        applications,
         pretty: source_node.pretty.clone(),
         variant_pretty,
         variant_layouts,
         variants,
+        pratt,
     })
+}
+
+fn authoritative_pretty_pratt_behavior(
+    lowered: &crate::materialization::LoweredGrammar,
+    resolved_node: &ResolvedNode,
+    source_variants: &[crate::source_model::SourcePrattVariant],
+    applications: &[MaterializedApplicationId],
+    variants: &mut [Vec<PrettyElementBehavior>],
+) -> Result<PrettyPrattBehavior, String> {
+    let resolved = lowered.source_modeled.resolved();
+    let positions = source_variants
+        .iter()
+        .map(|variant| match variant.position {
+            SourcePrattPosition::Atom => PrattPosition::Atom,
+            SourcePrattPosition::Prefix { bp } => PrattPosition::Prefix { bp },
+            SourcePrattPosition::Infix { lbp, rbp } => PrattPosition::Infix { lbp, rbp },
+            SourcePrattPosition::Postfix { bp } => PrattPosition::Postfix { bp },
+        })
+        .collect::<Vec<_>>();
+    let mut planned = Vec::with_capacity(source_variants.len());
+    for ((variant, behavior), position) in source_variants
+        .iter()
+        .zip(variants.iter_mut())
+        .zip(positions.iter().copied())
+    {
+        apply_authoritative_pretty_pratt_fixed_layout(position, &variant.common.elements, behavior);
+        let mut semantic_index = 0;
+        let mut operands = Vec::new();
+        for element in &variant.common.elements {
+            let GrammarElement::SemanticField { resolved_field, .. } = element else {
+                continue;
+            };
+            let field = resolved_node
+                .fields
+                .iter()
+                .find(|field| field.id == *resolved_field)
+                .ok_or_else(|| "a Pratt Pretty operand lacks resolved syntax".to_owned())?;
+            let projection = authored_projection(&field.ty, resolved)?;
+            operands.push(if projection.terminal_node == Some(resolved_node.id) {
+                pretty_recursive_operand(resolved_node.id, applications, position, semantic_index)
+            } else {
+                PrettyPrattOperandBehavior::Ordinary
+            });
+            semantic_index += 1;
+        }
+        planned.push(PrettyPrattVariantBehavior {
+            parenthesization: pretty_pratt_parenthesization(position),
+            operands,
+        });
+    }
+    Ok(PrettyPrattBehavior {
+        grouping: authoritative_pretty_pratt_grouping(
+            resolved_node,
+            source_variants,
+            variants,
+            &positions,
+            resolved,
+        )?,
+        variants: planned,
+    })
+}
+
+fn apply_authoritative_pretty_pratt_fixed_layout(
+    position: PrattPosition,
+    elements: &[GrammarElement],
+    behaviors: &mut [PrettyElementBehavior],
+) {
+    for (index, behavior) in behaviors.iter_mut().enumerate() {
+        let PrettyElementBehavior::Fixed {
+            spacing,
+            rendering,
+            soft_break_before,
+            soft_break_after,
+            ..
+        } = behavior
+        else {
+            continue;
+        };
+        let semantic =
+            |element: &GrammarElement| matches!(element, GrammarElement::SemanticField { .. });
+        let run_start = index == 0 || semantic(&elements[index - 1]);
+        let run_end = index + 1 == elements.len() || semantic(&elements[index + 1]);
+        if matches!(position, PrattPosition::Prefix { .. })
+            && run_end
+            && *spacing == PrettySpacing::Auto
+            && *rendering == PrettyFixedRendering::Punctuation
+        {
+            *rendering = PrettyFixedRendering::Opening;
+        }
+        *soft_break_before = matches!(position, PrattPosition::Infix { .. })
+            && run_start
+            && *spacing == PrettySpacing::Auto;
+        *soft_break_after = matches!(position, PrattPosition::Infix { .. })
+            && run_end
+            && *spacing == PrettySpacing::Auto;
+    }
+}
+
+fn authoritative_pretty_pratt_grouping(
+    resolved_node: &ResolvedNode,
+    source_variants: &[crate::source_model::SourcePrattVariant],
+    behaviors: &[Vec<PrettyElementBehavior>],
+    positions: &[PrattPosition],
+    resolved: &ResolvedSourceGrammar,
+) -> Result<Option<PrettyPrattGrouping>, String> {
+    for ((variant, behavior), position) in source_variants.iter().zip(behaviors).zip(positions) {
+        if !matches!(position, PrattPosition::Atom) {
+            continue;
+        }
+        let is_recursive = |element: &GrammarElement| -> Result<bool, String> {
+            let GrammarElement::SemanticField { resolved_field, .. } = element else {
+                return Ok(false);
+            };
+            let field = resolved_node
+                .fields
+                .iter()
+                .find(|field| field.id == *resolved_field)
+                .ok_or_else(|| "a Pratt grouping operand lacks resolved syntax".to_owned())?;
+            Ok(authored_projection(&field.ty, resolved)?.terminal_node == Some(resolved_node.id))
+        };
+        match (variant.common.elements.as_slice(), behavior.as_slice()) {
+            (
+                [semantic],
+                [
+                    PrettyElementBehavior::Semantic {
+                        attachment: Some(attachment),
+                        ..
+                    },
+                ],
+            ) if is_recursive(semantic)? => {
+                return Ok(Some(PrettyPrattGrouping {
+                    open: attachment
+                        .before
+                        .first()
+                        .ok_or_else(|| "a Pratt grouping attachment lacks an opener".to_owned())?
+                        .clone(),
+                    close: attachment
+                        .after
+                        .last()
+                        .ok_or_else(|| "a Pratt grouping attachment lacks a closer".to_owned())?
+                        .clone(),
+                }));
+            }
+            (
+                [
+                    GrammarElement::FixedToken { .. },
+                    semantic,
+                    GrammarElement::FixedToken { .. },
+                ],
+                [
+                    PrettyElementBehavior::Fixed {
+                        spelling: open_spelling,
+                        spacing: open_spacing,
+                        rendering: open_rendering,
+                        ..
+                    },
+                    PrettyElementBehavior::Semantic { .. },
+                    PrettyElementBehavior::Fixed {
+                        spelling: close_spelling,
+                        spacing: close_spacing,
+                        rendering: close_rendering,
+                        ..
+                    },
+                ],
+            ) if is_recursive(semantic)? => {
+                return Ok(Some(PrettyPrattGrouping {
+                    open: PrettyAttachedFixedBehavior {
+                        spelling: open_spelling.clone(),
+                        spacing: *open_spacing,
+                        rendering: *open_rendering,
+                    },
+                    close: PrettyAttachedFixedBehavior {
+                        spelling: close_spelling.clone(),
+                        spacing: *close_spacing,
+                        rendering: *close_rendering,
+                    },
+                }));
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
 }
 
 fn authoritative_pretty_elements(
@@ -2480,6 +2935,8 @@ fn authoritative_pretty_elements(
                     rendering: pretty_fixed_rendering(&spelling, fixed.pretty_spacing),
                     spelling,
                     spacing: fixed.pretty_spacing,
+                    soft_break_before: false,
+                    soft_break_after: false,
                 })
             }
             GrammarElement::SemanticField {
@@ -2528,11 +2985,15 @@ fn authoritative_pretty_elements(
                         .as_ref()
                         .map(|attachment| authoritative_pretty_attachment(lowered, attachment))
                         .transpose()?,
-                    opaque_provenance: authored_type_depends_on_node_generics(
+                    provenance: if authored_type_depends_on_node_generics(
                         &field.ty,
                         resolved_node,
                         resolved,
-                    ),
+                    ) {
+                        PrettyProvenanceBehavior::Opaque
+                    } else {
+                        PrettyProvenanceBehavior::Structured
+                    },
                     pretty: pretty.clone(),
                     presence: pretty_presence(&projection.wrappers),
                 })
@@ -3065,6 +3526,7 @@ fn plan_node(
         }
     };
     Ok(NodeParsePlan {
+        node: node.id,
         semantic_key: node.key.segments.join("::"),
         module: node.module,
         ident: emitted_ident(&node.ident)?,
@@ -3192,12 +3654,6 @@ fn structural_body(
                     }
                 }
             }
-            let grouping = nud.iter().find_map(|branch| {
-                if !matches!(branch.position, PrattPosition::Atom) {
-                    return None;
-                }
-                pratt_grouping_from_elements(&node.ident, &branch.variant.elements)
-            });
             NodeBodyPlan::Pratt(Box::new(PrattParsePlan {
                 expected_nud_count: nud.len(),
                 expected_led_count: led.len(),
@@ -3208,7 +3664,6 @@ fn structural_body(
                 nud_failure: PlannedFollow::Caller,
                 nud_selection_follow: ExpectedSet::empty(kind_count),
                 caller_follow_guard: None,
-                grouping,
             }))
         }
         _ => {
@@ -3360,6 +3815,7 @@ fn declaration_elements(
                             accessor: Some(accessor),
                         },
                         terminal: Box::new(projection.terminal),
+                        terminal_node: projection.terminal_node,
                         terminal_application: None,
                         wrappers: projection.wrappers,
                         container: Box::new(declaration_container(
@@ -4147,13 +4603,6 @@ fn plan_pratt_node(
         nud_selection_follow.union_assign(&branch.expected);
     }
 
-    let grouping = nud.iter().find_map(|branch| {
-        if !matches!(branch.position, PrattPosition::Atom) {
-            return None;
-        }
-        pratt_grouping_from_elements(&node.ident, &branch.variant.elements)
-    });
-
     Ok(PrattParsePlan {
         expected_nud_count: semantic_variants
             .iter()
@@ -4180,7 +4629,6 @@ fn plan_pratt_node(
         nud_failure,
         nud_selection_follow,
         caller_follow_guard,
-        grouping,
     })
 }
 
@@ -4241,68 +4689,6 @@ fn validate_pratt_led_position(
     }
 }
 
-fn pratt_grouping_from_elements(
-    node_ident: &str,
-    elements: &[ElementParsePlan],
-) -> Option<PrattGroupingPlan> {
-    let recursive = |terminal: &Type| {
-        terminal_path_ident(terminal)
-            .is_some_and(|ident| ident.unraw() == node_ident || ident.unraw() == "Self")
-    };
-    match elements {
-        [
-            ElementParsePlan {
-                kind:
-                    ElementParseKind::Semantic {
-                        terminal,
-                        attachment: Some(attachment),
-                        ..
-                    },
-                ..
-            },
-        ] if recursive(terminal) => {
-            let open = attachment.before.first()?;
-            let close = attachment.after.last()?;
-            Some(PrattGroupingPlan {
-                open: open.spelling.clone(),
-                open_rendering: pretty_fixed_rendering(&open.spelling, open.spacing),
-                close: close.spelling.clone(),
-                close_rendering: pretty_fixed_rendering(&close.spelling, close.spacing),
-            })
-        }
-        [
-            ElementParsePlan {
-                kind:
-                    ElementParseKind::Fixed {
-                        spelling: open,
-                        spacing: open_spacing,
-                        ..
-                    },
-                ..
-            },
-            ElementParsePlan {
-                kind: ElementParseKind::Semantic { terminal, .. },
-                ..
-            },
-            ElementParsePlan {
-                kind:
-                    ElementParseKind::Fixed {
-                        spelling: close,
-                        spacing: close_spacing,
-                        ..
-                    },
-                ..
-            },
-        ] if recursive(terminal) => Some(PrattGroupingPlan {
-            open: open.clone(),
-            open_rendering: pretty_fixed_rendering(open, *open_spacing),
-            close: close.clone(),
-            close_rendering: pretty_fixed_rendering(close, *close_spacing),
-        }),
-        _ => None,
-    }
-}
-
 fn plan_pratt_lhs(
     node: &ResolvedNode,
     resolved_variant: &crate::resolution::ResolvedNodeVariant,
@@ -4347,6 +4733,7 @@ fn plan_pratt_lhs(
                 accessor: Some(accessor),
             },
             terminal: Box::new(terminal_type(&closed, lowered, input_lifetime)?),
+            terminal_node: Some(node.id),
             terminal_application: Some(led.lhs.owner.application),
             wrappers: vec![FieldWrapper::Boxed],
             container: Box::new(PlannedContainer::Direct {
@@ -4544,6 +4931,13 @@ fn plan_elements(
                     })
                     .transpose()?;
                 let terminal_application = closed_terminal_application(ty);
+                let terminal_node = terminal_application.and_then(|application| {
+                    lowered
+                        .applications
+                        .iter()
+                        .find(|candidate| candidate.id == application)
+                        .map(|candidate| candidate.node)
+                });
                 let repetition_break = terminal_application
                     .filter(|application| {
                         separator.as_deref() == Some(";")
@@ -4578,6 +4972,7 @@ fn plan_elements(
                             }),
                         },
                         terminal: Box::new(terminal_type(ty, lowered, input_lifetime)?),
+                        terminal_node,
                         terminal_application,
                         wrappers,
                         container: Box::new(container),
@@ -7657,7 +8052,7 @@ fn render_pratt_node_pretty(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
     node_index: usize,
-    pratt: &PrattParsePlan,
+    _pratt: &PrattParsePlan,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let node_ident = &node.ident;
@@ -7666,26 +8061,19 @@ fn render_pratt_node_pretty(
     let behavior = plan.pretty.nodes[node_index]
         .as_ref()
         .expect("validated Pretty Pratt behavior");
+    let pratt_behavior = behavior
+        .pratt
+        .as_ref()
+        .expect("validated typed Pretty Pratt behavior");
     let (impl_generics, type_generics, where_clause) = pretty_impl_parts(facade, node);
     let variants = trait_variants(&node.body);
     let arms = variants
         .iter()
         .zip(&behavior.variant_layouts)
         .zip(&behavior.variants)
-        .map(|((variant, layout), behavior)| {
-            let position = pratt
-                .nud
-                .iter()
-                .find(|branch| branch.variant.ident == variant.ident)
-                .map(|branch| branch.position)
-                .or_else(|| {
-                    pratt
-                        .led
-                        .iter()
-                        .find(|branch| branch.variant.ident == variant.ident)
-                        .map(|branch| branch.position)
-                })
-                .expect("every Pratt variant has a frozen position");
+        .zip(&behavior.variant_pretty)
+        .zip(&pratt_behavior.variants)
+        .map(|((((variant, layout), behavior), variant_pretty), pratt_variant)| {
             let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty_pratt");
             let mut binding_index = 0_usize;
             let mut semantic_index = 0_usize;
@@ -7699,52 +8087,29 @@ fn render_pratt_node_pretty(
                     ElementParseKind::Fixed { .. },
                     PrettyElementBehavior::Fixed {
                         spelling,
-                        spacing,
                         rendering,
+                        soft_break_before,
+                        soft_break_after,
+                        ..
                     },
                 ) => {
-                    let infix = matches!(position, PrattPosition::Infix { .. });
-                    let prefix = matches!(position, PrattPosition::Prefix { .. });
-                    let run_start = index == 0
-                        || matches!(
-                            variant.elements[index - 1].kind,
-                            ElementParseKind::Semantic { .. }
-                        );
-                    let run_end = index + 1 == variant.elements.len()
-                        || matches!(
-                            variant.elements[index + 1].kind,
-                            ElementParseKind::Semantic { .. }
-                        );
-                    let fixed = if prefix
-                        && run_end
-                        && *spacing == PrettySpacing::Auto
-                        && *rendering == PrettyFixedRendering::Punctuation
-                    {
-                        render_pretty_fixed_with_method(
-                            plan,
-                            index,
-                            spelling,
-                            PrettyFixedRendering::Opening,
-                        )
-                    } else {
-                        render_pretty_fixed(plan, index, spelling, *rendering)
-                    };
-                    let before = (infix && run_start && *spacing == PrettySpacing::Auto)
+                    let fixed = render_pretty_fixed(plan, index, spelling, *rendering);
+                    let before = soft_break_before
                         .then(|| quote!(context.soft_break(" ")?;));
-                    let after = (infix && run_end && *spacing == PrettySpacing::Auto)
-                        .then(|| quote!(context.soft_break(" ")?;));
+                    let after = soft_break_after.then(|| quote!(context.soft_break(" ")?;));
                     quote!(#before #fixed #after)
                 }
                 (
                     ElementParseKind::Semantic {
-                        terminal,
                         wrappers,
                         container,
-                        pretty,
                         ..
                     },
                     PrettyElementBehavior::Semantic {
                         attachment,
+                        pretty,
+                        presence,
+                        provenance,
                         ..
                     },
                 ) => {
@@ -7757,45 +8122,46 @@ fn render_pratt_node_pretty(
                     );
                     let binding = &bindings[binding_index];
                     binding_index += 1;
-                    let current_semantic = semantic_index;
+                    let operand = &pratt_variant.operands[semantic_index];
                     semantic_index += 1;
-                    let recursive = terminal_path_ident(terminal)
-                        .is_some_and(|ident| ident == node_ident || ident.unraw() == "Self");
-                    let semantic = if recursive {
-                        let (minimum, next) = match position {
-                            PrattPosition::Atom => (quote!(0u16), quote!(None)),
-                            PrattPosition::Prefix { bp } => {
-                                (quote!(#bp as u16), quote!(__recursa_inner_next))
-                            }
-                            PrattPosition::Postfix { bp } => {
-                                (quote!(__recursa_inner_min), quote!(Some(#bp as u16)))
-                            }
-                            PrattPosition::Infix { lbp, .. } if current_semantic == 0 => {
-                                (quote!(__recursa_inner_min), quote!(Some(#lbp as u16)))
-                            }
-                            PrattPosition::Infix { rbp, .. } => {
-                                (quote!(#rbp as u16), quote!(__recursa_inner_next))
-                            }
-                        };
+                    let semantic = if let PrettyPrattOperandBehavior::Recursive {
+                        minimum,
+                        next,
+                        ..
+                    } = operand
+                    {
+                        let minimum = render_pretty_pratt_minimum(*minimum);
+                        let next = render_pretty_pratt_next(*next);
                         quote!((#binding).__recursa_pretty_pratt(context, #minimum, #next))
                     } else {
                         quote!(#facade::Pretty::pretty(#binding, context))
                     };
                     let rendered = if let Some(attachment) = attachment {
-                        let unit = render_pretty_attachment_unit(attachment, semantic);
+                        let unit = render_pretty_attachment_unit(
+                            attachment,
+                            *provenance,
+                            semantic,
+                        );
                         quote! {
                             context.with_child(#index, |context| {
                                 context.with_child(0, |context| { #unit Ok(()) })
                             })?;
                         }
                     } else {
+                        let child = pretty_provenance_child_method(*provenance);
                         quote! {
                             context.with_child(#index, |context| {
-                                context.with_child(0, |context| { #semantic })
+                                context.#child(0, |context| { #semantic })
                             })?;
                         }
                     };
-                    render_pretty_presence(pretty, wrappers, quote!(#binding), rendered)
+                    render_pretty_presence(
+                        pretty,
+                        *presence,
+                        wrappers,
+                        quote!(#binding),
+                        rendered,
+                    )
                 }
                 (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Semantic { .. })
                 | (ElementParseKind::Semantic { .. }, PrettyElementBehavior::Fixed { .. }) => {
@@ -7804,19 +8170,25 @@ fn render_pratt_node_pretty(
             })
             .collect::<Vec<_>>();
             let rendered = render_pretty_sequence(*layout, &rendered);
-            let rendered = render_pretty_hints(&variant.pretty, rendered);
-            let (entry, exit) = match position {
-                PrattPosition::Atom => (None, 256_u16),
-                PrattPosition::Prefix { bp } => (None, u16::from(bp)),
-                PrattPosition::Infix { lbp, rbp } => (Some(u16::from(lbp)), u16::from(rbp)),
-                PrattPosition::Postfix { bp } => (Some(u16::from(bp)), 256_u16),
-            };
-            let entry_check = entry.map_or_else(|| quote!(false), |entry| quote!(#entry < min_bp));
-            let group_open = pratt.grouping.as_ref().map(|grouping| {
-                render_pretty_synthetic_fixed(plan, &grouping.open, grouping.open_rendering)
+            let rendered = render_pretty_hints(variant_pretty, rendered);
+            let entry_check = pratt_variant
+                .parenthesization
+                .entry_lbp
+                .map_or_else(|| quote!(false), |entry| quote!(#entry < min_bp));
+            let exit = pratt_variant.parenthesization.exit_rbp;
+            let group_open = pratt_behavior.grouping.as_ref().map(|grouping| {
+                render_pretty_synthetic_fixed(
+                    plan,
+                    &grouping.open.spelling,
+                    grouping.open.rendering,
+                )
             });
-            let group_close = pratt.grouping.as_ref().map(|grouping| {
-                render_pretty_synthetic_fixed(plan, &grouping.close, grouping.close_rendering)
+            let group_close = pratt_behavior.grouping.as_ref().map(|grouping| {
+                render_pretty_synthetic_fixed(
+                    plan,
+                    &grouping.close.spelling,
+                    grouping.close.rendering,
+                )
             });
             quote! {
                 #pattern => {
@@ -7836,7 +8208,7 @@ fn render_pratt_node_pretty(
             }
         });
     let rendered_node = render_pretty_hints(
-        &node.pretty,
+        &behavior.pretty,
         quote!(self.__recursa_pretty_pratt(context, 0, None)?;),
     );
     quote! {
@@ -7860,6 +8232,22 @@ fn render_pratt_node_pretty(
                 context.baseline_group(|context| { #rendered_node Ok(()) })
             }
         }
+    }
+}
+
+fn render_pretty_pratt_minimum(minimum: PrettyPrattMinimum) -> proc_macro2::TokenStream {
+    match minimum {
+        PrettyPrattMinimum::Zero => quote!(0u16),
+        PrettyPrattMinimum::Inner => quote!(__recursa_inner_min),
+        PrettyPrattMinimum::Binding(binding) => quote!(#binding),
+    }
+}
+
+fn render_pretty_pratt_next(next: PrettyPrattNext) -> proc_macro2::TokenStream {
+    match next {
+        PrettyPrattNext::None => quote!(None),
+        PrettyPrattNext::Inner => quote!(__recursa_inner_next),
+        PrettyPrattNext::Binding(binding) => quote!(Some(#binding)),
     }
 }
 
@@ -7903,14 +8291,14 @@ fn render_node_pretty(
                     ) => render_pretty_fixed(plan, index, spelling, *rendering),
                     (
                         ElementParseKind::Semantic {
-                            field,
-                            wrappers,
-                            pretty,
-                            ..
+                            field, wrappers, ..
                         },
                         PrettyElementBehavior::Semantic {
                             repetition,
                             attachment,
+                            pretty,
+                            presence,
+                            provenance,
                             ..
                         },
                     ) => {
@@ -7924,6 +8312,8 @@ fn render_node_pretty(
                                 wrappers,
                                 attachment,
                                 repetition.as_ref(),
+                                *presence,
+                                *provenance,
                             )
                         } else {
                             render_pretty_semantic(
@@ -7931,9 +8321,16 @@ fn render_node_pretty(
                                 index,
                                 quote!(&#value),
                                 repetition.as_ref(),
+                                *provenance,
                             )
                         };
-                        render_pretty_presence(pretty, wrappers, quote!(&#value), rendered)
+                        render_pretty_presence(
+                            pretty,
+                            *presence,
+                            wrappers,
+                            quote!(&#value),
+                            rendered,
+                        )
                     }
                     (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Semantic { .. })
                     | (ElementParseKind::Semantic { .. }, PrettyElementBehavior::Fixed { .. }) => {
@@ -7965,7 +8362,8 @@ fn render_node_pretty(
                 .iter()
                 .zip(&behavior.variant_layouts)
                 .zip(&behavior.variants)
-                .map(|((variant, layout), behavior)| {
+                .zip(&behavior.variant_pretty)
+                .map(|(((variant, layout), behavior), variant_pretty)| {
                     let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty");
                     let mut binding_index = 0;
                     let rendered = variant
@@ -7984,12 +8382,13 @@ fn render_node_pretty(
                                     },
                                 ) => render_pretty_fixed(plan, index, spelling, *rendering),
                                 (
-                                    ElementParseKind::Semantic {
-                                        wrappers, pretty, ..
-                                    },
+                                    ElementParseKind::Semantic { wrappers, .. },
                                     PrettyElementBehavior::Semantic {
                                         repetition,
                                         attachment,
+                                        pretty,
+                                        presence,
+                                        provenance,
                                         ..
                                     },
                                 ) => {
@@ -8004,6 +8403,8 @@ fn render_node_pretty(
                                             wrappers,
                                             attachment,
                                             repetition.as_ref(),
+                                            *presence,
+                                            *provenance,
                                         )
                                     } else {
                                         render_pretty_semantic(
@@ -8011,10 +8412,12 @@ fn render_node_pretty(
                                             index,
                                             quote!(#binding),
                                             repetition.as_ref(),
+                                            *provenance,
                                         )
                                     };
                                     render_pretty_presence(
                                         pretty,
+                                        *presence,
                                         wrappers,
                                         quote!(#binding),
                                         rendered,
@@ -8032,13 +8435,13 @@ fn render_node_pretty(
                         )
                         .collect::<Vec<_>>();
                     let rendered = render_pretty_sequence(*layout, &rendered);
-                    let rendered = render_pretty_hints(&variant.pretty, rendered);
+                    let rendered = render_pretty_hints(variant_pretty, rendered);
                     quote!(#pattern => { #rendered Ok(()) })
                 });
             quote!(match self { #(#arms),* })
         }
     };
-    let body = render_pretty_hints(&node.pretty, quote!(#body?;));
+    let body = render_pretty_hints(&behavior.pretty, quote!(#body?;));
     quote! {
         impl #impl_generics #facade::Pretty for #node_ident #type_generics #where_clause {
             fn pretty(
@@ -8057,6 +8460,7 @@ fn render_pretty_semantic(
     index: usize,
     value: proc_macro2::TokenStream,
     repetition: Option<&PrettyRepetitionBehavior>,
+    provenance: PrettyProvenanceBehavior,
 ) -> proc_macro2::TokenStream {
     let render_value = if let Some(repetition) = repetition {
         let separator = repetition
@@ -8080,9 +8484,10 @@ fn render_pretty_semantic(
             context.with_child(#index, |context| #render_value)?;
         }
     } else {
+        let child = pretty_provenance_child_method(provenance);
         quote! {
             context.with_child(#index, |context| {
-                context.with_child(0, |context| #render_value)
+                context.#child(0, |context| #render_value)
             })?;
         }
     }
@@ -8119,6 +8524,7 @@ fn render_pretty_hints(
 
 fn render_pretty_presence(
     hints: &PrettyHints,
+    presence: PrettyPresence,
     wrappers: &[FieldWrapper],
     value: proc_macro2::TokenStream,
     body: proc_macro2::TokenStream,
@@ -8131,16 +8537,30 @@ fn render_pretty_presence(
     {
         return body;
     }
+    if presence == PrettyPresence::Always {
+        return body;
+    }
     let mut reference = value;
     for wrapper in wrappers {
         match wrapper {
             FieldWrapper::Boxed => reference = quote!((#reference).as_ref()),
-            FieldWrapper::Optional => return quote!(if (#reference).is_some() { #body }),
-            FieldWrapper::ZeroOrMore => return quote!(if !(#reference).is_empty() { #body }),
-            FieldWrapper::OneOrMore => return body,
+            FieldWrapper::Optional if presence == PrettyPresence::Optional => {
+                return quote!(if (#reference).is_some() { #body });
+            }
+            FieldWrapper::ZeroOrMore if presence == PrettyPresence::NonEmpty => {
+                return quote!(if !(#reference).is_empty() { #body });
+            }
+            FieldWrapper::Optional | FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore => {}
         }
     }
-    body
+    unreachable!("frozen Pretty presence has no matching storage wrapper")
+}
+
+fn pretty_provenance_child_method(provenance: PrettyProvenanceBehavior) -> Ident {
+    match provenance {
+        PrettyProvenanceBehavior::Structured => format_ident!("with_child"),
+        PrettyProvenanceBehavior::Opaque => format_ident!("with_opaque_child"),
+    }
 }
 
 fn render_pretty_fixed(
@@ -8190,12 +8610,8 @@ fn pretty_fixed_method(rendering: PrettyFixedRendering) -> syn::Ident {
     }
 }
 
-fn pretty_fixed_fallback(plan: &EmissionPlan, spelling: &str) -> String {
-    if plan.text_equivalence == TextEquivalence::AsciiInsensitive && is_word_shaped(spelling) {
-        spelling.to_ascii_uppercase()
-    } else {
-        spelling.to_owned()
-    }
+fn pretty_fixed_fallback(_plan: &EmissionPlan, spelling: &str) -> String {
+    spelling.to_owned()
 }
 
 fn render_pretty_sequence(
@@ -8238,6 +8654,7 @@ fn render_pretty_attached_fixed(
 
 fn render_pretty_attachment_unit(
     attachment: &PrettyAttachmentBehavior,
+    provenance: PrettyProvenanceBehavior,
     semantic_body: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let before = attachment
@@ -8247,8 +8664,9 @@ fn render_pretty_attachment_unit(
         .map(|(index, fixed)| render_pretty_attached_fixed(index, fixed))
         .collect::<Vec<_>>();
     let semantic_index = before.len();
+    let child = pretty_provenance_child_method(provenance);
     let semantic = quote! {
-        context.with_child(#semantic_index, |context| { #semantic_body })?;
+        context.#child(#semantic_index, |context| { #semantic_body })?;
     };
     let after = attachment
         .after
@@ -8281,6 +8699,7 @@ fn render_pretty_attachment_unit(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_pretty_attached_semantic(
     facade: &Ident,
     element_index: usize,
@@ -8289,10 +8708,12 @@ fn render_pretty_attached_semantic(
     wrappers: &[FieldWrapper],
     attachment: &PrettyAttachmentBehavior,
     repetition: Option<&PrettyRepetitionBehavior>,
+    presence: PrettyPresence,
+    provenance: PrettyProvenanceBehavior,
 ) -> proc_macro2::TokenStream {
     let render_unit = |terminal: proc_macro2::TokenStream| {
         let semantic = quote!(#facade::Pretty::pretty(#terminal, context));
-        render_pretty_attachment_unit(attachment, semantic)
+        render_pretty_attachment_unit(attachment, provenance, semantic)
     };
 
     if let Some(repetition) = repetition {
@@ -8331,9 +8752,7 @@ fn render_pretty_attached_semantic(
                 )?;
             }
         };
-        let outer_optional = outer
-            .iter()
-            .any(|wrapper| matches!(wrapper, FieldWrapper::Optional));
+        let outer_optional = presence == PrettyPresence::Optional;
         let body = if outer_optional {
             let collection = render_optional_view_reference(value, outer, value_is_reference);
             let rendered = render_collection(quote!(collection));
@@ -8352,10 +8771,7 @@ fn render_pretty_attached_semantic(
                 Ok(())
             })?;
         }
-    } else if wrappers
-        .iter()
-        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
-    {
+    } else if presence == PrettyPresence::Optional {
         let terminal = render_optional_view_reference(value, wrappers, value_is_reference);
         let unit = render_unit(quote!(terminal));
         quote! {
@@ -11313,6 +11729,239 @@ struct B;
                 .expect_err("corrupt emitted Pretty plan must diverge")
                 .contains("Pretty plan family")
         );
+    }
+
+    #[test]
+    fn pretty_pratt_recursion_uses_typed_node_identity_not_the_final_path_segment() {
+        let package = tempfile::tempdir().expect("temporary typed Pratt Pretty fixture");
+        fs::write(
+            package.path().join("grammar.rs"),
+            r#"
+                recursa::grammar! {
+                    module = crate::grammar,
+                    derives(Pretty),
+                    keyword_matching = sensitive,
+                    max_lookahead = 1,
+                }
+                recursa::tokens! {
+                    ignore = r"[ \t\n\r]+",
+                    punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" }
+                }
+                pub mod foreign {
+                    #[derive(recursa::Node)]
+                    pub struct Expr<'input> {
+                        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+                        pub value: ForeignExprText<'input>,
+                    }
+                }
+                #[derive(recursa::Node)]
+                pub struct Number<'input> {
+                    #[lex(pattern = r"[0-9]+")]
+                    pub value: NumberText<'input>,
+                }
+                #[derive(recursa::Node)]
+                #[pratt]
+                pub enum Expr<'input, T> {
+                    Foreign(foreign::Expr<'input>),
+                    Generic(T),
+                    Group(#[tok(OPEN, this, CLOSE)] Box<Self>),
+                    #[parse(infix, lbp = 10, rbp = 11)]
+                    #[tok(PLUS)]
+                    Add(Box<Self>, Box<Self>),
+                }
+                #[derive(recursa::Node)]
+                pub struct Root<'input> {
+                    pub expression: Expr<'input, Number<'input>>,
+                }
+            "#,
+        )
+        .expect("write typed Pratt Pretty fixture");
+        let success = analyze_source_tree(
+            M3Input::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("analyze typed Pratt Pretty fixture");
+        let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+            .expect("join typed Pratt Pretty fixture");
+        let index = plan
+            .nodes
+            .iter()
+            .position(|node| node.semantic_key == "grammar::Expr")
+            .expect("fixture has the owning Pratt Expr");
+        let behavior = plan.pretty.nodes[index]
+            .as_ref()
+            .expect("owning Expr has Pretty behavior");
+        let pratt = behavior
+            .pratt
+            .as_ref()
+            .expect("Expr has typed Pratt behavior");
+
+        assert_eq!(
+            pratt.variants[0].operands,
+            vec![PrettyPrattOperandBehavior::Ordinary],
+            "foreign::Expr must not become recursive merely because its final ident matches",
+        );
+        assert_eq!(
+            pratt.variants[1].operands,
+            vec![PrettyPrattOperandBehavior::Ordinary]
+        );
+        assert!(matches!(
+            pratt.variants[2].operands.as_slice(),
+            [PrettyPrattOperandBehavior::Recursive { owner, applications, .. }]
+                if *owner == behavior.node && applications == &behavior.applications
+        ));
+        assert!(matches!(
+            pratt.variants[3].operands.as_slice(),
+            [
+                PrettyPrattOperandBehavior::Recursive { .. },
+                PrettyPrattOperandBehavior::Recursive { .. }
+            ]
+        ));
+        assert!(
+            pratt.grouping.is_some(),
+            "typed Self atom supplies grouping"
+        );
+    }
+
+    #[test]
+    fn every_typed_pretty_pratt_decision_is_part_of_family_authority() {
+        let (package, plan) = joined_pratt_fixture();
+
+        fn behavior(plan: &mut EmissionPlan) -> &mut PrettyNodeBehavior {
+            let index = plan
+                .nodes
+                .iter()
+                .position(|node| node.ident == "Expr")
+                .expect("fixture has Expr");
+            plan.pretty.nodes[index].as_mut().expect("Expr has Pretty")
+        }
+        fn pratt(plan: &mut EmissionPlan) -> &mut PrettyPrattBehavior {
+            behavior(plan).pratt.as_mut().expect("Expr is Pratt")
+        }
+        fn reject(package: &Path, mut plan: EmissionPlan, corrupt: impl FnOnce(&mut EmissionPlan)) {
+            corrupt(&mut plan);
+            assert_plan_family_is_unselectable(package, &plan, "Pretty");
+        }
+
+        reject(package.path(), plan.clone(), |plan| {
+            behavior(plan).node = NodeId::next(999);
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            behavior(plan).applications.clear();
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            pratt(plan)
+                .grouping
+                .as_mut()
+                .expect("grouping")
+                .open
+                .spelling
+                .push('!');
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            pratt(plan)
+                .grouping
+                .as_mut()
+                .expect("grouping")
+                .close
+                .rendering = PrettyFixedRendering::Word;
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            pratt(plan).variants[0].parenthesization.entry_lbp = Some(1);
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            pratt(plan).variants[0].parenthesization.exit_rbp = 1;
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            let recursive = pratt(plan)
+                .variants
+                .iter_mut()
+                .flat_map(|variant| &mut variant.operands)
+                .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
+                .expect("recursive operand");
+            let PrettyPrattOperandBehavior::Recursive { owner, .. } = recursive else {
+                unreachable!()
+            };
+            *owner = NodeId::next(999);
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            let recursive = pratt(plan)
+                .variants
+                .iter_mut()
+                .flat_map(|variant| &mut variant.operands)
+                .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
+                .expect("recursive operand");
+            let PrettyPrattOperandBehavior::Recursive { applications, .. } = recursive else {
+                unreachable!()
+            };
+            applications.clear();
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            let recursive = pratt(plan)
+                .variants
+                .iter_mut()
+                .flat_map(|variant| &mut variant.operands)
+                .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
+                .expect("recursive operand");
+            let PrettyPrattOperandBehavior::Recursive { minimum, .. } = recursive else {
+                unreachable!()
+            };
+            *minimum = PrettyPrattMinimum::Binding(255);
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            let recursive = pratt(plan)
+                .variants
+                .iter_mut()
+                .flat_map(|variant| &mut variant.operands)
+                .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
+                .expect("recursive operand");
+            let PrettyPrattOperandBehavior::Recursive { next, .. } = recursive else {
+                unreachable!()
+            };
+            *next = PrettyPrattNext::Binding(255);
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            let fixed = behavior(plan)
+                .variants
+                .iter_mut()
+                .flatten()
+                .find(|element| matches!(element, PrettyElementBehavior::Fixed { .. }))
+                .expect("fixed Pretty element");
+            let PrettyElementBehavior::Fixed {
+                soft_break_before, ..
+            } = fixed
+            else {
+                unreachable!()
+            };
+            *soft_break_before = !*soft_break_before;
+        });
+        reject(package.path(), plan.clone(), |plan| {
+            let fixed = behavior(plan)
+                .variants
+                .iter_mut()
+                .flatten()
+                .find(|element| matches!(element, PrettyElementBehavior::Fixed { .. }))
+                .expect("fixed Pretty element");
+            let PrettyElementBehavior::Fixed {
+                soft_break_after, ..
+            } = fixed
+            else {
+                unreachable!()
+            };
+            *soft_break_after = !*soft_break_after;
+        });
+        reject(package.path(), plan, |plan| {
+            let semantic = behavior(plan)
+                .variants
+                .iter_mut()
+                .flatten()
+                .find(|element| matches!(element, PrettyElementBehavior::Semantic { .. }))
+                .expect("semantic Pretty element");
+            let PrettyElementBehavior::Semantic { provenance, .. } = semantic else {
+                unreachable!()
+            };
+            *provenance = PrettyProvenanceBehavior::Opaque;
+        });
     }
 
     #[test]
