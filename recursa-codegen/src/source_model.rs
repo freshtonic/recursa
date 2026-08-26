@@ -458,7 +458,7 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
     let mut diagnostics = Vec::new();
     let trait_planner = TraitPlanner::from_grammar(&input.resolved, &mut diagnostics);
     let mut tokens = TokenCatalog::default();
-    tokens.collect_fixed_definitions(&input.resolved, input.cfg);
+    tokens.collect_fixed_definitions(&input.resolved, input.cfg, &mut diagnostics);
     if tokens.post_lex_sites.len() > 1 {
         diagnostics.push(SourceModelDiagnostic {
             kind: SourceModelDiagnosticKind::MultiplePostLexHooks,
@@ -478,6 +478,7 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
     builder.reject_misplaced_content_declarations();
     builder.lower_central_content_definitions();
     builder.lower_nodes();
+    builder.validate_pretty_spacing();
     builder.finish()
 }
 
@@ -524,6 +525,134 @@ impl LoweredFields {
 }
 
 impl SourceModelBuilder<'_> {
+    fn validate_pretty_spacing(&mut self) {
+        let mut diagnostics = Vec::new();
+        for node in &self.nodes {
+            if !node
+                .configured_traits
+                .effective
+                .iter()
+                .any(|selection| selection.recipe == ConfiguredTraitRecipe::Pretty)
+            {
+                continue;
+            }
+            match &node.body {
+                NodeBody::Struct(elements) | NodeBody::Presence(elements) => {
+                    self.validate_pretty_element_boundaries(elements, &mut diagnostics);
+                }
+                NodeBody::Enum(variants) => {
+                    for variant in variants {
+                        self.validate_pretty_element_boundaries(
+                            &variant.elements,
+                            &mut diagnostics,
+                        );
+                    }
+                }
+                NodeBody::Pratt(variants) => {
+                    for variant in variants {
+                        self.validate_pretty_element_boundaries(
+                            &variant.common.elements,
+                            &mut diagnostics,
+                        );
+                    }
+                }
+            }
+        }
+        self.diagnostics.extend(diagnostics);
+    }
+
+    fn validate_pretty_element_boundaries(
+        &self,
+        elements: &[GrammarElement],
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) {
+        for adjacent in elements.windows(2) {
+            let [left, right] = adjacent else {
+                unreachable!()
+            };
+            let (Some((left_fixed, left_site)), Some((right_fixed, right_site))) = (
+                self.pretty_fixed_element(left),
+                self.pretty_fixed_element(right),
+            ) else {
+                continue;
+            };
+            let left_requests_space = matches!(
+                left_fixed.pretty_spacing,
+                PrettySpacing::After | PrettySpacing::Around
+            );
+            let right_requests_space = matches!(
+                right_fixed.pretty_spacing,
+                PrettySpacing::Before | PrettySpacing::Around
+            );
+            if left_requests_space || right_requests_space {
+                continue;
+            }
+            let forced_tight = matches!(
+                left_fixed.pretty_spacing,
+                PrettySpacing::Tight | PrettySpacing::Before
+            ) || matches!(
+                right_fixed.pretty_spacing,
+                PrettySpacing::Tight | PrettySpacing::After
+            );
+            if !forced_tight {
+                continue;
+            }
+
+            let left_tail = left_fixed.spelling.chars().next_back();
+            let right_head = right_fixed.spelling.chars().next();
+            if left_tail.is_some_and(unicode_ident::is_xid_continue)
+                && right_head.is_some_and(unicode_ident::is_xid_continue)
+            {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                    sites: vec![left_site.clone(), right_site.clone()],
+                    message: format!(
+                        "Pretty spacing would suppress a Unicode identifier boundary between `{}` and `{}`",
+                        left_fixed.spelling, right_fixed.spelling,
+                    ),
+                });
+                continue;
+            }
+
+            let combined = format!("{}{}", left_fixed.spelling, right_fixed.spelling);
+            if let Some(longer) = self.tokens.definitions.iter().find_map(|definition| {
+                let TokenDefinitionKind::Fixed(candidate) = &definition.kind else {
+                    return None;
+                };
+                (candidate.spelling.len() > left_fixed.spelling.len()
+                    && combined.starts_with(&candidate.spelling))
+                .then_some(candidate)
+            }) {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                    sites: vec![left_site.clone(), right_site.clone()],
+                    message: format!(
+                        "Pretty spacing would suppress a lexer-required boundary between `{}` and `{}`; longest match `{}` would change tokenization",
+                        left_fixed.spelling, right_fixed.spelling, longer.spelling,
+                    ),
+                });
+            }
+        }
+    }
+
+    fn pretty_fixed_element<'model, 'element>(
+        &'model self,
+        element: &'element GrammarElement,
+    ) -> Option<(&'model FixedTokenDefinition, &'element SourceSite)> {
+        let GrammarElement::FixedToken {
+            token_use, site, ..
+        } = element
+        else {
+            return None;
+        };
+        let definition = self.tokens.uses[token_use.index()].definition;
+        let TokenDefinitionKind::Fixed(fixed) = &self.tokens.definitions[definition.index()].kind
+        else {
+            unreachable!("fixed element points to a fixed definition")
+        };
+        Some((fixed, site))
+    }
+
     fn lower_central_content_definitions(&mut self) {
         for definition in std::mem::take(&mut self.tokens.central_content) {
             if let Some(semantic) = definition.semantic {
@@ -939,6 +1068,7 @@ impl TokenCatalog {
         &mut self,
         resolved: &ResolvedSourceGrammar,
         cfg: &CargoCfgSnapshot,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
         for inclusion in &resolved.tree.inclusions {
             let origin = SourceOrigin {
@@ -956,10 +1086,15 @@ impl TokenCatalog {
                         .segments
                         .last()
                         .is_some_and(|segment| segment.ident == "tokens")
-                    && let Ok(syntax) =
-                        syn::parse2::<CentralTokensSyntax>(item_macro.mac.tokens.clone())
                 {
-                    self.collect_central_definitions(resolved, origin, syntax);
+                    match syn::parse2::<CentralTokensSyntax>(item_macro.mac.tokens.clone()) {
+                        Ok(syntax) => self.collect_central_definitions(resolved, origin, syntax),
+                        Err(error) => diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                            sites: vec![source_site(resolved, origin, span_range(error.span()))],
+                            message: error.to_string(),
+                        }),
+                    }
                 }
                 self.collect_fixed_definitions_from_metas(resolved, origin, &metas);
                 match item {
@@ -4191,5 +4326,101 @@ struct Leaf;
             unsafe_keyword.to_string(),
             "this spacing mode is unsafe for a word-shaped fixed token"
         );
+    }
+
+    #[test]
+    fn pretty_spacing_rejects_a_tight_boundary_that_changes_longest_match() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation {
+        COLON => ":", spacing = tight,
+        DOUBLE_COLON => "::",
+    }
+}
+
+#[derive(recursa::Node)]
+#[tok(COLON, COLON)]
+struct Root;
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("longest match `::`")
+        }));
+    }
+
+    #[test]
+    fn pretty_spacing_rejects_a_tight_unicode_identifier_boundary() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation {
+        BASE => "a",
+        COMBINING_ACUTE => "\u{301}", spacing = after,
+    }
+}
+
+#[derive(recursa::Node)]
+#[tok(BASE, COMBINING_ACUTE)]
+struct Root;
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("Unicode identifier")
+        }));
+    }
+
+    #[test]
+    fn pretty_spacing_accepts_safe_requested_boundaries() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation {
+        COLON => ":", spacing = after,
+        DOUBLE_COLON => "::",
+    }
+}
+
+#[derive(recursa::Node)]
+#[tok(COLON, COLON)]
+struct Root;
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.source_modeled.is_some());
+    }
+
+    #[test]
+    fn invalid_pretty_spacing_is_reported_during_m3() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { COLON => ":", spacing = sideways }
+}
+
+#[derive(recursa::Node)]
+#[tok(COLON)]
+struct Root;
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic
+                    .message
+                    .contains("spacing must be auto, tight, before, after, or around")
+        }));
     }
 }

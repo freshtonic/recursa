@@ -7571,7 +7571,7 @@ fn render_pretty_fixed(
         PrettySpacing::Tight => format_ident!("tight_sequence_token"),
         PrettySpacing::Before => format_ident!("before_token"),
         PrettySpacing::After => format_ident!("after_token"),
-        PrettySpacing::Around => format_ident!("token"),
+        PrettySpacing::Around => format_ident!("around_token"),
         PrettySpacing::Auto if matches!(spelling, "(" | "[" | "{") => {
             format_ident!("opening_token")
         }

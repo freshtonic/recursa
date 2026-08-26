@@ -151,6 +151,8 @@ pub struct PrettyContext {
     needs_separator: bool,
     separator_supplied: bool,
     previous_auto_punctuation: bool,
+    requested_space_after: bool,
+    has_emitted_token: bool,
     provenance: Option<PrettyProvenance>,
     caller_configured: bool,
     repetition: Option<RepetitionLayout>,
@@ -169,6 +171,8 @@ impl Default for PrettyContext {
             needs_separator: false,
             separator_supplied: false,
             previous_auto_punctuation: false,
+            requested_space_after: false,
+            has_emitted_token: false,
             provenance: None,
             caller_configured: false,
             repetition: None,
@@ -187,6 +191,8 @@ impl PrettyContext {
             needs_separator: false,
             separator_supplied: false,
             previous_auto_punctuation: false,
+            requested_space_after: false,
+            has_emitted_token: false,
             provenance: None,
             caller_configured: true,
             repetition: None,
@@ -203,7 +209,10 @@ impl PrettyContext {
 
     /// Emits one semantic token using the default separating-space policy.
     pub fn token(&mut self, text: &str) -> fmt::Result {
-        if self.needs_separator && !self.separator_supplied && !text.is_empty() {
+        if (self.needs_separator || self.requested_space_after)
+            && !self.separator_supplied
+            && !text.is_empty()
+        {
             self.sink
                 .events
                 .push(PrettyEvent::SoftBreak(" ".to_owned()));
@@ -217,6 +226,8 @@ impl PrettyContext {
         self.needs_separator = !text.is_empty();
         self.separator_supplied = false;
         self.previous_auto_punctuation = false;
+        self.requested_space_after = false;
+        self.has_emitted_token |= !text.is_empty();
         Ok(())
     }
 
@@ -224,7 +235,10 @@ impl PrettyContext {
     /// a conservative lexer boundary.
     #[doc(hidden)]
     pub fn punctuation_token(&mut self, text: &str) -> fmt::Result {
-        if self.previous_auto_punctuation && !text.is_empty() {
+        if (self.previous_auto_punctuation || self.requested_space_after)
+            && !self.separator_supplied
+            && !text.is_empty()
+        {
             self.sink
                 .events
                 .push(PrettyEvent::SoftBreak(" ".to_owned()));
@@ -233,13 +247,18 @@ impl PrettyContext {
         self.needs_separator = !text.is_empty();
         self.separator_supplied = false;
         self.previous_auto_punctuation = !text.is_empty();
+        self.requested_space_after = false;
+        self.has_emitted_token |= !text.is_empty();
         Ok(())
     }
 
     /// Emits an opening delimiter tightly and suppresses spacing after it.
     #[doc(hidden)]
     pub fn opening_token(&mut self, text: &str) -> fmt::Result {
-        if self.previous_auto_punctuation && !text.is_empty() {
+        if (self.previous_auto_punctuation || self.requested_space_after)
+            && !self.separator_supplied
+            && !text.is_empty()
+        {
             self.sink
                 .events
                 .push(PrettyEvent::SoftBreak(" ".to_owned()));
@@ -252,6 +271,11 @@ impl PrettyContext {
     /// Emits a grammar-validated token tightly on both sides.
     #[doc(hidden)]
     pub fn tight_sequence_token(&mut self, text: &str) -> fmt::Result {
+        if self.requested_space_after && !self.separator_supplied && !text.is_empty() {
+            self.sink
+                .events
+                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+        }
         self.tight_token(text)?;
         self.needs_separator = false;
         Ok(())
@@ -260,7 +284,12 @@ impl PrettyContext {
     /// Emits a grammar-validated token with space before and tight after.
     #[doc(hidden)]
     pub fn before_token(&mut self, text: &str) -> fmt::Result {
-        self.token(text)?;
+        if self.has_emitted_token && !self.separator_supplied && !text.is_empty() {
+            self.sink
+                .events
+                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+        }
+        self.tight_token(text)?;
         self.needs_separator = false;
         Ok(())
     }
@@ -268,7 +297,23 @@ impl PrettyContext {
     /// Emits a grammar-validated token tight before and with space after.
     #[doc(hidden)]
     pub fn after_token(&mut self, text: &str) -> fmt::Result {
-        self.tight_token(text)
+        if self.requested_space_after && !self.separator_supplied && !text.is_empty() {
+            self.sink
+                .events
+                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+        }
+        self.tight_token(text)?;
+        self.requested_space_after = !text.is_empty();
+        Ok(())
+    }
+
+    /// Emits a grammar-validated token with requested space on both sides.
+    #[doc(hidden)]
+    pub fn around_token(&mut self, text: &str) -> fmt::Result {
+        self.before_token(text)?;
+        self.needs_separator = !text.is_empty();
+        self.requested_space_after = !text.is_empty();
+        Ok(())
     }
 
     /// Emits an exact captured source fragment without normalization.
@@ -283,6 +328,7 @@ impl PrettyContext {
             .push(PrettyEvent::SoftBreak(flat.to_owned()));
         self.separator_supplied = true;
         self.previous_auto_punctuation = false;
+        self.requested_space_after = false;
         Ok(())
     }
 
@@ -291,6 +337,7 @@ impl PrettyContext {
         self.sink.events.push(PrettyEvent::HardBreak);
         self.separator_supplied = true;
         self.previous_auto_punctuation = false;
+        self.requested_space_after = false;
         Ok(())
     }
 
@@ -550,5 +597,19 @@ mod tests {
             }
         }
         assert_eq!(AdjacentPunctuation.render(), ": :");
+    }
+
+    #[test]
+    fn requested_spacing_is_an_absolute_floor_before_punctuation() {
+        struct RequestedFloor;
+        impl Pretty for RequestedFloor {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.around_token("IS")?;
+                context.punctuation_token("!")?;
+                context.after_token(":")?;
+                context.punctuation_token("?")
+            }
+        }
+        assert_eq!(RequestedFloor.render(), "IS !: ?");
     }
 }
