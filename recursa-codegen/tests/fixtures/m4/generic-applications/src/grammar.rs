@@ -8,6 +8,11 @@ recursa::grammar! {
 
 recursa::tokens! {
     ignore = r"[ \t\n\r]+",
+    keywords {
+        IS => "is",
+        NOT => "not",
+        EXISTS => "exists",
+    }
     punctuation {
         MINUS => "-",
         COMMA => ",",
@@ -35,6 +40,17 @@ pub struct Name<'input> {
 #[derive(recursa::Node)]
 pub struct Atom<T> {
     pub value: T,
+}
+
+#[derive(recursa::Node)]
+pub struct Wrap<T> {
+    pub value: T,
+}
+
+#[derive(recursa::Node)]
+pub enum Mixed<'input> {
+    Direct(#[tok(LPAREN, this, RPAREN)] Wrap<Name<'input>>),
+    Repeated(#[tok(LBRACKET, this, RBRACKET)] Wrap<Vec<Name<'input>>>),
 }
 
 pub type Maybe<T> = Option<Box<T>>;
@@ -67,6 +83,31 @@ pub struct Pair<'left, 'right> {
 }
 
 #[derive(recursa::Node)]
+#[tok(LBRACE, this, RBRACE)]
+pub struct LifetimeNode<'input, T> {
+    pub value: T,
+    #[tok(COMMA, this)]
+    pub marker: Name<'input>,
+}
+
+mod aliases {
+    use super::LifetimeNode as DefinitionLocalNode;
+
+    pub type Maybe<'alias, T> = Option<Box<DefinitionLocalNode<'alias, T>>>;
+}
+
+#[derive(recursa::Node)]
+pub struct AliasLifetimeRoot<'input, T> {
+    #[tok(LPAREN, this, RPAREN)]
+    pub value: aliases::Maybe<'input, T>,
+}
+
+#[derive(recursa::Node)]
+pub struct AliasLifetimeConcrete<'input> {
+    pub value: AliasLifetimeRoot<'input, Integer<'input>>,
+}
+
+#[derive(recursa::Node)]
 pub struct AuditRoot<'outer> {
     pub optional: OptionalOnly<Name<'outer>>,
     pub aliased: Aliased<Integer<'outer>>,
@@ -88,4 +129,12 @@ pub enum Expr<'input> {
     #[parse(infix, lbp = 10, rbp = 11)]
     #[tok(MINUS)]
     Sub(Box<Self>, Box<Self>),
+
+    #[parse(prefix, bp = 20)]
+    #[tok(NOT, EXISTS)]
+    NotExists(Box<Self>),
+
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(IS, NOT)]
+    IsNot(Box<Self>, Box<Self>),
 }

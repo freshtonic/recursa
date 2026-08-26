@@ -21,6 +21,24 @@ fn main() {
         Some(recursa::Span::new(0, 1).unwrap())
     );
 
+    let not_exists = grammar::lex("not exists alpha");
+    let mut not_exists_input = not_exists.input();
+    let not_exists = grammar::Expr::parse_spanned(&mut not_exists_input)
+        .expect("multi-token prefix with a shared fixed token parses");
+    assert_eq!(
+        not_exists.root().not_exists_not_span(),
+        Some(recursa::Span::new(0, 3).unwrap())
+    );
+
+    let is_not = grammar::lex("alpha is not beta");
+    let mut is_not_input = is_not.input();
+    let is_not = grammar::Expr::parse_spanned(&mut is_not_input)
+        .expect("multi-token infix with a shared fixed token parses");
+    assert_eq!(
+        is_not.root().is_not_not_span(),
+        Some(recursa::Span::new(9, 12).unwrap())
+    );
+
     let detached = parsed.into_ast();
     match detached {
         grammar::Expr::Sub(lhs, rhs) => {
@@ -48,6 +66,8 @@ fn main() {
         assert_pretty::<grammar::OptionalOnly<T>>();
         assert_pretty::<grammar::Aliased<T>>();
         assert_pretty::<grammar::Chain<T>>();
+        assert_pretty::<grammar::Wrap<T>>();
+        assert_pretty::<grammar::AliasLifetimeRoot<'static, T>>();
     }
     assert_generic_declarations::<grammar::Name<'static>>();
 
@@ -57,6 +77,22 @@ fn main() {
         .expect("authored generic declaration cases parse");
     assert!(audit_input.is_eof());
     assert_eq!(parsed.render(), "(alpha)[7]{1{2}}{a{b}}(3, c)");
+
+    for (source, expected) in [("(MiXeD)", "(MiXeD)"), ("[One TWO]", "[One TWO]")] {
+        let lexed = grammar::lex(source);
+        let mut input = lexed.input();
+        let parsed = grammar::Mixed::parse_spanned(&mut input)
+            .expect("mixed direct and repeated generic applications parse");
+        assert!(input.is_eof());
+        assert_eq!(parsed.render(), expected);
+    }
+
+    let alias = grammar::lex("({7, marker})");
+    let mut alias_input = alias.input();
+    let parsed = grammar::AliasLifetimeConcrete::parse_spanned(&mut alias_input)
+        .expect("cross-module alias lifetime is rebound at its use site");
+    assert!(alias_input.is_eof());
+    assert_eq!(parsed.render(), "({7, marker})");
 
     println!("generic-applications-ok");
 }

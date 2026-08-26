@@ -19,7 +19,7 @@ use crate::decision_plan::{
     ContainerOperation, DispatchKind, ExpectedRecipe, FailureEdgeKind, FollowRecipe,
 };
 use crate::lexical::{KeywordRecognition, LexicalMatcher, LexicalPriority, TokenKindIdentity};
-use crate::lowering::ModuleId;
+use crate::lowering::{ModuleId, NodeId};
 use crate::m3::{CargoOutput, M3Input, analyze_source_tree, internal_generate_error};
 use crate::materialization::{
     ClosedType, MaterializedElement, MaterializedFixedAttachment, MaterializedNodeApplication,
@@ -27,11 +27,14 @@ use crate::materialization::{
     MaterializedPrattNudPosition, MaterializedPrattVariant, MaterializedVariant,
 };
 use crate::resolution::{
-    CatalogType, GenericParameterId, ResolvedFieldId, ResolvedFieldStyle, ResolvedGenericArgument,
-    ResolvedNode, ResolvedNodeBody, ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind,
-    SemanticOwner, SemanticTarget,
+    CatalogType, GenericParameterId, ResolvedFieldStyle, ResolvedGenericArgument, ResolvedNode,
+    ResolvedNodeBody, ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind, SemanticOwner,
+    SemanticTarget,
 };
-use crate::source_model::{ConfiguredTraitRecipe, PrettySpacing, TokenDefinitionKind};
+use crate::source_model::{
+    ConfiguredTraitRecipe, GrammarElement, Node as SourceNode, NodeBody as SourceNodeBody,
+    PrettySpacing, SourcePrattPosition, TokenDefinitionKind,
+};
 use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, span_range};
 use crate::{AtomExpression, FirstPosition, KindSet, SiteId, TextEquivalence, TextPredicate};
 
@@ -191,6 +194,7 @@ enum PrettyElementBehavior {
         repeated: bool,
         separator: Option<String>,
         attachment: Option<PrettyAttachmentBehavior>,
+        opaque_provenance: bool,
     },
 }
 
@@ -403,12 +407,12 @@ enum ElementParseKind {
         pratt_min_bp: Option<u8>,
         separator: Option<String>,
         attachment: Option<Box<FixedAttachmentParsePlan>>,
+        opaque_provenance: bool,
     },
 }
 
 #[derive(Clone, Debug)]
 struct FieldPlan {
-    source: ResolvedFieldId,
     ident: Option<Ident>,
     index: usize,
     accessor: Option<Ident>,
@@ -961,13 +965,14 @@ impl EmissionPlan {
                     node.ident
                 ));
             }
-            let configured_traits = lowered
+            let source_node = lowered
                 .source_modeled
                 .source_model()
                 .nodes
                 .iter()
                 .find(|source_node| source_node.resolved_node == node.id)
-                .ok_or_else(|| format!("Node `{}` lacks a configured trait plan", node.ident))?
+                .ok_or_else(|| format!("Node `{}` lacks a configured trait plan", node.ident))?;
+            let configured_traits = source_node
                 .configured_traits
                 .effective
                 .iter()
@@ -1005,7 +1010,7 @@ impl EmissionPlan {
             }
             let mut planned = source_plan
                 .ok_or_else(|| format!("Node `{}` lacks an application plan", node.ident))?;
-            planned.body = structural_body(node, &application_plans, resolved)?;
+            planned.body = structural_body(node, source_node, lowered, kind_count)?;
             planned.parse_applications.append(&mut application_plans);
             planned.configured_traits = configured_traits;
             nodes.push(planned);
@@ -2033,6 +2038,7 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
                 container,
                 attachment,
                 separator,
+                opaque_provenance,
                 ..
             } => PrettyElementBehavior::Semantic {
                 repeated: matches!(container.as_ref(), PlannedContainer::Repeated { .. }),
@@ -2058,6 +2064,7 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
                             .collect(),
                         separator: separator.clone(),
                     }),
+                opaque_provenance: *opaque_provenance,
             },
         })
         .collect()
@@ -2115,17 +2122,7 @@ fn authoritative_pretty_plan(
             {
                 return Ok(None);
             }
-            let application = lowered
-                .applications
-                .iter()
-                .find(|application| application.node == resolved_node.id)
-                .ok_or_else(|| {
-                    format!(
-                        "Node `{}` lacks an authoritative application",
-                        resolved_node.ident
-                    )
-                })?;
-            authoritative_pretty_node_behavior(lowered, application).map(Some)
+            authoritative_pretty_node_behavior(lowered, resolved_node, source_node).map(Some)
         })
         .collect::<Result<Vec<_>, String>>()?;
     let plan = PrettyEmissionPlan { tokens, nodes };
@@ -2134,31 +2131,25 @@ fn authoritative_pretty_plan(
 
 fn authoritative_pretty_node_behavior(
     lowered: &crate::materialization::LoweredGrammar,
-    application: &MaterializedNodeApplication,
+    resolved_node: &ResolvedNode,
+    source_node: &SourceNode,
 ) -> Result<PrettyNodeBehavior, String> {
-    let variants = match &application.body {
-        MaterializedNodeBody::Struct(elements) | MaterializedNodeBody::Presence(elements) => {
-            vec![authoritative_pretty_elements(lowered, elements)?]
+    let variants = match &source_node.body {
+        SourceNodeBody::Struct(elements) | SourceNodeBody::Presence(elements) => {
+            vec![authoritative_pretty_elements(
+                lowered,
+                resolved_node,
+                elements,
+            )?]
         }
-        MaterializedNodeBody::Enum(variants) => variants
+        SourceNodeBody::Enum(variants) => variants
             .iter()
-            .map(|variant| authoritative_pretty_elements(lowered, &variant.elements))
+            .map(|variant| authoritative_pretty_elements(lowered, resolved_node, &variant.elements))
             .collect::<Result<Vec<_>, String>>()?,
-        MaterializedNodeBody::Pratt(variants) => variants
+        SourceNodeBody::Pratt(variants) => variants
             .iter()
-            .map(|variant| match variant {
-                MaterializedPrattVariant::Nud(nud) => {
-                    authoritative_pretty_elements(lowered, &nud.body)
-                }
-                MaterializedPrattVariant::Led(led) => {
-                    let mut elements = vec![PrettyElementBehavior::Semantic {
-                        repeated: false,
-                        separator: None,
-                        attachment: None,
-                    }];
-                    elements.extend(authoritative_pretty_elements(lowered, &led.tail)?);
-                    Ok(elements)
-                }
+            .map(|variant| {
+                authoritative_pretty_elements(lowered, resolved_node, &variant.common.elements)
             })
             .collect::<Result<Vec<_>, String>>()?,
     };
@@ -2167,19 +2158,19 @@ fn authoritative_pretty_node_behavior(
 
 fn authoritative_pretty_elements(
     lowered: &crate::materialization::LoweredGrammar,
-    elements: &[MaterializedElement],
+    resolved_node: &ResolvedNode,
+    elements: &[GrammarElement],
 ) -> Result<Vec<PrettyElementBehavior>, String> {
     let source = lowered.source_modeled.source_model();
+    let resolved = lowered.source_modeled.resolved();
     elements
         .iter()
         .map(|element| match element {
-            MaterializedElement::FixedToken { token_use } => {
+            GrammarElement::FixedToken { token_use, .. } => {
                 let usage = &source.token_uses[token_use.index()];
                 let definition = &source.token_definitions[usage.definition.index()];
                 let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
-                    return Err(
-                        "a materialized fixed Pretty element is not a fixed token".to_owned()
-                    );
+                    return Err("an authored Pretty fixed element is not fixed syntax".to_owned());
                 };
                 Ok(PrettyElementBehavior::Fixed {
                     spelling: fixed_pretty_spelling(
@@ -2189,17 +2180,25 @@ fn authoritative_pretty_elements(
                     spacing: fixed.pretty_spacing,
                 })
             }
-            MaterializedElement::SemanticField {
-                ty,
+            GrammarElement::SemanticField {
+                resolved_field,
                 attachment,
                 separator,
                 ..
             } => {
-                let repeated = field_wrappers(ty)?.iter().any(|wrapper| {
-                    matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)
-                });
+                let field = resolved_node
+                    .fields
+                    .iter()
+                    .find(|field| field.id == *resolved_field)
+                    .ok_or_else(|| "an authored Pretty field lacks resolved syntax".to_owned())?;
+                let projection = authored_projection(&field.ty, resolved)?;
                 Ok(PrettyElementBehavior::Semantic {
-                    repeated,
+                    repeated: matches!(
+                        declaration_container_operation(&projection.wrappers),
+                        ContainerOperation::ZeroOrMore
+                            | ContainerOperation::OneOrMore
+                            | ContainerOperation::OptionalOneOrMore
+                    ),
                     separator: authoritative_pretty_separator(lowered, separator.as_ref())?,
                     attachment: attachment
                         .as_ref()
@@ -2207,6 +2206,11 @@ fn authoritative_pretty_elements(
                             authoritative_pretty_attachment(lowered, attachment, separator.as_ref())
                         })
                         .transpose()?,
+                    opaque_provenance: authored_type_depends_on_node_generics(
+                        &field.ty,
+                        resolved_node,
+                        resolved,
+                    ),
                 })
             }
         })
@@ -2234,7 +2238,7 @@ fn authoritative_pretty_separator(
 
 fn authoritative_pretty_attachment(
     lowered: &crate::materialization::LoweredGrammar,
-    attachment: &MaterializedFixedAttachment,
+    attachment: &crate::source_model::FixedTokenAttachment,
     separator: Option<&crate::source_model::Separator>,
 ) -> Result<PrettyAttachmentBehavior, String> {
     let source = lowered.source_modeled.source_model();
@@ -2254,17 +2258,16 @@ fn authoritative_pretty_attachment(
         before: attachment
             .before
             .iter()
-            .map(|token_use| fixed(*token_use))
+            .map(|attached| fixed(attached.token_use))
             .collect::<Result<_, _>>()?,
         after: attachment
             .after
             .iter()
-            .map(|token_use| fixed(*token_use))
+            .map(|attached| fixed(attached.token_use))
             .collect::<Result<_, _>>()?,
         separator,
     })
 }
-
 fn pretty_family_identity(plan: &PrettyEmissionPlan) -> Option<u64> {
     (plan.tokens.iter().any(Option::is_some) || plan.nodes.iter().any(Option::is_some))
         .then(|| plan_family_identity(plan))
@@ -2756,37 +2759,378 @@ fn plan_node(
 
 fn structural_body(
     node: &ResolvedNode,
-    applications: &[NodeApplicationParsePlan],
-    resolved: &ResolvedSourceGrammar,
+    source_node: &SourceNode,
+    lowered: &crate::materialization::LoweredGrammar,
+    kind_count: usize,
 ) -> Result<NodeBodyPlan, String> {
-    let mut body = applications
-        .first()
-        .ok_or_else(|| format!("Node `{}` lacks an application plan", node.ident))?
-        .body
-        .clone();
-    for_each_element_mut(&mut body, &mut |element| {
-        let ElementParseKind::Semantic {
-            field,
-            terminal,
-            wrappers,
-            ..
-        } = &mut element.kind
-        else {
-            return Ok(());
-        };
-        let source = node
-            .fields
-            .iter()
-            .find(|candidate| candidate.id == field.source)
-            .ok_or_else(|| "planned field has no authored source field".to_owned())?;
-        let projection = authored_projection(&source.ty, resolved)?;
-        **terminal = projection.terminal;
-        *wrappers = projection.wrappers;
-        Ok(())
-    })?;
+    let body = match (&source_node.body, &node.body) {
+        (
+            SourceNodeBody::Struct(elements) | SourceNodeBody::Presence(elements),
+            ResolvedNodeBody::Struct { style },
+        ) => NodeBodyPlan::Struct {
+            style: *style,
+            elements: declaration_elements(node, None, elements, lowered, kind_count)?,
+        },
+        (
+            SourceNodeBody::Enum(variants),
+            ResolvedNodeBody::Enum {
+                variants: resolved_variants,
+            },
+        ) => {
+            let variants = variants
+                .iter()
+                .map(|variant| {
+                    let resolved_variant = resolved_variants
+                        .iter()
+                        .find(|resolved| resolved.id == variant.resolved_variant)
+                        .ok_or_else(|| "authored enum variant lacks resolved shape".to_owned())?;
+                    Ok(VariantParsePlan {
+                        ident: emitted_ident(&variant.name)?,
+                        style: resolved_variant.style,
+                        elements: declaration_elements(
+                            node,
+                            Some((variant, resolved_variant)),
+                            &variant.elements,
+                            lowered,
+                            kind_count,
+                        )?,
+                        capture: resolved_variant.capture.map(PlannedCapturePolicy::from),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            NodeBodyPlan::Enum {
+                variants,
+                dispatch: empty_declaration_dispatch(),
+            }
+        }
+        (
+            SourceNodeBody::Pratt(variants),
+            ResolvedNodeBody::Enum {
+                variants: resolved_variants,
+            },
+        ) => {
+            let mut nud = Vec::new();
+            let mut led = Vec::new();
+            for (source_index, source_variant) in variants.iter().enumerate() {
+                let resolved_variant = resolved_variants
+                    .iter()
+                    .find(|resolved| resolved.id == source_variant.common.resolved_variant)
+                    .ok_or_else(|| "authored Pratt variant lacks resolved shape".to_owned())?;
+                let mut variant = VariantParsePlan {
+                    ident: emitted_ident(&source_variant.common.name)?,
+                    style: resolved_variant.style,
+                    elements: declaration_elements(
+                        node,
+                        Some((&source_variant.common, resolved_variant)),
+                        &source_variant.common.elements,
+                        lowered,
+                        kind_count,
+                    )?,
+                    capture: resolved_variant.capture.map(PlannedCapturePolicy::from),
+                };
+                let position = match source_variant.position {
+                    SourcePrattPosition::Atom => PrattPosition::Atom,
+                    SourcePrattPosition::Prefix { bp } => PrattPosition::Prefix { bp },
+                    SourcePrattPosition::Infix { lbp, rbp } => PrattPosition::Infix { lbp, rbp },
+                    SourcePrattPosition::Postfix { bp } => PrattPosition::Postfix { bp },
+                };
+                match position {
+                    PrattPosition::Atom | PrattPosition::Prefix { .. } => {
+                        nud.push(PrattNudParsePlan {
+                            source_index,
+                            variant,
+                            position,
+                        });
+                    }
+                    PrattPosition::Infix { .. } | PrattPosition::Postfix { .. } => {
+                        let lhs_index = variant
+                            .elements
+                            .iter()
+                            .position(|element| {
+                                matches!(element.kind, ElementParseKind::Semantic { .. })
+                            })
+                            .ok_or_else(|| {
+                                "authored Pratt led variant lacks its recursive lhs".to_owned()
+                            })?;
+                        let lhs = variant.elements.remove(lhs_index);
+                        led.push(PrattLedParsePlan {
+                            source_index,
+                            variant,
+                            lhs,
+                            position,
+                        });
+                    }
+                }
+            }
+            NodeBodyPlan::Pratt(Box::new(PrattParsePlan {
+                expected_nud_count: nud.len(),
+                expected_led_count: led.len(),
+                nud,
+                led,
+                nud_dispatch: empty_declaration_dispatch(),
+                led_dispatch: None,
+                nud_failure: PlannedFollow::Caller,
+                nud_selection_follow: ExpectedSet::empty(kind_count),
+                caller_follow_guard: None,
+            }))
+        }
+        _ => {
+            return Err(format!(
+                "Node `{}` authored and resolved declaration shapes disagree",
+                node.ident
+            ));
+        }
+    };
+    let mut body = body;
     disambiguate_fixed_accessors(&mut body)?;
     validate_accessor_names(node, &body)?;
     Ok(body)
+}
+
+fn empty_declaration_dispatch() -> PredictiveDispatchPlan {
+    let root = DispatchTrieNodePlan::default();
+    PredictiveDispatchPlan {
+        frozen_identity: predictive_dispatch_identity(&root),
+        root,
+        frozen_sequence_count: 0,
+        frozen_node_count: 0,
+    }
+}
+
+fn declaration_elements(
+    node: &ResolvedNode,
+    variant: Option<(
+        &crate::source_model::Variant,
+        &crate::resolution::ResolvedNodeVariant,
+    )>,
+    elements: &[GrammarElement],
+    lowered: &crate::materialization::LoweredGrammar,
+    kind_count: usize,
+) -> Result<Vec<ElementParsePlan>, String> {
+    let source = lowered.source_modeled.source_model();
+    let resolved = lowered.source_modeled.resolved();
+    elements
+        .iter()
+        .map(|element| match element {
+            GrammarElement::FixedToken { token_use, .. } => {
+                let usage = &source.token_uses[token_use.index()];
+                let definition = &source.token_definitions[usage.definition.index()];
+                let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+                    return Err("an authored fixed element references a non-fixed token".to_owned());
+                };
+                let name = fixed_element_name(node, usage, definition, fixed);
+                Ok(ElementParsePlan {
+                    metadata_name: name.clone(),
+                    kind: ElementParseKind::Fixed {
+                        expected: ExpectedSet::empty(kind_count),
+                        capture: PlannedCapturePolicy::Inherited,
+                        spelling: fixed_pretty_spelling(
+                            &fixed.spelling,
+                            lowered.grammar.text_equivalence,
+                        ),
+                        spacing: fixed.pretty_spacing,
+                        accessor: fixed_accessor_ident(&name)?,
+                    },
+                })
+            }
+            GrammarElement::SemanticField {
+                resolved_field,
+                attachment,
+                separator,
+                ..
+            } => {
+                let field = node
+                    .fields
+                    .iter()
+                    .find(|field| field.id == *resolved_field)
+                    .ok_or_else(|| "an authored semantic element lacks its field".to_owned())?;
+                let field_index = variant
+                    .map_or_else(
+                        || {
+                            node.fields
+                                .iter()
+                                .position(|candidate| candidate.id == field.id)
+                        },
+                        |(_, resolved)| {
+                            resolved
+                                .fields
+                                .iter()
+                                .position(|candidate| *candidate == field.id)
+                        },
+                    )
+                    .ok_or_else(|| {
+                        "an authored semantic element lacks its field index".to_owned()
+                    })?;
+                let base = field
+                    .syntax
+                    .ident
+                    .clone()
+                    .unwrap_or_else(|| format_ident!("field_{field_index}"));
+                let (metadata_name, accessor) = variant.map_or_else(
+                    || (base.unraw().to_string(), base.clone()),
+                    |(source_variant, _)| {
+                        let prefix = snake_case(&source_variant.name);
+                        let accessor = if base.unraw() == prefix {
+                            base.clone()
+                        } else {
+                            format_ident!("{}_{}", prefix, base)
+                        };
+                        (format!("{}_{}", prefix, base.unraw()), accessor)
+                    },
+                );
+                let projection = authored_projection(&field.ty, resolved)?;
+                let operation = declaration_container_operation(&projection.wrappers);
+                let separator_spelling = separator
+                    .as_ref()
+                    .map(|separator| {
+                        let usage = &source.token_uses[separator.token_use.index()];
+                        let definition = &source.token_definitions[usage.definition.index()];
+                        match &definition.kind {
+                            TokenDefinitionKind::Fixed(fixed) => Ok(fixed.spelling.clone()),
+                            _ => {
+                                Err("an authored separator references a non-fixed token".to_owned())
+                            }
+                        }
+                    })
+                    .transpose()?;
+                Ok(ElementParsePlan {
+                    metadata_name,
+                    kind: ElementParseKind::Semantic {
+                        field: FieldPlan {
+                            ident: field.syntax.ident.clone(),
+                            index: field_index,
+                            accessor: Some(accessor),
+                        },
+                        terminal: Box::new(projection.terminal),
+                        wrappers: projection.wrappers,
+                        container: Box::new(declaration_container(
+                            operation,
+                            separator.is_some(),
+                            separator
+                                .as_ref()
+                                .is_some_and(|separator| separator.optional_trailing),
+                            kind_count,
+                        )),
+                        capture: PlannedCapturePolicy::Inherited,
+                        child_capture: PlannedCapturePolicy::Inherited,
+                        pratt_min_bp: None,
+                        separator: separator_spelling,
+                        attachment: attachment
+                            .as_ref()
+                            .map(|attachment| {
+                                declaration_fixed_attachment(
+                                    attachment,
+                                    lowered,
+                                    kind_count,
+                                )
+                                .map(Box::new)
+                            })
+                            .transpose()?,
+                        opaque_provenance: authored_type_depends_on_node_generics(
+                            &field.ty, node, resolved,
+                        ),
+                    },
+                })
+            }
+        })
+        .collect()
+}
+
+fn declaration_fixed_attachment(
+    attachment: &crate::source_model::FixedTokenAttachment,
+    lowered: &crate::materialization::LoweredGrammar,
+    kind_count: usize,
+) -> Result<FixedAttachmentParsePlan, String> {
+    let source = lowered.source_modeled.source_model();
+    let plan_fixed = |token_use: crate::lowering::TokenUseId| {
+        let usage = &source.token_uses[token_use.index()];
+        let definition = &source.token_definitions[usage.definition.index()];
+        let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+            return Err("an authored attachment references non-fixed syntax".to_owned());
+        };
+        Ok(AttachedFixedParsePlan {
+            expected: ExpectedSet::empty(kind_count),
+            capture: PlannedCapturePolicy::Inherited,
+            spelling: fixed_pretty_spelling(
+                &fixed.spelling,
+                lowered.grammar.text_equivalence,
+            ),
+            spacing: fixed.pretty_spacing,
+        })
+    };
+    Ok(FixedAttachmentParsePlan {
+        before: attachment
+            .before
+            .iter()
+            .map(|attached| plan_fixed(attached.token_use))
+            .collect::<Result<_, _>>()?,
+        semantic: Box::new(PlannedContainer::Direct {
+            child_follow: PlannedFollow::Caller,
+            required_failure: PlannedFollow::Caller,
+        }),
+        after: attachment
+            .after
+            .iter()
+            .map(|attached| plan_fixed(attached.token_use))
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn declaration_container_operation(wrappers: &[FieldWrapper]) -> ContainerOperation {
+    let repetition = wrappers
+        .iter()
+        .position(|wrapper| matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore));
+    let optional_before_repeat = repetition.is_some_and(|index| {
+        wrappers[..index]
+            .iter()
+            .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+    });
+    match repetition.map(|index| wrappers[index]) {
+        Some(FieldWrapper::ZeroOrMore) => ContainerOperation::ZeroOrMore,
+        Some(FieldWrapper::OneOrMore) if optional_before_repeat => {
+            ContainerOperation::OptionalOneOrMore
+        }
+        Some(FieldWrapper::OneOrMore) => ContainerOperation::OneOrMore,
+        Some(FieldWrapper::Boxed | FieldWrapper::Optional) => unreachable!(),
+        None if wrappers
+            .iter()
+            .any(|wrapper| matches!(wrapper, FieldWrapper::Optional)) =>
+        {
+            ContainerOperation::Optional
+        }
+        None => ContainerOperation::Direct,
+    }
+}
+
+fn declaration_container(
+    operation: ContainerOperation,
+    has_separator: bool,
+    optional_trailing: bool,
+    kind_count: usize,
+) -> PlannedContainer {
+    match operation {
+        ContainerOperation::Direct => PlannedContainer::Direct {
+            child_follow: PlannedFollow::Caller,
+            required_failure: PlannedFollow::Caller,
+        },
+        ContainerOperation::Optional => PlannedContainer::Optional {
+            selector: ExpectedSet::empty(kind_count),
+            child_follow: PlannedFollow::Caller,
+        },
+        operation @ (ContainerOperation::ZeroOrMore
+        | ContainerOperation::OneOrMore
+        | ContainerOperation::OptionalOneOrMore) => PlannedContainer::Repeated {
+            operation,
+            element_selector: ExpectedSet::empty(kind_count),
+            separator_selector: has_separator.then(|| ExpectedSet::empty(kind_count)),
+            optional_trailing,
+            stop: PlannedFollow::Caller,
+            child_follow: PlannedFollow::Caller,
+            minimum_failure: None,
+            continuation_failure: Box::new(PlannedFollow::Caller),
+            after_separator_failure: None,
+        },
+    }
 }
 
 #[derive(Clone)]
@@ -2795,17 +3139,69 @@ struct AuthoredProjection {
     wrappers: Vec<FieldWrapper>,
 }
 
+#[derive(Clone, Default)]
+struct AuthoredBindings {
+    types: BTreeMap<GenericParameterId, ResolvedType>,
+    lifetimes: BTreeMap<String, syn::Lifetime>,
+}
+
+fn authored_type_depends_on_node_generics(
+    ty: &ResolvedType,
+    node: &ResolvedNode,
+    resolved: &ResolvedSourceGrammar,
+) -> bool {
+    match &ty.kind {
+        ResolvedTypeKind::Semantic {
+            use_site,
+            target,
+            arguments,
+            ..
+        } => {
+            let parameter_is_owned = |parameter| {
+                resolved.generic_parameters.iter().any(|candidate| {
+                    candidate.id == parameter && candidate.owner == SemanticOwner::Node(node.id)
+                })
+            };
+            matches!(target, SemanticTarget::GenericParameter(parameter) if parameter_is_owned(*parameter))
+                || (matches!(target, SemanticTarget::Node(owner) if *owner == node.id)
+                    && !node.generics.params.is_empty()
+                    && resolved.uses[use_site.index()].authored == "Self")
+                || arguments.iter().any(|argument| match argument {
+                    ResolvedGenericArgument::Type(argument) => {
+                        authored_type_depends_on_node_generics(argument, node, resolved)
+                    }
+                    ResolvedGenericArgument::Lifetime(_)
+                    | ResolvedGenericArgument::Unsupported(_) => false,
+                })
+        }
+        ResolvedTypeKind::Group(inner)
+        | ResolvedTypeKind::Parenthesized(inner)
+        | ResolvedTypeKind::Reference(inner) => {
+            authored_type_depends_on_node_generics(inner, node, resolved)
+        }
+        ResolvedTypeKind::Tuple(elements) => elements
+            .iter()
+            .any(|element| authored_type_depends_on_node_generics(element, node, resolved)),
+        ResolvedTypeKind::Unsupported => false,
+    }
+}
+
 fn authored_projection(
     ty: &ResolvedType,
     resolved: &ResolvedSourceGrammar,
 ) -> Result<AuthoredProjection, String> {
-    authored_projection_with(ty, resolved, &BTreeMap::new(), &mut BTreeSet::new())
+    authored_projection_with(
+        ty,
+        resolved,
+        &AuthoredBindings::default(),
+        &mut BTreeSet::new(),
+    )
 }
 
 fn authored_projection_with(
     ty: &ResolvedType,
     resolved: &ResolvedSourceGrammar,
-    bindings: &BTreeMap<GenericParameterId, ResolvedType>,
+    bindings: &AuthoredBindings,
     active_aliases: &mut BTreeSet<usize>,
 ) -> Result<AuthoredProjection, String> {
     match &ty.kind {
@@ -2813,17 +3209,22 @@ fn authored_projection_with(
             authored_projection_with(inner, resolved, bindings, active_aliases)
         }
         ResolvedTypeKind::Semantic {
-            target, arguments, ..
+            use_site,
+            target,
+            arguments,
+            ..
         } => match target {
-            SemanticTarget::GenericParameter(parameter) => bindings.get(parameter).map_or_else(
-                || {
-                    Ok(AuthoredProjection {
-                        terminal: ty.syntax.clone(),
-                        wrappers: Vec::new(),
-                    })
-                },
-                |bound| authored_projection_with(bound, resolved, bindings, active_aliases),
-            ),
+            SemanticTarget::GenericParameter(parameter) => {
+                bindings.types.get(parameter).map_or_else(
+                    || {
+                        Ok(AuthoredProjection {
+                            terminal: ty.syntax.clone(),
+                            wrappers: Vec::new(),
+                        })
+                    },
+                    |bound| authored_projection_with(bound, resolved, bindings, active_aliases),
+                )
+            }
             SemanticTarget::Catalog(catalog) => {
                 let argument = arguments.iter().find_map(|argument| match argument {
                     ResolvedGenericArgument::Type(ty) => Some(ty),
@@ -2855,38 +3256,78 @@ fn authored_projection_with(
                     .filter(|parameter| parameter.owner == SemanticOwner::TypeAlias(*alias_id))
                     .map(|parameter| (parameter.ident.as_str(), parameter.id))
                     .collect::<BTreeMap<_, _>>();
-                let mut supplied = arguments.iter().filter_map(|argument| match argument {
-                    ResolvedGenericArgument::Type(ty) => Some(ty),
-                    ResolvedGenericArgument::Lifetime(_)
-                    | ResolvedGenericArgument::Unsupported(_) => None,
-                });
+                let mut supplied = arguments.iter().peekable();
                 let mut alias_bindings = bindings.clone();
-                for parameter in alias.generics.type_params() {
-                    let id = parameter_ids
-                        .get(parameter.ident.to_string().as_str())
-                        .ok_or_else(|| {
-                            format!(
-                                "type alias `{}` lost generic parameter identity",
+                for parameter in &alias.generics.params {
+                    match parameter {
+                        GenericParam::Lifetime(parameter) => {
+                            let Some(ResolvedGenericArgument::Lifetime(argument)) = supplied.next()
+                            else {
+                                return Err(format!(
+                                    "type alias `{}` leaves lifetime `{}` open",
+                                    alias.ident, parameter.lifetime
+                                ));
+                            };
+                            let argument = bindings
+                                .lifetimes
+                                .get(&argument.ident.to_string())
+                                .cloned()
+                                .unwrap_or_else(|| argument.clone());
+                            alias_bindings
+                                .lifetimes
+                                .insert(parameter.lifetime.ident.to_string(), argument);
+                        }
+                        GenericParam::Type(parameter) => {
+                            let id = parameter_ids
+                                .get(parameter.ident.to_string().as_str())
+                                .ok_or_else(|| {
+                                    format!(
+                                        "type alias `{}` lost generic parameter identity",
+                                        alias.ident
+                                    )
+                                })?;
+                            let argument = match supplied.peek() {
+                                Some(ResolvedGenericArgument::Type(_)) => {
+                                    let Some(ResolvedGenericArgument::Type(argument)) =
+                                        supplied.next()
+                                    else {
+                                        unreachable!("peeked a type argument")
+                                    };
+                                    argument.clone()
+                                }
+                                Some(_) => {
+                                    return Err(format!(
+                                        "type alias `{}` has mismatched generic arguments",
+                                        alias.ident
+                                    ));
+                                }
+                                None => alias
+                                    .defaults
+                                    .iter()
+                                    .find(|default| default.parameter == *id)
+                                    .map(|default| default.ty.clone())
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "type alias `{}` leaves `{}` open",
+                                            alias.ident, parameter.ident
+                                        )
+                                    })?,
+                            };
+                            alias_bindings.types.insert(*id, argument);
+                        }
+                        GenericParam::Const(_) => {
+                            return Err(format!(
+                                "type alias `{}` uses an unsupported const generic",
                                 alias.ident
-                            )
-                        })?;
-                    let argument = supplied
-                        .next()
-                        .cloned()
-                        .or_else(|| {
-                            alias
-                                .defaults
-                                .iter()
-                                .find(|default| default.parameter == *id)
-                                .map(|default| default.ty.clone())
-                        })
-                        .ok_or_else(|| {
-                            format!(
-                                "type alias `{}` leaves `{}` open",
-                                alias.ident, parameter.ident
-                            )
-                        })?;
-                    alias_bindings.insert(*id, argument);
+                            ));
+                        }
+                    }
+                }
+                if supplied.next().is_some() {
+                    return Err(format!(
+                        "type alias `{}` has excess generic arguments",
+                        alias.ident
+                    ));
                 }
                 let target = alias.target.as_ref().ok_or_else(|| {
                     format!("type alias `{}` has no resolved target", alias.ident)
@@ -2896,7 +3337,18 @@ fn authored_projection_with(
                 active_aliases.remove(&alias_id.index());
                 projected
             }
-            SemanticTarget::Node(_) | SemanticTarget::ContentToken(_) => Ok(AuthoredProjection {
+            SemanticTarget::Node(node_id) => Ok(AuthoredProjection {
+                terminal: authored_node_type(
+                    *node_id,
+                    *use_site,
+                    arguments,
+                    resolved,
+                    bindings,
+                    active_aliases,
+                )?,
+                wrappers: Vec::new(),
+            }),
+            SemanticTarget::ContentToken(_) => Ok(AuthoredProjection {
                 terminal: ty.syntax.clone(),
                 wrappers: Vec::new(),
             }),
@@ -2907,6 +3359,80 @@ fn authored_projection_with(
             Err("an authored semantic field has no supported declaration projection".to_owned())
         }
     }
+}
+
+fn authored_open_type(
+    ty: &ResolvedType,
+    resolved: &ResolvedSourceGrammar,
+    bindings: &AuthoredBindings,
+    active_aliases: &mut BTreeSet<usize>,
+) -> Result<Type, String> {
+    let projection = authored_projection_with(ty, resolved, bindings, active_aliases)?;
+    let facade = emitted_ident(&resolved.build_inputs.facade.ident)?;
+    Ok(render_wrapped_type(
+        &facade,
+        &projection.terminal,
+        &projection.wrappers,
+    ))
+}
+
+fn authored_node_type(
+    node_id: NodeId,
+    use_site: crate::resolution::SemanticUseId,
+    arguments: &[ResolvedGenericArgument],
+    resolved: &ResolvedSourceGrammar,
+    bindings: &AuthoredBindings,
+    active_aliases: &mut BTreeSet<usize>,
+) -> Result<Type, String> {
+    if resolved.uses[use_site.index()].authored == "Self" {
+        return Ok(syn::parse_quote!(Self));
+    }
+    let node = &resolved.nodes[node_id.index()];
+    let mut path: syn::Path = syn::parse_quote!(crate);
+    for segment in &node.key.segments {
+        path.segments
+            .push(syn::PathSegment::from(emitted_ident(segment)?));
+    }
+    let mut rendered = syn::punctuated::Punctuated::new();
+    for argument in arguments {
+        match argument {
+            ResolvedGenericArgument::Lifetime(lifetime) => {
+                let lifetime = bindings
+                    .lifetimes
+                    .get(&lifetime.ident.to_string())
+                    .cloned()
+                    .unwrap_or_else(|| lifetime.clone());
+                rendered.push(GenericArgument::Lifetime(lifetime));
+            }
+            ResolvedGenericArgument::Type(ty) => {
+                rendered.push(GenericArgument::Type(authored_open_type(
+                    ty,
+                    resolved,
+                    bindings,
+                    active_aliases,
+                )?));
+            }
+            ResolvedGenericArgument::Unsupported(_) => {
+                return Err(format!(
+                    "Node `{}` has an unsupported authored generic argument",
+                    node.ident
+                ));
+            }
+        }
+    }
+    if !rendered.is_empty() {
+        let segment = path
+            .segments
+            .last_mut()
+            .ok_or_else(|| "authored Node path is empty".to_owned())?;
+        segment.arguments = PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+            colon2_token: None,
+            lt_token: Default::default(),
+            args: rendered,
+            gt_token: Default::default(),
+        });
+    }
+    Ok(Type::Path(syn::TypePath { qself: None, path }))
 }
 
 fn for_each_element(body: &NodeBodyPlan, visit: &mut impl FnMut(&ElementParsePlan)) {
@@ -2926,40 +3452,6 @@ fn for_each_element(body: &NodeBodyPlan, visit: &mut impl FnMut(&ElementParsePla
             }
         }
     }
-}
-
-fn for_each_element_mut(
-    body: &mut NodeBodyPlan,
-    visit: &mut impl FnMut(&mut ElementParsePlan) -> Result<(), String>,
-) -> Result<(), String> {
-    match body {
-        NodeBodyPlan::Struct { elements, .. } => {
-            for element in elements {
-                visit(element)?;
-            }
-        }
-        NodeBodyPlan::Enum { variants, .. } => {
-            for variant in variants {
-                for element in &mut variant.elements {
-                    visit(element)?;
-                }
-            }
-        }
-        NodeBodyPlan::Pratt(pratt) => {
-            for branch in &mut pratt.nud {
-                for element in &mut branch.variant.elements {
-                    visit(element)?;
-                }
-            }
-            for branch in &mut pratt.led {
-                visit(&mut branch.lhs)?;
-                for element in &mut branch.variant.elements {
-                    visit(element)?;
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<(), String> {
@@ -3418,7 +3910,6 @@ fn plan_pratt_lhs(
         metadata_name: format!("{}_{}", variant_name, base.unraw()),
         kind: ElementParseKind::Semantic {
             field: FieldPlan {
-                source: resolved_field.id,
                 ident: resolved_field.syntax.ident.clone(),
                 index: field_index,
                 accessor: Some(accessor),
@@ -3434,6 +3925,7 @@ fn plan_pratt_lhs(
             pratt_min_bp: None,
             separator: None,
             attachment: None,
+            opaque_provenance: false,
         },
     })
 }
@@ -3604,7 +4096,6 @@ fn plan_elements(
                     metadata_name,
                     kind: ElementParseKind::Semantic {
                         field: FieldPlan {
-                            source: resolved_field.id,
                             ident: resolved_field.syntax.ident.clone(),
                             index: field_index,
                             accessor: Some({
@@ -3659,6 +4150,7 @@ fn plan_elements(
                                 .map(Box::new)
                             })
                             .transpose()?,
+                        opaque_provenance: false,
                     },
                 })
             }
@@ -6121,6 +6613,61 @@ fn trait_impl_parts(
     )
 }
 
+fn pretty_impl_parts(
+    facade: &Ident,
+    node: &NodeParsePlan,
+) -> (
+    proc_macro2::TokenStream,
+    proc_macro2::TokenStream,
+    proc_macro2::TokenStream,
+) {
+    let mut generics = node.generics.clone();
+    for field_type in semantic_field_types(facade, node) {
+        generics
+            .make_where_clause()
+            .predicates
+            .push(syn::parse_quote!(#field_type: #facade::Pretty));
+    }
+    let attachment_terminals = match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => elements
+            .iter()
+            .filter_map(|element| attachment_pretty_terminal(node, element))
+            .collect::<Vec<_>>(),
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => trait_variants(&node.body)
+            .into_iter()
+            .flat_map(|variant| variant.elements)
+            .filter_map(|element| attachment_pretty_terminal(node, &element))
+            .collect(),
+    };
+    for terminal in attachment_terminals {
+        generics
+            .make_where_clause()
+            .predicates
+            .push(syn::parse_quote!(#terminal: #facade::Pretty));
+    }
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    (
+        quote!(#impl_generics),
+        quote!(#type_generics),
+        quote!(#where_clause),
+    )
+}
+
+fn attachment_pretty_terminal(
+    node: &NodeParsePlan,
+    element: &ElementParsePlan,
+) -> Option<Type> {
+    match &element.kind {
+        ElementParseKind::Semantic {
+            terminal,
+            attachment: Some(_),
+            opaque_provenance: true,
+            ..
+        } if !is_recursive_terminal(node, terminal) => Some(terminal.as_ref().clone()),
+        ElementParseKind::Fixed { .. } | ElementParseKind::Semantic { .. } => None,
+    }
+}
+
 fn render_node_standard_trait(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -6617,8 +7164,7 @@ fn render_pratt_node_pretty(
     let behavior = plan.pretty.nodes[node_index]
         .as_ref()
         .expect("validated Pretty Pratt behavior");
-    let (impl_generics, type_generics, where_clause) =
-        trait_impl_parts(facade, node, quote!(#facade::Pretty));
+    let (impl_generics, type_generics, where_clause) = pretty_impl_parts(facade, node);
     let variants = trait_variants(&node.body);
     let arms = variants
         .iter()
@@ -6685,7 +7231,11 @@ fn render_pratt_node_pretty(
                         container,
                         ..
                     },
-                    PrettyElementBehavior::Semantic { attachment, .. },
+                    PrettyElementBehavior::Semantic {
+                        attachment,
+                        opaque_provenance,
+                        ..
+                    },
                 ) => {
                     assert!(
                         matches!(container.as_ref(), PlannedContainer::Direct { .. })
@@ -6717,6 +7267,12 @@ fn render_pratt_node_pretty(
                             }
                         };
                         quote!((#binding).__recursa_pretty_pratt(context, #minimum, #next))
+                    } else if *opaque_provenance {
+                        quote! {
+                            context.without_provenance(|context| {
+                                #facade::Pretty::pretty(#binding, context)
+                            })
+                        }
                     } else {
                         quote!(#facade::Pretty::pretty(#binding, context))
                     };
@@ -6726,6 +7282,10 @@ fn render_pratt_node_pretty(
                             context.with_child(#index, |context| {
                                 context.with_child(0, |context| { #unit Ok(()) })
                             })?;
+                        }
+                    } else if *opaque_provenance && !recursive {
+                        quote! {
+                            context.with_child(#index, |context| { #semantic })?;
                         }
                     } else {
                         quote! {
@@ -6809,8 +7369,7 @@ fn render_node_pretty(
     let behavior = plan.pretty.nodes[node_index]
         .as_ref()
         .expect("validated Pretty Node behavior");
-    let (impl_generics, type_generics, where_clause) =
-        trait_impl_parts(facade, node, quote!(#facade::Pretty));
+    let (impl_generics, type_generics, where_clause) = pretty_impl_parts(facade, node);
     let elements = |elements: &[ElementParsePlan],
                     behavior: &[PrettyElementBehavior],
                     base: proc_macro2::TokenStream| {
@@ -6832,45 +7391,33 @@ fn render_node_pretty(
                             ..
                         },
                         PrettyElementBehavior::Semantic {
-                            repeated,
                             separator,
                             attachment,
+                            opaque_provenance,
+                            ..
                         },
                     ) => {
                         let value = field_access(base.clone(), field.ident.as_ref(), field.index);
                         if let Some(attachment) = attachment {
                             return render_pretty_attached_semantic(
-                                facade, index, value, false, wrappers, container, attachment,
+                                facade,
+                                index,
+                                value,
+                                false,
+                                wrappers,
+                                container,
+                                attachment,
+                                *opaque_provenance,
                             );
                         }
-                        if *repeated {
-                            separator.as_ref().map_or_else(
-                                || {
-                                    quote! {
-                                        context.with_child(#index, |context| {
-                                            #facade::Pretty::pretty(&#value, context)
-                                        })?;
-                                    }
-                                },
-                                |separator| {
-                                    quote! {
-                                        context.with_child(#index, |context| {
-                                            context.with_repetition(#separator, false, |context| {
-                                                #facade::Pretty::pretty(&#value, context)
-                                            })
-                                        })?;
-                                    }
-                                },
-                            )
-                        } else {
-                            quote! {
-                                context.with_child(#index, |context| {
-                                    context.with_child(0, |context| {
-                                        #facade::Pretty::pretty(&#value, context)
-                                    })
-                                })?;
-                            }
-                        }
+                        render_pretty_semantic(
+                            facade,
+                            index,
+                            quote!(&#value),
+                            container,
+                            separator.as_deref(),
+                            *opaque_provenance,
+                        )
                     }
                     (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Semantic { .. })
                     | (ElementParseKind::Semantic { .. }, PrettyElementBehavior::Fixed { .. }) => {
@@ -6912,9 +7459,10 @@ fn render_node_pretty(
                                     ..
                                 },
                                 PrettyElementBehavior::Semantic {
-                                    repeated,
                                     separator,
                                     attachment,
+                                    opaque_provenance,
+                                    ..
                                 },
                             ) => {
                                 let binding = &bindings[binding_index];
@@ -6928,32 +7476,17 @@ fn render_node_pretty(
                                         wrappers,
                                         container,
                                         attachment,
+                                        *opaque_provenance,
                                     );
                                 }
-                                if *repeated {
-                                    separator.as_ref().map_or_else(
-                                        || quote! {
-                                            context.with_child(#index, |context| {
-                                                #facade::Pretty::pretty(#binding, context)
-                                            })?;
-                                        },
-                                        |separator| quote! {
-                                            context.with_child(#index, |context| {
-                                                context.with_repetition(#separator, false, |context| {
-                                                    #facade::Pretty::pretty(#binding, context)
-                                                })
-                                            })?;
-                                        },
-                                    )
-                                } else {
-                                    quote! {
-                                        context.with_child(#index, |context| {
-                                            context.with_child(0, |context| {
-                                                #facade::Pretty::pretty(#binding, context)
-                                            })
-                                        })?;
-                                    }
-                                }
+                                render_pretty_semantic(
+                                    facade,
+                                    index,
+                                    quote!(#binding),
+                                    container,
+                                    separator.as_deref(),
+                                    *opaque_provenance,
+                                )
                             }
                             (
                                 ElementParseKind::Fixed { .. },
@@ -6980,6 +7513,47 @@ fn render_node_pretty(
                 context.configure_defaults(#max_width, #indent);
                 context.group(|context| { #body })
             }
+        }
+    }
+}
+
+fn render_pretty_semantic(
+    facade: &Ident,
+    index: usize,
+    value: proc_macro2::TokenStream,
+    container: &PlannedContainer,
+    separator: Option<&str>,
+    opaque_provenance: bool,
+) -> proc_macro2::TokenStream {
+    let render_value = if matches!(container, PlannedContainer::Repeated { .. }) {
+        separator.map_or_else(
+            || quote!(#facade::Pretty::pretty(#value, context)),
+            |separator| {
+                quote! {
+                    context.with_repetition(#separator, false, |context| {
+                        #facade::Pretty::pretty(#value, context)
+                    })
+                }
+            },
+        )
+    } else {
+        quote!(#facade::Pretty::pretty(#value, context))
+    };
+    if opaque_provenance {
+        quote! {
+            context.with_child(#index, |context| {
+                context.without_provenance(|context| #render_value)
+            })?;
+        }
+    } else if matches!(container, PlannedContainer::Repeated { .. }) {
+        quote! {
+            context.with_child(#index, |context| #render_value)?;
+        }
+    } else {
+        quote! {
+            context.with_child(#index, |context| {
+                context.with_child(0, |context| #render_value)
+            })?;
         }
     }
 }
@@ -7135,11 +7709,21 @@ fn render_pretty_attached_semantic(
     wrappers: &[FieldWrapper],
     container: &PlannedContainer,
     attachment: &PrettyAttachmentBehavior,
+    opaque_provenance: bool,
 ) -> proc_macro2::TokenStream {
     let render_unit = |terminal: proc_macro2::TokenStream| {
+        let semantic = if opaque_provenance {
+            quote! {
+                context.without_provenance(|context| {
+                    #facade::Pretty::pretty(#terminal, context)
+                })
+            }
+        } else {
+            quote!(#facade::Pretty::pretty(#terminal, context))
+        };
         render_pretty_attachment_unit(
             attachment,
-            quote!(#facade::Pretty::pretty(#terminal, context)),
+            semantic,
         )
     };
 
@@ -9781,7 +10365,8 @@ struct B;
         let dispatch = plan
             .nodes
             .iter_mut()
-            .find_map(|node| match &mut node.body {
+            .flat_map(|node| &mut node.parse_applications)
+            .find_map(|application| match &mut application.body {
                 NodeBodyPlan::Enum { dispatch, .. } => Some(dispatch),
                 NodeBodyPlan::Struct { .. } | NodeBodyPlan::Pratt(_) => None,
             })
@@ -9849,7 +10434,8 @@ struct B;
         let pratt = missing_plan
             .nodes
             .iter_mut()
-            .find_map(|node| match &mut node.body {
+            .flat_map(|node| &mut node.parse_applications)
+            .find_map(|application| match &mut application.body {
                 NodeBodyPlan::Pratt(pratt) => Some(pratt),
                 NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
             })
@@ -9861,7 +10447,8 @@ struct B;
         let pratt = branch_plan
             .nodes
             .iter_mut()
-            .find_map(|node| match &mut node.body {
+            .flat_map(|node| &mut node.parse_applications)
+            .find_map(|application| match &mut application.body {
                 NodeBodyPlan::Pratt(pratt) => Some(pratt),
                 NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
             })
@@ -9882,7 +10469,8 @@ struct B;
         let pratt = follow_plan
             .nodes
             .iter_mut()
-            .find_map(|node| match &mut node.body {
+            .flat_map(|node| &mut node.parse_applications)
+            .find_map(|application| match &mut application.body {
                 NodeBodyPlan::Pratt(pratt) => Some(pratt),
                 NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
             })
@@ -9910,7 +10498,8 @@ struct B;
         let pratt = failure_plan
             .nodes
             .iter_mut()
-            .find_map(|node| match &mut node.body {
+            .flat_map(|node| &mut node.parse_applications)
+            .find_map(|application| match &mut application.body {
                 NodeBodyPlan::Pratt(pratt) => Some(pratt),
                 NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
             })
@@ -10003,6 +10592,68 @@ struct B;
             }],
         });
         assert_plan_family_is_unselectable(package.path(), &explorer, "explorer");
+    }
+
+    #[test]
+    fn authored_pretty_authority_rejects_emitted_declaration_corruption() {
+        let package = tempfile::tempdir().expect("temporary Pretty authority fixture");
+        fs::write(
+            package.path().join("grammar.rs"),
+            include_str!("../tests/fixtures/m4/pratt/src/grammar.rs"),
+        )
+        .expect("write Pretty authority fixture");
+        let success = analyze_source_tree(
+            M3Input::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("analyze Pretty authority fixture");
+        let lowered = &success.analyzed.lowered;
+        let authority = authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
+            .expect("derive Pretty authority from source");
+        let mut plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+            .expect("join a complete Pretty plan");
+        let element = plan
+            .nodes
+            .iter_mut()
+            .flat_map(|node| match &mut node.body {
+                NodeBodyPlan::Struct { elements, .. } => elements.iter_mut().collect::<Vec<_>>(),
+                NodeBodyPlan::Enum { variants, .. } => variants
+                    .iter_mut()
+                    .flat_map(|variant| variant.elements.iter_mut())
+                    .collect(),
+                NodeBodyPlan::Pratt(pratt) => pratt
+                    .nud
+                    .iter_mut()
+                    .flat_map(|branch| branch.variant.elements.iter_mut())
+                    .chain(
+                        pratt
+                            .led
+                            .iter_mut()
+                            .flat_map(|branch| branch.variant.elements.iter_mut()),
+                    )
+                    .collect(),
+            })
+            .find(|element| matches!(element.kind, ElementParseKind::Semantic { .. }))
+            .expect("Pretty fixture contains a semantic declaration element");
+        let ElementParseKind::Semantic {
+            opaque_provenance, ..
+        } = &mut element.kind
+        else {
+            unreachable!("selected a semantic element")
+        };
+        *opaque_provenance = !*opaque_provenance;
+        plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens);
+
+        let authority_after_corruption =
+            authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
+                .expect("source authority remains derivable");
+        assert_eq!(authority, authority_after_corruption);
+        assert_ne!(Some(plan.pretty.clone()), authority);
+        assert!(
+            plan.validate()
+                .expect_err("corrupt emitted Pretty plan must diverge")
+                .contains("Pretty plan family")
+        );
     }
 
     fn assert_plan_family_is_unselectable(package: &Path, plan: &EmissionPlan, family: &str) {
