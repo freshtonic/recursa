@@ -563,6 +563,12 @@ enum PrettyBoundaryKind {
     Dynamic(String),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MaterializedPrettyBoundary {
+    Fixed(TokenDefinitionId),
+    Regex(String),
+}
+
 #[derive(Clone)]
 struct PrettyBoundary {
     kind: PrettyBoundaryKind,
@@ -724,6 +730,107 @@ fn pattern_matches_entire(pattern: &str, text: &str) -> bool {
     regex_automata::meta::Regex::new(&anchored)
         .map(|regex| regex.is_match(text.as_bytes()))
         .unwrap_or(true)
+}
+
+pub(crate) fn materialized_pretty_boundary_changes_lexing(
+    source: &SourceModel,
+    equivalence: crate::TextEquivalence,
+    left: &MaterializedPrettyBoundary,
+    right: &MaterializedPrettyBoundary,
+) -> bool {
+    let fixed = |boundary: &MaterializedPrettyBoundary| match boundary {
+        MaterializedPrettyBoundary::Fixed(id) => {
+            let TokenDefinitionKind::Fixed(fixed) = &source.token_definitions[id.index()].kind
+            else {
+                unreachable!("a materialized fixed Pretty boundary names fixed syntax")
+            };
+            Some(fixed)
+        }
+        MaterializedPrettyBoundary::Regex(_) => None,
+    };
+    let left_fixed = fixed(left);
+    let right_fixed = fixed(right);
+    let left_requests_space = left_fixed.is_some_and(|fixed| {
+        matches!(
+            fixed.pretty_spacing,
+            PrettySpacing::After | PrettySpacing::Around
+        )
+    });
+    let right_requests_space = right_fixed.is_some_and(|fixed| {
+        matches!(
+            fixed.pretty_spacing,
+            PrettySpacing::Before | PrettySpacing::Around
+        )
+    });
+    if left_requests_space || right_requests_space {
+        return false;
+    }
+    let explicitly_tight = left_fixed.is_some_and(|fixed| {
+        matches!(
+            fixed.pretty_spacing,
+            PrettySpacing::Tight | PrettySpacing::Before
+        )
+    }) || right_fixed.is_some_and(|fixed| {
+        matches!(
+            fixed.pretty_spacing,
+            PrettySpacing::Tight | PrettySpacing::After
+        )
+    });
+    let left_auto_punctuation = left_fixed.is_some_and(|fixed| {
+        fixed.pretty_spacing == PrettySpacing::Auto
+            && !is_word_shaped(&fixed.spelling)
+            && !matches!(fixed.spelling.as_str(), "(" | "[" | "{")
+    });
+    let left_auto_open = left_fixed.is_some_and(|fixed| {
+        fixed.pretty_spacing == PrettySpacing::Auto
+            && matches!(fixed.spelling.as_str(), "(" | "[" | "{")
+    });
+    let right_auto_punctuation = right_fixed.is_some_and(|fixed| {
+        fixed.pretty_spacing == PrettySpacing::Auto && !is_word_shaped(&fixed.spelling)
+    });
+    if !explicitly_tight && !left_auto_open && !(right_auto_punctuation && !left_auto_punctuation) {
+        return false;
+    }
+
+    let lexical_patterns = source
+        .token_definitions
+        .iter()
+        .map(|definition| match &definition.kind {
+            TokenDefinitionKind::Fixed(fixed) => {
+                fixed_lexical_pattern(&fixed.spelling, equivalence)
+            }
+            TokenDefinitionKind::Content(content) => content.pattern.clone(),
+            TokenDefinitionKind::LexicalBase(base) => base.pattern.clone(),
+        })
+        .chain(
+            source
+                .lexer_records
+                .iter()
+                .map(|record| record.pattern.clone()),
+        )
+        .collect::<Vec<_>>();
+    match (left, right) {
+        (MaterializedPrettyBoundary::Regex(pattern), MaterializedPrettyBoundary::Fixed(_)) => {
+            lexical_patterns.iter().any(|lexical_pattern| {
+                pattern_then_fixed_intersects_pattern(
+                    pattern,
+                    &right_fixed.expect("fixed right boundary").spelling,
+                    lexical_pattern,
+                )
+            })
+        }
+        (MaterializedPrettyBoundary::Fixed(_), MaterializedPrettyBoundary::Regex(pattern)) => {
+            lexical_patterns.iter().any(|lexical_pattern| {
+                fixed_then_pattern_intersects_pattern(
+                    &left_fixed.expect("fixed left boundary").spelling,
+                    pattern,
+                    lexical_pattern,
+                )
+            })
+        }
+        (MaterializedPrettyBoundary::Fixed(_), MaterializedPrettyBoundary::Fixed(_))
+        | (MaterializedPrettyBoundary::Regex(_), MaterializedPrettyBoundary::Regex(_)) => false,
+    }
 }
 
 fn hir_may_emit(hir: &regex_syntax::hir::Hir, predicate: &impl Fn(char) -> bool) -> bool {
