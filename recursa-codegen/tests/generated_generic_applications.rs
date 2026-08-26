@@ -16,6 +16,7 @@ fn a_generic_node_can_be_parsed_through_multiple_closed_applications() {
         String::from_utf8(output.stdout).unwrap().trim(),
         "generic-applications-ok"
     );
+    assert_application_qualified_diagrams(&package);
 
     let permuted = scaffold_fixture();
     let grammar = permuted.path().join("src/grammar.rs");
@@ -39,6 +40,34 @@ fn a_generic_node_can_be_parsed_through_multiple_closed_applications() {
         String::from_utf8(output.stdout).unwrap().trim(),
         "generic-applications-ok"
     );
+    assert_application_qualified_diagrams(&permuted);
+}
+
+fn assert_application_qualified_diagrams(package: &TempDir) {
+    let output = run_fixture_doc(package);
+    assert_success(&output);
+    let mut docs = Vec::new();
+    collect_rendered_rustdoc(&target_dir(package).join("doc"), &mut docs);
+    let aggregate = docs
+        .iter()
+        .find(|(path, source)| {
+            path.ends_with("grammar_docs/index.html") && source.contains("RECURSA_GRAMMAR_DIAGRAM")
+        })
+        .expect("aggregate generic application diagram");
+    for production in [
+        "grammar::Wrap&lt;grammar::Name&gt; =&gt; Wrap ::= grammar::Name",
+        "grammar::Wrap&lt;Vec&lt;grammar::Name&gt;&gt; =&gt; Wrap ::= Vec&lt;grammar::Name&gt;",
+        "grammar::Atom&lt;grammar::Integer&gt; =&gt; Atom ::= grammar::Integer",
+        "grammar::Atom&lt;grammar::Name&gt; =&gt; Atom ::= grammar::Name",
+        "grammar::Chain&lt;grammar::Integer&gt; =&gt; Chain ::= \"{\" grammar::Integer Option&lt;grammar::Chain&lt;grammar::Integer&gt;&gt; \"}\"",
+        "grammar::Chain&lt;grammar::Name&gt; =&gt; Chain ::= \"{\" grammar::Name Option&lt;grammar::Chain&lt;grammar::Name&gt;&gt; \"}\"",
+    ] {
+        assert!(
+            aggregate.1.contains(production),
+            "missing application-qualified production `{production}`:\n{}",
+            aggregate.1,
+        );
+    }
 }
 
 fn scaffold_fixture() -> TempDir {
@@ -86,6 +115,42 @@ fn run_fixture(package: &TempDir) -> Output {
         .env("CARGO_TARGET_DIR", target_dir(package))
         .output()
         .expect("run generic-applications fixture")
+}
+
+fn run_fixture_doc(package: &TempDir) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    Command::new(cargo)
+        .arg("doc")
+        .arg("--offline")
+        .arg("--quiet")
+        .arg("--no-deps")
+        .current_dir(package.path())
+        .env_remove("RECURSA_GENERATION")
+        .env("RUSTDOCFLAGS", "-D rustdoc::broken_intra_doc_links")
+        .env("CARGO_TARGET_DIR", target_dir(package))
+        .output()
+        .expect("render generic application grammar documentation")
+}
+
+fn collect_rendered_rustdoc(root: &Path, rendered: &mut Vec<(PathBuf, String)>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries {
+        let entry = entry.expect("read generic application rustdoc entry");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rendered_rustdoc(&path, rendered);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "html")
+        {
+            rendered.push((
+                path.clone(),
+                fs::read_to_string(path).expect("read rendered generic application rustdoc"),
+            ));
+        }
+    }
 }
 
 fn target_dir(package: &TempDir) -> PathBuf {
