@@ -24,5 +24,22 @@ fn main() {
     assert_eq!(errors[0].span(), recursa::Span::new(13, 14).unwrap());
     assert_eq!(errors[0].text(), "@");
 
+    let alternative_source = String::from("sElEcT");
+    let mut alternative = grammar::LexBuilder::new(&alternative_source);
+    alternative
+        .append(
+            grammar::TokenKind::WordText,
+            recursa::Span::new(0, 6).unwrap(),
+        )
+        .expect("a source-bounded typed token can be appended");
+    let alternative = alternative.finish();
+    let classified = alternative
+        .tokens()
+        .next()
+        .expect("the alternative lexer emitted one token");
+    assert_eq!(classified.kind(), grammar::TokenKind::SELECT);
+    assert_eq!(classified.text(), "sElEcT");
+    assert_eq!(alternative.errors().count(), 0);
+
     println!("lexing-ok");
 }

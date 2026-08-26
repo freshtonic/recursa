@@ -14,7 +14,7 @@ use syn::{GenericArgument, GenericParam, Generics, Ident, PathArguments, Type, V
 use crate::TypeShape;
 use crate::build_diagnostic::{BuildReport, DiagnosticStage, GenerateError};
 use crate::decision_plan::{ContainerOperation, DispatchKind, FollowRecipe};
-use crate::lexical::{LexicalMatcher, TokenKindIdentity};
+use crate::lexical::{KeywordRecognition, LexicalMatcher, TokenKindIdentity};
 use crate::lowering::ModuleId;
 use crate::m3::{CargoOutput, M3Input, analyze_source_tree, internal_generate_error};
 use crate::materialization::{
@@ -98,6 +98,7 @@ struct EmissionPlan {
     tokens: Vec<TokenParsePlan>,
     token_bindings: Vec<TokenBindingPlan>,
     lexical_rules: Vec<LexRulePlan>,
+    keyword_classifiers: Vec<KeywordClassifierPlan>,
 }
 
 #[derive(Clone)]
@@ -318,6 +319,14 @@ struct LexRulePlan {
     skip: bool,
 }
 
+#[derive(Clone)]
+struct KeywordClassifierPlan {
+    canonical_spelling: String,
+    kind: u16,
+    carriers: Vec<u16>,
+    ascii_insensitive: bool,
+}
+
 fn fixed_lexical_pattern(spelling: &str, equivalence: TextEquivalence) -> String {
     let mut characters = spelling.chars();
     let word_shaped = characters.next().is_some_and(|first| {
@@ -448,34 +457,10 @@ impl EmissionPlan {
             )?);
         }
 
-        // Keep fixed rules explicit in the executable tracer bullet even when
-        // M3 proved that a later keyword-classification pass could eliminate
-        // them. That post-lex optimization is not part of this runtime seam.
-        let mut lexical_rules = lowered
-            .source_modeled
-            .source_model()
-            .token_definitions
-            .iter()
-            .filter_map(|definition| {
-                let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
-                    return None;
-                };
-                let correlation = lowered
-                    .lexical_plan
-                    .lowering_map
-                    .token_definitions
-                    .iter()
-                    .find(|correlation| correlation.source == definition.id)?;
-                Some(LexRulePlan {
-                    pattern: fixed_lexical_pattern(
-                        &fixed.spelling,
-                        resolved.build_inputs.text_equivalence,
-                    ),
-                    kind: correlation.lowered.index().try_into().ok()?,
-                    skip: false,
-                })
-            })
-            .collect::<Vec<_>>();
+        // M3 has already decided whether each fixed token remains a standalone
+        // rule or is recognized through one or more proven carriers. Preserve
+        // that decision here instead of reconstructing fixed rules from source.
+        let mut lexical_rules: Vec<LexRulePlan> = Vec::new();
         for rule in &lowered.lexical_plan.rules {
             let pattern = match &rule.matcher {
                 LexicalMatcher::Regex(pattern) => pattern.clone(),
@@ -511,6 +496,40 @@ impl EmissionPlan {
                 skip: true,
             });
         }
+        let keyword_classifiers =
+            lowered
+                .lexical_plan
+                .keywords
+                .iter()
+                .filter_map(|keyword| {
+                    let KeywordRecognition::CombinedCarriers {
+                        carrier,
+                        additional_carriers,
+                    } = &keyword.recognition
+                    else {
+                        return None;
+                    };
+                    let carriers = std::iter::once(*carrier)
+                        .chain(additional_carriers.iter().copied())
+                        .map(|kind| {
+                            kind.index().try_into().map_err(|_| {
+                                "generated token kind exceeds runtime width".to_owned()
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>();
+                    Some(carriers.and_then(|carriers| {
+                        Ok(KeywordClassifierPlan {
+                            canonical_spelling: keyword.canonical_spelling.clone(),
+                            kind: keyword.kind.index().try_into().map_err(|_| {
+                                "generated token kind exceeds runtime width".to_owned()
+                            })?,
+                            carriers,
+                            ascii_insensitive: resolved.build_inputs.text_equivalence
+                                == TextEquivalence::AsciiInsensitive,
+                        })
+                    }))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
 
         let mut canonical = format!(
             "{EMITTER_IDENTITY};release={};protocol={PRIVATE_PROTOCOL};facade={facade};anchor={};kinds={kind_count};edition={:?};cfg={:?};",
@@ -559,6 +578,15 @@ impl EmissionPlan {
                 rule.pattern, rule.kind, rule.skip
             ));
         }
+        for classifier in &keyword_classifiers {
+            canonical.push_str(&format!(
+                ";classify={:?}:{}:{:?}:{}",
+                classifier.canonical_spelling,
+                classifier.kind,
+                classifier.carriers,
+                classifier.ascii_insensitive,
+            ));
+        }
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {
             identity,
@@ -574,6 +602,7 @@ impl EmissionPlan {
             tokens,
             token_bindings,
             lexical_rules,
+            keyword_classifiers,
         };
         plan.validate()?;
         Ok(plan)
@@ -1411,6 +1440,30 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         let index = index as u16;
         quote!(#index => TokenKind::#variant,)
     });
+    let raw_kind_arms = kind_variants.iter().enumerate().map(|(index, variant)| {
+        let index = index as u16;
+        quote!(TokenKind::#variant => #index,)
+    });
+    let keyword_classifiers = plan.keyword_classifiers.iter().map(|classifier| {
+        let canonical = &classifier.canonical_spelling;
+        let kind = classifier.kind;
+        let carriers = &classifier.carriers;
+        let matches = if classifier.ascii_insensitive {
+            quote!(text.eq_ignore_ascii_case(#canonical))
+        } else {
+            quote!(text == #canonical)
+        };
+        quote! {
+            if [#(#carriers),*].contains(&record.kind)
+                && source
+                    .get(record.span.range())
+                    .is_some_and(|text| #matches)
+            {
+                record.kind = #kind;
+                continue;
+            }
+        }
+    });
     let patterns = plan.lexical_rules.iter().map(|rule| &rule.pattern);
     let kinds = plan.lexical_rules.iter().map(|rule| rule.kind);
     let skips = plan.lexical_rules.iter().map(|rule| rule.skip);
@@ -1475,6 +1528,23 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         pub enum TokenKind {
             #(#kind_variants,)*
             LexicalError,
+        }
+
+        fn __recursa_raw_kind(kind: TokenKind) -> u16 {
+            match kind {
+                #(#raw_kind_arms)*
+                TokenKind::LexicalError => #lexical_error_kind,
+            }
+        }
+
+        fn __recursa_finalize<'input>(
+            source: &'input str,
+            mut records: Vec<#facade::__private::TokenRecord>,
+        ) -> #facade::__private::LexResult<'input> {
+            for record in &mut records {
+                #(#keyword_classifiers)*
+            }
+            #facade::__private::LexResult::new(source, records)
         }
 
         /// Read-only metadata for this generated grammar.
@@ -1605,6 +1675,79 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
         impl ExactSizeIterator for LexErrors<'_, '_> {}
 
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum LexBuildError {
+            InvalidSpan { span: #facade::Span },
+            OutOfOrder {
+                previous: #facade::Span,
+                span: #facade::Span,
+            },
+        }
+
+        impl ::core::fmt::Display for LexBuildError {
+            fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                match self {
+                    Self::InvalidSpan { span } => write!(
+                        formatter,
+                        "token span {}..{} is not a UTF-8 range within the lexer source",
+                        span.start(),
+                        span.end(),
+                    ),
+                    Self::OutOfOrder { previous, span } => write!(
+                        formatter,
+                        "token span {}..{} overlaps or precedes {}..{}",
+                        span.start(),
+                        span.end(),
+                        previous.start(),
+                        previous.end(),
+                    ),
+                }
+            }
+        }
+
+        impl ::std::error::Error for LexBuildError {}
+
+        /// Validated input for an alternative lexer.
+        pub struct LexBuilder<'input> {
+            source: &'input str,
+            records: Vec<#facade::__private::TokenRecord>,
+        }
+
+        impl<'input> LexBuilder<'input> {
+            pub fn new(source: &'input str) -> Self {
+                Self {
+                    source,
+                    records: Vec::new(),
+                }
+            }
+
+            pub fn append(
+                &mut self,
+                kind: TokenKind,
+                span: #facade::Span,
+            ) -> Result<&mut Self, LexBuildError> {
+                if self.source.get(span.range()).is_none() {
+                    return Err(LexBuildError::InvalidSpan { span });
+                }
+                if let Some(previous) = self.records.last().map(|record| record.span) {
+                    if span.start() < previous.end() {
+                        return Err(LexBuildError::OutOfOrder { previous, span });
+                    }
+                }
+                self.records.push(#facade::__private::TokenRecord {
+                    kind: __recursa_raw_kind(kind),
+                    span,
+                });
+                Ok(self)
+            }
+
+            pub fn finish(self) -> LexResult<'input> {
+                LexResult {
+                    inner: __recursa_finalize(self.source, self.records),
+                }
+            }
+        }
+
         /// A cursor bound to this generated grammar's token identities.
         pub struct Input<'input, A = ()> {
             pub(crate) inner: #facade::__private::Input<'input, A>,
@@ -1667,13 +1810,13 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         }
 
         pub fn lex(source: &str) -> LexResult<'_> {
-            LexResult {
-                inner: #facade::__private::lex(
-                    source,
-                    __RECURSA_LEX_RULES,
-                    #lexical_error_kind,
-                ),
-            }
+            let scanned = #facade::__private::lex(
+                source,
+                __RECURSA_LEX_RULES,
+                #lexical_error_kind,
+            );
+            let records = #facade::__private::lex_records(&scanned).to_vec();
+            LexResult { inner: __recursa_finalize(source, records) }
         }
 
         #(#token_items)*
