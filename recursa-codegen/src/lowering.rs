@@ -9,11 +9,12 @@ use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
 use proc_macro2::Span;
-use syn::parse::{Parse, ParseStream, Parser as _};
+use syn::parse::Parser as _;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned as _;
-use syn::{Attribute, Fields, Item, LitInt, LitStr, Path as SynPath, Token, Type};
+use syn::{Attribute, Fields, Item, LitStr, Path as SynPath, Token, Type};
 
+use crate::source_syntax::GrammarConfigSyntax;
 use crate::{
     AnalysisReport, AtomDescription, AtomExpression, AtomId, ContainerShape, DeclId, Declaration,
     Diagnostic, GrammarDescription, KindDescription, KindId, Location, LocationId, ParseSite,
@@ -157,7 +158,7 @@ pub(crate) struct LoweredGrammar {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BuildInputs {
+pub(crate) struct DiscoveryInputs {
     pub(crate) selected_root: PathBuf,
     pub(crate) source_files: Vec<PathBuf>,
     pub(crate) edition: RustEdition,
@@ -166,7 +167,7 @@ pub(crate) struct BuildInputs {
     pub(crate) environment_dependencies: Vec<String>,
 }
 
-impl BuildInputs {
+impl DiscoveryInputs {
     pub(crate) fn watched_paths(&self) -> Vec<PathBuf> {
         let mut paths = self
             .source_files
@@ -179,6 +180,23 @@ impl BuildInputs {
         }
         paths.into_iter().collect()
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BuildInputs {
+    pub(crate) discovery: DiscoveryInputs,
+    pub(crate) module_anchor: SelectedRootAnchor,
+    pub(crate) facade: FacadeMapping,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SelectedRootAnchor {
+    pub(crate) segments: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FacadeMapping {
+    pub(crate) ident: String,
 }
 
 fn safe_manifest_relative_path(path: &Path) -> bool {
@@ -902,7 +920,7 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
         );
     }
     let grammar_item = grammar_macros[0];
-    let config = match syn::parse2::<GrammarConfigInput>(grammar_item.mac.tokens.clone()) {
+    let config = match syn::parse2::<GrammarConfigSyntax>(grammar_item.mac.tokens.clone()) {
         Ok(config) => config,
         Err(error) => {
             return failure(
@@ -913,6 +931,15 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
             );
         }
     };
+    if config.facade != "recursa" {
+        return failure(
+            input.manifest_relative_path,
+            DiagnosticStage::Lowering,
+            Some(span_range(config.facade.span())),
+            "ticket #53's single-file seam supports only the default `recursa` facade; configured facade resolution is handled by ticket #58"
+                .to_owned(),
+        );
+    }
     if !path_is(&config.module, &["crate"]) {
         return failure(
             input.manifest_relative_path,
@@ -1114,12 +1141,20 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
         diagnostics: Vec::new(),
         lowered: Some(LoweredGrammar {
             build_inputs: BuildInputs {
-                selected_root: input.manifest_relative_path.to_owned(),
-                source_files: vec![input.manifest_relative_path.to_owned()],
-                edition: input.edition,
-                watched_module_candidates: Vec::new(),
-                cfg_snapshot: Vec::new(),
-                environment_dependencies: Vec::new(),
+                discovery: DiscoveryInputs {
+                    selected_root: input.manifest_relative_path.to_owned(),
+                    source_files: vec![input.manifest_relative_path.to_owned()],
+                    edition: input.edition,
+                    watched_module_candidates: Vec::new(),
+                    cfg_snapshot: Vec::new(),
+                    environment_dependencies: Vec::new(),
+                },
+                module_anchor: SelectedRootAnchor {
+                    segments: Vec::new(),
+                },
+                facade: FacadeMapping {
+                    ident: config.facade.to_string(),
+                },
             },
             grammar,
             source_model,
@@ -1130,7 +1165,7 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
 
 fn lower_semantics(
     source: &SourceModel,
-    config: &GrammarConfigInput,
+    config: &GrammarConfigSyntax,
 ) -> (GrammarDescription, LoweringMap) {
     let token = &source.token_definitions[0];
     let node = &source.nodes[0];
@@ -1356,70 +1391,6 @@ fn token_type_ident(ty: &Type) -> Result<syn::Ident, String> {
     Ok(segment.ident.clone())
 }
 
-struct GrammarConfigInput {
-    module: SynPath,
-    text_equivalence: TextEquivalence,
-    max_lookahead: usize,
-}
-
-impl Parse for GrammarConfigInput {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let mut module = None;
-        let mut text_equivalence = None;
-        let mut max_lookahead = None;
-        while !input.is_empty() {
-            let key: syn::Ident = input.parse()?;
-            input.parse::<Token![=]>()?;
-            if key == "module" {
-                reject_duplicate(&module, key.span(), "module")?;
-                module = Some(SynPath::parse_mod_style(input)?);
-            } else if key == "keyword_matching" {
-                reject_duplicate(&text_equivalence, key.span(), "keyword_matching")?;
-                let value: syn::Ident = input.parse()?;
-                text_equivalence = Some(if value == "sensitive" {
-                    TextEquivalence::Sensitive
-                } else if value == "ascii_insensitive" {
-                    TextEquivalence::AsciiInsensitive
-                } else {
-                    return Err(syn::Error::new(
-                        value.span(),
-                        "keyword_matching must be sensitive or ascii_insensitive",
-                    ));
-                });
-            } else if key == "max_lookahead" {
-                reject_duplicate(&max_lookahead, key.span(), "max_lookahead")?;
-                let value: LitInt = input.parse()?;
-                max_lookahead = Some(value.base10_parse()?);
-            } else {
-                return Err(syn::Error::new(
-                    key.span(),
-                    format!("unsupported grammar setting `{key}` in ticket #53 lowering"),
-                ));
-            }
-            if input.is_empty() {
-                break;
-            }
-            input.parse::<Token![,]>()?;
-        }
-        Ok(Self {
-            module: module.ok_or_else(|| input.error("grammar configuration requires module"))?,
-            text_equivalence: text_equivalence.unwrap_or(TextEquivalence::Sensitive),
-            max_lookahead: max_lookahead.unwrap_or(1),
-        })
-    }
-}
-
-fn reject_duplicate<T>(value: &Option<T>, span: Span, name: &str) -> syn::Result<()> {
-    if value.is_some() {
-        Err(syn::Error::new(
-            span,
-            format!("duplicate grammar setting `{name}`"),
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -1459,13 +1430,13 @@ struct Root<'input> {
         let analyzed = report.analyzed.expect("valid grammar is analyzed");
         let lowered = &analyzed.lowered;
 
-        assert_eq!(lowered.build_inputs.source_files.len(), 1);
+        assert_eq!(lowered.build_inputs.discovery.source_files.len(), 1);
         assert_eq!(
-            lowered.build_inputs.selected_root,
+            lowered.build_inputs.discovery.selected_root,
             Path::new("src/grammar.rs"),
         );
         assert_eq!(
-            lowered.build_inputs.source_files,
+            lowered.build_inputs.discovery.source_files,
             [Path::new("src/grammar.rs")],
         );
         assert_eq!(lowered.source_model.files.len(), 1);

@@ -11,6 +11,8 @@ mod ir;
 mod kind_set;
 mod lowering;
 mod provenance;
+mod resolution;
+mod source_syntax;
 
 pub use analysis::{
     AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition, FirstSequence,
