@@ -26,7 +26,10 @@ use crate::materialization::{
     MaterializedNodeBody, MaterializedPrattLed, MaterializedPrattLedPosition, MaterializedPrattNud,
     MaterializedPrattNudPosition, MaterializedPrattVariant, MaterializedVariant,
 };
-use crate::resolution::{ResolvedFieldStyle, ResolvedNode, ResolvedNodeBody};
+use crate::resolution::{
+    ResolvedFieldId, ResolvedFieldStyle, ResolvedGenericArgument, ResolvedNode, ResolvedNodeBody,
+    ResolvedType, ResolvedTypeKind, SemanticTarget,
+};
 use crate::source_model::{ConfiguredTraitRecipe, PrettySpacing, TokenDefinitionKind};
 use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, span_range};
 use crate::{AtomExpression, FirstPosition, KindSet, SiteId, TextEquivalence, TextPredicate};
@@ -252,8 +255,17 @@ struct NodeParsePlan {
     generics: Generics,
     input_lifetime: syn::Lifetime,
     body: NodeBodyPlan,
+    parse_applications: Vec<NodeApplicationParsePlan>,
     capture: PlannedCapturePolicy,
     configured_traits: Vec<ConfiguredTraitRecipe>,
+}
+
+#[derive(Clone, Debug)]
+struct NodeApplicationParsePlan {
+    parse_index: usize,
+    ty: Type,
+    input_lifetime: syn::Lifetime,
+    body: NodeBodyPlan,
 }
 
 #[derive(Clone, Debug)]
@@ -379,6 +391,7 @@ enum ElementParseKind {
         capture: PlannedCapturePolicy,
         spelling: String,
         spacing: PrettySpacing,
+        accessor: Ident,
     },
     Semantic {
         field: FieldPlan,
@@ -395,6 +408,7 @@ enum ElementParseKind {
 
 #[derive(Clone, Debug)]
 struct FieldPlan {
+    source: ResolvedFieldId,
     ident: Option<Ident>,
     index: usize,
     accessor: Option<Ident>,
@@ -941,12 +955,12 @@ impl EmissionPlan {
                 .iter()
                 .filter(|application| application.node == node.id)
                 .collect::<Vec<_>>();
-            let [application] = applications.as_slice() else {
+            if applications.is_empty() {
                 return Err(format!(
-                    "Node `{}` must have exactly one materialized application before compound emission",
+                    "Node `{}` lacks a materialized application before compound emission",
                     node.ident
                 ));
-            };
+            }
             let configured_traits = lowered
                 .source_modeled
                 .source_model()
@@ -959,20 +973,55 @@ impl EmissionPlan {
                 .iter()
                 .map(|selection| selection.recipe)
                 .collect();
-            let mut planned = plan_node(
-                node,
-                application,
-                lowered,
-                decisions,
-                kind_count,
-                &mut instrumentation,
-            )?;
+            let authored_lifetimes = node
+                .generics
+                .lifetimes()
+                .map(|parameter| parameter.lifetime.clone())
+                .collect::<Vec<_>>();
+            let mut application_plans = Vec::new();
+            let mut source_plan = None;
+            for application in applications {
+                let planned = plan_node(
+                    node,
+                    application,
+                    lowered,
+                    decisions,
+                    kind_count,
+                    &mut instrumentation,
+                )?;
+                application_plans.push(NodeApplicationParsePlan {
+                    parse_index: 0,
+                    ty: materialized_application_type(
+                        application,
+                        &authored_lifetimes,
+                        lowered,
+                        &planned.input_lifetime,
+                    )?,
+                    input_lifetime: planned.input_lifetime.clone(),
+                    body: planned.body.clone(),
+                });
+                if source_plan.is_none() {
+                    source_plan = Some(planned);
+                }
+            }
+            let mut planned = source_plan
+                .ok_or_else(|| format!("Node `{}` lacks an application plan", node.ident))?;
+            planned.body = structural_body(node, &application_plans)?;
+            planned.parse_applications.append(&mut application_plans);
             planned.configured_traits = configured_traits;
             nodes.push(planned);
         }
+        let mut next_parse_index = 0;
+        for node in &mut nodes {
+            for application in &mut node.parse_applications {
+                application.parse_index = next_parse_index;
+                next_parse_index += 1;
+            }
+        }
         let frozen_dispatch_sequences = nodes
             .iter()
-            .filter_map(|node| match &node.body {
+            .flat_map(|node| &node.parse_applications)
+            .filter_map(|application| match &application.body {
                 NodeBodyPlan::Enum { dispatch, .. } => Some(dispatch.frozen_sequence_count),
                 NodeBodyPlan::Struct { .. } => None,
                 NodeBodyPlan::Pratt(pratt) => Some(
@@ -1289,24 +1338,26 @@ impl EmissionPlan {
         self.validate_plan_families()?;
         let mut frozen_nodes = 0;
         for node in &self.nodes {
-            match &node.body {
-                NodeBodyPlan::Enum { variants, dispatch } => {
-                    if dispatch.frozen_sequence_count == 0 {
-                        return Err(
-                            "the emitted predictive plan has no frozen sequences".to_owned()
-                        );
+            for application in &node.parse_applications {
+                match &application.body {
+                    NodeBodyPlan::Enum { variants, dispatch } => {
+                        if dispatch.frozen_sequence_count == 0 {
+                            return Err(
+                                "the emitted predictive plan has no frozen sequences".to_owned()
+                            );
+                        }
+                        frozen_nodes += validate_predictive_dispatch(dispatch, variants.len())?;
                     }
-                    frozen_nodes += validate_predictive_dispatch(dispatch, variants.len())?;
+                    NodeBodyPlan::Pratt(pratt) => {
+                        pratt.validate()?;
+                        frozen_nodes += pratt.nud_dispatch.frozen_node_count;
+                        frozen_nodes += pratt
+                            .led_dispatch
+                            .as_ref()
+                            .map_or(0, |dispatch| dispatch.frozen_node_count);
+                    }
+                    NodeBodyPlan::Struct { .. } => {}
                 }
-                NodeBodyPlan::Pratt(pratt) => {
-                    pratt.validate()?;
-                    frozen_nodes += pratt.nud_dispatch.frozen_node_count;
-                    frozen_nodes += pratt
-                        .led_dispatch
-                        .as_ref()
-                        .map_or(0, |dispatch| dispatch.frozen_node_count);
-                }
-                NodeBodyPlan::Struct { .. } => {}
             }
         }
         if self.instrumentation.frozen_dispatch_nodes_consumed != frozen_nodes
@@ -2463,6 +2514,7 @@ fn plan_node(
             GenericParam::Lifetime(parameter) => Some(parameter.lifetime.clone()),
             GenericParam::Type(_) | GenericParam::Const(_) => None,
         })
+        .or_else(|| application_input_lifetime(application))
         .unwrap_or_else(|| syn::parse_quote!('__recursa_input));
 
     let body = match (
@@ -2654,7 +2706,6 @@ fn plan_node(
             ));
         }
     };
-    validate_accessor_names(node, &body)?;
     Ok(NodeParsePlan {
         semantic_key: node.key.segments.join("::"),
         module: node.module,
@@ -2669,9 +2720,286 @@ fn plan_node(
         generics: node.generics.clone(),
         input_lifetime,
         body,
+        parse_applications: Vec::new(),
         capture: inherited_capture.into(),
         configured_traits: Vec::new(),
     })
+}
+
+fn structural_body(
+    node: &ResolvedNode,
+    applications: &[NodeApplicationParsePlan],
+) -> Result<NodeBodyPlan, String> {
+    let mut body = applications
+        .first()
+        .ok_or_else(|| format!("Node `{}` lacks an application plan", node.ident))?
+        .body
+        .clone();
+    let mut terminals = BTreeMap::<usize, BTreeSet<String>>::new();
+    for application in applications {
+        for_each_element(&application.body, &mut |element| {
+            if let ElementParseKind::Semantic {
+                field, terminal, ..
+            } = &element.kind
+            {
+                terminals
+                    .entry(field.source.index())
+                    .or_default()
+                    .insert(terminal.to_token_stream().to_string());
+            }
+        });
+    }
+    for_each_element_mut(&mut body, &mut |element| {
+        let ElementParseKind::Semantic {
+            field,
+            terminal,
+            wrappers,
+            ..
+        } = &mut element.kind
+        else {
+            return Ok(());
+        };
+        let source = node
+            .fields
+            .iter()
+            .find(|candidate| candidate.id == field.source)
+            .ok_or_else(|| "planned field has no authored source field".to_owned())?;
+        if terminals
+            .get(&field.source.index())
+            .is_some_and(|types| types.len() > 1)
+            || resolved_type_uses_generic_parameter(&source.ty)
+        {
+            **terminal = authored_terminal_type(&source.syntax.ty, wrappers)?;
+        }
+        Ok(())
+    })?;
+    disambiguate_fixed_accessors(&mut body)?;
+    validate_accessor_names(node, &body)?;
+    Ok(body)
+}
+
+fn resolved_type_uses_generic_parameter(ty: &ResolvedType) -> bool {
+    match &ty.kind {
+        ResolvedTypeKind::Semantic {
+            target, arguments, ..
+        } => {
+            matches!(target, SemanticTarget::GenericParameter(_))
+                || arguments.iter().any(|argument| match argument {
+                    ResolvedGenericArgument::Type(ty) => resolved_type_uses_generic_parameter(ty),
+                    ResolvedGenericArgument::Lifetime(_)
+                    | ResolvedGenericArgument::Unsupported(_) => false,
+                })
+        }
+        ResolvedTypeKind::Group(inner)
+        | ResolvedTypeKind::Parenthesized(inner)
+        | ResolvedTypeKind::Reference(inner) => resolved_type_uses_generic_parameter(inner),
+        ResolvedTypeKind::Tuple(elements) => {
+            elements.iter().any(resolved_type_uses_generic_parameter)
+        }
+        ResolvedTypeKind::Unsupported => false,
+    }
+}
+
+fn for_each_element(body: &NodeBodyPlan, visit: &mut impl FnMut(&ElementParsePlan)) {
+    match body {
+        NodeBodyPlan::Struct { elements, .. } => elements.iter().for_each(visit),
+        NodeBodyPlan::Enum { variants, .. } => variants
+            .iter()
+            .flat_map(|variant| &variant.elements)
+            .for_each(visit),
+        NodeBodyPlan::Pratt(pratt) => {
+            for branch in &pratt.nud {
+                branch.variant.elements.iter().for_each(&mut *visit);
+            }
+            for branch in &pratt.led {
+                visit(&branch.lhs);
+                branch.variant.elements.iter().for_each(&mut *visit);
+            }
+        }
+    }
+}
+
+fn for_each_element_mut(
+    body: &mut NodeBodyPlan,
+    visit: &mut impl FnMut(&mut ElementParsePlan) -> Result<(), String>,
+) -> Result<(), String> {
+    match body {
+        NodeBodyPlan::Struct { elements, .. } => {
+            for element in elements {
+                visit(element)?;
+            }
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            for variant in variants {
+                for element in &mut variant.elements {
+                    visit(element)?;
+                }
+            }
+        }
+        NodeBodyPlan::Pratt(pratt) => {
+            for branch in &mut pratt.nud {
+                for element in &mut branch.variant.elements {
+                    visit(element)?;
+                }
+            }
+            for branch in &mut pratt.led {
+                visit(&mut branch.lhs)?;
+                for element in &mut branch.variant.elements {
+                    visit(element)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn authored_terminal_type(authored: &Type, wrappers: &[FieldWrapper]) -> Result<Type, String> {
+    fn ungroup(ty: &Type) -> &Type {
+        match ty {
+            Type::Group(group) => ungroup(&group.elem),
+            Type::Paren(paren) => ungroup(&paren.elem),
+            _ => ty,
+        }
+    }
+
+    let mut terminal = authored.clone();
+    for wrapper in wrappers {
+        let expected = match wrapper {
+            FieldWrapper::Boxed => "Box",
+            FieldWrapper::Optional => "Option",
+            FieldWrapper::ZeroOrMore => "Vec",
+            FieldWrapper::OneOrMore => "Vec1",
+        };
+        let Type::Path(path) = ungroup(&terminal) else {
+            return Err(format!(
+                "authored generic field wrapper `{expected}` is not a type path"
+            ));
+        };
+        let segment = path
+            .path
+            .segments
+            .last()
+            .ok_or_else(|| "authored generic field type path is empty".to_owned())?;
+        if segment.ident.unraw() != expected {
+            return Err(format!(
+                "authored generic field expected `{expected}`, found `{}`",
+                segment.ident
+            ));
+        }
+        let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+            return Err(format!("authored `{expected}` field has no type argument"));
+        };
+        terminal = arguments
+            .args
+            .iter()
+            .find_map(|argument| match argument {
+                GenericArgument::Type(ty) => Some(ty.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| format!("authored `{expected}` field has no type argument"))?;
+    }
+    Ok(terminal)
+}
+
+fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<(), String> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for_each_element(body, &mut |element| {
+        let name = match &element.kind {
+            ElementParseKind::Fixed { accessor, .. } => Some(accessor.unraw().to_string()),
+            ElementParseKind::Semantic { field, .. } => field
+                .accessor
+                .as_ref()
+                .map(|accessor| accessor.unraw().to_string()),
+        };
+        if let Some(name) = name {
+            *counts.entry(name).or_default() += 1;
+        }
+    });
+    let mut occupied = counts
+        .iter()
+        .filter_map(|(name, count)| (*count == 1).then_some(name.clone()))
+        .collect::<BTreeSet<_>>();
+
+    fn qualify(
+        elements: &mut [ElementParsePlan],
+        variant: Option<&Ident>,
+        counts: &BTreeMap<String, usize>,
+        occupied: &mut BTreeSet<String>,
+    ) -> Result<(), String> {
+        for (index, element) in elements.iter_mut().enumerate() {
+            let ElementParseKind::Fixed { accessor, .. } = &mut element.kind else {
+                continue;
+            };
+            let original = accessor.unraw().to_string();
+            if counts.get(&original).copied().unwrap_or(0) <= 1 {
+                continue;
+            }
+            let prefix = variant.map_or_else(
+                || "fixed".to_owned(),
+                |variant| snake_case(&variant.unraw().to_string()),
+            );
+            let mut candidate = format!("{prefix}_{original}");
+            if occupied.contains(&candidate) {
+                candidate = format!("{prefix}_element_{index}_{original}");
+            }
+            let mut suffix = 2;
+            while occupied.contains(&candidate) {
+                candidate = format!("{prefix}_element_{index}_{suffix}_{original}");
+                suffix += 1;
+            }
+            *accessor = emitted_ident(&candidate)?;
+            occupied.insert(candidate);
+        }
+        Ok(())
+    }
+
+    match body {
+        NodeBodyPlan::Struct { elements, .. } => qualify(elements, None, &counts, &mut occupied)?,
+        NodeBodyPlan::Enum { variants, .. } => {
+            for variant in variants {
+                qualify(
+                    &mut variant.elements,
+                    Some(&variant.ident),
+                    &counts,
+                    &mut occupied,
+                )?;
+            }
+        }
+        NodeBodyPlan::Pratt(pratt) => {
+            for branch in &mut pratt.nud {
+                qualify(
+                    &mut branch.variant.elements,
+                    Some(&branch.variant.ident),
+                    &counts,
+                    &mut occupied,
+                )?;
+            }
+            for branch in &mut pratt.led {
+                qualify(
+                    &mut branch.variant.elements,
+                    Some(&branch.variant.ident),
+                    &counts,
+                    &mut occupied,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn application_input_lifetime(application: &MaterializedNodeApplication) -> Option<syn::Lifetime> {
+    fn first(closed: &ClosedType) -> Option<syn::Lifetime> {
+        match closed {
+            ClosedType::Node(node) => node.lifetimes.first().cloned(),
+            ClosedType::Boxed(inner)
+            | ClosedType::Optional(inner)
+            | ClosedType::ZeroOrMore(inner)
+            | ClosedType::OneOrMore(inner) => first(inner),
+            ClosedType::ContentToken(_) => None,
+        }
+    }
+
+    application.type_arguments.iter().find_map(first)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3044,6 +3372,7 @@ fn plan_pratt_lhs(
         metadata_name: format!("{}_{}", variant_name, base.unraw()),
         kind: ElementParseKind::Semantic {
             field: FieldPlan {
+                source: resolved_field.id,
                 ident: resolved_field.syntax.ident.clone(),
                 index: field_index,
                 accessor: Some(accessor),
@@ -3118,6 +3447,7 @@ fn plan_elements(
                     return Err("a fixed element has a dynamic failure recipe".to_owned());
                 };
                 let name = fixed_element_name(node, token_use, definition, fixed);
+                let accessor = fixed_accessor_ident(&name)?;
                 let capture = fixed_element_field(node, token_use)
                     .and_then(|field| field.capture)
                     .map(PlannedCapturePolicy::from)
@@ -3132,6 +3462,7 @@ fn plan_elements(
                             lowered.grammar.text_equivalence,
                         ),
                         spacing: fixed.pretty_spacing,
+                        accessor,
                     },
                 })
             }
@@ -3227,6 +3558,7 @@ fn plan_elements(
                     metadata_name,
                     kind: ElementParseKind::Semantic {
                         field: FieldPlan {
+                            source: resolved_field.id,
                             ident: resolved_field.syntax.ident.clone(),
                             index: field_index,
                             accessor: Some({
@@ -3719,44 +4051,12 @@ fn terminal_type(
         | ClosedType::Optional(inner)
         | ClosedType::ZeroOrMore(inner)
         | ClosedType::OneOrMore(inner) => terminal_type(inner, lowered, input_lifetime),
-        ClosedType::Node(node_use) => {
-            let application = &lowered.applications[node_use.application.index()];
-            let mut path =
-                syn::parse_str::<syn::Path>(&format!("crate::{}", application.display_name))
-                    .map_err(|error| {
-                        format!(
-                            "materialized terminal `{}` is not a Rust type path: {error}",
-                            application.display_name
-                        )
-                    })?;
-            if !node_use.lifetimes.is_empty() {
-                let segment = path
-                    .segments
-                    .last_mut()
-                    .ok_or_else(|| "materialized terminal path is empty".to_owned())?;
-                let mut arguments = syn::punctuated::Punctuated::new();
-                for lifetime in &node_use.lifetimes {
-                    arguments.push(GenericArgument::Lifetime(lifetime.clone()));
-                }
-                match &segment.arguments {
-                    PathArguments::None => {}
-                    PathArguments::AngleBracketed(existing) => {
-                        arguments.extend(existing.args.clone());
-                    }
-                    PathArguments::Parenthesized(_) => {
-                        return Err("materialized terminal uses parenthesized arguments".to_owned());
-                    }
-                }
-                segment.arguments =
-                    PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
-                        colon2_token: None,
-                        lt_token: Default::default(),
-                        args: arguments,
-                        gt_token: Default::default(),
-                    });
-            }
-            Ok(Type::Path(syn::TypePath { qself: None, path }))
-        }
+        ClosedType::Node(node_use) => materialized_application_type(
+            &lowered.applications[node_use.application.index()],
+            &node_use.lifetimes,
+            lowered,
+            input_lifetime,
+        ),
         ClosedType::ContentToken(token) => {
             let mut path: syn::Path = syn::parse_quote!(crate);
             for segment in &lowered
@@ -3780,6 +4080,101 @@ fn terminal_type(
             Ok(Type::Path(syn::TypePath { qself: None, path }))
         }
     }
+}
+
+fn materialized_application_type(
+    application: &MaterializedNodeApplication,
+    lifetimes: &[syn::Lifetime],
+    lowered: &crate::materialization::LoweredGrammar,
+    input_lifetime: &syn::Lifetime,
+) -> Result<Type, String> {
+    let resolved = lowered.source_modeled.resolved();
+    let node = &resolved.nodes[application.node.index()];
+    let mut path: syn::Path = syn::parse_quote!(crate);
+    for segment in &node.key.segments {
+        path.segments
+            .push(syn::PathSegment::from(emitted_ident(segment)?));
+    }
+    let segment = path
+        .segments
+        .last_mut()
+        .ok_or_else(|| "materialized application path is empty".to_owned())?;
+    let mut lifetime_arguments = lifetimes.iter();
+    let mut type_arguments = application.type_arguments.iter();
+    let mut arguments = syn::punctuated::Punctuated::new();
+    for parameter in &node.generics.params {
+        match parameter {
+            GenericParam::Lifetime(_) => {
+                let lifetime = lifetime_arguments.next().ok_or_else(|| {
+                    format!(
+                        "materialized application `{}` lacks an authored lifetime argument",
+                        application.display_name
+                    )
+                })?;
+                arguments.push(GenericArgument::Lifetime(lifetime.clone()));
+            }
+            GenericParam::Type(_) => {
+                let argument = type_arguments.next().ok_or_else(|| {
+                    format!(
+                        "materialized application `{}` lacks a closed type argument",
+                        application.display_name
+                    )
+                })?;
+                arguments.push(GenericArgument::Type(closed_type(
+                    argument,
+                    lowered,
+                    input_lifetime,
+                )?));
+            }
+            GenericParam::Const(_) => {
+                return Err("const-generic materialized applications cannot be emitted".to_owned());
+            }
+        }
+    }
+    if lifetime_arguments.next().is_some() || type_arguments.next().is_some() {
+        return Err(format!(
+            "materialized application `{}` has excess generic arguments",
+            application.display_name
+        ));
+    }
+    if !arguments.is_empty() {
+        segment.arguments = PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+            colon2_token: None,
+            lt_token: Default::default(),
+            args: arguments,
+            gt_token: Default::default(),
+        });
+    }
+    Ok(Type::Path(syn::TypePath { qself: None, path }))
+}
+
+fn closed_type(
+    closed: &ClosedType,
+    lowered: &crate::materialization::LoweredGrammar,
+    input_lifetime: &syn::Lifetime,
+) -> Result<Type, String> {
+    let facade = emitted_ident(&lowered.source_modeled.resolved().build_inputs.facade.ident)?;
+    Ok(match closed {
+        ClosedType::Node(_) | ClosedType::ContentToken(_) => {
+            terminal_type(closed, lowered, input_lifetime)?
+        }
+        ClosedType::Boxed(inner) => {
+            let inner = closed_type(inner, lowered, input_lifetime)?;
+            syn::parse_quote!(Box<#inner>)
+        }
+        ClosedType::Optional(inner) => {
+            let inner = closed_type(inner, lowered, input_lifetime)?;
+            syn::parse_quote!(Option<#inner>)
+        }
+        ClosedType::ZeroOrMore(inner) => {
+            let inner = closed_type(inner, lowered, input_lifetime)?;
+            syn::parse_quote!(Vec<#inner>)
+        }
+        ClosedType::OneOrMore(inner) => {
+            let inner = closed_type(inner, lowered, input_lifetime)?;
+            syn::parse_quote!(#facade::Vec1<#inner>)
+        }
+    })
 }
 
 fn planned_follow(
@@ -3818,9 +4213,7 @@ fn validate_accessor_names(node: &ResolvedNode, body: &NodeBodyPlan) -> Result<(
     let mut names = BTreeSet::new();
     let mut check = |element: &ElementParsePlan| -> Result<(), String> {
         let name = match &element.kind {
-            ElementParseKind::Fixed { .. } => fixed_accessor_ident(&element.metadata_name)?
-                .unraw()
-                .to_string(),
+            ElementParseKind::Fixed { accessor, .. } => accessor.unraw().to_string(),
             ElementParseKind::Semantic { field, .. } => {
                 let Some(accessor) = &field.accessor else {
                     return Ok(());
@@ -5366,18 +5759,6 @@ fn render_node(
     let (view_impl_generics, view_type_generics, view_where_clause) =
         view_generics.split_for_impl();
     let view_application = quote!(#view_ident<'view #(, #generic_arguments)*>);
-    let mut parse_generics = generics.clone();
-    if !generics
-        .params
-        .iter()
-        .any(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
-    {
-        parse_generics
-            .params
-            .insert(0, syn::parse_quote!('__recursa_input));
-    }
-    parse_generics.params.push(syn::parse_quote!(A));
-    let (parse_impl_generics, _, parse_where_clause) = parse_generics.split_for_impl();
     let input_lifetime = &node.input_lifetime;
     let inherent_method_generics = if generics
         .params
@@ -5386,31 +5767,16 @@ fn render_node(
     {
         quote!(<A>)
     } else {
-        quote!(<'__recursa_input, A>)
+        quote!(<#input_lifetime, A>)
     };
-    let node_capture = node.capture.render(facade);
     let metadata = render_metadata(plan, node, node_index);
     let accessors = render_accessors(plan, node);
     let span_elements = render_span_elements(node, node_index);
-    let planned_parse_body = render_node_parse_body(plan, node, node_index, instrumentation);
-    let (parse_body, pratt_helper) = if matches!(&node.body, NodeBodyPlan::Pratt(_)) {
-        (
-            quote!(Self::__recursa_parse_bp(context, 0)),
-            quote! {
-                fn __recursa_parse_bp #inherent_method_generics(
-                    context: &mut #facade::__private::ParseContext<'_, #input_lifetime, A>,
-                    min_bp: u8,
-                ) -> Result<
-                    #facade::__private::ParsedNode<Self>,
-                    #facade::ParseError,
-                > {
-                    #planned_parse_body
-                }
-            },
-        )
-    } else {
-        (planned_parse_body, quote!())
-    };
+    let parse_implementations = node
+        .parse_applications
+        .iter()
+        .map(|application| render_node_parse_application(plan, node, application, instrumentation))
+        .collect::<Vec<_>>();
     let token_bindings = if plan.nodes[..node_index]
         .iter()
         .any(|candidate| candidate.module == node.module)
@@ -5439,9 +5805,16 @@ fn render_node(
     #[cfg(not(feature = "diagrams"))]
     let diagram_attribute = proc_macro2::TokenStream::new();
     let view_pretty = plan.pretty.nodes[node_index].is_some().then(|| {
+        let mut pretty_generics = view_generics.clone();
+        pretty_generics
+            .make_where_clause()
+            .predicates
+            .push(syn::parse_quote!(#node_ident #type_generics: #facade::Pretty));
+        let (pretty_impl_generics, pretty_type_generics, pretty_where_clause) =
+            pretty_generics.split_for_impl();
         quote! {
-            impl #view_impl_generics #facade::Pretty
-                for #view_ident #view_type_generics #view_where_clause
+            impl #pretty_impl_generics #facade::Pretty
+                for #view_ident #pretty_type_generics #pretty_where_clause
             {
                 fn pretty(
                     &self,
@@ -5506,8 +5879,91 @@ fn render_node(
             ) -> Self::View<'view> { #view_ident { value: self, cursor } }
         }
 
+        #(#parse_implementations)*
+
+        #configured_traits
+
+        #diagram_attribute
+        #[allow(dead_code)]
+        impl #impl_generics #node_ident #type_generics #where_clause {
+            pub fn parse #inherent_method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
+            where
+                Self: #facade::Parse<
+                    #module_anchor::Input<#input_lifetime, A>,
+                    Output = #facade::Parsed<#input_lifetime, Self>,
+                >,
+            {
+                <Self as #facade::Parse<#module_anchor::Input<#input_lifetime, A>>>::parse(input)
+            }
+            pub fn parse_spanned #inherent_method_generics(
+                input: &mut #module_anchor::Input<#input_lifetime, A>,
+            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError>
+            where
+                Self: #facade::__private::Parse<#input_lifetime, A>,
+            {
+                #facade::__private::parse_spanned(&mut input.inner)
+            }
+        }
+    }
+}
+
+fn render_node_parse_application(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    application: &NodeApplicationParsePlan,
+    instrumentation: &mut RenderInstrumentation,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
+    let input_lifetime = &application.input_lifetime;
+    let ty = &application.ty;
+    let mut parse_generics = Generics::default();
+    let mut helper_generics = Generics::default();
+    if input_lifetime.ident != "static" {
+        let lifetime = input_lifetime.clone();
+        parse_generics.params.push(syn::parse_quote!(#lifetime));
+        helper_generics.params.push(syn::parse_quote!(#lifetime));
+    }
+    parse_generics.params.push(syn::parse_quote!(A));
+    let (parse_impl_generics, _, parse_where_clause) = parse_generics.split_for_impl();
+    let (helper_impl_generics, _, helper_where_clause) = helper_generics.split_for_impl();
+    let node_capture = node.capture.render(facade);
+    let mut application_node = node.clone();
+    application_node.body = application.body.clone();
+    let planned_parse_body = render_node_parse_body(
+        plan,
+        &application_node,
+        application.parse_index,
+        instrumentation,
+    );
+    let (parse_body, pratt_helper) = if matches!(&application.body, NodeBodyPlan::Pratt(_)) {
+        (
+            quote!(Self::__recursa_parse_bp(context, 0)),
+            quote! {
+                impl #helper_impl_generics #ty #helper_where_clause {
+                    fn __recursa_parse_bp<A>(
+                        context: &mut #facade::__private::ParseContext<'_, #input_lifetime, A>,
+                        min_bp: u8,
+                    ) -> Result<
+                        #facade::__private::ParsedNode<Self>,
+                        #facade::ParseError,
+                    > {
+                        #planned_parse_body
+                    }
+                }
+            },
+        )
+    } else {
+        (planned_parse_body, quote!())
+    };
+
+    quote! {
+        #pratt_helper
+
         impl #parse_impl_generics #facade::__private::Parse<#input_lifetime, A>
-            for #node_ident #type_generics #parse_where_clause
+            for #ty #parse_where_clause
         {
             const CAPTURE_POLICY: #facade::__private::CapturePolicy = #node_capture;
             fn grammar() -> &'static #facade::__private::GrammarInfo {
@@ -5525,36 +5981,17 @@ fn render_node(
 
         impl #parse_impl_generics
             #facade::__private::ParseSealed<#module_anchor::Input<#input_lifetime, A>>
-            for #node_ident #type_generics #parse_where_clause
+            for #ty #parse_where_clause
         {}
 
         impl #parse_impl_generics #facade::Parse<#module_anchor::Input<#input_lifetime, A>>
-            for #node_ident #type_generics #parse_where_clause
+            for #ty #parse_where_clause
         {
             type Output = #facade::Parsed<#input_lifetime, Self>;
             fn parse(
                 input: &mut #module_anchor::Input<#input_lifetime, A>,
             ) -> Result<Self::Output, #facade::ParseError> {
                 #facade::__private::parse(&mut input.inner)
-            }
-        }
-
-        #configured_traits
-
-        #diagram_attribute
-        #[allow(dead_code)]
-        impl #impl_generics #node_ident #type_generics #where_clause {
-            #pratt_helper
-
-            pub fn parse #inherent_method_generics(
-                input: &mut #module_anchor::Input<#input_lifetime, A>,
-            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError> {
-                <Self as #facade::Parse<#module_anchor::Input<#input_lifetime, A>>>::parse(input)
-            }
-            pub fn parse_spanned #inherent_method_generics(
-                input: &mut #module_anchor::Input<#input_lifetime, A>,
-            ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError> {
-                #facade::__private::parse_spanned(&mut input.inner)
             }
         }
     }
@@ -7237,9 +7674,8 @@ fn render_accessor(
     variant: Option<(&Ident, &Ident, ResolvedFieldStyle)>,
 ) -> Option<proc_macro2::TokenStream> {
     match &element.kind {
-        ElementParseKind::Fixed { .. } => {
-            let method = fixed_accessor_ident(&element.metadata_name)
-                .expect("fixed accessor names were validated during planning");
+        ElementParseKind::Fixed { accessor, .. } => {
+            let method = accessor;
             let active = variant.map(|(node, variant, style)| {
                 let pattern = variant_pattern(node, variant, style);
                 quote! {
@@ -7322,7 +7758,10 @@ fn render_accessor(
                 Some(quote! {
                     pub fn #accessor(
                         &self,
-                    ) -> Option<impl #facade::NodeView<Value = #terminal> + 'view> {
+                    ) -> Option<impl #facade::NodeView<Value = #terminal> + 'view>
+                    where
+                        #terminal: #facade::__private::NodeViewFactory,
+                    {
                         match self.value {
                             #active_pattern => #value,
                             _ => None,
@@ -7336,7 +7775,10 @@ fn render_accessor(
                 Some(quote! {
                     pub fn #accessor(
                         &self,
-                    ) -> Option<impl #facade::NodeView<Value = #terminal> + 'view> {
+                    ) -> Option<impl #facade::NodeView<Value = #terminal> + 'view>
+                    where
+                        #terminal: #facade::__private::NodeViewFactory,
+                    {
                         #optional_reference.map(|value| {
                             #facade::__private::NodeViewFactory::view(
                                 value,
@@ -7352,7 +7794,10 @@ fn render_accessor(
                 Some(quote! {
                     pub fn #accessor(
                         &self,
-                    ) -> impl #facade::NodeView<Value = #terminal> + 'view {
+                    ) -> impl #facade::NodeView<Value = #terminal> + 'view
+                    where
+                        #terminal: #facade::__private::NodeViewFactory,
+                    {
                         #facade::__private::NodeViewFactory::view(
                             #reference,
                             #cursor,
@@ -7431,7 +7876,10 @@ fn render_repeated_accessor(
         quote! {
             pub fn #accessor(
                 &self,
-            ) -> Option<#facade::Repeated<'view, #terminal, #item_type>> {
+            ) -> Option<#facade::Repeated<'view, #terminal, #item_type>>
+            where
+                #terminal: #facade::__private::NodeViewFactory,
+            {
                 match self.value {
                     #active_pattern => #active_value,
                     _ => None,
@@ -7446,7 +7894,10 @@ fn render_repeated_accessor(
             quote! {
                 pub fn #accessor(
                     &self,
-                ) -> Option<#facade::Repeated<'view, #terminal, #item_type>> {
+                ) -> Option<#facade::Repeated<'view, #terminal, #item_type>>
+                where
+                    #terminal: #facade::__private::NodeViewFactory,
+                {
                     #collection.map(|collection| #repeated)
                 }
             }
@@ -7456,7 +7907,10 @@ fn render_repeated_accessor(
             quote! {
                 pub fn #accessor(
                     &self,
-                ) -> #facade::Repeated<'view, #terminal, #item_type> {
+                ) -> #facade::Repeated<'view, #terminal, #item_type>
+                where
+                    #terminal: #facade::__private::NodeViewFactory,
+                {
                     #repeated
                 }
             }
@@ -7491,9 +7945,7 @@ fn render_node_parse_body(
                 instrumentation,
             )
         }
-        NodeBodyPlan::Pratt(pratt) => {
-            render_pratt_parse(plan, node, node_index, pratt, instrumentation)
-        }
+        NodeBodyPlan::Pratt(pratt) => render_pratt_parse(plan, node_index, pratt, instrumentation),
     }
 }
 
@@ -7700,13 +8152,12 @@ fn render_predictive_selection(
 
 fn render_pratt_parse(
     plan: &EmissionPlan,
-    node: &NodeParsePlan,
     node_index: usize,
     pratt: &PrattParsePlan,
     instrumentation: &mut RenderInstrumentation,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
-    let owner = &node.ident;
+    let owner = quote!(Self);
     let expression_start = format_ident!("__recursa_expression_start");
     let mut expected_index = 2_000_000;
     let nud_follow_name = expected_static(node_index, 3_200_000, "pratt_nud_follow");
@@ -7734,7 +8185,7 @@ fn render_pratt_parse(
             variant.style,
             &variant.elements,
             variant.capture,
-            Some(owner),
+            Some(&owner),
         );
         quote!(Some(#index) => { #body? })
     });
@@ -7802,7 +8253,7 @@ fn render_pratt_parse(
             plan,
             node_index,
             metadata_index,
-            owner,
+            &owner,
             branch,
             &expression_start,
         );
@@ -7862,7 +8313,7 @@ fn render_pratt_led_parse(
     plan: &EmissionPlan,
     node_index: usize,
     variant_index: usize,
-    owner: &Ident,
+    owner: &proc_macro2::TokenStream,
     branch: &PrattLedParsePlan,
     expression_start: &Ident,
 ) -> proc_macro2::TokenStream {
@@ -7969,7 +8420,7 @@ fn render_sequence_parse(
     style: ResolvedFieldStyle,
     elements: &[ElementParsePlan],
     capture: Option<PlannedCapturePolicy>,
-    pratt_owner: Option<&Ident>,
+    pratt_owner: Option<&proc_macro2::TokenStream>,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let start = format_ident!("__recursa_start");
@@ -8065,7 +8516,7 @@ fn render_semantic_parse(
     container: &PlannedContainer,
     capture: PlannedCapturePolicy,
     child_capture: PlannedCapturePolicy,
-    pratt_owner: Option<&Ident>,
+    pratt_owner: Option<&proc_macro2::TokenStream>,
     pratt_min_bp: Option<u8>,
     attachment: Option<&FixedAttachmentParsePlan>,
 ) -> proc_macro2::TokenStream {
@@ -8235,7 +8686,7 @@ fn render_attachment_child(
     attachment: &FixedAttachmentParsePlan,
     outer_follow: &proc_macro2::TokenStream,
     child_capture: &proc_macro2::TokenStream,
-    pratt_owner: Option<&Ident>,
+    pratt_owner: Option<&proc_macro2::TokenStream>,
     pratt_min_bp: Option<u8>,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let facade = &plan.facade;
