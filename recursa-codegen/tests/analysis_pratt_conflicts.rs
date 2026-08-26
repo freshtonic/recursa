@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use recursa_codegen::{
-    AtomDescription, AtomExpression, ConflictRemedy, Declaration, DiagnosticCode,
+    AtomDescription, AtomExpression, ConflictRemedy, ContainerShape, Declaration, DiagnosticCode,
     GrammarDescription, KindDescription, KindId, Location, ParseSite, PrattPosition, PrattVariant,
-    SiteContainer, SourceId, TextPredicate, TypeDescription, TypeId, TypeShape, analyze,
+    SourceId, TextPredicate, TypeDescription, TypeId, TypeShape, analyze,
 };
 
 struct Builder {
@@ -19,7 +19,12 @@ impl Builder {
 
     fn with_lookahead(name: &str, kinds: &[&str], max_lookahead: usize) -> Self {
         let mut builder = Self {
-            grammar: GrammarDescription::new(name, kinds.len(), max_lookahead),
+            grammar: GrammarDescription::new(
+                name,
+                kinds.len(),
+                max_lookahead,
+                recursa_codegen::TextEquivalence::AsciiInsensitive,
+            ),
             next_byte: 0,
             atoms: Vec::new(),
         };
@@ -68,7 +73,7 @@ impl Builder {
                     owner,
                     *target,
                     declaration,
-                    SiteContainer::Direct,
+                    ContainerShape::Direct,
                 ))
             })
             .collect();
@@ -111,7 +116,7 @@ impl Builder {
                     owner,
                     *target,
                     declaration,
-                    SiteContainer::Direct,
+                    ContainerShape::Direct,
                 ));
                 let mut sites = vec![operator];
                 if matches!(
@@ -122,7 +127,7 @@ impl Builder {
                         owner,
                         owner,
                         declaration,
-                        SiteContainer::Boxed,
+                        ContainerShape::boxed(ContainerShape::Direct),
                     )));
                 }
                 PrattVariant {

@@ -1,10 +1,16 @@
 use recursa_codegen::{
-    Alternative, AtomDescription, AtomExpression, Declaration, GrammarDescription, KindDescription,
-    KindId, Location, ParseSite, SiteContainer, SourceId, TypeDescription, TypeShape, analyze,
+    Alternative, AtomDescription, AtomExpression, ContainerShape, Declaration, GrammarDescription,
+    KindDescription, KindId, Location, LocationId, ParseSite, RepetitionCardinality, SourceId,
+    TypeDescription, TypeId, TypeShape, analyze,
 };
 
 fn representative_grammar() -> GrammarDescription {
-    let mut grammar = GrammarDescription::new("representative", 2, 1);
+    let mut grammar = GrammarDescription::new(
+        "representative",
+        2,
+        1,
+        recursa_codegen::TextEquivalence::AsciiInsensitive,
+    );
 
     let source = SourceId::new(0);
     let number_location = grammar.push_location(Location::new(source, 0..6));
@@ -54,13 +60,13 @@ fn representative_grammar() -> GrammarDescription {
         list,
         item,
         item_decl,
-        SiteContainer::Optional,
+        ContainerShape::optional(ContainerShape::Direct),
     ));
     let required_comma = grammar.push_site(ParseSite::new(
         list,
         comma,
         comma_decl,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     assert_eq!(
         grammar.push_type(TypeDescription::new(
@@ -78,7 +84,12 @@ fn representative_grammar() -> GrammarDescription {
 }
 
 fn recursive_grammar() -> GrammarDescription {
-    let mut grammar = GrammarDescription::new("recursive", 2, 1);
+    let mut grammar = GrammarDescription::new(
+        "recursive",
+        2,
+        1,
+        recursa_codegen::TextEquivalence::AsciiInsensitive,
+    );
     let source = SourceId::new(0);
     let location = grammar.push_location(Location::new(source, 0..1));
     let number_decl = grammar.push_declaration(Declaration::new("NUMBER", location));
@@ -118,24 +129,29 @@ fn recursive_grammar() -> GrammarDescription {
 
     let node = grammar.next_type_id();
     let branch = recursa_codegen::TypeId::new(node.get() + 1);
-    let leaf_site = grammar.push_site(ParseSite::new(node, leaf, leaf_decl, SiteContainer::Direct));
+    let leaf_site = grammar.push_site(ParseSite::new(
+        node,
+        leaf,
+        leaf_decl,
+        ContainerShape::Direct,
+    ));
     let branch_site = grammar.push_site(ParseSite::new(
         node,
         branch,
         branch_decl,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     let comma_site = grammar.push_site(ParseSite::new(
         branch,
         comma_token,
         comma_decl,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     let recursive_site = grammar.push_site(ParseSite::new(
         branch,
         node,
         node_decl,
-        SiteContainer::Boxed,
+        ContainerShape::boxed(ContainerShape::Direct),
     ));
     assert_eq!(
         grammar.push_type(TypeDescription::new(
@@ -174,7 +190,11 @@ fn recursive_grammar() -> GrammarDescription {
 fn normalized_grammar_produces_first_and_nullable_facts() {
     let report = analyze(representative_grammar());
 
-    assert!(report.diagnostics.is_empty());
+    assert!(
+        report.diagnostics.is_empty(),
+        "unexpected diagnostics: {:#?}",
+        report.diagnostics,
+    );
     let output = report.output.expect("a clean grammar has semantic output");
     let item = output.first(recursa_codegen::TypeId::new(0)).unwrap();
     let list = output.first(recursa_codegen::TypeId::new(2)).unwrap();
@@ -248,4 +268,129 @@ fn nullable_sites_and_text_predicates_survive_the_analysis_seam() {
     let list = output.first(recursa_codegen::TypeId::new(2)).unwrap();
     assert_eq!(item.positions[0].text_predicate, Some(predicate));
     assert!(list.nullable);
+}
+
+#[test]
+fn recursive_container_shape_preserves_box_placement_and_optional_vec1_cardinality() {
+    let mut grammar = representative_grammar();
+    let shape = ContainerShape::Optional(Box::new(ContainerShape::Boxed(Box::new(
+        ContainerShape::Repeat {
+            element: Box::new(ContainerShape::Boxed(Box::new(ContainerShape::Direct))),
+            cardinality: RepetitionCardinality::OneOrMore,
+            separator: None,
+        },
+    ))));
+    grammar.sites[0].container = shape.clone();
+    let TypeShape::Sequence { sites } = &mut grammar.types[2].shape else {
+        panic!("fixture list is a sequence type");
+    };
+    sites.truncate(1);
+
+    let report = analyze(grammar.clone());
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity == recursa_codegen::Severity::Warning),
+        "unexpected diagnostics: {:#?}",
+        report.diagnostics,
+    );
+    assert_eq!(grammar.sites[0].container, shape);
+    let list = report
+        .output
+        .unwrap()
+        .first(TypeId::new(2))
+        .unwrap()
+        .clone();
+    assert!(list.nullable);
+    assert_eq!(
+        list.positions[0].kinds.iter().collect::<Vec<_>>(),
+        [KindId::new(0)],
+    );
+}
+
+#[test]
+fn unsupported_container_cardinality_is_rejected_before_analysis() {
+    let invalid_shapes = [
+        ContainerShape::optional(ContainerShape::optional(ContainerShape::Direct)),
+        ContainerShape::optional(ContainerShape::zero_or_more(ContainerShape::Direct, None)),
+        ContainerShape::zero_or_more(ContainerShape::optional(ContainerShape::Direct), None),
+        ContainerShape::zero_or_more(
+            ContainerShape::zero_or_more(ContainerShape::Direct, None),
+            None,
+        ),
+        ContainerShape::one_or_more(
+            ContainerShape::one_or_more(ContainerShape::Direct, None),
+            None,
+        ),
+    ];
+
+    for shape in invalid_shapes {
+        let mut grammar = representative_grammar();
+        grammar.sites[0].container = shape;
+
+        let report = analyze(grammar);
+
+        assert!(report.output.is_none());
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].code.as_str(), "RCA0001");
+        assert_eq!(
+            report.diagnostics[0].primary.location,
+            Some(LocationId::new(2))
+        );
+    }
+}
+
+#[test]
+fn every_supported_container_cardinality_reaches_first_and_nullable_analysis() {
+    let cases = [
+        (ContainerShape::Direct, false),
+        (
+            ContainerShape::boxed(ContainerShape::optional(ContainerShape::boxed(
+                ContainerShape::Direct,
+            ))),
+            true,
+        ),
+        (
+            ContainerShape::zero_or_more(ContainerShape::boxed(ContainerShape::Direct), None),
+            true,
+        ),
+        (
+            ContainerShape::boxed(ContainerShape::one_or_more(
+                ContainerShape::boxed(ContainerShape::Direct),
+                None,
+            )),
+            false,
+        ),
+        (
+            ContainerShape::optional(ContainerShape::boxed(ContainerShape::one_or_more(
+                ContainerShape::Direct,
+                None,
+            ))),
+            true,
+        ),
+    ];
+
+    for (shape, expected_nullable) in cases {
+        let mut grammar = representative_grammar();
+        grammar.sites[0].container = shape.clone();
+        let TypeShape::Sequence { sites } = &mut grammar.types[2].shape else {
+            panic!("fixture list is a sequence type");
+        };
+        sites.truncate(1);
+
+        let report = analyze(grammar.clone());
+
+        assert_eq!(grammar.sites[0].container, shape);
+        let output = report
+            .output
+            .expect("supported container has semantic output");
+        let first = output.first(TypeId::new(2)).unwrap();
+        assert_eq!(first.nullable, expected_nullable);
+        assert_eq!(
+            first.positions[0].kinds.iter().collect::<Vec<_>>(),
+            [KindId::new(0)],
+        );
+    }
 }

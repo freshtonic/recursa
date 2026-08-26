@@ -1,5 +1,5 @@
 use recursa_codegen::{
-    GrammarDescription, PrattPosition, PrattVariant, SiteContainer, TypeDescription, TypeId,
+    ContainerShape, GrammarDescription, PrattPosition, PrattVariant, TypeDescription, TypeId,
     TypeShape,
 };
 
@@ -58,7 +58,7 @@ pub fn grammar(reverse_variants: bool) -> GrammarDescription {
     let mut pratt_variants = Vec::new();
     for (name, target, position) in variants {
         let declaration = builder.declaration(name);
-        let site = builder.site(EXPR, target, declaration, SiteContainer::Direct);
+        let site = builder.site(EXPR, target, declaration, ContainerShape::Direct);
         let mut sites = vec![site];
         if matches!(
             position,
@@ -70,14 +70,24 @@ pub fn grammar(reverse_variants: bool) -> GrammarDescription {
                 _ => unreachable!("guarded Pratt operand position"),
             };
             let operand = builder.grammar.push_site(
-                recursa_codegen::ParseSite::new(EXPR, EXPR, declaration, SiteContainer::Boxed)
-                    .with_min_bp(min_bp),
+                recursa_codegen::ParseSite::new(
+                    EXPR,
+                    EXPR,
+                    declaration,
+                    ContainerShape::boxed(ContainerShape::Direct),
+                )
+                .with_min_bp(min_bp),
             );
             sites.push(operand);
         }
         if name == "Paren" {
-            sites.push(builder.site(EXPR, EXPR, declaration, SiteContainer::Boxed));
-            sites.push(builder.site(EXPR, RPAREN_TOK, declaration, SiteContainer::Direct));
+            sites.push(builder.site(
+                EXPR,
+                EXPR,
+                declaration,
+                ContainerShape::boxed(ContainerShape::Direct),
+            ));
+            sites.push(builder.site(EXPR, RPAREN_TOK, declaration, ContainerShape::Direct));
         }
         pratt_variants.push(PrattVariant {
             declaration,

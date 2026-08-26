@@ -1,7 +1,7 @@
 use recursa_codegen::{
-    Alternative, AtomDescription, AtomExpression, DeclId, Declaration, DiagnosticCode,
-    GrammarDescription, KindDescription, Location, ParseSite, PrattPosition, PrattVariant, Remedy,
-    Severity, SiteContainer, SourceId, TypeDescription, TypeId, TypeShape, analyze,
+    Alternative, AtomDescription, AtomExpression, ContainerShape, DeclId, Declaration,
+    DiagnosticCode, GrammarDescription, KindDescription, Location, ParseSite, PrattPosition,
+    PrattVariant, Remedy, Severity, SourceId, TypeDescription, TypeId, TypeShape, analyze,
 };
 
 fn declaration(grammar: &mut GrammarDescription, name: &str, start: u32) -> DeclId {
@@ -28,7 +28,12 @@ fn token(grammar: &mut GrammarDescription, type_name: &str, kind_name: &str, sta
 }
 
 fn left_recursive_through_box() -> GrammarDescription {
-    let mut grammar = GrammarDescription::new("left-recursive", 2, 1);
+    let mut grammar = GrammarDescription::new(
+        "left-recursive",
+        2,
+        1,
+        recursa_codegen::TextEquivalence::AsciiInsensitive,
+    );
     let plus = token(&mut grammar, "PlusTok", "Plus", 0);
     let literal = token(&mut grammar, "LitTok", "Lit", 2);
     let expr = TypeId::new(2);
@@ -45,17 +50,27 @@ fn left_recursive_through_box() -> GrammarDescription {
         expr,
         add,
         add_variant,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     let literal_site = grammar.push_site(ParseSite::new(
         expr,
         literal,
         literal_variant,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
-    let lhs = grammar.push_site(ParseSite::new(add, expr, lhs_decl, SiteContainer::Boxed));
-    let op = grammar.push_site(ParseSite::new(add, plus, op_decl, SiteContainer::Direct));
-    let rhs = grammar.push_site(ParseSite::new(add, expr, rhs_decl, SiteContainer::Boxed));
+    let lhs = grammar.push_site(ParseSite::new(
+        add,
+        expr,
+        lhs_decl,
+        ContainerShape::boxed(ContainerShape::Direct),
+    ));
+    let op = grammar.push_site(ParseSite::new(add, plus, op_decl, ContainerShape::Direct));
+    let rhs = grammar.push_site(ParseSite::new(
+        add,
+        expr,
+        rhs_decl,
+        ContainerShape::boxed(ContainerShape::Direct),
+    ));
     assert_eq!(
         grammar.push_type(TypeDescription::new(
             "E",
@@ -90,7 +105,12 @@ fn left_recursive_through_box() -> GrammarDescription {
 }
 
 fn mutually_left_recursive() -> GrammarDescription {
-    let mut grammar = GrammarDescription::new("mutual", 2, 1);
+    let mut grammar = GrammarDescription::new(
+        "mutual",
+        2,
+        1,
+        recursa_codegen::TextEquivalence::AsciiInsensitive,
+    );
     let tok1 = token(&mut grammar, "Tok1", "Tok1", 0);
     let tok2 = token(&mut grammar, "Tok2", "Tok2", 2);
     let a = TypeId::new(2);
@@ -106,21 +126,21 @@ fn mutually_left_recursive() -> GrammarDescription {
     let b_to_a = declaration(&mut grammar, "B::ViaA", 54);
     let a_wrap_to_a = declaration(&mut grammar, "AWrap.inner", 56);
 
-    let a_b_site = grammar.push_site(ParseSite::new(a, b_wrap, a_to_b, SiteContainer::Direct));
-    let a_tok_site = grammar.push_site(ParseSite::new(a, tok1, a_decl, SiteContainer::Direct));
+    let a_b_site = grammar.push_site(ParseSite::new(a, b_wrap, a_to_b, ContainerShape::Direct));
+    let a_tok_site = grammar.push_site(ParseSite::new(a, tok1, a_decl, ContainerShape::Direct));
     let b_wrap_site = grammar.push_site(ParseSite::new(
         b_wrap,
         b,
         b_wrap_to_b,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
-    let b_a_site = grammar.push_site(ParseSite::new(b, a_wrap, b_to_a, SiteContainer::Direct));
-    let b_tok_site = grammar.push_site(ParseSite::new(b, tok2, b_decl, SiteContainer::Direct));
+    let b_a_site = grammar.push_site(ParseSite::new(b, a_wrap, b_to_a, ContainerShape::Direct));
+    let b_tok_site = grammar.push_site(ParseSite::new(b, tok2, b_decl, ContainerShape::Direct));
     let a_wrap_site = grammar.push_site(ParseSite::new(
         a_wrap,
         a,
         a_wrap_to_a,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     assert_eq!(
         grammar.push_type(TypeDescription::new(
@@ -248,18 +268,28 @@ fn pratt_led_recursion_is_excluded_but_prefix_recursion_is_not() {
 }
 
 fn recursive_pratt(position: PrattPosition) -> GrammarDescription {
-    let mut grammar = GrammarDescription::new("pratt", 1, 1);
+    let mut grammar = GrammarDescription::new(
+        "pratt",
+        1,
+        1,
+        recursa_codegen::TextEquivalence::AsciiInsensitive,
+    );
     let atom = token(&mut grammar, "AtomTok", "Atom", 0);
     let expr = TypeId::new(1);
     let expr_decl = declaration(&mut grammar, "Expr", 10);
     let atom_decl = declaration(&mut grammar, "Expr::Atom", 20);
     let recursive_decl = declaration(&mut grammar, "Expr::Recursive", 30);
-    let atom_site = grammar.push_site(ParseSite::new(expr, atom, atom_decl, SiteContainer::Direct));
+    let atom_site = grammar.push_site(ParseSite::new(
+        expr,
+        atom,
+        atom_decl,
+        ContainerShape::Direct,
+    ));
     let recursive_site = grammar.push_site(ParseSite::new(
         expr,
         expr,
         recursive_decl,
-        SiteContainer::Boxed,
+        ContainerShape::boxed(ContainerShape::Direct),
     ));
     assert_eq!(
         grammar.push_type(TypeDescription::new(
@@ -308,7 +338,12 @@ fn invalid_references_are_reported_before_dependent_semantics() {
 
 #[test]
 fn independent_recursive_components_are_collected_in_source_order() {
-    let mut grammar = GrammarDescription::new("independent", 0, 1);
+    let mut grammar = GrammarDescription::new(
+        "independent",
+        0,
+        1,
+        recursa_codegen::TextEquivalence::AsciiInsensitive,
+    );
     let first = TypeId::new(0);
     let second = TypeId::new(1);
     let first_decl = declaration(&mut grammar, "First", 10);
@@ -317,13 +352,13 @@ fn independent_recursive_components_are_collected_in_source_order() {
         first,
         first,
         first_decl,
-        SiteContainer::Boxed,
+        ContainerShape::boxed(ContainerShape::Direct),
     ));
     let second_site = grammar.push_site(ParseSite::new(
         second,
         second,
         second_decl,
-        SiteContainer::Boxed,
+        ContainerShape::boxed(ContainerShape::Direct),
     ));
     grammar.push_type(TypeDescription::new(
         "First",
@@ -377,7 +412,12 @@ fn independent_structural_failures_are_collected_before_recursion_analysis() {
 
 #[test]
 fn independent_atom_membership_cycles_are_each_reported_once() {
-    let mut grammar = GrammarDescription::new("atom-cycles", 0, 1);
+    let mut grammar = GrammarDescription::new(
+        "atom-cycles",
+        0,
+        1,
+        recursa_codegen::TextEquivalence::AsciiInsensitive,
+    );
     let a_decl = declaration(&mut grammar, "A", 10);
     let b_decl = declaration(&mut grammar, "B", 12);
     let c_decl = declaration(&mut grammar, "C", 20);

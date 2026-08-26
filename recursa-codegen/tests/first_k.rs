@@ -1,6 +1,6 @@
 use recursa_codegen::{
-    Alternative, AtomDescription, AtomExpression, ConflictRemedy, Declaration, DiagnosticCode,
-    GrammarDescription, KindDescription, Location, ParseSite, SiteContainer, SourceId,
+    Alternative, AtomDescription, AtomExpression, ConflictRemedy, ContainerShape, Declaration,
+    DiagnosticCode, GrammarDescription, KindDescription, Location, ParseSite, SourceId,
     TypeDescription, TypeId, TypeShape, analyze,
 };
 
@@ -13,7 +13,12 @@ struct Builder {
 impl Builder {
     fn new(max_lookahead: usize, kinds: &[&str]) -> Self {
         let mut builder = Self {
-            grammar: GrammarDescription::new("first-k", kinds.len(), max_lookahead),
+            grammar: GrammarDescription::new(
+                "first-k",
+                kinds.len(),
+                max_lookahead,
+                recursa_codegen::TextEquivalence::AsciiInsensitive,
+            ),
             next_byte: 0,
             atoms: Vec::new(),
         };
@@ -74,12 +79,12 @@ impl Builder {
             name,
             &targets
                 .iter()
-                .map(|target| (*target, SiteContainer::Direct))
+                .map(|target| (*target, ContainerShape::Direct))
                 .collect::<Vec<_>>(),
         )
     }
 
-    fn sequence_with(&mut self, name: &str, targets: &[(TypeId, SiteContainer)]) -> TypeId {
+    fn sequence_with(&mut self, name: &str, targets: &[(TypeId, ContainerShape)]) -> TypeId {
         let owner = self.grammar.next_type_id();
         let declaration = self.declaration(name);
         let sites = targets
@@ -118,7 +123,7 @@ impl Builder {
                     owner,
                     *target,
                     alternative,
-                    SiteContainer::Direct,
+                    ContainerShape::Direct,
                 ));
                 Alternative {
                     declaration: alternative,
@@ -231,22 +236,22 @@ fn nullable_leading_tokens_produce_all_symbolic_first_two_sequences() {
     let print_statement = builder.sequence_with(
         "PrintStatement",
         &[
-            (debug, SiteContainer::Optional),
-            (print, SiteContainer::Direct),
+            (debug, ContainerShape::optional(ContainerShape::Direct)),
+            (print, ContainerShape::Direct),
         ],
     );
     let read_statement = builder.sequence_with(
         "ReadStatement",
         &[
-            (debug, SiteContainer::Optional),
-            (read, SiteContainer::Direct),
+            (debug, ContainerShape::optional(ContainerShape::Direct)),
+            (read, ContainerShape::Direct),
         ],
     );
     let set_statement = builder.sequence_with(
         "SetStatement",
         &[
-            (debug, SiteContainer::Optional),
-            (set, SiteContainer::Direct),
+            (debug, ContainerShape::optional(ContainerShape::Direct)),
+            (set, ContainerShape::Direct),
         ],
     );
     let statement = builder.choice(
@@ -338,6 +343,7 @@ fn an_unequal_length_prefix_is_separated_by_end_of_alternative() {
             &output.first(a).unwrap().sequences,
             &output.first(ab).unwrap().sequences,
             &predicates,
+            recursa_codegen::TextEquivalence::AsciiInsensitive,
             2,
         ),
         Some(2),
@@ -350,12 +356,15 @@ fn a_repeated_shared_prefix_recommends_restructuring() {
     let x = builder.token("X", 0);
     let a = builder.token("A", 1);
     let b = builder.token("B", 2);
-    let repeated = SiteContainer::Repeat {
-        at_least_one: true,
-        separator: None,
-    };
-    let left = builder.sequence_with("Left", &[(x, repeated.clone()), (a, SiteContainer::Direct)]);
-    let right = builder.sequence_with("Right", &[(x, repeated), (b, SiteContainer::Direct)]);
+    let repeated = ContainerShape::boxed(ContainerShape::one_or_more(
+        ContainerShape::boxed(ContainerShape::Direct),
+        None,
+    ));
+    let left = builder.sequence_with(
+        "Left",
+        &[(x, repeated.clone()), (a, ContainerShape::Direct)],
+    );
+    let right = builder.sequence_with("Right", &[(x, repeated), (b, ContainerShape::Direct)]);
     builder.choice("Choice", &[left, right]);
 
     let report = analyze(builder.grammar);
@@ -387,6 +396,7 @@ fn disambiguation_depth_returns_the_first_separating_position() {
             &output.first(TypeId::new(4)).unwrap().sequences,
             &output.first(TypeId::new(5)).unwrap().sequences,
             &predicates,
+            recursa_codegen::TextEquivalence::AsciiInsensitive,
             3,
         ),
         Some(3),
@@ -464,8 +474,8 @@ fn nullable_tail_prefix(max_lookahead: usize) -> GrammarDescription {
     builder.sequence_with(
         "Container",
         &[
-            (optional, SiteContainer::Optional),
-            (required, SiteContainer::Direct),
+            (optional, ContainerShape::optional(ContainerShape::Direct)),
+            (required, ContainerShape::Direct),
         ],
     );
 
@@ -531,10 +541,10 @@ fn consuming_optional_prefix(max_lookahead: usize) -> GrammarDescription {
     builder.sequence_with(
         "Container",
         &[
-            (a, SiteContainer::Optional),
-            (a, SiteContainer::Direct),
-            (a, SiteContainer::Direct),
-            (b, SiteContainer::Direct),
+            (a, ContainerShape::optional(ContainerShape::Direct)),
+            (a, ContainerShape::Direct),
+            (a, ContainerShape::Direct),
+            (b, ContainerShape::Direct),
         ],
     );
     builder.grammar
@@ -598,26 +608,26 @@ fn right_recursive_shared_prefix() -> GrammarDescription {
         left,
         a,
         left_recursive_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     let left_recursive_self = builder.grammar.push_site(ParseSite::new(
         left,
         left,
         left_recursive_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     let left_recursive_l = builder.grammar.push_site(ParseSite::new(
         left,
         l,
         left_recursive_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     let left_base_declaration = builder.declaration("Left::Base");
     let left_base = builder.grammar.push_site(ParseSite::new(
         left,
         x,
         left_base_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(
@@ -646,26 +656,26 @@ fn right_recursive_shared_prefix() -> GrammarDescription {
         right,
         a,
         right_recursive_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     let right_recursive_self = builder.grammar.push_site(ParseSite::new(
         right,
         right,
         right_recursive_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     let right_recursive_r = builder.grammar.push_site(ParseSite::new(
         right,
         r,
         right_recursive_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     let right_base_declaration = builder.declaration("Right::Base");
     let right_base = builder.grammar.push_site(ParseSite::new(
         right,
         y,
         right_base_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(
@@ -727,7 +737,7 @@ fn nullable_prefix_before_recursive_alternatives(max_lookahead: usize) -> Gramma
                 left,
                 target,
                 left_recursive_declaration,
-                SiteContainer::Direct,
+                ContainerShape::Direct,
             ))
         })
         .collect::<Vec<_>>();
@@ -736,7 +746,7 @@ fn nullable_prefix_before_recursive_alternatives(max_lookahead: usize) -> Gramma
         left,
         x,
         left_base_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(
@@ -768,7 +778,7 @@ fn nullable_prefix_before_recursive_alternatives(max_lookahead: usize) -> Gramma
                 right,
                 target,
                 right_recursive_declaration,
-                SiteContainer::Direct,
+                ContainerShape::Direct,
             ))
         })
         .collect::<Vec<_>>();
@@ -777,7 +787,7 @@ fn nullable_prefix_before_recursive_alternatives(max_lookahead: usize) -> Gramma
         right,
         y,
         right_base_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(
@@ -809,7 +819,7 @@ fn nullable_prefix_before_recursive_alternatives(max_lookahead: usize) -> Gramma
                 choice,
                 target,
                 left_choice_declaration,
-                SiteContainer::Direct,
+                ContainerShape::Direct,
             ))
         })
         .collect();
@@ -821,7 +831,7 @@ fn nullable_prefix_before_recursive_alternatives(max_lookahead: usize) -> Gramma
                 choice,
                 target,
                 right_choice_declaration,
-                SiteContainer::Direct,
+                ContainerShape::Direct,
             ))
         })
         .collect();
@@ -880,20 +890,20 @@ fn compressed_finite_prefix_ignores_an_unrelated_recursive_branch() {
         recursive,
         a,
         step_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     let step_self = builder.grammar.push_site(ParseSite::new(
         recursive,
         recursive,
         step_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     let base_declaration = builder.declaration("Recursive::Base");
     let base = builder.grammar.push_site(ParseSite::new(
         recursive,
         z,
         base_declaration,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(

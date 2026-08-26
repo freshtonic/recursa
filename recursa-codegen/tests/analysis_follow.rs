@@ -1,7 +1,8 @@
 use recursa_codegen::{
-    Alternative, AtomDescription, AtomExpression, ConflictRemedy, Declaration, DiagnosticCode,
-    GrammarDescription, KindDescription, KindId, Location, ParseSite, PrattPosition, PrattVariant,
-    Severity, SiteContainer, SourceId, TextPredicate, TypeDescription, TypeId, TypeShape, analyze,
+    Alternative, AtomDescription, AtomExpression, ConflictRemedy, ContainerShape, Declaration,
+    DiagnosticCode, GrammarDescription, KindDescription, KindId, Location, ParseSite,
+    PrattPosition, PrattVariant, Severity, SourceId, TextPredicate, TypeDescription, TypeId,
+    TypeShape, analyze,
 };
 
 struct Builder {
@@ -13,7 +14,12 @@ struct Builder {
 impl Builder {
     fn new(name: &str, kinds: &[&str]) -> Self {
         let mut builder = Self {
-            grammar: GrammarDescription::new(name, kinds.len(), 1),
+            grammar: GrammarDescription::new(
+                name,
+                kinds.len(),
+                1,
+                recursa_codegen::TextEquivalence::AsciiInsensitive,
+            ),
             next_byte: 0,
             atoms: Vec::new(),
         };
@@ -90,7 +96,7 @@ impl Builder {
         owner: TypeId,
         target: TypeId,
         name: &str,
-        container: SiteContainer,
+        container: ContainerShape,
     ) -> recursa_codegen::SiteId {
         let declaration = self.declaration(name);
         self.grammar
@@ -111,7 +117,12 @@ fn nested_nullable_follow(predicate_match: bool) -> (GrammarDescription, recursa
 
     let inner = builder.grammar.next_type_id();
     let inner_decl = builder.declaration("Inner");
-    let maybe_site = builder.site(inner, maybe, "maybe", SiteContainer::Optional);
+    let maybe_site = builder.site(
+        inner,
+        maybe,
+        "maybe",
+        ContainerShape::optional(ContainerShape::Direct),
+    );
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(
             "Inner",
@@ -129,10 +140,7 @@ fn nested_nullable_follow(predicate_match: bool) -> (GrammarDescription, recursa
         root,
         inner,
         "inner",
-        SiteContainer::Repeat {
-            at_least_one: false,
-            separator: Some(after),
-        },
+        ContainerShape::zero_or_more(ContainerShape::Direct, Some(after)),
     );
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(
@@ -156,8 +164,8 @@ fn empty_and_multiple_roots_seed_eof_separately_and_deterministically() {
     let unused = builder.token("Unused", 2);
     let unreachable = builder.grammar.next_type_id();
     let unreachable_decl = builder.declaration("Unreachable");
-    let unreachable_a = builder.site(unreachable, a, "unreachable_a", SiteContainer::Direct);
-    let unreachable_b = builder.site(unreachable, b, "unreachable_b", SiteContainer::Direct);
+    let unreachable_a = builder.site(unreachable, a, "unreachable_a", ContainerShape::Direct);
+    let unreachable_b = builder.site(unreachable, b, "unreachable_b", ContainerShape::Direct);
     builder.grammar.push_type(TypeDescription::new(
         "Unreachable",
         unreachable_decl,
@@ -293,10 +301,10 @@ fn containers_separators_variants_and_nullable_sccs_propagate_follow() {
         list,
         item,
         "items",
-        SiteContainer::Repeat {
-            at_least_one: false,
-            separator: Some(separator),
-        },
+        ContainerShape::optional(ContainerShape::boxed(ContainerShape::one_or_more(
+            ContainerShape::boxed(ContainerShape::Direct),
+            Some(separator),
+        ))),
     );
     builder.grammar.push_type(TypeDescription::new(
         "List",
@@ -314,13 +322,13 @@ fn containers_separators_variants_and_nullable_sccs_propagate_follow() {
         choice,
         list,
         list_variant_decl,
-        SiteContainer::Boxed,
+        ContainerShape::boxed(ContainerShape::Direct),
     ));
     let alt_variant = builder.grammar.push_site(ParseSite::new(
         choice,
         alt,
         alt_variant_decl,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     builder.grammar.push_type(TypeDescription::new(
         "Choice",
@@ -341,8 +349,8 @@ fn containers_separators_variants_and_nullable_sccs_propagate_follow() {
 
     let root = builder.grammar.next_type_id();
     let root_decl = builder.declaration("Root");
-    let choice_site = builder.site(root, choice, "choice", SiteContainer::Direct);
-    let end_site = builder.site(root, end, "end", SiteContainer::Direct);
+    let choice_site = builder.site(root, choice, "choice", ContainerShape::Direct);
+    let end_site = builder.site(root, end, "end", ContainerShape::Direct);
     builder.grammar.push_type(TypeDescription::new(
         "Root",
         root_decl,
@@ -395,7 +403,12 @@ fn nullable_separator_closes_repeat_item_separator_and_outer_follow() {
 
     let item = builder.grammar.next_type_id();
     let item_decl = builder.declaration("NullableItem");
-    let optional_item = builder.site(item, item_token, "optional_item", SiteContainer::Optional);
+    let optional_item = builder.site(
+        item,
+        item_token,
+        "optional_item",
+        ContainerShape::optional(ContainerShape::Direct),
+    );
     builder.grammar.push_type(TypeDescription::new(
         "NullableItem",
         item_decl,
@@ -410,7 +423,7 @@ fn nullable_separator_closes_repeat_item_separator_and_outer_follow() {
         separator,
         separator_token,
         "optional_separator",
-        SiteContainer::Optional,
+        ContainerShape::optional(ContainerShape::Direct),
     );
     builder.grammar.push_type(TypeDescription::new(
         "Separator",
@@ -426,12 +439,9 @@ fn nullable_separator_closes_repeat_item_separator_and_outer_follow() {
         root,
         item,
         "items",
-        SiteContainer::Repeat {
-            at_least_one: false,
-            separator: Some(separator),
-        },
+        ContainerShape::zero_or_more(ContainerShape::Direct, Some(separator)),
     );
-    let end_site = builder.site(root, end, "end", SiteContainer::Direct);
+    let end_site = builder.site(root, end, "end", ContainerShape::Direct);
     builder.grammar.push_type(TypeDescription::new(
         "Root",
         root_decl,
@@ -479,8 +489,13 @@ fn recursive_follow_scc_propagates_eof_without_conflicting_with_it() {
     let token = builder.token("Tok", 0);
     let node = builder.grammar.next_type_id();
     let node_decl = builder.declaration("Node");
-    let token_site = builder.site(node, token, "token", SiteContainer::Direct);
-    let recursive_site = builder.site(node, node, "next", SiteContainer::Optional);
+    let token_site = builder.site(node, token, "token", ContainerShape::Direct);
+    let recursive_site = builder.site(
+        node,
+        node,
+        "next",
+        ContainerShape::optional(ContainerShape::Direct),
+    );
     builder.grammar.push_type(TypeDescription::new(
         "Node",
         node_decl,
@@ -514,8 +529,13 @@ fn multi_node_follow_scc_converges_before_provenance() {
     let b = TypeId::new(a.get() + 1);
 
     let a_decl = builder.declaration("NodeA");
-    let a_token_site = builder.site(a, a_token, "a_token", SiteContainer::Direct);
-    let a_to_b = builder.site(a, b, "a_to_b", SiteContainer::Optional);
+    let a_token_site = builder.site(a, a_token, "a_token", ContainerShape::Direct);
+    let a_to_b = builder.site(
+        a,
+        b,
+        "a_to_b",
+        ContainerShape::optional(ContainerShape::Direct),
+    );
     builder.grammar.push_type(TypeDescription::new(
         "NodeA",
         a_decl,
@@ -525,8 +545,13 @@ fn multi_node_follow_scc_converges_before_provenance() {
     ));
 
     let b_decl = builder.declaration("NodeB");
-    let b_token_site = builder.site(b, b_token, "b_token", SiteContainer::Direct);
-    let b_to_a = builder.site(b, a, "b_to_a", SiteContainer::Optional);
+    let b_token_site = builder.site(b, b_token, "b_token", ContainerShape::Direct);
+    let b_to_a = builder.site(
+        b,
+        a,
+        "b_to_a",
+        ContainerShape::optional(ContainerShape::Direct),
+    );
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(
             "NodeB",
@@ -571,8 +596,13 @@ fn static_error_kinds_suppress_duplicate_nullable_follow_warnings() {
     let token = builder.token("Token", 0);
     let owner = builder.grammar.next_type_id();
     let owner_decl = builder.declaration("Owner");
-    let optional = builder.site(owner, token, "optional", SiteContainer::Optional);
-    let required = builder.site(owner, token, "required", SiteContainer::Direct);
+    let optional = builder.site(
+        owner,
+        token,
+        "optional",
+        ContainerShape::optional(ContainerShape::Direct),
+    );
+    let required = builder.site(owner, token, "required", ContainerShape::Direct);
     builder.grammar.push_type(TypeDescription::new(
         "Owner",
         owner_decl,
@@ -604,9 +634,9 @@ fn shared_declaration_warning_grammar(reverse_roots: bool) -> GrammarDescription
         static_owner,
         multi,
         shared_declaration,
-        SiteContainer::Optional,
+        ContainerShape::optional(ContainerShape::Direct),
     ));
-    let required = builder.site(static_owner, k0, "required", SiteContainer::Direct);
+    let required = builder.site(static_owner, k0, "required", ContainerShape::Direct);
     builder.grammar.push_type(TypeDescription::new(
         "StaticOwner",
         static_owner_decl,
@@ -623,7 +653,7 @@ fn shared_declaration_warning_grammar(reverse_roots: bool) -> GrammarDescription
             inner,
             multi,
             shared_declaration,
-            SiteContainer::Optional,
+            ContainerShape::optional(ContainerShape::Direct),
         ));
         builder.grammar.push_type(TypeDescription::new(
             format!("Inner{suffix}"),
@@ -639,10 +669,7 @@ fn shared_declaration_warning_grammar(reverse_roots: bool) -> GrammarDescription
             root,
             inner,
             &format!("repeat{suffix}"),
-            SiteContainer::Repeat {
-                at_least_one: false,
-                separator: Some(multi),
-            },
+            ContainerShape::zero_or_more(ContainerShape::Direct, Some(multi)),
         );
         builder.grammar.push_type(TypeDescription::new(
             format!("Root{suffix}"),
@@ -744,10 +771,10 @@ fn pratt_follow_warnings_filter_extenders_by_site_min_bp() {
     let low_decl = builder.declaration("Expr::Low");
     let high_decl = builder.declaration("Expr::High");
     let post_decl = builder.declaration("Expr::Post");
-    let atom_site = builder.site(expr, atom, "atom", SiteContainer::Direct);
-    let low_site = builder.site(expr, low, "low", SiteContainer::Direct);
-    let high_site = builder.site(expr, high, "high", SiteContainer::Direct);
-    let post_site = builder.site(expr, post, "post", SiteContainer::Direct);
+    let atom_site = builder.site(expr, atom, "atom", ContainerShape::Direct);
+    let low_site = builder.site(expr, low, "low", ContainerShape::Direct);
+    let high_site = builder.site(expr, high, "high", ContainerShape::Direct);
+    let post_site = builder.site(expr, post, "post", ContainerShape::Direct);
     builder.grammar.push_type(TypeDescription::new(
         "Expr",
         expr_decl,
@@ -780,9 +807,9 @@ fn pratt_follow_warnings_filter_extenders_by_site_min_bp() {
     let low_context = builder.grammar.next_type_id();
     let low_context_decl = builder.declaration("LowContext");
     let low_expr = builder.grammar.push_site(
-        ParseSite::new(low_context, expr, low_context_decl, SiteContainer::Direct).with_min_bp(15),
+        ParseSite::new(low_context, expr, low_context_decl, ContainerShape::Direct).with_min_bp(15),
     );
-    let low_tail = builder.site(low_context, low, "low_tail", SiteContainer::Direct);
+    let low_tail = builder.site(low_context, low, "low_tail", ContainerShape::Direct);
     builder.grammar.push_type(TypeDescription::new(
         "LowContext",
         low_context_decl,
@@ -794,10 +821,15 @@ fn pratt_follow_warnings_filter_extenders_by_site_min_bp() {
     let high_context = builder.grammar.next_type_id();
     let high_context_decl = builder.declaration("HighContext");
     let high_expr = builder.grammar.push_site(
-        ParseSite::new(high_context, expr, high_context_decl, SiteContainer::Direct)
-            .with_min_bp(15),
+        ParseSite::new(
+            high_context,
+            expr,
+            high_context_decl,
+            ContainerShape::Direct,
+        )
+        .with_min_bp(15),
     );
-    let high_tail = builder.site(high_context, high, "high_tail", SiteContainer::Direct);
+    let high_tail = builder.site(high_context, high, "high_tail", ContainerShape::Direct);
     builder.grammar.push_type(TypeDescription::new(
         "HighContext",
         high_context_decl,
@@ -809,10 +841,15 @@ fn pratt_follow_warnings_filter_extenders_by_site_min_bp() {
     let post_context = builder.grammar.next_type_id();
     let post_context_decl = builder.declaration("PostContext");
     let post_expr = builder.grammar.push_site(
-        ParseSite::new(post_context, expr, post_context_decl, SiteContainer::Direct)
-            .with_min_bp(15),
+        ParseSite::new(
+            post_context,
+            expr,
+            post_context_decl,
+            ContainerShape::Direct,
+        )
+        .with_min_bp(15),
     );
-    let post_tail = builder.site(post_context, post, "post_tail", SiteContainer::Direct);
+    let post_tail = builder.site(post_context, post, "post_tail", ContainerShape::Direct);
     builder.grammar.push_type(TypeDescription::new(
         "PostContext",
         post_context_decl,

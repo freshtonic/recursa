@@ -22,9 +22,9 @@ pub use ids::{
     AtomId, DeclId, KindId, LocationId, ProofId, SiteId, SourceId, TextPredicateId, TypeId,
 };
 pub use ir::{
-    Alternative, AtomDescription, AtomExpression, Declaration, GrammarDescription, KindDescription,
-    Location, ParseSite, PrattPosition, PrattVariant, SiteContainer, TextPredicate,
-    TypeDescription, TypeShape,
+    Alternative, AtomDescription, AtomExpression, ContainerShape, Declaration, GrammarDescription,
+    KindDescription, Location, ParseSite, PrattPosition, PrattVariant, RepetitionCardinality,
+    TextEquivalence, TextPredicate, TypeDescription, TypeShape,
 };
 pub use kind_set::{KindSet, KindSetError, KindSetIter};
 pub use provenance::{

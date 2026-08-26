@@ -2,8 +2,8 @@ pub mod arith;
 pub mod json;
 
 use recursa_codegen::{
-    AtomDescription, AtomExpression, DeclId, Declaration, GrammarDescription, KindDescription,
-    Location, ParseSite, SiteContainer, SourceId, TypeId,
+    AtomDescription, AtomExpression, ContainerShape, DeclId, Declaration, GrammarDescription,
+    KindDescription, Location, ParseSite, SourceId, TypeId,
 };
 
 struct FixtureBuilder {
@@ -14,7 +14,12 @@ struct FixtureBuilder {
 
 impl FixtureBuilder {
     fn new(name: &str, kind_names: &[&str]) -> Self {
-        let mut grammar = GrammarDescription::new(name, kind_names.len(), 1);
+        let mut grammar = GrammarDescription::new(
+            name,
+            kind_names.len(),
+            1,
+            recursa_codegen::TextEquivalence::AsciiInsensitive,
+        );
         let location = grammar.push_location(Location::new(SourceId::new(0), 0..1));
         let mut atoms = Vec::with_capacity(kind_names.len());
         for &name in kind_names {
@@ -56,7 +61,7 @@ impl FixtureBuilder {
         owner: TypeId,
         target: TypeId,
         declaration: DeclId,
-        container: SiteContainer,
+        container: ContainerShape,
     ) -> recursa_codegen::SiteId {
         self.grammar
             .push_site(ParseSite::new(owner, target, declaration, container))
