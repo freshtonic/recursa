@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use proc_macro2::Span;
 use syn::parse::{Parse, ParseStream, Parser as _};
@@ -26,7 +26,7 @@ macro_rules! source_id {
         pub(crate) struct $name(u32);
 
         impl $name {
-            fn next(length: usize) -> Self {
+            pub(crate) fn next(length: usize) -> Self {
                 Self(length.try_into().expect("source model ID overflow"))
             }
 
@@ -60,6 +60,7 @@ pub(crate) struct SingleFileInput<'source> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DiagnosticStage {
+    Discovery,
     Syntax,
     Lowering,
 }
@@ -157,12 +158,40 @@ pub(crate) struct LoweredGrammar {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BuildInputs {
-    pub(crate) selected_root: SourceId,
-    pub(crate) source_files: Vec<SourceId>,
+    pub(crate) selected_root: PathBuf,
+    pub(crate) source_files: Vec<PathBuf>,
     pub(crate) edition: RustEdition,
     pub(crate) watched_module_candidates: Vec<PathBuf>,
     pub(crate) cfg_snapshot: Vec<String>,
     pub(crate) environment_dependencies: Vec<String>,
+}
+
+impl BuildInputs {
+    pub(crate) fn watched_paths(&self) -> Vec<PathBuf> {
+        let mut paths = self
+            .source_files
+            .iter()
+            .chain(&self.watched_module_candidates)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if safe_manifest_relative_path(&self.selected_root) {
+            paths.insert(self.selected_root.clone());
+        }
+        paths.into_iter().collect()
+    }
+}
+
+fn safe_manifest_relative_path(path: &Path) -> bool {
+    let mut depth = 0_usize;
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(_) => depth += 1,
+            Component::ParentDir if depth > 0 => depth -= 1,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1085,8 +1114,8 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
         diagnostics: Vec::new(),
         lowered: Some(LoweredGrammar {
             build_inputs: BuildInputs {
-                selected_root: file_id,
-                source_files: vec![file_id],
+                selected_root: input.manifest_relative_path.to_owned(),
+                source_files: vec![input.manifest_relative_path.to_owned()],
                 edition: input.edition,
                 watched_module_candidates: Vec::new(),
                 cfg_snapshot: Vec::new(),
@@ -1431,7 +1460,14 @@ struct Root<'input> {
         let lowered = &analyzed.lowered;
 
         assert_eq!(lowered.build_inputs.source_files.len(), 1);
-        assert_eq!(lowered.build_inputs.selected_root.index(), 0);
+        assert_eq!(
+            lowered.build_inputs.selected_root,
+            Path::new("src/grammar.rs"),
+        );
+        assert_eq!(
+            lowered.build_inputs.source_files,
+            [Path::new("src/grammar.rs")],
+        );
         assert_eq!(lowered.source_model.files.len(), 1);
         assert_eq!(lowered.source_model.modules.len(), 1);
         assert_eq!(lowered.source_model.nodes.len(), 1);

@@ -9,3 +9,6 @@ repository.workspace = true
 [dependencies]
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["extra-traits", "full", "parsing"] }
+
+[dev-dependencies]
+tempfile = "3"
