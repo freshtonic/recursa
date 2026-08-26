@@ -11278,6 +11278,97 @@ struct B;
     }
 
     #[test]
+    fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
+        let source = include_str!("../tests/fixtures/m4/repetitions/src/grammar.rs.in")
+            .replace("__RECURSA_SPANS_MODE__", "off");
+        let package = tempfile::tempdir().expect("temporary Pretty hint authority fixture");
+        fs::write(package.path().join("grammar.rs"), source)
+            .expect("write Pretty hint authority fixture");
+        let success = analyze_source_tree(
+            M3Input::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("analyze Pretty hint authority fixture");
+        let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+            .expect("join a complete Pretty hint plan");
+
+        fn pretty_node<'a>(plan: &'a mut EmissionPlan, ident: &str) -> &'a mut PrettyNodeBehavior {
+            let index = plan
+                .nodes
+                .iter()
+                .position(|node| node.ident == ident)
+                .unwrap_or_else(|| panic!("fixture contains {ident}"));
+            plan.pretty.nodes[index]
+                .as_mut()
+                .unwrap_or_else(|| panic!("{ident} has Pretty behavior"))
+        }
+        fn semantic(node: &mut PrettyNodeBehavior) -> &mut PrettyElementBehavior {
+            node.variants
+                .iter_mut()
+                .flatten()
+                .find_map(|element| match element {
+                    PrettyElementBehavior::Semantic { .. } => Some(element),
+                    PrettyElementBehavior::Fixed { .. } => None,
+                })
+                .expect("selected fixture node has a semantic field")
+        }
+
+        let mut node_hint = plan.clone();
+        assert!(!pretty_node(&mut node_hint, "NodeGroupPretty").pretty.indent);
+        pretty_node(&mut node_hint, "NodeGroupPretty").pretty.indent = true;
+        assert_plan_family_is_unselectable(package.path(), &node_hint, "Pretty");
+
+        let mut variant_hint = plan.clone();
+        pretty_node(&mut variant_hint, "VariantGroupPretty").variant_pretty[0].indent = true;
+        assert_plan_family_is_unselectable(package.path(), &variant_hint, "Pretty");
+
+        let mut field_hint = plan.clone();
+        let PrettyElementBehavior::Semantic { pretty, .. } =
+            semantic(pretty_node(&mut field_hint, "AttachmentPretty"))
+        else {
+            unreachable!("semantic helper returns semantic behavior")
+        };
+        pretty.trailing_separator = Some(PrettyTrailingSeparator::Never);
+        assert_plan_family_is_unselectable(package.path(), &field_hint, "Pretty");
+
+        let mut separator_policy = plan.clone();
+        let PrettyElementBehavior::Semantic { pretty, .. } =
+            semantic(pretty_node(&mut separator_policy, "LeadingPretty"))
+        else {
+            unreachable!("semantic helper returns semantic behavior")
+        };
+        pretty.separator = Some(PrettySeparatorPosition::Trailing);
+        assert_plan_family_is_unselectable(package.path(), &separator_policy, "Pretty");
+
+        let mut inconsistent_group = plan.clone();
+        pretty_node(&mut inconsistent_group, "InconsistentIndentPretty")
+            .pretty
+            .group = Some(PrettyGroup::Consistent);
+        assert_plan_family_is_unselectable(package.path(), &inconsistent_group, "Pretty");
+
+        let mut attachment_presence = plan;
+        let presence = pretty_node(&mut attachment_presence, "HintAttachedOptional")
+            .variants
+            .iter_mut()
+            .flatten()
+            .find_map(|element| match element {
+                PrettyElementBehavior::Semantic {
+                    attachment: Some(_),
+                    presence,
+                    ..
+                } => Some(presence),
+                PrettyElementBehavior::Fixed { .. }
+                | PrettyElementBehavior::Semantic {
+                    attachment: None, ..
+                } => None,
+            })
+            .expect("fixture has a conditionally present attachment unit");
+        assert_eq!(*presence, PrettyPresence::Optional);
+        *presence = PrettyPresence::Always;
+        assert_plan_family_is_unselectable(package.path(), &attachment_presence, "Pretty");
+    }
+
+    #[test]
     fn ascii_insensitive_word_separators_share_canonical_pretty_family_authority() {
         let package = tempfile::tempdir().expect("temporary word-separator authority fixture");
         fs::write(
