@@ -5,11 +5,14 @@ recursa::grammar! {
 }
 
 recursa::tokens! {
-    ignore = r"[ \t\n\r]+",
+    ignore = r"[ \t\n\r]+|--[^\n]*",
     post_lex = crate::grammar::repair,
     keywords {
         SELECT => "select",
         NULL => "null",
+        TRUE => "true",
+        FALSE => "false",
+        CALLBACK_KEYWORD => "kk",
     }
     punctuation {
         COLON => ":",
@@ -39,6 +42,15 @@ pub fn repair(editor: &mut LexEditor<'_>) {
                 .is_err()
         );
         assert_eq!(editor.record(0), Some(before));
+        assert!(
+            editor
+                .replace(
+                    0,
+                    [(before.kind(), before.span()), (before.kind(), before.span())],
+                )
+                .is_err()
+        );
+        assert_eq!(editor.record(0), Some(before));
     }
     assert!(editor.remove(editor.len()..editor.len() + 1).is_err());
     assert!(
@@ -49,7 +61,16 @@ pub fn repair(editor: &mut LexEditor<'_>) {
     let mut index = 0;
     while let Some(record) = editor.record(index) {
         match record.kind() {
-            TokenKind::PseudoText if matches!(record.text(), ":NULL" | ":TRUE" | ":FALSE") => {
+            TokenKind::PseudoText
+                if record
+                    .text()
+                    .get(1..)
+                    .is_some_and(|body| {
+                        body.eq_ignore_ascii_case("NULL")
+                            || body.eq_ignore_ascii_case("TRUE")
+                            || body.eq_ignore_ascii_case("FALSE")
+                    }) =>
+            {
                 let span = record.span();
                 editor
                     .replace(
@@ -68,13 +89,20 @@ pub fn repair(editor: &mut LexEditor<'_>) {
                         ],
                     )
                     .expect("a pseudo-variable can be split into adjacent source records");
-                editor
-                    .classify_word(index + 1)
-                    .expect("the split word uses the generated keyword classifier");
                 index += 2;
+            }
+            TokenKind::PseudoText if record.text().eq_ignore_ascii_case(":ERROR") => {
+                editor
+                    .reclassify(index, TokenKind::LexicalError)
+                    .expect("reclassification updates the authoritative error view");
+                index += 1;
             }
             TokenKind::BrokenOperator => {
                 let span = record.span();
+                let comment_start = span.start() as usize + 2;
+                let comment_end = editor.source()[comment_start..]
+                    .find('\n')
+                    .map_or(editor.source().len(), |offset| comment_start + offset);
                 editor
                     .replace(
                         index,
@@ -85,6 +113,16 @@ pub fn repair(editor: &mut LexEditor<'_>) {
                         )],
                     )
                     .expect("the broken operator record can be shortened before the comment");
+                let mut comment_records_end = index + 1;
+                while editor
+                    .record(comment_records_end)
+                    .is_some_and(|record| (record.span().start() as usize) < comment_end)
+                {
+                    comment_records_end += 1;
+                }
+                editor
+                    .remove(index + 1..comment_records_end)
+                    .expect("records emitted inside the line comment are contiguous");
                 index += 1;
             }
             _ => index += 1,
@@ -93,6 +131,15 @@ pub fn repair(editor: &mut LexEditor<'_>) {
 }
 
 pub fn scan_word(context: &mut LexContext<'_>) -> LexAction {
+    if let Some(character) = context.remainder().chars().next()
+        && character.len_utf8() > 1
+    {
+        assert!(context.bump(1).is_err());
+        context
+            .bump(character.len_utf8())
+            .expect("a callback may bump over one complete UTF-8 scalar");
+        return LexAction::Emit;
+    }
     let extra = context
         .remainder()
         .bytes()
@@ -113,7 +160,7 @@ pub fn scan_word(context: &mut LexContext<'_>) -> LexAction {
 #[derive(recursa::Node)]
 #[tok(SELECT, this)]
 pub struct Selection<'input> {
-    #[lex(pattern = r"[A-Za-z]+", admits(SELECT, NULL))]
+    #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(SELECT, NULL))]
     pub name: WordText<'input>,
 }
 
@@ -126,7 +173,7 @@ pub struct LowSelection<'input> {
 #[derive(recursa::Node)]
 pub struct CallbackSelection<'input> {
     #[lex(
-        pattern = r"~",
+        pattern = r"[~kK]",
         callback = crate::grammar::scan_word,
         priority = 2
     )]
@@ -135,7 +182,7 @@ pub struct CallbackSelection<'input> {
 
 #[derive(recursa::Node)]
 pub struct PseudoSelection<'input> {
-    #[lex(pattern = r":[A-Za-z]+")]
+    #[lex(pattern = r#":(?:[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")"#)]
     pub name: PseudoText<'input>,
 }
 
@@ -147,6 +194,6 @@ pub struct QuotedSelection<'input> {
 
 #[derive(recursa::Node)]
 pub struct BrokenOperatorSelection<'input> {
-    #[lex(pattern = r"!=--[^\n]*")]
+    #[lex(pattern = r"!=--")]
     pub name: BrokenOperator<'input>,
 }

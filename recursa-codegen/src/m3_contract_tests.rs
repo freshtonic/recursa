@@ -356,6 +356,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::rejects_content_display_and_misplacement_before_lexical_planning --locked",
     },
     ProducerEvidence {
+        codes: &["RCA3117"],
+        producer_source: "src/m3.rs",
+        test_source: "src/source_model.rs",
+        test_name: "multiple_post_lex_hooks_are_rejected_instead_of_using_source_order",
+        command: "cargo test -p recursa-codegen source_model::tests::multiple_post_lex_hooks_are_rejected_instead_of_using_source_order --locked",
+    },
+    ProducerEvidence {
         codes: &[
             "RCA3202", "RCA3203", "RCA3204", "RCA3205", "RCA3206", "RCA3207", "RCA3208",
         ],

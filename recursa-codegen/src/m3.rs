@@ -615,6 +615,7 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::InvalidTokenPlacement => "RCA3114",
         SourceModelDiagnosticKind::InvalidPrattTokenPlacement => "RCA3115",
         SourceModelDiagnosticKind::ConfiguredOrdinaryDeriveConflict => "RCA3116",
+        SourceModelDiagnosticKind::MultiplePostLexHooks => "RCA3117",
     }
 }
 

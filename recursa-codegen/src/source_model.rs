@@ -412,6 +412,7 @@ pub(crate) enum SourceModelDiagnosticKind {
     InvalidTokenPlacement,
     InvalidPrattTokenPlacement,
     ConfiguredOrdinaryDeriveConflict,
+    MultiplePostLexHooks,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -427,6 +428,13 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
     let trait_planner = TraitPlanner::from_grammar(&input.resolved, &mut diagnostics);
     let mut tokens = TokenCatalog::default();
     tokens.collect_fixed_definitions(&input.resolved, input.cfg);
+    if tokens.post_lex_sites.len() > 1 {
+        diagnostics.push(SourceModelDiagnostic {
+            kind: SourceModelDiagnosticKind::MultiplePostLexHooks,
+            sites: tokens.post_lex_sites.clone(),
+            message: "a grammar accepts exactly one post_lex hook declaration".to_owned(),
+        });
+    }
     let mut builder = SourceModelBuilder {
         resolved: input.resolved,
         cfg: input.cfg,
@@ -883,6 +891,7 @@ struct TokenCatalog {
     lexer_records: Vec<NonTokenLexerRecord>,
     uses: Vec<TokenUse>,
     post_lex: Option<syn::Path>,
+    post_lex_sites: Vec<SourceSite>,
 }
 
 struct CentralContentDefinition {
@@ -979,8 +988,12 @@ impl TokenCatalog {
         origin: SourceOrigin,
         syntax: CentralTokensSyntax,
     ) {
-        if self.post_lex.is_none() {
-            self.post_lex = syntax.post_lex.clone();
+        for post_lex in &syntax.post_lex {
+            self.post_lex_sites
+                .push(source_site(resolved, origin, span_range(post_lex.span())));
+            if self.post_lex.is_none() {
+                self.post_lex = Some(post_lex.clone());
+            }
         }
         for fixed in syntax.fixed {
             self.define_fixed(
@@ -1985,7 +1998,7 @@ struct CentralTokensSyntax {
     fixed: Vec<CentralFixedSyntax>,
     content: Vec<CentralContentSyntax>,
     non_token_lexer_records: Vec<CentralNonTokenLexerRecordSyntax>,
-    post_lex: Option<syn::Path>,
+    post_lex: Vec<syn::Path>,
 }
 
 struct CentralNonTokenLexerRecordSyntax {
@@ -2010,7 +2023,7 @@ impl Parse for CentralTokensSyntax {
         let mut fixed = Vec::new();
         let mut content = Vec::new();
         let mut non_token_lexer_records = Vec::new();
-        let mut post_lex = None;
+        let mut post_lex = Vec::new();
         while !input.is_empty() {
             let section = syn::Ident::parse_any(input)?;
             if input.peek(Token![=]) {
@@ -2021,9 +2034,7 @@ impl Parse for CentralTokensSyntax {
                         outcome: NonTokenLexerOutcome::NonEmitting,
                     });
                 } else if section == "post_lex" {
-                    if post_lex.replace(input.parse()?).is_some() {
-                        return Err(syn::Error::new(section.span(), "duplicate post_lex hook"));
-                    }
+                    post_lex.push(input.parse()?);
                 } else {
                     input.parse::<syn::Expr>()?;
                 }
@@ -2556,6 +2567,63 @@ mod tests {
 
     fn model(source: &str) -> super::SourceModelReport {
         model_with_cfg(source, &CargoCfgSnapshot::default())
+    }
+
+    #[test]
+    fn multiple_post_lex_hooks_are_rejected_instead_of_using_source_order() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { post_lex = crate::first }
+recursa::tokens! { post_lex = crate::second }
+
+#[derive(recursa::Node)]
+struct Root<'input> {
+    #[lex(pattern = r"[a-z]+")]
+    value: Word<'input>,
+}
+"#,
+        );
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::MultiplePostLexHooks,
+            "RCA3117",
+        );
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.kind == SourceModelDiagnosticKind::MultiplePostLexHooks)
+            .expect("a singular grammar hook cannot be selected by source order");
+        assert_eq!(diagnostic.sites.len(), 2);
+        assert!(report.source_modeled.is_none());
+    }
+
+    #[test]
+    fn duplicate_post_lex_hooks_in_one_tokens_block_preserve_both_sites() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    post_lex = crate::first,
+    post_lex = crate::second,
+}
+
+#[derive(recursa::Node)]
+struct Root;
+"#,
+        );
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::MultiplePostLexHooks,
+            "RCA3117",
+        );
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.kind == SourceModelDiagnosticKind::MultiplePostLexHooks)
+            .expect("both hook declarations produce one grammar-level diagnostic");
+        assert_eq!(diagnostic.sites.len(), 2);
+        assert!(report.source_modeled.is_none());
     }
 
     fn completed(report: super::SourceModelReport) -> super::SourceModel {

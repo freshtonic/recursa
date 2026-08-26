@@ -48,6 +48,30 @@ fn main() {
     assert_eq!(alternative.errors().count(), 0);
     assert_eq!(grammar::post_lex_calls(), 1);
 
+    let mut standalone_keyword = grammar::LexBuilder::new("Kk");
+    standalone_keyword
+        .append(
+            grammar::TokenKind::CallbackText,
+            recursa::Span::new(0, 2).unwrap(),
+        )
+        .expect("an alternative lexer may initially report a content kind");
+    let standalone_keyword = standalone_keyword.finish();
+    assert_eq!(
+        standalone_keyword.tokens().next().unwrap().kind(),
+        grammar::TokenKind::CALLBACK_KEYWORD,
+    );
+
+    let unicode_callback = grammar::lex("~é");
+    let unicode_callback = unicode_callback
+        .tokens()
+        .next()
+        .expect("the callback accepted one complete non-ASCII scalar");
+    assert_eq!(unicode_callback.text(), "~é");
+
+    let repaired_error = grammar::lex(":ERROR");
+    assert_eq!(repaired_error.tokens().count(), 0);
+    assert_eq!(repaired_error.errors().next().unwrap().text(), ":ERROR");
+
     let mut invalid = grammar::LexBuilder::new("abcd");
     invalid
         .append(
@@ -98,22 +122,38 @@ fn main() {
         recursa::Span::new(16, 22).unwrap()
     );
 
-    let repaired = grammar::lex(":NULL ':TRUE' !=--comment\n!=-");
+    let repaired = grammar::lex(":NULL :true :FaLsE :'TRUE' :\"FALSE\" !=--comment\n!=-");
+    assert_eq!(repaired.errors().count(), 0);
     let repaired = repaired.tokens().collect::<Vec<_>>();
     assert_eq!(
         repaired.iter().map(|token| token.kind()).collect::<Vec<_>>(),
         [
             grammar::TokenKind::COLON,
             grammar::TokenKind::NULL,
-            grammar::TokenKind::QuotedText,
+            grammar::TokenKind::COLON,
+            grammar::TokenKind::TRUE,
+            grammar::TokenKind::COLON,
+            grammar::TokenKind::FALSE,
+            grammar::TokenKind::PseudoText,
+            grammar::TokenKind::PseudoText,
             grammar::TokenKind::NOT_EQUAL,
             grammar::TokenKind::LEGIT_NOT_EQUAL,
         ]
     );
     assert_eq!(
         repaired.iter().map(|token| token.text()).collect::<Vec<_>>(),
-        [":", "NULL", "':TRUE'", "!=", "!=-",]
+        [
+            ":", "NULL", ":", "true", ":", "FaLsE", ":'TRUE'", ":\"FALSE\"", "!=",
+            "!=-",
+        ]
     );
+
+    let repaired_eof_comment = grammar::lex("!=--comment @");
+    assert_eq!(repaired_eof_comment.errors().count(), 0);
+    let repaired_eof_comment = repaired_eof_comment.tokens().collect::<Vec<_>>();
+    assert_eq!(repaired_eof_comment.len(), 1);
+    assert_eq!(repaired_eof_comment[0].kind(), grammar::TokenKind::NOT_EQUAL);
+    assert_eq!(repaired_eof_comment[0].text(), "!=");
 
     let admitted = grammar::lex("select null");
     let mut admitted_input = admitted.input();
