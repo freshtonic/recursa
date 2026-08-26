@@ -59,7 +59,7 @@ const KNOWN_EVIDENCE: [&str; 22] = [
     "cargo test -p recursa-codegen m3_pipeline::tests::canonical_projection_matches_optq --locked",
     "cargo test -p recursa-codegen m3_pipeline::tests::canonical_projection_matches_cskw --locked",
     "cargo test -p recursa-codegen m3_pipeline::tests::projection_candidate_command_never_updates_reviewed_expectations --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::m3_pipeline_has_no_generation_publication_surface --locked",
+    "cargo test -p recursa-codegen m3_pipeline::tests::m3_stays_private_and_m4_owns_the_generation_publication_surface --locked",
     "cargo test --workspace --all-targets --locked",
 ];
 

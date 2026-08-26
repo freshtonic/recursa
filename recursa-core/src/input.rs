@@ -43,6 +43,14 @@ impl<'src> LexResult<'src> {
             capture_spans: false,
         }
     }
+
+    pub(crate) fn source(&self) -> &'src str {
+        self.source
+    }
+
+    pub(crate) fn records(&self) -> &[TokenRecord] {
+        &self.records
+    }
 }
 
 /// A cursor over a borrowed lexing result plus parse-session state.

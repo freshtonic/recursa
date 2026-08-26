@@ -81,7 +81,7 @@ const fn evidence_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticEvide
         3004 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::InvalidPattern),
         3005 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PatternOverlap),
         3006 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PriorityTie),
-        9101..=9104 => DiagnosticEvidenceSchema::InternalInvariant,
+        9101..=9105 => DiagnosticEvidenceSchema::InternalInvariant,
         1..=301 => DiagnosticEvidenceSchema::AnalysisWitness,
         1001..=3209 => DiagnosticEvidenceSchema::SourceFacts,
         _ => DiagnosticEvidenceSchema::InternalInvariant,
@@ -102,7 +102,7 @@ const fn remedy_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticRemedyS
         3004 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::InvalidPattern),
         3005 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PatternOverlap),
         3006 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PriorityTie),
-        9101..=9104 => DiagnosticRemedySchema::ReportInternalFailure,
+        9101..=9105 => DiagnosticRemedySchema::ReportInternalFailure,
         1..=301 => DiagnosticRemedySchema::ResolveAnalysisConflict,
         1001..=3209 => DiagnosticRemedySchema::CorrectAuthoredInput,
         _ => DiagnosticRemedySchema::ReportInternalFailure,
@@ -210,6 +210,7 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA9102", Resolution, Error),
     diagnostic_spec!("RCA9103", Lowering, Error),
     diagnostic_spec!("RCA9104", Analysis, Error),
+    diagnostic_spec!("RCA9105", Emission, Error),
 ];
 
 pub(crate) fn diagnostic_code_registry() -> &'static [DiagnosticCodeSpec] {
@@ -809,7 +810,8 @@ impl RecursaDiagnostic {
             DiagnosticStage::Resolution => (self.stage, RecursaDiagnosticCode::new("RCA9102")),
             DiagnosticStage::Lowering => (self.stage, RecursaDiagnosticCode::new("RCA9103")),
             DiagnosticStage::Analysis => (self.stage, RecursaDiagnosticCode::new("RCA9104")),
-            DiagnosticStage::Emission | DiagnosticStage::Loading => (
+            DiagnosticStage::Emission => (self.stage, RecursaDiagnosticCode::new("RCA9105")),
+            DiagnosticStage::Loading => (
                 DiagnosticStage::Analysis,
                 RecursaDiagnosticCode::new("RCA9104"),
             ),

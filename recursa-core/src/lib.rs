@@ -2,6 +2,7 @@
 
 mod grammar;
 mod input;
+mod lex;
 mod output;
 mod parse;
 mod parsed;
@@ -23,10 +24,39 @@ pub use span::{OffsetOverflow, Span};
 pub mod __private {
     use crate::{ExpectedAtomId, FollowSet, Input, ParseError, Span, SpanBlock};
 
+    pub use crate::lex::{LexRule, lex};
     pub use crate::parsed::{
         CapturePolicy, ContentText, NodeViewFactory, Occurrence, Parse, ParseContext, ParsedNode,
         ViewCursor, parse, parse_spanned,
     };
+
+    /// Type-level identity of one exact facade release and private protocol.
+    ///
+    /// Matching generated root code names its producing release and protocol as
+    /// const arguments and assigns [`FACADE_COMPATIBILITY`] to that exact type.
+    #[derive(Clone, Copy, Debug)]
+    pub struct FacadeCompatibility<const RELEASE: u64, const PRIVATE_PROTOCOL: u32> {
+        _private: (),
+    }
+
+    /// Stable type-level encoding of an exact Cargo package release string.
+    pub const fn release_stamp(release: &str) -> u64 {
+        let bytes = release.as_bytes();
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        let mut index = 0;
+        while index < bytes.len() {
+            hash ^= bytes[index] as u64;
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+            index += 1;
+        }
+        hash
+    }
+
+    /// Compatibility capability supplied by this exact facade/runtime build.
+    pub const FACADE_COMPATIBILITY: FacadeCompatibility<
+        { release_stamp(env!("CARGO_PKG_VERSION")) },
+        1,
+    > = FacadeCompatibility { _private: () };
 
     /// Opaque cursor state used by generated speculative parsing.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,6 +96,18 @@ pub mod __private {
         input.consumed_end()
     }
 
+    /// Returns the source retained by a grammar-local generated lexing result.
+    pub fn lex_source<'input>(lexed: &crate::LexResult<'input>) -> &'input str {
+        lexed.source()
+    }
+
+    /// Returns payload-free records for a generated typed token view.
+    pub fn lex_records<'lexed>(
+        lexed: &'lexed crate::LexResult<'_>,
+    ) -> &'lexed [crate::TokenRecord] {
+        lexed.records()
+    }
+
     /// Populates a generated node's public extent.
     pub fn set_node_span<const N: usize>(block: &mut SpanBlock<N>, span: Span) {
         block.set_node(span);
@@ -83,5 +125,16 @@ pub mod __private {
         span: Span,
     ) -> bool {
         block.set_element(index, span)
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    #[test]
+    fn core_exposes_the_exact_release_and_private_protocol_capability() {
+        let _: super::__private::FacadeCompatibility<
+            { super::__private::release_stamp("0.1.0") },
+            1,
+        > = super::__private::FACADE_COMPATIBILITY;
     }
 }

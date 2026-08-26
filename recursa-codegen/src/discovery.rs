@@ -1653,6 +1653,34 @@ mod inactive_contract_checks;
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn cargo_cfg_snapshot_ignores_non_unicode_environment_entries_without_panicking() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let snapshot = CargoCfgSnapshot::from_cargo_environment([
+            (
+                OsString::from("CARGO_CFG_TARGET_OS"),
+                OsString::from("linux"),
+            ),
+            (
+                OsString::from_vec(b"CARGO_CFG_INVALID_\xff".to_vec()),
+                OsString::from("ignored"),
+            ),
+            (
+                OsString::from("CARGO_CFG_INVALID_VALUE"),
+                OsString::from_vec(vec![0xff]),
+            ),
+            (
+                OsString::from_vec(b"UNRELATED_\xff".to_vec()),
+                OsString::from_vec(vec![0xff]),
+            ),
+        ]);
+
+        assert_eq!(snapshot.canonical_facts(), ["target_os=\"linux\""]);
+    }
+
     #[test]
     fn raw_identifiers_use_unraw_module_names() {
         let package = TempDir::new().unwrap();
