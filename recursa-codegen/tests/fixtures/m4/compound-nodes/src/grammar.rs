@@ -15,7 +15,7 @@ recursa::tokens! {
         RIGHT => "right",
     }
     punctuation {
-        COLON => ":",
+        COLON => ":", spacing = tight,
     }
 }
 

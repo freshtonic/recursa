@@ -325,6 +325,17 @@ pub(crate) enum TokenDefinitionKind {
 pub(crate) struct FixedTokenDefinition {
     pub(crate) spelling: String,
     pub(crate) authored_classifications: Vec<AuthoredFixedClassification>,
+    pub(crate) pretty_spacing: PrettySpacing,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum PrettySpacing {
+    #[default]
+    Auto,
+    Tight,
+    Before,
+    After,
+    Around,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -998,7 +1009,14 @@ impl TokenCatalog {
                 let TokenSequenceEntry::Definition(spelling) = entry else {
                     continue;
                 };
-                self.define_fixed(resolved, origin, spelling.value(), spelling, None);
+                self.define_fixed(
+                    resolved,
+                    origin,
+                    spelling.value(),
+                    spelling,
+                    None,
+                    PrettySpacing::Auto,
+                );
             }
         }
     }
@@ -1023,6 +1041,7 @@ impl TokenCatalog {
                 fixed.name.unraw().to_string(),
                 fixed.spelling,
                 Some(fixed.authored_class),
+                fixed.pretty_spacing,
             );
         }
         for content in syntax.content {
@@ -1059,6 +1078,7 @@ impl TokenCatalog {
         name: String,
         spelling: LitStr,
         authored_class: Option<AuthoredFixedTokenClass>,
+        pretty_spacing: PrettySpacing,
     ) {
         let site = source_site(resolved, origin, span_range(spelling.span()));
         let spelling = spelling.value();
@@ -1084,6 +1104,7 @@ impl TokenCatalog {
             name,
             kind: TokenDefinitionKind::Fixed(FixedTokenDefinition {
                 spelling,
+                pretty_spacing,
                 authored_classifications: authored_class
                     .map(|class| AuthoredFixedClassification {
                         class,
@@ -2070,6 +2091,7 @@ struct CentralFixedSyntax {
     name: syn::Ident,
     spelling: LitStr,
     authored_class: AuthoredFixedTokenClass,
+    pretty_spacing: PrettySpacing,
 }
 
 struct CentralContentSyntax {
@@ -2111,12 +2133,13 @@ impl Parse for CentralTokensSyntax {
                         let name = syn::Ident::parse_any(&body)?;
                         body.parse::<Token![=>]>()?;
                         let spelling = body.parse()?;
+                        let pretty_spacing = parse_fixed_pretty_spacing(&body, &spelling)?;
                         fixed.push(CentralFixedSyntax {
                             name,
                             spelling,
                             authored_class,
+                            pretty_spacing,
                         });
-                        skip_central_entry_tail(&body)?;
                     }
                 } else if section == "literals" || section == "lexer_tokens" {
                     while !body.is_empty() {
@@ -2161,6 +2184,64 @@ impl Parse for CentralTokensSyntax {
             post_lex,
         })
     }
+}
+
+fn parse_fixed_pretty_spacing(
+    input: ParseStream<'_>,
+    spelling: &LitStr,
+) -> syn::Result<PrettySpacing> {
+    if !input.peek(Token![,]) {
+        return Ok(PrettySpacing::Auto);
+    }
+    let fork = input.fork();
+    fork.parse::<Token![,]>()?;
+    if fork.is_empty() {
+        input.parse::<Token![,]>()?;
+        return Ok(PrettySpacing::Auto);
+    }
+    let marker = syn::Ident::parse_any(&fork)?;
+    if fork.peek(Token![=>]) || !fork.peek(Token![=]) {
+        input.parse::<Token![,]>()?;
+        return Ok(PrettySpacing::Auto);
+    }
+    if marker != "spacing" {
+        return Err(syn::Error::new(
+            marker.span(),
+            format!("unsupported fixed-token setting `{marker}`"),
+        ));
+    }
+    input.parse::<Token![,]>()?;
+    syn::Ident::parse_any(input)?;
+    input.parse::<Token![=]>()?;
+    let mode = syn::Ident::parse_any(input)?;
+    let spacing = match mode.to_string().as_str() {
+        "auto" => PrettySpacing::Auto,
+        "tight" => PrettySpacing::Tight,
+        "before" => PrettySpacing::Before,
+        "after" => PrettySpacing::After,
+        "around" => PrettySpacing::Around,
+        _ => {
+            return Err(syn::Error::new(
+                mode.span(),
+                "spacing must be auto, tight, before, after, or around",
+            ));
+        }
+    };
+    if spacing == PrettySpacing::Tight
+        && spelling
+            .value()
+            .chars()
+            .all(|character| character == '_' || character.is_alphanumeric())
+    {
+        return Err(syn::Error::new(
+            mode.span(),
+            "tight spacing is unsafe for a word-shaped fixed token",
+        ));
+    }
+    if input.peek(Token![,]) {
+        input.parse::<Token![,]>()?;
+    }
+    Ok(spacing)
 }
 
 fn skip_central_entry_tail(input: ParseStream<'_>) -> syn::Result<()> {
@@ -2594,10 +2675,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        ConfiguredTraitOwnership, ConfiguredTraitRecipe, ContentTextStorage, DeclaredRepetition,
-        GrammarElement, GrammarElementKind, NodeBody, NodeShape, SourceModelDiagnosticKind,
-        SourceModelInput, SourcePrattPosition, TokenDefinitionKind, TokenUseRole,
-        lower_source_model,
+        CentralTokensSyntax, ConfiguredTraitOwnership, ConfiguredTraitRecipe, ContentTextStorage,
+        DeclaredRepetition, GrammarElement, GrammarElementKind, NodeBody, NodeShape, PrettySpacing,
+        SourceModelDiagnosticKind, SourceModelInput, SourcePrattPosition, TokenDefinitionKind,
+        TokenUseRole, lower_source_model,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
@@ -4059,6 +4140,54 @@ struct Leaf;
                 .count(),
             3,
             "node-level future #[parse] forms must not be classified as Pratt roles",
+        );
+    }
+
+    #[test]
+    fn central_fixed_tokens_accept_only_the_five_safe_spacing_modes() {
+        let syntax: CentralTokensSyntax = syn::parse_str(
+            r#"punctuation {
+                AUTO => "+",
+                TIGHT => "::", spacing = tight,
+                BEFORE => ":", spacing = before,
+                AFTER => ":", spacing = after,
+                AROUND => ":", spacing = around,
+            }"#,
+        )
+        .expect("safe fixed-token spacing modes parse");
+        assert_eq!(
+            syntax
+                .fixed
+                .iter()
+                .map(|fixed| fixed.pretty_spacing)
+                .collect::<Vec<_>>(),
+            [
+                PrettySpacing::Auto,
+                PrettySpacing::Tight,
+                PrettySpacing::Before,
+                PrettySpacing::After,
+                PrettySpacing::Around,
+            ]
+        );
+
+        let unknown = syn::parse_str::<CentralTokensSyntax>(
+            r#"punctuation { COLON => ":", spacing = sideways }"#,
+        )
+        .err()
+        .expect("unknown spacing is rejected");
+        assert_eq!(
+            unknown.to_string(),
+            "spacing must be auto, tight, before, after, or around"
+        );
+
+        let unsafe_keyword = syn::parse_str::<CentralTokensSyntax>(
+            r#"keywords { SELECT => "SELECT", spacing = tight }"#,
+        )
+        .err()
+        .expect("unsafe keyword spacing is rejected");
+        assert_eq!(
+            unsafe_keyword.to_string(),
+            "tight spacing is unsafe for a word-shaped fixed token"
         );
     }
 }
