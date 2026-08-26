@@ -628,13 +628,22 @@ fn assert_repetition_behavior() {
     assert!(empty_choice.root().items().is_none());
     assert_eq!(empty_choice.root().empty_span(), empty_choice.root().span());
 
+    let failed_lexed = grammar::lex("strict");
+    let mut failed_input = failed_lexed.input();
+    assert!(grammar::Strict::parse_spanned(&mut failed_input).is_err());
+    assert_eq!(
+        failed_input.cursor(),
+        0,
+        "a mandatory Vec1 with zero items rolls back its input cursor"
+    );
+
     let failed_lexed = grammar::lex("strict alpha,");
     let mut failed_input = failed_lexed.input();
     assert!(grammar::Strict::parse_spanned(&mut failed_input).is_err());
     assert_eq!(
         failed_input.cursor(),
         0,
-        "a failed repetition parse commits neither semantic values nor provenance"
+        "a bad trailing separator commits neither semantic values nor provenance"
     );
 
     let synthetic = recursa::Parsed::synthetic(grammar::Many { values: Vec::new() });

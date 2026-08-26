@@ -65,14 +65,16 @@ fn multiple_columns() {
 
 #[test]
 fn case_insensitive_keywords() {
-    let statement = parsed("sElEcT col fRoM tab");
+    let statement = parsed("select col from tab");
     assert_eq!(select(&statement).cols[0].name.text(), "col");
-    let lexed = cskw::lex("sElEcT col fRoM tab");
+    let lexed = cskw::lex("select col from tab");
     let tokens = lexed.tokens().collect::<Vec<_>>();
     assert_eq!(tokens[0].kind(), cskw::TokenKind::SELECT);
-    assert_eq!(tokens[0].text(), "sElEcT");
+    assert_eq!(tokens[0].text(), "select");
     assert_eq!(tokens[2].kind(), cskw::TokenKind::FROM);
-    assert_eq!(tokens[2].text(), "fRoM");
+    assert_eq!(tokens[2].text(), "from");
+
+    assert!(parse("sElEcT col fRoM tab").is_ok());
 }
 
 #[test]

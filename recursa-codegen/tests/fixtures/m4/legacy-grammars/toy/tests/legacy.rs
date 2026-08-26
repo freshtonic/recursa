@@ -1,4 +1,5 @@
 use recursa_legacy_toy::toy;
+use recursa::{HasSpan as _, NodeView as _};
 
 fn parse(source: &str) -> Result<toy::SemicolonStmt, recursa::ParseError> {
     let lexed = toy::lex(source);
@@ -11,7 +12,15 @@ fn parse(source: &str) -> Result<toy::SemicolonStmt, recursa::ParseError> {
 
 #[test]
 fn parses_a_single_semicolon() {
-    parse(";").expect("semicolon parses");
+    let lexed = toy::lex(";");
+    let tokens = lexed.tokens().collect::<Vec<_>>();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens[0].kind(), toy::TokenKind::SEMI);
+
+    let mut input = lexed.input();
+    let parsed = toy::SemicolonStmt::parse_spanned(&mut input).expect("semicolon parses");
+    assert!(input.is_eof(), "accepted parse must consume explicit EOF");
+    assert_eq!(parsed.root().span(), recursa::Span::new(0, 1).ok());
 }
 
 #[test]
