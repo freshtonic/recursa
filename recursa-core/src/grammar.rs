@@ -11,18 +11,23 @@ pub struct ExpectedAtomId(pub u32);
 /// Static names and distinguished kinds for one generated grammar.
 #[derive(Debug, Eq, PartialEq)]
 pub struct GrammarInfo {
-    pub name: &'static str,
-    pub kind_names: &'static [&'static str],
-    pub atom_names: &'static [&'static str],
-    pub lexical_error_kind: TokenKind,
+    pub(crate) name: &'static str,
+    pub(crate) kind_names: &'static [&'static str],
+    pub(crate) atom_names: &'static [&'static str],
+    pub(crate) lexical_error_kind: TokenKind,
 }
 
 impl GrammarInfo {
-    pub fn kind_name(&self, kind: TokenKind) -> Option<&'static str> {
+    /// The configured grammar name.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    pub(crate) fn kind_name(&self, kind: TokenKind) -> Option<&'static str> {
         self.kind_names.get(usize::from(kind)).copied()
     }
 
-    pub fn atom_name(&self, atom: ExpectedAtomId) -> Option<&'static str> {
+    pub(crate) fn atom_name(&self, atom: ExpectedAtomId) -> Option<&'static str> {
         usize::try_from(atom.0)
             .ok()
             .and_then(|index| self.atom_names.get(index))
@@ -30,7 +35,7 @@ impl GrammarInfo {
     }
 }
 
-/// Dynamic caller FOLLOW supplied to every generated parser.
+/// Recursive FOLLOW state transported only by matching generated parsers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FollowSet {
     pub(crate) kind_count: u32,

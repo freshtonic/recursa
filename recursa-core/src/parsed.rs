@@ -4,6 +4,21 @@ use std::hash::{Hash, Hasher};
 
 use crate::{FollowSet, GrammarInfo, HasSpan, Input, ParseError, Span, TokenRecord};
 
+#[doc(hidden)]
+pub mod parse_seal {
+    pub trait Sealed<I: ?Sized> {}
+}
+
+/// Safe parsing capability implemented only by matching Recursa generations.
+///
+/// `I` is a generated grammar-local input type. Recursive parsing and FOLLOW
+/// transport are deliberately absent from this public contract.
+pub trait Parse<I: ?Sized>: parse_seal::Sealed<I> {
+    type Output;
+
+    fn parse(input: &mut I) -> Result<Self::Output, ParseError>;
+}
+
 /// A parsed semantic value together with its immutable occurrence provenance.
 ///
 /// Mutating access is deliberately unavailable: consume the wrapper with
@@ -407,7 +422,7 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         policy: CapturePolicy,
     ) -> Result<ParsedNode<T>, ParseError>
     where
-        T: Parse<'input, A>,
+        T: GeneratedParse<'input, A>,
     {
         if !std::ptr::eq(self.input.grammar(), T::grammar()) {
             return Err(ParseError::grammar_mismatch(self.input));
@@ -419,7 +434,7 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
 
 /// Matching-version recursive parsing protocol implemented by generated code.
 #[doc(hidden)]
-pub trait Parse<'input, A = ()>: Node + Sized {
+pub trait GeneratedParse<'input, A = ()>: Node + Sized {
     const CAPTURE_POLICY: CapturePolicy;
 
     fn grammar() -> &'static GrammarInfo;
@@ -433,7 +448,7 @@ pub trait Parse<'input, A = ()>: Node + Sized {
 #[doc(hidden)]
 pub fn parse<'input, T, A>(input: &mut Input<'input, A>) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: Parse<'input, A>,
+    T: GeneratedParse<'input, A>,
 {
     parse_with_request::<T, A>(input, CaptureRequest::Default)
 }
@@ -444,7 +459,7 @@ pub fn parse_spanned<'input, T, A>(
     input: &mut Input<'input, A>,
 ) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: Parse<'input, A>,
+    T: GeneratedParse<'input, A>,
 {
     parse_with_request::<T, A>(input, CaptureRequest::Spanned)
 }
@@ -454,7 +469,7 @@ fn parse_with_request<'input, T, A>(
     request: CaptureRequest,
 ) -> Result<Parsed<'input, T>, ParseError>
 where
-    T: Parse<'input, A>,
+    T: GeneratedParse<'input, A>,
 {
     if !std::ptr::eq(input.grammar(), T::grammar()) {
         return Err(ParseError::grammar_mismatch(input));
@@ -473,4 +488,222 @@ where
         Origin::Uncaptured
     };
     Ok(Parsed { ast: value, origin })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ExpectedAtomId, LexResult, ParseErrorKind};
+
+    const WORD: u16 = 0;
+    const LEXICAL_ERROR: u16 = 1;
+    static GRAMMAR: GrammarInfo = GrammarInfo {
+        name: "parsed-tests",
+        kind_names: &["word", "lexical error"],
+        atom_names: &["word"],
+        lexical_error_kind: LEXICAL_ERROR,
+    };
+    static WORD_START: FollowSet = FollowSet::from_static(2, &[1 << WORD], &[ExpectedAtomId(0)]);
+
+    #[derive(Clone, Copy)]
+    struct TokenView<'view, T> {
+        value: &'view T,
+        cursor: ViewCursor<'view>,
+    }
+
+    impl<T> crate::output::span_seal::Sealed for TokenView<'_, T> {}
+
+    impl<T> HasSpan for TokenView<'_, T> {
+        fn span(&self) -> Option<Span> {
+            self.cursor.span()
+        }
+    }
+
+    impl<T> NodeView for TokenView<'_, T> {
+        type Value = T;
+
+        fn value(&self) -> &Self::Value {
+            self.value
+        }
+    }
+
+    macro_rules! test_token {
+        ($name:ident, $policy:ident) => {
+            #[derive(Debug)]
+            struct $name<'input> {
+                text: ContentText<'input>,
+            }
+
+            impl<'input> NodeViewFactory for $name<'input> {
+                type View<'view>
+                    = TokenView<'view, Self>
+                where
+                    Self: 'view;
+
+                fn view<'view>(&'view self, cursor: ViewCursor<'view>) -> Self::View<'view> {
+                    TokenView {
+                        value: self,
+                        cursor,
+                    }
+                }
+            }
+
+            impl<'input> GeneratedParse<'input> for $name<'input> {
+                const CAPTURE_POLICY: CapturePolicy = CapturePolicy::$policy;
+
+                fn grammar() -> &'static GrammarInfo {
+                    &GRAMMAR
+                }
+
+                fn root_follow() -> &'static FollowSet {
+                    &WORD_START
+                }
+
+                fn parse(
+                    context: &mut ParseContext<'_, 'input, ()>,
+                ) -> Result<ParsedNode<Self>, ParseError> {
+                    let Some(record) = context.peek(0) else {
+                        return Err(context.unexpected(&WORD_START));
+                    };
+                    if record.kind != WORD {
+                        return Err(context.unexpected(&WORD_START));
+                    }
+                    context.advance();
+                    let text = context.matched_text(record)?;
+                    context.finish(Self { text }, record.span)
+                }
+            }
+        };
+    }
+
+    test_token!(OffToken, Off);
+    test_token!(OptionalToken, Optional);
+    test_token!(MandatoryToken, Mandatory);
+
+    #[derive(Debug)]
+    struct FailsAfterOccurrence;
+
+    impl NodeViewFactory for FailsAfterOccurrence {
+        type View<'view> = TokenView<'view, Self>;
+
+        fn view<'view>(&'view self, cursor: ViewCursor<'view>) -> Self::View<'view> {
+            TokenView {
+                value: self,
+                cursor,
+            }
+        }
+    }
+
+    impl<'input> GeneratedParse<'input> for FailsAfterOccurrence {
+        const CAPTURE_POLICY: CapturePolicy = CapturePolicy::Mandatory;
+
+        fn grammar() -> &'static GrammarInfo {
+            &GRAMMAR
+        }
+
+        fn root_follow() -> &'static FollowSet {
+            &WORD_START
+        }
+
+        fn parse(
+            context: &mut ParseContext<'_, 'input, ()>,
+        ) -> Result<ParsedNode<Self>, ParseError> {
+            let record = context.advance().expect("fixture has a first token");
+            let _partial = context.finish(Self, record.span)?;
+            Err(context.unexpected(&WORD_START))
+        }
+    }
+
+    fn one_word(source: &str) -> LexResult<'_> {
+        LexResult::new(
+            source,
+            vec![TokenRecord {
+                kind: WORD,
+                span: Span::new(0, source.len()).unwrap(),
+            }],
+        )
+    }
+
+    #[test]
+    fn root_capture_policy_and_request_cover_all_six_combinations() {
+        macro_rules! assert_case {
+            ($token:ident, $spanned:expr, $captured:expr) => {{
+                let lexed = one_word("word");
+                let mut input = lexed.input(&GRAMMAR);
+                let parsed = if $spanned {
+                    parse_spanned::<$token<'_>, _>(&mut input).unwrap()
+                } else {
+                    parse::<$token<'_>, _>(&mut input).unwrap()
+                };
+                assert_eq!(parsed.source().is_some(), $captured);
+                assert_eq!(parsed.root().span().is_some(), $captured);
+                assert_eq!(parsed.root().value().text.as_str(), "word");
+            }};
+        }
+
+        assert_case!(OffToken, false, false);
+        assert_case!(OffToken, true, false);
+        assert_case!(OptionalToken, false, false);
+        assert_case!(OptionalToken, true, true);
+        assert_case!(MandatoryToken, false, true);
+        assert_case!(MandatoryToken, true, true);
+    }
+
+    #[test]
+    fn invalid_generated_record_spans_are_structured_errors() {
+        let lexed = LexResult::new(
+            "x",
+            vec![TokenRecord {
+                kind: WORD,
+                span: Span::new(0, 2).unwrap(),
+            }],
+        );
+        let mut input = lexed.input(&GRAMMAR);
+
+        let error = parse_spanned::<OptionalToken<'_>, _>(&mut input).unwrap_err();
+
+        assert_eq!(error.kind(), ParseErrorKind::InvalidTokenSpan);
+    }
+
+    #[test]
+    fn parse_errors_expose_symbolic_names_without_numeric_runtime_ids() {
+        let lexed = LexResult::new(
+            "?",
+            vec![TokenRecord {
+                kind: LEXICAL_ERROR,
+                span: Span::new(0, 1).unwrap(),
+            }],
+        );
+        let mut input = lexed.input(&GRAMMAR);
+
+        let error = parse::<OptionalToken<'_>, _>(&mut input).unwrap_err();
+
+        assert_eq!(error.kind(), ParseErrorKind::LexicalError);
+        assert_eq!(error.found(), Some("lexical error"));
+        assert_eq!(error.expected().collect::<Vec<_>>(), vec!["word"]);
+    }
+
+    #[test]
+    fn failed_parses_publish_no_partial_occurrence_provenance() {
+        let lexed = LexResult::new(
+            "a b",
+            vec![
+                TokenRecord {
+                    kind: WORD,
+                    span: Span::new(0, 1).unwrap(),
+                },
+                TokenRecord {
+                    kind: WORD,
+                    span: Span::new(2, 3).unwrap(),
+                },
+            ],
+        );
+        let mut input = lexed.input(&GRAMMAR);
+
+        assert!(parse::<FailsAfterOccurrence, _>(&mut input).is_err());
+        let parsed = parse_spanned::<OptionalToken<'_>, _>(&mut input).unwrap();
+
+        assert_eq!(parsed.root().value().text.as_str(), "b");
+        assert_eq!(parsed.root().span(), Some(Span::new(2, 3).unwrap()));
+    }
 }

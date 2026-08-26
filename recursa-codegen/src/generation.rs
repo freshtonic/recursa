@@ -423,19 +423,20 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             let _: #module_anchor::__RecursaGenerationAnchor = __RecursaGenerationAnchor;
         };
 
-        static __RECURSA_GRAMMAR: #facade::GrammarInfo = #facade::GrammarInfo {
-            name: #key,
-            kind_names: &[#(#kind_names),*],
-            atom_names: &[stringify!(#token_ident)],
-            lexical_error_kind: #lexical_error_kind as u16,
-        };
-        static __RECURSA_EMPTY_FOLLOW: #facade::FollowSet =
+        static __RECURSA_GRAMMAR: #facade::__private::GrammarInfo =
+            #facade::__private::grammar_info(
+                #key,
+                &[#(#kind_names),*],
+                &[stringify!(#token_ident)],
+                #lexical_error_kind as u16,
+            );
+        static __RECURSA_EMPTY_FOLLOW: #facade::__private::FollowSet =
             #facade::__private::follow_set(#kind_count as u32, &[0], &[]);
-        static __RECURSA_TOKEN_START: #facade::FollowSet =
+        static __RECURSA_TOKEN_START: #facade::__private::FollowSet =
             #facade::__private::follow_set(
                 #kind_count as u32,
                 &[1_u64 << #kind],
-                &[#facade::ExpectedAtomId(#expected_atom)],
+                &[#facade::__private::ExpectedAtomId(#expected_atom)],
             );
         static __RECURSA_LEX_RULES: &[#facade::__private::LexRule] = &[
             #(
@@ -453,10 +454,27 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             LexicalError,
         }
 
+        /// Read-only metadata for this generated grammar.
+        pub struct GrammarInfo {
+            _private: (),
+        }
+
+        impl GrammarInfo {
+            pub fn name(&self) -> &'static str {
+                __RECURSA_GRAMMAR.name()
+            }
+        }
+
+        static __RECURSA_PUBLIC_GRAMMAR_INFO: GrammarInfo = GrammarInfo { _private: () };
+
+        pub fn grammar_info() -> &'static GrammarInfo {
+            &__RECURSA_PUBLIC_GRAMMAR_INFO
+        }
+
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct Token<'input> {
             source: &'input str,
-            record: #facade::TokenRecord,
+            record: #facade::__private::TokenRecord,
         }
 
         impl<'input> Token<'input> {
@@ -480,7 +498,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
         pub struct Tokens<'lexed, 'input> {
             source: &'input str,
-            records: ::core::slice::Iter<'lexed, #facade::TokenRecord>,
+            records: ::core::slice::Iter<'lexed, #facade::__private::TokenRecord>,
         }
 
         impl<'input> Iterator for Tokens<'_, 'input> {
@@ -500,8 +518,31 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
         impl ExactSizeIterator for Tokens<'_, '_> {}
 
+        /// A cursor bound to this generated grammar's token identities.
+        pub struct Input<'input, A = ()> {
+            inner: #facade::__private::Input<'input, A>,
+        }
+
+        impl<'input, A> Input<'input, A> {
+            pub fn source(&self) -> &'input str {
+                self.inner.source()
+            }
+
+            pub fn builder(&mut self) -> &mut A {
+                self.inner.builder()
+            }
+
+            pub fn cursor(&self) -> usize {
+                self.inner.cursor()
+            }
+
+            pub fn is_eof(&self) -> bool {
+                self.inner.is_eof()
+            }
+        }
+
         pub struct LexResult<'input> {
-            inner: #facade::LexResult<'input>,
+            inner: #facade::__private::LexResult<'input>,
         }
 
         impl<'input> LexResult<'input> {
@@ -512,8 +553,22 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 }
             }
 
-            pub fn input(&self) -> #facade::Input<'_> {
-                self.inner.input(&__RECURSA_GRAMMAR)
+            pub fn source(&self) -> &'input str {
+                #facade::__private::lex_source(&self.inner)
+            }
+
+            pub fn input(&self) -> Input<'_> {
+                Input {
+                    inner: self.inner.input(&__RECURSA_GRAMMAR),
+                }
+            }
+
+            pub fn input_with_builder<A>(&self, builder: A) -> Input<'_, A> {
+                Input {
+                    inner: self
+                        .inner
+                        .input_with_builder(&__RECURSA_GRAMMAR, builder),
+                }
             }
         }
 
@@ -557,6 +612,10 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             cursor: #facade::__private::ViewCursor<'view>,
         }
 
+        impl<#input_lifetime> #facade::__private::HasSpanSealed
+            for #token_view<'_, #input_lifetime>
+        {}
+
         impl<#input_lifetime> #facade::HasSpan for #token_view<'_, #input_lifetime> {
             fn span(&self) -> Option<#facade::Span> {
                 self.cursor.span()
@@ -584,22 +643,22 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             }
         }
 
-        impl<#input_lifetime> #facade::__private::Parse<#input_lifetime>
+        impl<#input_lifetime, A> #facade::__private::Parse<#input_lifetime, A>
             for #token_ident<#input_lifetime>
         {
             const CAPTURE_POLICY: #facade::__private::CapturePolicy =
                 #token_capture;
 
-            fn grammar() -> &'static #facade::GrammarInfo {
+            fn grammar() -> &'static #facade::__private::GrammarInfo {
                 &__RECURSA_GRAMMAR
             }
 
-            fn root_follow() -> &'static #facade::FollowSet {
+            fn root_follow() -> &'static #facade::__private::FollowSet {
                 &__RECURSA_EMPTY_FOLLOW
             }
 
             fn parse(
-                context: &mut #facade::__private::ParseContext<'_, #input_lifetime, ()>,
+                context: &mut #facade::__private::ParseContext<'_, #input_lifetime, A>,
             ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
                 let Some(record) = context.peek(0) else {
                     return Err(context.unexpected(&__RECURSA_TOKEN_START));
@@ -610,6 +669,23 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 context.advance();
                 let text = context.matched_text(record)?;
                 context.finish(Self { text }, record.span)
+            }
+        }
+
+        impl<#input_lifetime, A>
+            #facade::__private::ParseSealed<Input<#input_lifetime, A>>
+            for #token_ident<#input_lifetime>
+        {}
+
+        impl<#input_lifetime, A> #facade::Parse<Input<#input_lifetime, A>>
+            for #token_ident<#input_lifetime>
+        {
+            type Output = #facade::Parsed<#input_lifetime, Self>;
+
+            fn parse(
+                input: &mut Input<#input_lifetime, A>,
+            ) -> Result<Self::Output, #facade::ParseError> {
+                #facade::__private::parse(&mut input.inner)
             }
         }
 
@@ -644,9 +720,13 @@ fn render_node(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let node_ident = &plan.node.ident;
     let field = &plan.node.field;
     let token_ident = &plan.token.ident;
+    let token_view = sibling_ident(token_ident, "View");
     let view_ident = sibling_ident(node_ident, "View");
     let generics = &plan.node.generics;
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    let mut parse_generics = generics.clone();
+    parse_generics.params.push(syn::parse_quote!(A));
+    let (parse_impl_generics, _, parse_where_clause) = parse_generics.split_for_impl();
     let input_lifetime = &plan.token.lifetime;
     let node_capture = plan.node.capture.render(facade);
     let field_capture = plan.node.field_capture.render(facade);
@@ -663,6 +743,19 @@ fn render_node(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             value: &'view #node_ident<#input_lifetime>,
             cursor: #facade::__private::ViewCursor<'view>,
         }
+
+        impl<'view, #input_lifetime> #view_ident<'view, #input_lifetime> {
+            pub fn #field(&self) -> #token_view<'view, #input_lifetime> {
+                #facade::__private::NodeViewFactory::view(
+                    &self.value.#field,
+                    self.cursor.child(0),
+                )
+            }
+        }
+
+        impl<#input_lifetime> #facade::__private::HasSpanSealed
+            for #view_ident<'_, #input_lifetime>
+        {}
 
         impl<#input_lifetime> #facade::HasSpan for #view_ident<'_, #input_lifetime> {
             fn span(&self) -> Option<#facade::Span> {
@@ -693,22 +786,22 @@ fn render_node(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             }
         }
 
-        impl #impl_generics #facade::__private::Parse<#input_lifetime>
-            for #node_ident #type_generics #where_clause
+        impl #parse_impl_generics #facade::__private::Parse<#input_lifetime, A>
+            for #node_ident #type_generics #parse_where_clause
         {
             const CAPTURE_POLICY: #facade::__private::CapturePolicy =
                 #node_capture;
 
-            fn grammar() -> &'static #facade::GrammarInfo {
+            fn grammar() -> &'static #facade::__private::GrammarInfo {
                 &__RECURSA_GRAMMAR
             }
 
-            fn root_follow() -> &'static #facade::FollowSet {
+            fn root_follow() -> &'static #facade::__private::FollowSet {
                 &__RECURSA_EMPTY_FOLLOW
             }
 
             fn parse(
-                context: &mut #facade::__private::ParseContext<'_, #input_lifetime, ()>,
+                context: &mut #facade::__private::ParseContext<'_, #input_lifetime, A>,
             ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
                 let record = context.peek(0);
                 let caller_follow = context.follow().clone();
@@ -725,17 +818,34 @@ fn render_node(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             }
         }
 
+        impl #parse_impl_generics
+            #facade::__private::ParseSealed<Input<#input_lifetime, A>>
+            for #node_ident #type_generics #parse_where_clause
+        {}
+
+        impl #parse_impl_generics #facade::Parse<Input<#input_lifetime, A>>
+            for #node_ident #type_generics #parse_where_clause
+        {
+            type Output = #facade::Parsed<#input_lifetime, Self>;
+
+            fn parse(
+                input: &mut Input<#input_lifetime, A>,
+            ) -> Result<Self::Output, #facade::ParseError> {
+                #facade::__private::parse(&mut input.inner)
+            }
+        }
+
         impl #impl_generics #node_ident #type_generics #where_clause {
-            pub fn parse(
-                input: &mut #facade::Input<#input_lifetime>,
+            pub fn parse<A>(
+                input: &mut Input<#input_lifetime, A>,
             ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError> {
-                #facade::__private::parse(input)
+                <Self as #facade::Parse<Input<#input_lifetime, A>>>::parse(input)
             }
 
-            pub fn parse_spanned(
-                input: &mut #facade::Input<#input_lifetime>,
+            pub fn parse_spanned<A>(
+                input: &mut Input<#input_lifetime, A>,
             ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError> {
-                #facade::__private::parse_spanned(input)
+                #facade::__private::parse_spanned(&mut input.inner)
             }
         }
     }

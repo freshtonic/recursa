@@ -2,11 +2,21 @@
 
 ## Status
 
-Current design, pre-implementation. This document designs the developer-facing
-API for the recursa port — the layer that sits **in front of** the validated
-FIRST/FOLLOW model and analysis→codegen pipeline built in the spike. Its grammar
-entry and emission sections incorporate the accepted M0 build-output/Node
-decision; older macro-only claims are superseded.
+Historical pre-M4 design rationale. This document is retained to explain the
+questions that shaped the port; it is not the current public API contract.
+Later accepted M3/M4 decisions, consolidated in issues #36, #38, and #49,
+supersede its raw runtime examples. In particular:
+
+- `TokenRecord`, numeric token kinds, erased `LexResult` construction, raw
+  `Input`, and caller-supplied FOLLOW are private generated/runtime ABI;
+- lexing, metadata, and input types are generated and grammar-bound;
+- `recursa::Parse` is sealed and has no public recursive FOLLOW operation; and
+- source provenance lives beside semantic values in `Parsed` occurrence views,
+  not in AST `SpanBlock` fields.
+
+The checked facade and generated grammar fixtures are authoritative for the
+currently implemented surface. The remaining sections describe the earlier
+design and should be read in that historical context.
 
 The execution of this design is planned in [`port-plan.md`](./port-plan.md).
 The bar is **production readiness**, validated by a full pg-sql port with

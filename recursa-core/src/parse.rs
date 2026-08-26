@@ -93,16 +93,16 @@ impl ParseError {
         self.span
     }
 
-    pub fn found(&self) -> Option<TokenKind> {
-        self.found
+    /// The grammar-local display name of the found token, when present.
+    pub fn found(&self) -> Option<&'static str> {
+        self.found.and_then(|kind| self.grammar.kind_name(kind))
     }
 
-    pub fn expected(&self) -> &[ExpectedAtomId] {
-        &self.expected
-    }
-
-    pub fn grammar(&self) -> &'static GrammarInfo {
-        self.grammar
+    /// Grammar-local display names for the symbolic expectations.
+    pub fn expected(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.expected
+            .iter()
+            .filter_map(|atom| self.grammar.atom_name(*atom))
     }
 }
 
@@ -127,17 +127,3 @@ impl fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
-
-/// Parsing contract implemented by Recursa-generated grammar types.
-pub trait Parse<'i, A = ()>: Sized {
-    type Out;
-
-    fn parse(input: &mut Input<'i, A>, follow: &FollowSet) -> Result<Self::Out, ParseError>;
-
-    fn parse_spanned(
-        input: &mut Input<'i, A>,
-        follow: &FollowSet,
-    ) -> Result<Self::Out, ParseError> {
-        input.with_span_capture(|input| Self::parse(input, follow))
-    }
-}
