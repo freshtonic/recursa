@@ -573,6 +573,14 @@ enum PrettyBoundarySide {
     Last,
 }
 
+fn is_word_shaped(spelling: &str) -> bool {
+    spelling
+        .chars()
+        .next()
+        .is_some_and(unicode_ident::is_xid_start)
+        && spelling.chars().all(unicode_ident::is_xid_continue)
+}
+
 fn pattern_may_emit_any(pattern: &str, spelling: &str) -> bool {
     let Ok(hir) = regex_syntax::Parser::new().parse(pattern) else {
         return true;
@@ -587,6 +595,13 @@ fn pattern_may_emit_xid(pattern: &str) -> bool {
         return true;
     };
     hir_may_emit(&hir, &unicode_ident::is_xid_continue)
+}
+
+fn pattern_matches_entire(pattern: &str, text: &str) -> bool {
+    let anchored = format!(r"\A(?:{pattern})\z");
+    regex_automata::meta::Regex::new(&anchored)
+        .map(|regex| regex.is_match(text.as_bytes()))
+        .unwrap_or(true)
 }
 
 fn hir_may_emit(hir: &regex_syntax::hir::Hir, predicate: &impl Fn(char) -> bool) -> bool {
@@ -1508,14 +1523,28 @@ impl SourceModelBuilder<'_> {
         if left_requests_space || right_requests_space {
             return;
         }
-        let forced_tight = matches!(
+        let explicitly_tight = matches!(
             left_fixed.map(|fixed| fixed.pretty_spacing),
             Some(PrettySpacing::Tight | PrettySpacing::Before)
         ) || matches!(
             right_fixed.map(|fixed| fixed.pretty_spacing),
             Some(PrettySpacing::Tight | PrettySpacing::After)
         );
-        if !forced_tight {
+        let left_auto_punctuation = left_fixed.is_some_and(|fixed| {
+            fixed.pretty_spacing == PrettySpacing::Auto
+                && !is_word_shaped(&fixed.spelling)
+                && !matches!(fixed.spelling.as_str(), "(" | "[" | "{")
+        });
+        let left_auto_open = left_fixed.is_some_and(|fixed| {
+            fixed.pretty_spacing == PrettySpacing::Auto
+                && matches!(fixed.spelling.as_str(), "(" | "[" | "{")
+        });
+        let right_auto_punctuation = right_fixed.is_some_and(|fixed| {
+            fixed.pretty_spacing == PrettySpacing::Auto && !is_word_shaped(&fixed.spelling)
+        });
+        let runtime_auto_tight =
+            left_auto_open || (right_auto_punctuation && !left_auto_punctuation);
+        if !explicitly_tight && !runtime_auto_tight {
             return;
         }
 
@@ -1585,28 +1614,6 @@ impl SourceModelBuilder<'_> {
         right_site: &SourceSite,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
-        let left_requests_space = matches!(
-            left_fixed.pretty_spacing,
-            PrettySpacing::After | PrettySpacing::Around
-        );
-        let right_requests_space = matches!(
-            right_fixed.pretty_spacing,
-            PrettySpacing::Before | PrettySpacing::Around
-        );
-        if left_requests_space || right_requests_space {
-            return;
-        }
-        let forced_tight = matches!(
-            left_fixed.pretty_spacing,
-            PrettySpacing::Tight | PrettySpacing::Before
-        ) || matches!(
-            right_fixed.pretty_spacing,
-            PrettySpacing::Tight | PrettySpacing::After
-        );
-        if !forced_tight {
-            return;
-        }
-
         let left_tail = left_fixed.spelling.chars().next_back();
         let right_head = right_fixed.spelling.chars().next();
         if left_tail.is_some_and(unicode_ident::is_xid_continue)
@@ -1640,6 +1647,44 @@ impl SourceModelBuilder<'_> {
                         left_fixed.spelling, right_fixed.spelling, longer.spelling,
                     ),
                 });
+            return;
+        }
+
+        let pattern = self
+            .tokens
+            .definitions
+            .iter()
+            .find_map(|definition| match &definition.kind {
+                TokenDefinitionKind::Content(content)
+                    if pattern_matches_entire(&content.pattern, &combined) =>
+                {
+                    Some(content.pattern.as_str())
+                }
+                TokenDefinitionKind::LexicalBase(base)
+                    if pattern_matches_entire(&base.pattern, &combined) =>
+                {
+                    Some(base.pattern.as_str())
+                }
+                TokenDefinitionKind::Fixed(_)
+                | TokenDefinitionKind::Content(_)
+                | TokenDefinitionKind::LexicalBase(_) => None,
+            })
+            .or_else(|| {
+                self.tokens
+                    .lexer_records
+                    .iter()
+                    .find(|record| pattern_matches_entire(&record.pattern, &combined))
+                    .map(|record| record.pattern.as_str())
+            });
+        if let Some(pattern) = pattern {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                sites: vec![left_site.clone(), right_site.clone()],
+                message: format!(
+                    "Pretty spacing would suppress a lexer-required boundary between `{}` and `{}`; lexical pattern `{pattern}` would change tokenization",
+                    left_fixed.spelling, right_fixed.spelling,
+                ),
+            });
         }
     }
 
@@ -5656,6 +5701,79 @@ struct Root;
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
                 && diagnostic.message.contains("longest match `::`")
+        }));
+    }
+
+    #[test]
+    fn pretty_spacing_rejects_runtime_tight_auto_boundaries() {
+        for source in [
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { LPAREN => "(", RPAREN => ")", WHOLE => "()" } }
+#[derive(recursa::Node)] #[tok(LPAREN, RPAREN)] struct Root;
+"#,
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { COLON => ":" } }
+#[derive(recursa::Node)] #[tok(COLON)] struct Tail;
+#[derive(recursa::Node)]
+struct Root<'input> {
+    #[lex(pattern = r"[A-Za-z:]+")]
+    left: RootText<'input>,
+    right: Tail,
+}
+"#,
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { COLON => ":" } }
+#[derive(recursa::Node)]
+struct Root<'input> {
+    #[tok(this, COLON)]
+    #[lex(pattern = r"[A-Za-z:]+")]
+    value: RootText<'input>,
+}
+"#,
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { LPAREN => "(", RPAREN => ")", WHOLE => "()" } }
+#[derive(recursa::Node)] struct Child;
+#[derive(recursa::Node)] #[tok(RPAREN)] struct Tail;
+#[derive(recursa::Node)] struct Root(#[tok(this, LPAREN)] Child, Tail);
+"#,
+        ] {
+            let report = model(source);
+            assert!(report.source_modeled.is_none(), "{source}");
+            assert!(
+                report.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                        && (diagnostic.message.contains("lexer")
+                            || diagnostic.message.contains("regex-backed"))
+                }),
+                "{source}: {:?}",
+                report.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn pretty_spacing_checks_explicit_tight_fixed_edges_against_regex_rules() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { PLUS => "+", spacing = tight, MINUS => "-" } }
+#[derive(recursa::Node)]
+struct Lexeme<'input> {
+    #[lex(pattern = r"\+-")]
+    value: LexemeText<'input>,
+}
+#[derive(recursa::Node)] #[tok(PLUS, MINUS)] struct Root;
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("lexical pattern")
         }));
     }
 
