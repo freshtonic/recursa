@@ -108,6 +108,7 @@ pub(crate) struct Node {
     pub(crate) name: String,
     pub(crate) body: NodeBody,
     pub(crate) configured_traits: ConfiguredTraitPlan,
+    pub(crate) pretty: PrettyHints,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -156,6 +157,44 @@ pub(crate) struct Variant {
     pub(crate) name: String,
     pub(crate) elements: Vec<GrammarElement>,
     pub(crate) site: SourceSite,
+    pub(crate) pretty: PrettyHints,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PrettyHints {
+    pub(crate) group: Option<PrettyGroup>,
+    pub(crate) indent: bool,
+    pub(crate) break_before: Option<PrettyBreak>,
+    pub(crate) break_after: Option<PrettyBreak>,
+    pub(crate) separator: Option<PrettySeparatorPosition>,
+    pub(crate) trailing_separator: Option<PrettyTrailingSeparator>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PrettyGroup {
+    Consistent,
+    Inconsistent,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PrettyBreak {
+    Soft,
+    Hard,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PrettySeparatorPosition {
+    Leading,
+    Trailing,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PrettyTrailingSeparator {
+    Always,
+    Never,
+}
+
+impl PrettyHints {
+    fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -237,6 +276,9 @@ pub(crate) enum GrammarElement {
         name: Option<String>,
         attachment: Option<FixedTokenAttachment>,
         separator: Option<Separator>,
+        pretty: PrettyHints,
+        attachment_before: usize,
+        attachment_after: usize,
         site: SourceSite,
     },
 }
@@ -429,6 +471,9 @@ struct SourceOrigin {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum SourceModelDiagnosticKind {
     InvalidConfiguration,
+    InvalidPrettyHint,
+    InapplicablePrettyHint,
+    UnsafePrettyHint,
     MultipleTokenSequences,
     EmptyTokenSequence,
     MultipleThisAnchors,
@@ -569,6 +614,192 @@ fn hir_may_emit(hir: &regex_syntax::hir::Hir, predicate: &impl Fn(char) -> bool)
     }
 }
 
+fn hir_matches_single_char(hir: &regex_syntax::hir::Hir, required: char) -> (bool, bool) {
+    use regex_syntax::hir::{Class, HirKind};
+
+    match hir.kind() {
+        HirKind::Empty | HirKind::Look(_) => (true, false),
+        HirKind::Literal(literal) => {
+            std::str::from_utf8(&literal.0).map_or((false, false), |text| {
+                let mut chars = text.chars();
+                let first = chars.next();
+                (
+                    first.is_none(),
+                    first == Some(required) && chars.next().is_none(),
+                )
+            })
+        }
+        HirKind::Class(Class::Unicode(class)) => (
+            false,
+            class
+                .ranges()
+                .iter()
+                .any(|range| range.start() <= required && required <= range.end()),
+        ),
+        HirKind::Class(Class::Bytes(class)) => (
+            false,
+            u8::try_from(required).is_ok_and(|required| {
+                class
+                    .ranges()
+                    .iter()
+                    .any(|range| range.start() <= required && required <= range.end())
+            }),
+        ),
+        HirKind::Repetition(repetition) => {
+            let (sub_empty, sub_char) = hir_matches_single_char(&repetition.sub, required);
+            let can_repeat = repetition.max.is_none_or(|max| max >= 1);
+            (
+                repetition.min == 0 || sub_empty,
+                can_repeat && sub_char && (repetition.min <= 1 || sub_empty),
+            )
+        }
+        HirKind::Capture(capture) => hir_matches_single_char(&capture.sub, required),
+        HirKind::Concat(parts) => {
+            let properties = parts
+                .iter()
+                .map(|part| hir_matches_single_char(part, required))
+                .collect::<Vec<_>>();
+            let empty = properties.iter().all(|(empty, _)| *empty);
+            let one = properties.iter().enumerate().any(|(candidate, (_, one))| {
+                *one && properties
+                    .iter()
+                    .enumerate()
+                    .all(|(index, (empty, _))| index == candidate || *empty)
+            });
+            (empty, one)
+        }
+        HirKind::Alternation(parts) => parts.iter().fold((false, false), |result, part| {
+            let part = hir_matches_single_char(part, required);
+            (result.0 || part.0, result.1 || part.1)
+        }),
+    }
+}
+
+fn parse_pretty_hints(metas: &[Meta]) -> Result<PrettyHints, String> {
+    let named_pretty = metas
+        .iter()
+        .filter(|meta| {
+            meta.path()
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "pretty")
+        })
+        .collect::<Vec<_>>();
+    if named_pretty
+        .iter()
+        .any(|meta| !meta.path().is_ident("pretty"))
+    {
+        return Err("#[pretty(...)] must use the exact unqualified `pretty` path".to_owned());
+    }
+    let pretty = named_pretty;
+    if pretty.len() > 1 {
+        return Err("duplicate #[pretty(...)] attribute".to_owned());
+    }
+    let Some(Meta::List(list)) = pretty.first().copied() else {
+        return if pretty.is_empty() {
+            Ok(PrettyHints::default())
+        } else {
+            Err("#[pretty] requires a non-empty hint list".to_owned())
+        };
+    };
+    let entries = syn::punctuated::Punctuated::<Meta, Token![,]>::parse_terminated
+        .parse2(list.tokens.clone())
+        .map_err(|error| format!("invalid #[pretty(...)] syntax: {error}"))?;
+    if entries.is_empty() {
+        return Err("#[pretty(...)] requires at least one hint".to_owned());
+    }
+    let mut hints = PrettyHints::default();
+    for entry in entries {
+        let key = entry
+            .path()
+            .get_ident()
+            .map(ToString::to_string)
+            .ok_or_else(|| "Pretty hint keys must be unqualified identifiers".to_owned())?;
+        if matches!(entry, Meta::Path(_)) {
+            if key != "indent" {
+                return Err(format!("unknown bare Pretty hint `{key}`"));
+            }
+            if hints.indent {
+                return Err("duplicate Pretty hint `indent`".to_owned());
+            }
+            hints.indent = true;
+            continue;
+        }
+        let Meta::NameValue(value) = entry else {
+            return Err(format!("Pretty hint `{key}` must use `key = value`"));
+        };
+        let syn::Expr::Path(value) = value.value else {
+            return Err(format!("Pretty hint `{key}` requires an identifier value"));
+        };
+        let value = value
+            .path
+            .get_ident()
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                format!("Pretty hint `{key}` requires an unqualified identifier value")
+            })?;
+        match key.as_str() {
+            "group" => {
+                if hints.group.is_some() {
+                    return Err("duplicate Pretty hint `group`".to_owned());
+                }
+                hints.group = Some(match value.as_str() {
+                    "consistent" => PrettyGroup::Consistent,
+                    "inconsistent" => PrettyGroup::Inconsistent,
+                    _ => {
+                        return Err(
+                            "Pretty `group` must be `consistent` or `inconsistent`".to_owned()
+                        );
+                    }
+                });
+            }
+            "break_before" | "break_after" => {
+                let parsed = match value.as_str() {
+                    "soft" => PrettyBreak::Soft,
+                    "hard" => PrettyBreak::Hard,
+                    _ => return Err(format!("Pretty `{key}` must be `soft` or `hard`")),
+                };
+                let slot = if key == "break_before" {
+                    &mut hints.break_before
+                } else {
+                    &mut hints.break_after
+                };
+                if slot.replace(parsed).is_some() {
+                    return Err(format!("duplicate Pretty hint `{key}`"));
+                }
+            }
+            "separator" => {
+                if hints.separator.is_some() {
+                    return Err("duplicate Pretty hint `separator`".to_owned());
+                }
+                hints.separator = Some(match value.as_str() {
+                    "leading" => PrettySeparatorPosition::Leading,
+                    "trailing" => PrettySeparatorPosition::Trailing,
+                    _ => {
+                        return Err("Pretty `separator` must be `leading` or `trailing`".to_owned());
+                    }
+                });
+            }
+            "trailing_separator" => {
+                if hints.trailing_separator.is_some() {
+                    return Err("duplicate Pretty hint `trailing_separator`".to_owned());
+                }
+                hints.trailing_separator = Some(match value.as_str() {
+                    "always" => PrettyTrailingSeparator::Always,
+                    "never" => PrettyTrailingSeparator::Never,
+                    _ => {
+                        return Err(
+                            "Pretty `trailing_separator` must be `always` or `never`".to_owned()
+                        );
+                    }
+                });
+            }
+            _ => return Err(format!("unknown Pretty hint `{key}`")),
+        }
+    }
+    Ok(hints)
+}
+
 impl LoweredFields {
     fn push_attachment(&mut self, elements: Vec<GrammarElement>) {
         self.attachment_starts.push(self.elements.len());
@@ -588,20 +819,41 @@ impl SourceModelBuilder<'_> {
     fn validate_pretty_spacing(&mut self) {
         let mut diagnostics = Vec::new();
         for node in &self.nodes {
-            if !node
+            let pretty_enabled = node
                 .configured_traits
                 .effective
                 .iter()
-                .any(|selection| selection.recipe == ConfiguredTraitRecipe::Pretty)
-            {
+                .any(|selection| selection.recipe == ConfiguredTraitRecipe::Pretty);
+            if !pretty_enabled {
+                self.report_disabled_pretty_hints(node, &mut diagnostics);
                 continue;
+            }
+            if node.pretty.separator.is_some() || node.pretty.trailing_separator.is_some() {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                    sites: Vec::new(),
+                    message: "separator Pretty hints apply only to repeated fields".to_owned(),
+                });
             }
             match &node.body {
                 NodeBody::Struct(elements) | NodeBody::Presence(elements) => {
+                    self.validate_pretty_scope(&node.pretty, elements, "Node", &mut diagnostics);
                     self.validate_pretty_element_boundaries(elements, &mut diagnostics);
                 }
                 NodeBody::Enum(variants) => {
+                    self.validate_pretty_multi_scope(
+                        &node.pretty,
+                        variants.iter().map(|variant| variant.elements.as_slice()),
+                        "enum Node",
+                        &mut diagnostics,
+                    );
                     for variant in variants {
+                        self.validate_pretty_scope(
+                            &variant.pretty,
+                            &variant.elements,
+                            "variant",
+                            &mut diagnostics,
+                        );
                         self.validate_pretty_element_boundaries(
                             &variant.elements,
                             &mut diagnostics,
@@ -609,6 +861,14 @@ impl SourceModelBuilder<'_> {
                     }
                 }
                 NodeBody::Pratt(variants) => {
+                    self.validate_pretty_multi_scope(
+                        &node.pretty,
+                        variants
+                            .iter()
+                            .map(|variant| variant.common.elements.as_slice()),
+                        "Pratt Node",
+                        &mut diagnostics,
+                    );
                     let requires_grouping = variants
                         .iter()
                         .any(|variant| !matches!(variant.position, SourcePrattPosition::Atom));
@@ -631,6 +891,12 @@ impl SourceModelBuilder<'_> {
                         });
                     }
                     for variant in variants {
+                        self.validate_pretty_scope(
+                            &variant.common.pretty,
+                            &variant.common.elements,
+                            "Pratt variant",
+                            &mut diagnostics,
+                        );
                         self.validate_pretty_element_boundaries(
                             &variant.common.elements,
                             &mut diagnostics,
@@ -640,6 +906,137 @@ impl SourceModelBuilder<'_> {
             }
         }
         self.diagnostics.extend(diagnostics);
+    }
+
+    fn report_disabled_pretty_hints(
+        &self,
+        node: &Node,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) {
+        let mut report = |pretty: &PrettyHints, sites: Vec<SourceSite>| {
+            if !pretty.is_empty() {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                    sites,
+                    message: "#[pretty(...)] requires the effective Pretty configured trait"
+                        .to_owned(),
+                });
+            }
+        };
+        report(&node.pretty, Vec::new());
+        let variants = match &node.body {
+            NodeBody::Struct(elements) | NodeBody::Presence(elements) => {
+                vec![(None, elements.as_slice())]
+            }
+            NodeBody::Enum(variants) => variants
+                .iter()
+                .map(|variant| {
+                    (
+                        Some((&variant.pretty, &variant.site)),
+                        variant.elements.as_slice(),
+                    )
+                })
+                .collect(),
+            NodeBody::Pratt(variants) => variants
+                .iter()
+                .map(|variant| {
+                    (
+                        Some((&variant.common.pretty, &variant.common.site)),
+                        variant.common.elements.as_slice(),
+                    )
+                })
+                .collect(),
+        };
+        for (variant, elements) in variants {
+            if let Some((pretty, site)) = variant {
+                report(pretty, vec![site.clone()]);
+            }
+            for element in elements {
+                if let GrammarElement::SemanticField { pretty, site, .. } = element {
+                    report(pretty, vec![site.clone()]);
+                }
+            }
+        }
+    }
+
+    fn validate_pretty_scope(
+        &self,
+        pretty: &PrettyHints,
+        elements: &[GrammarElement],
+        scope: &str,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) {
+        self.validate_pretty_scope_facts(
+            pretty,
+            Self::pretty_scope_has_soft_opportunity(elements),
+            scope,
+            diagnostics,
+        );
+    }
+
+    fn validate_pretty_scope_facts(
+        &self,
+        pretty: &PrettyHints,
+        has_soft_opportunity: bool,
+        scope: &str,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) {
+        if pretty.separator.is_some() || pretty.trailing_separator.is_some() {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                sites: Vec::new(),
+                message: format!("separator Pretty hints do not apply to a {scope}"),
+            });
+        }
+        if pretty.group.is_some() && !has_soft_opportunity {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                sites: Vec::new(),
+                message: format!("Pretty `group` on {scope} has no soft-break opportunity"),
+            });
+        }
+        if pretty.indent && !has_soft_opportunity {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                sites: Vec::new(),
+                message: format!("Pretty `indent` on {scope} has no possible break"),
+            });
+        }
+        if (pretty.break_before.is_some() || pretty.break_after.is_some())
+            && !self.pretty_trivia_supports_breaks()
+        {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::UnsafePrettyHint,
+                sites: Vec::new(),
+                message: format!(
+                    "Pretty breaks on {scope} require ignored lexer trivia accepting both spaces and newlines"
+                ),
+            });
+        }
+    }
+
+    fn validate_pretty_multi_scope<'a>(
+        &self,
+        pretty: &PrettyHints,
+        mut variants: impl Iterator<Item = &'a [GrammarElement]>,
+        scope: &str,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) {
+        let has_soft_opportunity = variants.any(Self::pretty_scope_has_soft_opportunity);
+        self.validate_pretty_scope_facts(pretty, has_soft_opportunity, scope, diagnostics);
+    }
+
+    fn pretty_scope_has_soft_opportunity(elements: &[GrammarElement]) -> bool {
+        elements.len() > 1
+            || elements.iter().any(|element| {
+                matches!(
+                    element,
+                    GrammarElement::SemanticField {
+                        separator: Some(_),
+                        ..
+                    }
+                )
+            })
     }
 
     fn is_pretty_pratt_grouping(&self, node: NodeId, variant: &Variant) -> bool {
@@ -709,6 +1106,110 @@ impl SourceModelBuilder<'_> {
         elements: &[GrammarElement],
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
+        for (index, element) in elements.iter().enumerate() {
+            let GrammarElement::SemanticField {
+                resolved_field,
+                separator,
+                pretty,
+                attachment_before,
+                attachment_after,
+                site,
+                ..
+            } = element
+            else {
+                continue;
+            };
+            if pretty.separator.is_some() && separator.is_none() {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                    sites: vec![site.clone()],
+                    message: "Pretty `separator` requires a repeated field with #[sep]".to_owned(),
+                });
+            }
+            if pretty.trailing_separator.is_some()
+                && !separator
+                    .as_ref()
+                    .is_some_and(|separator| separator.optional_trailing)
+            {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                    sites: vec![site.clone()],
+                    message: "Pretty `trailing_separator` requires #[sep(..., trailing)]"
+                        .to_owned(),
+                });
+            }
+            let has_internal_break = *attachment_before > 0
+                || *attachment_after > 0
+                || separator.is_some()
+                || self.field_has_repetition(*resolved_field).unwrap_or(true);
+            if pretty.group.is_some() && !has_internal_break {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                    sites: vec![site.clone()],
+                    message: "Pretty `group` on field has no soft-break opportunity".to_owned(),
+                });
+            }
+            if pretty.indent && !has_internal_break {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                    sites: vec![site.clone()],
+                    message: "Pretty `indent` on field has no possible break".to_owned(),
+                });
+            }
+            let attachment_start = index.saturating_sub(*attachment_before);
+            let attachment_end = index.saturating_add(*attachment_after);
+            if pretty.break_before.is_some() && attachment_start == 0 {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                    sites: vec![site.clone()],
+                    message: "Pretty `break_before` requires a preceding grammar element"
+                        .to_owned(),
+                });
+            }
+            if pretty.break_after.is_some() && attachment_end + 1 == elements.len() {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
+                    sites: vec![site.clone()],
+                    message: "Pretty `break_after` requires a following grammar element".to_owned(),
+                });
+            }
+            let tight_before = attachment_start.checked_sub(1).is_some_and(|before| {
+                matches!(
+                    elements[before],
+                    GrammarElement::FixedToken { token_use, .. }
+                        if self.fixed_definition_for_use(token_use).pretty_spacing
+                            == PrettySpacing::Tight
+                )
+            });
+            let tight_after = elements.get(attachment_end + 1).is_some_and(|after| {
+                matches!(
+                    after,
+                    GrammarElement::FixedToken { token_use, .. }
+                        if self.fixed_definition_for_use(*token_use).pretty_spacing
+                            == PrettySpacing::Tight
+                )
+            });
+            if (pretty.break_before.is_some() && tight_before)
+                || (pretty.break_after.is_some() && tight_after)
+            {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::UnsafePrettyHint,
+                    sites: vec![site.clone()],
+                    message: "Pretty attachment break crosses a mandatory-tight boundary"
+                        .to_owned(),
+                });
+            }
+            if (pretty.break_before.is_some() || pretty.break_after.is_some())
+                && !self.pretty_trivia_supports_breaks()
+            {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::UnsafePrettyHint,
+                    sites: vec![site.clone()],
+                    message: "Pretty attachment breaks require ignored lexer trivia accepting both spaces and newlines"
+                        .to_owned(),
+                });
+            }
+        }
         for adjacent in elements.windows(2) {
             let [left, right] = adjacent else {
                 unreachable!()
@@ -723,6 +1224,51 @@ impl SourceModelBuilder<'_> {
                 }
             }
         }
+    }
+
+    fn pretty_trivia_supports_breaks(&self) -> bool {
+        [' ', '\n'].into_iter().all(|required| {
+            self.tokens.lexer_records.iter().any(|record| {
+                regex_syntax::Parser::new()
+                    .parse(&record.pattern)
+                    .is_ok_and(|hir| hir_matches_single_char(&hir, required).1)
+            })
+        })
+    }
+
+    fn field_has_repetition(&self, field: ResolvedFieldId) -> Option<bool> {
+        fn repeated(builder: &SourceModelBuilder<'_>, ty: &ResolvedType) -> Option<bool> {
+            match &ty.kind {
+                ResolvedTypeKind::Semantic {
+                    target, arguments, ..
+                } => match target {
+                    SemanticTarget::Catalog(CatalogType::Vec | CatalogType::Vec1) => Some(true),
+                    SemanticTarget::Catalog(CatalogType::Box | CatalogType::Option) => arguments
+                        .iter()
+                        .filter_map(|argument| match argument {
+                            ResolvedGenericArgument::Type(ty) => Some(ty),
+                            ResolvedGenericArgument::Lifetime(_)
+                            | ResolvedGenericArgument::Unsupported(_) => None,
+                        })
+                        .next()
+                        .and_then(|ty| repeated(builder, ty)),
+                    SemanticTarget::TypeAlias(alias) => builder
+                        .resolved
+                        .type_aliases
+                        .iter()
+                        .find(|candidate| candidate.id == *alias)
+                        .and_then(|alias| alias.target.as_ref())
+                        .and_then(|ty| repeated(builder, ty)),
+                    SemanticTarget::Node(_) | SemanticTarget::ContentToken(_) => Some(false),
+                    SemanticTarget::GenericParameter(_) => None,
+                },
+                ResolvedTypeKind::Group(inner)
+                | ResolvedTypeKind::Parenthesized(inner)
+                | ResolvedTypeKind::Reference(inner) => repeated(builder, inner),
+                ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => Some(false),
+            }
+        }
+        repeated(self, &self.resolved_field(field).ty)
     }
 
     fn validate_pretty_boundary(
@@ -890,6 +1436,10 @@ impl SourceModelBuilder<'_> {
             unreachable!("fixed boundary points to fixed syntax")
         };
         fixed
+    }
+
+    fn fixed_definition_for_use(&self, id: TokenUseId) -> &FixedTokenDefinition {
+        self.fixed_definition_by_id(self.tokens.uses[id.index()].definition)
     }
 
     fn pretty_element_boundaries(
@@ -1258,6 +1808,11 @@ impl SourceModelBuilder<'_> {
                                             name: variant.ident.clone(),
                                             elements: reassign_element_ids(elements),
                                             site: self.site(origin, variant.range.clone()),
+                                            pretty: self.lower_pretty_hints(
+                                                origin,
+                                                &variant.metas,
+                                                variant.range.clone(),
+                                            ),
                                         },
                                         position,
                                     }
@@ -1297,6 +1852,11 @@ impl SourceModelBuilder<'_> {
                                         name: variant.ident.clone(),
                                         elements: reassign_element_ids(elements),
                                         site: self.site(origin, variant.range.clone()),
+                                        pretty: self.lower_pretty_hints(
+                                            origin,
+                                            &variant.metas,
+                                            variant.range.clone(),
+                                        ),
                                     }
                                 })
                                 .collect(),
@@ -1317,11 +1877,13 @@ impl SourceModelBuilder<'_> {
                 &configured_traits,
                 &mut self.diagnostics,
             );
+            let pretty = self.lower_pretty_hints(origin, configured, node.range);
             self.nodes.push(Node {
                 resolved_node: node.id,
                 name: node.ident,
                 body,
                 configured_traits,
+                pretty,
             });
         }
     }
@@ -1369,9 +1931,16 @@ impl SourceModelBuilder<'_> {
                     field_configured,
                     &resolved_field,
                 ),
+                pretty: self.lower_pretty_hints(
+                    origin,
+                    field_configured,
+                    resolved_field.range.clone(),
+                ),
+                attachment_before: 0,
+                attachment_after: 0,
                 site,
             };
-            body.push_attachment(PositionalTokenPlanner::lower(
+            let mut attachment = PositionalTokenPlanner::lower(
                 &self.resolved,
                 &mut self.tokens,
                 &mut self.diagnostics,
@@ -1379,7 +1948,23 @@ impl SourceModelBuilder<'_> {
                 field_configured,
                 vec![semantic],
                 TokenAttachment::Field,
-            ));
+            );
+            let semantic = attachment
+                .iter()
+                .position(|element| matches!(element, GrammarElement::SemanticField { .. }))
+                .expect("a field attachment retains its semantic element");
+            let after = attachment.len() - semantic - 1;
+            let GrammarElement::SemanticField {
+                attachment_before,
+                attachment_after,
+                ..
+            } = &mut attachment[semantic]
+            else {
+                unreachable!()
+            };
+            *attachment_before = semantic;
+            *attachment_after = after;
+            body.push_attachment(attachment);
         }
         body
     }
@@ -1391,6 +1976,25 @@ impl SourceModelBuilder<'_> {
             .flat_map(|node| &node.fields)
             .find(|field| field.id == id)
             .expect("resolved Node body owns every field identity")
+    }
+
+    fn lower_pretty_hints(
+        &mut self,
+        origin: SourceOrigin,
+        metas: &[Meta],
+        range: Range<u32>,
+    ) -> PrettyHints {
+        match parse_pretty_hints(metas) {
+            Ok(hints) => hints,
+            Err(message) => {
+                self.diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidPrettyHint,
+                    sites: vec![self.site(origin, range)],
+                    message,
+                });
+                PrettyHints::default()
+            }
+        }
     }
 
     fn site(&self, origin: SourceOrigin, range: Range<u32>) -> SourceSite {
@@ -4996,5 +5600,217 @@ enum Expr<'input> {
             diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
                 && diagnostic.message.contains("cannot repair precedence")
         }));
+    }
+
+    #[test]
+    fn pretty_hints_accept_the_closed_local_catalog() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { ignore = r"\s+" }
+recursa::tokens! { punctuation { COMMA => ",", TAIL => "." } }
+#[derive(recursa::Node)]
+struct Item<'input> { #[lex(pattern = r"[a-z]+") ] text: ItemText<'input> }
+#[derive(recursa::Node)] #[tok(TAIL)] struct Tail;
+#[derive(recursa::Node)]
+#[pretty(group = inconsistent, indent, break_before = soft, break_after = hard)]
+struct Root<'input> {
+    head: Tail,
+    #[sep(COMMA, trailing)]
+    #[pretty(group = consistent, indent, break_before = soft, break_after = hard, separator = leading, trailing_separator = always)]
+    values: Vec<Item<'input>>,
+    tail: Tail,
+}
+"#,
+        );
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.source_modeled.is_some());
+    }
+
+    #[test]
+    fn pretty_hints_reject_unknown_duplicate_and_inapplicable_settings() {
+        let unknown = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+#[derive(recursa::Node)]
+#[pretty(text = normalized)]
+struct Root;
+"#,
+        );
+        assert!(unknown.source_modeled.is_none());
+        assert!(unknown.diagnostics.iter().any(|diagnostic| diagnostic.kind
+            == SourceModelDiagnosticKind::InvalidPrettyHint
+            && diagnostic.message.contains("unknown Pretty hint")));
+
+        let qualified = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+#[derive(recursa::Node)]
+#[other::pretty(group = consistent)]
+struct Root { value: Leaf }
+#[derive(recursa::Node)] struct Leaf;
+"#,
+        );
+        assert!(qualified.source_modeled.is_none());
+        assert!(qualified.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidPrettyHint
+                && diagnostic.message.contains("exact unqualified")
+        }));
+
+        let inapplicable = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+#[derive(recursa::Node)]
+struct Item;
+#[derive(recursa::Node)]
+struct Root { #[pretty(separator = leading, trailing_separator = never)] value: Item }
+"#,
+        );
+        assert!(inapplicable.source_modeled.is_none());
+        assert!(
+            inapplicable
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.kind
+                    == SourceModelDiagnosticKind::InapplicablePrettyHint)
+                .count()
+                >= 2
+        );
+
+        let empty_scopes = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { keywords { ONLY => "only" } }
+#[derive(recursa::Node)]
+#[pretty(group = consistent)]
+enum Single { #[tok(ONLY)] Only }
+#[derive(recursa::Node)]
+#[pratt]
+#[pretty(indent)]
+enum Atom<'input> {
+    Value(#[lex(pattern = r"[a-z]+") ] Word<'input>),
+}
+"#,
+        );
+        assert!(empty_scopes.source_modeled.is_none());
+        assert!(empty_scopes.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InapplicablePrettyHint
+                && diagnostic.message.contains("enum Node")
+        }));
+        assert!(empty_scopes.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InapplicablePrettyHint
+                && diagnostic.message.contains("Pratt Node")
+        }));
+    }
+
+    #[test]
+    fn pretty_hints_reject_missing_pretty_trait_empty_groups_and_tight_breaks() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
+#[derive(recursa::Node)]
+struct Empty;
+#[derive(recursa::Node)]
+#[tok(COLON, this)]
+struct Root {
+    #[pretty(break_before = hard)]
+    value: Empty,
+}
+"#,
+        );
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::UnsafePrettyHint
+                && diagnostic.message.contains("mandatory-tight")
+        }));
+
+        let disabled = model(
+            r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)] struct Leaf;
+#[derive(recursa::Node)]
+#[pretty(group = consistent)]
+enum Empty {
+    #[pretty(group = inconsistent)]
+    Value(#[pretty(group = consistent)] Leaf),
+}
+"#,
+        );
+        assert!(disabled.source_modeled.is_none());
+        assert_eq!(
+            disabled
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.kind == SourceModelDiagnosticKind::InapplicablePrettyHint
+                        && diagnostic.message.contains("effective Pretty")
+                })
+                .count(),
+            3,
+        );
+        assert!(!disabled.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("Pretty cannot repair precedence")
+        }));
+
+        let document_edges = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { ignore = r"\s+" }
+#[derive(recursa::Node)] struct Leaf;
+#[derive(recursa::Node)]
+#[pretty(break_before = soft)]
+struct Root {
+    #[pretty(break_before = soft, break_after = hard)]
+    value: Leaf,
+}
+"#,
+        );
+        assert!(document_edges.source_modeled.is_none());
+        assert!(document_edges.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InapplicablePrettyHint
+                && diagnostic.message.contains("preceding grammar element")
+        }));
+        assert!(document_edges.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InapplicablePrettyHint
+                && diagnostic.message.contains("following grammar element")
+        }));
+
+        let no_ignored_trivia = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { DOT => "." } }
+#[derive(recursa::Node)] #[tok(DOT)] struct Marker;
+#[derive(recursa::Node)] struct Leaf;
+#[derive(recursa::Node)]
+#[pretty(break_before = soft)]
+struct Root {
+    before: Marker,
+    #[pretty(break_before = soft, break_after = hard)]
+    value: Leaf,
+    after: Marker,
+}
+#[derive(recursa::Node)]
+enum Choice {
+    #[pretty(break_after = hard)]
+    Value(Leaf),
+}
+"#,
+        );
+        assert!(no_ignored_trivia.source_modeled.is_none());
+        assert!(no_ignored_trivia.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::UnsafePrettyHint
+                && diagnostic.message.contains("ignored lexer trivia")
+        }));
+        assert!(
+            no_ignored_trivia
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.kind == SourceModelDiagnosticKind::UnsafePrettyHint)
+                .count()
+                >= 3
+        );
     }
 }
