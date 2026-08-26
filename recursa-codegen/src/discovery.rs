@@ -10,134 +10,12 @@ use std::path::{Component, Path, PathBuf};
 
 use proc_macro2::Span;
 use syn::ext::IdentExt as _;
-use syn::parse::Parser as _;
-use syn::punctuated::Punctuated;
 use syn::spanned::Spanned as _;
-use syn::{Attribute, Expr, Item, ItemMod, Lit, Meta, Token};
+use syn::{Expr, Item, ItemMod, Lit, Meta};
 
 use crate::SourceId;
-use crate::lowering::{BuildInputs, DiagnosticStage, ModuleId, RustEdition};
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct CargoCfgSnapshot {
-    flags: BTreeSet<String>,
-    values: BTreeMap<String, BTreeSet<String>>,
-}
-
-impl CargoCfgSnapshot {
-    pub(crate) fn with_flag(mut self, name: impl Into<String>) -> Self {
-        self.flags.insert(name.into());
-        self
-    }
-
-    pub(crate) fn with_value(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.values
-            .entry(name.into())
-            .or_default()
-            .insert(value.into());
-        self
-    }
-
-    pub(crate) fn from_cargo_environment(
-        variables: impl IntoIterator<Item = (String, String)>,
-    ) -> Self {
-        let mut snapshot = Self::default();
-        for (name, value) in variables {
-            if let Some(cfg_name) = name.strip_prefix("CARGO_CFG_") {
-                let cfg_name = cfg_name.to_ascii_lowercase();
-                if value.is_empty() && !empty_value_cfg(&cfg_name) {
-                    snapshot.flags.insert(cfg_name);
-                } else {
-                    for value in value
-                        .split(',')
-                        .filter(|value| !value.is_empty() || empty_value_cfg(&cfg_name))
-                    {
-                        snapshot
-                            .values
-                            .entry(cfg_name.clone())
-                            .or_default()
-                            .insert(value.to_owned());
-                    }
-                }
-            }
-        }
-        snapshot
-    }
-
-    fn canonical_facts(&self) -> Vec<String> {
-        let mut facts = self.flags.iter().cloned().collect::<Vec<_>>();
-        for (name, values) in &self.values {
-            facts.extend(values.iter().map(|value| format!("{name}=\"{value}\"")));
-        }
-        facts.sort();
-        facts
-    }
-
-    fn flag(&self, name: &str) -> Result<bool, CfgFailureKind> {
-        if invocation_only_cfg(name) {
-            return Err(CfgFailureKind::InvocationOnly);
-        }
-        if self.flags.contains(name) {
-            Ok(true)
-        } else if self.values.contains_key(name) || compiler_owned_cfg(name) {
-            Ok(false)
-        } else {
-            Err(CfgFailureKind::Unknown)
-        }
-    }
-
-    fn value(&self, name: &str, value: &str) -> Result<bool, CfgFailureKind> {
-        if invocation_only_cfg(name) {
-            return Err(CfgFailureKind::InvocationOnly);
-        }
-        if let Some(values) = self.values.get(name) {
-            Ok(values.contains(value))
-        } else if self.flags.contains(name) || compiler_owned_cfg(name) {
-            Ok(false)
-        } else {
-            Err(CfgFailureKind::Unknown)
-        }
-    }
-}
-
-fn invocation_only_cfg(name: &str) -> bool {
-    matches!(name, "test" | "doc" | "doctest")
-}
-
-fn empty_value_cfg(name: &str) -> bool {
-    matches!(name, "target_abi" | "target_env")
-}
-
-fn compiler_owned_cfg(name: &str) -> bool {
-    matches!(
-        name,
-        "contract_checks"
-            | "debug_assertions"
-            | "feature"
-            | "miri"
-            | "overflow_checks"
-            | "panic"
-            | "proc_macro"
-            | "relocation_model"
-            | "sanitize"
-            | "target_abi"
-            | "target_arch"
-            | "target_endian"
-            | "target_env"
-            | "target_family"
-            | "target_feature"
-            | "target_has_atomic"
-            | "target_has_atomic_equal_alignment"
-            | "target_has_atomic_load_store"
-            | "target_os"
-            | "target_pointer_width"
-            | "target_thread_local"
-            | "target_vendor"
-            | "ub_checks"
-            | "unix"
-            | "windows"
-    )
-}
+use crate::lowering::{DiagnosticStage, DiscoveryInputs, ModuleId, RustEdition};
+use crate::source_syntax::{CargoCfgSnapshot, ConfigurationErrorKind, configure_attributes};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DiscoveryInput<'input> {
@@ -149,7 +27,7 @@ pub(crate) struct DiscoveryInput<'input> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DiscoveryReport {
-    pub(crate) build_inputs: BuildInputs,
+    pub(crate) discovery_inputs: DiscoveryInputs,
     pub(crate) diagnostics: Vec<DiscoveryDiagnostic>,
     pub(crate) tree: Option<DiscoveredModuleTree>,
 }
@@ -208,7 +86,10 @@ pub(crate) struct ModuleInclusion {
     pub(crate) parent: Option<ModuleId>,
     pub(crate) logical_path: Vec<String>,
     pub(crate) source: SourceId,
+    pub(crate) declaration_source: SourceId,
     pub(crate) source_kind: ModuleSourceKind,
+    pub(crate) visibility: syn::Visibility,
+    pub(crate) items: Vec<Item>,
     pub(crate) declaration_range: Range<u32>,
     pub(crate) ownership: DirectoryOwnership,
 }
@@ -233,7 +114,7 @@ pub(crate) fn discover_module_tree(input: DiscoveryInput<'_>) -> DiscoveryReport
     let mut state = DiscoveryState {
         manifest_dir: PathBuf::new(),
         cfg: input.cfg,
-        build_inputs: BuildInputs {
+        discovery_inputs: DiscoveryInputs {
             selected_root,
             source_files: Vec::new(),
             edition: input.edition,
@@ -282,7 +163,7 @@ pub(crate) fn discover_module_tree(input: DiscoveryInput<'_>) -> DiscoveryReport
     ) else {
         return state.finish();
     };
-    state.build_inputs.selected_root = root_path.relative.clone();
+    state.discovery_inputs.selected_root = root_path.relative.clone();
     if !root_path.absolute.exists() {
         state.push_diagnostic(DiscoveryDiagnostic {
             kind: DiscoveryDiagnosticKind::MissingRoot,
@@ -311,7 +192,10 @@ pub(crate) fn discover_module_tree(input: DiscoveryInput<'_>) -> DiscoveryReport
         parent: None,
         logical_path: Vec::new(),
         source: root_source,
+        declaration_source: root_source,
         source_kind: ModuleSourceKind::Root,
+        visibility: syn::Visibility::Inherited,
+        items: root_items.clone(),
         declaration_range: 0..root_length.try_into().unwrap_or(u32::MAX),
         ownership: root_ownership.clone(),
     });
@@ -330,7 +214,7 @@ pub(crate) fn discover_module_tree(input: DiscoveryInput<'_>) -> DiscoveryReport
 struct DiscoveryState<'cfg> {
     manifest_dir: PathBuf,
     cfg: &'cfg CargoCfgSnapshot,
-    build_inputs: BuildInputs,
+    discovery_inputs: DiscoveryInputs,
     diagnostics: Vec<DiscoveryDiagnostic>,
     files: Vec<DiscoveredSourceFile>,
     file_by_path: BTreeMap<PathBuf, SourceId>,
@@ -340,14 +224,15 @@ struct DiscoveryState<'cfg> {
 
 impl DiscoveryState<'_> {
     fn finish(mut self) -> DiscoveryReport {
-        self.build_inputs.source_files = self.files.iter().map(|file| file.path.clone()).collect();
-        self.build_inputs.watched_module_candidates = self.candidates.into_iter().collect();
+        self.discovery_inputs.source_files =
+            self.files.iter().map(|file| file.path.clone()).collect();
+        self.discovery_inputs.watched_module_candidates = self.candidates.into_iter().collect();
         let tree = self.diagnostics.is_empty().then_some(DiscoveredModuleTree {
             files: self.files,
             inclusions: self.inclusions,
         });
         DiscoveryReport {
-            build_inputs: self.build_inputs,
+            discovery_inputs: self.discovery_inputs,
             diagnostics: self.diagnostics,
             tree,
         }
@@ -439,7 +324,10 @@ impl DiscoveryState<'_> {
                     parent: Some(parent),
                     logical_path: logical_path.clone(),
                     source,
+                    declaration_source: source,
                     source_kind: ModuleSourceKind::Inline,
+                    visibility: module.vis.clone(),
+                    items: inline_items.clone(),
                     declaration_range: span_range(module.ident.span()),
                     ownership: child_ownership.clone(),
                 });
@@ -523,7 +411,10 @@ impl DiscoveryState<'_> {
                 parent: Some(parent),
                 logical_path: logical_path.clone(),
                 source: child_source,
+                declaration_source: source,
                 source_kind: ModuleSourceKind::External,
+                visibility: module.vis.clone(),
+                items: child_items.clone(),
                 declaration_range: span_range(module.ident.span()),
                 ownership: child_ownership.clone(),
             });
@@ -541,17 +432,31 @@ impl DiscoveryState<'_> {
     }
 
     fn configure_module(&mut self, module: &ItemMod, source: SourceId) -> Option<ConfiguredModule> {
+        let configured_attributes = match configure_attributes(&module.attrs, self.cfg) {
+            Ok(Some(attributes)) => attributes,
+            Ok(None) => {
+                return Some(ConfiguredModule {
+                    active: false,
+                    paths: Vec::new(),
+                });
+            }
+            Err(failure) => {
+                self.push_diagnostic(DiscoveryDiagnostic {
+                    kind: discovery_cfg_diagnostic(failure.kind),
+                    stage: DiagnosticStage::Discovery,
+                    path: self.source_path(source).to_owned(),
+                    range: Some(failure.range),
+                    message: failure.message,
+                });
+                return None;
+            }
+        };
         let mut configured = ConfiguredModule {
             active: true,
             paths: Vec::new(),
         };
-        let mut valid = true;
-        for attribute in &module.attrs {
-            if !matches_attribute(attribute, &["cfg", "cfg_attr", "path"]) {
-                continue;
-            }
-            if let Err(failure) = apply_attribute(&attribute.meta, self.cfg, &mut configured) {
-                valid = false;
+        for meta in configured_attributes.metas {
+            if let Err(failure) = apply_path_attribute(&meta, &mut configured) {
                 self.push_diagnostic(DiscoveryDiagnostic {
                     kind: failure.kind,
                     stage: DiagnosticStage::Discovery,
@@ -559,9 +464,10 @@ impl DiscoveryState<'_> {
                     range: Some(failure.range),
                     message: failure.message,
                 });
+                return None;
             }
         }
-        valid.then_some(configured)
+        Some(configured)
     }
 
     fn select_default_candidate(
@@ -803,52 +709,14 @@ struct ActivePath {
 }
 
 #[derive(Clone, Debug)]
-struct CfgFailure {
-    kind: DiscoveryDiagnosticKind,
-    range: Range<u32>,
-    message: String,
+pub(crate) struct CfgFailure {
+    pub(crate) kind: DiscoveryDiagnosticKind,
+    pub(crate) range: Range<u32>,
+    pub(crate) message: String,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum CfgFailureKind {
-    Unknown,
-    InvocationOnly,
-}
-
-fn matches_attribute(attribute: &Attribute, names: &[&str]) -> bool {
-    names.iter().any(|name| attribute.path().is_ident(name))
-}
-
-fn apply_attribute(
-    meta: &Meta,
-    snapshot: &CargoCfgSnapshot,
-    configured: &mut ConfiguredModule,
-) -> Result<(), CfgFailure> {
-    if meta.path().is_ident("cfg") {
-        let Meta::List(list) = meta else {
-            return Err(malformed_cfg(meta.span(), "cfg must use parentheses"));
-        };
-        let predicate = syn::parse2::<Meta>(list.tokens.clone())
-            .map_err(|error| malformed_cfg(error.span(), error.to_string()))?;
-        configured.active &= evaluate_cfg(&predicate, snapshot)?;
-        Ok(())
-    } else if meta.path().is_ident("cfg_attr") {
-        let Meta::List(list) = meta else {
-            return Err(malformed_cfg(meta.span(), "cfg_attr must use parentheses"));
-        };
-        let nested = Punctuated::<Meta, Token![,]>::parse_terminated
-            .parse2(list.tokens.clone())
-            .map_err(|error| malformed_cfg(error.span(), error.to_string()))?;
-        let Some(predicate) = nested.first() else {
-            return Err(malformed_cfg(meta.span(), "cfg_attr requires a predicate"));
-        };
-        if evaluate_cfg(predicate, snapshot)? {
-            for attribute in nested.iter().skip(1) {
-                apply_attribute(attribute, snapshot, configured)?;
-            }
-        }
-        Ok(())
-    } else if meta.path().is_ident("path") {
+fn apply_path_attribute(meta: &Meta, configured: &mut ConfiguredModule) -> Result<(), CfgFailure> {
+    if meta.path().is_ident("path") {
         let Meta::NameValue(name_value) = meta else {
             return Err(CfgFailure {
                 kind: DiscoveryDiagnosticKind::InvalidModulePath,
@@ -880,75 +748,11 @@ fn apply_attribute(
     }
 }
 
-fn evaluate_cfg(meta: &Meta, snapshot: &CargoCfgSnapshot) -> Result<bool, CfgFailure> {
-    let name = meta
-        .path()
-        .get_ident()
-        .ok_or_else(|| malformed_cfg(meta.span(), "cfg predicate must be an identifier"))?
-        .to_string();
-    match meta {
-        Meta::Path(_) => snapshot
-            .flag(&name)
-            .map_err(|failure| cfg_lookup_failure(failure, meta.span(), &name)),
-        Meta::NameValue(name_value) => {
-            let Expr::Lit(expression) = &name_value.value else {
-                return Err(malformed_cfg(
-                    name_value.value.span(),
-                    "cfg value must be a string literal",
-                ));
-            };
-            let Lit::Str(value) = &expression.lit else {
-                return Err(malformed_cfg(
-                    expression.lit.span(),
-                    "cfg value must be a string literal",
-                ));
-            };
-            snapshot
-                .value(&name, &value.value())
-                .map_err(|failure| cfg_lookup_failure(failure, meta.span(), &name))
-        }
-        Meta::List(list) => {
-            let nested = Punctuated::<Meta, Token![,]>::parse_terminated
-                .parse2(list.tokens.clone())
-                .map_err(|error| malformed_cfg(error.span(), error.to_string()))?;
-            let values = nested
-                .iter()
-                .map(|predicate| evaluate_cfg(predicate, snapshot))
-                .collect::<Result<Vec<_>, _>>()?;
-            match name.as_str() {
-                "all" => Ok(values.into_iter().all(|value| value)),
-                "any" => Ok(values.into_iter().any(|value| value)),
-                "not" if values.len() == 1 => Ok(!values[0]),
-                "not" => Err(malformed_cfg(meta.span(), "not requires one predicate")),
-                _ => Err(malformed_cfg(
-                    meta.span(),
-                    "cfg supports only all, any, and not predicate functions",
-                )),
-            }
-        }
-    }
-}
-
-fn cfg_lookup_failure(failure: CfgFailureKind, span: Span, name: &str) -> CfgFailure {
-    match failure {
-        CfgFailureKind::Unknown => CfgFailure {
-            kind: DiscoveryDiagnosticKind::UnknownCfg,
-            range: span_range(span),
-            message: format!("cfg `{name}` is absent from Cargo's target snapshot"),
-        },
-        CfgFailureKind::InvocationOnly => CfgFailure {
-            kind: DiscoveryDiagnosticKind::InvocationOnlyCfg,
-            range: span_range(span),
-            message: format!("cfg `{name}` is unavailable to build-script discovery"),
-        },
-    }
-}
-
-fn malformed_cfg(span: Span, message: impl Into<String>) -> CfgFailure {
-    CfgFailure {
-        kind: DiscoveryDiagnosticKind::MalformedCfg,
-        range: span_range(span),
-        message: message.into(),
+fn discovery_cfg_diagnostic(kind: ConfigurationErrorKind) -> DiscoveryDiagnosticKind {
+    match kind {
+        ConfigurationErrorKind::Unknown => DiscoveryDiagnosticKind::UnknownCfg,
+        ConfigurationErrorKind::InvocationOnly => DiscoveryDiagnosticKind::InvocationOnlyCfg,
+        ConfigurationErrorKind::Malformed => DiscoveryDiagnosticKind::MalformedCfg,
     }
 }
 
@@ -1004,11 +808,9 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{
-        CargoCfgSnapshot, DiscoveryDiagnosticKind, DiscoveryInput, ModuleSourceKind,
-        discover_module_tree,
-    };
+    use super::{DiscoveryDiagnosticKind, DiscoveryInput, ModuleSourceKind, discover_module_tree};
     use crate::lowering::RustEdition;
+    use crate::source_syntax::CargoCfgSnapshot;
 
     fn write(package: &Path, relative: &str, source: &str) {
         let path = package.join(relative);
@@ -1291,12 +1093,12 @@ mod nested_inline { mod leaf; }
         assert_eq!(explicit.ownership.relative_stem, None);
 
         assert_eq!(
-            report.build_inputs.selected_root,
+            report.discovery_inputs.selected_root,
             Path::new("grammar/root.rs")
         );
         assert!(
             report
-                .build_inputs
+                .discovery_inputs
                 .watched_module_candidates
                 .contains(&PathBuf::from("grammar/ordinary/mod.rs")),
         );
@@ -1332,7 +1134,7 @@ mod nested_inline { mod leaf; }
             ],
         );
         assert_eq!(
-            report.build_inputs.watched_module_candidates,
+            report.discovery_inputs.watched_module_candidates,
             [
                 PathBuf::from("grammar/ambiguous/mod.rs"),
                 PathBuf::from("grammar/ambiguous.rs"),
@@ -1342,7 +1144,7 @@ mod nested_inline { mod leaf; }
             ],
         );
         assert_eq!(
-            report.build_inputs.source_files,
+            report.discovery_inputs.source_files,
             [PathBuf::from("grammar/root.rs")],
         );
         let root = fs::read_to_string(package.path().join("grammar/root.rs")).unwrap();
@@ -1378,7 +1180,7 @@ mod selected;
         let base = discover(&package, "grammar/root.rs", &base_cfg);
         assert!(base.diagnostics.is_empty());
         assert_eq!(
-            base.build_inputs.watched_module_candidates,
+            base.discovery_inputs.watched_module_candidates,
             [PathBuf::from("grammar/base.rs")],
         );
 
@@ -1388,7 +1190,7 @@ mod selected;
         let alt = discover(&package, "grammar/root.rs", &alt_cfg);
         assert!(alt.diagnostics.is_empty());
         assert_eq!(
-            alt.build_inputs.watched_module_candidates,
+            alt.discovery_inputs.watched_module_candidates,
             [PathBuf::from("grammar/alt.rs")],
         );
     }
@@ -1425,7 +1227,7 @@ mod selected;
             ],
         );
         assert_eq!(
-            report.build_inputs.watched_module_candidates,
+            report.discovery_inputs.watched_module_candidates,
             [PathBuf::from("grammar/a.rs"), PathBuf::from("grammar/b.rs"),],
         );
     }
@@ -1453,7 +1255,7 @@ mod selected;
             DiscoveryDiagnosticKind::AncestorCycle,
         );
         assert_eq!(
-            report.build_inputs.watched_module_candidates,
+            report.discovery_inputs.watched_module_candidates,
             [
                 PathBuf::from("grammar/a.rs"),
                 PathBuf::from("grammar/root.rs"),
@@ -1473,8 +1275,13 @@ mod selected;
             absolute.diagnostics[0].kind,
             DiscoveryDiagnosticKind::AbsolutePath,
         );
-        assert!(absolute.build_inputs.source_files.is_empty());
-        assert!(absolute.build_inputs.watched_module_candidates.is_empty());
+        assert!(absolute.discovery_inputs.source_files.is_empty());
+        assert!(
+            absolute
+                .discovery_inputs
+                .watched_module_candidates
+                .is_empty()
+        );
 
         write(
             package.path(),
@@ -1487,10 +1294,15 @@ mod selected;
             DiscoveryDiagnosticKind::PackageEscape,
         );
         assert_eq!(
-            escaping.build_inputs.source_files,
+            escaping.discovery_inputs.source_files,
             [PathBuf::from("grammar/root.rs")],
         );
-        assert!(escaping.build_inputs.watched_module_candidates.is_empty());
+        assert!(
+            escaping
+                .discovery_inputs
+                .watched_module_candidates
+                .is_empty()
+        );
     }
 
     #[cfg(unix)]
@@ -1594,9 +1406,12 @@ mod inactive_contract_checks;
         write(package.path(), "grammar/empty_target_values.rs", "");
         let report = discover(&package, "grammar/root.rs", &snapshot);
         assert!(report.diagnostics.is_empty());
-        assert_eq!(report.build_inputs.cfg_snapshot, snapshot.canonical_facts(),);
         assert_eq!(
-            report.build_inputs.watched_module_candidates,
+            report.discovery_inputs.cfg_snapshot,
+            snapshot.canonical_facts(),
+        );
+        assert_eq!(
+            report.discovery_inputs.watched_module_candidates,
             [
                 PathBuf::from("grammar/empty_target_values.rs"),
                 PathBuf::from("grammar/selected.rs"),
@@ -1614,7 +1429,7 @@ mod inactive_contract_checks;
 
         assert!(report.diagnostics.is_empty());
         assert_eq!(
-            report.build_inputs.watched_module_candidates,
+            report.discovery_inputs.watched_module_candidates,
             [
                 PathBuf::from("grammar/type/mod.rs"),
                 PathBuf::from("grammar/type.rs"),
@@ -1633,7 +1448,7 @@ mod inactive_contract_checks;
 
         assert!(report.diagnostics.is_empty());
         assert_eq!(
-            report.build_inputs.watched_module_candidates,
+            report.discovery_inputs.watched_module_candidates,
             [
                 PathBuf::from("src/grammar/child/mod.rs"),
                 PathBuf::from("src/grammar/child.rs"),
@@ -1665,7 +1480,7 @@ mod inactive_contract_checks;
         assert_eq!(report.diagnostics[0].path, Path::new("grammar/broken.rs"));
         assert!(report.diagnostics[0].range.is_some());
         assert_eq!(
-            report.build_inputs.source_files,
+            report.discovery_inputs.source_files,
             [
                 PathBuf::from("grammar/root.rs"),
                 PathBuf::from("grammar/broken.rs"),
@@ -1691,7 +1506,7 @@ mod inactive_contract_checks;
         assert!(discovery.diagnostics.is_empty());
         write_tracking_build_script(
             explicit.path(),
-            &discovery.build_inputs.watched_paths(),
+            &discovery.discovery_inputs.watched_paths(),
             &[
                 PathBuf::from("grammar/root.rs"),
                 PathBuf::from("grammar/child.rs"),
@@ -1752,7 +1567,7 @@ mod inactive_contract_checks;
         assert!(discovery.diagnostics.is_empty());
         write_tracking_build_script(
             default.path(),
-            &discovery.build_inputs.watched_paths(),
+            &discovery.discovery_inputs.watched_paths(),
             &[PathBuf::from("grammar/root.rs")],
             &[(
                 PathBuf::from("grammar/child.rs"),
