@@ -224,6 +224,28 @@ impl PrettyContext {
         Ok(())
     }
 
+    /// Emits a grammar-validated token tightly on both sides.
+    #[doc(hidden)]
+    pub fn tight_sequence_token(&mut self, text: &str) -> fmt::Result {
+        self.tight_token(text)?;
+        self.needs_separator = false;
+        Ok(())
+    }
+
+    /// Emits a grammar-validated token with space before and tight after.
+    #[doc(hidden)]
+    pub fn before_token(&mut self, text: &str) -> fmt::Result {
+        self.token(text)?;
+        self.needs_separator = false;
+        Ok(())
+    }
+
+    /// Emits a grammar-validated token tight before and with space after.
+    #[doc(hidden)]
+    pub fn after_token(&mut self, text: &str) -> fmt::Result {
+        self.tight_token(text)
+    }
+
     /// Emits an exact captured source fragment without normalization.
     pub fn exact(&mut self, text: &str) -> fmt::Result {
         self.tight_token(text)
