@@ -3,11 +3,13 @@
     reason = "private M3 source-model seam is consumed by later pipeline tickets"
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 
 use proc_macro2::Span;
+use regex_automata::dfa::{Automaton as _, dense};
+use regex_automata::{Anchored, Input};
 use syn::ext::IdentExt as _;
 use syn::parse::{Parse, ParseStream, Parser as _};
 use syn::spanned::Spanned as _;
@@ -581,13 +583,24 @@ fn is_word_shaped(spelling: &str) -> bool {
         && spelling.chars().all(unicode_ident::is_xid_continue)
 }
 
-fn pattern_may_emit_any(pattern: &str, spelling: &str) -> bool {
-    let Ok(hir) = regex_syntax::Parser::new().parse(pattern) else {
-        return true;
-    };
+fn fixed_lexical_pattern(spelling: &str, equivalence: crate::TextEquivalence) -> String {
+    if equivalence != crate::TextEquivalence::AsciiInsensitive || !is_word_shaped(spelling) {
+        return regex_syntax::escape(spelling);
+    }
     spelling
         .chars()
-        .any(|character| hir_may_emit(&hir, &|candidate| candidate == character))
+        .map(|character| {
+            if character.is_ascii_alphabetic() {
+                format!(
+                    "[{}{}]",
+                    character.to_ascii_lowercase(),
+                    character.to_ascii_uppercase()
+                )
+            } else {
+                regex_syntax::escape(&character.to_string())
+            }
+        })
+        .collect()
 }
 
 fn pattern_may_emit_xid(pattern: &str) -> bool {
@@ -595,6 +608,115 @@ fn pattern_may_emit_xid(pattern: &str) -> bool {
         return true;
     };
     hir_may_emit(&hir, &unicode_ident::is_xid_continue)
+}
+
+fn dfa_accepts_state(
+    dfa: &dense::DFA<Vec<u32>>,
+    state: regex_automata::util::primitives::StateID,
+) -> bool {
+    dfa.is_match_state(dfa.next_eoi_state(state))
+}
+
+fn dfa_advance(
+    dfa: &dense::DFA<Vec<u32>>,
+    mut state: regex_automata::util::primitives::StateID,
+    bytes: &[u8],
+) -> Option<regex_automata::util::primitives::StateID> {
+    for &byte in bytes {
+        state = dfa.next_state(state, byte);
+        if dfa.is_dead_state(state) || dfa.is_quit_state(state) {
+            return None;
+        }
+    }
+    Some(state)
+}
+
+fn pattern_then_fixed_intersects_pattern(
+    pattern: &str,
+    fixed: &str,
+    lexical_pattern: &str,
+) -> bool {
+    let (Ok(pattern_dfa), Ok(lexical_dfa)) =
+        (dense::DFA::new(pattern), dense::DFA::new(lexical_pattern))
+    else {
+        return true;
+    };
+    let input = Input::new(b"").anchored(Anchored::Yes);
+    let (Ok(pattern_start), Ok(lexical_start)) = (
+        pattern_dfa.start_state_forward(&input),
+        lexical_dfa.start_state_forward(&input),
+    ) else {
+        return true;
+    };
+    let mut seen = BTreeSet::from([(pattern_start, lexical_start)]);
+    let mut frontier = VecDeque::from([(pattern_start, lexical_start)]);
+    while let Some((pattern_state, lexical_state)) = frontier.pop_front() {
+        if dfa_accepts_state(&pattern_dfa, pattern_state)
+            && dfa_advance(&lexical_dfa, lexical_state, fixed.as_bytes())
+                .is_some_and(|state| dfa_accepts_state(&lexical_dfa, state))
+        {
+            return true;
+        }
+        for byte in u8::MIN..=u8::MAX {
+            let pattern_next = pattern_dfa.next_state(pattern_state, byte);
+            let lexical_next = lexical_dfa.next_state(lexical_state, byte);
+            if pattern_dfa.is_dead_state(pattern_next)
+                || pattern_dfa.is_quit_state(pattern_next)
+                || lexical_dfa.is_dead_state(lexical_next)
+                || lexical_dfa.is_quit_state(lexical_next)
+                || !seen.insert((pattern_next, lexical_next))
+            {
+                continue;
+            }
+            frontier.push_back((pattern_next, lexical_next));
+        }
+    }
+    false
+}
+
+fn fixed_then_pattern_intersects_pattern(
+    fixed: &str,
+    pattern: &str,
+    lexical_pattern: &str,
+) -> bool {
+    let (Ok(pattern_dfa), Ok(lexical_dfa)) =
+        (dense::DFA::new(pattern), dense::DFA::new(lexical_pattern))
+    else {
+        return true;
+    };
+    let input = Input::new(b"").anchored(Anchored::Yes);
+    let (Ok(pattern_start), Ok(lexical_start)) = (
+        pattern_dfa.start_state_forward(&input),
+        lexical_dfa.start_state_forward(&input),
+    ) else {
+        return true;
+    };
+    let Some(lexical_start) = dfa_advance(&lexical_dfa, lexical_start, fixed.as_bytes()) else {
+        return false;
+    };
+    let mut seen = BTreeSet::from([(pattern_start, lexical_start)]);
+    let mut frontier = VecDeque::from([(pattern_start, lexical_start)]);
+    while let Some((pattern_state, lexical_state)) = frontier.pop_front() {
+        if dfa_accepts_state(&pattern_dfa, pattern_state)
+            && dfa_accepts_state(&lexical_dfa, lexical_state)
+        {
+            return true;
+        }
+        for byte in u8::MIN..=u8::MAX {
+            let pattern_next = pattern_dfa.next_state(pattern_state, byte);
+            let lexical_next = lexical_dfa.next_state(lexical_state, byte);
+            if pattern_dfa.is_dead_state(pattern_next)
+                || pattern_dfa.is_quit_state(pattern_next)
+                || lexical_dfa.is_dead_state(lexical_next)
+                || lexical_dfa.is_quit_state(lexical_next)
+                || !seen.insert((pattern_next, lexical_next))
+            {
+                continue;
+            }
+            frontier.push_back((pattern_next, lexical_next));
+        }
+    }
+    false
 }
 
 fn pattern_matches_entire(pattern: &str, text: &str) -> bool {
@@ -1498,6 +1620,27 @@ impl SourceModelBuilder<'_> {
         repeated(self, &self.resolved_field(field).ty)
     }
 
+    fn pretty_lexical_patterns(&self) -> Vec<String> {
+        let equivalence = self.resolved.configuration.syntax.text_equivalence;
+        self.tokens
+            .definitions
+            .iter()
+            .map(|definition| match &definition.kind {
+                TokenDefinitionKind::Fixed(fixed) => {
+                    fixed_lexical_pattern(&fixed.spelling, equivalence)
+                }
+                TokenDefinitionKind::Content(content) => content.pattern.clone(),
+                TokenDefinitionKind::LexicalBase(base) => base.pattern.clone(),
+            })
+            .chain(
+                self.tokens
+                    .lexer_records
+                    .iter()
+                    .map(|record| record.pattern.clone()),
+            )
+            .collect()
+    }
+
     fn validate_pretty_boundary(
         &self,
         left: &PrettyBoundary,
@@ -1559,6 +1702,9 @@ impl SourceModelBuilder<'_> {
                 );
             }
             (PrettyBoundaryKind::Dynamic(pattern), PrettyBoundaryKind::Fixed(_)) => {
+                if pattern.is_empty() {
+                    return;
+                }
                 let right_fixed = right_fixed.expect("fixed boundary");
                 if pattern_may_emit_xid(pattern)
                     && right_fixed
@@ -1572,7 +1718,17 @@ impl SourceModelBuilder<'_> {
                             sites: vec![left.site.clone(), right.site.clone()],
                             message: "Pretty spacing would suppress a Unicode identifier boundary involving regex-backed content".to_owned(),
                         });
-                } else if pattern_may_emit_any(pattern, &right_fixed.spelling) {
+                } else if self
+                    .pretty_lexical_patterns()
+                    .iter()
+                    .any(|lexical_pattern| {
+                        pattern_then_fixed_intersects_pattern(
+                            pattern,
+                            &right_fixed.spelling,
+                            lexical_pattern,
+                        )
+                    })
+                {
                     diagnostics.push(SourceModelDiagnostic {
                             kind: SourceModelDiagnosticKind::InvalidConfiguration,
                             sites: vec![left.site.clone(), right.site.clone()],
@@ -1581,6 +1737,9 @@ impl SourceModelBuilder<'_> {
                 }
             }
             (PrettyBoundaryKind::Fixed(_), PrettyBoundaryKind::Dynamic(pattern)) => {
+                if pattern.is_empty() {
+                    return;
+                }
                 let left_fixed = left_fixed.expect("fixed boundary");
                 if left_fixed
                     .spelling
@@ -1594,7 +1753,17 @@ impl SourceModelBuilder<'_> {
                             sites: vec![left.site.clone(), right.site.clone()],
                             message: "Pretty spacing would suppress a Unicode identifier boundary involving regex-backed content".to_owned(),
                         });
-                } else if pattern_may_emit_any(pattern, &left_fixed.spelling) {
+                } else if self
+                    .pretty_lexical_patterns()
+                    .iter()
+                    .any(|lexical_pattern| {
+                        fixed_then_pattern_intersects_pattern(
+                            &left_fixed.spelling,
+                            pattern,
+                            lexical_pattern,
+                        )
+                    })
+                {
                     diagnostics.push(SourceModelDiagnostic {
                             kind: SourceModelDiagnosticKind::InvalidConfiguration,
                             sites: vec![left.site.clone(), right.site.clone()],
@@ -4166,7 +4335,8 @@ mod tests {
         CentralTokensSyntax, ConfiguredTraitOwnership, ConfiguredTraitRecipe, ContentTextStorage,
         DeclaredRepetition, GrammarElement, GrammarElementKind, NodeBody, NodeShape, PrettySpacing,
         SourceModelDiagnosticKind, SourceModelInput, SourcePrattPosition, TokenDefinitionKind,
-        TokenUseRole, lower_source_model,
+        TokenUseRole, fixed_then_pattern_intersects_pattern, lower_source_model,
+        pattern_then_fixed_intersects_pattern,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
@@ -5753,6 +5923,18 @@ recursa::tokens! { punctuation { LPAREN => "(", RPAREN => ")", WHOLE => "()" } }
                 report.diagnostics
             );
         }
+    }
+
+    #[test]
+    fn pretty_boundary_language_checks_only_crossing_lexemes() {
+        let word = r"[A-Za-z_][A-Za-z0-9_]*";
+        assert!(!pattern_then_fixed_intersects_pattern(word, "]", word));
+        assert!(!fixed_then_pattern_intersects_pattern("[", word, word));
+        assert!(pattern_then_fixed_intersects_pattern(
+            r"[A-Za-z:]+",
+            ":",
+            r"[A-Za-z:]+"
+        ));
     }
 
     #[test]

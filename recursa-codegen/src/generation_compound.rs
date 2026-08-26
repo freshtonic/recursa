@@ -186,7 +186,14 @@ enum PrettyTokenBehavior {
 struct PrettyNodeBehavior {
     pretty: PrettyHints,
     variant_pretty: Vec<PrettyHints>,
+    variant_layouts: Vec<PrettySequenceLayout>,
     variants: Vec<Vec<PrettyElementBehavior>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrettySequenceLayout {
+    Linear,
+    Delimited,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -194,16 +201,24 @@ enum PrettyElementBehavior {
     Fixed {
         spelling: String,
         spacing: PrettySpacing,
+        rendering: PrettyFixedRendering,
     },
     Semantic {
-        repeated: bool,
-        separator: Option<String>,
+        repetition: Option<PrettyRepetitionBehavior>,
         attachment: Option<PrettyAttachmentBehavior>,
         opaque_provenance: bool,
-        top_level_break: bool,
         pretty: PrettyHints,
         presence: PrettyPresence,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PrettyRepetitionBehavior {
+    separator: Option<String>,
+    trailing_separator: bool,
+    hard_break: bool,
+    leading_separator: bool,
+    space_before_separator: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -215,15 +230,27 @@ enum PrettyPresence {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PrettyAttachmentBehavior {
+    layout: PrettySequenceLayout,
     before: Vec<PrettyAttachedFixedBehavior>,
     after: Vec<PrettyAttachedFixedBehavior>,
-    separator: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PrettyAttachedFixedBehavior {
     spelling: String,
     spacing: PrettySpacing,
+    rendering: PrettyFixedRendering,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrettyFixedRendering {
+    TightSequence,
+    Before,
+    After,
+    Around,
+    Opening,
+    Word,
+    Punctuation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -320,9 +347,9 @@ struct PrattParsePlan {
 #[derive(Clone, Debug)]
 struct PrattGroupingPlan {
     open: String,
-    open_spacing: PrettySpacing,
+    open_rendering: PrettyFixedRendering,
     close: String,
-    close_spacing: PrettySpacing,
+    close_rendering: PrettyFixedRendering,
 }
 
 #[derive(Clone, Debug)]
@@ -2170,9 +2197,14 @@ fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBehavior {
             .map(|variant| emitted_pretty_elements(&variant.elements))
             .collect(),
     };
+    let variant_layouts = variants
+        .iter()
+        .map(|elements| pretty_sequence_layout(elements))
+        .collect();
     PrettyNodeBehavior {
         pretty: node.pretty.clone(),
         variant_pretty,
+        variant_layouts,
         variants,
     }
 }
@@ -2186,6 +2218,7 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
             } => PrettyElementBehavior::Fixed {
                 spelling: spelling.clone(),
                 spacing: *spacing,
+                rendering: pretty_fixed_rendering(spelling, *spacing),
             },
             ElementParseKind::Semantic {
                 container,
@@ -2197,40 +2230,110 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
                 pretty,
                 ..
             } => PrettyElementBehavior::Semantic {
-                repeated: matches!(container.as_ref(), PlannedContainer::Repeated { .. }),
-                separator: separator.clone(),
-                attachment: attachment
-                    .as_ref()
-                    .map(|attachment| PrettyAttachmentBehavior {
-                        before: attachment
-                            .before
-                            .iter()
-                            .map(|fixed| PrettyAttachedFixedBehavior {
-                                spelling: fixed.spelling.clone(),
-                                spacing: fixed.spacing,
-                            })
-                            .collect(),
-                        after: attachment
-                            .after
-                            .iter()
-                            .map(|fixed| PrettyAttachedFixedBehavior {
-                                spelling: fixed.spelling.clone(),
-                                spacing: fixed.spacing,
-                            })
-                            .collect(),
-                        separator: separator.clone(),
-                    }),
-                opaque_provenance: *opaque_provenance,
-                top_level_break: matches!(
-                    repetition_break,
-                    PlannedRepetitionBreak::TopLevelStatement(_)
-                        | PlannedRepetitionBreak::TopLevelStatementFamily(_)
+                repetition: pretty_repetition_behavior(
+                    matches!(container.as_ref(), PlannedContainer::Repeated { .. }),
+                    separator.clone(),
+                    matches!(
+                        repetition_break,
+                        PlannedRepetitionBreak::TopLevelStatement(_)
+                            | PlannedRepetitionBreak::TopLevelStatementFamily(_)
+                    ),
+                    pretty,
                 ),
+                attachment: attachment.as_ref().map(|attachment| {
+                    let before = attachment
+                        .before
+                        .iter()
+                        .map(|fixed| PrettyAttachedFixedBehavior {
+                            spelling: fixed.spelling.clone(),
+                            spacing: fixed.spacing,
+                            rendering: pretty_fixed_rendering(&fixed.spelling, fixed.spacing),
+                        })
+                        .collect::<Vec<_>>();
+                    let after = attachment
+                        .after
+                        .iter()
+                        .map(|fixed| PrettyAttachedFixedBehavior {
+                            spelling: fixed.spelling.clone(),
+                            spacing: fixed.spacing,
+                            rendering: pretty_fixed_rendering(&fixed.spelling, fixed.spacing),
+                        })
+                        .collect::<Vec<_>>();
+                    PrettyAttachmentBehavior {
+                        layout: pretty_attachment_layout(&before, &after),
+                        before,
+                        after,
+                    }
+                }),
+                opaque_provenance: *opaque_provenance,
                 pretty: pretty.clone(),
                 presence: pretty_presence(wrappers),
             },
         })
         .collect()
+}
+
+fn pretty_repetition_behavior(
+    repeated: bool,
+    separator: Option<String>,
+    hard_break: bool,
+    pretty: &PrettyHints,
+) -> Option<PrettyRepetitionBehavior> {
+    repeated.then(|| PrettyRepetitionBehavior {
+        space_before_separator: separator.as_deref().is_some_and(is_word_shaped),
+        separator,
+        trailing_separator: matches!(
+            pretty.trailing_separator,
+            Some(PrettyTrailingSeparator::Always)
+        ),
+        hard_break,
+        leading_separator: matches!(pretty.separator, Some(PrettySeparatorPosition::Leading)),
+    })
+}
+
+fn pretty_fixed_rendering(spelling: &str, spacing: PrettySpacing) -> PrettyFixedRendering {
+    match spacing {
+        PrettySpacing::Tight => PrettyFixedRendering::TightSequence,
+        PrettySpacing::Before => PrettyFixedRendering::Before,
+        PrettySpacing::After => PrettyFixedRendering::After,
+        PrettySpacing::Around => PrettyFixedRendering::Around,
+        PrettySpacing::Auto if matches!(spelling, "(" | "[" | "{") => PrettyFixedRendering::Opening,
+        PrettySpacing::Auto if is_word_shaped(spelling) => PrettyFixedRendering::Word,
+        PrettySpacing::Auto => PrettyFixedRendering::Punctuation,
+    }
+}
+
+fn pretty_sequence_layout(elements: &[PrettyElementBehavior]) -> PrettySequenceLayout {
+    let delimited = elements.first().and_then(|first| {
+        let PrettyElementBehavior::Fixed { spelling, .. } = first else {
+            return None;
+        };
+        delimiter_close(spelling).filter(|close| {
+            elements.last().is_some_and(|last| {
+                matches!(last, PrettyElementBehavior::Fixed { spelling, .. } if spelling == close)
+            })
+        })
+    });
+    if delimited.is_some() {
+        PrettySequenceLayout::Delimited
+    } else {
+        PrettySequenceLayout::Linear
+    }
+}
+
+fn pretty_attachment_layout(
+    before: &[PrettyAttachedFixedBehavior],
+    after: &[PrettyAttachedFixedBehavior],
+) -> PrettySequenceLayout {
+    let delimited = before
+        .first()
+        .and_then(|open| delimiter_close(&open.spelling))
+        .is_some_and(|close| after.last().is_some_and(|fixed| fixed.spelling == close));
+    if delimited {
+        PrettySequenceLayout::Delimited
+    } else {
+        PrettySequenceLayout::Linear
+    }
 }
 
 fn pretty_presence(wrappers: &[FieldWrapper]) -> PrettyPresence {
@@ -2343,9 +2446,14 @@ fn authoritative_pretty_node_behavior(
             })
             .collect::<Result<Vec<_>, String>>()?,
     };
+    let variant_layouts = variants
+        .iter()
+        .map(|elements| pretty_sequence_layout(elements))
+        .collect();
     Ok(PrettyNodeBehavior {
         pretty: source_node.pretty.clone(),
         variant_pretty,
+        variant_layouts,
         variants,
     })
 }
@@ -2366,11 +2474,11 @@ fn authoritative_pretty_elements(
                 let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
                     return Err("an authored Pretty fixed element is not fixed syntax".to_owned());
                 };
+                let spelling =
+                    fixed_pretty_spelling(&fixed.spelling, lowered.grammar.text_equivalence);
                 Ok(PrettyElementBehavior::Fixed {
-                    spelling: fixed_pretty_spelling(
-                        &fixed.spelling,
-                        lowered.grammar.text_equivalence,
-                    ),
+                    rendering: pretty_fixed_rendering(&spelling, fixed.pretty_spacing),
+                    spelling,
                     spacing: fixed.pretty_spacing,
                 })
             }
@@ -2387,43 +2495,44 @@ fn authoritative_pretty_elements(
                     .find(|field| field.id == *resolved_field)
                     .ok_or_else(|| "an authored Pretty field lacks resolved syntax".to_owned())?;
                 let projection = authored_projection(&field.ty, resolved)?;
+                let repeated = matches!(
+                    declaration_container_operation(&projection.wrappers),
+                    ContainerOperation::ZeroOrMore
+                        | ContainerOperation::OneOrMore
+                        | ContainerOperation::OptionalOneOrMore
+                );
+                let separator_spelling =
+                    authoritative_pretty_separator(lowered, separator.as_ref())?;
+                let top_level_break = separator.as_ref().is_some_and(|separator| {
+                    let usage = &source.token_uses[separator.token_use.index()];
+                    let definition = &source.token_definitions[usage.definition.index()];
+                    matches!(
+                        &definition.kind,
+                        TokenDefinitionKind::Fixed(fixed) if fixed.spelling == ";"
+                    )
+                }) && repeated
+                    && projection.terminal_node.is_some_and(|node_id| {
+                        matches!(
+                            resolved.nodes[node_id.index()].body,
+                            ResolvedNodeBody::Enum { .. }
+                        )
+                    });
                 Ok(PrettyElementBehavior::Semantic {
-                    repeated: matches!(
-                        declaration_container_operation(&projection.wrappers),
-                        ContainerOperation::ZeroOrMore
-                            | ContainerOperation::OneOrMore
-                            | ContainerOperation::OptionalOneOrMore
+                    repetition: pretty_repetition_behavior(
+                        repeated,
+                        separator_spelling,
+                        top_level_break,
+                        pretty,
                     ),
-                    separator: authoritative_pretty_separator(lowered, separator.as_ref())?,
                     attachment: attachment
                         .as_ref()
-                        .map(|attachment| {
-                            authoritative_pretty_attachment(lowered, attachment, separator.as_ref())
-                        })
+                        .map(|attachment| authoritative_pretty_attachment(lowered, attachment))
                         .transpose()?,
                     opaque_provenance: authored_type_depends_on_node_generics(
                         &field.ty,
                         resolved_node,
                         resolved,
                     ),
-                    top_level_break: separator.as_ref().is_some_and(|separator| {
-                        let usage = &source.token_uses[separator.token_use.index()];
-                        let definition = &source.token_definitions[usage.definition.index()];
-                        matches!(
-                            &definition.kind,
-                            TokenDefinitionKind::Fixed(fixed) if fixed.spelling == ";"
-                        )
-                    }) && matches!(
-                        declaration_container_operation(&projection.wrappers),
-                        ContainerOperation::ZeroOrMore
-                            | ContainerOperation::OneOrMore
-                            | ContainerOperation::OptionalOneOrMore
-                    ) && projection.terminal_node.is_some_and(|node_id| {
-                        matches!(
-                            resolved.nodes[node_id.index()].body,
-                            ResolvedNodeBody::Enum { .. }
-                        )
-                    }),
                     pretty: pretty.clone(),
                     presence: pretty_presence(&projection.wrappers),
                 })
@@ -2454,7 +2563,6 @@ fn authoritative_pretty_separator(
 fn authoritative_pretty_attachment(
     lowered: &crate::materialization::LoweredGrammar,
     attachment: &crate::source_model::FixedTokenAttachment,
-    separator: Option<&crate::source_model::Separator>,
 ) -> Result<PrettyAttachmentBehavior, String> {
     let source = lowered.source_modeled.source_model();
     let fixed = |token_use: crate::lowering::TokenUseId| {
@@ -2463,24 +2571,27 @@ fn authoritative_pretty_attachment(
         let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
             return Err("an attached Pretty element is not fixed syntax".to_owned());
         };
+        let spelling = fixed_pretty_spelling(&fixed.spelling, lowered.grammar.text_equivalence);
         Ok(PrettyAttachedFixedBehavior {
-            spelling: fixed_pretty_spelling(&fixed.spelling, lowered.grammar.text_equivalence),
+            rendering: pretty_fixed_rendering(&spelling, fixed.pretty_spacing),
+            spelling,
             spacing: fixed.pretty_spacing,
         })
     };
-    let separator = authoritative_pretty_separator(lowered, separator)?;
+    let before = attachment
+        .before
+        .iter()
+        .map(|attached| fixed(attached.token_use))
+        .collect::<Result<Vec<_>, _>>()?;
+    let after = attachment
+        .after
+        .iter()
+        .map(|attached| fixed(attached.token_use))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(PrettyAttachmentBehavior {
-        before: attachment
-            .before
-            .iter()
-            .map(|attached| fixed(attached.token_use))
-            .collect::<Result<_, _>>()?,
-        after: attachment
-            .after
-            .iter()
-            .map(|attached| fixed(attached.token_use))
-            .collect::<Result<_, _>>()?,
-        separator,
+        layout: pretty_attachment_layout(&before, &after),
+        before,
+        after,
     })
 }
 fn pretty_family_identity(plan: &PrettyEmissionPlan) -> Option<u64> {
@@ -4154,9 +4265,9 @@ fn pratt_grouping_from_elements(
             let close = attachment.after.last()?;
             Some(PrattGroupingPlan {
                 open: open.spelling.clone(),
-                open_spacing: open.spacing,
+                open_rendering: pretty_fixed_rendering(&open.spelling, open.spacing),
                 close: close.spelling.clone(),
-                close_spacing: close.spacing,
+                close_rendering: pretty_fixed_rendering(&close.spelling, close.spacing),
             })
         }
         [
@@ -4184,9 +4295,9 @@ fn pratt_grouping_from_elements(
             },
         ] if recursive(terminal) => Some(PrattGroupingPlan {
             open: open.clone(),
-            open_spacing: *open_spacing,
+            open_rendering: pretty_fixed_rendering(open, *open_spacing),
             close: close.clone(),
-            close_spacing: *close_spacing,
+            close_rendering: pretty_fixed_rendering(close, *close_spacing),
         }),
         _ => None,
     }
@@ -7559,8 +7670,9 @@ fn render_pratt_node_pretty(
     let variants = trait_variants(&node.body);
     let arms = variants
         .iter()
+        .zip(&behavior.variant_layouts)
         .zip(&behavior.variants)
-        .map(|(variant, behavior)| {
+        .map(|((variant, layout), behavior)| {
             let position = pratt
                 .nud
                 .iter()
@@ -7585,7 +7697,11 @@ fn render_pratt_node_pretty(
             .map(|(index, (element, behavior))| match (&element.kind, behavior) {
                 (
                     ElementParseKind::Fixed { .. },
-                    PrettyElementBehavior::Fixed { spelling, spacing },
+                    PrettyElementBehavior::Fixed {
+                        spelling,
+                        spacing,
+                        rendering,
+                    },
                 ) => {
                     let infix = matches!(position, PrattPosition::Infix { .. });
                     let prefix = matches!(position, PrattPosition::Prefix { .. });
@@ -7602,16 +7718,16 @@ fn render_pratt_node_pretty(
                     let fixed = if prefix
                         && run_end
                         && *spacing == PrettySpacing::Auto
-                        && !is_word_shaped(spelling)
+                        && *rendering == PrettyFixedRendering::Punctuation
                     {
                         render_pretty_fixed_with_method(
                             plan,
                             index,
                             spelling,
-                            format_ident!("opening_token"),
+                            PrettyFixedRendering::Opening,
                         )
                     } else {
-                        render_pretty_fixed(plan, index, spelling, *spacing)
+                        render_pretty_fixed(plan, index, spelling, *rendering)
                     };
                     let before = (infix && run_start && *spacing == PrettySpacing::Auto)
                         .then(|| quote!(context.soft_break(" ")?;));
@@ -7687,7 +7803,7 @@ fn render_pratt_node_pretty(
                 }
             })
             .collect::<Vec<_>>();
-            let rendered = render_pretty_sequence(behavior, &rendered);
+            let rendered = render_pretty_sequence(*layout, &rendered);
             let rendered = render_pretty_hints(&variant.pretty, rendered);
             let (entry, exit) = match position {
                 PrattPosition::Atom => (None, 256_u16),
@@ -7697,10 +7813,10 @@ fn render_pratt_node_pretty(
             };
             let entry_check = entry.map_or_else(|| quote!(false), |entry| quote!(#entry < min_bp));
             let group_open = pratt.grouping.as_ref().map(|grouping| {
-                render_pretty_synthetic_fixed(plan, &grouping.open, grouping.open_spacing)
+                render_pretty_synthetic_fixed(plan, &grouping.open, grouping.open_rendering)
             });
             let group_close = pratt.grouping.as_ref().map(|grouping| {
-                render_pretty_synthetic_fixed(plan, &grouping.close, grouping.close_spacing)
+                render_pretty_synthetic_fixed(plan, &grouping.close, grouping.close_rendering)
             });
             quote! {
                 #pattern => {
@@ -7769,6 +7885,7 @@ fn render_node_pretty(
     let (impl_generics, type_generics, where_clause) = pretty_impl_parts(facade, node);
     let elements = |elements: &[ElementParsePlan],
                     behavior: &[PrettyElementBehavior],
+                    layout: PrettySequenceLayout,
                     base: proc_macro2::TokenStream| {
         let rendered = elements
             .iter()
@@ -7778,21 +7895,22 @@ fn render_node_pretty(
                 |(index, (element, behavior))| match (&element.kind, behavior) {
                     (
                         ElementParseKind::Fixed { .. },
-                        PrettyElementBehavior::Fixed { spelling, spacing },
-                    ) => render_pretty_fixed(plan, index, spelling, *spacing),
+                        PrettyElementBehavior::Fixed {
+                            spelling,
+                            rendering,
+                            ..
+                        },
+                    ) => render_pretty_fixed(plan, index, spelling, *rendering),
                     (
                         ElementParseKind::Semantic {
                             field,
                             wrappers,
-                            container,
                             pretty,
                             ..
                         },
                         PrettyElementBehavior::Semantic {
-                            separator,
+                            repetition,
                             attachment,
-                            opaque_provenance,
-                            top_level_break,
                             ..
                         },
                     ) => {
@@ -7804,21 +7922,15 @@ fn render_node_pretty(
                                 value.clone(),
                                 false,
                                 wrappers,
-                                container,
                                 attachment,
-                                *opaque_provenance,
-                                *top_level_break,
-                                pretty,
+                                repetition.as_ref(),
                             )
                         } else {
                             render_pretty_semantic(
                                 facade,
                                 index,
                                 quote!(&#value),
-                                container,
-                                separator.as_deref(),
-                                *top_level_break,
-                                pretty,
+                                repetition.as_ref(),
                             )
                         };
                         render_pretty_presence(pretty, wrappers, quote!(&#value), rendered)
@@ -7830,13 +7942,18 @@ fn render_node_pretty(
                 },
             )
             .collect::<Vec<_>>();
-        render_pretty_sequence(behavior, &rendered)
+        render_pretty_sequence(layout, &rendered)
     };
     let body = match &node.body {
         NodeBodyPlan::Struct {
             elements: fields, ..
         } => {
-            let rendered = elements(fields, &behavior.variants[0], quote!(self));
+            let rendered = elements(
+                fields,
+                &behavior.variants[0],
+                behavior.variant_layouts[0],
+                quote!(self),
+            );
             quote!({ #rendered Ok(()) })
         }
         NodeBodyPlan::Pratt(pratt) => {
@@ -7846,8 +7963,9 @@ fn render_node_pretty(
             let variants = trait_variants(&node.body);
             let arms = variants
                 .iter()
+                .zip(&behavior.variant_layouts)
                 .zip(&behavior.variants)
-                .map(|(variant, behavior)| {
+                .map(|((variant, layout), behavior)| {
                     let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty");
                     let mut binding_index = 0;
                     let rendered = variant
@@ -7859,20 +7977,19 @@ fn render_node_pretty(
                             |(index, (element, behavior))| match (&element.kind, behavior) {
                                 (
                                     ElementParseKind::Fixed { .. },
-                                    PrettyElementBehavior::Fixed { spelling, spacing },
-                                ) => render_pretty_fixed(plan, index, spelling, *spacing),
-                                (
-                                    ElementParseKind::Semantic {
-                                        wrappers,
-                                        container,
-                                        pretty,
+                                    PrettyElementBehavior::Fixed {
+                                        spelling,
+                                        rendering,
                                         ..
                                     },
+                                ) => render_pretty_fixed(plan, index, spelling, *rendering),
+                                (
+                                    ElementParseKind::Semantic {
+                                        wrappers, pretty, ..
+                                    },
                                     PrettyElementBehavior::Semantic {
-                                        separator,
+                                        repetition,
                                         attachment,
-                                        opaque_provenance,
-                                        top_level_break,
                                         ..
                                     },
                                 ) => {
@@ -7885,21 +8002,15 @@ fn render_node_pretty(
                                             quote!(#binding),
                                             true,
                                             wrappers,
-                                            container,
                                             attachment,
-                                            *opaque_provenance,
-                                            *top_level_break,
-                                            pretty,
+                                            repetition.as_ref(),
                                         )
                                     } else {
                                         render_pretty_semantic(
                                             facade,
                                             index,
                                             quote!(#binding),
-                                            container,
-                                            separator.as_deref(),
-                                            *top_level_break,
-                                            pretty,
+                                            repetition.as_ref(),
                                         )
                                     };
                                     render_pretty_presence(
@@ -7920,7 +8031,7 @@ fn render_node_pretty(
                             },
                         )
                         .collect::<Vec<_>>();
-                    let rendered = render_pretty_sequence(behavior, &rendered);
+                    let rendered = render_pretty_sequence(*layout, &rendered);
                     let rendered = render_pretty_hints(&variant.pretty, rendered);
                     quote!(#pattern => { #rendered Ok(()) })
                 });
@@ -7945,21 +8056,17 @@ fn render_pretty_semantic(
     facade: &Ident,
     index: usize,
     value: proc_macro2::TokenStream,
-    container: &PlannedContainer,
-    separator: Option<&str>,
-    top_level_break: bool,
-    pretty: &PrettyHints,
+    repetition: Option<&PrettyRepetitionBehavior>,
 ) -> proc_macro2::TokenStream {
-    let render_value = if matches!(container, PlannedContainer::Repeated { .. }) {
-        let space_before_separator = separator.is_some_and(is_word_shaped);
-        let separator =
-            separator.map_or_else(|| quote!(None), |separator| quote!(Some(#separator)));
-        let hard_break = top_level_break;
-        let trailing = matches!(
-            pretty.trailing_separator,
-            Some(PrettyTrailingSeparator::Always)
-        );
-        let leading = matches!(pretty.separator, Some(PrettySeparatorPosition::Leading));
+    let render_value = if let Some(repetition) = repetition {
+        let separator = repetition
+            .separator
+            .as_deref()
+            .map_or_else(|| quote!(None), |separator| quote!(Some(#separator)));
+        let trailing = repetition.trailing_separator;
+        let hard_break = repetition.hard_break;
+        let leading = repetition.leading_separator;
+        let space_before_separator = repetition.space_before_separator;
         quote! {
             context.with_repetition_style(#separator, #trailing, #hard_break, #leading, #space_before_separator, |context| {
                 #facade::Pretty::pretty(#value, context)
@@ -7968,7 +8075,7 @@ fn render_pretty_semantic(
     } else {
         quote!(#facade::Pretty::pretty(#value, context))
     };
-    if matches!(container, PlannedContainer::Repeated { .. }) {
+    if repetition.is_some() {
         quote! {
             context.with_child(#index, |context| #render_value)?;
         }
@@ -8040,18 +8147,18 @@ fn render_pretty_fixed(
     plan: &EmissionPlan,
     index: usize,
     spelling: &str,
-    spacing: PrettySpacing,
+    rendering: PrettyFixedRendering,
 ) -> proc_macro2::TokenStream {
-    let method = pretty_fixed_method(spelling, spacing);
-    render_pretty_fixed_with_method(plan, index, spelling, method)
+    render_pretty_fixed_with_method(plan, index, spelling, rendering)
 }
 
 fn render_pretty_fixed_with_method(
     plan: &EmissionPlan,
     index: usize,
     spelling: &str,
-    method: syn::Ident,
+    rendering: PrettyFixedRendering,
 ) -> proc_macro2::TokenStream {
+    let method = pretty_fixed_method(rendering);
     let fallback = pretty_fixed_fallback(plan, spelling);
     quote! {
         context.with_child(#index, |context| {
@@ -8064,24 +8171,22 @@ fn render_pretty_fixed_with_method(
 fn render_pretty_synthetic_fixed(
     plan: &EmissionPlan,
     spelling: &str,
-    spacing: PrettySpacing,
+    rendering: PrettyFixedRendering,
 ) -> proc_macro2::TokenStream {
-    let method = pretty_fixed_method(spelling, spacing);
+    let method = pretty_fixed_method(rendering);
     let fallback = pretty_fixed_fallback(plan, spelling);
     quote!(context.without_provenance(|context| context.#method(#fallback))?;)
 }
 
-fn pretty_fixed_method(spelling: &str, spacing: PrettySpacing) -> syn::Ident {
-    match spacing {
-        PrettySpacing::Tight => format_ident!("tight_sequence_token"),
-        PrettySpacing::Before => format_ident!("before_token"),
-        PrettySpacing::After => format_ident!("after_token"),
-        PrettySpacing::Around => format_ident!("around_token"),
-        PrettySpacing::Auto if matches!(spelling, "(" | "[" | "{") => {
-            format_ident!("opening_token")
-        }
-        PrettySpacing::Auto if is_word_shaped(spelling) => format_ident!("token"),
-        PrettySpacing::Auto => format_ident!("punctuation_token"),
+fn pretty_fixed_method(rendering: PrettyFixedRendering) -> syn::Ident {
+    match rendering {
+        PrettyFixedRendering::TightSequence => format_ident!("tight_sequence_token"),
+        PrettyFixedRendering::Before => format_ident!("before_token"),
+        PrettyFixedRendering::After => format_ident!("after_token"),
+        PrettyFixedRendering::Around => format_ident!("around_token"),
+        PrettyFixedRendering::Opening => format_ident!("opening_token"),
+        PrettyFixedRendering::Word => format_ident!("token"),
+        PrettyFixedRendering::Punctuation => format_ident!("punctuation_token"),
     }
 }
 
@@ -8094,20 +8199,10 @@ fn pretty_fixed_fallback(plan: &EmissionPlan, spelling: &str) -> String {
 }
 
 fn render_pretty_sequence(
-    behavior: &[PrettyElementBehavior],
+    layout: PrettySequenceLayout,
     rendered: &[proc_macro2::TokenStream],
 ) -> proc_macro2::TokenStream {
-    let delimiter = behavior.first().and_then(|first| {
-        let PrettyElementBehavior::Fixed { spelling, .. } = first else {
-            return None;
-        };
-        delimiter_close(spelling).filter(|close| {
-            behavior.last().is_some_and(|last| {
-                matches!(last, PrettyElementBehavior::Fixed { spelling, .. } if spelling == close)
-            })
-        })
-    });
-    if delimiter.is_some() && rendered.len() >= 2 {
+    if layout == PrettySequenceLayout::Delimited && rendered.len() >= 2 {
         let open = &rendered[0];
         let middle = &rendered[1..rendered.len() - 1];
         let close = &rendered[rendered.len() - 1];
@@ -8131,17 +8226,7 @@ fn render_pretty_attached_fixed(
     index: usize,
     fixed: &PrettyAttachedFixedBehavior,
 ) -> proc_macro2::TokenStream {
-    let method = match fixed.spacing {
-        PrettySpacing::Tight => format_ident!("tight_sequence_token"),
-        PrettySpacing::Before => format_ident!("before_token"),
-        PrettySpacing::After => format_ident!("after_token"),
-        PrettySpacing::Around => format_ident!("around_token"),
-        PrettySpacing::Auto if matches!(fixed.spelling.as_str(), "(" | "[" | "{") => {
-            format_ident!("opening_token")
-        }
-        PrettySpacing::Auto if is_word_shaped(&fixed.spelling) => format_ident!("token"),
-        PrettySpacing::Auto => format_ident!("punctuation_token"),
-    };
+    let method = pretty_fixed_method(fixed.rendering);
     let spelling = &fixed.spelling;
     quote! {
         context.with_child(#index, |context| {
@@ -8171,17 +8256,7 @@ fn render_pretty_attachment_unit(
         .enumerate()
         .map(|(index, fixed)| render_pretty_attached_fixed(semantic_index + 1 + index, fixed))
         .collect::<Vec<_>>();
-    let delimited = attachment
-        .before
-        .first()
-        .and_then(|open| delimiter_close(&open.spelling))
-        .is_some_and(|close| {
-            attachment
-                .after
-                .last()
-                .is_some_and(|fixed| fixed.spelling == close)
-        });
-    if delimited {
+    if attachment.layout == PrettySequenceLayout::Delimited {
         let open = &before[0];
         let leading = &before[1..];
         let close = after
@@ -8206,25 +8281,21 @@ fn render_pretty_attachment_unit(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_pretty_attached_semantic(
     facade: &Ident,
     element_index: usize,
     value: proc_macro2::TokenStream,
     value_is_reference: bool,
     wrappers: &[FieldWrapper],
-    container: &PlannedContainer,
     attachment: &PrettyAttachmentBehavior,
-    _opaque_provenance: bool,
-    top_level_break: bool,
-    pretty: &PrettyHints,
+    repetition: Option<&PrettyRepetitionBehavior>,
 ) -> proc_macro2::TokenStream {
     let render_unit = |terminal: proc_macro2::TokenStream| {
         let semantic = quote!(#facade::Pretty::pretty(#terminal, context));
         render_pretty_attachment_unit(attachment, semantic)
     };
 
-    if matches!(container, PlannedContainer::Repeated { .. }) {
+    if let Some(repetition) = repetition {
         let repeat_index = wrappers
             .iter()
             .position(|wrapper| {
@@ -8235,22 +8306,20 @@ fn render_pretty_attached_semantic(
         let inner = &wrappers[repeat_index + 1..];
         let item = render_terminal_reference(quote!(item), inner, true);
         let unit = render_unit(item);
-        let separator = attachment
+        let separator = repetition
             .separator
             .as_deref()
             .map_or_else(|| quote!(None), |separator| quote!(Some(#separator)));
-        let trailing = matches!(
-            pretty.trailing_separator,
-            Some(PrettyTrailingSeparator::Always)
-        );
-        let leading = matches!(pretty.separator, Some(PrettySeparatorPosition::Leading));
-        let space_before_separator = attachment.separator.as_deref().is_some_and(is_word_shaped);
+        let trailing = repetition.trailing_separator;
+        let hard_break = repetition.hard_break;
+        let leading = repetition.leading_separator;
+        let space_before_separator = repetition.space_before_separator;
         let render_collection = |collection: proc_macro2::TokenStream| {
             quote! {
                 context.with_repetition_style(
                     #separator,
                     #trailing,
-                    #top_level_break,
+                    #hard_break,
                     #leading,
                     #space_before_separator,
                     |context| {
@@ -11116,7 +11185,15 @@ struct B;
             .expect("the trait fixture contains Pretty behavior");
         match element {
             PrettyElementBehavior::Fixed { spelling, .. } => spelling.push_str("-corrupt"),
-            PrettyElementBehavior::Semantic { repeated, .. } => *repeated = !*repeated,
+            PrettyElementBehavior::Semantic { repetition, .. } => {
+                *repetition = Some(PrettyRepetitionBehavior {
+                    separator: None,
+                    trailing_separator: false,
+                    hard_break: false,
+                    leading_separator: false,
+                    space_before_separator: false,
+                });
+            }
         }
         assert_plan_family_is_unselectable(package.path(), &pretty, "Pretty");
 
@@ -11301,6 +11378,16 @@ struct B;
                 })
                 .expect("selected fixture node has a semantic field")
         }
+        fn repetition_behavior(node: &mut PrettyNodeBehavior) -> &mut PrettyRepetitionBehavior {
+            let PrettyElementBehavior::Semantic {
+                repetition: Some(repetition),
+                ..
+            } = semantic(node)
+            else {
+                panic!("selected fixture node has a repeated semantic field")
+            };
+            repetition
+        }
 
         let mut node_hint = plan.clone();
         assert!(!pretty_node(&mut node_hint, "NodeGroupPretty").pretty.indent);
@@ -11334,6 +11421,86 @@ struct B;
             .pretty
             .group = Some(PrettyGroup::Consistent);
         assert_plan_family_is_unselectable(package.path(), &inconsistent_group, "Pretty");
+
+        let mut sequence_layout = plan.clone();
+        pretty_node(&mut sequence_layout, "NodeGroupPretty").variant_layouts[0] =
+            PrettySequenceLayout::Delimited;
+        assert_plan_family_is_unselectable(package.path(), &sequence_layout, "Pretty");
+
+        let mut fixed_rendering = plan.clone();
+        let rendering = pretty_node(&mut fixed_rendering, "NodeGroupPretty")
+            .variants
+            .iter_mut()
+            .flatten()
+            .find_map(|element| match element {
+                PrettyElementBehavior::Fixed { rendering, .. } => Some(rendering),
+                PrettyElementBehavior::Semantic { .. } => None,
+            })
+            .expect("fixture has ordinary fixed syntax");
+        assert_eq!(*rendering, PrettyFixedRendering::Word);
+        *rendering = PrettyFixedRendering::Punctuation;
+        assert_plan_family_is_unselectable(package.path(), &fixed_rendering, "Pretty");
+
+        let mut attachment_layout = plan.clone();
+        let PrettyElementBehavior::Semantic {
+            attachment: Some(attachment),
+            ..
+        } = semantic(pretty_node(&mut attachment_layout, "AttachedOptional"))
+        else {
+            panic!("fixture has an attached field")
+        };
+        assert_eq!(attachment.layout, PrettySequenceLayout::Delimited);
+        attachment.layout = PrettySequenceLayout::Linear;
+        assert_plan_family_is_unselectable(package.path(), &attachment_layout, "Pretty");
+
+        let mut attached_fixed_rendering = plan.clone();
+        let PrettyElementBehavior::Semantic {
+            attachment: Some(attachment),
+            ..
+        } = semantic(pretty_node(
+            &mut attached_fixed_rendering,
+            "AttachedOptional",
+        ))
+        else {
+            panic!("fixture has an attached field")
+        };
+        let rendering = &mut attachment.before[0].rendering;
+        assert_eq!(*rendering, PrettyFixedRendering::Opening);
+        *rendering = PrettyFixedRendering::Punctuation;
+        assert_plan_family_is_unselectable(package.path(), &attached_fixed_rendering, "Pretty");
+
+        let mut separator_spelling = plan.clone();
+        repetition_behavior(pretty_node(&mut separator_spelling, "LeadingPretty"))
+            .separator
+            .as_mut()
+            .expect("fixture has a separator")
+            .push_str("-corrupt");
+        assert_plan_family_is_unselectable(package.path(), &separator_spelling, "Pretty");
+
+        let mut trailing_separator = plan.clone();
+        let repetition = repetition_behavior(pretty_node(&mut trailing_separator, "LeadingPretty"));
+        assert!(repetition.trailing_separator);
+        repetition.trailing_separator = false;
+        assert_plan_family_is_unselectable(package.path(), &trailing_separator, "Pretty");
+
+        let mut leading_separator = plan.clone();
+        let repetition = repetition_behavior(pretty_node(&mut leading_separator, "LeadingPretty"));
+        assert!(repetition.leading_separator);
+        repetition.leading_separator = false;
+        assert_plan_family_is_unselectable(package.path(), &leading_separator, "Pretty");
+
+        let mut word_separator_spacing = plan.clone();
+        let repetition =
+            repetition_behavior(pretty_node(&mut word_separator_spacing, "WordSeparated"));
+        assert!(repetition.space_before_separator);
+        repetition.space_before_separator = false;
+        assert_plan_family_is_unselectable(package.path(), &word_separator_spacing, "Pretty");
+
+        let mut top_level_break = plan.clone();
+        let repetition = repetition_behavior(pretty_node(&mut top_level_break, "MixedProgram"));
+        assert!(repetition.hard_break);
+        repetition.hard_break = false;
+        assert_plan_family_is_unselectable(package.path(), &top_level_break, "Pretty");
 
         let mut attachment_presence = plan;
         let presence = pretty_node(&mut attachment_presence, "HintAttachedOptional")
