@@ -113,7 +113,7 @@ pub fn scan_word(context: &mut LexContext<'_>) -> LexAction {
 #[derive(recursa::Node)]
 #[tok(SELECT, this)]
 pub struct Selection<'input> {
-    #[lex(pattern = r"[A-Za-z]+")]
+    #[lex(pattern = r"[A-Za-z]+", admits(SELECT, NULL))]
     pub name: WordText<'input>,
 }
 

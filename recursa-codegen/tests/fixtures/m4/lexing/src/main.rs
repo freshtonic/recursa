@@ -1,3 +1,4 @@
+use recursa::NodeView as _;
 use recursa_generated_lexing::grammar;
 
 fn assert_token_kind_value<T: Copy + Eq + std::hash::Hash + std::fmt::Debug>() {}
@@ -17,6 +18,10 @@ fn main() {
     assert_eq!(tokens[1].kind(), grammar::TokenKind::SELECT);
     assert_eq!(tokens[1].span(), recursa::Span::new(6, 12).unwrap());
     assert_eq!(tokens[1].text(), "sElEcT");
+    assert_eq!(tokens[1].to_string(), "sElEcT");
+    assert_eq!(grammar::TokenKind::SELECT.to_string(), "SELECT");
+    assert_eq!(grammar::TokenKind::COLON.to_string(), ":");
+    assert_eq!(grammar::TokenKind::WordText.to_string(), "WordText");
 
     let errors = lexed.errors().collect::<Vec<grammar::LexError<'_>>>();
     assert_eq!(errors.len(), 1);
@@ -108,6 +113,22 @@ fn main() {
     assert_eq!(
         repaired.iter().map(|token| token.text()).collect::<Vec<_>>(),
         [":", "NULL", "':TRUE'", "!=", "!=-",]
+    );
+
+    let admitted = grammar::lex("select null");
+    let mut admitted_input = admitted.input();
+    let admitted = grammar::Selection::parse(&mut admitted_input)
+        .expect("an admitted keyword remains usable as content");
+    assert_eq!(
+        admitted.root().value().name.kind(),
+        grammar::TokenKind::NULL
+    );
+    assert_eq!(admitted.root().value().name.text(), "null");
+    let synthetic = grammar::WordText::with_kind(grammar::TokenKind::SELECT, "owned")
+        .expect("an admitted kind is valid for public synthesis");
+    assert_eq!(synthetic.kind(), grammar::TokenKind::SELECT);
+    assert!(
+        grammar::WordText::with_kind(grammar::TokenKind::COLON, "invalid").is_err()
     );
 
     println!("lexing-ok");
