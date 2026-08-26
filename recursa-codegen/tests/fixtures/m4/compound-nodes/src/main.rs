@@ -92,11 +92,11 @@ impl<'input> recursa::TotalVisitorMut<grammar::__RecursaVisitEventsMut<'input>> 
         grammar::__RecursaVisitEventsMut<'input>: 'visit,
     {
         let name = match event {
-            grammar::__RecursaVisitEventMut::Record(_) => "enter-record",
-            grammar::__RecursaVisitEventMut::Label(_) => "enter-label",
-            grammar::__RecursaVisitEventMut::LabelText(_) => "enter-label-text",
-            grammar::__RecursaVisitEventMut::Count(_) => "enter-count",
-            grammar::__RecursaVisitEventMut::CountText(text) => {
+            grammar::__RecursaVisitEventMut::__RecursaTarget_6_Record(_) => "enter-record",
+            grammar::__RecursaVisitEventMut::__RecursaTarget_5_Label(_) => "enter-label",
+            grammar::__RecursaVisitEventMut::__RecursaTarget_9_LabelText(_) => "enter-label-text",
+            grammar::__RecursaVisitEventMut::__RecursaTarget_5_Count(_) => "enter-count",
+            grammar::__RecursaVisitEventMut::__RecursaTarget_9_CountText(text) => {
                 *text = grammar::CountText::new("73");
                 "enter-count-text"
             }
@@ -114,11 +114,11 @@ impl<'input> recursa::TotalVisitorMut<grammar::__RecursaVisitEventsMut<'input>> 
         grammar::__RecursaVisitEventsMut<'input>: 'visit,
     {
         let name = match event {
-            grammar::__RecursaVisitEventMut::Record(_) => "exit-record",
-            grammar::__RecursaVisitEventMut::Label(_) => "exit-label",
-            grammar::__RecursaVisitEventMut::LabelText(_) => "exit-label-text",
-            grammar::__RecursaVisitEventMut::Count(_) => "exit-count",
-            grammar::__RecursaVisitEventMut::CountText(_) => "exit-count-text",
+            grammar::__RecursaVisitEventMut::__RecursaTarget_6_Record(_) => "exit-record",
+            grammar::__RecursaVisitEventMut::__RecursaTarget_5_Label(_) => "exit-label",
+            grammar::__RecursaVisitEventMut::__RecursaTarget_9_LabelText(_) => "exit-label-text",
+            grammar::__RecursaVisitEventMut::__RecursaTarget_5_Count(_) => "exit-count",
+            grammar::__RecursaVisitEventMut::__RecursaTarget_9_CountText(_) => "exit-count-text",
             _ => return std::ops::ControlFlow::Continue(()),
         };
         self.0.push(name);
@@ -254,7 +254,7 @@ fn main() {
     let mut forwarded_hash = std::collections::hash_map::DefaultHasher::new();
     forwarded_a.hash(&mut forwarded_hash);
     assert_ne!(forwarded_hash.finish(), 0);
-    assert_eq!(forwarded_a.render(), "record : alpha 42");
+    assert_eq!(forwarded_a.render(), "RECORD : alpha 42");
 
     struct MutationCounter(usize);
     impl<'input> recursa::TotalVisitorMut<grammar::__RecursaVisitEventsMut<'input>>
@@ -289,7 +289,7 @@ fn main() {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     detached.hash(&mut hasher);
     assert_ne!(hasher.finish(), 0);
-    assert_eq!(recursa::Parsed::synthetic(cloned.clone()).render(), "record : alpha 42");
+    assert_eq!(recursa::Parsed::synthetic(cloned.clone()).render(), "RECORD : alpha 42");
     let mut order = OrderedMutator(Vec::new());
     assert!(recursa::VisitMut::visit_mut(&mut detached, &mut order).is_continue());
     assert_eq!(

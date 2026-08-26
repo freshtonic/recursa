@@ -427,19 +427,15 @@ fn visitor_variant(ty: &Type, event: &syn::Path) -> syn::Result<syn::Ident> {
         .map(|segment| segment.ident.unraw().to_string())
         .collect::<Vec<_>>()
         .join("::");
-    Ok(if relative.contains("::") {
-        let suffix = relative
-            .split("::")
-            .map(|segment| format!("{}_{}", segment.len(), segment))
-            .collect::<Vec<_>>()
-            .join("_");
-        syn::Ident::new(
-            &format!("__RecursaTarget_{suffix}"),
-            proc_macro2::Span::call_site(),
-        )
-    } else {
-        syn::Ident::new(&relative, proc_macro2::Span::call_site())
-    })
+    let suffix = relative
+        .split("::")
+        .map(|segment| format!("{}_{}", segment.len(), segment))
+        .collect::<Vec<_>>()
+        .join("_");
+    Ok(syn::Ident::new(
+        &format!("__RecursaTarget_{suffix}"),
+        proc_macro2::Span::call_site(),
+    ))
 }
 
 fn stable_hash(bytes: &[u8]) -> u64 {
@@ -473,6 +469,16 @@ mod tests {
         assert_eq!(
             visitor_variant(&ty, &event).unwrap(),
             "__RecursaTarget_11_public_left_9_Duplicate"
+        );
+    }
+
+    #[test]
+    fn root_visit_variant_is_length_encoded() {
+        let ty = syn::parse_quote!(grammar::Opaque);
+        let event = syn::parse_quote!(grammar::__RecursaVisitEvent);
+        assert_eq!(
+            visitor_variant(&ty, &event).unwrap(),
+            "__RecursaTarget_6_Opaque"
         );
     }
 }

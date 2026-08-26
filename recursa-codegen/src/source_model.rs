@@ -2365,7 +2365,10 @@ impl Parse for TokenSequence {
     }
 }
 
-fn configured_trait_recipe(path: &syn::Path, facade: &str) -> Option<ConfiguredTraitRecipe> {
+pub(crate) fn configured_trait_recipe(
+    path: &syn::Path,
+    facade: &str,
+) -> Option<ConfiguredTraitRecipe> {
     if path.leading_colon.is_some()
         || path
             .segments
