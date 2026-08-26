@@ -9,6 +9,9 @@ use std::path::PathBuf;
 
 use syn::GenericParam;
 
+use crate::lexical::{
+    LexicalDiagnostic, LexicalPlan, TokenDefinitionKindCorrelation, kind_label, plan_lexical,
+};
 use crate::lowering::{NodeId, RustEdition, TokenUseId};
 use crate::resolution::{
     CatalogType, ContentTokenId, GenericParameterId, ResolutionTraceId, ResolvedFieldId,
@@ -17,7 +20,6 @@ use crate::resolution::{
 };
 use crate::source_model::{
     DeclaredRepetition, GrammarElement, NodeBody, Separator, SourceModel, SourceModeledGrammar,
-    TokenDefinitionKind,
 };
 use crate::{
     AtomDescription, AtomExpression, ContainerShape, DeclId, Declaration, GrammarDescription,
@@ -45,6 +47,7 @@ materialization_id!(MaterializedApplicationId);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MaterializationReport {
+    pub(crate) lexical_diagnostics: Vec<LexicalDiagnostic>,
     pub(crate) diagnostics: Vec<MaterializationDiagnostic>,
     pub(crate) lowered: Option<LoweredGrammar>,
 }
@@ -52,6 +55,7 @@ pub(crate) struct MaterializationReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LoweredGrammar {
     pub(crate) source_modeled: SourceModeledGrammar,
+    pub(crate) lexical_plan: LexicalPlan,
     pub(crate) applications: Vec<MaterializedNodeApplication>,
     pub(crate) grammar: GrammarDescription,
     pub(crate) lowering_map: LoweringMap,
@@ -60,9 +64,17 @@ pub(crate) struct LoweredGrammar {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LoweringMap {
     pub(crate) sources: Vec<SourceCorrelation>,
+    pub(crate) token_definitions: Vec<TokenDefinitionKindCorrelation>,
+    pub(crate) content_targets: Vec<ContentTargetTypeCorrelation>,
     pub(crate) applications: Vec<ApplicationTypeCorrelation>,
     pub(crate) variants: Vec<VariantAlternativeCorrelation>,
     pub(crate) fields: Vec<MaterializedFieldSiteCorrelation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ContentTargetTypeCorrelation {
+    pub(crate) semantic: ContentTokenId,
+    pub(crate) lowered: TypeId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -265,6 +277,7 @@ struct EvaluationEnvironment {
 
 struct Materializer {
     source_modeled: SourceModeledGrammar,
+    lexical_plan: LexicalPlan,
     application_by_key: BTreeMap<ApplicationKey, MaterializedApplicationId>,
     applications: Vec<MaterializedNodeApplication>,
     diagnostics: Vec<MaterializationDiagnostic>,
@@ -273,8 +286,17 @@ struct Materializer {
 }
 
 pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> MaterializationReport {
+    let lexical = plan_lexical(&source_modeled);
+    let Some(lexical_plan) = lexical.plan else {
+        return MaterializationReport {
+            lexical_diagnostics: lexical.diagnostics,
+            diagnostics: Vec::new(),
+            lowered: None,
+        };
+    };
     let materializer = Materializer {
         source_modeled,
+        lexical_plan,
         application_by_key: BTreeMap::new(),
         applications: Vec::new(),
         diagnostics: Vec::new(),
@@ -291,6 +313,17 @@ impl Materializer {
 
     fn source_model(&self) -> &SourceModel {
         self.source_modeled.source_model()
+    }
+
+    fn kind_for_definition(&self, definition: crate::lowering::TokenDefinitionId) -> crate::KindId {
+        self.lexical_plan
+            .lowering_map
+            .token_definitions
+            .iter()
+            .find_map(|correlation| {
+                (correlation.source == definition).then_some(correlation.lowered)
+            })
+            .expect("every source token definition has a lexical KindId correlation")
     }
 
     fn run(mut self) -> MaterializationReport {
@@ -319,15 +352,18 @@ impl Materializer {
         }
         if !self.diagnostics.is_empty() {
             return MaterializationReport {
+                lexical_diagnostics: Vec::new(),
                 diagnostics: std::mem::take(&mut self.diagnostics),
                 lowered: None,
             };
         }
         let (grammar, lowering_map) = self.project_m2();
         MaterializationReport {
+            lexical_diagnostics: Vec::new(),
             diagnostics: Vec::new(),
             lowered: Some(LoweredGrammar {
                 source_modeled: self.source_modeled,
+                lexical_plan: self.lexical_plan,
                 applications: self.applications,
                 grammar,
                 lowering_map,
@@ -953,7 +989,7 @@ impl Materializer {
                 .module_anchor
                 .segments
                 .join("::"),
-            self.source_model().token_definitions.len(),
+            self.lexical_plan.token_kinds.len(),
             self.resolved().build_inputs.max_lookahead,
             self.resolved().build_inputs.text_equivalence,
         );
@@ -964,30 +1000,79 @@ impl Materializer {
             .len()
             .try_into()
             .expect("source count overflow");
-        let mut content_types = BTreeMap::new();
-        for token in &self.source_model().token_definitions {
-            let site = &token.definition_sites[0];
+        let mut kind_atoms = Vec::with_capacity(self.lexical_plan.token_kinds.len());
+        let mut fixed_types = BTreeMap::new();
+        for kind_plan in &self.lexical_plan.token_kinds {
+            let source_definition = self
+                .lexical_plan
+                .lowering_map
+                .token_definitions
+                .iter()
+                .find(|correlation| correlation.lowered == kind_plan.id)
+                .map(|correlation| {
+                    &self.source_model().token_definitions[correlation.source.index()]
+                })
+                .expect("every lexical kind has source evidence");
+            let site = &source_definition.definition_sites[0];
             let location = grammar.push_location(Location::new(site.source, site.range.clone()));
-            let declaration = grammar.push_declaration(Declaration::new(&token.name, location));
-            let kind = grammar.push_kind(KindDescription::new(&token.name, declaration));
+            let name = kind_label(&kind_plan.identity);
+            let declaration = grammar.push_declaration(Declaration::new(&name, location));
+            let kind = grammar.push_kind(KindDescription::new(&name, declaration));
+            assert_eq!(
+                kind, kind_plan.id,
+                "M2 KindId must equal the lexical KindId"
+            );
             let atom = grammar.push_atom(AtomDescription::new(
-                &token.name,
+                &name,
                 declaration,
                 AtomExpression::Kind(kind),
             ));
+            kind_atoms.push(atom);
+            if matches!(
+                kind_plan.identity,
+                crate::lexical::TokenKindIdentity::Fixed(_)
+            ) {
+                let ty = grammar.push_type(TypeDescription::new(
+                    &name,
+                    declaration,
+                    TypeShape::Token {
+                        atom,
+                        text_predicate: None,
+                    },
+                ));
+                fixed_types.insert(kind, ty);
+            }
+        }
+        let mut content_types = BTreeMap::new();
+        for target in &self.lexical_plan.parser_targets {
+            let source_definition =
+                &self.source_model().token_definitions[target.definition.index()];
+            let site = &source_definition.definition_sites[0];
+            let location = grammar.push_location(Location::new(site.source, site.range.clone()));
+            let declaration = grammar.push_declaration(Declaration::new(&target.name, location));
+            let atom = grammar.push_atom(AtomDescription::new(
+                &target.name,
+                declaration,
+                AtomExpression::Target {
+                    base: kind_atoms[target.base_kind.index()],
+                    admits: target
+                        .admitted_kinds
+                        .iter()
+                        .map(|kind| kind_atoms[kind.index()])
+                        .collect(),
+                },
+            ));
             let ty = grammar.push_type(TypeDescription::new(
-                &token.name,
+                &target.name,
                 declaration,
                 TypeShape::Token {
                     atom,
                     text_predicate: None,
                 },
             ));
-            if let TokenDefinitionKind::Content(content) = &token.kind {
-                content_types.insert(content.semantic, ty);
-            }
+            content_types.insert(target.semantic, ty);
         }
-        let token_count = self.source_model().token_definitions.len();
+        let terminal_type_count = grammar.types.len();
         let applications = self
             .applications
             .iter()
@@ -995,7 +1080,7 @@ impl Materializer {
                 application: application.id,
                 node: application.node,
                 lowered: TypeId::new(
-                    (token_count + application.id.index())
+                    (terminal_type_count + application.id.index())
                         .try_into()
                         .expect("M2 type ID overflow"),
                 ),
@@ -1014,7 +1099,7 @@ impl Materializer {
         }
         for application in &self.applications {
             let owner = TypeId::new(
-                (token_count + application.id.index())
+                (terminal_type_count + application.id.index())
                     .try_into()
                     .expect("M2 type ID overflow"),
             );
@@ -1026,7 +1111,8 @@ impl Materializer {
                         application,
                         owner,
                         elements,
-                        token_count,
+                        terminal_type_count,
+                        &fixed_types,
                         &content_types,
                         &mut field_correlations,
                     ),
@@ -1067,7 +1153,8 @@ impl Materializer {
                                     application,
                                     owner,
                                     &variant.elements,
-                                    token_count,
+                                    terminal_type_count,
+                                    &fixed_types,
                                     &content_types,
                                     &mut field_correlations,
                                 ),
@@ -1099,6 +1186,14 @@ impl Materializer {
                         lowered: source.id,
                     })
                     .collect(),
+                token_definitions: self.lexical_plan.lowering_map.token_definitions.clone(),
+                content_targets: content_types
+                    .iter()
+                    .map(|(semantic, lowered)| ContentTargetTypeCorrelation {
+                        semantic: *semantic,
+                        lowered: *lowered,
+                    })
+                    .collect(),
                 applications,
                 variants: variant_correlations,
                 fields: field_correlations,
@@ -1113,7 +1208,8 @@ impl Materializer {
         application: &MaterializedNodeApplication,
         owner: TypeId,
         elements: &[MaterializedElement],
-        token_count: usize,
+        terminal_type_count: usize,
+        fixed_types: &BTreeMap<crate::KindId, TypeId>,
         content_types: &BTreeMap<ContentTokenId, TypeId>,
         field_correlations: &mut Vec<MaterializedFieldSiteCorrelation>,
     ) -> Vec<SiteId> {
@@ -1133,13 +1229,7 @@ impl Materializer {
                     ));
                     grammar.push_site(ParseSite::new(
                         owner,
-                        TypeId::new(
-                            token_use
-                                .definition
-                                .index()
-                                .try_into()
-                                .expect("M2 type ID overflow"),
-                        ),
+                        fixed_types[&self.kind_for_definition(token_use.definition)],
                         declaration,
                         ContainerShape::Direct,
                     ))
@@ -1162,18 +1252,12 @@ impl Materializer {
                     let separator_type = separator.as_ref().map(|separator| {
                         let token_use =
                             &self.source_model().token_uses[separator.token_use.index()];
-                        TypeId::new(
-                            token_use
-                                .definition
-                                .index()
-                                .try_into()
-                                .expect("M2 type ID overflow"),
-                        )
+                        fixed_types[&self.kind_for_definition(token_use.definition)]
                     });
                     let (terminal, container) = terminal_and_container(ty, separator_type);
                     let target = match terminal {
                         Terminal::Node(application) => TypeId::new(
-                            (token_count + application.index())
+                            (terminal_type_count + application.index())
                                 .try_into()
                                 .expect("M2 type ID overflow"),
                         ),
@@ -1326,12 +1410,12 @@ mod tests {
         ClosedType, MaterializationDiagnosticKind, MaterializationTraceStep, MaterializedElement,
         MaterializedNodeApplication, materialize,
     };
-    use crate::TypeShape;
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
     use crate::resolution::{ResolutionInput, resolve_local_semantics};
     use crate::source_model::{SourceModelInput, lower_source_model};
     use crate::source_syntax::CargoCfgSnapshot;
+    use crate::{AtomExpression, KindSet, TypeShape};
 
     fn resolve_report(source: &str) -> crate::resolution::ResolutionReport {
         let package = TempDir::new().unwrap();
@@ -1371,6 +1455,149 @@ mod tests {
             source_model.diagnostics
         );
         source_model.source_modeled.unwrap()
+    }
+
+    fn target_kind_set(grammar: &crate::GrammarDescription, target: crate::TypeId) -> KindSet {
+        let TypeShape::Token { atom, .. } = grammar.types[target.index()].shape else {
+            panic!("content target must lower to a token type")
+        };
+        let AtomExpression::Target { base, ref admits } = grammar.atoms[atom.index()].expression
+        else {
+            panic!("content target must lower to a target atom")
+        };
+        let members = std::iter::once(base).chain(admits.iter().copied());
+        KindSet::from_kinds(
+            grammar.kind_count,
+            members.map(|member| match grammar.atoms[member.index()].expression {
+                AtomExpression::Kind(kind) => kind,
+                _ => panic!("target members must be direct kind atoms"),
+            }),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn contextual_keyword_targets_are_concrete_m2_kind_sets_before_analysis() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! {
+    module = crate,
+    keyword_matching = ascii_insensitive,
+}
+
+#[derive(recursa::Node)]
+#[tok("SELECT", "FROM", "AS", ",")]
+struct Fixed;
+
+#[derive(recursa::Node)]
+struct Projection {
+    #[lex(pattern = r"[A-Za-z_]+")]
+    word: Word,
+    #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
+    column: ColumnName,
+    #[lex(pattern = r"[A-Za-z_]+", admits(AS))]
+    table: TableName,
+    #[lex(pattern = r"[A-Za-z_]+")]
+    alias: Alias,
+}
+"#,
+        ));
+
+        assert!(report.lexical_diagnostics.is_empty());
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.unwrap();
+        assert_eq!(lowered.lexical_plan.token_kinds.len(), 5);
+        assert_eq!(lowered.grammar.kind_count, 5);
+        assert_eq!(lowered.lexical_plan.content_bases.len(), 1);
+
+        for target in &lowered.lexical_plan.parser_targets {
+            let correlation = lowered
+                .lowering_map
+                .content_targets
+                .iter()
+                .find(|correlation| correlation.semantic == target.semantic)
+                .unwrap();
+            assert_eq!(
+                target_kind_set(&lowered.grammar, correlation.lowered),
+                target.accepted_kinds(),
+                "{} must reach M2 as its exact base-plus-admissions set",
+                target.name,
+            );
+            assert_eq!(
+                target.admitted_kinds.iter().count(),
+                usize::from(matches!(target.name.as_str(), "ColumnName" | "TableName")),
+            );
+        }
+
+        let content_kinds = lowered
+            .lowering_map
+            .token_definitions
+            .iter()
+            .filter_map(|correlation| {
+                matches!(
+                    lowered.source_modeled.source_model().token_definitions
+                        [correlation.source.index()]
+                    .kind,
+                    crate::source_model::TokenDefinitionKind::Content(_)
+                )
+                .then_some(correlation.lowered)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(content_kinds.len(), 4);
+        assert!(content_kinds.iter().all(|kind| *kind == content_kinds[0]));
+    }
+
+    #[test]
+    fn content_target_type_ids_preserve_source_definition_order() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate }
+
+#[derive(recursa::Node)]
+struct Root {
+    #[lex(pattern = r"z")]
+    zeta: Zeta,
+    #[lex(pattern = r"a")]
+    alpha: Alpha,
+}
+"#,
+        ));
+
+        assert!(report.lexical_diagnostics.is_empty());
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.expect("valid grammar materializes");
+        assert_eq!(
+            lowered
+                .lexical_plan
+                .parser_targets
+                .iter()
+                .map(|target| (target.name.as_str(), target.definition.index()))
+                .collect::<Vec<_>>(),
+            [("Zeta", 0), ("Alpha", 1)],
+        );
+        let target_type_ids = lowered
+            .lexical_plan
+            .parser_targets
+            .iter()
+            .map(|target| {
+                lowered
+                    .lowering_map
+                    .content_targets
+                    .iter()
+                    .find(|correlation| correlation.semantic == target.semantic)
+                    .expect("every parser target reaches M2")
+                    .lowered
+                    .index()
+            })
+            .collect::<Vec<_>>();
+        assert!(target_type_ids.windows(2).all(|ids| ids[0] < ids[1]));
+        assert_eq!(
+            target_type_ids
+                .iter()
+                .map(|id| lowered.grammar.types[*id].name.as_str())
+                .collect::<Vec<_>>(),
+            ["Zeta", "Alpha"],
+        );
     }
 
     fn fields(

@@ -142,8 +142,15 @@ pub(crate) struct GrammarConfigSyntax {
     pub(crate) facade: syn::Ident,
     pub(crate) facade_explicit: bool,
     pub(crate) text_equivalence: TextEquivalence,
+    pub(crate) invalid_keyword_matching: Option<InvalidKeywordMatchingSyntax>,
     pub(crate) max_lookahead: usize,
     pub(crate) derives: Vec<Path>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InvalidKeywordMatchingSyntax {
+    pub(crate) authored: String,
+    pub(crate) range: std::ops::Range<u32>,
 }
 
 impl Parse for GrammarConfigSyntax {
@@ -151,6 +158,7 @@ impl Parse for GrammarConfigSyntax {
         let mut module = None;
         let mut facade = None;
         let mut text_equivalence = None;
+        let mut invalid_keyword_matching = None;
         let mut max_lookahead = None;
         let mut derives = None;
         while !input.is_empty() {
@@ -180,10 +188,11 @@ impl Parse for GrammarConfigSyntax {
                     } else if value == "ascii_insensitive" {
                         TextEquivalence::AsciiInsensitive
                     } else {
-                        return Err(syn::Error::new(
-                            value.span(),
-                            "keyword_matching must be sensitive or ascii_insensitive",
-                        ));
+                        invalid_keyword_matching = Some(InvalidKeywordMatchingSyntax {
+                            authored: value.to_string(),
+                            range: span_range(value.span()),
+                        });
+                        TextEquivalence::Sensitive
                     });
                 } else if key == "max_lookahead" {
                     reject_duplicate(&max_lookahead, key.span(), "max_lookahead")?;
@@ -206,6 +215,7 @@ impl Parse for GrammarConfigSyntax {
             facade: facade.unwrap_or_else(|| syn::Ident::new("recursa", Span::call_site())),
             facade_explicit,
             text_equivalence: text_equivalence.unwrap_or(TextEquivalence::Sensitive),
+            invalid_keyword_matching,
             max_lookahead: max_lookahead.unwrap_or(1),
             derives: derives.unwrap_or_default(),
         })

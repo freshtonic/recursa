@@ -9,6 +9,7 @@ mod discovery;
 mod ids;
 mod ir;
 mod kind_set;
+mod lexical;
 mod lowering;
 mod materialization;
 mod provenance;
