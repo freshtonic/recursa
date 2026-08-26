@@ -11,12 +11,13 @@ use proc_macro2::Span;
 use syn::ext::IdentExt as _;
 use syn::parse::{Parse, ParseStream, Parser as _};
 use syn::spanned::Spanned as _;
-use syn::{Fields, Item, LitStr, Meta, Token};
+use syn::{Item, LitStr, Meta, Token};
 
-use crate::lowering::{
-    BuildInputs, ElementId as GrammarElementId, ModuleId, NodeId, TokenDefinitionId, TokenUseId,
+use crate::lowering::{ElementId as GrammarElementId, NodeId, TokenDefinitionId, TokenUseId};
+use crate::resolution::{
+    CatalogType, ContentTokenId, ResolvedFieldId, ResolvedNodeBody, ResolvedNodeField,
+    ResolvedSourceGrammar, ResolvedTypeKind, ResolvedVariantId, SemanticTarget,
 };
-use crate::resolution::{CatalogType, ContentTokenId, ResolvedSourceGrammar, SemanticTarget};
 use crate::source_syntax::{
     CargoCfgSnapshot, configured_attribute_metas as configured_metas,
     item_attributes as item_attrs, path_text, span_range,
@@ -30,14 +31,28 @@ pub(crate) struct SourceModelInput<'cfg> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SourceModelReport {
-    pub(crate) build_inputs: BuildInputs,
     pub(crate) diagnostics: Vec<SourceModelDiagnostic>,
-    pub(crate) source_model: Option<SourceModel>,
+    pub(crate) source_modeled: Option<SourceModeledGrammar>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SourceModeledGrammar {
+    resolved: ResolvedSourceGrammar,
+    source_model: SourceModel,
+}
+
+impl SourceModeledGrammar {
+    pub(crate) const fn resolved(&self) -> &ResolvedSourceGrammar {
+        &self.resolved
+    }
+
+    pub(crate) const fn source_model(&self) -> &SourceModel {
+        &self.source_model
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SourceModel {
-    pub(crate) build_inputs: BuildInputs,
     pub(crate) grammar_trait_defaults: Vec<ConfiguredTraitSelection>,
     pub(crate) nodes: Vec<Node>,
     pub(crate) token_definitions: Vec<TokenDefinition>,
@@ -46,7 +61,7 @@ pub(crate) struct SourceModel {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Node {
-    pub(crate) source: NodeId,
+    pub(crate) resolved_node: NodeId,
     pub(crate) name: String,
     pub(crate) body: NodeBody,
     pub(crate) configured_traits: ConfiguredTraitPlan,
@@ -85,6 +100,7 @@ impl Node {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Variant {
+    pub(crate) resolved_variant: ResolvedVariantId,
     pub(crate) name: String,
     pub(crate) elements: Vec<GrammarElement>,
     pub(crate) pratt_role: Option<PrattRole>,
@@ -158,6 +174,7 @@ pub(crate) enum GrammarElement {
     },
     SemanticField {
         id: GrammarElementId,
+        resolved_field: ResolvedFieldId,
         name: Option<String>,
         separator: Option<Separator>,
         site: SourceSite,
@@ -195,7 +212,7 @@ impl GrammarElement {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Separator {
     pub(crate) token_use: TokenUseId,
-    pub(crate) repetition: DeclaredRepetition,
+    pub(crate) declared_repetition: Option<DeclaredRepetition>,
     pub(crate) optional_trailing: bool,
 }
 
@@ -232,6 +249,7 @@ pub(crate) struct FixedTokenDefinition {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ContentTokenDefinition {
+    pub(crate) semantic: ContentTokenId,
     pub(crate) pattern: String,
     pub(crate) admission_set: Vec<TokenDefinitionId>,
     pub(crate) authored_admissions: Vec<AuthoredAdmissions>,
@@ -267,6 +285,7 @@ pub(crate) enum TokenUseRole {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SourceSite {
+    pub(crate) source: crate::SourceId,
     pub(crate) path: PathBuf,
     pub(crate) range: Range<u32>,
 }
@@ -286,7 +305,6 @@ pub(crate) enum SourceModelDiagnosticKind {
     ContentDisplayOverride,
     ConflictingTokenDefinition,
     InvalidSeparator,
-    UnsupportedSeparatorTarget,
     UnsupportedFixedSyntax,
     InvalidTokenPlacement,
     InvalidPrattTokenPlacement,
@@ -301,7 +319,6 @@ pub(crate) struct SourceModelDiagnostic {
 }
 
 pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelReport {
-    let build_inputs = input.resolved.build_inputs.clone();
     let semantic_facts = SemanticFacts::from_resolved(&input.resolved);
     let mut diagnostics = Vec::new();
     let trait_planner = TraitPlanner::from_grammar(&input.resolved, &mut diagnostics);
@@ -316,8 +333,9 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         tokens,
         diagnostics,
     };
+    builder.reject_misplaced_content_declarations();
     builder.lower_nodes();
-    builder.finish(build_inputs)
+    builder.finish()
 }
 
 struct SourceModelBuilder<'cfg> {
@@ -363,25 +381,25 @@ impl LoweredFields {
 }
 
 impl SourceModelBuilder<'_> {
-    fn finish(mut self, build_inputs: BuildInputs) -> SourceModelReport {
-        normalize_source_order(&self.resolved, &mut self.nodes, &mut self.tokens);
-        let source_model = self.diagnostics.is_empty().then(|| SourceModel {
-            build_inputs: build_inputs.clone(),
-            grammar_trait_defaults: self.trait_planner.grammar_defaults,
-            nodes: self.nodes,
-            token_definitions: self.tokens.definitions,
-            token_uses: self.tokens.uses,
+    fn finish(mut self) -> SourceModelReport {
+        normalize_source_order(&mut self.nodes, &mut self.tokens);
+        let source_modeled = self.diagnostics.is_empty().then(|| SourceModeledGrammar {
+            resolved: self.resolved,
+            source_model: SourceModel {
+                grammar_trait_defaults: self.trait_planner.grammar_defaults,
+                nodes: self.nodes,
+                token_definitions: self.tokens.definitions,
+                token_uses: self.tokens.uses,
+            },
         });
         SourceModelReport {
-            build_inputs,
             diagnostics: self.diagnostics,
-            source_model,
+            source_modeled,
         }
     }
 
-    fn lower_nodes(&mut self) {
-        let inclusions = self.resolved.tree.inclusions.clone();
-        for inclusion in inclusions {
+    fn reject_misplaced_content_declarations(&mut self) {
+        for inclusion in self.resolved.tree.inclusions.clone() {
             for item in &inclusion.items {
                 let configured = match configured_metas(item_attrs(item), self.cfg) {
                     Ok(Some(configured)) => configured,
@@ -401,191 +419,166 @@ impl SourceModelBuilder<'_> {
                     &configured,
                     &mut self.diagnostics,
                 );
-                match item {
-                    Item::Struct(item) => {
-                        let Some(source_node) = self.find_node(
-                            inclusion.id,
-                            &item.ident.unraw().to_string(),
-                            span_range(item.ident.span()),
-                        ) else {
-                            continue;
+                if let Item::Enum(item) = item {
+                    for variant in &item.variants {
+                        let configured = match configured_metas(&variant.attrs, self.cfg) {
+                            Ok(Some(configured)) => configured,
+                            Ok(None) => continue,
+                            Err(error) => {
+                                self.diagnostics.push(SourceModelDiagnostic {
+                                    kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                                    sites: vec![self.site(inclusion.source, error.range)],
+                                    message: error.message,
+                                });
+                                continue;
+                            }
                         };
-                        let body = self
-                            .lower_fields(inclusion.source, &item.fields)
-                            .into_elements();
-                        let elements = PositionalTokenPlanner::lower(
-                            &self.resolved,
-                            &mut self.tokens,
-                            &mut self.diagnostics,
-                            inclusion.source,
-                            &configured,
-                            body,
-                            TokenAttachment::StructBody,
-                        );
-                        let body = if matches!(item.fields, Fields::Unit)
-                            && elements
-                                .iter()
-                                .all(|element| element.kind() == GrammarElementKind::FixedToken)
-                            && !elements.is_empty()
-                        {
-                            NodeBody::Presence(reassign_element_ids(elements))
-                        } else {
-                            NodeBody::Struct(reassign_element_ids(elements))
-                        };
-                        let configured_traits = self.trait_planner.node_plan(
+                        reject_misplaced_content_declarations(
                             &self.resolved,
                             inclusion.source,
                             &configured,
                             &mut self.diagnostics,
                         );
-                        self.trait_planner.validate_ordinary_derive_ownership(
-                            &self.resolved,
-                            inclusion.source,
-                            &configured,
-                            &configured_traits,
-                            &mut self.diagnostics,
-                        );
-                        self.nodes.push(Node {
-                            source: source_node,
-                            name: item.ident.unraw().to_string(),
-                            body,
-                            configured_traits,
-                        });
                     }
-                    Item::Enum(item) => {
-                        let Some(source_node) = self.find_node(
-                            inclusion.id,
-                            &item.ident.unraw().to_string(),
-                            span_range(item.ident.span()),
-                        ) else {
-                            continue;
-                        };
-                        PositionalTokenPlanner::reject_legacy_syntax(
-                            &self.resolved,
-                            inclusion.source,
-                            &configured,
-                            &mut self.diagnostics,
-                        );
-                        if let Some(token_meta) =
-                            configured.iter().find(|meta| meta.path().is_ident("tok"))
-                        {
-                            self.diagnostics.push(SourceModelDiagnostic {
-                                kind: SourceModelDiagnosticKind::InvalidTokenPlacement,
-                                sites: vec![
-                                    self.site(inclusion.source, span_range(token_meta.span())),
-                                ],
-                                message:
-                                    "#[tok] belongs on each enum variant, not on the enum body"
-                                        .to_owned(),
-                            });
-                        }
-                        let is_pratt = configured.iter().any(|meta| meta.path().is_ident("pratt"));
-                        let mut variants = Vec::new();
-                        for variant in &item.variants {
-                            let variant_configured =
-                                match configured_metas(&variant.attrs, self.cfg) {
-                                    Ok(Some(configured)) => configured,
-                                    Ok(None) => continue,
-                                    Err(error) => {
-                                        self.diagnostics.push(SourceModelDiagnostic {
-                                            kind: SourceModelDiagnosticKind::InvalidConfiguration,
-                                            sites: vec![self.site(inclusion.source, error.range)],
-                                            message: error.message,
-                                        });
-                                        continue;
-                                    }
-                                };
-                            reject_misplaced_content_declarations(
-                                &self.resolved,
-                                inclusion.source,
-                                &variant_configured,
-                                &mut self.diagnostics,
-                            );
-                            let pratt_role = PrattRole::from_attributes(
-                                &self.resolved,
-                                inclusion.source,
-                                &variant_configured,
-                                is_pratt,
-                                &mut self.diagnostics,
-                            );
-                            let body = self.lower_fields(inclusion.source, &variant.fields);
-                            let second_field_attachment = body.second_attachment_start();
-                            let elements = PositionalTokenPlanner::lower(
-                                &self.resolved,
-                                &mut self.tokens,
-                                &mut self.diagnostics,
-                                inclusion.source,
-                                &variant_configured,
-                                body.into_elements(),
-                                if is_pratt {
-                                    TokenAttachment::PrattVariant {
-                                        role: pratt_role,
-                                        second_field_attachment,
-                                    }
-                                } else {
-                                    TokenAttachment::Variant
-                                },
-                            );
-                            variants.push(Variant {
-                                name: variant.ident.unraw().to_string(),
-                                elements: reassign_element_ids(elements),
-                                pratt_role,
-                                site: self.site(inclusion.source, span_range(variant.ident.span())),
-                            });
-                        }
-                        let configured_traits = self.trait_planner.node_plan(
-                            &self.resolved,
-                            inclusion.source,
-                            &configured,
-                            &mut self.diagnostics,
-                        );
-                        self.trait_planner.validate_ordinary_derive_ownership(
-                            &self.resolved,
-                            inclusion.source,
-                            &configured,
-                            &configured_traits,
-                            &mut self.diagnostics,
-                        );
-                        self.nodes.push(Node {
-                            source: source_node,
-                            name: item.ident.unraw().to_string(),
-                            body: NodeBody::Enum(variants),
-                            configured_traits,
-                        });
-                    }
-                    _ => {}
                 }
             }
         }
     }
 
-    fn lower_fields(&mut self, source: crate::SourceId, fields: &Fields) -> LoweredFields {
-        let mut body = LoweredFields::default();
-        for field in fields {
-            let field_configured = match configured_metas(&field.attrs, self.cfg) {
-                Ok(Some(configured)) => configured,
-                Ok(None) => continue,
-                Err(error) => {
-                    self.diagnostics.push(SourceModelDiagnostic {
-                        kind: SourceModelDiagnosticKind::InvalidConfiguration,
-                        sites: vec![self.site(source, error.range)],
-                        message: error.message,
-                    });
-                    continue;
+    fn lower_nodes(&mut self) {
+        for node in self.resolved.nodes.clone() {
+            let source = node.source;
+            let configured = &node.metas;
+            let body = match &node.body {
+                ResolvedNodeBody::Struct { unit } => {
+                    let field_ids = node.fields.iter().map(|field| field.id).collect::<Vec<_>>();
+                    let fields = self.lower_fields(source, &field_ids).into_elements();
+                    let elements = PositionalTokenPlanner::lower(
+                        &self.resolved,
+                        &mut self.tokens,
+                        &mut self.diagnostics,
+                        source,
+                        configured,
+                        fields,
+                        TokenAttachment::StructBody,
+                    );
+                    if *unit
+                        && elements
+                            .iter()
+                            .all(|element| element.kind() == GrammarElementKind::FixedToken)
+                        && !elements.is_empty()
+                    {
+                        NodeBody::Presence(reassign_element_ids(elements))
+                    } else {
+                        NodeBody::Struct(reassign_element_ids(elements))
+                    }
+                }
+                ResolvedNodeBody::Enum {
+                    variants: resolved_variants,
+                } => {
+                    PositionalTokenPlanner::reject_legacy_syntax(
+                        &self.resolved,
+                        source,
+                        configured,
+                        &mut self.diagnostics,
+                    );
+                    if let Some(token_meta) =
+                        configured.iter().find(|meta| meta.path().is_ident("tok"))
+                    {
+                        self.diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::InvalidTokenPlacement,
+                            sites: vec![self.site(source, span_range(token_meta.span()))],
+                            message: "#[tok] belongs on each enum variant, not on the enum body"
+                                .to_owned(),
+                        });
+                    }
+                    let is_pratt = configured.iter().any(|meta| meta.path().is_ident("pratt"));
+                    NodeBody::Enum(
+                        resolved_variants
+                            .iter()
+                            .map(|variant| {
+                                let pratt_role = PrattRole::from_attributes(
+                                    &self.resolved,
+                                    source,
+                                    &variant.metas,
+                                    is_pratt,
+                                    &mut self.diagnostics,
+                                );
+                                let body = self.lower_fields(source, &variant.fields);
+                                let second_field_attachment = body.second_attachment_start();
+                                let elements = PositionalTokenPlanner::lower(
+                                    &self.resolved,
+                                    &mut self.tokens,
+                                    &mut self.diagnostics,
+                                    source,
+                                    &variant.metas,
+                                    body.into_elements(),
+                                    if is_pratt {
+                                        TokenAttachment::PrattVariant {
+                                            role: pratt_role,
+                                            second_field_attachment,
+                                        }
+                                    } else {
+                                        TokenAttachment::Variant
+                                    },
+                                );
+                                Variant {
+                                    resolved_variant: variant.id,
+                                    name: variant.ident.clone(),
+                                    elements: reassign_element_ids(elements),
+                                    pratt_role,
+                                    site: self.site(source, variant.range.clone()),
+                                }
+                            })
+                            .collect(),
+                    )
                 }
             };
+            let configured_traits = self.trait_planner.node_plan(
+                &self.resolved,
+                source,
+                configured,
+                &mut self.diagnostics,
+            );
+            self.trait_planner.validate_ordinary_derive_ownership(
+                &self.resolved,
+                source,
+                configured,
+                &configured_traits,
+                &mut self.diagnostics,
+            );
+            self.nodes.push(Node {
+                resolved_node: node.id,
+                name: node.ident,
+                body,
+                configured_traits,
+            });
+        }
+    }
+
+    fn lower_fields(
+        &mut self,
+        source: crate::SourceId,
+        fields: &[ResolvedFieldId],
+    ) -> LoweredFields {
+        let mut body = LoweredFields::default();
+        for field in fields {
+            let resolved_field = self.resolved_field(*field).clone();
+            let field = &resolved_field.syntax;
+            let field_configured = &resolved_field.metas;
             let site = self.site(source, span_range(field.span()));
             self.tokens.lower_content_definition(
                 &self.resolved,
                 &self.semantic_facts,
                 &self.trait_planner.grammar_defaults,
                 source,
-                &field_configured,
-                &field.ty,
+                field_configured,
+                &resolved_field,
                 &mut self.diagnostics,
             );
             let semantic = GrammarElement::SemanticField {
                 id: GrammarElementId::next(0),
+                resolved_field: resolved_field.id,
                 name: field.ident.as_ref().map(|ident| ident.unraw().to_string()),
                 separator: SeparatorPlanner::lower(
                     &self.resolved,
@@ -593,8 +586,8 @@ impl SourceModelBuilder<'_> {
                     &mut self.tokens,
                     &mut self.diagnostics,
                     source,
-                    &field_configured,
-                    &field.ty,
+                    field_configured,
+                    &resolved_field,
                 ),
                 site,
             };
@@ -603,7 +596,7 @@ impl SourceModelBuilder<'_> {
                 &mut self.tokens,
                 &mut self.diagnostics,
                 source,
-                &field_configured,
+                field_configured,
                 vec![semantic],
                 TokenAttachment::Field,
             ));
@@ -611,12 +604,13 @@ impl SourceModelBuilder<'_> {
         body
     }
 
-    fn find_node(&self, module: ModuleId, name: &str, range: Range<u32>) -> Option<NodeId> {
+    fn resolved_field(&self, id: ResolvedFieldId) -> &ResolvedNodeField {
         self.resolved
             .nodes
             .iter()
-            .find(|node| node.module == module && node.ident == name && node.range == range)
-            .map(|node| node.id)
+            .flat_map(|node| &node.fields)
+            .find(|field| field.id == id)
+            .expect("resolved Node body owns every field identity")
     }
 
     fn site(&self, source: crate::SourceId, range: Range<u32>) -> SourceSite {
@@ -625,66 +619,43 @@ impl SourceModelBuilder<'_> {
 }
 
 struct SemanticFacts {
-    targets_by_site: BTreeMap<(usize, u32, u32), SemanticTarget>,
     content_token_names: BTreeMap<ContentTokenId, String>,
 }
 
 impl SemanticFacts {
     fn from_resolved(resolved: &ResolvedSourceGrammar) -> Self {
-        let targets_by_site = resolved
-            .resolutions
-            .iter()
-            .map(|resolution| {
-                let use_site = &resolved.uses[resolution.use_site.index()];
-                (
-                    (
-                        use_site.source.index(),
-                        use_site.range.start,
-                        use_site.range.end,
-                    ),
-                    resolution.target,
-                )
-            })
-            .collect();
         let content_token_names = resolved
             .content_tokens
             .iter()
             .map(|token| (token.id, token.ident.clone()))
             .collect();
         Self {
-            targets_by_site,
             content_token_names,
         }
     }
 
-    fn target_for_type(&self, source: crate::SourceId, ty: &syn::Type) -> Option<SemanticTarget> {
-        let syn::Type::Path(path) = ty else {
+    fn target_for_field(field: &ResolvedNodeField) -> Option<SemanticTarget> {
+        let ResolvedTypeKind::Semantic { target, .. } = field.ty.kind else {
             return None;
         };
-        let range = span_range(path.path.span());
-        self.targets_by_site
-            .get(&(source.index(), range.start, range.end))
-            .copied()
+        Some(target)
     }
 
-    fn content_token_name(&self, source: crate::SourceId, ty: &syn::Type) -> Option<String> {
-        let SemanticTarget::ContentToken(token) = self.target_for_type(source, ty)? else {
+    fn content_token(&self, field: &ResolvedNodeField) -> Option<(ContentTokenId, String)> {
+        let SemanticTarget::ContentToken(token) = Self::target_for_field(field)? else {
             return None;
         };
-        self.content_token_names.get(&token).cloned()
+        Some((token, self.content_token_names.get(&token)?.clone()))
     }
 
-    fn declared_repetition(
-        &self,
-        source: crate::SourceId,
-        ty: &syn::Type,
-    ) -> Option<DeclaredRepetition> {
-        match self.target_for_type(source, ty)? {
+    fn declared_repetition(&self, field: &ResolvedNodeField) -> Option<DeclaredRepetition> {
+        match Self::target_for_field(field)? {
             SemanticTarget::Catalog(CatalogType::Vec) => Some(DeclaredRepetition::ZeroOrMore),
             SemanticTarget::Catalog(CatalogType::Vec1) => Some(DeclaredRepetition::OneOrMore),
             SemanticTarget::Node(_)
             | SemanticTarget::GenericParameter(_)
             | SemanticTarget::ContentToken(_)
+            | SemanticTarget::TypeAlias(_)
             | SemanticTarget::Catalog(CatalogType::Option | CatalogType::Box) => None,
         }
     }
@@ -1102,7 +1073,7 @@ impl SeparatorPlanner {
         diagnostics: &mut Vec<SourceModelDiagnostic>,
         source: crate::SourceId,
         metas: &[Meta],
-        ty: &syn::Type,
+        field: &ResolvedNodeField,
     ) -> Option<Separator> {
         let separator_metas = metas
             .iter()
@@ -1142,15 +1113,7 @@ impl SeparatorPlanner {
                 return None;
             }
         };
-        let Some(repetition) = semantic_facts.declared_repetition(source, ty) else {
-            diagnostics.push(SourceModelDiagnostic {
-                kind: SourceModelDiagnosticKind::UnsupportedSeparatorTarget,
-                sites: vec![source_site(resolved, source, span_range(ty.span()))],
-                message: "#[sep] requires a resolved Vec<T> or Vec1<T> repetition; container normalization belongs to ticket #51"
-                    .to_owned(),
-            });
-            return None;
-        };
+        let declared_repetition = semantic_facts.declared_repetition(field);
         let (name, site) = match syntax.token {
             FixedTokenSyntax::Definition(spelling) => (
                 spelling.value(),
@@ -1172,7 +1135,7 @@ impl SeparatorPlanner {
         let token_use = tokens.record_use(definition, TokenUseRole::Separator, site);
         Some(Separator {
             token_use,
-            repetition,
+            declared_repetition,
             optional_trailing: syntax.optional_trailing,
         })
     }
@@ -1431,6 +1394,7 @@ fn source_site(
     range: Range<u32>,
 ) -> SourceSite {
     SourceSite {
+        source,
         path: resolved.tree.files[source.index()].path.clone(),
         range,
     }
@@ -1445,7 +1409,7 @@ impl TokenCatalog {
         grammar_defaults: &[ConfiguredTraitSelection],
         source: crate::SourceId,
         metas: &[Meta],
-        ty: &syn::Type,
+        field: &ResolvedNodeField,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
         let lex_metas = metas
@@ -1495,10 +1459,10 @@ impl TokenCatalog {
             });
             return;
         }
-        let Some(name) = semantic_facts.content_token_name(source, ty) else {
+        let Some((semantic, name)) = semantic_facts.content_token(field) else {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::InvalidContentToken,
-                sites: vec![source_site(resolved, source, span_range(ty.span()))],
+                sites: vec![source_site(resolved, source, field.range.clone())],
                 message: "#[lex] requires a resolved content-token field target".to_owned(),
             });
             return;
@@ -1529,6 +1493,7 @@ impl TokenCatalog {
             definitions: authored_definitions,
         };
         self.define_content(
+            semantic,
             name,
             syntax.pattern.value(),
             admission_set,
@@ -1542,6 +1507,7 @@ impl TokenCatalog {
     #[allow(clippy::too_many_arguments)]
     fn define_content(
         &mut self,
+        semantic: ContentTokenId,
         name: String,
         pattern: String,
         admission_set: Vec<TokenDefinitionId>,
@@ -1555,7 +1521,9 @@ impl TokenCatalog {
             let compatible = matches!(
                 &definition.kind,
                 TokenDefinitionKind::Content(content)
-                    if content.pattern == pattern && content.admission_set == admission_set
+                    if content.semantic == semantic
+                        && content.pattern == pattern
+                        && content.admission_set == admission_set
             );
             definition.definition_sites.push(site);
             let TokenDefinitionKind::Content(content) = &mut definition.kind else {
@@ -1589,6 +1557,7 @@ impl TokenCatalog {
             id,
             name,
             kind: TokenDefinitionKind::Content(ContentTokenDefinition {
+                semantic,
                 pattern,
                 admission_set,
                 authored_admissions: vec![authored],
@@ -1836,25 +1805,8 @@ fn configured_trait_recipe(path: &syn::Path, facade: &str) -> Option<ConfiguredT
     }
 }
 
-fn normalize_source_order(
-    resolved: &ResolvedSourceGrammar,
-    nodes: &mut [Node],
-    tokens: &mut TokenCatalog,
-) {
-    let source_order = resolved
-        .tree
-        .files
-        .iter()
-        .enumerate()
-        .map(|(index, file)| (file.path.clone(), index))
-        .collect::<BTreeMap<_, _>>();
-    let site_key = |site: &SourceSite| {
-        (
-            source_order.get(&site.path).copied().unwrap_or(usize::MAX),
-            site.range.start,
-            site.range.end,
-        )
-    };
+fn normalize_source_order(nodes: &mut [Node], tokens: &mut TokenCatalog) {
+    let site_key = |site: &SourceSite| (site.source.index(), site.range.start, site.range.end);
 
     for definition in &mut tokens.definitions {
         definition.definition_sites.sort_by_key(&site_key);
@@ -1957,7 +1909,7 @@ mod tests {
 
     use super::{
         ConfiguredTraitOwnership, ConfiguredTraitRecipe, ContentTextStorage, DeclaredRepetition,
-        GrammarElementKind, NodeShape, SourceModelDiagnosticKind, SourceModelInput,
+        GrammarElement, GrammarElementKind, NodeShape, SourceModelDiagnosticKind, SourceModelInput,
         TokenDefinitionKind, TokenUseRole, lower_source_model,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
@@ -2000,6 +1952,10 @@ mod tests {
         model_with_cfg(source, &CargoCfgSnapshot::default())
     }
 
+    fn completed(report: super::SourceModelReport) -> super::SourceModel {
+        report.source_modeled.unwrap().source_model
+    }
+
     #[test]
     fn lowers_positional_tokens_and_presence_nodes_in_source_order() {
         let report = model(
@@ -2017,9 +1973,7 @@ struct Present;
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report
-            .source_model
-            .expect("valid grammar has a source model");
+        let model = completed(report);
         assert_eq!(
             model
                 .nodes
@@ -2080,7 +2034,7 @@ struct Leaf;
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report.source_model.unwrap();
+        let model = completed(report);
         assert_eq!(model.grammar_trait_defaults.len(), 3);
         assert_eq!(
             model.nodes[0].configured_traits.additions[0].ownership,
@@ -2131,7 +2085,7 @@ struct Root {
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report.source_model.unwrap();
+        let model = completed(report);
         let content = model
             .token_definitions
             .iter()
@@ -2169,17 +2123,23 @@ struct Leaf;
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report.source_model.unwrap();
+        let model = completed(report);
         assert_eq!(model.nodes[0].elements().len(), 2);
         let first = model.nodes[0].elements()[0]
             .separator()
             .expect("Vec separator");
-        assert_eq!(first.repetition, DeclaredRepetition::ZeroOrMore);
+        assert_eq!(
+            first.declared_repetition,
+            Some(DeclaredRepetition::ZeroOrMore)
+        );
         assert!(!first.optional_trailing);
         let second = model.nodes[0].elements()[1]
             .separator()
             .expect("Vec1 separator");
-        assert_eq!(second.repetition, DeclaredRepetition::OneOrMore);
+        assert_eq!(
+            second.declared_repetition,
+            Some(DeclaredRepetition::OneOrMore)
+        );
         assert!(second.optional_trailing);
         assert_eq!(
             model
@@ -2211,7 +2171,7 @@ struct Leaf;
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report.source_model.unwrap();
+        let model = completed(report);
         assert_eq!(model.nodes[0].shape(), NodeShape::Enum);
         assert_eq!(
             model.nodes[0]
@@ -2262,7 +2222,7 @@ struct Legacy;
 "#,
         );
 
-        assert!(report.source_model.is_none());
+        assert!(report.source_modeled.is_none());
         let kinds = report
             .diagnostics
             .iter()
@@ -2285,7 +2245,7 @@ struct Root;
 "#,
         );
 
-        assert!(report.source_model.is_none());
+        assert!(report.source_modeled.is_none());
         let kinds = report
             .diagnostics
             .iter()
@@ -2320,7 +2280,7 @@ struct Misplaced;
 "#,
         );
 
-        assert!(report.source_model.is_none());
+        assert!(report.source_modeled.is_none());
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == SourceModelDiagnosticKind::ContentDisplayOverride
         }));
@@ -2359,7 +2319,7 @@ struct Second;
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report.source_model.unwrap();
+        let model = completed(report);
         assert_eq!(model.token_definitions.len(), 1);
         assert_eq!(model.token_definitions[0].name, "IF");
         assert_eq!(model.token_definitions[0].definition_sites.len(), 2);
@@ -2387,7 +2347,7 @@ struct Root;
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let traits = &report.source_model.unwrap().nodes[0].configured_traits;
+        let traits = &completed(report).nodes[0].configured_traits;
         assert_eq!(
             traits
                 .effective
@@ -2440,10 +2400,7 @@ struct Root;
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         assert_eq!(
-            report.source_model.unwrap().nodes[0]
-                .configured_traits
-                .effective
-                .len(),
+            completed(report).nodes[0].configured_traits.effective.len(),
             14,
         );
     }
@@ -2468,7 +2425,7 @@ struct Later;
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report.source_model.unwrap();
+        let model = completed(report);
         assert_eq!(
             model
                 .token_definitions
@@ -2511,7 +2468,7 @@ struct IfPresence;
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report.source_model.unwrap();
+        let model = completed(report);
         let (content_id, admission) = model
             .token_definitions
             .iter()
@@ -2545,7 +2502,7 @@ struct Leaf;
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         assert_eq!(
-            report.source_model.unwrap().nodes[0]
+            completed(report).nodes[0]
                 .elements()
                 .iter()
                 .map(|element| element.kind())
@@ -2603,15 +2560,6 @@ enum Root { Variant }
                 r#"
 recursa::grammar! { module = crate }
 #[derive(recursa::Node)]
-struct Root { #[sep(",")] value: Leaf }
-#[derive(recursa::Node)] struct Leaf;
-"#,
-                SourceModelDiagnosticKind::UnsupportedSeparatorTarget,
-            ),
-            (
-                r#"
-recursa::grammar! { module = crate }
-#[derive(recursa::Node)]
 #[tok(MISSING)]
 struct Root;
 "#,
@@ -2621,7 +2569,7 @@ struct Root;
 
         for (source, expected) in cases {
             let report = model(source);
-            assert!(report.source_model.is_none());
+            assert!(report.source_modeled.is_none());
             assert!(
                 report
                     .diagnostics
@@ -2651,7 +2599,7 @@ enum Expr {
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         assert_eq!(
-            report.source_model.unwrap().nodes[0].variants()[0]
+            completed(report).nodes[0].variants()[0]
                 .elements
                 .iter()
                 .map(|element| element.kind())
@@ -2666,7 +2614,7 @@ enum Expr {
     }
 
     #[test]
-    fn resolved_catalog_identity_controls_separator_repetition() {
+    fn unresolved_repetition_is_retained_for_post_resolution_materialization() {
         let report = model(
             r#"
 recursa::grammar! { module = crate }
@@ -2685,10 +2633,16 @@ struct Leaf;
 "#,
         );
 
-        assert!(report.source_model.is_none());
-        assert!(report.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == SourceModelDiagnosticKind::UnsupportedSeparatorTarget
-        }));
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let source_model = completed(report);
+        let GrammarElement::SemanticField {
+            separator: Some(separator),
+            ..
+        } = &source_model.nodes[1].elements()[0]
+        else {
+            panic!("separator is retained until aliases and applications are materialized")
+        };
+        assert_eq!(separator.declared_repetition, None);
     }
 
     #[test]
@@ -2705,7 +2659,7 @@ struct Root<Word> {
 "#,
         );
 
-        assert!(report.source_model.is_none());
+        assert!(report.source_modeled.is_none());
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == SourceModelDiagnosticKind::InvalidContentToken
         }));
@@ -2738,7 +2692,7 @@ enum Expr {
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report.source_model.unwrap();
+        let model = completed(report);
         let variants = model.nodes[0].variants();
         assert_eq!(
             variants
@@ -2806,7 +2760,7 @@ struct ElseToken;
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report.source_model.unwrap();
+        let model = completed(report);
         let content = model
             .token_definitions
             .iter()
@@ -2859,7 +2813,7 @@ enum Expr {
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report.source_model.unwrap();
+        let model = completed(report);
         assert_eq!(model.nodes[0].variants()[0].pratt_role, None);
     }
 
@@ -2880,7 +2834,7 @@ enum Expr {
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let model = report.source_model.unwrap();
+        let model = completed(report);
         let rendered = model.nodes[0].variants()[0]
             .elements
             .iter()
@@ -2914,7 +2868,7 @@ enum Expr {
 "#,
         );
 
-        assert!(report.source_model.is_none());
+        assert!(report.source_modeled.is_none());
         assert_eq!(
             report
                 .diagnostics

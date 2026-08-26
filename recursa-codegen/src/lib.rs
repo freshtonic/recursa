@@ -10,6 +10,7 @@ mod ids;
 mod ir;
 mod kind_set;
 mod lowering;
+mod materialization;
 mod provenance;
 mod resolution;
 mod source_model;

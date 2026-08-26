@@ -83,7 +83,7 @@ pub(crate) struct SingleFileAnalysisReport {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AnalyzedGrammar {
-    pub(crate) lowered: LoweredGrammar,
+    pub(crate) lowered: SingleFileLoweredGrammar,
     pub(crate) analysis: AnalysisReport,
 }
 
@@ -150,7 +150,7 @@ impl AnalyzedGrammar {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LoweredGrammar {
+pub(crate) struct SingleFileLoweredGrammar {
     pub(crate) build_inputs: BuildInputs,
     pub(crate) grammar: GrammarDescription,
     pub(crate) source_model: SourceModel,
@@ -187,6 +187,8 @@ pub(crate) struct BuildInputs {
     pub(crate) discovery: DiscoveryInputs,
     pub(crate) module_anchor: SelectedRootAnchor,
     pub(crate) facade: FacadeMapping,
+    pub(crate) text_equivalence: TextEquivalence,
+    pub(crate) max_lookahead: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -880,7 +882,7 @@ pub(crate) fn analyze_single_file(input: SingleFileInput<'_>) -> SingleFileAnaly
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LoweringReport {
     pub(crate) diagnostics: Vec<SourceDiagnostic>,
-    pub(crate) lowered: Option<LoweredGrammar>,
+    pub(crate) lowered: Option<SingleFileLoweredGrammar>,
 }
 
 pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
@@ -1139,7 +1141,7 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
     }
     LoweringReport {
         diagnostics: Vec::new(),
-        lowered: Some(LoweredGrammar {
+        lowered: Some(SingleFileLoweredGrammar {
             build_inputs: BuildInputs {
                 discovery: DiscoveryInputs {
                     selected_root: input.manifest_relative_path.to_owned(),
@@ -1155,6 +1157,8 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
                 facade: FacadeMapping {
                     ident: config.facade.to_string(),
                 },
+                text_equivalence: config.text_equivalence,
+                max_lookahead: config.max_lookahead,
             },
             grammar,
             source_model,
