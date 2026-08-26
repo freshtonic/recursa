@@ -126,7 +126,22 @@ struct EmissionPlan {
     #[cfg(feature = "diagrams")]
     diagrams: Option<DiagramPlan>,
     instrumentation: EmissionInstrumentation,
-    frozen_parse_identity: u64,
+    plan_families: EmissionPlanFamilies,
+}
+
+#[derive(Clone, Debug)]
+struct EmissionPlanFamilies {
+    configured_traits: u64,
+    pretty: Option<u64>,
+    parse: u64,
+    diagrams: Option<ExtensionPlanFamily>,
+    explorer: Option<ExtensionPlanFamily>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ExtensionPlanFamily {
+    frozen_identity: u64,
+    planned_identity: u64,
 }
 
 #[cfg(feature = "diagrams")]
@@ -882,6 +897,14 @@ impl EmissionPlan {
             })
             .sum::<usize>();
         let frozen_parse_identity = parse_plan_identity(&nodes);
+        let plan_families = EmissionPlanFamilies {
+            configured_traits: configured_trait_plan_identity(&nodes, &tokens, false),
+            pretty: configured_traits_include(&nodes, &tokens, ConfiguredTraitRecipe::Pretty)
+                .then(|| configured_trait_plan_identity(&nodes, &tokens, true)),
+            parse: frozen_parse_identity,
+            diagrams: None,
+            explorer: None,
+        };
         // M3 has already decided whether each fixed token remains a standalone
         // rule or is recognized through one or more proven carriers. Preserve
         // that decision here instead of reconstructing fixed rules from source.
@@ -1115,7 +1138,7 @@ impl EmissionPlan {
             #[cfg(feature = "diagrams")]
             diagrams,
             instrumentation,
-            frozen_parse_identity,
+            plan_families,
         };
         plan.validate()?;
         Ok(plan)
@@ -1142,6 +1165,7 @@ impl EmissionPlan {
         {
             return Err("the diagram plan does not cover every frozen Node".to_owned());
         }
+        self.validate_plan_families()?;
         let mut frozen_nodes = 0;
         for node in &self.nodes {
             match &node.body {
@@ -1165,9 +1189,36 @@ impl EmissionPlan {
             }
         }
         if self.instrumentation.frozen_dispatch_nodes_consumed != frozen_nodes
-            || self.frozen_parse_identity != parse_plan_identity(&self.nodes)
+            || self.plan_families.parse != parse_plan_identity(&self.nodes)
         {
             return Err("the emitted predictive plan diverges from frozen M2 decisions".to_owned());
+        }
+        Ok(())
+    }
+
+    fn validate_plan_families(&self) -> Result<(), String> {
+        if self.plan_families.configured_traits
+            != configured_trait_plan_identity(&self.nodes, &self.tokens, false)
+        {
+            return Err(
+                "the configured-trait plan family diverges from its frozen identity".to_owned(),
+            );
+        }
+        let pretty =
+            configured_traits_include(&self.nodes, &self.tokens, ConfiguredTraitRecipe::Pretty)
+                .then(|| configured_trait_plan_identity(&self.nodes, &self.tokens, true));
+        if self.plan_families.pretty != pretty {
+            return Err("the Pretty plan family diverges from its frozen identity".to_owned());
+        }
+        for (name, family) in [
+            ("diagram", self.plan_families.diagrams),
+            ("explorer", self.plan_families.explorer),
+        ] {
+            if family.is_some_and(|family| family.frozen_identity != family.planned_identity) {
+                return Err(format!(
+                    "the {name} plan family diverges from its frozen identity"
+                ));
+            }
         }
         Ok(())
     }
@@ -1513,6 +1564,46 @@ fn diagram_semantic_element(
 
 fn parse_plan_identity(nodes: &[NodeParsePlan]) -> u64 {
     stable_hash(format!("{nodes:?}").as_bytes())
+}
+
+fn configured_traits_include(
+    nodes: &[NodeParsePlan],
+    tokens: &[TokenParsePlan],
+    recipe: ConfiguredTraitRecipe,
+) -> bool {
+    nodes
+        .iter()
+        .flat_map(|node| &node.configured_traits)
+        .chain(tokens.iter().flat_map(|token| &token.configured_traits))
+        .any(|candidate| *candidate == recipe)
+}
+
+fn configured_trait_plan_identity(
+    nodes: &[NodeParsePlan],
+    tokens: &[TokenParsePlan],
+    pretty_only: bool,
+) -> u64 {
+    let mut canonical = String::new();
+    for node in nodes {
+        canonical.push_str(&node.semantic_key);
+        canonical.push(':');
+        for recipe in &node.configured_traits {
+            if !pretty_only || *recipe == ConfiguredTraitRecipe::Pretty {
+                canonical.push_str(&format!("{recipe:?},"));
+            }
+        }
+        canonical.push(';');
+    }
+    for (index, token) in tokens.iter().enumerate() {
+        canonical.push_str(&format!("token-{index}:"));
+        for recipe in &token.configured_traits {
+            if !pretty_only || *recipe == ConfiguredTraitRecipe::Pretty {
+                canonical.push_str(&format!("{recipe:?},"));
+            }
+        }
+        canonical.push(';');
+    }
+    stable_hash(canonical.as_bytes())
 }
 
 fn planned_kind_variants(
@@ -7849,6 +7940,52 @@ struct B;
     }
 
     #[test]
+    fn corrupted_trait_pretty_and_extension_plan_families_fail_before_publication() {
+        let (package, mut traits) = joined_pratt_fixture();
+        traits.nodes[0]
+            .configured_traits
+            .pop()
+            .expect("the trait fixture configures recipes");
+        assert_plan_family_is_unselectable(package.path(), &traits, "configured-trait");
+
+        let (package, mut pretty) = joined_pratt_fixture();
+        *pretty
+            .plan_families
+            .pretty
+            .as_mut()
+            .expect("the trait fixture configures Pretty") ^= 1;
+        assert_plan_family_is_unselectable(package.path(), &pretty, "Pretty");
+
+        for extension in ["diagram", "explorer"] {
+            let (package, mut plan) = joined_pratt_fixture();
+            let corrupt = Some(ExtensionPlanFamily {
+                frozen_identity: 1,
+                planned_identity: 2,
+            });
+            if extension == "diagram" {
+                plan.plan_families.diagrams = corrupt;
+            } else {
+                plan.plan_families.explorer = corrupt;
+            }
+            assert_plan_family_is_unselectable(package.path(), &plan, extension);
+        }
+    }
+
+    fn assert_plan_family_is_unselectable(package: &Path, plan: &EmissionPlan, family: &str) {
+        let detail = match render(plan) {
+            Err(detail) => detail,
+            Ok(_) => panic!("a corrupted family cannot render"),
+        };
+        assert!(detail.contains(family), "detail={detail}");
+        let error = failure(Path::new("grammar.rs"), &detail);
+        let [diagnostic] = error.report().diagnostics() else {
+            panic!("one pre-publication invariant diagnostic is required");
+        };
+        assert_eq!(diagnostic.code().as_str(), "RCA9105");
+        assert!(!package.join(SELECTED_GENERATION).exists());
+    }
+
+    #[test]
     fn incomplete_staging_is_unselectable() {
         let output = tempfile::tempdir().unwrap();
         let staging = output.path().join("staging");
@@ -7998,7 +8135,10 @@ struct Root {
             selected_generation(output.path()).as_deref(),
             Some(plan.identity.as_str())
         );
-        let published = output.path().join("recursa-generations").join(&plan.identity);
+        let published = output
+            .path()
+            .join("recursa-generations")
+            .join(&plan.identity);
         assert!(published.join("root.rs").is_file());
         assert!(published.join("loader-map").is_file());
         assert_eq!(
