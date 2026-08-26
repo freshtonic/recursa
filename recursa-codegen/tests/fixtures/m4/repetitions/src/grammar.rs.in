@@ -56,6 +56,7 @@ recursa::tokens! {
         TIGHT_CLOSE => "?", spacing = tight,
         ATTACH_OPEN => "<",
         ATTACH_CLOSE => ">",
+        AROUND_MARK => "@", spacing = around,
     }
 }
 
@@ -68,6 +69,17 @@ pub struct Item<'input> {
 #[derive(recursa::Node)]
 #[tok(DOT)]
 pub struct Marker;
+
+#[derive(recursa::Node)]
+#[tok(DOT)]
+pub struct PunctuationItem;
+
+#[derive(recursa::Node)]
+pub struct AttachmentAround {
+    pub before: Marker,
+    #[tok(AROUND_MARK, this)]
+    pub value: PunctuationItem,
+}
 
 #[derive(recursa::Node)]
 #[tok(CAPTURE, this)]
@@ -266,6 +278,31 @@ pub struct AttachedMaybeMany<'input> {
     #[pretty(break_before = hard, break_after = hard)]
     pub values: Option<Box<recursa::Vec1<Box<Item<'input>>>>>,
     pub after: Marker,
+}
+
+#[derive(recursa::Node)]
+#[tok(MARKS, this)]
+pub struct AttachedLeadingPretty<'input> {
+    #[tok(LBRACKET, this, RBRACKET)]
+    #[sep(COMMA, trailing)]
+    #[pretty(separator = leading, trailing_separator = always)]
+    pub values: Vec<Box<Item<'input>>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(MARKS, this)]
+pub struct AttachedTrailingPretty<'input> {
+    #[tok(LBRACKET, this, RBRACKET)]
+    #[sep(COMMA, trailing)]
+    #[pretty(separator = trailing, trailing_separator = never)]
+    pub values: Vec<Box<Item<'input>>>,
+}
+
+#[derive(recursa::Node)]
+pub struct AttachedProgram {
+    #[tok(LBRACKET, this, RBRACKET)]
+    #[sep(SEMICOLON)]
+    pub values: Vec<MixedCapture>,
 }
 
 #[derive(recursa::Node)]

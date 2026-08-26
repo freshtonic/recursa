@@ -18,7 +18,7 @@ pub use parsed::{
     ElementMetadata, ElementRole, ElementView, Elements, Node, NodeView, Parse, Parsed, Repeated,
     RepeatedIter,
 };
-pub use pretty::{Pretty, PrettyConfig, PrettyContext, PrettySink};
+pub use pretty::{Pretty, PrettyConfig, PrettyContext, PrettySink, SourceMap, SourceMapEntry};
 pub use span::{OffsetOverflow, Span};
 pub use visitor::{
     TotalVisitor, TotalVisitorMut, Visit, VisitBreak, VisitMut, Visitor, VisitorMut,

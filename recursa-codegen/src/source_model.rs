@@ -1248,6 +1248,13 @@ impl SourceModelBuilder<'_> {
             let attachment_has_soft_opportunity = attachment.as_ref().is_some_and(|attachment| {
                 self.pretty_attachment_has_soft_opportunity(*resolved_field, attachment)
             });
+            if let Some(attachment) = attachment {
+                self.validate_pretty_attachment_boundaries(
+                    *resolved_field,
+                    attachment,
+                    diagnostics,
+                );
+            }
             let has_internal_break = separator.is_some()
                 || self.field_has_repetition(*resolved_field).unwrap_or(true)
                 || attachment_has_soft_opportunity
@@ -1383,6 +1390,52 @@ impl SourceModelBuilder<'_> {
                 last.iter()
                     .any(|left| self.pretty_boundary_emits_soft_break(left, right))
             })
+    }
+
+    fn validate_pretty_attachment_boundaries(
+        &self,
+        field: ResolvedFieldId,
+        attachment: &FixedTokenAttachment,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) {
+        let fixed = |token: &AttachedFixedToken| PrettyBoundary {
+            kind: PrettyBoundaryKind::Fixed(self.tokens.uses[token.token_use.index()].definition),
+            site: token.site.clone(),
+        };
+        let before = attachment.before.iter().map(fixed).collect::<Vec<_>>();
+        let after = attachment.after.iter().map(fixed).collect::<Vec<_>>();
+        let site = attachment
+            .before
+            .first()
+            .or_else(|| attachment.after.first())
+            .map(|token| token.site.clone())
+            .expect("an attachment has fixed syntax");
+        let first = self.pretty_type_boundaries(
+            &self.resolved_field(field).ty,
+            PrettyBoundarySide::First,
+            &site,
+            &mut Vec::new(),
+        );
+        let last = self.pretty_type_boundaries(
+            &self.resolved_field(field).ty,
+            PrettyBoundarySide::Last,
+            &site,
+            &mut Vec::new(),
+        );
+
+        for pair in before.windows(2).chain(after.windows(2)) {
+            self.validate_pretty_boundary(&pair[0], &pair[1], diagnostics);
+        }
+        if let Some(left) = before.last() {
+            for right in &first {
+                self.validate_pretty_boundary(left, right, diagnostics);
+            }
+        }
+        if let Some(right) = after.first() {
+            for left in &last {
+                self.validate_pretty_boundary(left, right, diagnostics);
+            }
+        }
     }
 
     fn pretty_trivia_supports_breaks(&self) -> bool {
@@ -1692,14 +1745,30 @@ impl SourceModelBuilder<'_> {
             }],
             GrammarElement::SemanticField {
                 resolved_field,
+                attachment,
                 site,
                 ..
-            } => self.pretty_type_boundaries(
-                &self.resolved_field(*resolved_field).ty,
-                side,
-                site,
-                visiting,
-            ),
+            } => {
+                let attached = attachment.as_ref().and_then(|attachment| match side {
+                    PrettyBoundarySide::First => attachment.before.first(),
+                    PrettyBoundarySide::Last => attachment.after.last(),
+                });
+                if let Some(attached) = attached {
+                    vec![PrettyBoundary {
+                        kind: PrettyBoundaryKind::Fixed(
+                            self.tokens.uses[attached.token_use.index()].definition,
+                        ),
+                        site: attached.site.clone(),
+                    }]
+                } else {
+                    self.pretty_type_boundaries(
+                        &self.resolved_field(*resolved_field).ty,
+                        side,
+                        site,
+                        visiting,
+                    )
+                }
+            }
         }
     }
 
@@ -5663,6 +5732,58 @@ struct Root(Child);
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
                 && diagnostic.message.contains("longest match `::`")
+        }));
+    }
+
+    #[test]
+    fn pretty_spacing_validates_internal_and_external_attachment_boundaries() {
+        for source in [
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { COLON => ":", spacing = tight, DOUBLE_COLON => "::" }
+}
+#[derive(recursa::Node)] #[tok(COLON)] struct Child;
+#[derive(recursa::Node)] struct Root { #[tok(COLON, this)] child: Child }
+"#,
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { COLON => ":", spacing = tight, DOUBLE_COLON => "::" }
+}
+#[derive(recursa::Node)] struct Child;
+#[derive(recursa::Node)] #[tok(COLON)] struct Tail;
+#[derive(recursa::Node)] struct Root(#[tok(this, COLON)] Child, Tail);
+"#,
+        ] {
+            let report = model(source);
+            assert!(report.source_modeled.is_none());
+            assert!(report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                    && diagnostic.message.contains("longest match `::`")
+            }));
+        }
+    }
+
+    #[test]
+    fn pretty_spacing_rejects_explicit_tight_inside_an_attachment() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
+#[derive(recursa::Node)]
+struct Root<'input> {
+    #[tok(this, COLON)]
+    #[lex(pattern = r"[A-Za-z:]+")]
+    text: RootText<'input>,
+}
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("regex-backed")
         }));
     }
 

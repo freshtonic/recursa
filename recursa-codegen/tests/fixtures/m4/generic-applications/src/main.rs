@@ -106,6 +106,43 @@ fn main() {
         assert_eq!(parsed.render(), expected);
     }
 
+    let generic_keyword = grammar::lex("iS MiXeD");
+    let mut generic_keyword_input = generic_keyword.input();
+    let generic_keyword = grammar::GenericKeywordRoot::parse_spanned(&mut generic_keyword_input)
+        .expect("generic-dependent child with a keyword parses");
+    assert!(generic_keyword_input.is_eof());
+    let (generic_keyword_rendered, generic_keyword_map) = generic_keyword.render_mapped();
+    assert_eq!(generic_keyword_rendered, "iS MiXeD");
+    assert!(generic_keyword_map.entries().iter().any(|entry| {
+        entry.source() == recursa::Span::new(0, 2).unwrap()
+            && &generic_keyword_rendered[entry.output()] == "iS"
+    }));
+    let reparsed = grammar::lex(&generic_keyword_rendered);
+    let mut reparsed_input = reparsed.input();
+    let reparsed = grammar::GenericKeywordRoot::parse_spanned(&mut reparsed_input)
+        .expect("mapped generic Pretty output reparses");
+    assert!(reparsed_input.is_eof());
+    assert_eq!(reparsed.render(), generic_keyword_rendered);
+
+    let attached_generic = grammar::lex("{Is MiXeD}");
+    let mut attached_generic_input = attached_generic.input();
+    let attached_generic =
+        grammar::GenericAttachedRoot::parse_spanned(&mut attached_generic_input)
+            .expect("attached generic-dependent child with a keyword parses");
+    assert!(attached_generic_input.is_eof());
+    let (attached_generic_rendered, attached_generic_map) = attached_generic.render_mapped();
+    assert_eq!(attached_generic_rendered, "{Is MiXeD}");
+    assert!(attached_generic_map.entries().iter().any(|entry| {
+        entry.source() == recursa::Span::new(1, 3).unwrap()
+            && &attached_generic_rendered[entry.output()] == "Is"
+    }));
+    let reparsed = grammar::lex(&attached_generic_rendered);
+    let mut reparsed_input = reparsed.input();
+    let reparsed = grammar::GenericAttachedRoot::parse_spanned(&mut reparsed_input)
+        .expect("mapped attached generic Pretty output reparses");
+    assert!(reparsed_input.is_eof());
+    assert_eq!(reparsed.render(), attached_generic_rendered);
+
     let alias = grammar::lex("({7, marker})");
     let mut alias_input = alias.input();
     let parsed = grammar::AliasLifetimeConcrete::parse_spanned(&mut alias_input)
@@ -121,7 +158,7 @@ fn main() {
     let separated = separated.into_ast().separated;
     assert_eq!(separated.values[0].value.text(), "One");
     assert_eq!(separated.values[1].value.text(), "TWO");
-    assert_eq!(separated.render(), "[One]AND [TWO]");
+    assert_eq!(separated.render(), "[One] AND [TWO]");
 
     let rendered = separated.render();
     let reparsed = grammar::lex(&rendered);

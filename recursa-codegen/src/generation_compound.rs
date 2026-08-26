@@ -7629,7 +7629,6 @@ fn render_pratt_node_pretty(
                     },
                     PrettyElementBehavior::Semantic {
                         attachment,
-                        opaque_provenance,
                         ..
                     },
                 ) => {
@@ -7663,12 +7662,6 @@ fn render_pratt_node_pretty(
                             }
                         };
                         quote!((#binding).__recursa_pretty_pratt(context, #minimum, #next))
-                    } else if *opaque_provenance {
-                        quote! {
-                            context.without_provenance(|context| {
-                                #facade::Pretty::pretty(#binding, context)
-                            })
-                        }
                     } else {
                         quote!(#facade::Pretty::pretty(#binding, context))
                     };
@@ -7678,10 +7671,6 @@ fn render_pratt_node_pretty(
                             context.with_child(#index, |context| {
                                 context.with_child(0, |context| { #unit Ok(()) })
                             })?;
-                        }
-                    } else if *opaque_provenance && !recursive {
-                        quote! {
-                            context.with_child(#index, |context| { #semantic })?;
                         }
                     } else {
                         quote! {
@@ -7818,6 +7807,8 @@ fn render_node_pretty(
                                 container,
                                 attachment,
                                 *opaque_provenance,
+                                *top_level_break,
+                                pretty,
                             )
                         } else {
                             render_pretty_semantic(
@@ -7898,6 +7889,8 @@ fn render_node_pretty(
                                             container,
                                             attachment,
                                             *opaque_provenance,
+                                            *top_level_break,
+                                            pretty,
                                         )
                                     } else {
                                         render_pretty_semantic(
@@ -7957,7 +7950,7 @@ fn render_pretty_semantic(
     container: &PlannedContainer,
     separator: Option<&str>,
     top_level_break: bool,
-    opaque_provenance: bool,
+    _opaque_provenance: bool,
     pretty: &PrettyHints,
 ) -> proc_macro2::TokenStream {
     let render_value = if matches!(container, PlannedContainer::Repeated { .. }) {
@@ -7978,13 +7971,7 @@ fn render_pretty_semantic(
     } else {
         quote!(#facade::Pretty::pretty(#value, context))
     };
-    if opaque_provenance {
-        quote! {
-            context.with_child(#index, |context| {
-                context.without_provenance(|context| #render_value)
-            })?;
-        }
-    } else if matches!(container, PlannedContainer::Repeated { .. }) {
+    if matches!(container, PlannedContainer::Repeated { .. }) {
         quote! {
             context.with_child(#index, |context| #render_value)?;
         }
@@ -8084,7 +8071,7 @@ fn render_pretty_synthetic_fixed(
 ) -> proc_macro2::TokenStream {
     let method = pretty_fixed_method(spelling, spacing);
     let fallback = pretty_fixed_fallback(plan, spelling);
-    quote!(context.#method(#fallback)?;)
+    quote!(context.without_provenance(|context| context.#method(#fallback))?;)
 }
 
 fn pretty_fixed_method(spelling: &str, spacing: PrettySpacing) -> syn::Ident {
@@ -8151,12 +8138,12 @@ fn render_pretty_attached_fixed(
         PrettySpacing::Tight => format_ident!("tight_sequence_token"),
         PrettySpacing::Before => format_ident!("before_token"),
         PrettySpacing::After => format_ident!("after_token"),
-        PrettySpacing::Around => format_ident!("token"),
+        PrettySpacing::Around => format_ident!("around_token"),
         PrettySpacing::Auto if matches!(fixed.spelling.as_str(), "(" | "[" | "{") => {
             format_ident!("opening_token")
         }
         PrettySpacing::Auto if is_word_shaped(&fixed.spelling) => format_ident!("token"),
-        PrettySpacing::Auto => format_ident!("tight_token"),
+        PrettySpacing::Auto => format_ident!("punctuation_token"),
     };
     let spelling = &fixed.spelling;
     quote! {
@@ -8215,6 +8202,7 @@ fn render_pretty_attachment_unit(
             })?;
             context.soft_break("")?;
             #close
+            context.close_delimiter();
         }
     } else {
         quote!(#(#before)* #semantic #(#after)*)
@@ -8230,18 +8218,12 @@ fn render_pretty_attached_semantic(
     wrappers: &[FieldWrapper],
     container: &PlannedContainer,
     attachment: &PrettyAttachmentBehavior,
-    opaque_provenance: bool,
+    _opaque_provenance: bool,
+    top_level_break: bool,
+    pretty: &PrettyHints,
 ) -> proc_macro2::TokenStream {
     let render_unit = |terminal: proc_macro2::TokenStream| {
-        let semantic = if opaque_provenance {
-            quote! {
-                context.without_provenance(|context| {
-                    #facade::Pretty::pretty(#terminal, context)
-                })
-            }
-        } else {
-            quote!(#facade::Pretty::pretty(#terminal, context))
-        };
+        let semantic = quote!(#facade::Pretty::pretty(#terminal, context));
         render_pretty_attachment_unit(attachment, semantic)
     };
 
@@ -8256,21 +8238,31 @@ fn render_pretty_attached_semantic(
         let inner = &wrappers[repeat_index + 1..];
         let item = render_terminal_reference(quote!(item), inner, true);
         let unit = render_unit(item);
+        let separator = attachment
+            .separator
+            .as_deref()
+            .map_or_else(|| quote!(None), |separator| quote!(Some(#separator)));
+        let trailing = matches!(
+            pretty.trailing_separator,
+            Some(PrettyTrailingSeparator::Always)
+        );
+        let leading = matches!(pretty.separator, Some(PrettySeparatorPosition::Leading));
+        let space_before_separator = attachment.separator.as_deref().is_some_and(is_word_shaped);
         let render_collection = |collection: proc_macro2::TokenStream| {
-            let separator = attachment.separator.as_ref().map(|separator| {
-                quote! {
-                    if item_index + 1 < item_count {
-                        context.tight_token(#separator)?;
-                        context.soft_break(" ")?;
-                    }
-                }
-            });
             quote! {
-                let item_count = (#collection).len();
-                for (item_index, item) in (#collection).iter().enumerate() {
-                    context.with_child(item_index, |context| { #unit Ok(()) })?;
-                    #separator
-                }
+                context.with_repetition_style(
+                    #separator,
+                    #trailing,
+                    #top_level_break,
+                    #leading,
+                    #space_before_separator,
+                    |context| {
+                        context.render_repeated_by(
+                            (#collection).iter(),
+                            |context, item| { #unit Ok(()) },
+                        )
+                    },
+                )?;
             }
         };
         let outer_optional = outer

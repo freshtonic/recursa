@@ -256,9 +256,23 @@ fn parse(source: &str) -> recursa::Parsed<'_, {module}::{root}<'_>> {{
 {fingerprint}
 
 fn main() {{
-    let parsed = parse({source:?});
+    let original = {source:?};
+    let parsed = parse(original);
     let formatted = parsed.render();
     assert_eq!(formatted, {expected:?});
+    let (mapped, source_map) = parsed.render_mapped();
+    assert_eq!(mapped, formatted, "mapped rendering preserves Pretty output");
+    assert!(!source_map.entries().is_empty(), "rendered tokens are mapped");
+    assert!(
+        source_map.entries().iter().any(|entry| !entry.source().is_synthetic()),
+        "captured parsed tokens retain source spans",
+    );
+    for entry in source_map.entries() {{
+        let output = &mapped[entry.output()];
+        if !entry.source().is_synthetic() {{
+            assert_eq!(output, &original[entry.source().range()]);
+        }}
+    }}
     let meaning = fingerprint(&parsed.into_ast());
     let reparsed = parse(&formatted);
     assert_eq!(reparsed.render(), formatted, "Pretty rendering is idempotent");

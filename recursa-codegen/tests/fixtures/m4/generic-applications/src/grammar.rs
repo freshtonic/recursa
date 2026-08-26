@@ -50,6 +50,28 @@ pub struct Wrap<T> {
 }
 
 #[derive(recursa::Node)]
+#[tok(IS, this)]
+pub struct KeywordName<'input> {
+    pub value: Name<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct GenericKeywordRoot<'input> {
+    pub value: Wrap<KeywordName<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub struct AttachedWrap<T> {
+    #[tok(LBRACE, this, RBRACE)]
+    pub value: T,
+}
+
+#[derive(recursa::Node)]
+pub struct GenericAttachedRoot<'input> {
+    pub value: AttachedWrap<KeywordName<'input>>,
+}
+
+#[derive(recursa::Node)]
 pub struct Separated<T> {
     #[tok(LBRACKET, this, RBRACKET)]
     #[sep(AND)]
