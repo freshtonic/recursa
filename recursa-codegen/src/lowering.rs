@@ -190,6 +190,7 @@ pub(crate) struct BuildInputs {
     pub(crate) text_equivalence: TextEquivalence,
     pub(crate) max_lookahead: usize,
     pub(crate) spans: CaptureMode,
+    pub(crate) diagrams: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1161,6 +1162,7 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
                 text_equivalence: config.text_equivalence,
                 max_lookahead: config.max_lookahead,
                 spans: config.spans,
+                diagrams: config.diagrams,
             },
             grammar,
             source_model,

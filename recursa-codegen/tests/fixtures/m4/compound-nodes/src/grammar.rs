@@ -25,6 +25,7 @@ fn RecordView() {}
 #[cfg(any())]
 struct RecordView;
 
+/// RECURSA_AUTHORED_RECORD_DOC: source-authored documentation remains authoritative.
 #[derive(recursa::Node)]
 #[tok(RECORD, this)]
 pub struct Record<'input> {
