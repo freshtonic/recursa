@@ -1522,24 +1522,88 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         pub struct Tokens<'lexed, 'input> {
             source: &'input str,
             records: ::core::slice::Iter<'lexed, #facade::__private::TokenRecord>,
+            lexical_error_kind: u16,
         }
 
         impl<'input> Iterator for Tokens<'_, 'input> {
             type Item = Token<'input>;
 
             fn next(&mut self) -> Option<Self::Item> {
-                self.records.next().copied().map(|record| Token {
-                    source: self.source,
-                    record,
-                })
+                self.records
+                    .find(|record| record.kind != self.lexical_error_kind)
+                    .copied()
+                    .map(|record| Token {
+                        source: self.source,
+                        record,
+                    })
             }
 
             fn size_hint(&self) -> (usize, Option<usize>) {
-                self.records.size_hint()
+                let remaining = self
+                    .records
+                    .as_slice()
+                    .iter()
+                    .filter(|record| record.kind != self.lexical_error_kind)
+                    .count();
+                (remaining, Some(remaining))
             }
         }
 
         impl ExactSizeIterator for Tokens<'_, '_> {}
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct LexError<'input> {
+            source: &'input str,
+            record: #facade::__private::TokenRecord,
+        }
+
+        impl<'input> LexError<'input> {
+            pub const fn kind(self) -> TokenKind {
+                TokenKind::LexicalError
+            }
+
+            pub fn text(self) -> &'input str {
+                self.source
+                    .get(self.record.span.range())
+                    .expect("generated lexer produced a valid UTF-8 error span")
+            }
+
+            pub fn span(self) -> #facade::Span {
+                self.record.span
+            }
+        }
+
+        pub struct LexErrors<'lexed, 'input> {
+            source: &'input str,
+            records: ::core::slice::Iter<'lexed, #facade::__private::TokenRecord>,
+            lexical_error_kind: u16,
+        }
+
+        impl<'input> Iterator for LexErrors<'_, 'input> {
+            type Item = LexError<'input>;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                self.records
+                    .find(|record| record.kind == self.lexical_error_kind)
+                    .copied()
+                    .map(|record| LexError {
+                        source: self.source,
+                        record,
+                    })
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let remaining = self
+                    .records
+                    .as_slice()
+                    .iter()
+                    .filter(|record| record.kind == self.lexical_error_kind)
+                    .count();
+                (remaining, Some(remaining))
+            }
+        }
+
+        impl ExactSizeIterator for LexErrors<'_, '_> {}
 
         /// A cursor bound to this generated grammar's token identities.
         pub struct Input<'input, A = ()> {
@@ -1573,6 +1637,15 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 Tokens {
                     source: #facade::__private::lex_source(&self.inner),
                     records: #facade::__private::lex_records(&self.inner).iter(),
+                    lexical_error_kind: #lexical_error_kind,
+                }
+            }
+
+            pub fn errors(&self) -> LexErrors<'_, 'input> {
+                LexErrors {
+                    source: #facade::__private::lex_source(&self.inner),
+                    records: #facade::__private::lex_records(&self.inner).iter(),
+                    lexical_error_kind: #lexical_error_kind,
                 }
             }
 
