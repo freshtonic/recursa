@@ -16,12 +16,12 @@ macro_rules! parse_spanned {
 #[total_visitor(dispatch = [grammar::Record<'static>], error = ())]
 struct TypedRecordVisitor(usize);
 
-impl recursa::Visitor<grammar::Record<'static>> for TypedRecordVisitor {
+impl<'input> recursa::Visitor<grammar::Record<'input>> for TypedRecordVisitor {
     type Error = ();
 
     fn enter(
         &mut self,
-        _node: &grammar::Record<'static>,
+        _node: &grammar::Record<'input>,
     ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
         self.0 += 1;
         std::ops::ControlFlow::Continue(())
@@ -32,16 +32,105 @@ impl recursa::Visitor<grammar::Record<'static>> for TypedRecordVisitor {
 #[total_visitor_mut(dispatch = [grammar::Count<'static>], error = ())]
 struct TypedCountMutator;
 
-impl recursa::VisitorMut<grammar::Count<'static>> for TypedCountMutator {
+impl<'input> recursa::VisitorMut<grammar::Count<'input>> for TypedCountMutator {
     type Error = ();
 
     fn enter_mut(
         &mut self,
-        node: &mut grammar::Count<'static>,
+        node: &mut grammar::Count<'input>,
     ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
         node.text = grammar::CountText::new("99");
         std::ops::ControlFlow::Continue(())
     }
+}
+
+#[derive(recursa::TotalVisitor)]
+#[total_visitor(
+    dispatch = [
+        grammar::public_left::Duplicate,
+        grammar::public_right::Duplicate,
+    ],
+    error = (),
+    event = grammar::__RecursaVisitEvent,
+)]
+struct DuplicateVisitor(Vec<&'static str>);
+
+impl recursa::Visitor<grammar::public_left::Duplicate> for DuplicateVisitor {
+    type Error = ();
+
+    fn enter(
+        &mut self,
+        _node: &grammar::public_left::Duplicate,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+        self.0.push("left");
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+impl recursa::Visitor<grammar::public_right::Duplicate> for DuplicateVisitor {
+    type Error = ();
+
+    fn enter(
+        &mut self,
+        _node: &grammar::public_right::Duplicate,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+        self.0.push("right");
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+struct OrderedMutator(Vec<&'static str>);
+
+impl<'input> recursa::TotalVisitorMut<grammar::__RecursaVisitEventsMut<'input>> for OrderedMutator {
+    type Error = ();
+
+    fn total_enter_mut<'visit>(
+        &mut self,
+        event: grammar::__RecursaVisitEventMut<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEventsMut<'input>: 'visit,
+    {
+        let name = match event {
+            grammar::__RecursaVisitEventMut::Record(_) => "enter-record",
+            grammar::__RecursaVisitEventMut::Label(_) => "enter-label",
+            grammar::__RecursaVisitEventMut::LabelText(_) => "enter-label-text",
+            grammar::__RecursaVisitEventMut::Count(_) => "enter-count",
+            grammar::__RecursaVisitEventMut::CountText(text) => {
+                *text = grammar::CountText::new("73");
+                "enter-count-text"
+            }
+            _ => return std::ops::ControlFlow::Continue(()),
+        };
+        self.0.push(name);
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn total_exit_mut<'visit>(
+        &mut self,
+        event: grammar::__RecursaVisitEventMut<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEventsMut<'input>: 'visit,
+    {
+        let name = match event {
+            grammar::__RecursaVisitEventMut::Record(_) => "exit-record",
+            grammar::__RecursaVisitEventMut::Label(_) => "exit-label",
+            grammar::__RecursaVisitEventMut::LabelText(_) => "exit-label-text",
+            grammar::__RecursaVisitEventMut::Count(_) => "exit-count",
+            grammar::__RecursaVisitEventMut::CountText(_) => "exit-count-text",
+            _ => return std::ops::ControlFlow::Continue(()),
+        };
+        self.0.push(name);
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+fn visit_borrowed_record(source: &str) -> usize {
+    let parsed = parse_spanned!(grammar::Record<'_>, source);
+    let mut visitor = TypedRecordVisitor(0);
+    assert!(recursa::Visit::visit(&parsed, &mut visitor).is_continue());
+    visitor.0
 }
 
 fn main() {
@@ -54,8 +143,8 @@ fn main() {
         record.root().span(),
         Some(recursa::Span::new(0, 15).unwrap())
     );
-    assert_eq!(record.root().render(), "ReCoRd:alpha 42");
-    assert_eq!(record.render(), "ReCoRd:alpha 42");
+    assert_eq!(record.root().render(), "ReCoRd : alpha 42");
+    assert_eq!(record.render(), "ReCoRd : alpha 42");
     assert_eq!(
         record.root().label().span(),
         Some(recursa::Span::new(7, 12).unwrap())
@@ -107,34 +196,55 @@ fn main() {
         elements.get(3).unwrap().span(),
         record.root().count().and_then(|view| view.span())
     );
-    struct TraversalLog(Vec<&'static str>);
-    impl recursa::TotalVisitor for TraversalLog {
+    struct TraversalLog(usize);
+    impl<'input> recursa::TotalVisitor<grammar::__RecursaVisitEvents<'input>> for TraversalLog {
         type Error = ();
-        fn total_enter<N>(
+        fn total_enter<'visit>(
             &mut self,
-            _node: &N,
-        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
-            self.0.push(std::any::type_name::<N>());
+            _event: grammar::__RecursaVisitEvent<'visit, 'input>,
+        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+        where
+            grammar::__RecursaVisitEvents<'input>: 'visit,
+        {
+            self.0 += 1;
             std::ops::ControlFlow::Continue(())
         }
-        fn total_exit<N>(
+        fn total_exit<'visit>(
             &mut self,
-            _node: &N,
-        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+            _event: grammar::__RecursaVisitEvent<'visit, 'input>,
+        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+        where
+            grammar::__RecursaVisitEvents<'input>: 'visit,
+        {
             std::ops::ControlFlow::Continue(())
         }
     }
-    let mut traversal = TraversalLog(Vec::new());
+    let mut traversal = TraversalLog(0);
     assert!(recursa::Visit::visit(record.root().value(), &mut traversal).is_continue());
-    assert_eq!(traversal.0.len(), 5);
-    assert!(traversal.0[0].contains("::Record"));
-    assert!(traversal.0[1].contains("::Label"));
-    assert!(traversal.0[2].contains("__RecursaContentToken"));
-    assert!(traversal.0[3].contains("::Count"));
-    assert!(traversal.0[4].contains("__RecursaContentToken"));
+    assert_eq!(traversal.0, 5);
     let mut typed = TypedRecordVisitor(0);
     assert!(recursa::Visit::visit(&record, &mut typed).is_continue());
     assert_eq!(typed.0, 1);
+
+    let mut duplicates = DuplicateVisitor(Vec::new());
+    assert!(recursa::Visit::visit(&grammar::public_left::Duplicate, &mut duplicates).is_continue());
+    assert!(recursa::Visit::visit(&grammar::public_right::Duplicate, &mut duplicates).is_continue());
+    assert_eq!(duplicates.0, ["left", "right"]);
+
+    let first_source = String::from("record:first 1");
+    let second_source = String::from("record:second 2");
+    assert_eq!(visit_borrowed_record(&first_source), 1);
+    assert_eq!(visit_borrowed_record(&second_source), 1);
+
+    let spaced = parse_spanned!(grammar::Record<'_>, "ReCoRd  : alpha   42");
+    assert_eq!(spaced.render(), "ReCoRd : alpha 42");
+
+    let mut arbitrary_input = recursa::__private::arbitrary::Unstructured::new(&[0; 64]);
+    let arbitrary_record =
+        <grammar::Record<'static> as recursa::Arbitrary>::arbitrary(&mut arbitrary_input)
+            .expect("configured Arbitrary creates a Record");
+    let arbitrary_rendered = recursa::Parsed::synthetic(arbitrary_record).render();
+    let _roundtrip = parse_spanned!(grammar::Record<'_>, arbitrary_rendered.as_str());
 
     let forwarded_a = recursa::Parsed::synthetic(record.root().value().clone());
     let forwarded_b = recursa::Parsed::synthetic(record.root().value().clone());
@@ -147,19 +257,27 @@ fn main() {
     assert_eq!(forwarded_a.render(), "record : alpha 42");
 
     struct MutationCounter(usize);
-    impl recursa::TotalVisitorMut for MutationCounter {
+    impl<'input> recursa::TotalVisitorMut<grammar::__RecursaVisitEventsMut<'input>>
+        for MutationCounter
+    {
         type Error = ();
-        fn total_enter_mut<N>(
+        fn total_enter_mut<'visit>(
             &mut self,
-            _node: &mut N,
-        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+            _event: grammar::__RecursaVisitEventMut<'visit, 'input>,
+        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+        where
+            grammar::__RecursaVisitEventsMut<'input>: 'visit,
+        {
             self.0 += 1;
             std::ops::ControlFlow::Continue(())
         }
-        fn total_exit_mut<N>(
+        fn total_exit_mut<'visit>(
             &mut self,
-            _node: &mut N,
-        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+            _event: grammar::__RecursaVisitEventMut<'visit, 'input>,
+        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+        where
+            grammar::__RecursaVisitEventsMut<'input>: 'visit,
+        {
             std::ops::ControlFlow::Continue(())
         }
     }
@@ -172,6 +290,24 @@ fn main() {
     detached.hash(&mut hasher);
     assert_ne!(hasher.finish(), 0);
     assert_eq!(recursa::Parsed::synthetic(cloned.clone()).render(), "record : alpha 42");
+    let mut order = OrderedMutator(Vec::new());
+    assert!(recursa::VisitMut::visit_mut(&mut detached, &mut order).is_continue());
+    assert_eq!(
+        order.0,
+        [
+            "enter-record",
+            "enter-label",
+            "enter-label-text",
+            "exit-label-text",
+            "exit-label",
+            "enter-count",
+            "enter-count-text",
+            "exit-count-text",
+            "exit-count",
+            "exit-record",
+        ]
+    );
+    assert_eq!(detached.count.as_ref().as_ref().unwrap().text.text(), "73");
     let mut mutations = MutationCounter(0);
     assert!(recursa::VisitMut::visit_mut(&mut detached, &mut mutations).is_continue());
     assert_eq!(mutations.0, 5);

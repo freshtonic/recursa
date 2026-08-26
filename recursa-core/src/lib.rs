@@ -40,6 +40,7 @@ pub mod __private {
         Occurrence, Occurrences, ParseContext, ParsedNode, Repeated, RepeatedIter, ViewCursor,
         parse, parse_seal::Sealed as ParseSealed, parse_spanned,
     };
+    pub use crate::visitor::{VisitEventFamily, VisitEventFamilyMut, VisitNode};
     #[cfg(feature = "arbitrary")]
     pub use arbitrary;
     #[cfg(feature = "serde")]

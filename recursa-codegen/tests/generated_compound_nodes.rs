@@ -61,10 +61,14 @@ fn extra_facade_capabilities_are_harmless() {
     .expect("remove feature-backed recipes while retaining facade features");
     let main = package.path().join("src/main.rs");
     let source = fs::read_to_string(&main).expect("read downstream consumer");
+    let source = source.replace(
+        "    fn assert_arbitrary<T: for<'arbitrary> recursa::Arbitrary<'arbitrary>>() {}\n    assert_arbitrary::<grammar::Record<'static>>();\n\n",
+        "",
+    );
     fs::write(
         &main,
         source.replace(
-            "    fn assert_arbitrary<T: for<'arbitrary> recursa::Arbitrary<'arbitrary>>() {}\n    assert_arbitrary::<grammar::Record<'static>>();\n\n",
+            "    let mut arbitrary_input = recursa::__private::arbitrary::Unstructured::new(&[0; 64]);\n    let arbitrary_record =\n        <grammar::Record<'static> as recursa::Arbitrary>::arbitrary(&mut arbitrary_input)\n            .expect(\"configured Arbitrary creates a Record\");\n    let arbitrary_rendered = recursa::Parsed::synthetic(arbitrary_record).render();\n    let _roundtrip = parse_spanned!(grammar::Record<'_>, arbitrary_rendered.as_str());\n\n",
             "",
         ),
     )
@@ -75,6 +79,32 @@ fn extra_facade_capabilities_are_harmless() {
         "extra capabilities failed\n{}",
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+#[test]
+fn unrequested_diagram_and_explorer_capabilities_are_rejected_exactly_once() {
+    for feature in ["diagrams", "explorer"] {
+        let package = scaffold_fixture();
+        let manifest = package.path().join("Cargo.toml");
+        let source = fs::read_to_string(&manifest).expect("read fixture manifest");
+        fs::write(
+            &manifest,
+            source.replace(
+                "features = [\"arbitrary\", \"serde\"]",
+                &format!("features = [\"arbitrary\", \"serde\", \"{feature}\"]"),
+            ),
+        )
+        .expect("enable an unrequested facade capability");
+
+        let output = run_fixture_unlocked(&package);
+        assert!(!output.status.success(), "unrequested {feature} must fail");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.matches("error: error[RCA9005]").count(),
+            1,
+            "feature={feature}\nstderr:\n{stderr}"
+        );
+    }
 }
 
 #[test]
@@ -134,6 +164,80 @@ fn private_protocol_mismatch_is_reported_once_at_the_grammar_root() {
         1,
         "stderr:\n{stderr}"
     );
+    assert!(!stderr.contains("E0308"), "stderr:\n{stderr}");
+}
+
+#[test]
+fn canonical_content_token_types_are_not_exposed_at_the_grammar_root() {
+    let package = scaffold_fixture();
+    let main = package.path().join("src/main.rs");
+    let source = fs::read_to_string(&main).expect("read downstream consumer");
+    fs::write(
+        &main,
+        source.replace(
+            "fn main() {",
+            "fn expose_canonical(_: grammar::__RecursaContentToken0<'static>) {}\n\nfn main() {",
+        ),
+    )
+    .expect("try to name a canonical content token");
+
+    let output = run_fixture(&package);
+    assert!(
+        !output.status.success(),
+        "canonical token must remain private"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot find type `__RecursaContentToken0`")
+            || stderr.contains("not found in `grammar`"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn visitor_events_cannot_substitute_or_retain_borrowed_input_as_static() {
+    let package = scaffold_fixture();
+    let main = package.path().join("src/main.rs");
+    let source = fs::read_to_string(&main).expect("read downstream consumer");
+    let proof = r#"
+fn substitute_events<'input>(
+    events: grammar::__RecursaVisitEvents<'input>,
+) -> grammar::__RecursaVisitEvents<'static> {
+    events
+}
+
+struct StaticRetainer(Option<&'static str>);
+
+impl<'input> recursa::Visitor<grammar::LabelText<'input>> for StaticRetainer {
+    type Error = ();
+
+    fn enter(
+        &mut self,
+        token: &grammar::LabelText<'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+        self.0 = Some(token.text());
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+"#;
+    fs::write(
+        &main,
+        source.replace("fn main() {", &format!("{proof}fn main() {{")),
+    )
+    .expect("insert lifetime-safety proof");
+
+    let output = run_fixture(&package);
+    assert!(
+        !output.status.success(),
+        "lifetime erasure must not compile"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("lifetime may not live long enough")
+            || stderr.contains("requires that `'input` must outlive `'static`"),
+        "stderr:\n{stderr}"
+    );
 }
 
 #[test]
@@ -159,7 +263,8 @@ fn parsed_values_and_views_exclude_owned_or_mutable_semantic_traits() {
     assert!(!output.status.success(), "excluded traits must not compile");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Parsed<'_, recursa_generated_compound_nodes::grammar::Record<'_>>: Clone"),
+        stderr.contains("Parsed<'_, recursa_generated_compound_nodes::grammar::Record<'_>>: Clone")
+            || stderr.contains("Parsed<'_, Record<'_>>: Clone"),
         "stderr:\n{stderr}"
     );
     assert!(
