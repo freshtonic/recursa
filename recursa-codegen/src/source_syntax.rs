@@ -156,6 +156,7 @@ pub(crate) struct GrammarConfigSyntax {
     pub(crate) max_lookahead: usize,
     pub(crate) spans: CaptureMode,
     pub(crate) derives: Vec<Path>,
+    pub(crate) diagrams: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -247,6 +248,21 @@ mod capture_tests {
             "duplicate `spanned` attribute"
         );
     }
+
+    #[test]
+    fn diagrams_are_an_explicit_non_default_generation_request() {
+        let core: GrammarConfigSyntax =
+            syn::parse_str("module = crate").expect("core grammar configuration parses");
+        assert!(!core.diagrams);
+
+        let diagrams: GrammarConfigSyntax = syn::parse_str("module = crate, diagrams")
+            .expect("diagram grammar configuration parses");
+        assert!(diagrams.diagrams);
+
+        let duplicate = syn::parse_str::<GrammarConfigSyntax>("module = crate, diagrams, diagrams")
+            .unwrap_err();
+        assert_eq!(duplicate.to_string(), "duplicate diagrams setting");
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -264,6 +280,7 @@ impl Parse for GrammarConfigSyntax {
         let mut max_lookahead = None;
         let mut spans = None;
         let mut derives = None;
+        let mut diagrams = false;
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
             if key == "derives" {
@@ -275,6 +292,11 @@ impl Parse for GrammarConfigSyntax {
                         .into_iter()
                         .collect(),
                 );
+            } else if key == "diagrams" {
+                if diagrams {
+                    return Err(syn::Error::new(key.span(), "duplicate diagrams setting"));
+                }
+                diagrams = true;
             } else {
                 input.parse::<Token![=]>()?;
                 if key == "module" {
@@ -326,6 +348,7 @@ impl Parse for GrammarConfigSyntax {
             // Optional preserves the pre-configuration generated API behavior.
             spans: spans.unwrap_or(CaptureMode::Optional),
             derives: derives.unwrap_or_default(),
+            diagrams,
         })
     }
 }

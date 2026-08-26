@@ -541,6 +541,7 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         text_equivalence: configuration.syntax.text_equivalence,
         max_lookahead: configuration.syntax.max_lookahead,
         spans: configuration.syntax.spans,
+        diagrams: configuration.syntax.diagrams,
     };
     let mut resolver = Resolver {
         cfg: input.cfg,

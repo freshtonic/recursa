@@ -73,6 +73,20 @@ pub fn generate(root: impl AsRef<Path>) -> Result<Generation, GenerateError> {
         ),
         &mut cargo,
     )?;
+    if success
+        .analyzed
+        .lowered
+        .source_modeled
+        .resolved()
+        .build_inputs
+        .diagrams
+        && !cfg!(feature = "diagrams")
+    {
+        return Err(failure(
+            root.as_ref(),
+            "diagram generation was requested but recursa-codegen was built without its `diagrams` capability",
+        ));
+    }
     let plan = EmissionPlan::join(&success.analyzed, &cfg)
         .map_err(|detail| failure(root.as_ref(), &detail))?;
     let rendered = render(&plan).map_err(|detail| failure(root.as_ref(), &detail))?;
@@ -108,8 +122,24 @@ struct EmissionPlan {
     word_candidate_kinds: Vec<u16>,
     post_lex: Option<syn::Path>,
     root_configured_traits: Vec<ConfiguredTraitRecipe>,
+    diagrams: Option<DiagramPlan>,
     instrumentation: EmissionInstrumentation,
     frozen_parse_identity: u64,
+}
+
+#[derive(Clone, Debug)]
+struct DiagramPlan {
+    grammar_name: String,
+    nodes: Vec<NodeDiagramPlan>,
+    fixed_tokens: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug)]
+struct NodeDiagramPlan {
+    semantic_key: String,
+    ident: String,
+    public_path: Option<String>,
+    production: String,
 }
 
 #[derive(Clone, Default)]
@@ -263,7 +293,7 @@ struct FieldPlan {
     accessor: Option<Ident>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FieldWrapper {
     Boxed,
     Optional,
@@ -961,6 +991,11 @@ impl EmissionPlan {
                     .map_err(|_| "generated token kind exceeds runtime width".to_owned())
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let diagrams = resolved
+            .build_inputs
+            .diagrams
+            .then(|| plan_diagrams(resolved, &nodes, &kind_names, &kind_static_texts))
+            .transpose()?;
 
         let mut canonical = format!(
             "{EMITTER_IDENTITY};release={};protocol={PRIVATE_PROTOCOL};facade={facade};anchor={};kinds={kind_count};edition={:?};cfg={:?};",
@@ -1033,6 +1068,11 @@ impl EmissionPlan {
             ));
         }
         canonical.push_str(&format!(";word_candidates={word_candidate_kinds:?}"));
+        canonical.push_str(if diagrams.is_some() {
+            ";capabilities=core,diagrams"
+        } else {
+            ";capabilities=core"
+        });
         canonical.push_str(&format!(
             ";frozen_dispatch_sequences={frozen_dispatch_sequences};frozen_dispatch_nodes={};emitter_dispatch_decisions=0;frozen_parse_identity={frozen_parse_identity:016x}",
             instrumentation.frozen_dispatch_nodes_consumed,
@@ -1064,6 +1104,7 @@ impl EmissionPlan {
             word_candidate_kinds,
             post_lex: lowered.source_modeled.source_model().post_lex.clone(),
             root_configured_traits,
+            diagrams,
             instrumentation,
             frozen_parse_identity,
         };
@@ -1083,6 +1124,13 @@ impl EmissionPlan {
         }
         if self.lexical_rules.is_empty() {
             return Err("the generated lexical plan has no rules".to_owned());
+        }
+        if self
+            .diagrams
+            .as_ref()
+            .is_some_and(|diagrams| diagrams.nodes.len() != self.nodes.len())
+        {
+            return Err("the diagram plan does not cover every frozen Node".to_owned());
         }
         let mut frozen_nodes = 0;
         for node in &self.nodes {
@@ -1113,6 +1161,119 @@ impl EmissionPlan {
         }
         Ok(())
     }
+}
+
+fn plan_diagrams(
+    resolved: &crate::resolution::ResolvedSourceGrammar,
+    nodes: &[NodeParsePlan],
+    kind_names: &[String],
+    kind_static_texts: &[Option<String>],
+) -> Result<DiagramPlan, String> {
+    let nodes = nodes
+        .iter()
+        .map(|node| {
+            let source = resolved
+                .nodes
+                .iter()
+                .find(|source| source.key.segments.join("::") == node.semantic_key)
+                .ok_or_else(|| {
+                    format!(
+                        "diagram plan cannot correlate frozen Node `{}`",
+                        node.semantic_key
+                    )
+                })?;
+            let public_path = node_is_publicly_linkable(resolved, source)
+                .then(|| format!("crate::{}", node.semantic_key));
+            Ok(NodeDiagramPlan {
+                semantic_key: node.semantic_key.clone(),
+                ident: node.ident.unraw().to_string(),
+                public_path,
+                production: diagram_production(node),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let fixed_tokens = kind_names
+        .iter()
+        .zip(kind_static_texts)
+        .filter_map(|(name, spelling)| {
+            spelling
+                .as_ref()
+                .map(|spelling| (name.clone(), spelling.clone()))
+        })
+        .collect();
+    Ok(DiagramPlan {
+        grammar_name: resolved.build_inputs.module_anchor.segments.join("::"),
+        nodes,
+        fixed_tokens,
+    })
+}
+
+fn node_is_publicly_linkable(
+    resolved: &crate::resolution::ResolvedSourceGrammar,
+    node: &ResolvedNode,
+) -> bool {
+    if !matches!(node.visibility, Visibility::Public(_)) {
+        return false;
+    }
+    let mut module = Some(node.module);
+    while let Some(current) = module {
+        let inclusion = &resolved.tree.inclusions[current.index()];
+        if inclusion.parent.is_some() && !matches!(inclusion.visibility, Visibility::Public(_)) {
+            return false;
+        }
+        module = inclusion.parent;
+    }
+    true
+}
+
+fn diagram_production(node: &NodeParsePlan) -> String {
+    let right = match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => diagram_sequence(elements),
+        NodeBodyPlan::Enum { variants, .. } => variants
+            .iter()
+            .map(|variant| {
+                let sequence = diagram_sequence(&variant.elements);
+                if sequence == "ε" {
+                    variant.ident.unraw().to_string()
+                } else {
+                    format!("{}({sequence})", variant.ident.unraw())
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" | "),
+    };
+    format!("{} ::= {right}", node.ident.unraw())
+}
+
+fn diagram_sequence(elements: &[ElementParsePlan]) -> String {
+    if elements.is_empty() {
+        return "ε".to_owned();
+    }
+    elements
+        .iter()
+        .map(|element| match &element.kind {
+            ElementParseKind::Fixed { spelling, .. } => format!("{spelling:?}"),
+            ElementParseKind::Semantic {
+                wrappers, field, ..
+            } => {
+                let name = field
+                    .accessor
+                    .as_ref()
+                    .map_or_else(|| element.metadata_name.clone(), ToString::to_string);
+                let suffix = if wrappers.contains(&FieldWrapper::ZeroOrMore) {
+                    "*"
+                } else if wrappers.contains(&FieldWrapper::OneOrMore) {
+                    "+"
+                } else if wrappers.contains(&FieldWrapper::Optional) {
+                    "?"
+                } else {
+                    ""
+                };
+                format!("<{name}>{suffix}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn parse_plan_identity(nodes: &[NodeParsePlan]) -> u64 {
@@ -2637,6 +2798,58 @@ fn render(plan: &EmissionPlan) -> Result<RenderedGeneration, String> {
     })
 }
 
+fn render_aggregate_diagram_document(plan: &DiagramPlan) -> String {
+    let mut document = format!(
+        "# Generated grammar diagram\n\nRECURSA_GRAMMAR_DIAGRAM\n\nGrammar `{}` is rendered from the frozen semantic Generation plan.\n\n",
+        plan.grammar_name
+    );
+    for node in &plan.nodes {
+        document.push_str(&diagram_svg(&node.production, &node.semantic_key));
+        document.push_str("\n\n");
+    }
+    document.push_str("## Public Nodes\n\n");
+    for node in plan.nodes.iter().filter(|node| node.public_path.is_some()) {
+        let path = node.public_path.as_deref().expect("filtered public path");
+        document.push_str(&format!("- [`{}`]({path})\n", node.semantic_key));
+    }
+    document.push_str(
+        "\n## Fixed tokens\n\nFixed tokens are syntax-only: they shape accepted input but do not create AST fields or retain matched text. Their canonical spellings are:\n\n",
+    );
+    for (name, spelling) in &plan.fixed_tokens {
+        document.push_str(&format!("- `{name}`: `{spelling}`\n"));
+    }
+    document
+}
+
+fn render_node_diagram_document(node: &NodeDiagramPlan) -> String {
+    format!(
+        "## Generated grammar diagram\n\nRECURSA_NODE_DIAGRAM: {}\n\n{}\n\nFixed tokens shown as quoted terminals are syntax-only. They shape parsing but do not add fields to the authored Node or retain matched text.\n",
+        node.ident,
+        diagram_svg(&node.production, &node.semantic_key),
+    )
+}
+
+fn diagram_svg(production: &str, label: &str) -> String {
+    let width = 40_usize
+        .saturating_add(production.chars().count().saturating_mul(9))
+        .clamp(240, 1400);
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"52\" role=\"img\" aria-label=\"{} grammar diagram\"><rect x=\"1\" y=\"1\" width=\"{}\" height=\"50\" rx=\"5\" fill=\"none\" stroke=\"currentColor\"/><text x=\"16\" y=\"32\" font-family=\"monospace\" fill=\"currentColor\">{}</text></svg>",
+        escape_html(label),
+        width.saturating_sub(2),
+        escape_html(production),
+    )
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
@@ -2646,6 +2859,16 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let release = format_ident!("{release}");
     let protocol = format_ident!("protocol_{PRIVATE_PROTOCOL}");
     let grammar_name = &plan.grammar_name;
+    let aggregate_diagram = plan.diagrams.as_ref().map(|diagrams| {
+        let documentation = syn::LitStr::new(
+            &render_aggregate_diagram_document(diagrams),
+            proc_macro2::Span::call_site(),
+        );
+        quote! {
+            #[doc = #documentation]
+            pub mod grammar_docs {}
+        }
+    });
     let kind_count = plan.kind_count;
     let lexical_error_kind = plan.lexical_error_kind;
     let kind_names = &plan.kind_names;
@@ -2795,12 +3018,16 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             )
         });
     let mut accepted_capabilities = Vec::new();
-    // This Generation emits only the core payload. Diagram and explorer
-    // Generations extend this exact handshake with their requested bits.
+    // This Generation emits the selected core or diagram payload. Explorer
+    // Generations extend this exact handshake with their requested bit.
+    let diagrams = usize::from(plan.diagrams.is_some());
+    let explorer = 0;
     for arbitrary in 0..=1 {
         for serde in 0..=1 {
             if (!requested_arbitrary || arbitrary == 1) && (!requested_serde || serde == 1) {
-                accepted_capabilities.push(format_ident!("cap_core_d0_e0_a{arbitrary}_s{serde}"));
+                accepted_capabilities.push(format_ident!(
+                    "cap_core_d{diagrams}_e{explorer}_a{arbitrary}_s{serde}"
+                ));
             }
         }
     }
@@ -2821,6 +3048,8 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         const _: fn() = || {
             let _: #module_anchor::__RecursaGenerationAnchor = __RecursaGenerationAnchor;
         };
+
+        #aggregate_diagram
 
         static __RECURSA_GRAMMAR: #facade::__private::GrammarInfo =
             #facade::__private::grammar_info(
@@ -4011,9 +4240,15 @@ fn render_token_binding(
     let view = sibling_ident(ident, "View");
     let canonical = &plan.tokens[binding.token].ident;
     let canonical_view = sibling_ident(canonical, "View");
+    let token_documentation = syn::LitStr::new(
+        "A content-bearing token. Parsed values retain their exact matched input text; synthesized values own their text. Fixed tokens are syntax-only grammar elements: they shape parsing but store no value and have no generated token type.",
+        proc_macro2::Span::call_site(),
+    );
     quote! {
+        #[doc = #token_documentation]
         #visibility type #ident<'input> =
             #module_anchor::__recursa_content_tokens::#canonical<'input>;
+        #[doc = "A provenance-aware view of this generated content-bearing token."]
         #visibility type #view<'view, 'input> =
             #module_anchor::__recursa_content_tokens::#canonical_view<'view, 'input>;
     }
@@ -4097,6 +4332,16 @@ fn render_node(
             .collect::<Vec<_>>()
     };
     let configured_traits = render_node_configured_traits(plan, node);
+    let diagram_documentation = plan.diagrams.as_ref().map(|diagrams| {
+        let diagram = &diagrams.nodes[node_index];
+        syn::LitStr::new(
+            &render_node_diagram_document(diagram),
+            proc_macro2::Span::call_site(),
+        )
+    });
+    let diagram_attribute = diagram_documentation
+        .as_ref()
+        .map(|documentation| quote!(#[doc = #documentation]));
     let view_pretty = node
         .configured_traits
         .contains(&ConfiguredTraitRecipe::Pretty)
@@ -4203,6 +4448,7 @@ fn render_node(
 
         #configured_traits
 
+        #diagram_attribute
         #[allow(dead_code)]
         impl #impl_generics #node_ident #type_generics #where_clause {
             #pratt_helper
