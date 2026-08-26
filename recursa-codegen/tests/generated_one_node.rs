@@ -166,6 +166,21 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
     assert!(stderr.contains("RCA9004"), "stderr:\n{stderr}");
 
     fs::write(&node, &node_rust).expect("restore matching Node body");
+    fs::write(&node, "this is externally malformed generated Rust").unwrap();
+    force_consumer_recompile(&package, "malformed-node");
+    let malformed = run_fixture(&package);
+    let stderr = String::from_utf8_lossy(&malformed.stderr);
+    assert!(
+        !malformed.status.success(),
+        "malformed generated Node Rust must fail"
+    );
+    assert!(
+        stderr.contains("expected one of") || stderr.contains("expected `!`"),
+        "native Rust syntax diagnostics must remain authoritative\nstderr:\n{stderr}"
+    );
+    assert!(!stderr.contains("RCA9002"), "stderr:\n{stderr}");
+
+    fs::write(&node, &node_rust).expect("restore generated Node body after corruption");
     fs::write(&root, "this is externally malformed generated Rust").unwrap();
     force_consumer_recompile(&package, "malformed-root");
     let malformed = run_fixture(&package);
@@ -178,6 +193,8 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
         stderr.contains("expected one of") || stderr.contains("expected `!`"),
         "native Rust syntax diagnostics must remain authoritative\nstderr:\n{stderr}"
     );
+    assert!(!stderr.contains("RCA9001"), "stderr:\n{stderr}");
+    assert!(!stderr.contains("RCA9002"), "stderr:\n{stderr}");
     assert!(!stderr.contains("runtime fallback"), "stderr:\n{stderr}");
 
     fs::write(&root, root_rust).expect("restore generated root after corruption");
