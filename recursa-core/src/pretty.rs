@@ -151,11 +151,26 @@ pub struct PrettyContext {
     needs_separator: bool,
     separator_supplied: bool,
     provenance: Option<PrettyProvenance>,
+    caller_configured: bool,
+    repetition: Option<RepetitionLayout>,
+}
+
+#[derive(Clone)]
+struct RepetitionLayout {
+    separator: String,
+    trailing: bool,
 }
 
 impl Default for PrettyContext {
     fn default() -> Self {
-        Self::with_config(PrettyConfig::default())
+        Self {
+            sink: PrettySink::new(PrettyConfig::default()),
+            needs_separator: false,
+            separator_supplied: false,
+            provenance: None,
+            caller_configured: false,
+            repetition: None,
+        }
     }
 }
 
@@ -170,6 +185,16 @@ impl PrettyContext {
             needs_separator: false,
             separator_supplied: false,
             provenance: None,
+            caller_configured: true,
+            repetition: None,
+        }
+    }
+
+    /// Applies one grammar's defaults unless the caller supplied overrides.
+    #[doc(hidden)]
+    pub fn configure_defaults(&mut self, max_width: usize, indent: usize) {
+        if !self.caller_configured {
+            self.sink.config = PrettyConfig::new(max_width, indent);
         }
     }
 
@@ -188,6 +213,14 @@ impl PrettyContext {
         self.sink.events.push(PrettyEvent::Text(text.to_owned()));
         self.needs_separator = !text.is_empty();
         self.separator_supplied = false;
+        Ok(())
+    }
+
+    /// Emits an opening delimiter tightly and suppresses spacing after it.
+    #[doc(hidden)]
+    pub fn opening_token(&mut self, text: &str) -> fmt::Result {
+        self.tight_token(text)?;
+        self.needs_separator = false;
         Ok(())
     }
 
@@ -226,6 +259,48 @@ impl PrettyContext {
         let result = render(self);
         self.sink.events.push(PrettyEvent::Dedent);
         result
+    }
+
+    /// Applies one generated repetition's separator policy to its container.
+    #[doc(hidden)]
+    pub fn with_repetition<R>(
+        &mut self,
+        separator: &str,
+        trailing: bool,
+        render: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.repetition.replace(RepetitionLayout {
+            separator: separator.to_owned(),
+            trailing,
+        });
+        let result = render(self);
+        self.repetition = previous;
+        result
+    }
+
+    fn render_repeated<'a, T: Pretty + 'a>(
+        &mut self,
+        values: impl ExactSizeIterator<Item = &'a T>,
+    ) -> fmt::Result {
+        let layout = self.repetition.take();
+        let length = values.len();
+        for (index, value) in values.enumerate() {
+            self.with_child(index, |context| value.pretty(context))?;
+            if let Some(layout) = &layout
+                && (index + 1 < length || layout.trailing)
+            {
+                self.tight_token(&layout.separator)?;
+                if index + 1 < length {
+                    if layout.separator == ";" {
+                        self.hard_break()?;
+                    } else {
+                        self.soft_break(" ")?;
+                    }
+                }
+            }
+        }
+        self.repetition = layout;
+        Ok(())
     }
 
     /// Runs structured rendering with one captured occurrence as provenance.
@@ -280,7 +355,10 @@ pub trait Pretty {
     fn pretty(&self, context: &mut PrettyContext) -> fmt::Result;
 
     fn render(&self) -> String {
-        self.render_with(PrettyConfig::default())
+        let mut context = PrettyContext::new();
+        self.pretty(&mut context)
+            .expect("rendering into a structured sink cannot fail");
+        context.finish()
     }
 
     fn render_with(&self, config: PrettyConfig) -> String {
@@ -308,19 +386,13 @@ impl<T: Pretty> Pretty for Option<T> {
 
 impl<T: Pretty> Pretty for Vec<T> {
     fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
-        for (index, value) in self.iter().enumerate() {
-            context.with_child(index, |context| value.pretty(context))?;
-        }
-        Ok(())
+        context.render_repeated(self.iter())
     }
 }
 
 impl<T: Pretty> Pretty for crate::Vec1<T> {
     fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
-        for (index, value) in self.iter().enumerate() {
-            context.with_child(index, |context| value.pretty(context))?;
-        }
-        Ok(())
+        context.render_repeated(self.iter())
     }
 }
 
@@ -373,6 +445,31 @@ mod tests {
         assert_eq!(
             LongLexeme.render_with(PrettyConfig::new(3, 2)),
             "indivisible"
+        );
+    }
+
+    #[test]
+    fn repeated_values_emit_trailing_separators_and_structural_item_breaks() {
+        struct Word(&'static str);
+        impl Pretty for Word {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.tight_token(self.0)
+            }
+        }
+        struct Words(Vec<Word>);
+        impl Pretty for Words {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.group(|context| {
+                    context.with_repetition(",", false, |context| self.0.pretty(context))
+                })
+            }
+        }
+
+        let words = Words(vec![Word("alpha"), Word("beta"), Word("gamma")]);
+        assert_eq!(words.render(), "alpha, beta, gamma");
+        assert_eq!(
+            words.render_with(PrettyConfig::new(12, 2)),
+            "alpha,\nbeta,\ngamma"
         );
     }
 }
