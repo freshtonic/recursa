@@ -7483,8 +7483,10 @@ fn select_generation(
         ".recursa-selector-{}-{nonce}.rs",
         std::process::id()
     ));
-    fs::write(&staging, &rendered.selector)
-        .map_err(|error| format!("cannot stage the Generation selector: {error}"))?;
+    if let Err(error) = fs::write(&staging, &rendered.selector) {
+        let _ = fs::remove_file(&staging);
+        return Err(format!("cannot stage the Generation selector: {error}"));
+    }
     if let Err(error) = during_selection() {
         let _ = fs::remove_file(&staging);
         return Err(error);
