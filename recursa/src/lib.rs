@@ -5,6 +5,8 @@
 
 #[cfg(feature = "arbitrary")]
 pub use recursa_core::__private::arbitrary::Arbitrary;
+#[cfg(feature = "explorer")]
+pub use recursa_core::explorer;
 pub use recursa_core::{
     ElementMetadata, ElementRole, ElementView, Elements, HasSpan, Node, NodeView, OffsetOverflow,
     Parse, ParseError, ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext, PrettySink,

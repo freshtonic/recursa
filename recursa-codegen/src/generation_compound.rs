@@ -141,7 +141,7 @@ struct EmissionPlan {
     pretty: PrettyEmissionPlan,
     #[cfg(feature = "diagrams")]
     diagrams: Option<DiagramPlan>,
-    explorer: Option<ExtensionEmissionPlan>,
+    explorer: Option<ExplorerPlan>,
     instrumentation: EmissionInstrumentation,
     plan_families: EmissionPlanFamilies,
 }
@@ -314,14 +314,8 @@ enum PrettyFixedRendering {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ExtensionEmissionPlan {
-    artifacts: Vec<ExtensionArtifactPlan>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ExtensionArtifactPlan {
-    logical_name: String,
-    content: String,
+struct ExplorerPlan {
+    roots: Vec<String>,
 }
 
 #[cfg(feature = "diagrams")]
@@ -1292,11 +1286,11 @@ impl EmissionPlan {
         #[cfg(not(feature = "diagrams"))]
         let frozen_diagrams = None;
         let private_abi = emitted_private_abi_plan();
-        let explorer = None;
+        let explorer = emitted_explorer_plan(&nodes);
         let pretty = emitted_pretty_plan(&nodes, &tokens);
         let capabilities =
             emitted_capability_plan(&nodes, &tokens, diagram_enabled, explorer.is_some());
-        let authoritative_explorer = authoritative_explorer_plan(resolved);
+        let authoritative_explorer = authoritative_explorer_plan(lowered);
         let plan_families = EmissionPlanFamilies {
             configured_traits: authoritative_configured_trait_identity(lowered, resolved),
             private_abi: plan_family_identity(&authoritative_private_abi_plan()),
@@ -2135,15 +2129,20 @@ fn accepted_capabilities(
     explorer: bool,
 ) -> Vec<FacadeCapability> {
     let mut accepted = Vec::new();
-    for arbitrary in [false, true] {
-        for serde in [false, true] {
-            if (!requested_arbitrary || arbitrary) && (!requested_serde || serde) {
-                accepted.push(FacadeCapability {
-                    diagrams,
-                    explorer,
-                    arbitrary,
-                    serde,
-                });
+    for explorer_enabled in [false, true] {
+        for arbitrary in [false, true] {
+            for serde in [false, true] {
+                if (!explorer_enabled || explorer)
+                    && (!requested_arbitrary || arbitrary)
+                    && (!requested_serde || serde)
+                {
+                    accepted.push(FacadeCapability {
+                        diagrams,
+                        explorer: explorer_enabled,
+                        arbitrary,
+                        serde,
+                    });
+                }
             }
         }
     }
@@ -3052,12 +3051,55 @@ fn pretty_family_identity(plan: &PrettyEmissionPlan) -> Option<u64> {
         .then(|| plan_family_identity(plan))
 }
 
+fn emitted_explorer_plan(nodes: &[NodeParsePlan]) -> Option<ExplorerPlan> {
+    let roots = nodes
+        .iter()
+        .filter(|node| {
+            node.publicly_materialized
+                && node
+                    .configured_traits
+                    .contains(&ConfiguredTraitRecipe::Visit)
+                && node
+                    .generics
+                    .params
+                    .iter()
+                    .all(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
+        })
+        .map(|node| node.semantic_key.clone())
+        .collect::<Vec<_>>();
+    (!roots.is_empty()).then_some(ExplorerPlan { roots })
+}
+
 fn authoritative_explorer_plan(
-    _resolved: &crate::resolution::ResolvedSourceGrammar,
-) -> Option<ExtensionEmissionPlan> {
-    // The current resolved grammar has no explorer request. Ticket #70 extends
-    // this authoritative seam with its resolved explorer plan.
-    None
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Option<ExplorerPlan> {
+    let resolved = lowered.source_modeled.resolved();
+    let source = lowered.source_modeled.source_model();
+    let roots = resolved
+        .nodes
+        .iter()
+        .filter(|node| {
+            publicly_reachable(&resolved.tree, node.module, &node.visibility)
+                && node
+                    .generics
+                    .params
+                    .iter()
+                    .all(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
+                && source
+                    .nodes
+                    .iter()
+                    .find(|source_node| source_node.resolved_node == node.id)
+                    .is_some_and(|source_node| {
+                        source_node
+                            .configured_traits
+                            .effective
+                            .iter()
+                            .any(|selection| selection.recipe == ConfiguredTraitRecipe::Visit)
+                    })
+        })
+        .map(|node| node.key.segments.join("::"))
+        .collect::<Vec<_>>();
+    (!roots.is_empty()).then_some(ExplorerPlan { roots })
 }
 
 fn planned_kind_variants(
@@ -5885,6 +5927,47 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         .enumerate()
         .map(|(index, token)| render_token(plan, token, index));
     let visit_events = render_visit_events(plan);
+    let explorer_lex = plan.explorer.as_ref().map(|_| {
+        let classes = plan
+            .kind_variants
+            .iter()
+            .zip(&plan.kind_names)
+            .zip(&plan.kind_static_texts)
+            .map(|((variant, name), static_text)| {
+                let class = if static_text.is_some() {
+                    quote!(#facade::explorer::LexicalClass::Fixed)
+                } else {
+                    quote!(#facade::explorer::LexicalClass::Content)
+                };
+                quote! {
+                    TokenKind::#variant => (#name, #class),
+                }
+            });
+        quote! {
+            __recursa_if_explorer! {
+                fn __recursa_explorer_lex(
+                    source: &str,
+                ) -> #facade::explorer::LexResult<'_> {
+                    let lexed = lex(source);
+                    let tokens = lexed.tokens().map(|token| {
+                        let (name, class) = match token.kind() {
+                            #(#classes)*
+                            TokenKind::LexicalError => unreachable!(
+                                "lexical errors are not explorer token records"
+                            ),
+                        };
+                        #facade::__private::explorer_lex_record(
+                            name,
+                            class,
+                            token.span(),
+                        )
+                    });
+                    let errors = lexed.errors().map(|error| error.span());
+                    #facade::__private::explorer_lex_result(source, tokens, errors)
+                }
+            }
+        }
+    });
     let loader_arms = plan.nodes.iter().enumerate().map(|(index, node)| {
         let ident = &node.ident;
         let anchor = syn::LitStr::new(&node.loader_anchor, proc_macro2::Span::call_site());
@@ -6545,6 +6628,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         }
 
         #visit_events
+        #explorer_lex
 
         macro_rules! __recursa_root_handshake {
             #(#capability_arms)*
@@ -7016,6 +7100,30 @@ fn render_token(
                 }
             }
         });
+    let explorer_impl = plan.explorer.as_ref().map(|_| {
+        let schema = format_ident!("__RECURSA_EXPLORER_TOKEN_SCHEMA_{index}");
+        let name = token.kind_variant.unraw().to_string();
+        quote! {
+            __recursa_if_explorer! {
+                static #schema: #facade::__private::ExplorerSchemaData =
+                    #facade::__private::explorer_schema(#name, None, &[]);
+
+                impl<'input> #facade::__private::ExplorerNode for #ident<'input> {
+                    fn __recursa_explorer_node(
+                        &self,
+                        cursor: #facade::__private::ViewCursor<'_>,
+                    ) -> #facade::__private::ExplorerNodeData {
+                        #facade::__private::explorer_node(
+                            &#schema,
+                            cursor.span(),
+                            Some(self.text().into()),
+                            [],
+                        )
+                    }
+                }
+            }
+        }
+    });
     quote! {
         #[doc(hidden)]
         #standard_derive
@@ -7101,6 +7209,7 @@ fn render_token(
         #arbitrary_impl
         #serialize_impl
         #deserialize_impl
+        #explorer_impl
     }
 }
 
@@ -7179,6 +7288,7 @@ fn render_node(
             .collect::<Vec<_>>()
     };
     let configured_traits = render_node_configured_traits(plan, node, node_index);
+    let explorer = render_node_explorer(plan, node, node_index);
     #[cfg(feature = "diagrams")]
     let diagram_documentation = plan.diagrams.as_ref().map(|diagrams| {
         let diagram = &diagrams.nodes[node_index];
@@ -7271,6 +7381,7 @@ fn render_node(
         #(#parse_implementations)*
 
         #configured_traits
+        #explorer
 
         #diagram_attribute
         #[allow(dead_code)]
@@ -7383,6 +7494,333 @@ fn render_node_parse_application(
             ) -> Result<Self::Output, #facade::ParseError> {
                 #facade::__private::parse(&mut input.inner)
             }
+        }
+    }
+}
+
+fn explorer_elements_for_node(node: &NodeParsePlan) -> Vec<&ElementParsePlan> {
+    match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => elements.iter().collect(),
+        NodeBodyPlan::Enum { variants, .. } => variants
+            .iter()
+            .flat_map(|variant| variant.elements.iter())
+            .collect(),
+        NodeBodyPlan::Pratt(pratt) => pratt
+            .nud
+            .iter()
+            .flat_map(|branch| branch.variant.elements.iter())
+            .chain(pratt.led.iter().flat_map(|branch| {
+                std::iter::once(&branch.lhs).chain(branch.variant.elements.iter())
+            }))
+            .collect(),
+    }
+}
+
+fn explorer_impl_generics(plan: &EmissionPlan, node: &NodeParsePlan) -> Generics {
+    let mut generics = node.generics.clone();
+    let mut terminals = BTreeSet::new();
+    for element in explorer_elements_for_node(node) {
+        let ElementParseKind::Semantic { terminal, .. } = &element.kind else {
+            continue;
+        };
+        let text = terminal.to_token_stream().to_string();
+        if terminals.insert(text) {
+            let facade = &plan.facade;
+            generics
+                .make_where_clause()
+                .predicates
+                .push(syn::parse_quote!(#terminal: #facade::__private::ExplorerNode));
+        }
+    }
+    generics
+}
+
+fn explorer_variant_pattern_and_bindings(
+    node_ident: &Ident,
+    variant: &VariantParsePlan,
+) -> (proc_macro2::TokenStream, Vec<Option<Ident>>) {
+    let mut bindings = vec![None; variant.elements.len()];
+    let semantic = variant
+        .elements
+        .iter()
+        .enumerate()
+        .filter_map(|(element_index, element)| match &element.kind {
+            ElementParseKind::Semantic { field, .. } => {
+                let binding = format_ident!("__recursa_explorer_field_{}", field.index);
+                bindings[element_index] = Some(binding.clone());
+                Some((field, binding))
+            }
+            ElementParseKind::Fixed { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let variant_ident = &variant.ident;
+    let pattern = match variant.style {
+        ResolvedFieldStyle::Named => {
+            let fields = semantic.iter().map(|(field, binding)| {
+                let ident = field.ident.as_ref().expect("named fields have identifiers");
+                quote!(#ident: #binding)
+            });
+            quote!(#node_ident::#variant_ident { #(#fields),*, .. })
+        }
+        ResolvedFieldStyle::Unnamed => {
+            let count = semantic
+                .iter()
+                .map(|(field, _)| field.index + 1)
+                .max()
+                .unwrap_or(0);
+            let mut fields = (0..count).map(|_| quote!(_)).collect::<Vec<_>>();
+            for (field, binding) in &semantic {
+                fields[field.index] = quote!(#binding);
+            }
+            quote!(#node_ident::#variant_ident(#(#fields),*))
+        }
+        ResolvedFieldStyle::Unit => quote!(#node_ident::#variant_ident),
+    };
+    (pattern, bindings)
+}
+
+fn render_node_explorer(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    node_index: usize,
+) -> proc_macro2::TokenStream {
+    let Some(explorer_plan) = &plan.explorer else {
+        return quote!();
+    };
+    let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
+    let node_ident = &node.ident;
+    let schema_definitions = render_explorer_schema(plan, node, node_index);
+    let explorer_generics = explorer_impl_generics(plan, node);
+    let (impl_generics, type_generics, where_clause) = explorer_generics.split_for_impl();
+
+    let body = match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => {
+            let schema = explorer_schema_static(node_index, None);
+            let occurrences = elements.iter().enumerate().map(|(element_index, element)| {
+                let field = match &element.kind {
+                    ElementParseKind::Fixed { .. } => None,
+                    ElementParseKind::Semantic { field, .. } => Some(field_access(
+                        quote!(&self),
+                        field.ident.as_ref(),
+                        field.index,
+                    )),
+                };
+                render_explorer_element_occurrence(
+                    plan,
+                    node_index,
+                    None,
+                    element_index,
+                    element,
+                    field,
+                )
+            });
+            quote! {
+                #facade::__private::explorer_node(
+                    &#schema,
+                    cursor.span(),
+                    None,
+                    [#(#occurrences),*],
+                )
+            }
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let arms = variants.iter().enumerate().map(|(variant_index, variant)| {
+                let (pattern, bindings) =
+                    explorer_variant_pattern_and_bindings(node_ident, variant);
+                let body = render_explorer_variant_body(
+                    plan,
+                    node_index,
+                    Some(variant_index),
+                    &variant.elements,
+                    &bindings,
+                );
+                quote!(#pattern => #body,)
+            });
+            quote!(match self { #(#arms)* })
+        }
+        NodeBodyPlan::Pratt(pratt) => {
+            let nud = pratt.nud.iter().enumerate().map(|(variant_index, branch)| {
+                let variant = &branch.variant;
+                let (pattern, bindings) =
+                    explorer_variant_pattern_and_bindings(node_ident, variant);
+                let body = render_explorer_variant_body(
+                    plan,
+                    node_index,
+                    Some(variant_index),
+                    &variant.elements,
+                    &bindings,
+                );
+                quote!(#pattern => #body,)
+            });
+            let led = pratt.led.iter().enumerate().map(|(index, branch)| {
+                let variant_index = pratt.nud.len() + index;
+                let mut variant = branch.variant.clone();
+                variant.elements.insert(0, branch.lhs.clone());
+                let (pattern, bindings) =
+                    explorer_variant_pattern_and_bindings(node_ident, &variant);
+                let body = render_explorer_variant_body(
+                    plan,
+                    node_index,
+                    Some(variant_index),
+                    &variant.elements,
+                    &bindings,
+                );
+                quote!(#pattern => #body,)
+            });
+            quote!(match self { #(#nud)* #(#led)* })
+        }
+    };
+
+    let is_root = explorer_plan
+        .roots
+        .iter()
+        .any(|root| root == &node.semantic_key);
+    let entry =
+        is_root.then(|| {
+            let root_schema = explorer_schema_static(node_index, None);
+            let parse = format_ident!("__recursa_explorer_parse_{node_index}");
+            let sample = format_ident!("__recursa_explorer_sample_{node_index}");
+            let lifetime_arguments = node
+                .generics
+                .params
+                .iter()
+                .map(|parameter| match parameter {
+                    GenericParam::Lifetime(_) => quote!('__recursa_input),
+                    GenericParam::Type(_) | GenericParam::Const(_) => {
+                        unreachable!("explorer roots are closed except for input lifetimes")
+                    }
+                })
+                .collect::<Vec<_>>();
+            let static_arguments = node
+                .generics
+                .params
+                .iter()
+                .map(|parameter| match parameter {
+                    GenericParam::Lifetime(_) => quote!('static),
+                    GenericParam::Type(_) | GenericParam::Const(_) => unreachable!(),
+                })
+                .collect::<Vec<_>>();
+            let parse_type = if lifetime_arguments.is_empty() {
+                quote!(#node_ident)
+            } else {
+                quote!(#node_ident<#(#lifetime_arguments),*>)
+            };
+            let static_type = if static_arguments.is_empty() {
+                quote!(#node_ident)
+            } else {
+                quote!(#node_ident<#(#static_arguments),*>)
+            };
+            let pretty = node
+                .configured_traits
+                .contains(&ConfiguredTraitRecipe::Pretty);
+            let pretty_parse = pretty.then(|| {
+                quote! {
+                    document.__set_pretty(#facade::Pretty::render(&parsed));
+                }
+            });
+            let arbitrary = node
+                .configured_traits
+                .contains(&ConfiguredTraitRecipe::Arbitrary);
+            let sample_function = arbitrary.then(|| {
+            let pretty_sample = pretty.then(|| quote! {
+                document.__set_pretty(#facade::Pretty::render(&parsed));
+            });
+            quote! {
+                __recursa_if_arbitrary! {
+                    fn #sample(
+                        seed: u64,
+                    ) -> Result<#facade::explorer::Document<'static>, #facade::explorer::Error> {
+                        let mut state = seed;
+                        let mut bytes = [0_u8; 512];
+                        for byte in &mut bytes {
+                            state ^= state << 13;
+                            state ^= state >> 7;
+                            state ^= state << 17;
+                            *byte = state as u8;
+                        }
+                        let mut input = #facade::__private::arbitrary::Unstructured::new(&bytes);
+                        let value = <#static_type as #facade::Arbitrary>::arbitrary(&mut input)
+                            .map_err(|error| #facade::explorer::Error::Sample {
+                                message: error.to_string().into_boxed_str(),
+                            })?;
+                        let parsed = #facade::Parsed::synthetic(value);
+                        let mut document = #facade::__private::explorer_document(&parsed, None);
+                        #pretty_sample
+                        Ok(document)
+                    }
+                }
+            }
+        });
+            let arbitrary_binding = if arbitrary {
+                quote! {
+                    let (arbitrary, sample): (
+                        bool,
+                        Option<fn(u64) -> Result<
+                            #facade::explorer::Document<'static>,
+                            #facade::explorer::Error,
+                        >>,
+                    ) = __recursa_explorer_sample!(#sample);
+                }
+            } else {
+                quote! {
+                    let (arbitrary, sample) = (false, None);
+                }
+            };
+            quote! {
+                fn #parse<'__recursa_input>(
+                    source: &'__recursa_input str,
+                ) -> Result<
+                    #facade::explorer::Document<'__recursa_input>,
+                    #facade::explorer::Error,
+                > {
+                    let lexed = #module_anchor::lex(source);
+                    let mut input = lexed.input();
+                    let parsed = <#parse_type>::parse_spanned(&mut input)?;
+                    let mut document = #facade::__private::explorer_document(
+                        &parsed,
+                        parsed.source(),
+                    );
+                    #pretty_parse
+                    Ok(document)
+                }
+
+                #sample_function
+
+                impl #impl_generics #facade::__private::ExplorerRoot
+                    for #node_ident #type_generics #where_clause
+                {
+                    fn __recursa_explorer_adapter() -> #facade::explorer::Adapter {
+                        #arbitrary_binding
+                        #facade::__private::explorer_adapter(
+                            &#root_schema,
+                            #pretty,
+                            arbitrary,
+                            #module_anchor::__recursa_explorer_lex,
+                            #parse,
+                            sample,
+                        )
+                    }
+                }
+            }
+        });
+
+    quote! {
+        __recursa_if_explorer! {
+            #schema_definitions
+
+            impl #impl_generics #facade::__private::ExplorerNode
+                for #node_ident #type_generics #where_clause
+            {
+                fn __recursa_explorer_node(
+                    &self,
+                    cursor: #facade::__private::ViewCursor<'_>,
+                ) -> #facade::__private::ExplorerNodeData {
+                    #body
+                }
+            }
+
+            #entry
         }
     }
 }
@@ -9258,6 +9696,326 @@ fn render_metadata(
             });
             quote!(#(#nud)* #(#led)*)
         }
+    }
+}
+
+fn explorer_schema_static(node_index: usize, variant: Option<usize>) -> Ident {
+    match variant {
+        Some(variant) => {
+            format_ident!("__RECURSA_EXPLORER_SCHEMA_{node_index}_{variant}")
+        }
+        None => format_ident!("__RECURSA_EXPLORER_SCHEMA_{node_index}"),
+    }
+}
+
+fn explorer_element_schema_static(
+    node_index: usize,
+    variant: Option<usize>,
+    element: usize,
+) -> Ident {
+    match variant {
+        Some(variant) => {
+            format_ident!("__RECURSA_EXPLORER_ELEMENT_SCHEMA_{node_index}_{variant}_{element}")
+        }
+        None => format_ident!("__RECURSA_EXPLORER_ELEMENT_SCHEMA_{node_index}_{element}"),
+    }
+}
+
+fn explorer_cardinality(facade: &Ident, wrappers: &[FieldWrapper]) -> proc_macro2::TokenStream {
+    if wrappers
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::ZeroOrMore))
+    {
+        quote!(#facade::explorer::Cardinality::ZeroOrMore)
+    } else if wrappers
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::OneOrMore))
+    {
+        quote!(#facade::explorer::Cardinality::OneOrMore)
+    } else if wrappers
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+    {
+        quote!(#facade::explorer::Cardinality::Optional)
+    } else {
+        quote!(#facade::explorer::Cardinality::One)
+    }
+}
+
+fn is_content_terminal(plan: &EmissionPlan, terminal: &Type) -> bool {
+    let Type::Path(path) = terminal else {
+        return false;
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return false;
+    };
+    plan.tokens.iter().any(|token| token.ident == segment.ident)
+        || plan
+            .token_bindings
+            .iter()
+            .any(|binding| binding.ident == segment.ident)
+}
+
+fn render_explorer_schema_entries(
+    plan: &EmissionPlan,
+    node_index: usize,
+    variant: Option<usize>,
+    elements: &[ElementParsePlan],
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let definitions = elements.iter().enumerate().map(|(index, element)| {
+        let schema = explorer_element_schema_static(node_index, variant, index);
+        let name = &element.metadata_name;
+        let (role, cardinality, classification) = match &element.kind {
+            ElementParseKind::Fixed { .. } => (
+                quote!(#facade::ElementRole::FixedToken),
+                quote!(#facade::explorer::Cardinality::One),
+                quote!(Some(#facade::explorer::TokenClassification::Fixed)),
+            ),
+            ElementParseKind::Semantic {
+                terminal, wrappers, ..
+            } => {
+                let classification = if is_content_terminal(plan, terminal) {
+                    quote!(Some(#facade::explorer::TokenClassification::Content))
+                } else {
+                    quote!(None)
+                };
+                (
+                    quote!(#facade::ElementRole::SemanticField),
+                    explorer_cardinality(facade, wrappers),
+                    classification,
+                )
+            }
+        };
+        quote! {
+            static #schema: #facade::__private::ExplorerElementSchemaData =
+                #facade::__private::explorer_element_schema(
+                    Some(#name),
+                    #role,
+                    #cardinality,
+                    #classification,
+                );
+        }
+    });
+    quote!(#(#definitions)*)
+}
+
+fn render_explorer_schema(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    node_index: usize,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let node_name = node.ident.unraw().to_string();
+    match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => {
+            let definitions = render_explorer_schema_entries(plan, node_index, None, elements);
+            let schema = explorer_schema_static(node_index, None);
+            let element_schemas = (0..elements.len())
+                .map(|index| explorer_element_schema_static(node_index, None, index));
+            quote! {
+                #definitions
+                static #schema: #facade::__private::ExplorerSchemaData =
+                    #facade::__private::explorer_schema(
+                        #node_name,
+                        None,
+                        &[#(#element_schemas),*],
+                    );
+            }
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let base = explorer_schema_static(node_index, None);
+            let definitions = variants.iter().enumerate().map(|(variant_index, variant)| {
+                let entries = render_explorer_schema_entries(
+                    plan,
+                    node_index,
+                    Some(variant_index),
+                    &variant.elements,
+                );
+                let schema = explorer_schema_static(node_index, Some(variant_index));
+                let variant_name = variant.ident.unraw().to_string();
+                let element_schemas = (0..variant.elements.len()).map(|element_index| {
+                    explorer_element_schema_static(node_index, Some(variant_index), element_index)
+                });
+                quote! {
+                    #entries
+                    static #schema: #facade::__private::ExplorerSchemaData =
+                        #facade::__private::explorer_schema(
+                            #node_name,
+                            Some(#variant_name),
+                            &[#(#element_schemas),*],
+                        );
+                }
+            });
+            quote! {
+                static #base: #facade::__private::ExplorerSchemaData =
+                    #facade::__private::explorer_schema(#node_name, None, &[]);
+                #(#definitions)*
+            }
+        }
+        NodeBodyPlan::Pratt(pratt) => {
+            let base = explorer_schema_static(node_index, None);
+            let variants = pratt
+                .nud
+                .iter()
+                .map(|branch| &branch.variant)
+                .chain(pratt.led.iter().map(|branch| &branch.variant))
+                .collect::<Vec<_>>();
+            let definitions = variants.iter().enumerate().map(|(variant_index, variant)| {
+                let elements = if variant_index < pratt.nud.len() {
+                    variant.elements.clone()
+                } else {
+                    let led = &pratt.led[variant_index - pratt.nud.len()];
+                    std::iter::once(led.lhs.clone())
+                        .chain(variant.elements.iter().cloned())
+                        .collect()
+                };
+                let entries = render_explorer_schema_entries(
+                    plan,
+                    node_index,
+                    Some(variant_index),
+                    &elements,
+                );
+                let schema = explorer_schema_static(node_index, Some(variant_index));
+                let variant_name = variant.ident.unraw().to_string();
+                let element_schemas = (0..elements.len()).map(|element_index| {
+                    explorer_element_schema_static(node_index, Some(variant_index), element_index)
+                });
+                quote! {
+                    #entries
+                    static #schema: #facade::__private::ExplorerSchemaData =
+                        #facade::__private::explorer_schema(
+                            #node_name,
+                            Some(#variant_name),
+                            &[#(#element_schemas),*],
+                        );
+                }
+            });
+            quote! {
+                static #base: #facade::__private::ExplorerSchemaData =
+                    #facade::__private::explorer_schema(#node_name, None, &[]);
+                #(#definitions)*
+            }
+        }
+    }
+}
+
+fn render_explorer_element_occurrence(
+    plan: &EmissionPlan,
+    node_index: usize,
+    variant: Option<usize>,
+    element_index: usize,
+    element: &ElementParsePlan,
+    field_value: Option<proc_macro2::TokenStream>,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let schema = explorer_element_schema_static(node_index, variant, element_index);
+    let cursor = quote!(cursor.child(#element_index));
+    match &element.kind {
+        ElementParseKind::Fixed { spelling, .. } => quote! {
+            #facade::__private::explorer_element(
+                &#schema,
+                #cursor,
+                Some(Box::<str>::from(#spelling)),
+                [],
+            )
+        },
+        ElementParseKind::Semantic { wrappers, .. } => {
+            let field_value = field_value.expect("semantic explorer elements have field values");
+            if let Some(repeat_index) = wrappers.iter().position(|wrapper| {
+                matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)
+            }) {
+                let outer = &wrappers[..repeat_index];
+                let inner = &wrappers[repeat_index + 1..];
+                let collection = if outer
+                    .iter()
+                    .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+                {
+                    let optional = render_optional_view_reference(field_value, outer, true);
+                    quote!((#optional).into_iter().flat_map(|values| values.iter()))
+                } else {
+                    let collection = render_terminal_reference(field_value, outer, true);
+                    quote!((#collection).iter())
+                };
+                let item = render_terminal_reference(quote!(value), inner, true);
+                quote! {
+                    #facade::__private::explorer_element(
+                        &#schema,
+                        #cursor,
+                        None,
+                        #collection.enumerate().map(|(index, value)| {
+                            #facade::__private::ExplorerNode::__recursa_explorer_node(
+                                #item,
+                                #cursor.child(index),
+                            )
+                        }),
+                    )
+                }
+            } else if wrappers
+                .iter()
+                .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+            {
+                let optional = render_optional_view_reference(field_value, wrappers, true);
+                quote! {
+                    #facade::__private::explorer_element(
+                        &#schema,
+                        #cursor,
+                        None,
+                        (#optional).into_iter().map(|value| {
+                            #facade::__private::ExplorerNode::__recursa_explorer_node(
+                                value,
+                                #cursor.child(0),
+                            )
+                        }),
+                    )
+                }
+            } else {
+                let value = render_terminal_reference(field_value, wrappers, true);
+                quote! {
+                    #facade::__private::explorer_element(
+                        &#schema,
+                        #cursor,
+                        None,
+                        [#facade::__private::ExplorerNode::__recursa_explorer_node(
+                            #value,
+                            #cursor.child(0),
+                        )],
+                    )
+                }
+            }
+        }
+    }
+}
+
+fn render_explorer_variant_body(
+    plan: &EmissionPlan,
+    node_index: usize,
+    variant_index: Option<usize>,
+    elements: &[ElementParsePlan],
+    bindings: &[Option<Ident>],
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let schema = explorer_schema_static(node_index, variant_index);
+    let occurrences = elements.iter().enumerate().map(|(element_index, element)| {
+        let field = bindings[element_index]
+            .as_ref()
+            .map(|binding| quote!(#binding));
+        render_explorer_element_occurrence(
+            plan,
+            node_index,
+            variant_index,
+            element_index,
+            element,
+            field,
+        )
+    });
+    quote! {
+        #facade::__private::explorer_node(
+            &#schema,
+            cursor.span(),
+            None,
+            [#(#occurrences),*],
+        )
     }
 }
 
@@ -11656,12 +12414,11 @@ struct B;
         }
 
         let (package, mut explorer) = joined_pratt_fixture();
-        explorer.explorer = Some(ExtensionEmissionPlan {
-            artifacts: vec![ExtensionArtifactPlan {
-                logical_name: "grammar-index".to_owned(),
-                content: "corrupt explorer plan".to_owned(),
-            }],
-        });
+        explorer
+            .explorer
+            .get_or_insert_with(|| ExplorerPlan { roots: Vec::new() })
+            .roots
+            .push("corrupt explorer plan".to_owned());
         assert_plan_family_is_unselectable(package.path(), &explorer, "explorer");
     }
 

@@ -82,29 +82,173 @@ fn extra_facade_capabilities_are_harmless() {
 }
 
 #[test]
-fn unrequested_diagram_and_explorer_capabilities_are_rejected_exactly_once() {
-    for feature in ["diagrams", "explorer"] {
-        let package = scaffold_fixture();
-        let manifest = package.path().join("Cargo.toml");
-        let source = fs::read_to_string(&manifest).expect("read fixture manifest");
-        fs::write(
-            &manifest,
-            source.replace(
-                "features = [\"arbitrary\", \"serde\"]",
-                &format!("features = [\"arbitrary\", \"serde\", \"{feature}\"]"),
-            ),
-        )
-        .expect("enable an unrequested facade capability");
+fn unrequested_diagram_capability_is_rejected_exactly_once() {
+    let package = scaffold_fixture();
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read fixture manifest");
+    fs::write(
+        &manifest,
+        source.replace(
+            "features = [\"arbitrary\", \"serde\"]",
+            "features = [\"arbitrary\", \"serde\", \"diagrams\"]",
+        ),
+    )
+    .expect("enable an unrequested facade capability");
 
-        let output = run_fixture_unlocked(&package);
-        assert!(!output.status.success(), "unrequested {feature} must fail");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(
-            stderr.matches("error: error[RCA9005]").count(),
-            1,
-            "feature={feature}\nstderr:\n{stderr}"
-        );
-    }
+    let output = run_fixture_unlocked(&package);
+    assert!(!output.status.success(), "unrequested diagrams must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.matches("error: error[RCA9005]").count(),
+        1,
+        "{stderr}"
+    );
+}
+
+#[test]
+fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples() {
+    let package = scaffold_fixture();
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read fixture manifest");
+    fs::write(
+        &manifest,
+        source.replace(
+            "features = [\"arbitrary\", \"serde\"]",
+            "features = [\"arbitrary\", \"serde\", \"explorer\"]",
+        ),
+    )
+    .expect("enable explorer facade payload");
+    let main = package.path().join("src/main.rs");
+    let source = fs::read_to_string(&main).expect("read downstream consumer");
+    let assertions = r#"
+    let adapter = recursa::explorer::adapter::<grammar::Record<'static>>();
+    assert_eq!(adapter.schema().name(), "Record");
+    assert!(adapter.capabilities().pretty());
+    assert!(adapter.capabilities().arbitrary());
+
+    let lexical = adapter.lex("ReCoRd:alpha 42");
+    assert_eq!(lexical.tokens().len(), 4);
+    assert_eq!(lexical.errors().len(), 0);
+    let first = lexical.tokens().next().unwrap();
+    assert_eq!(first.text(), "ReCoRd");
+    assert_eq!(first.class(), recursa::explorer::LexicalClass::Fixed);
+
+    let document = adapter.parse("ReCoRd:alpha 42").expect("explorer parse");
+    assert_eq!(document.provenance(), recursa::explorer::Provenance::Parsed);
+    assert_eq!(document.pretty().unwrap(), "ReCoRd : alpha 42");
+    let root = document.root();
+    assert_eq!(root.schema().name(), "Record");
+    assert_eq!(root.span(), Some(recursa::Span::new(0, 15).unwrap()));
+    let mut elements = root.elements();
+    assert_eq!(elements.len(), 4);
+    assert_eq!(elements.next().unwrap().display(), Some("ReCoRd"));
+    assert_eq!(elements.next().unwrap().display(), Some(":"));
+    let label = elements.next().unwrap();
+    assert_eq!(label.schema().name(), Some("label"));
+    assert_eq!(label.children().len(), 1);
+    let label_node = label.children().next().unwrap();
+    assert_eq!(label_node.schema().name(), "Label");
+    let token = label_node.elements().next().unwrap().children().next().unwrap();
+    assert_eq!(token.display(), Some("alpha"));
+    let count = elements.next().unwrap();
+    assert_eq!(count.schema().cardinality(), recursa::explorer::Cardinality::Optional);
+    assert_eq!(count.children().len(), 1);
+
+    let absent = adapter.parse("record:beta").expect("optional absent parse");
+    let absent_count = absent.root().elements().nth(3).unwrap();
+    assert_eq!(absent_count.schema().name(), Some("count"));
+    assert_eq!(absent_count.children().len(), 0);
+
+    let sample = adapter.sample(7).expect("deterministic synthetic sample");
+    assert_eq!(sample.provenance(), recursa::explorer::Provenance::Synthetic);
+    assert!(sample.source().is_none());
+    assert!(sample.pretty().is_ok());
+"#;
+    fs::write(
+        main,
+        source.replace(
+            "    grammar::assert_private_sibling_spans();",
+            &format!("{assertions}\n    grammar::assert_private_sibling_spans();"),
+        ),
+    )
+    .expect("add explorer assertions");
+
+    let output = run_fixture_unlocked(&package);
+    assert!(
+        output.status.success(),
+        "explorer fixture failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn explorer_capability_requires_a_source_visible_visit_root() {
+    let package = scaffold_fixture();
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read fixture manifest");
+    fs::write(
+        &manifest,
+        source.replace(
+            "features = [\"arbitrary\", \"serde\"]",
+            "features = [\"arbitrary\", \"serde\", \"explorer\"]",
+        ),
+    )
+    .expect("enable explorer facade feature");
+    let grammar = package.path().join("src/grammar.rs");
+    fs::write(
+        &grammar,
+        r#"recursa::grammar! {
+    module = crate::grammar,
+    derives(Debug),
+}
+
+recursa::tokens! { keywords { ONLY => "only" } }
+
+#[derive(recursa::Node)]
+#[tok(ONLY)]
+pub struct Only;
+"#,
+    )
+    .expect("create a grammar without Visit");
+    fs::write(package.path().join("src/main.rs"), "fn main() {}\n").expect("replace consumer");
+
+    let output = run_fixture_unlocked(&package);
+    assert!(!output.status.success(), "explorer without Visit must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.matches("error: error[RCA9005]").count(),
+        1,
+        "{stderr}"
+    );
+}
+
+#[test]
+fn explorer_public_api_and_generated_payload_are_absent_when_the_feature_is_off() {
+    let package = scaffold_fixture();
+    let main = package.path().join("src/main.rs");
+    fs::write(
+        &main,
+        r#"use recursa_generated_compound_nodes::grammar;
+
+fn main() {
+    let _ = recursa::explorer::adapter::<grammar::Record<'static>>();
+}
+"#,
+    )
+    .expect("attempt to use the disabled explorer API");
+
+    let output = run_fixture_unlocked(&package);
+    assert!(
+        !output.status.success(),
+        "disabled explorer must expose no API"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("could not find `explorer` in `recursa`")
+            || stderr.contains("could not find `explorer`"),
+        "stderr:\n{stderr}"
+    );
 }
 
 #[test]
