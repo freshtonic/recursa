@@ -2736,6 +2736,44 @@ struct Attached<T> {
             diagnostic.kind == MaterializationDiagnosticKind::InapplicablePrettyHint
                 && diagnostic.message.contains("closed Pretty boundary")
         }));
+
+        let trivia_report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+#[derive(recursa::Node)]
+struct Number<'input> { #[lex(pattern = r"[0-9]+")] text: NumberText<'input> }
+#[derive(recursa::Node)]
+struct Name<'input> { #[lex(pattern = r"[A-Za-z]+")] text: NameText<'input> }
+#[derive(recursa::Node)] struct Pair<A, B> { left: A, right: B }
+#[derive(recursa::Node)]
+struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
+"#,
+        ));
+        assert!(trivia_report.lowered.is_none());
+        assert!(trivia_report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == MaterializationDiagnosticKind::InapplicablePrettyHint
+                && diagnostic.message.contains("closed Pretty boundary")
+        }));
+
+        let trivia_safe_report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { ignore = r"[ ]+" }
+#[derive(recursa::Node)]
+struct Number<'input> { #[lex(pattern = r"[0-9]+")] text: NumberText<'input> }
+#[derive(recursa::Node)]
+struct Name<'input> { #[lex(pattern = r"[A-Za-z]+")] text: NameText<'input> }
+#[derive(recursa::Node)] struct Pair<A, B> { left: A, right: B }
+#[derive(recursa::Node)]
+struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
+"#,
+        ));
+        assert!(
+            trivia_safe_report.diagnostics.is_empty(),
+            "{:?}",
+            trivia_safe_report.diagnostics
+        );
+        assert!(trivia_safe_report.lowered.is_some());
     }
 
     fn assert_code(
