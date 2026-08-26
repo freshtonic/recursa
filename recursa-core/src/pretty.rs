@@ -150,6 +150,7 @@ pub struct PrettyContext {
     sink: PrettySink,
     needs_separator: bool,
     separator_supplied: bool,
+    previous_auto_punctuation: bool,
     provenance: Option<PrettyProvenance>,
     caller_configured: bool,
     repetition: Option<RepetitionLayout>,
@@ -167,6 +168,7 @@ impl Default for PrettyContext {
             sink: PrettySink::new(PrettyConfig::default()),
             needs_separator: false,
             separator_supplied: false,
+            previous_auto_punctuation: false,
             provenance: None,
             caller_configured: false,
             repetition: None,
@@ -184,6 +186,7 @@ impl PrettyContext {
             sink: PrettySink::new(config),
             needs_separator: false,
             separator_supplied: false,
+            previous_auto_punctuation: false,
             provenance: None,
             caller_configured: true,
             repetition: None,
@@ -213,6 +216,23 @@ impl PrettyContext {
         self.sink.events.push(PrettyEvent::Text(text.to_owned()));
         self.needs_separator = !text.is_empty();
         self.separator_supplied = false;
+        self.previous_auto_punctuation = false;
+        Ok(())
+    }
+
+    /// Emits punctuation tightly unless adjacent automatic punctuation needs
+    /// a conservative lexer boundary.
+    #[doc(hidden)]
+    pub fn punctuation_token(&mut self, text: &str) -> fmt::Result {
+        if self.previous_auto_punctuation && !text.is_empty() {
+            self.sink
+                .events
+                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+        }
+        self.sink.events.push(PrettyEvent::Text(text.to_owned()));
+        self.needs_separator = !text.is_empty();
+        self.separator_supplied = false;
+        self.previous_auto_punctuation = !text.is_empty();
         Ok(())
     }
 
@@ -257,6 +277,7 @@ impl PrettyContext {
             .events
             .push(PrettyEvent::SoftBreak(flat.to_owned()));
         self.separator_supplied = true;
+        self.previous_auto_punctuation = false;
         Ok(())
     }
 
@@ -264,6 +285,7 @@ impl PrettyContext {
     pub fn hard_break(&mut self) -> fmt::Result {
         self.sink.events.push(PrettyEvent::HardBreak);
         self.separator_supplied = true;
+        self.previous_auto_punctuation = false;
         Ok(())
     }
 
@@ -463,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn indivisible_lexemes_are_the_only_default_width_exception() {
+    fn indivisible_lexemes_and_mandatory_tight_sequences_may_exceed_width() {
         struct LongLexeme;
         impl Pretty for LongLexeme {
             fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
@@ -474,6 +496,18 @@ mod tests {
             LongLexeme.render_with(PrettyConfig::new(3, 2)),
             "indivisible"
         );
+
+        struct TightSequence;
+        impl Pretty for TightSequence {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.group(|context| {
+                    context.tight_sequence_token("a")?;
+                    context.tight_sequence_token("::")?;
+                    context.tight_sequence_token("b")
+                })
+            }
+        }
+        assert_eq!(TightSequence.render_with(PrettyConfig::new(1, 2)), "a::b");
     }
 
     #[test]
@@ -499,5 +533,17 @@ mod tests {
             words.render_with(PrettyConfig::new(12, 2)),
             "alpha,\nbeta,\ngamma"
         );
+    }
+
+    #[test]
+    fn automatic_punctuation_preserves_a_conservative_lexer_boundary() {
+        struct AdjacentPunctuation;
+        impl Pretty for AdjacentPunctuation {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.punctuation_token(":")?;
+                context.punctuation_token(":")
+            }
+        }
+        assert_eq!(AdjacentPunctuation.render(), ": :");
     }
 }

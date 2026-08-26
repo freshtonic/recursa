@@ -7576,7 +7576,7 @@ fn render_pretty_fixed(
             format_ident!("opening_token")
         }
         PrettySpacing::Auto if is_word_shaped(spelling) => format_ident!("token"),
-        PrettySpacing::Auto => format_ident!("tight_token"),
+        PrettySpacing::Auto => format_ident!("punctuation_token"),
     };
     let fallback =
         if plan.text_equivalence == TextEquivalence::AsciiInsensitive && is_word_shaped(spelling) {
