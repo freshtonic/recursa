@@ -7,10 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use proc_macro2::Span;
+use syn::ext::IdentExt as _;
 use syn::parse::{Parse, ParseStream, Parser as _};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned as _;
-use syn::{Attribute, Expr, Lit, LitInt, Meta, Path, Token};
+use syn::{Attribute, Expr, Item, Lit, LitInt, Meta, Path, Token};
 
 use crate::TextEquivalence;
 
@@ -135,13 +136,14 @@ fn compiler_owned_cfg(name: &str) -> bool {
     )
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GrammarConfigSyntax {
     pub(crate) module: Path,
     pub(crate) facade: syn::Ident,
     pub(crate) facade_explicit: bool,
     pub(crate) text_equivalence: TextEquivalence,
     pub(crate) max_lookahead: usize,
+    pub(crate) derives: Vec<Path>,
 }
 
 impl Parse for GrammarConfigSyntax {
@@ -150,37 +152,49 @@ impl Parse for GrammarConfigSyntax {
         let mut facade = None;
         let mut text_equivalence = None;
         let mut max_lookahead = None;
+        let mut derives = None;
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
-            input.parse::<Token![=]>()?;
-            if key == "module" {
-                reject_duplicate(&module, key.span(), "module")?;
-                module = Some(Path::parse_mod_style(input)?);
-            } else if key == "facade" {
-                reject_duplicate(&facade, key.span(), "facade")?;
-                facade = Some(input.parse()?);
-            } else if key == "keyword_matching" {
-                reject_duplicate(&text_equivalence, key.span(), "keyword_matching")?;
-                let value: syn::Ident = input.parse()?;
-                text_equivalence = Some(if value == "sensitive" {
-                    TextEquivalence::Sensitive
-                } else if value == "ascii_insensitive" {
-                    TextEquivalence::AsciiInsensitive
+            if key == "derives" {
+                reject_duplicate(&derives, key.span(), "derives")?;
+                let content;
+                syn::parenthesized!(content in input);
+                derives = Some(
+                    syn::punctuated::Punctuated::<Path, Token![,]>::parse_terminated(&content)?
+                        .into_iter()
+                        .collect(),
+                );
+            } else {
+                input.parse::<Token![=]>()?;
+                if key == "module" {
+                    reject_duplicate(&module, key.span(), "module")?;
+                    module = Some(Path::parse_mod_style(input)?);
+                } else if key == "facade" {
+                    reject_duplicate(&facade, key.span(), "facade")?;
+                    facade = Some(input.parse()?);
+                } else if key == "keyword_matching" {
+                    reject_duplicate(&text_equivalence, key.span(), "keyword_matching")?;
+                    let value: syn::Ident = input.parse()?;
+                    text_equivalence = Some(if value == "sensitive" {
+                        TextEquivalence::Sensitive
+                    } else if value == "ascii_insensitive" {
+                        TextEquivalence::AsciiInsensitive
+                    } else {
+                        return Err(syn::Error::new(
+                            value.span(),
+                            "keyword_matching must be sensitive or ascii_insensitive",
+                        ));
+                    });
+                } else if key == "max_lookahead" {
+                    reject_duplicate(&max_lookahead, key.span(), "max_lookahead")?;
+                    let value: LitInt = input.parse()?;
+                    max_lookahead = Some(value.base10_parse()?);
                 } else {
                     return Err(syn::Error::new(
-                        value.span(),
-                        "keyword_matching must be sensitive or ascii_insensitive",
+                        key.span(),
+                        format!("unsupported grammar setting `{key}`"),
                     ));
-                });
-            } else if key == "max_lookahead" {
-                reject_duplicate(&max_lookahead, key.span(), "max_lookahead")?;
-                let value: LitInt = input.parse()?;
-                max_lookahead = Some(value.base10_parse()?);
-            } else {
-                return Err(syn::Error::new(
-                    key.span(),
-                    format!("unsupported grammar setting `{key}`"),
-                ));
+                }
             }
             if !input.is_empty() {
                 input.parse::<Token![,]>()?;
@@ -193,6 +207,7 @@ impl Parse for GrammarConfigSyntax {
             facade_explicit,
             text_equivalence: text_equivalence.unwrap_or(TextEquivalence::Sensitive),
             max_lookahead: max_lookahead.unwrap_or(1),
+            derives: derives.unwrap_or_default(),
         })
     }
 }
@@ -237,6 +252,44 @@ pub(crate) fn configure_attributes(
         }
     }
     Ok(Some(ConfiguredAttributes { metas }))
+}
+
+pub(crate) fn configured_attribute_metas(
+    attributes: &[Attribute],
+    cfg: &CargoCfgSnapshot,
+) -> Result<Option<Vec<Meta>>, ConfigurationError> {
+    configure_attributes(attributes, cfg)
+        .map(|configured| configured.map(|configured| configured.metas))
+}
+
+pub(crate) fn item_attributes(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Const(item) => &item.attrs,
+        Item::Enum(item) => &item.attrs,
+        Item::ExternCrate(item) => &item.attrs,
+        Item::Fn(item) => &item.attrs,
+        Item::ForeignMod(item) => &item.attrs,
+        Item::Impl(item) => &item.attrs,
+        Item::Macro(item) => &item.attrs,
+        Item::Mod(item) => &item.attrs,
+        Item::Static(item) => &item.attrs,
+        Item::Struct(item) => &item.attrs,
+        Item::Trait(item) => &item.attrs,
+        Item::TraitAlias(item) => &item.attrs,
+        Item::Type(item) => &item.attrs,
+        Item::Union(item) => &item.attrs,
+        Item::Use(item) => &item.attrs,
+        Item::Verbatim(_) => &[],
+        _ => &[],
+    }
+}
+
+pub(crate) fn path_text(path: &Path) -> String {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.unraw().to_string())
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 fn apply_meta(
@@ -363,7 +416,7 @@ fn cfg_lookup_error(failure: CfgLookupFailure, span: Span, name: &str) -> Config
     }
 }
 
-fn span_range(span: Span) -> Range<u32> {
+pub(crate) fn span_range(span: Span) -> Range<u32> {
     let range = span.byte_range();
     range.start.try_into().unwrap_or(u32::MAX)..range.end.try_into().unwrap_or(u32::MAX)
 }
