@@ -89,13 +89,13 @@ fn assert_pretty_pratt_parentheses() {
         Box::new(grammar::Expr::Add(Box::new(name("a")), Box::new(name("b")))),
         Box::new(name("c")),
     );
-    assert_eq!(multiply_after_add.render(), "(a + b) * c");
+    assert_eq!(multiply_after_add.render(), "[a + b] * c");
 
     let left_nested_power = grammar::Expr::Power(
         Box::new(grammar::Expr::Power(Box::new(name("a")), Box::new(name("b")))),
         Box::new(name("c")),
     );
-    assert_eq!(left_nested_power.render(), "(a ^ b) ^ c");
+    assert_eq!(left_nested_power.render(), "[a ^ b] ^ c");
 
     let right_nested_power = grammar::Expr::Power(
         Box::new(name("a")),
@@ -108,6 +108,22 @@ fn assert_pretty_pratt_parentheses() {
         let reparsed = parse(&formatted);
         assert_eq!(reparsed.render(), formatted, "pretty output is idempotent");
     }
+}
+
+fn assert_pretty_multi_token_operators() {
+    let infix = grammar::Expr::IsNot(Box::new(name("a")), Box::new(name("b")));
+    assert_eq!(infix.render(), "a IS NOT b");
+
+    let prefix = grammar::Expr::NotExists(Box::new(name("a")));
+    assert_eq!(prefix.render(), "NOT EXISTS a");
+
+    let formatted = parse("a IS NOT b").render();
+    assert_eq!(formatted, "a IS NOT b");
+    assert_eq!(parse(&formatted).render(), formatted);
+
+    let formatted = parse("NOT EXISTS a").render();
+    assert_eq!(formatted, "NOT EXISTS a");
+    assert_eq!(parse(&formatted).render(), formatted);
 }
 
 fn main() {
@@ -129,6 +145,7 @@ fn main() {
     assert_traits::<grammar::Expr<'static>>();
     assert_arbitrary::<grammar::Expr<'static>>();
     assert_pretty_pratt_parentheses();
+    assert_pretty_multi_token_operators();
 
     let lexed = grammar::lex("alpha + 12");
     assert_eq!(

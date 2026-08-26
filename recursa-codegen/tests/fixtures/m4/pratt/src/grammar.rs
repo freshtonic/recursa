@@ -8,14 +8,19 @@ recursa::grammar! {
 
 recursa::tokens! {
     ignore = r"[ \t\n\r]+",
+    keywords {
+        IS => "IS",
+        NOT => "NOT",
+        EXISTS => "EXISTS",
+    }
     punctuation {
         PLUS => "+",
         MINUS => "-",
         STAR => "*",
         CARET => "^",
         BANG => "!",
-        LPAREN => "(",
-        RPAREN => ")",
+        GROUP_OPEN => "[",
+        GROUP_CLOSE => "]",
     }
 }
 
@@ -36,7 +41,7 @@ pub struct Name<'input> {
 pub enum Expr<'input> {
     Integer(Integer<'input>),
     Name(Name<'input>),
-    Paren(#[tok(LPAREN, this, RPAREN)] Box<Self>),
+    Paren(#[tok(GROUP_OPEN, this, GROUP_CLOSE)] Box<Self>),
 
     #[parse(prefix, bp = 35)]
     #[tok(MINUS)]
@@ -57,6 +62,14 @@ pub enum Expr<'input> {
     #[parse(infix, lbp = 10, rbp = 11)]
     #[tok(PLUS)]
     Add(Box<Self>, Box<Self>),
+
+    #[parse(prefix, bp = 35)]
+    #[tok(NOT, EXISTS)]
+    NotExists(Box<Self>),
+
+    #[parse(infix, lbp = 5, rbp = 6)]
+    #[tok(IS, NOT)]
+    IsNot(Box<Self>, Box<Self>),
 }
 
 #[derive(recursa::Node)]

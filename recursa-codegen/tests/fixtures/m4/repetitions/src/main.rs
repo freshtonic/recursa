@@ -193,6 +193,7 @@ fn assert_capture_configuration(mode: CaptureMode) {
     );
 
     let mixed = parse_spanned!(grammar::MixedMany, "mixed off,on,off,on");
+    assert_eq!(mixed.render(), "mixed off,\non,\noff,\non");
     let values = mixed.root().values();
     assert_eq!(values.len(), 4);
     assert_eq!(values.get(0).unwrap().span(), None);
