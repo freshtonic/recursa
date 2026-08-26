@@ -17,6 +17,7 @@ fn a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade() {
     let initial = run_fixture(&package);
 
     assert_success(&initial);
+    let selected = find_selected_generation(&target_dir(&package));
     assert_eq!(
         String::from_utf8(initial.stdout).unwrap().trim(),
         "one-node-ok"
@@ -39,6 +40,10 @@ fn a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade() {
     assert!(
         !String::from_utf8_lossy(&failed.stdout).contains("one-node-ok"),
         "Cargo must not run the stale previously built binary after generation fails"
+    );
+    assert!(
+        !selected.exists(),
+        "a failed generation must invalidate the previous selector"
     );
 
     let revised_source = valid_source
@@ -87,6 +92,97 @@ fn a_node_body_rejects_the_same_semantic_key_from_a_different_physical_declarati
         "the declaration-local anchor mismatch must fail at the Node loader\nstderr:\n{}",
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+#[test]
+fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
+    let package = scaffold_fixture();
+    assert_success(&run_fixture(&package));
+
+    let selected = find_selected_generation(&target_dir(&package));
+    let selector = fs::read_to_string(&selected).expect("read selected Generation");
+    let identity = selector
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("// recursa-generation:"))
+        .expect("selector carries its private Generation identity");
+    let generation = selected
+        .parent()
+        .unwrap()
+        .join("recursa-generations")
+        .join(identity);
+    let root = generation.join("root.rs");
+    let node = generation.join("node-0.rs");
+    let root_rust = fs::read(&root).expect("read generated root");
+    let node_rust = fs::read(&node).expect("read generated Node body");
+
+    fs::remove_file(&root).expect("remove generated root");
+    force_consumer_recompile(&package, "root-absence");
+    let missing_root = run_fixture(&package);
+    let stderr = String::from_utf8_lossy(&missing_root.stderr);
+    assert!(!missing_root.status.success(), "missing root must fail");
+    assert!(stderr.contains("RCA9001"), "stderr:\n{stderr}");
+    assert!(!stderr.contains("RCA9002"), "stderr:\n{stderr}");
+
+    fs::write(&root, &root_rust).expect("restore generated root");
+    fs::remove_file(&node).expect("remove generated Node body");
+    force_consumer_recompile(&package, "node-absence");
+    let missing_node = run_fixture(&package);
+    let stderr = String::from_utf8_lossy(&missing_node.stderr);
+    assert!(
+        !missing_node.status.success(),
+        "missing Node body must fail"
+    );
+    assert!(stderr.contains("RCA9002"), "stderr:\n{stderr}");
+    assert!(!stderr.contains("RCA9001"), "stderr:\n{stderr}");
+
+    fs::write(&node, &node_rust).expect("restore generated Node body");
+    let incompatible_root = String::from_utf8(root_rust.clone())
+        .unwrap()
+        .replace("protocol_1", "protocol_999");
+    assert_ne!(incompatible_root.as_bytes(), root_rust);
+    fs::write(&root, incompatible_root).unwrap();
+    force_consumer_recompile(&package, "protocol-mismatch");
+    let mismatch = run_fixture(&package);
+    let stderr = String::from_utf8_lossy(&mismatch.stderr);
+    assert!(!mismatch.status.success(), "protocol mismatch must fail");
+    assert_eq!(
+        stderr.matches("error: error[RCA9003]").count(),
+        1,
+        "stderr:\n{stderr}"
+    );
+    assert!(!stderr.contains("RCA9002"), "stderr:\n{stderr}");
+
+    fs::write(&root, &root_rust).expect("restore protocol-compatible root");
+    let conflicting_node = String::from_utf8(node_rust.clone())
+        .unwrap()
+        .replace(identity, "g_0000000000000000");
+    assert_ne!(conflicting_node.as_bytes(), node_rust);
+    fs::write(&node, conflicting_node).unwrap();
+    force_consumer_recompile(&package, "generation-conflict");
+    let conflict = run_fixture(&package);
+    let stderr = String::from_utf8_lossy(&conflict.stderr);
+    assert!(!conflict.status.success(), "Generation conflict must fail");
+    assert!(stderr.contains("RCA9004"), "stderr:\n{stderr}");
+
+    fs::write(&node, &node_rust).expect("restore matching Node body");
+    fs::write(&root, "this is externally malformed generated Rust").unwrap();
+    force_consumer_recompile(&package, "malformed-root");
+    let malformed = run_fixture(&package);
+    let stderr = String::from_utf8_lossy(&malformed.stderr);
+    assert!(
+        !malformed.status.success(),
+        "malformed generated Rust must fail"
+    );
+    assert!(
+        stderr.contains("expected one of") || stderr.contains("expected `!`"),
+        "native Rust syntax diagnostics must remain authoritative\nstderr:\n{stderr}"
+    );
+    assert!(!stderr.contains("runtime fallback"), "stderr:\n{stderr}");
+
+    fs::write(&root, root_rust).expect("restore generated root after corruption");
+    force_consumer_recompile(&package, "clean-recovery");
+    assert_success(&run_fixture(&package));
 }
 
 fn scaffold_fixture() -> TempDir {
@@ -141,6 +237,34 @@ fn run_fixture(package: &TempDir) -> Output {
 
 fn target_dir(package: &TempDir) -> PathBuf {
     package.path().join("target")
+}
+
+fn find_selected_generation(directory: &Path) -> PathBuf {
+    let mut found = Vec::new();
+    find_named(directory, "recursa-selected.rs", &mut found);
+    assert_eq!(found.len(), 1, "one selected Generation: {found:?}");
+    found.pop().unwrap()
+}
+
+fn find_named(directory: &Path, name: &str, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            find_named(&path, name, found);
+        } else if path.file_name().is_some_and(|file| file == name) {
+            found.push(path);
+        }
+    }
+}
+
+fn force_consumer_recompile(package: &TempDir, marker: &str) {
+    let main = package.path().join("src/main.rs");
+    let mut source = fs::read_to_string(&main).expect("read downstream consumer");
+    source.push_str(&format!("\n// {marker}\n"));
+    fs::write(main, source).expect("touch downstream consumer");
 }
 
 fn assert_success(output: &Output) {

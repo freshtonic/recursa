@@ -56,12 +56,13 @@ impl CargoOutput for StdoutCargo {
 
 /// Analyzes, renders, stages, and atomically selects one complete Generation.
 pub fn generate(root: impl AsRef<Path>) -> Result<Generation, GenerateError> {
-    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .ok_or_else(|| failure(root.as_ref(), "CARGO_MANIFEST_DIR is unavailable"))?;
     let out_dir = env::var_os("OUT_DIR")
         .map(PathBuf::from)
         .ok_or_else(|| failure(root.as_ref(), "OUT_DIR is unavailable"))?;
+    invalidate_selection(&out_dir).map_err(|detail| failure(root.as_ref(), &detail))?;
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| failure(root.as_ref(), "CARGO_MANIFEST_DIR is unavailable"))?;
     let cfg = CargoCfgSnapshot::from_cargo_environment(env::vars_os());
     let mut cargo = StdoutCargo;
     let success = analyze_source_tree(
@@ -3046,6 +3047,7 @@ fn validate_accessor_names(node: &ResolvedNode, body: &NodeBodyPlan) -> Result<(
 struct RenderedGeneration {
     root: String,
     nodes: Vec<(String, String)>,
+    node_anchors: Vec<String>,
     selector: String,
 }
 
@@ -3067,16 +3069,22 @@ fn render(plan: &EmissionPlan) -> Result<RenderedGeneration, String> {
         return Err("the renderer did not consume exactly the frozen dispatch trie".to_owned());
     }
     let selected_root = format!("/recursa-generations/{}/root.rs", plan.identity);
-    let selector = quote! {
+    let selector_body = quote! {
         include!(concat!(env!("OUT_DIR"), #selected_root));
     }
     .to_string();
+    let selector = format!("// recursa-generation:{}\n{selector_body}", plan.identity);
     syn::parse_file(&root).map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
     syn::parse_file(&selector)
         .map_err(|error| format!("Generation selector rendering is invalid Rust: {error}"))?;
     Ok(RenderedGeneration {
         root,
         nodes,
+        node_anchors: plan
+            .nodes
+            .iter()
+            .map(|node| node.loader_anchor.clone())
+            .collect(),
         selector,
     })
 }
@@ -7294,12 +7302,30 @@ fn generic_arguments(generics: &Generics) -> Vec<proc_macro2::TokenStream> {
 }
 
 fn publish(out_dir: &Path, identity: &str, rendered: &RenderedGeneration) -> Result<(), String> {
+    publish_with_checkpoint(out_dir, identity, rendered, |_| Ok(()))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationCheckpoint {
+    BeforeStaging,
+    DuringStaging,
+    BeforeSelection,
+    DuringSelection,
+}
+
+fn publish_with_checkpoint(
+    out_dir: &Path,
+    identity: &str,
+    rendered: &RenderedGeneration,
+    mut checkpoint: impl FnMut(PublicationCheckpoint) -> Result<(), String>,
+) -> Result<(), String> {
     let generations = out_dir.join("recursa-generations");
     fs::create_dir_all(&generations)
         .map_err(|error| format!("cannot create Generation directory: {error}"))?;
     let published = generations.join(identity);
     if published.exists() {
         if !published.join("root.rs").is_file()
+            || !published.join("loader-map").is_file()
             || rendered
                 .nodes
                 .iter()
@@ -7308,6 +7334,7 @@ fn publish(out_dir: &Path, identity: &str, rendered: &RenderedGeneration) -> Res
             return Err("an existing published Generation is incomplete".to_owned());
         }
     } else {
+        checkpoint(PublicationCheckpoint::BeforeStaging)?;
         let nonce = staging_nonce()?;
         let staging = generations.join(format!(
             ".staging-{}-{nonce}-{identity}",
@@ -7315,9 +7342,18 @@ fn publish(out_dir: &Path, identity: &str, rendered: &RenderedGeneration) -> Res
         ));
         fs::create_dir(&staging)
             .map_err(|error| format!("cannot create Generation staging directory: {error}"))?;
-        stage_and_publish(&staging, &published, rendered, || Ok(()))?;
+        let staged = stage_and_publish(&staging, &published, rendered, || {
+            checkpoint(PublicationCheckpoint::DuringStaging)
+        });
+        if staged.is_err() {
+            let _ = fs::remove_dir_all(&staging);
+        }
+        staged?;
     }
-    select_generation(out_dir, rendered)
+    checkpoint(PublicationCheckpoint::BeforeSelection)?;
+    select_generation(out_dir, rendered, || {
+        checkpoint(PublicationCheckpoint::DuringSelection)
+    })
 }
 
 fn stage_and_publish(
@@ -7333,12 +7369,24 @@ fn stage_and_publish(
         fs::write(staging.join(name), node)
             .map_err(|error| format!("cannot stage generated Node `{name}`: {error}"))?;
     }
+    let loader_map = rendered
+        .node_anchors
+        .iter()
+        .zip(&rendered.nodes)
+        .map(|(anchor, (name, _))| format!("{anchor}\t{name}\n"))
+        .collect::<String>();
+    fs::write(staging.join("loader-map"), loader_map)
+        .map_err(|error| format!("cannot stage the Node loader map: {error}"))?;
     fs::rename(staging, published)
         .map_err(|error| format!("cannot cross the Generation publication barrier: {error}"))?;
     Ok(())
 }
 
-fn select_generation(out_dir: &Path, rendered: &RenderedGeneration) -> Result<(), String> {
+fn select_generation(
+    out_dir: &Path,
+    rendered: &RenderedGeneration,
+    during_selection: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
     let nonce = staging_nonce()?;
     let staging = out_dir.join(format!(
         ".recursa-selector-{}-{nonce}.rs",
@@ -7346,8 +7394,41 @@ fn select_generation(out_dir: &Path, rendered: &RenderedGeneration) -> Result<()
     ));
     fs::write(&staging, &rendered.selector)
         .map_err(|error| format!("cannot stage the Generation selector: {error}"))?;
-    fs::rename(&staging, out_dir.join(SELECTED_GENERATION))
-        .map_err(|error| format!("cannot atomically select the complete Generation: {error}"))
+    if let Err(error) = during_selection() {
+        let _ = fs::remove_file(&staging);
+        return Err(error);
+    }
+    let selected = out_dir.join(SELECTED_GENERATION);
+    match fs::rename(&staging, selected) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(&staging);
+            Err(format!(
+                "cannot atomically select the complete Generation: {error}"
+            ))
+        }
+    }
+}
+
+fn invalidate_selection(out_dir: &Path) -> Result<(), String> {
+    let selected = out_dir.join(SELECTED_GENERATION);
+    match fs::remove_file(&selected) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "cannot invalidate the previously selected Generation: {error}"
+        )),
+    }
+}
+
+#[cfg(test)]
+fn selected_generation(out_dir: &Path) -> Option<String> {
+    let selector = fs::read_to_string(out_dir.join(SELECTED_GENERATION)).ok()?;
+    selector
+        .lines()
+        .next()?
+        .strip_prefix("// recursa-generation:")
+        .map(str::to_owned)
 }
 
 fn staging_nonce() -> Result<u128, String> {
@@ -7776,6 +7857,7 @@ struct B;
         let rendered = RenderedGeneration {
             root: "fn root() {}".to_owned(),
             nodes: vec![("node-0.rs".to_owned(), "fn node() {}".to_owned())],
+            node_anchors: vec!["anchor-0".to_owned()],
             selector: "fn selected() {}".to_owned(),
         };
         assert_eq!(
@@ -7788,5 +7870,117 @@ struct B;
         assert!(!published.exists());
         assert!(staging.join("root.rs").is_file());
         assert!(!staging.join("node-0.rs").exists());
+    }
+
+    fn publication_fixture(identity: &str) -> RenderedGeneration {
+        RenderedGeneration {
+            root: format!("// {identity} root"),
+            nodes: vec![("node-0.rs".to_owned(), format!("// {identity} node"))],
+            node_anchors: vec!["anchor-0".to_owned()],
+            selector: format!(
+                "// recursa-generation:{identity}\ninclude!(concat!(env!(\"OUT_DIR\"), \"/recursa-generations/{identity}/root.rs\"));\n"
+            ),
+        }
+    }
+
+    #[test]
+    fn every_failed_publication_checkpoint_invalidates_stale_selection_and_recovers() {
+        for checkpoint in [
+            PublicationCheckpoint::BeforeStaging,
+            PublicationCheckpoint::DuringStaging,
+            PublicationCheckpoint::BeforeSelection,
+            PublicationCheckpoint::DuringSelection,
+        ] {
+            let output = tempfile::tempdir().unwrap();
+            let old = publication_fixture("g_old");
+            publish_with_checkpoint(output.path(), "g_old", &old, |_| Ok(())).unwrap();
+            assert_eq!(selected_generation(output.path()).as_deref(), Some("g_old"));
+
+            invalidate_selection(output.path()).unwrap();
+            let next = publication_fixture("g_next");
+            let error = publish_with_checkpoint(output.path(), "g_next", &next, |point| {
+                if point == checkpoint {
+                    Err(format!("injected {point:?} fault"))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+            assert_eq!(error, format!("injected {checkpoint:?} fault"));
+            assert_eq!(selected_generation(output.path()), None);
+
+            publish_with_checkpoint(output.path(), "g_next", &next, |_| Ok(())).unwrap();
+            assert_eq!(
+                selected_generation(output.path()).as_deref(),
+                Some("g_next")
+            );
+            assert!(
+                output
+                    .path()
+                    .join("recursa-generations/g_next/root.rs")
+                    .is_file()
+            );
+            assert!(
+                output
+                    .path()
+                    .join("recursa-generations/g_next/node-0.rs")
+                    .is_file()
+            );
+        }
+    }
+
+    #[test]
+    fn filesystem_rename_failures_leave_no_loadable_or_staged_generation() {
+        let output = tempfile::tempdir().unwrap();
+        let rendered = publication_fixture("g_next");
+        let published = output.path().join("recursa-generations/g_next");
+        let error = publish_with_checkpoint(output.path(), "g_next", &rendered, |checkpoint| {
+            if checkpoint == PublicationCheckpoint::DuringStaging {
+                fs::create_dir_all(&published).unwrap();
+                fs::write(published.join("block"), "external collision").unwrap();
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(error.contains("publication barrier"), "{error}");
+        assert_eq!(selected_generation(output.path()), None);
+        assert_no_transaction_staging(output.path());
+
+        fs::remove_dir_all(&published).unwrap();
+        fs::create_dir(output.path().join(SELECTED_GENERATION)).unwrap();
+        let error =
+            publish_with_checkpoint(output.path(), "g_next", &rendered, |_| Ok(())).unwrap_err();
+        assert!(error.contains("atomically select"), "{error}");
+        assert_eq!(selected_generation(output.path()), None);
+        assert_no_transaction_staging(output.path());
+    }
+
+    fn assert_no_transaction_staging(out_dir: &Path) {
+        let mut pending = vec![out_dir.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    let name = path.file_name().unwrap().to_string_lossy();
+                    assert!(!name.starts_with(".recursa-selector-"), "{path:?}");
+                }
+            }
+        }
+        let generations = out_dir.join("recursa-generations");
+        if let Ok(entries) = fs::read_dir(generations) {
+            for entry in entries {
+                let path = entry.unwrap().path();
+                assert!(
+                    !path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(".staging-"),
+                    "{path:?}"
+                );
+            }
+        }
     }
 }

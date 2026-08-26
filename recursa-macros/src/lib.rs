@@ -2,7 +2,10 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
+use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use syn::ext::IdentExt as _;
 use syn::parse::Parse as _;
 use syn::visit_mut::VisitMut as _;
@@ -40,10 +43,17 @@ pub fn node(input: TokenStream) -> TokenStream {
     );
     let loader_anchor_text = format!("{:016x}", stable_hash(anchor.as_bytes()));
     let loader_anchor = syn::LitStr::new(&loader_anchor_text, proc_macro2::Span::call_site());
-    quote! {
-        __recursa_load_node!(#ident, #loader_anchor);
+    match selected_node(&loader_anchor_text) {
+        LoaderStatus::Ready => quote! {
+            __recursa_load_node!(#ident, #loader_anchor);
+        }
+        .into(),
+        LoaderStatus::RootUnavailable => TokenStream::new(),
+        LoaderStatus::NodeUnavailable => quote! {
+            compile_error!("error[RCA9002]: selected Generation has no readable body for this Node");
+        }
+        .into(),
     }
-    .into()
 }
 
 /// Loads the complete Generation selected by the build script.
@@ -51,6 +61,12 @@ pub fn node(input: TokenStream) -> TokenStream {
 /// Only `recursa-codegen` interprets this macro's grammar configuration.
 #[proc_macro]
 pub fn grammar(_input: TokenStream) -> TokenStream {
+    if selected_output().is_none() {
+        return quote! {
+            compile_error!("error[RCA9001]: selected Generation has no readable root output");
+        }
+        .into();
+    }
     let release = format!("release_{}", env!("CARGO_PKG_VERSION")).replace(['.', '-'], "_");
     let release = syn::Ident::new(&release, proc_macro2::Span::call_site());
     let protocol = syn::Ident::new(
@@ -100,6 +116,90 @@ pub fn grammar(_input: TokenStream) -> TokenStream {
         __recursa_root_handshake!(#release, #protocol, #capabilities);
     }
     .into()
+}
+
+struct SelectedOutput {
+    directory: PathBuf,
+    loader_files: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoaderStatus {
+    Ready,
+    RootUnavailable,
+    NodeUnavailable,
+}
+
+fn selected_output() -> Option<Arc<SelectedOutput>> {
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR")?);
+    static SELECTED: OnceLock<Mutex<BTreeMap<PathBuf, Option<Arc<SelectedOutput>>>>> =
+        OnceLock::new();
+    let selected = SELECTED.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut selected = selected.lock().ok()?;
+    if let Some(cached) = selected.get(&out_dir) {
+        return cached.clone();
+    }
+    let loaded = load_selected_output(&out_dir).map(Arc::new);
+    selected.insert(out_dir, loaded.clone());
+    loaded
+}
+
+fn load_selected_output(out_dir: &Path) -> Option<SelectedOutput> {
+    let selector = fs::read_to_string(out_dir.join("recursa-selected.rs")).ok()?;
+    let identity = selector
+        .lines()
+        .next()?
+        .strip_prefix("// recursa-generation:")?;
+    if !valid_generation_identity(identity) {
+        return None;
+    }
+    let directory = out_dir.join("recursa-generations").join(identity);
+    fs::read_to_string(directory.join("root.rs")).ok()?;
+    let loader_files = fs::read_to_string(directory.join("loader-map"))
+        .ok()
+        .and_then(|loader_map| {
+            loader_map
+                .lines()
+                .map(|line| {
+                    let (anchor, name) = line.split_once('\t')?;
+                    valid_node_file(name).then(|| (anchor.to_owned(), name.to_owned()))
+                })
+                .collect()
+        });
+    Some(SelectedOutput {
+        directory,
+        loader_files,
+    })
+}
+
+fn selected_node(anchor: &str) -> LoaderStatus {
+    let Some(selected) = selected_output() else {
+        return LoaderStatus::RootUnavailable;
+    };
+    let Some(loader_files) = &selected.loader_files else {
+        return LoaderStatus::NodeUnavailable;
+    };
+    let Some(name) = loader_files.get(anchor) else {
+        return LoaderStatus::NodeUnavailable;
+    };
+    if !valid_node_file(name) || fs::read_to_string(selected.directory.join(name)).is_err() {
+        return LoaderStatus::NodeUnavailable;
+    }
+    LoaderStatus::Ready
+}
+
+fn valid_generation_identity(identity: &str) -> bool {
+    identity
+        .strip_prefix("g_")
+        .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn valid_node_file(name: &str) -> bool {
+    name.strip_prefix("node-").is_some_and(|suffix| {
+        suffix.strip_suffix(".rs").is_some_and(|index| {
+            !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    })
 }
 
 /// Structural placeholder for token declarations consumed by the analyzer.
