@@ -1,0 +1,1949 @@
+#![allow(
+    dead_code,
+    reason = "private M3 materialization seam is consumed by final source lowering"
+)]
+
+use std::collections::BTreeMap;
+use std::ops::Range;
+use std::path::PathBuf;
+
+use syn::GenericParam;
+
+use crate::lowering::{NodeId, RustEdition, TokenUseId};
+use crate::resolution::{
+    CatalogType, ContentTokenId, GenericParameterId, ResolutionTraceId, ResolvedFieldId,
+    ResolvedGenericArgument, ResolvedNode, ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind,
+    ResolvedVariantId, SemanticOwner, SemanticTarget, SemanticUseId, TypeAliasId,
+};
+use crate::source_model::{
+    DeclaredRepetition, GrammarElement, NodeBody, Separator, SourceModel, SourceModeledGrammar,
+    TokenDefinitionKind,
+};
+use crate::{
+    AtomDescription, AtomExpression, ContainerShape, DeclId, Declaration, GrammarDescription,
+    KindDescription, Location, ParseSite, SiteId, SourceId, TypeDescription, TypeId, TypeShape,
+};
+
+macro_rules! materialization_id {
+    ($name:ident) => {
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        pub(crate) struct $name(u32);
+
+        impl $name {
+            fn next(length: usize) -> Self {
+                Self(length.try_into().expect("materialized identity overflow"))
+            }
+
+            pub(crate) const fn index(self) -> usize {
+                self.0 as usize
+            }
+        }
+    };
+}
+
+materialization_id!(MaterializedApplicationId);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializationReport {
+    pub(crate) diagnostics: Vec<MaterializationDiagnostic>,
+    pub(crate) lowered: Option<LoweredGrammar>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LoweredGrammar {
+    pub(crate) source_modeled: SourceModeledGrammar,
+    pub(crate) applications: Vec<MaterializedNodeApplication>,
+    pub(crate) grammar: GrammarDescription,
+    pub(crate) lowering_map: LoweringMap,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LoweringMap {
+    pub(crate) sources: Vec<SourceCorrelation>,
+    pub(crate) applications: Vec<ApplicationTypeCorrelation>,
+    pub(crate) variants: Vec<VariantAlternativeCorrelation>,
+    pub(crate) fields: Vec<MaterializedFieldSiteCorrelation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SourceCorrelation {
+    pub(crate) resolved: SourceId,
+    pub(crate) lowered: SourceId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ApplicationTypeCorrelation {
+    pub(crate) application: MaterializedApplicationId,
+    pub(crate) node: NodeId,
+    pub(crate) lowered: TypeId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializedFieldSiteCorrelation {
+    pub(crate) application: MaterializedApplicationId,
+    pub(crate) field: ResolvedFieldId,
+    pub(crate) lowered: SiteId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct VariantAlternativeCorrelation {
+    pub(crate) application: MaterializedApplicationId,
+    pub(crate) variant: ResolvedVariantId,
+    pub(crate) lowered: DeclId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializedNodeApplication {
+    pub(crate) id: MaterializedApplicationId,
+    pub(crate) node: NodeId,
+    pub(crate) display_name: String,
+    pub(crate) body: MaterializedNodeBody,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MaterializedNodeBody {
+    Struct(Vec<MaterializedElement>),
+    Presence(Vec<MaterializedElement>),
+    Enum(Vec<MaterializedVariant>),
+}
+
+impl MaterializedNodeBody {
+    fn elements(&self) -> impl Iterator<Item = &MaterializedElement> {
+        let direct = match self {
+            Self::Struct(elements) | Self::Presence(elements) => elements.as_slice(),
+            Self::Enum(_) => &[],
+        };
+        let variants = match self {
+            Self::Enum(variants) => variants.as_slice(),
+            Self::Struct(_) | Self::Presence(_) => &[],
+        };
+        direct
+            .iter()
+            .chain(variants.iter().flat_map(|variant| variant.elements.iter()))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializedVariant {
+    pub(crate) resolved_variant: ResolvedVariantId,
+    pub(crate) name: String,
+    pub(crate) elements: Vec<MaterializedElement>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MaterializedElement {
+    FixedToken {
+        token_use: TokenUseId,
+    },
+    SemanticField {
+        field: ResolvedFieldId,
+        ty: ClosedType,
+        trace: MaterializationTrace,
+        separator: Option<Separator>,
+    },
+}
+
+impl MaterializedNodeApplication {
+    pub(crate) fn fields(&self) -> impl Iterator<Item = &MaterializedElement> {
+        self.body
+            .elements()
+            .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ClosedType {
+    Node(MaterializedNodeUse),
+    ContentToken(ContentTokenId),
+    Boxed(Box<Self>),
+    Optional(Box<Self>),
+    ZeroOrMore(Box<Self>),
+    OneOrMore(Box<Self>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializedNodeUse {
+    pub(crate) application: MaterializedApplicationId,
+    pub(crate) lifetimes: Vec<syn::Lifetime>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializationTrace {
+    pub(crate) steps: Vec<MaterializationTraceStep>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MaterializationTraceStep {
+    Use(SemanticUseId),
+    Resolution(ResolutionTraceId),
+    Alias(TypeAliasId),
+    Parameter(GenericParameterId),
+    SelfApplication(MaterializedApplicationId),
+    Catalog(CatalogType),
+    Application(MaterializedApplicationId),
+    ContentToken(ContentTokenId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum MaterializationDiagnosticKind {
+    UnsupportedEdition,
+    OpenApplication,
+    ConstGeneric,
+    UnsupportedType,
+    InvalidArguments,
+    InvalidContainer,
+    AliasCycle,
+    NonRegularRecursion,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializationDiagnostic {
+    pub(crate) kind: MaterializationDiagnosticKind,
+    pub(crate) path: PathBuf,
+    pub(crate) range: Option<Range<u32>>,
+    pub(crate) message: String,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ApplicationKey {
+    node: NodeId,
+    arguments: Vec<Vec<TypeIdentityAtom>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum TypeIdentityAtom {
+    Node(MaterializedApplicationId),
+    ContentToken(ContentTokenId),
+    Boxed,
+    Optional,
+    ZeroOrMore,
+    OneOrMore,
+}
+
+impl ClosedType {
+    fn identity(&self) -> Vec<TypeIdentityAtom> {
+        let mut identity = Vec::new();
+        self.extend_identity(&mut identity);
+        identity
+    }
+
+    fn extend_identity(&self, identity: &mut Vec<TypeIdentityAtom>) {
+        match self {
+            Self::Node(node) => identity.push(TypeIdentityAtom::Node(node.application)),
+            Self::ContentToken(token) => identity.push(TypeIdentityAtom::ContentToken(*token)),
+            Self::Boxed(inner) => {
+                identity.push(TypeIdentityAtom::Boxed);
+                inner.extend_identity(identity);
+            }
+            Self::Optional(inner) => {
+                identity.push(TypeIdentityAtom::Optional);
+                inner.extend_identity(identity);
+            }
+            Self::ZeroOrMore(inner) => {
+                identity.push(TypeIdentityAtom::ZeroOrMore);
+                inner.extend_identity(identity);
+            }
+            Self::OneOrMore(inner) => {
+                identity.push(TypeIdentityAtom::OneOrMore);
+                inner.extend_identity(identity);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct EvaluatedType {
+    closed: ClosedType,
+    trace: Vec<MaterializationTraceStep>,
+}
+
+#[derive(Clone, Default)]
+struct EvaluationEnvironment {
+    types: BTreeMap<GenericParameterId, EvaluatedType>,
+    lifetimes: BTreeMap<String, syn::Lifetime>,
+}
+
+struct Materializer {
+    source_modeled: SourceModeledGrammar,
+    application_by_key: BTreeMap<ApplicationKey, MaterializedApplicationId>,
+    applications: Vec<MaterializedNodeApplication>,
+    diagnostics: Vec<MaterializationDiagnostic>,
+    active_aliases: Vec<TypeAliasId>,
+    active_applications: Vec<ApplicationKey>,
+}
+
+pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> MaterializationReport {
+    let materializer = Materializer {
+        source_modeled,
+        application_by_key: BTreeMap::new(),
+        applications: Vec::new(),
+        diagnostics: Vec::new(),
+        active_aliases: Vec::new(),
+        active_applications: Vec::new(),
+    };
+    materializer.run()
+}
+
+impl Materializer {
+    fn resolved(&self) -> &ResolvedSourceGrammar {
+        self.source_modeled.resolved()
+    }
+
+    fn source_model(&self) -> &SourceModel {
+        self.source_modeled.source_model()
+    }
+
+    fn run(mut self) -> MaterializationReport {
+        if self.resolved().build_inputs.discovery.edition != RustEdition::Rust2024 {
+            self.diagnostics.push(MaterializationDiagnostic {
+                kind: MaterializationDiagnosticKind::UnsupportedEdition,
+                path: self.resolved().build_inputs.discovery.selected_root.clone(),
+                range: None,
+                message: "M3 materialization currently supports only Rust 2024".to_owned(),
+            });
+        }
+        let seeds = self
+            .resolved()
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.generics
+                    .params
+                    .iter()
+                    .all(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
+            })
+            .map(|node| node.id)
+            .collect::<Vec<_>>();
+        for node in seeds {
+            self.ensure_application(node, Vec::new());
+        }
+        if !self.diagnostics.is_empty() {
+            return MaterializationReport {
+                diagnostics: std::mem::take(&mut self.diagnostics),
+                lowered: None,
+            };
+        }
+        let (grammar, lowering_map) = self.project_m2();
+        MaterializationReport {
+            diagnostics: Vec::new(),
+            lowered: Some(LoweredGrammar {
+                source_modeled: self.source_modeled,
+                applications: self.applications,
+                grammar,
+                lowering_map,
+            }),
+        }
+    }
+
+    fn ensure_application(
+        &mut self,
+        node_id: NodeId,
+        type_arguments: Vec<EvaluatedType>,
+    ) -> Option<MaterializedApplicationId> {
+        let key = ApplicationKey {
+            node: node_id,
+            arguments: type_arguments
+                .iter()
+                .map(|argument| argument.closed.identity())
+                .collect(),
+        };
+        if let Some(id) = self.application_by_key.get(&key) {
+            return Some(*id);
+        }
+        let node = self.resolved().nodes[node_id.index()].clone();
+        if self
+            .active_applications
+            .iter()
+            .any(|active| active.node == node_id)
+        {
+            self.push_node_diagnostic(
+                &node,
+                MaterializationDiagnosticKind::NonRegularRecursion,
+                format!(
+                    "recursive Node `{}` changes its closed type arguments",
+                    node.key.segments.join("::")
+                ),
+            );
+            return None;
+        }
+        let type_parameters = node
+            .generics
+            .params
+            .iter()
+            .filter_map(|parameter| match parameter {
+                GenericParam::Type(parameter) => Some(parameter.ident.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if type_parameters.len() != type_arguments.len() {
+            self.push_node_diagnostic(
+                &node,
+                MaterializationDiagnosticKind::OpenApplication,
+                format!(
+                    "Node `{}` needs {} closed type argument(s), found {}",
+                    node.key.segments.join("::"),
+                    type_parameters.len(),
+                    type_arguments.len(),
+                ),
+            );
+            return None;
+        }
+        if node
+            .generics
+            .params
+            .iter()
+            .any(|parameter| matches!(parameter, GenericParam::Const(_)))
+        {
+            self.push_node_diagnostic(
+                &node,
+                MaterializationDiagnosticKind::ConstGeneric,
+                "const-generic Nodes are outside the closed grammar type language".to_owned(),
+            );
+            return None;
+        }
+
+        let id = MaterializedApplicationId::next(self.applications.len());
+        self.application_by_key.insert(key.clone(), id);
+        self.active_applications.push(key);
+        let display_name = self.display_application(&node, &type_arguments);
+        self.applications.push(MaterializedNodeApplication {
+            id,
+            node: node_id,
+            display_name,
+            body: MaterializedNodeBody::Struct(Vec::new()),
+        });
+        let parameter_ids = self
+            .resolved()
+            .generic_parameters
+            .iter()
+            .filter(|parameter| parameter.owner == SemanticOwner::Node(node_id))
+            .map(|parameter| parameter.id)
+            .collect::<Vec<_>>();
+        let types = parameter_ids
+            .into_iter()
+            .zip(type_arguments)
+            .collect::<BTreeMap<_, _>>();
+        let lifetimes = node
+            .generics
+            .params
+            .iter()
+            .filter_map(|parameter| match parameter {
+                GenericParam::Lifetime(parameter) => Some((
+                    parameter.lifetime.ident.to_string(),
+                    parameter.lifetime.clone(),
+                )),
+                _ => None,
+            })
+            .collect();
+        let environment = EvaluationEnvironment { types, lifetimes };
+        let current_use = MaterializedNodeUse {
+            application: id,
+            lifetimes: node
+                .generics
+                .params
+                .iter()
+                .filter_map(|parameter| match parameter {
+                    GenericParam::Lifetime(parameter) => Some(parameter.lifetime.clone()),
+                    _ => None,
+                })
+                .collect(),
+        };
+        let source_node = self
+            .source_model()
+            .nodes
+            .iter()
+            .find(|source_node| source_node.resolved_node == node_id)
+            .cloned()
+            .expect("source model covers every resolved Node");
+        let body =
+            match source_node.body {
+                NodeBody::Struct(elements) => MaterializedNodeBody::Struct(
+                    self.materialize_elements(&elements, &current_use, &environment),
+                ),
+                NodeBody::Presence(elements) => MaterializedNodeBody::Presence(
+                    self.materialize_elements(&elements, &current_use, &environment),
+                ),
+                NodeBody::Enum(variants) => MaterializedNodeBody::Enum(
+                    variants
+                        .into_iter()
+                        .map(|variant| MaterializedVariant {
+                            resolved_variant: variant.resolved_variant,
+                            name: variant.name,
+                            elements: self.materialize_elements(
+                                &variant.elements,
+                                &current_use,
+                                &environment,
+                            ),
+                        })
+                        .collect(),
+                ),
+            };
+        self.applications[id.index()].body = body;
+        let popped = self.active_applications.pop();
+        debug_assert!(popped.is_some_and(|application| application.node == node_id));
+        Some(id)
+    }
+
+    fn materialize_elements(
+        &mut self,
+        elements: &[GrammarElement],
+        current_application: &MaterializedNodeUse,
+        environment: &EvaluationEnvironment,
+    ) -> Vec<MaterializedElement> {
+        let mut materialized = Vec::new();
+        for element in elements {
+            match element {
+                GrammarElement::FixedToken { token_use, .. } => {
+                    materialized.push(MaterializedElement::FixedToken {
+                        token_use: *token_use,
+                    });
+                }
+                GrammarElement::SemanticField {
+                    resolved_field,
+                    separator,
+                    ..
+                } => {
+                    let field = self.resolved_field(*resolved_field).clone();
+                    let Some(evaluated) = self.evaluate_type(
+                        &field.ty,
+                        Some(current_application.clone()),
+                        environment,
+                    ) else {
+                        continue;
+                    };
+                    let (_, container) = terminal_and_container(&evaluated.closed, None);
+                    let semantics = container.semantics();
+                    if semantics.is_none() {
+                        self.push_diagnostic(
+                            field.ty.source,
+                            Some(field.range.clone()),
+                            MaterializationDiagnosticKind::InvalidContainer,
+                            format!(
+                                "unsupported container shape `{container}`; expected T, Option<T>, Vec<T>, Vec1<T>, or Option<Vec1<T>> after ignoring Box"
+                            ),
+                        );
+                    } else if separator.as_ref().is_some_and(|_| {
+                        semantics.is_some_and(|semantics| !semantics.cardinality.is_repeated())
+                    }) {
+                        self.push_diagnostic(
+                            field.ty.source,
+                            Some(field.range.clone()),
+                            MaterializationDiagnosticKind::InvalidContainer,
+                            "#[sep] requires a normalized Vec<T>, Vec1<T>, or Option<Vec1<T>> field"
+                                .to_owned(),
+                        );
+                    } else if let (Some(separator), Some(semantics)) = (separator, semantics)
+                        && separator.declared_repetition.is_some_and(|declared| {
+                            !matches!(
+                                (declared, semantics.cardinality),
+                                (
+                                    DeclaredRepetition::ZeroOrMore,
+                                    crate::ir::ContainerCardinality::ZeroOrMore,
+                                ) | (
+                                    DeclaredRepetition::OneOrMore,
+                                    crate::ir::ContainerCardinality::OneOrMore
+                                        | crate::ir::ContainerCardinality::OptionalOneOrMore,
+                                )
+                            )
+                        })
+                    {
+                        self.push_diagnostic(
+                            field.ty.source,
+                            Some(field.range.clone()),
+                            MaterializationDiagnosticKind::InvalidContainer,
+                            "separator repetition metadata disagrees with the normalized container"
+                                .to_owned(),
+                        );
+                    }
+                    materialized.push(MaterializedElement::SemanticField {
+                        field: field.id,
+                        ty: evaluated.closed,
+                        trace: MaterializationTrace {
+                            steps: evaluated.trace,
+                        },
+                        separator: separator.clone(),
+                    });
+                }
+            }
+        }
+        materialized
+    }
+
+    fn resolved_field(&self, id: ResolvedFieldId) -> &crate::resolution::ResolvedNodeField {
+        self.resolved()
+            .nodes
+            .iter()
+            .flat_map(|node| &node.fields)
+            .find(|field| field.id == id)
+            .expect("source-model field identity belongs to resolved grammar")
+    }
+
+    fn evaluate_type(
+        &mut self,
+        ty: &ResolvedType,
+        current_application: Option<MaterializedNodeUse>,
+        environment: &EvaluationEnvironment,
+    ) -> Option<EvaluatedType> {
+        match &ty.kind {
+            ResolvedTypeKind::Group(inner) | ResolvedTypeKind::Parenthesized(inner) => {
+                self.evaluate_type(inner, current_application, environment)
+            }
+            ResolvedTypeKind::Semantic {
+                use_site,
+                target,
+                trace,
+                arguments,
+            } => {
+                let authored = self.resolved().uses[use_site.index()].authored.clone();
+                let prefix = vec![
+                    MaterializationTraceStep::Use(*use_site),
+                    MaterializationTraceStep::Resolution(*trace),
+                ];
+                match *target {
+                    SemanticTarget::GenericParameter(parameter) => environment
+                        .types
+                        .get(&parameter)
+                        .cloned()
+                        .map(|mut value| {
+                            let mut steps = prefix;
+                            steps.push(MaterializationTraceStep::Parameter(parameter));
+                            steps.extend(value.trace);
+                            value.trace = steps;
+                            value
+                        })
+                        .or_else(|| {
+                            self.push_diagnostic(
+                                ty.source,
+                                Some(ty.range.clone()),
+                                MaterializationDiagnosticKind::OpenApplication,
+                                format!("generic parameter `{authored}` remains open"),
+                            );
+                            None
+                        }),
+                    SemanticTarget::ContentToken(token) => {
+                        if !arguments.is_empty() {
+                            self.push_invalid_arguments(ty, &authored);
+                            return None;
+                        }
+                        let mut trace = prefix;
+                        trace.push(MaterializationTraceStep::ContentToken(token));
+                        Some(EvaluatedType {
+                            closed: ClosedType::ContentToken(token),
+                            trace,
+                        })
+                    }
+                    SemanticTarget::Catalog(catalog) => {
+                        let [ResolvedGenericArgument::Type(argument)] = arguments.as_slice() else {
+                            self.push_invalid_arguments(ty, &authored);
+                            return None;
+                        };
+                        let argument =
+                            self.evaluate_type(argument, current_application, environment)?;
+                        Some(wrap_catalog(catalog, prefix, argument))
+                    }
+                    SemanticTarget::Node(node) => {
+                        if authored == "Self" {
+                            if !arguments.is_empty() {
+                                self.push_invalid_arguments(ty, "Self");
+                                return None;
+                            }
+                            let Some(current_application) = current_application else {
+                                self.push_diagnostic(
+                                    ty.source,
+                                    Some(ty.range.clone()),
+                                    MaterializationDiagnosticKind::UnsupportedType,
+                                    "`Self` has no current Node application in this context"
+                                        .to_owned(),
+                                );
+                                return None;
+                            };
+                            let mut trace = prefix;
+                            trace.push(MaterializationTraceStep::SelfApplication(
+                                current_application.application,
+                            ));
+                            trace.push(MaterializationTraceStep::Application(
+                                current_application.application,
+                            ));
+                            return Some(EvaluatedType {
+                                closed: ClosedType::Node(current_application),
+                                trace,
+                            });
+                        }
+                        let (arguments, lifetimes) = self.bind_node_arguments(
+                            node,
+                            arguments,
+                            ty,
+                            current_application,
+                            environment,
+                        )?;
+                        let argument_trace = arguments
+                            .iter()
+                            .flat_map(|argument| argument.trace.iter().copied())
+                            .collect::<Vec<_>>();
+                        let application = self.ensure_application(node, arguments)?;
+                        let mut trace = prefix;
+                        trace.extend(argument_trace);
+                        trace.push(MaterializationTraceStep::Application(application));
+                        Some(EvaluatedType {
+                            closed: ClosedType::Node(MaterializedNodeUse {
+                                application,
+                                lifetimes,
+                            }),
+                            trace,
+                        })
+                    }
+                    SemanticTarget::TypeAlias(alias) => self.evaluate_alias(
+                        alias,
+                        arguments,
+                        ty,
+                        current_application,
+                        environment,
+                        prefix,
+                    ),
+                }
+            }
+            ResolvedTypeKind::Reference(_)
+            | ResolvedTypeKind::Tuple(_)
+            | ResolvedTypeKind::Unsupported => {
+                self.push_diagnostic(
+                    ty.source,
+                    Some(ty.range.clone()),
+                    MaterializationDiagnosticKind::UnsupportedType,
+                    "only resolved paths and supported containers are grammar-semantic types"
+                        .to_owned(),
+                );
+                None
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bind_node_arguments(
+        &mut self,
+        node: NodeId,
+        supplied: &[ResolvedGenericArgument],
+        use_type: &ResolvedType,
+        current_application: Option<MaterializedNodeUse>,
+        environment: &EvaluationEnvironment,
+    ) -> Option<(Vec<EvaluatedType>, Vec<syn::Lifetime>)> {
+        let declaration = self.resolved().nodes[node.index()].clone();
+        let mut supplied = supplied.iter().peekable();
+        let mut types = Vec::new();
+        let mut lifetimes = Vec::new();
+        for parameter in &declaration.generics.params {
+            match parameter {
+                GenericParam::Lifetime(_) => {
+                    if let Some(ResolvedGenericArgument::Lifetime(lifetime)) = supplied.peek() {
+                        lifetimes.push(
+                            environment
+                                .lifetimes
+                                .get(&lifetime.ident.to_string())
+                                .cloned()
+                                .unwrap_or_else(|| lifetime.clone()),
+                        );
+                        supplied.next();
+                    }
+                }
+                GenericParam::Type(parameter) => {
+                    let argument = match supplied.next() {
+                        Some(ResolvedGenericArgument::Type(argument)) => argument,
+                        Some(_) => {
+                            self.push_invalid_arguments(use_type, &declaration.ident);
+                            return None;
+                        }
+                        None => {
+                            self.push_diagnostic(
+                                use_type.source,
+                                Some(use_type.range.clone()),
+                                MaterializationDiagnosticKind::OpenApplication,
+                                format!(
+                                    "Node `{}` leaves type parameter `{}` open",
+                                    declaration.ident, parameter.ident
+                                ),
+                            );
+                            return None;
+                        }
+                    };
+                    types.push(self.evaluate_type(
+                        argument,
+                        current_application.clone(),
+                        environment,
+                    )?);
+                }
+                GenericParam::Const(_) => {
+                    self.push_node_diagnostic(
+                        &declaration,
+                        MaterializationDiagnosticKind::ConstGeneric,
+                        "const-generic Nodes are outside the closed grammar type language"
+                            .to_owned(),
+                    );
+                    return None;
+                }
+            }
+        }
+        if supplied.next().is_some() {
+            self.push_invalid_arguments(use_type, &declaration.ident);
+            return None;
+        }
+        Some((types, lifetimes))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_alias(
+        &mut self,
+        alias: TypeAliasId,
+        supplied: &[ResolvedGenericArgument],
+        use_type: &ResolvedType,
+        current_application: Option<MaterializedNodeUse>,
+        caller_environment: &EvaluationEnvironment,
+        prefix: Vec<MaterializationTraceStep>,
+    ) -> Option<EvaluatedType> {
+        if self.active_aliases.contains(&alias) {
+            let declaration = &self.resolved().type_aliases[alias.index()];
+            self.push_diagnostic(
+                use_type.source,
+                Some(use_type.range.clone()),
+                MaterializationDiagnosticKind::AliasCycle,
+                format!("type alias cycle reaches `{}`", declaration.ident),
+            );
+            return None;
+        }
+        let declaration = self.resolved().type_aliases[alias.index()].clone();
+        if declaration
+            .generics
+            .params
+            .iter()
+            .any(|parameter| matches!(parameter, GenericParam::Const(_)))
+        {
+            self.push_diagnostic(
+                declaration.source,
+                Some(declaration.range.clone()),
+                MaterializationDiagnosticKind::ConstGeneric,
+                format!(
+                    "const-generic type alias `{}` is outside the closed grammar type language",
+                    declaration.ident
+                ),
+            );
+            return None;
+        }
+        let parameter_ids = self
+            .resolved()
+            .generic_parameters
+            .iter()
+            .filter(|parameter| parameter.owner == SemanticOwner::TypeAlias(alias))
+            .map(|parameter| (parameter.ident.clone(), parameter.id))
+            .collect::<BTreeMap<_, _>>();
+        let mut supplied = supplied.iter().peekable();
+        let mut alias_environment = EvaluationEnvironment::default();
+        let mut alias_is_active = false;
+        for parameter in &declaration.generics.params {
+            match parameter {
+                GenericParam::Lifetime(parameter) => {
+                    let value = if let Some(ResolvedGenericArgument::Lifetime(lifetime)) =
+                        supplied.peek()
+                    {
+                        let value = caller_environment
+                            .lifetimes
+                            .get(&lifetime.ident.to_string())
+                            .cloned()
+                            .unwrap_or_else(|| lifetime.clone());
+                        supplied.next();
+                        value
+                    } else {
+                        parameter.lifetime.clone()
+                    };
+                    alias_environment
+                        .lifetimes
+                        .insert(parameter.lifetime.ident.to_string(), value);
+                }
+                GenericParam::Type(parameter) => {
+                    let value = match supplied.peek() {
+                        Some(ResolvedGenericArgument::Type(_)) => {
+                            let Some(ResolvedGenericArgument::Type(argument)) = supplied.next()
+                            else {
+                                unreachable!("peeked type argument")
+                            };
+                            self.evaluate_type(
+                                argument,
+                                current_application.clone(),
+                                caller_environment,
+                            )?
+                        }
+                        Some(_) => {
+                            if alias_is_active {
+                                self.active_aliases.pop();
+                            }
+                            self.push_invalid_arguments(use_type, &declaration.ident);
+                            return None;
+                        }
+                        None => {
+                            let parameter_id = parameter_ids[&parameter.ident.to_string()];
+                            let Some(default) = declaration
+                                .defaults
+                                .iter()
+                                .find(|default| default.parameter == parameter_id)
+                            else {
+                                if alias_is_active {
+                                    self.active_aliases.pop();
+                                }
+                                self.push_diagnostic(
+                                    use_type.source,
+                                    Some(use_type.range.clone()),
+                                    MaterializationDiagnosticKind::OpenApplication,
+                                    format!(
+                                        "type alias `{}` leaves parameter `{}` open",
+                                        declaration.ident, parameter.ident
+                                    ),
+                                );
+                                return None;
+                            };
+                            if !alias_is_active {
+                                self.active_aliases.push(alias);
+                                alias_is_active = true;
+                            }
+                            let evaluated = self.evaluate_type(
+                                &default.ty,
+                                current_application.clone(),
+                                &alias_environment,
+                            );
+                            let Some(evaluated) = evaluated else {
+                                self.active_aliases.pop();
+                                return None;
+                            };
+                            evaluated
+                        }
+                    };
+                    alias_environment
+                        .types
+                        .insert(parameter_ids[&parameter.ident.to_string()], value);
+                }
+                GenericParam::Const(_) => unreachable!("rejected above"),
+            }
+        }
+        if supplied.next().is_some() {
+            if alias_is_active {
+                self.active_aliases.pop();
+            }
+            self.push_invalid_arguments(use_type, &declaration.ident);
+            return None;
+        }
+        if !alias_is_active {
+            self.active_aliases.push(alias);
+        }
+        let target = declaration
+            .target
+            .as_ref()
+            .expect("reachable alias has a resolved target");
+        let evaluated = self.evaluate_type(target, current_application, &alias_environment);
+        let popped = self.active_aliases.pop();
+        debug_assert_eq!(popped, Some(alias));
+        evaluated.map(|mut evaluated| {
+            let mut steps = prefix;
+            steps.push(MaterializationTraceStep::Alias(alias));
+            steps.extend(evaluated.trace);
+            evaluated.trace = steps;
+            evaluated
+        })
+    }
+
+    fn project_m2(&self) -> (GrammarDescription, LoweringMap) {
+        let mut grammar = GrammarDescription::new(
+            self.resolved()
+                .build_inputs
+                .module_anchor
+                .segments
+                .join("::"),
+            self.source_model().token_definitions.len(),
+            self.resolved().build_inputs.max_lookahead,
+            self.resolved().build_inputs.text_equivalence,
+        );
+        grammar.source_count = self
+            .resolved()
+            .tree
+            .files
+            .len()
+            .try_into()
+            .expect("source count overflow");
+        let mut content_types = BTreeMap::new();
+        for token in &self.source_model().token_definitions {
+            let site = &token.definition_sites[0];
+            let location = grammar.push_location(Location::new(site.source, site.range.clone()));
+            let declaration = grammar.push_declaration(Declaration::new(&token.name, location));
+            let kind = grammar.push_kind(KindDescription::new(&token.name, declaration));
+            let atom = grammar.push_atom(AtomDescription::new(
+                &token.name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            let ty = grammar.push_type(TypeDescription::new(
+                &token.name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ));
+            if let TokenDefinitionKind::Content(content) = &token.kind {
+                content_types.insert(content.semantic, ty);
+            }
+        }
+        let token_count = self.source_model().token_definitions.len();
+        let applications = self
+            .applications
+            .iter()
+            .map(|application| ApplicationTypeCorrelation {
+                application: application.id,
+                node: application.node,
+                lowered: TypeId::new(
+                    (token_count + application.id.index())
+                        .try_into()
+                        .expect("M2 type ID overflow"),
+                ),
+            })
+            .collect::<Vec<_>>();
+        let mut field_correlations = Vec::new();
+        let mut variant_correlations = Vec::new();
+        let mut declarations = Vec::new();
+        for application in &self.applications {
+            let node = &self.resolved().nodes[application.node.index()];
+            let location = grammar.push_location(Location::new(node.source, node.range.clone()));
+            declarations.push(
+                grammar
+                    .push_declaration(Declaration::new(application.display_name.clone(), location)),
+            );
+        }
+        for application in &self.applications {
+            let owner = TypeId::new(
+                (token_count + application.id.index())
+                    .try_into()
+                    .expect("M2 type ID overflow"),
+            );
+            let shape = match &application.body {
+                MaterializedNodeBody::Struct(elements)
+                | MaterializedNodeBody::Presence(elements) => TypeShape::Sequence {
+                    sites: self.project_elements(
+                        &mut grammar,
+                        application,
+                        owner,
+                        elements,
+                        token_count,
+                        &content_types,
+                        &mut field_correlations,
+                    ),
+                },
+                MaterializedNodeBody::Enum(variants) => TypeShape::Enum {
+                    alternatives: variants
+                        .iter()
+                        .map(|variant| {
+                            let source_variant = self
+                                .source_model()
+                                .nodes
+                                .iter()
+                                .find(|node| node.resolved_node == application.node)
+                                .expect("materialized Node belongs to source model")
+                                .variants()
+                                .iter()
+                                .find(|source_variant| {
+                                    source_variant.resolved_variant == variant.resolved_variant
+                                })
+                                .expect("typed variant identity belongs to materialized Node");
+                            let location = grammar.push_location(Location::new(
+                                source_variant.site.source,
+                                source_variant.site.range.clone(),
+                            ));
+                            let declaration = grammar.push_declaration(Declaration::new(
+                                format!("{}::{}", application.display_name, variant.name),
+                                location,
+                            ));
+                            variant_correlations.push(VariantAlternativeCorrelation {
+                                application: application.id,
+                                variant: variant.resolved_variant,
+                                lowered: declaration,
+                            });
+                            crate::Alternative {
+                                declaration,
+                                sites: self.project_elements(
+                                    &mut grammar,
+                                    application,
+                                    owner,
+                                    &variant.elements,
+                                    token_count,
+                                    &content_types,
+                                    &mut field_correlations,
+                                ),
+                            }
+                        })
+                        .collect(),
+                },
+            };
+            assert_eq!(
+                grammar.push_type(TypeDescription::new(
+                    application.display_name.clone(),
+                    declarations[application.id.index()],
+                    shape,
+                )),
+                owner,
+            );
+            grammar.entry_types.push(owner);
+        }
+        (
+            grammar,
+            LoweringMap {
+                sources: self
+                    .resolved()
+                    .tree
+                    .files
+                    .iter()
+                    .map(|source| SourceCorrelation {
+                        resolved: source.id,
+                        lowered: source.id,
+                    })
+                    .collect(),
+                applications,
+                variants: variant_correlations,
+                fields: field_correlations,
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn project_elements(
+        &self,
+        grammar: &mut GrammarDescription,
+        application: &MaterializedNodeApplication,
+        owner: TypeId,
+        elements: &[MaterializedElement],
+        token_count: usize,
+        content_types: &BTreeMap<ContentTokenId, TypeId>,
+        field_correlations: &mut Vec<MaterializedFieldSiteCorrelation>,
+    ) -> Vec<SiteId> {
+        elements
+            .iter()
+            .enumerate()
+            .map(|(index, element)| match element {
+                MaterializedElement::FixedToken { token_use } => {
+                    let token_use = &self.source_model().token_uses[token_use.index()];
+                    let location = grammar.push_location(Location::new(
+                        token_use.site.source,
+                        token_use.site.range.clone(),
+                    ));
+                    let declaration = grammar.push_declaration(Declaration::new(
+                        format!("{}::element{index}", application.display_name),
+                        location,
+                    ));
+                    grammar.push_site(ParseSite::new(
+                        owner,
+                        TypeId::new(
+                            token_use
+                                .definition
+                                .index()
+                                .try_into()
+                                .expect("M2 type ID overflow"),
+                        ),
+                        declaration,
+                        ContainerShape::Direct,
+                    ))
+                }
+                MaterializedElement::SemanticField {
+                    field,
+                    ty,
+                    separator,
+                    ..
+                } => {
+                    let resolved_field = self.resolved_field(*field);
+                    let location = grammar.push_location(Location::new(
+                        resolved_field.ty.source,
+                        resolved_field.range.clone(),
+                    ));
+                    let declaration = grammar.push_declaration(Declaration::new(
+                        format!("{}::element{index}", application.display_name),
+                        location,
+                    ));
+                    let separator_type = separator.as_ref().map(|separator| {
+                        let token_use =
+                            &self.source_model().token_uses[separator.token_use.index()];
+                        TypeId::new(
+                            token_use
+                                .definition
+                                .index()
+                                .try_into()
+                                .expect("M2 type ID overflow"),
+                        )
+                    });
+                    let (terminal, container) = terminal_and_container(ty, separator_type);
+                    let target = match terminal {
+                        Terminal::Node(application) => TypeId::new(
+                            (token_count + application.index())
+                                .try_into()
+                                .expect("M2 type ID overflow"),
+                        ),
+                        Terminal::ContentToken(token) => content_types[&token],
+                    };
+                    let site =
+                        grammar.push_site(ParseSite::new(owner, target, declaration, container));
+                    field_correlations.push(MaterializedFieldSiteCorrelation {
+                        application: application.id,
+                        field: *field,
+                        lowered: site,
+                    });
+                    site
+                }
+            })
+            .collect()
+    }
+
+    fn display_application(&self, node: &ResolvedNode, arguments: &[EvaluatedType]) -> String {
+        let name = node.key.segments.join("::");
+        if arguments.is_empty() {
+            return name;
+        }
+        format!(
+            "{name}<{}>",
+            arguments
+                .iter()
+                .map(|argument| self.display_type(&argument.closed))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+
+    fn display_type(&self, ty: &ClosedType) -> String {
+        match ty {
+            ClosedType::Node(node) => self.applications[node.application.index()]
+                .display_name
+                .clone(),
+            ClosedType::ContentToken(token) => {
+                self.resolved().content_tokens[token.index()].ident.clone()
+            }
+            ClosedType::Boxed(inner) => format!("Box<{}>", self.display_type(inner)),
+            ClosedType::Optional(inner) => format!("Option<{}>", self.display_type(inner)),
+            ClosedType::ZeroOrMore(inner) => format!("Vec<{}>", self.display_type(inner)),
+            ClosedType::OneOrMore(inner) => format!("Vec1<{}>", self.display_type(inner)),
+        }
+    }
+
+    fn push_node_diagnostic(
+        &mut self,
+        node: &ResolvedNode,
+        kind: MaterializationDiagnosticKind,
+        message: String,
+    ) {
+        self.push_diagnostic(node.source, Some(node.range.clone()), kind, message);
+    }
+
+    fn push_invalid_arguments(&mut self, ty: &ResolvedType, name: &str) {
+        self.push_diagnostic(
+            ty.source,
+            Some(ty.range.clone()),
+            MaterializationDiagnosticKind::InvalidArguments,
+            format!("invalid semantic arguments for `{name}`"),
+        );
+    }
+
+    fn push_diagnostic(
+        &mut self,
+        source: crate::SourceId,
+        range: Option<Range<u32>>,
+        kind: MaterializationDiagnosticKind,
+        message: String,
+    ) {
+        self.diagnostics.push(MaterializationDiagnostic {
+            kind,
+            path: self.resolved().tree.files[source.index()].path.clone(),
+            range,
+            message,
+        });
+    }
+}
+
+fn wrap_catalog(
+    catalog: CatalogType,
+    mut prefix: Vec<MaterializationTraceStep>,
+    argument: EvaluatedType,
+) -> EvaluatedType {
+    prefix.push(MaterializationTraceStep::Catalog(catalog));
+    prefix.extend(argument.trace);
+    match catalog {
+        CatalogType::Box => EvaluatedType {
+            closed: ClosedType::Boxed(Box::new(argument.closed)),
+            trace: prefix,
+        },
+        CatalogType::Option => EvaluatedType {
+            closed: ClosedType::Optional(Box::new(argument.closed)),
+            trace: prefix,
+        },
+        CatalogType::Vec => EvaluatedType {
+            closed: ClosedType::ZeroOrMore(Box::new(argument.closed)),
+            trace: prefix,
+        },
+        CatalogType::Vec1 => EvaluatedType {
+            closed: ClosedType::OneOrMore(Box::new(argument.closed)),
+            trace: prefix,
+        },
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Terminal {
+    Node(MaterializedApplicationId),
+    ContentToken(ContentTokenId),
+}
+
+fn terminal_and_container(
+    ty: &ClosedType,
+    separator: Option<TypeId>,
+) -> (Terminal, ContainerShape) {
+    match ty {
+        ClosedType::Node(node) => (Terminal::Node(node.application), ContainerShape::Direct),
+        ClosedType::ContentToken(token) => (Terminal::ContentToken(*token), ContainerShape::Direct),
+        ClosedType::Boxed(inner) => {
+            let (terminal, shape) = terminal_and_container(inner, separator);
+            (terminal, ContainerShape::boxed(shape))
+        }
+        ClosedType::Optional(inner) => {
+            let (terminal, shape) = terminal_and_container(inner, separator);
+            (terminal, ContainerShape::optional(shape))
+        }
+        ClosedType::ZeroOrMore(inner) => {
+            let (terminal, shape) = terminal_and_container(inner, None);
+            (terminal, ContainerShape::zero_or_more(shape, separator))
+        }
+        ClosedType::OneOrMore(inner) => {
+            let (terminal, shape) = terminal_and_container(inner, None);
+            (terminal, ContainerShape::one_or_more(shape, separator))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use tempfile::TempDir;
+
+    use super::{
+        ClosedType, MaterializationDiagnosticKind, MaterializationTraceStep, MaterializedElement,
+        MaterializedNodeApplication, materialize,
+    };
+    use crate::TypeShape;
+    use crate::discovery::{DiscoveryInput, discover_module_tree};
+    use crate::lowering::RustEdition;
+    use crate::resolution::{ResolutionInput, resolve_local_semantics};
+    use crate::source_model::{SourceModelInput, lower_source_model};
+    use crate::source_syntax::CargoCfgSnapshot;
+
+    fn resolve_report(source: &str) -> crate::resolution::ResolutionReport {
+        let package = TempDir::new().unwrap();
+        let path = package.path().join("grammar/root.rs");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, source).unwrap();
+        let cfg = CargoCfgSnapshot::default();
+        let discovery = discover_module_tree(DiscoveryInput {
+            manifest_dir: package.path(),
+            selected_root: Path::new("grammar/root.rs"),
+            edition: RustEdition::Rust2024,
+            cfg: &cfg,
+        });
+        assert!(discovery.diagnostics.is_empty());
+        resolve_local_semantics(ResolutionInput {
+            discovery_inputs: discovery.discovery_inputs,
+            tree: discovery.tree.unwrap(),
+            cfg: &cfg,
+        })
+    }
+
+    fn resolve(source: &str) -> crate::source_model::SourceModeledGrammar {
+        let resolution = resolve_report(source);
+        assert!(
+            resolution.diagnostics.is_empty(),
+            "{:?}",
+            resolution.diagnostics
+        );
+        let resolved = resolution.resolved.unwrap();
+        let source_model = lower_source_model(SourceModelInput {
+            resolved: resolved.clone(),
+            cfg: &CargoCfgSnapshot::default(),
+        });
+        assert!(
+            source_model.diagnostics.is_empty(),
+            "{:?}",
+            source_model.diagnostics
+        );
+        source_model.source_modeled.unwrap()
+    }
+
+    fn fields(
+        application: &MaterializedNodeApplication,
+    ) -> Vec<(&ClosedType, &super::MaterializationTrace)> {
+        application
+            .fields()
+            .map(|element| match element {
+                MaterializedElement::SemanticField { ty, trace, .. } => (ty, trace),
+                MaterializedElement::FixedToken { .. } => unreachable!("filtered semantic field"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn materializes_closed_generic_applications_and_self_without_unrolling_cycles() {
+        let resolved = resolve(
+            r#"
+recursa::grammar! { module = crate::arith }
+
+#[derive(recursa::Node)]
+struct Number<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    text: Digits,
+}
+
+#[derive(recursa::Node)]
+struct Recursive<'input, T> {
+    value: T,
+    next: Option<Box<Self>>,
+}
+
+#[derive(recursa::Node)]
+struct Root<'input> {
+    expression: Recursive<'input, Number<'input>>,
+    static_expression: Recursive<'static, Number<'static>>,
+}
+"#,
+        );
+
+        let report = materialize(resolved);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let grammar = report.lowered.unwrap();
+        assert_eq!(
+            grammar
+                .applications
+                .iter()
+                .map(|application| application.display_name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "arith::Number",
+                "arith::Root",
+                "arith::Recursive<arith::Number>"
+            ],
+        );
+        let recursive = grammar
+            .applications
+            .iter()
+            .find(|application| application.display_name.starts_with("arith::Recursive"))
+            .unwrap();
+        assert_eq!(
+            grammar
+                .applications
+                .iter()
+                .filter(|application| application.display_name.starts_with("arith::Recursive"))
+                .count(),
+            1,
+        );
+        let root = grammar
+            .applications
+            .iter()
+            .find(|application| application.display_name == "arith::Root")
+            .unwrap();
+        assert!(matches!(
+            fields(root)[0].0,
+            ClosedType::Node(node) if node.lifetimes[0].to_string() == "'input"
+        ));
+        assert!(matches!(
+            fields(root)[1].0,
+            ClosedType::Node(node) if node.lifetimes[0].to_string() == "'static"
+        ));
+        assert!(matches!(
+            fields(recursive)[1].0,
+            ClosedType::Optional(inner)
+                if matches!(inner.as_ref(), ClosedType::Boxed(boxed)
+                    if matches!(boxed.as_ref(), ClosedType::Node(node)
+                        if node.application == recursive.id
+                            && node.lifetimes[0].to_string() == "'input"))
+        ));
+        let recursive_trace = &fields(recursive)[1].1.steps;
+        assert!(recursive_trace.contains(&MaterializationTraceStep::SelfApplication(recursive.id)));
+        assert_eq!(
+            recursive_trace.last(),
+            Some(&MaterializationTraceStep::Application(recursive.id)),
+        );
+        assert_eq!(grammar.grammar.types.len(), grammar.applications.len() + 1);
+    }
+
+    #[test]
+    fn expands_selected_tree_aliases_with_defaults_and_retains_alias_traces() {
+        let resolved = resolve(
+            r#"
+recursa::grammar! { module = crate::arith }
+
+#[derive(recursa::Node)]
+struct Number<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    text: Digits,
+}
+
+type Heap<T> = Box<T>;
+type Maybe<'input, T = Number<'input>> = Option<Heap<T>>;
+type OpaqueToGrammar = dependency::OrdinaryRustType;
+
+#[derive(recursa::Node)]
+struct Root<'input> {
+    explicit: Maybe<'input, Number<'input>>,
+    defaulted: Maybe<'input>,
+    static_defaulted: Maybe<'static>,
+}
+"#,
+        );
+
+        let report = materialize(resolved);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let grammar = report.lowered.unwrap();
+        let root = grammar
+            .applications
+            .iter()
+            .find(|application| application.display_name == "arith::Root")
+            .unwrap();
+        assert_eq!(fields(root)[0].0, fields(root)[1].0);
+        assert_eq!(
+            fields(root)[0]
+                .1
+                .steps
+                .iter()
+                .filter(|step| matches!(step, super::MaterializationTraceStep::Alias(_)))
+                .count(),
+            2,
+        );
+        let explicit_trace = &fields(root)[0].1.steps;
+        let alias_positions = explicit_trace
+            .iter()
+            .enumerate()
+            .filter_map(|(position, step)| {
+                matches!(step, MaterializationTraceStep::Alias(_)).then_some(position)
+            })
+            .collect::<Vec<_>>();
+        let parameter_position = explicit_trace
+            .iter()
+            .position(|step| matches!(step, MaterializationTraceStep::Parameter(_)))
+            .unwrap();
+        assert!(alias_positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            alias_positions
+                .iter()
+                .all(|position| *position < parameter_position)
+        );
+        assert!(
+            explicit_trace
+                .iter()
+                .any(|step| matches!(step, MaterializationTraceStep::Parameter(_)))
+        );
+        assert!(matches!(
+            explicit_trace.last(),
+            Some(MaterializationTraceStep::Application(_))
+        ));
+        assert!(matches!(
+            fields(root)[2].0,
+            ClosedType::Optional(optional)
+                if matches!(optional.as_ref(), ClosedType::Boxed(boxed)
+                    if matches!(boxed.as_ref(), ClosedType::Node(node)
+                        if node.lifetimes[0].to_string() == "'static"))
+        ));
+        assert!(matches!(
+            fields(root)[0].0,
+            ClosedType::Optional(optional)
+                if matches!(optional.as_ref(), ClosedType::Boxed(boxed)
+                    if matches!(boxed.as_ref(), ClosedType::Node(_)))
+        ));
+    }
+
+    #[test]
+    fn preserves_box_placement_and_exact_supported_cardinalities_in_m2() {
+        let resolved = resolve(
+            r#"
+recursa::grammar! { module = crate::shapes }
+#[derive(recursa::Node)]
+struct Leaf { #[lex(pattern = r"x")] text: Text }
+#[derive(recursa::Node)]
+struct Root {
+    one: Box<Leaf>,
+    optional: Option<Box<Leaf>>,
+    zero_or_more: Vec<Box<Leaf>>,
+    one_or_more: recursa::Vec1<Box<Leaf>>,
+    optional_one_or_more: Option<Box<recursa::Vec1<Box<Leaf>>>>,
+}
+"#,
+        );
+
+        let report = materialize(resolved);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let grammar = report.lowered.unwrap();
+        let root = grammar
+            .applications
+            .iter()
+            .find(|application| application.display_name == "shapes::Root")
+            .unwrap();
+        let root_type =
+            &grammar.grammar.types[grammar.grammar.entry_types[root.id.index()].index()];
+        let TypeShape::Sequence { sites } = &root_type.shape else {
+            panic!("root is a sequence")
+        };
+        assert_eq!(
+            sites
+                .iter()
+                .map(|site| grammar.grammar.sites[site.index()].container.to_string())
+                .collect::<Vec<_>>(),
+            [
+                "Box<T>",
+                "Option<Box<T>>",
+                "Vec<Box<T>>",
+                "Vec1<Box<T>>",
+                "Option<Box<Vec1<Box<T>>>>",
+            ],
+        );
+    }
+
+    #[test]
+    fn rejects_open_unsupported_cyclic_and_invalid_closed_types_before_m2() {
+        let invalid_containers = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::invalid }
+#[derive(recursa::Node)] struct Leaf { this: Self }
+#[derive(recursa::Node)] struct Root {
+    a: Option<Option<Leaf>>,
+    b: Option<Vec<Leaf>>,
+    c: Vec<Option<Leaf>>,
+    d: Vec<Vec<Leaf>>,
+    e: recursa::Vec1<Option<Leaf>>,
+}
+"#,
+        ));
+        assert!(invalid_containers.lowered.is_none());
+        assert_eq!(
+            invalid_containers
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.kind)
+                .collect::<Vec<_>>(),
+            [MaterializationDiagnosticKind::InvalidContainer; 5],
+        );
+
+        let unsupported = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::invalid }
+#[derive(recursa::Node)] struct Generic<T> { value: T }
+#[derive(recursa::Node)] struct ConstGeneric<const N: usize> { this: Self }
+#[derive(recursa::Node)] struct Root {
+    open: Generic,
+    inferred: _,
+    opaque: impl Sized,
+    constant: ConstGeneric<1>,
+}
+"#,
+        ));
+        assert!(unsupported.lowered.is_none());
+        assert_eq!(
+            unsupported
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.kind)
+                .collect::<Vec<_>>(),
+            [
+                MaterializationDiagnosticKind::OpenApplication,
+                MaterializationDiagnosticKind::UnsupportedType,
+                MaterializationDiagnosticKind::UnsupportedType,
+                MaterializationDiagnosticKind::ConstGeneric,
+            ],
+        );
+
+        let aliases = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::invalid }
+type A = B;
+type B = A;
+#[derive(recursa::Node)] struct Root { value: A }
+"#,
+        ));
+        assert_eq!(
+            aliases.diagnostics[0].kind,
+            MaterializationDiagnosticKind::AliasCycle,
+        );
+
+        let default_cycle = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::invalid }
+type Loop<T = Loop> = T;
+#[derive(recursa::Node)] struct Root { value: Loop }
+"#,
+        ));
+        assert_eq!(
+            default_cycle.diagnostics[0].kind,
+            MaterializationDiagnosticKind::AliasCycle,
+        );
+
+        let changing = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::invalid }
+#[derive(recursa::Node)] struct Leaf { this: Self }
+#[derive(recursa::Node)] struct Growing<T> { next: Box<Growing<Option<T>>> }
+#[derive(recursa::Node)] struct Root { value: Growing<Leaf> }
+"#,
+        ));
+        assert_eq!(
+            changing.diagnostics[0].kind,
+            MaterializationDiagnosticKind::NonRegularRecursion,
+        );
+
+        for source in [
+            r#"
+recursa::grammar! { module = crate::invalid }
+type External = dependency::Thing;
+#[derive(recursa::Node)] struct Root { value: External }
+"#,
+            r#"
+recursa::grammar! { module = crate::invalid }
+#[derive(recursa::Node)] struct Generic<T> { value: T::Associated }
+#[derive(recursa::Node)] struct Root { value: Generic<Root> }
+"#,
+            r#"
+recursa::grammar! { module = crate::invalid }
+#[derive(recursa::Node)] struct Generic<T> { value: <T as Trait>::Associated }
+#[derive(recursa::Node)] struct Root { value: Generic<Root> }
+"#,
+        ] {
+            let resolution = resolve_report(source);
+            assert!(resolution.resolved.is_none());
+            assert!(!resolution.diagnostics.is_empty());
+        }
+    }
+
+    #[test]
+    fn arithmetic_generic_application_reaches_a_successful_m2_analysis() {
+        let resolved = resolve(
+            r#"
+recursa::grammar! {
+    module = crate::arith,
+    max_lookahead = 3,
+    keyword_matching = ascii_insensitive,
+}
+#[derive(recursa::Node)]
+struct Number<'input> { #[lex(pattern = r"[0-9]+")] text: Digits }
+#[derive(recursa::Node)]
+struct Word<'input> { #[lex(pattern = r"[A-Za-z]+")] text: Letters }
+#[derive(recursa::Node)]
+struct Binary<'input, T> { left: T, right: T }
+#[derive(recursa::Node)]
+struct Expression<'input> {
+    sum: Binary<'input, Number<'input>>,
+    words: Binary<'input, Word<'input>>,
+}
+"#,
+        );
+
+        let report = materialize(resolved);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let materialized = report.lowered.unwrap();
+        let build_inputs = &materialized.source_modeled.resolved().build_inputs;
+        assert_eq!(build_inputs.max_lookahead, 3);
+        assert_eq!(
+            build_inputs.text_equivalence,
+            crate::TextEquivalence::AsciiInsensitive,
+        );
+        assert_eq!(materialized.grammar.max_lookahead, 3);
+        assert_eq!(
+            materialized.grammar.text_equivalence,
+            crate::TextEquivalence::AsciiInsensitive,
+        );
+        let binary = materialized
+            .applications
+            .iter()
+            .find(|application| application.display_name == "arith::Binary<arith::Number>")
+            .unwrap();
+        assert_eq!(
+            materialized
+                .applications
+                .iter()
+                .filter(|application| application.node == binary.node)
+                .count(),
+            2,
+        );
+        let correlation = materialized
+            .lowering_map
+            .applications
+            .iter()
+            .find(|correlation| correlation.application == binary.id)
+            .unwrap();
+        assert_eq!(correlation.node, binary.node);
+        assert_eq!(
+            materialized.grammar.types[correlation.lowered.index()].name,
+            "arith::Binary<arith::Number>",
+        );
+        let analysis = crate::analyze(&materialized.grammar);
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:?}",
+            analysis.diagnostics
+        );
+        assert!(analysis.output.is_some());
+        assert!(materialized.lowering_map.fields.iter().all(|correlation| {
+            materialized
+                .source_modeled
+                .resolved()
+                .nodes
+                .iter()
+                .flat_map(|node| &node.fields)
+                .any(|field| field.id == correlation.field)
+        }));
+        for field in &materialized.source_modeled.resolved().nodes[binary.node.index()].fields {
+            assert_eq!(
+                materialized
+                    .lowering_map
+                    .fields
+                    .iter()
+                    .filter(|correlation| correlation.field == field.id)
+                    .count(),
+                2,
+            );
+        }
+    }
+
+    #[test]
+    fn typed_source_field_and_variant_identities_drive_every_materialized_join() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::choices }
+#[derive(recursa::Node)]
+struct Leaf { #[lex(pattern = "x")] text: Text }
+#[derive(recursa::Node)]
+enum Choice {
+    #[tok("A", this)]
+    First(Leaf),
+    #[tok("B", this)]
+    Second(Leaf),
+}
+"#,
+        ));
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.unwrap();
+        let resolved = lowered.source_modeled.resolved();
+        let source_model = lowered.source_modeled.source_model();
+        assert_eq!(
+            lowered.lowering_map.sources.len(),
+            resolved.tree.files.len()
+        );
+        assert!(
+            lowered
+                .lowering_map
+                .sources
+                .iter()
+                .all(|correlation| correlation.resolved == correlation.lowered)
+        );
+
+        let resolved_choice = resolved
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Choice")
+            .unwrap();
+        let crate::resolution::ResolvedNodeBody::Enum { variants } = &resolved_choice.body else {
+            panic!("Choice is an enum")
+        };
+        let source_choice = source_model
+            .nodes
+            .iter()
+            .find(|node| node.resolved_node == resolved_choice.id)
+            .unwrap();
+        assert_eq!(source_choice.variants().len(), variants.len());
+        let application = lowered
+            .applications
+            .iter()
+            .find(|application| application.node == resolved_choice.id)
+            .unwrap();
+
+        for variant in variants {
+            let source_variant = source_choice
+                .variants()
+                .iter()
+                .find(|candidate| candidate.resolved_variant == variant.id)
+                .unwrap();
+            assert_eq!(source_variant.site.source, resolved_choice.source);
+            let correlation = lowered
+                .lowering_map
+                .variants
+                .iter()
+                .find(|correlation| {
+                    correlation.application == application.id && correlation.variant == variant.id
+                })
+                .unwrap();
+            let declaration = &lowered.grammar.declarations[correlation.lowered.index()];
+            assert_eq!(
+                lowered.grammar.locations[declaration.location.index()].source,
+                resolved_choice.source,
+            );
+            for field in &variant.fields {
+                assert!(lowered.lowering_map.fields.iter().any(|correlation| {
+                    correlation.application == application.id && correlation.field == *field
+                }));
+            }
+        }
+        assert!(
+            source_model
+                .token_uses
+                .iter()
+                .all(|token_use| token_use.site.source == resolved_choice.source)
+        );
+    }
+
+    #[test]
+    fn separator_metadata_reaches_the_normalized_repeat_and_is_repeat_only() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::lists }
+#[derive(recursa::Node)] struct Leaf { #[lex(pattern = "x")] text: Text }
+type NonEmpty<T> = Option<Box<recursa::Vec1<Box<T>>>>;
+#[derive(recursa::Node)]
+struct Root { #[sep(",", trailing)] values: NonEmpty<Leaf> }
+"#,
+        ));
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.unwrap();
+        let root = lowered
+            .applications
+            .iter()
+            .find(|application| application.display_name == "lists::Root")
+            .unwrap();
+        let correlation = lowered
+            .lowering_map
+            .applications
+            .iter()
+            .find(|correlation| correlation.application == root.id)
+            .unwrap();
+        let TypeShape::Sequence { sites } =
+            &lowered.grammar.types[correlation.lowered.index()].shape
+        else {
+            panic!("root is a sequence")
+        };
+        let site = &lowered.grammar.sites[sites[0].index()];
+        let mut separators = Vec::new();
+        site.container
+            .visit_separators(&mut |separator| separators.push(separator));
+        assert_eq!(separators.len(), 1);
+        let MaterializedElement::SemanticField {
+            separator: Some(separator),
+            ..
+        } = root.fields().next().unwrap()
+        else {
+            panic!("root field retains separator metadata")
+        };
+        assert!(separator.optional_trailing);
+
+        let invalid = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::lists }
+#[derive(recursa::Node)] struct Vec<T> { value: T }
+#[derive(recursa::Node)] struct Leaf { this: Self }
+#[derive(recursa::Node)] struct Root { #[sep(",")] values: Vec<Leaf> }
+"#,
+        ));
+        assert_eq!(
+            invalid.diagnostics[0].kind,
+            MaterializationDiagnosticKind::InvalidContainer,
+        );
+    }
+}

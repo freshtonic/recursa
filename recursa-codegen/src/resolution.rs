@@ -49,6 +49,9 @@ resolution_id!(GenericParameterId);
 resolution_id!(ImportId);
 resolution_id!(ContentTokenId);
 resolution_id!(OpaqueTargetId);
+resolution_id!(TypeAliasId);
+resolution_id!(ResolvedFieldId);
+resolution_id!(ResolvedVariantId);
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResolutionInput<'cfg> {
@@ -71,6 +74,7 @@ pub(crate) struct ResolvedSourceGrammar {
     pub(crate) configuration: SelectedGrammarConfiguration,
     pub(crate) tree: DiscoveredModuleTree,
     pub(crate) nodes: Vec<ResolvedNode>,
+    pub(crate) type_aliases: Vec<ResolvedTypeAlias>,
     pub(crate) generic_parameters: Vec<ResolvedGenericParameter>,
     pub(crate) content_tokens: Vec<ResolvedContentToken>,
     pub(crate) token_bindings: Vec<TokenTypeBinding>,
@@ -100,13 +104,96 @@ pub(crate) struct ResolvedNode {
     pub(crate) ident: String,
     pub(crate) key: NodeKey,
     pub(crate) range: Range<u32>,
+    pub(crate) generics: syn::Generics,
+    pub(crate) metas: Vec<Meta>,
+    pub(crate) body: ResolvedNodeBody,
+    pub(crate) fields: Vec<ResolvedNodeField>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ResolvedNodeBody {
+    Struct { unit: bool },
+    Enum { variants: Vec<ResolvedNodeVariant> },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedNodeVariant {
+    pub(crate) id: ResolvedVariantId,
+    pub(crate) ident: String,
+    pub(crate) range: Range<u32>,
+    pub(crate) metas: Vec<Meta>,
+    pub(crate) fields: Vec<ResolvedFieldId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedNodeField {
+    pub(crate) id: ResolvedFieldId,
+    pub(crate) syntax: Field,
+    pub(crate) metas: Vec<Meta>,
+    pub(crate) range: Range<u32>,
+    pub(crate) ty: ResolvedType,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedType {
+    pub(crate) syntax: Type,
+    pub(crate) source: SourceId,
+    pub(crate) range: Range<u32>,
+    pub(crate) kind: ResolvedTypeKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ResolvedTypeKind {
+    Semantic {
+        use_site: SemanticUseId,
+        target: SemanticTarget,
+        trace: ResolutionTraceId,
+        arguments: Vec<ResolvedGenericArgument>,
+    },
+    Group(Box<ResolvedType>),
+    Parenthesized(Box<ResolvedType>),
+    Reference(Box<ResolvedType>),
+    Tuple(Vec<ResolvedType>),
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ResolvedGenericArgument {
+    Lifetime(syn::Lifetime),
+    Type(ResolvedType),
+    Unsupported(GenericArgument),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedGenericParameter {
     pub(crate) id: GenericParameterId,
-    pub(crate) node: NodeId,
+    pub(crate) owner: SemanticOwner,
     pub(crate) ident: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum SemanticOwner {
+    Node(NodeId),
+    TypeAlias(TypeAliasId),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedTypeAlias {
+    pub(crate) id: TypeAliasId,
+    pub(crate) module: ModuleId,
+    pub(crate) source: SourceId,
+    pub(crate) ident: String,
+    pub(crate) range: Range<u32>,
+    pub(crate) generics: syn::Generics,
+    pub(crate) ty: Type,
+    pub(crate) target: Option<ResolvedType>,
+    pub(crate) defaults: Vec<ResolvedAliasDefault>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedAliasDefault {
+    pub(crate) parameter: GenericParameterId,
+    pub(crate) ty: ResolvedType,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,6 +237,7 @@ pub(crate) struct ResolvedImport {
 pub(crate) enum ImportTarget {
     Module(ModuleId),
     Node(NodeId),
+    TypeAlias(TypeAliasId),
     ContentToken(ContentTokenId),
     Catalog(CatalogType),
     Unsupported,
@@ -160,7 +248,7 @@ pub(crate) enum ImportTarget {
 pub(crate) struct SemanticUse {
     pub(crate) id: SemanticUseId,
     pub(crate) module: ModuleId,
-    pub(crate) containing_node: NodeId,
+    pub(crate) owner: SemanticOwner,
     pub(crate) source: SourceId,
     pub(crate) range: Range<u32>,
     pub(crate) authored: String,
@@ -177,6 +265,7 @@ pub(crate) struct SemanticResolution {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SemanticTarget {
     Node(NodeId),
+    TypeAlias(TypeAliasId),
     GenericParameter(GenericParameterId),
     ContentToken(ContentTokenId),
     Catalog(CatalogType),
@@ -206,6 +295,7 @@ pub(crate) enum ResolutionTraceStep {
     Module(ModuleId),
     Import(ImportId),
     Declaration(NodeId),
+    TypeAlias(TypeAliasId),
     TokenBinding(ContentTokenId),
     GenericParameter(GenericParameterId),
     Prelude(CatalogType),
@@ -260,6 +350,7 @@ struct Binding {
 enum BindingKind {
     Module(ModuleId),
     Node(NodeId),
+    TypeAlias(TypeAliasId),
     ContentToken(ContentTokenId),
     Catalog(CatalogType),
     Unsupported(OpaqueTargetId),
@@ -343,11 +434,42 @@ struct ConfiguredNodeField {
     metas: Vec<Meta>,
 }
 
+struct ConfiguredNodeVariant {
+    ident: String,
+    range: Range<u32>,
+    metas: Vec<Meta>,
+    fields: Vec<ConfiguredNodeField>,
+}
+
+enum ConfiguredNodeBody {
+    Struct {
+        unit: bool,
+        fields: Vec<ConfiguredNodeField>,
+    },
+    Enum {
+        variants: Vec<ConfiguredNodeVariant>,
+    },
+}
+
 #[derive(Clone, Debug)]
 struct PendingNode {
     resolved: ResolvedNode,
     generic_parameters: BTreeMap<String, GenericParameterId>,
-    fields: Vec<Type>,
+    fields: Vec<PendingNodeField>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingNodeField {
+    id: ResolvedFieldId,
+    syntax: Field,
+    metas: Vec<Meta>,
+    range: Range<u32>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingTypeAlias {
+    resolved: ResolvedTypeAlias,
+    generic_parameters: BTreeMap<String, GenericParameterId>,
 }
 
 struct Resolver<'cfg> {
@@ -365,7 +487,10 @@ struct Resolver<'cfg> {
     token_bindings: Vec<TokenTypeBinding>,
     pending_content_tokens: Vec<PendingContentTokenSite>,
     next_opaque_target: usize,
+    next_resolved_field: usize,
+    next_resolved_variant: usize,
     nodes: Vec<PendingNode>,
+    type_aliases: Vec<PendingTypeAlias>,
     generic_parameters: Vec<ResolvedGenericParameter>,
     uses: Vec<SemanticUse>,
     resolutions: Vec<SemanticResolution>,
@@ -394,6 +519,8 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         discovery: input.discovery_inputs,
         module_anchor: anchor.clone(),
         facade: facade.clone(),
+        text_equivalence: configuration.syntax.text_equivalence,
+        max_lookahead: configuration.syntax.max_lookahead,
     };
     let mut resolver = Resolver {
         cfg: input.cfg,
@@ -410,7 +537,10 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         token_bindings: Vec::new(),
         pending_content_tokens: Vec::new(),
         next_opaque_target: 0,
+        next_resolved_field: 0,
+        next_resolved_variant: 0,
         nodes: Vec::new(),
+        type_aliases: Vec::new(),
         generic_parameters: Vec::new(),
         uses: Vec::new(),
         resolutions: Vec::new(),
@@ -433,6 +563,11 @@ impl Resolver<'_> {
             configuration: self.configuration,
             tree: self.tree,
             nodes: self.nodes.into_iter().map(|node| node.resolved).collect(),
+            type_aliases: self
+                .type_aliases
+                .into_iter()
+                .map(|alias| alias.resolved)
+                .collect(),
             generic_parameters: self.generic_parameters,
             content_tokens: self.content_tokens,
             token_bindings: self.token_bindings,
@@ -534,23 +669,63 @@ impl Resolver<'_> {
                 let name = ident.unraw().to_string();
                 let is_node =
                     may_be_node && has_node_derive(&configured, &self.build_inputs.facade.ident);
+                let is_type_alias = matches!(item, Item::Type(_));
                 let binding_id = BindingId::next(self.bindings.len());
-                let opaque_target = (!is_node).then(|| self.allocate_opaque_target());
+                let opaque_target =
+                    (!is_node && !is_type_alias).then(|| self.allocate_opaque_target());
                 let kind = if is_node {
-                    let configured_fields = configured_node_fields(
+                    let id = NodeId::next(self.nodes.len());
+                    let configured_body = configured_node_body(
                         &item,
                         self.cfg,
                         &mut self.diagnostics,
                         &self.tree,
                         inclusion.source,
                     );
-                    let fields = configured_fields
+                    let mut fields = Vec::new();
+                    let body = match configured_body {
+                        ConfiguredNodeBody::Struct {
+                            unit,
+                            fields: configured_fields,
+                        } => {
+                            fields.extend(
+                                configured_fields
+                                    .into_iter()
+                                    .map(|field| self.register_node_field(field)),
+                            );
+                            ResolvedNodeBody::Struct { unit }
+                        }
+                        ConfiguredNodeBody::Enum { variants } => ResolvedNodeBody::Enum {
+                            variants: variants
+                                .into_iter()
+                                .map(|variant| {
+                                    let variant_id =
+                                        ResolvedVariantId::next(self.next_resolved_variant);
+                                    self.next_resolved_variant += 1;
+                                    let field_ids = variant
+                                        .fields
+                                        .into_iter()
+                                        .map(|field| {
+                                            let field = self.register_node_field(field);
+                                            let id = field.id;
+                                            fields.push(field);
+                                            id
+                                        })
+                                        .collect();
+                                    ResolvedNodeVariant {
+                                        id: variant_id,
+                                        ident: variant.ident,
+                                        range: variant.range,
+                                        metas: variant.metas,
+                                        fields: field_ids,
+                                    }
+                                })
+                                .collect(),
+                        },
+                    };
+                    let content_tokens = fields
                         .iter()
-                        .map(|configured| configured.field.ty.clone())
-                        .collect();
-                    let content_tokens = configured_fields
-                        .iter()
-                        .filter_map(content_token_site)
+                        .filter_map(pending_content_token_site)
                         .map(|(ident, visibility, range)| PendingContentTokenSite {
                             module: inclusion.id,
                             source: inclusion.source,
@@ -559,25 +734,8 @@ impl Resolver<'_> {
                             visibility,
                         })
                         .collect::<Vec<_>>();
-                    let id = NodeId::next(self.nodes.len());
-                    let generic_parameters = generics
-                        .params
-                        .iter()
-                        .filter_map(|parameter| {
-                            let syn::GenericParam::Type(parameter) = parameter else {
-                                return None;
-                            };
-                            let parameter_id =
-                                GenericParameterId::next(self.generic_parameters.len());
-                            let ident = parameter.ident.unraw().to_string();
-                            self.generic_parameters.push(ResolvedGenericParameter {
-                                id: parameter_id,
-                                node: id,
-                                ident: ident.clone(),
-                            });
-                            Some((ident, parameter_id))
-                        })
-                        .collect();
+                    let generic_parameters =
+                        self.register_generic_parameters(&generics, SemanticOwner::Node(id));
                     let mut key = self.build_inputs.module_anchor.segments.clone();
                     key.extend(inclusion.logical_path.iter().cloned());
                     key.push(name.clone());
@@ -589,12 +747,35 @@ impl Resolver<'_> {
                             ident: name.clone(),
                             key: NodeKey { segments: key },
                             range: span_range(ident.span()),
+                            generics,
+                            metas: configured.clone(),
+                            body,
+                            fields: Vec::new(),
                         },
                         generic_parameters,
                         fields,
                     });
                     self.pending_content_tokens.extend(content_tokens);
                     BindingKind::Node(id)
+                } else if let Item::Type(item_type) = &item {
+                    let id = TypeAliasId::next(self.type_aliases.len());
+                    let generic_parameters =
+                        self.register_generic_parameters(&generics, SemanticOwner::TypeAlias(id));
+                    self.type_aliases.push(PendingTypeAlias {
+                        resolved: ResolvedTypeAlias {
+                            id,
+                            module: inclusion.id,
+                            source: inclusion.source,
+                            ident: name.clone(),
+                            range: span_range(ident.span()),
+                            generics,
+                            ty: (*item_type.ty).clone(),
+                            target: None,
+                            defaults: Vec::new(),
+                        },
+                        generic_parameters,
+                    });
+                    BindingKind::TypeAlias(id)
                 } else {
                     BindingKind::Unsupported(
                         opaque_target.expect("non-Node declarations have opaque identities"),
@@ -613,6 +794,41 @@ impl Resolver<'_> {
                 });
             }
         }
+    }
+
+    fn register_node_field(&mut self, configured: ConfiguredNodeField) -> PendingNodeField {
+        let id = ResolvedFieldId::next(self.next_resolved_field);
+        self.next_resolved_field += 1;
+        PendingNodeField {
+            id,
+            range: span_range(configured.field.ty.span()),
+            syntax: configured.field,
+            metas: configured.metas,
+        }
+    }
+
+    fn register_generic_parameters(
+        &mut self,
+        generics: &syn::Generics,
+        owner: SemanticOwner,
+    ) -> BTreeMap<String, GenericParameterId> {
+        generics
+            .params
+            .iter()
+            .filter_map(|parameter| {
+                let syn::GenericParam::Type(parameter) = parameter else {
+                    return None;
+                };
+                let id = GenericParameterId::next(self.generic_parameters.len());
+                let ident = parameter.ident.unraw().to_string();
+                self.generic_parameters.push(ResolvedGenericParameter {
+                    id,
+                    owner,
+                    ident: ident.clone(),
+                });
+                Some((ident, id))
+            })
+            .collect()
     }
 
     fn insert_binding(&mut self, binding: Binding) {
@@ -1570,32 +1786,88 @@ impl Resolver<'_> {
     }
 
     fn resolve_fields(&mut self) {
-        let nodes = self.nodes.clone();
-        for node in nodes {
-            for ty in &node.fields {
-                self.resolve_type(
-                    ty,
+        for node_index in 0..self.nodes.len() {
+            let node = self.nodes[node_index].clone();
+            let mut resolved_fields = Vec::new();
+            for field in &node.fields {
+                if let Some(ty) = self.resolve_type(
+                    &field.syntax.ty,
                     node.resolved.module,
-                    node.resolved.id,
+                    SemanticOwner::Node(node.resolved.id),
                     node.resolved.source,
-                );
+                ) {
+                    resolved_fields.push(ResolvedNodeField {
+                        id: field.id,
+                        syntax: field.syntax.clone(),
+                        metas: field.metas.clone(),
+                        range: field.range.clone(),
+                        ty,
+                    });
+                }
             }
+            self.nodes[node_index].resolved.fields = resolved_fields;
+        }
+        let mut resolved_aliases = BTreeSet::new();
+        let mut resolution_index = 0;
+        while resolution_index < self.resolutions.len() {
+            let target = self.resolutions[resolution_index].target;
+            resolution_index += 1;
+            let SemanticTarget::TypeAlias(alias_id) = target else {
+                continue;
+            };
+            if !resolved_aliases.insert(alias_id) {
+                continue;
+            }
+            let alias = self.type_aliases[alias_id.index()].clone();
+            let target = self.resolve_type(
+                &alias.resolved.ty,
+                alias.resolved.module,
+                SemanticOwner::TypeAlias(alias.resolved.id),
+                alias.resolved.source,
+            );
+            self.type_aliases[alias_id.index()].resolved.target = target;
+            let parameter_ids = alias.generic_parameters;
+            let mut defaults = Vec::new();
+            for parameter in &alias.resolved.generics.params {
+                if let syn::GenericParam::Type(parameter) = parameter
+                    && let Some(default) = &parameter.default
+                    && let Some(ty) = self.resolve_type(
+                        default,
+                        alias.resolved.module,
+                        SemanticOwner::TypeAlias(alias.resolved.id),
+                        alias.resolved.source,
+                    )
+                {
+                    defaults.push(ResolvedAliasDefault {
+                        parameter: parameter_ids[&parameter.ident.unraw().to_string()],
+                        ty,
+                    });
+                }
+            }
+            self.type_aliases[alias_id.index()].resolved.defaults = defaults;
         }
     }
 
-    fn resolve_type(&mut self, ty: &Type, module: ModuleId, node: NodeId, source: SourceId) {
+    fn resolve_type(
+        &mut self,
+        ty: &Type,
+        module: ModuleId,
+        owner: SemanticOwner,
+        source: SourceId,
+    ) -> Option<ResolvedType> {
+        let range = span_range(ty.span());
         match ty {
             Type::Path(type_path) => {
                 let path = &type_path.path;
                 let authored = path_text(path);
                 let use_id = SemanticUseId::next(self.uses.len());
-                let range = span_range(path.span());
+                let path_range = span_range(path.span());
                 self.uses.push(SemanticUse {
                     id: use_id,
                     module,
-                    containing_node: node,
+                    owner,
                     source,
-                    range: range.clone(),
+                    range: path_range.clone(),
                     authored: authored.clone(),
                 });
                 let outcome = if type_path.qself.is_some() {
@@ -1604,9 +1876,9 @@ impl Resolver<'_> {
                         "qualified semantic paths are outside the local resolver".to_owned(),
                     ))
                 } else {
-                    self.resolve_path(path, module, node)
+                    self.resolve_path(path, module, owner)
                 };
-                match outcome {
+                let resolved_target = match outcome {
                     Ok((target, steps)) => {
                         let trace = ResolutionTraceId::next(self.traces.len());
                         self.traces.push(ResolutionTrace { id: trace, steps });
@@ -1616,30 +1888,93 @@ impl Resolver<'_> {
                             target,
                             trace,
                         });
+                        Some((target, trace))
                     }
                     Err((kind, message)) => {
-                        self.push_site_diagnostic(kind, source, Some(range), message)
+                        self.push_site_diagnostic(kind, source, Some(path_range), message);
+                        None
                     }
-                }
-                for segment in &path.segments {
-                    if let PathArguments::AngleBracketed(arguments) = &segment.arguments {
-                        for argument in &arguments.args {
-                            if let GenericArgument::Type(argument) = argument {
-                                self.resolve_type(argument, module, node, source);
+                };
+                let mut arguments = Vec::new();
+                if let Some(segment) = path.segments.last()
+                    && let PathArguments::AngleBracketed(authored_arguments) = &segment.arguments
+                {
+                    for argument in &authored_arguments.args {
+                        arguments.push(match argument {
+                            GenericArgument::Lifetime(lifetime) => {
+                                ResolvedGenericArgument::Lifetime(lifetime.clone())
                             }
-                        }
+                            GenericArgument::Type(argument) => ResolvedGenericArgument::Type(
+                                self.resolve_type(argument, module, owner, source)?,
+                            ),
+                            other => ResolvedGenericArgument::Unsupported(other.clone()),
+                        });
                     }
                 }
+                let (target, trace) = resolved_target?;
+                Some(ResolvedType {
+                    syntax: ty.clone(),
+                    source,
+                    range,
+                    kind: ResolvedTypeKind::Semantic {
+                        use_site: use_id,
+                        target,
+                        trace,
+                        arguments,
+                    },
+                })
             }
-            Type::Group(group) => self.resolve_type(&group.elem, module, node, source),
-            Type::Paren(paren) => self.resolve_type(&paren.elem, module, node, source),
-            Type::Reference(reference) => self.resolve_type(&reference.elem, module, node, source),
+            Type::Group(group) => Some(ResolvedType {
+                syntax: ty.clone(),
+                source,
+                range,
+                kind: ResolvedTypeKind::Group(Box::new(self.resolve_type(
+                    &group.elem,
+                    module,
+                    owner,
+                    source,
+                )?)),
+            }),
+            Type::Paren(paren) => Some(ResolvedType {
+                syntax: ty.clone(),
+                source,
+                range,
+                kind: ResolvedTypeKind::Parenthesized(Box::new(self.resolve_type(
+                    &paren.elem,
+                    module,
+                    owner,
+                    source,
+                )?)),
+            }),
+            Type::Reference(reference) => Some(ResolvedType {
+                syntax: ty.clone(),
+                source,
+                range,
+                kind: ResolvedTypeKind::Reference(Box::new(self.resolve_type(
+                    &reference.elem,
+                    module,
+                    owner,
+                    source,
+                )?)),
+            }),
             Type::Tuple(tuple) => {
+                let mut elements = Vec::new();
                 for element in &tuple.elems {
-                    self.resolve_type(element, module, node, source);
+                    elements.push(self.resolve_type(element, module, owner, source)?);
                 }
+                Some(ResolvedType {
+                    syntax: ty.clone(),
+                    source,
+                    range,
+                    kind: ResolvedTypeKind::Tuple(elements),
+                })
             }
-            _ => {}
+            _ => Some(ResolvedType {
+                syntax: ty.clone(),
+                source,
+                range,
+                kind: ResolvedTypeKind::Unsupported,
+            }),
         }
     }
 
@@ -1647,7 +1982,7 @@ impl Resolver<'_> {
         &self,
         path: &Path,
         use_module: ModuleId,
-        containing_node: NodeId,
+        owner: SemanticOwner,
     ) -> Result<(SemanticTarget, Vec<ResolutionTraceStep>), (ResolutionDiagnosticKind, String)>
     {
         let names = path
@@ -1669,6 +2004,12 @@ impl Resolver<'_> {
                     "associated paths through `Self` are unsupported".to_owned(),
                 ));
             }
+            let SemanticOwner::Node(containing_node) = owner else {
+                return Err((
+                    ResolutionDiagnosticKind::UnsupportedDeclaration,
+                    "`Self` is unsupported in a selected-tree type alias".to_owned(),
+                ));
+            };
             return Ok((
                 SemanticTarget::Node(containing_node),
                 vec![
@@ -1678,7 +2019,7 @@ impl Resolver<'_> {
             ));
         }
         if !matches!(names[0].as_str(), "self" | "super" | "crate")
-            && let Some(parameter) = self.generic_parameter(containing_node, &names[0])
+            && let Some(parameter) = self.generic_parameter(owner, &names[0])
         {
             if names.len() != 1 {
                 return Err((
@@ -1765,6 +2106,10 @@ impl Resolver<'_> {
                 steps.push(ResolutionTraceStep::Declaration(node));
                 Ok((SemanticTarget::Node(node), steps))
             }
+            BindingKind::TypeAlias(alias) => {
+                steps.push(ResolutionTraceStep::TypeAlias(alias));
+                Ok((SemanticTarget::TypeAlias(alias), steps))
+            }
             BindingKind::ContentToken(token) => {
                 steps.push(ResolutionTraceStep::TokenBinding(token));
                 Ok((SemanticTarget::ContentToken(token), steps))
@@ -1787,11 +2132,17 @@ impl Resolver<'_> {
         }
     }
 
-    fn generic_parameter(&self, node: NodeId, name: &str) -> Option<GenericParameterId> {
-        self.nodes[node.index()]
-            .generic_parameters
-            .get(name)
-            .copied()
+    fn generic_parameter(&self, owner: SemanticOwner, name: &str) -> Option<GenericParameterId> {
+        match owner {
+            SemanticOwner::Node(node) => self.nodes[node.index()]
+                .generic_parameters
+                .get(name)
+                .copied(),
+            SemanticOwner::TypeAlias(alias) => self.type_aliases[alias.index()]
+                .generic_parameters
+                .get(name)
+                .copied(),
+        }
     }
 
     fn binding_visible(&self, binding: &Binding, use_module: ModuleId) -> bool {
@@ -2112,20 +2463,24 @@ fn item_declaration(item: &Item) -> Option<(syn::Ident, Visibility, syn::Generic
     }
 }
 
-fn configured_node_fields(
+fn configured_node_body(
     item: &Item,
     cfg: &CargoCfgSnapshot,
     diagnostics: &mut Vec<ResolutionDiagnostic>,
     tree: &DiscoveredModuleTree,
     source: SourceId,
-) -> Vec<ConfiguredNodeField> {
-    let fields = match item {
-        Item::Struct(item) => item.fields.iter().collect::<Vec<_>>(),
-        Item::Enum(item) => item
-            .variants
-            .iter()
-            .filter_map(|variant| match configured_metas(&variant.attrs, cfg) {
-                Ok(Some(_)) => Some(variant.fields.iter().collect::<Vec<_>>()),
+) -> ConfiguredNodeBody {
+    fn configured_fields(
+        fields: impl IntoIterator<Item = Field>,
+        cfg: &CargoCfgSnapshot,
+        diagnostics: &mut Vec<ResolutionDiagnostic>,
+        tree: &DiscoveredModuleTree,
+        source: SourceId,
+    ) -> Vec<ConfiguredNodeField> {
+        fields
+            .into_iter()
+            .filter_map(|field| match configured_metas(&field.attrs, cfg) {
+                Ok(Some(metas)) => Some(ConfiguredNodeField { field, metas }),
                 Ok(None) => None,
                 Err(error) => {
                     diagnostics.push(ResolutionDiagnostic {
@@ -2137,33 +2492,50 @@ fn configured_node_fields(
                     None
                 }
             })
-            .flatten()
-            .collect(),
-        _ => Vec::new(),
-    };
-    fields
-        .into_iter()
-        .filter_map(|field| match configured_metas(&field.attrs, cfg) {
-            Ok(Some(metas)) => Some(ConfiguredNodeField {
-                field: field.clone(),
-                metas,
-            }),
-            Ok(None) => None,
-            Err(error) => {
-                diagnostics.push(ResolutionDiagnostic {
-                    kind: ResolutionDiagnosticKind::InvalidConfiguration,
-                    path: tree.files[source.index()].path.clone(),
-                    range: Some(error.range),
-                    message: error.message,
-                });
-                None
-            }
-        })
-        .collect()
+            .collect()
+    }
+
+    match item {
+        Item::Struct(item) => ConfiguredNodeBody::Struct {
+            unit: matches!(item.fields, syn::Fields::Unit),
+            fields: configured_fields(item.fields.iter().cloned(), cfg, diagnostics, tree, source),
+        },
+        Item::Enum(item) => ConfiguredNodeBody::Enum {
+            variants: item
+                .variants
+                .iter()
+                .filter_map(|variant| match configured_metas(&variant.attrs, cfg) {
+                    Ok(Some(metas)) => Some(ConfiguredNodeVariant {
+                        ident: variant.ident.unraw().to_string(),
+                        range: span_range(variant.ident.span()),
+                        metas,
+                        fields: configured_fields(
+                            variant.fields.iter().cloned(),
+                            cfg,
+                            diagnostics,
+                            tree,
+                            source,
+                        ),
+                    }),
+                    Ok(None) => None,
+                    Err(error) => {
+                        diagnostics.push(ResolutionDiagnostic {
+                            kind: ResolutionDiagnosticKind::InvalidConfiguration,
+                            path: tree.files[source.index()].path.clone(),
+                            range: Some(error.range),
+                            message: error.message,
+                        });
+                        None
+                    }
+                })
+                .collect(),
+        },
+        _ => unreachable!("only struct and enum Nodes reach configured_node_body"),
+    }
 }
 
-fn content_token_site(
-    configured: &ConfiguredNodeField,
+fn pending_content_token_site(
+    configured: &PendingNodeField,
 ) -> Option<(String, Visibility, Range<u32>)> {
     if !configured
         .metas
@@ -2172,7 +2544,7 @@ fn content_token_site(
     {
         return None;
     }
-    let field = &configured.field;
+    let field = &configured.syntax;
     let Type::Path(path) = &field.ty else {
         return None;
     };
@@ -2253,6 +2625,7 @@ fn import_target(kind: BindingKind) -> ImportTarget {
     match kind {
         BindingKind::Module(module) => ImportTarget::Module(module),
         BindingKind::Node(node) => ImportTarget::Node(node),
+        BindingKind::TypeAlias(alias) => ImportTarget::TypeAlias(alias),
         BindingKind::ContentToken(token) => ImportTarget::ContentToken(token),
         BindingKind::Catalog(catalog) => ImportTarget::Catalog(catalog),
         BindingKind::Unsupported(_) => ImportTarget::Unsupported,
@@ -2391,7 +2764,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        CatalogType, ResolutionDiagnosticKind, ResolutionInput, SemanticTarget,
+        CatalogType, ResolutionDiagnosticKind, ResolutionInput, SemanticOwner, SemanticTarget,
         resolve_local_semantics,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
@@ -2722,6 +3095,7 @@ struct Root {
 recursa::grammar! { module = crate::sql }
 mod source { #[derive(recursa::Node)] pub struct Leaf { this: Self } }
 use self::source::Leaf as Vec;
+type Identity<T> = T;
 #[derive(recursa::Node)]
 struct Root<Vec> { value: Vec }
 "#,
@@ -2729,10 +3103,29 @@ struct Root<Vec> { value: Vec }
 
         assert!(report.diagnostics.is_empty());
         let resolved = report.resolved.unwrap();
-        assert_eq!(resolved.generic_parameters.len(), 1);
+        assert_eq!(resolved.generic_parameters.len(), 2);
+        let node_parameter = resolved
+            .generic_parameters
+            .iter()
+            .find(|parameter| matches!(parameter.owner, SemanticOwner::Node(_)))
+            .unwrap();
+        let alias_parameter = resolved
+            .generic_parameters
+            .iter()
+            .find(|parameter| matches!(parameter.owner, SemanticOwner::TypeAlias(_)))
+            .unwrap();
+        assert!(matches!(
+            node_parameter.owner,
+            SemanticOwner::Node(node) if resolved.nodes[node.index()].ident == "Root"
+        ));
+        assert!(matches!(
+            alias_parameter.owner,
+            SemanticOwner::TypeAlias(alias)
+                if resolved.type_aliases[alias.index()].ident == "Identity"
+        ));
         assert_eq!(
             resolved.resolutions[0].target,
-            SemanticTarget::GenericParameter(resolved.generic_parameters[0].id),
+            SemanticTarget::GenericParameter(node_parameter.id),
         );
     }
 
@@ -3367,6 +3760,9 @@ mod consumer {{
                     let use_site = &resolved.uses[resolution.use_site.index()];
                     let target = match resolution.target {
                         SemanticTarget::Node(node) => format!("node:{}", node_key(resolved, node)),
+                        SemanticTarget::TypeAlias(alias) => {
+                            format!("alias:{}", resolved.type_aliases[alias.index()].ident)
+                        }
                         SemanticTarget::GenericParameter(parameter) => format!(
                             "generic:{}",
                             resolved.generic_parameters[parameter.index()].ident
@@ -3409,6 +3805,9 @@ mod consumer {{
                             super::ResolutionTraceStep::Declaration(node) => {
                                 format!("declaration:{}", node_key(resolved, *node))
                             }
+                            super::ResolutionTraceStep::TypeAlias(alias) => {
+                                format!("alias:{}", resolved.type_aliases[alias.index()].ident)
+                            }
                             super::ResolutionTraceStep::TokenBinding(token) => format!(
                                 "token-binding:{}",
                                 resolved.content_tokens[token.index()].ident
@@ -3426,7 +3825,15 @@ mod consumer {{
                         })
                         .collect();
                     (
-                        node_key(resolved, use_site.containing_node),
+                        node_key(
+                            resolved,
+                            match use_site.owner {
+                                super::SemanticOwner::Node(node) => node,
+                                super::SemanticOwner::TypeAlias(_) => {
+                                    panic!("fixture projection contains only Node fields")
+                                }
+                            },
+                        ),
                         resolution.authored.clone(),
                         target,
                         steps,
