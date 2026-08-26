@@ -2987,7 +2987,10 @@ fn declaration_elements(
                         let usage = &source.token_uses[separator.token_use.index()];
                         let definition = &source.token_definitions[usage.definition.index()];
                         match &definition.kind {
-                            TokenDefinitionKind::Fixed(fixed) => Ok(fixed.spelling.clone()),
+                            TokenDefinitionKind::Fixed(fixed) => Ok(fixed_pretty_spelling(
+                                &fixed.spelling,
+                                lowered.grammar.text_equivalence,
+                            )),
                             _ => {
                                 Err("an authored separator references a non-fixed token".to_owned())
                             }
@@ -4122,7 +4125,10 @@ fn plan_elements(
                                 let definition =
                                     &source.token_definitions[token_use.definition.index()];
                                 match &definition.kind {
-                                    TokenDefinitionKind::Fixed(fixed) => Ok(fixed.spelling.clone()),
+                                    TokenDefinitionKind::Fixed(fixed) => Ok(fixed_pretty_spelling(
+                                        &fixed.spelling,
+                                        lowered.grammar.text_equivalence,
+                                    )),
                                     _ => Err(
                                         "a repetition separator is not fixed syntax".to_owned()
                                     ),
@@ -10715,6 +10721,111 @@ struct B;
         assert!(
             plan.validate()
                 .expect_err("corrupt emitted Pretty plan must diverge")
+                .contains("Pretty plan family")
+        );
+    }
+
+    #[test]
+    fn ascii_insensitive_word_separators_share_canonical_pretty_family_authority() {
+        let package = tempfile::tempdir().expect("temporary word-separator authority fixture");
+        fs::write(
+            package.path().join("grammar.rs"),
+            r#"
+                recursa::grammar! {
+                    module = crate::grammar,
+                    derives(Pretty),
+                    keyword_matching = ascii_insensitive,
+                    max_lookahead = 1,
+                }
+
+                recursa::tokens! {
+                    ignore = r"[ \t\n\r]+",
+                    keywords { AND => "and" }
+                    punctuation { LBRACKET => "[", RBRACKET => "]" }
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Name<'input> {
+                    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+                    pub value: NameText<'input>,
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Separated<T> {
+                    #[tok(LBRACKET, this, RBRACKET)]
+                    #[sep(AND)]
+                    pub values: Vec<T>,
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Root<'input> {
+                    pub value: Separated<Name<'input>>,
+                }
+            "#,
+        )
+        .expect("write word-separator authority fixture");
+        let success = analyze_source_tree(
+            M3Input::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("analyze word-separator authority fixture");
+        let lowered = &success.analyzed.lowered;
+        let authority = authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
+            .expect("derive word-separator Pretty authority from source");
+        let mut plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+            .expect("canonical word separator joins one Pretty family");
+        assert_eq!(Some(plan.pretty.clone()), authority);
+        let application_separator = plan
+            .nodes
+            .iter()
+            .flat_map(|node| &node.parse_applications)
+            .flat_map(|application| match &application.body {
+                NodeBodyPlan::Struct { elements, .. } => elements.iter().collect::<Vec<_>>(),
+                NodeBodyPlan::Enum { variants, .. } => variants
+                    .iter()
+                    .flat_map(|variant| variant.elements.iter())
+                    .collect(),
+                NodeBodyPlan::Pratt(_) => Vec::new(),
+            })
+            .find_map(|element| match &element.kind {
+                ElementParseKind::Semantic {
+                    separator: Some(separator),
+                    attachment: Some(_),
+                    ..
+                } => Some(separator),
+                ElementParseKind::Fixed { .. } | ElementParseKind::Semantic { .. } => None,
+            })
+            .expect("fixture materializes an attached word-separated application");
+        assert_eq!(application_separator, "AND");
+
+        let separator = plan
+            .nodes
+            .iter_mut()
+            .flat_map(|node| match &mut node.body {
+                NodeBodyPlan::Struct { elements, .. } => elements.iter_mut().collect::<Vec<_>>(),
+                NodeBodyPlan::Enum { variants, .. } => variants
+                    .iter_mut()
+                    .flat_map(|variant| variant.elements.iter_mut())
+                    .collect(),
+                NodeBodyPlan::Pratt(_) => Vec::new(),
+            })
+            .find_map(|element| match &mut element.kind {
+                ElementParseKind::Semantic {
+                    separator: Some(separator),
+                    attachment: Some(_),
+                    ..
+                } => Some(separator),
+                ElementParseKind::Fixed { .. } | ElementParseKind::Semantic { .. } => None,
+            })
+            .expect("fixture contains an attached word-separated repetition");
+        assert_eq!(separator, "AND");
+        *separator = "and".to_owned();
+        plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens);
+
+        assert_ne!(Some(plan.pretty.clone()), authority);
+        assert!(
+            plan.validate()
+                .expect_err("raw word separator must diverge from Pretty authority")
                 .contains("Pretty plan family")
         );
     }
