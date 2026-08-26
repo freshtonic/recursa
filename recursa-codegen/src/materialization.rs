@@ -128,6 +128,7 @@ pub(crate) struct MaterializedNodeApplication {
     pub(crate) id: MaterializedApplicationId,
     pub(crate) node: NodeId,
     pub(crate) display_name: String,
+    pub(crate) type_arguments: Vec<ClosedType>,
     pub(crate) body: MaterializedNodeBody,
 }
 
@@ -615,10 +616,15 @@ impl Materializer {
         self.application_by_key.insert(key.clone(), id);
         self.active_applications.push(key);
         let display_name = self.display_application(&node, &type_arguments);
+        let closed_type_arguments = type_arguments
+            .iter()
+            .map(|argument| argument.closed.clone())
+            .collect();
         self.applications.push(MaterializedNodeApplication {
             id,
             node: node_id,
             display_name,
+            type_arguments: closed_type_arguments,
             body: MaterializedNodeBody::Struct(Vec::new()),
         });
         let parameter_ids = self
