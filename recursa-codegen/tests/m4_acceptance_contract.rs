@@ -16,11 +16,11 @@ fn m4_matrix_distinguishes_executable_green_evidence_from_pending_dependencies()
     assert_eq!(rows.len(), 16);
     assert_eq!(
         rows.values().filter(|row| row.status == "Green").count(),
-        11,
+        13,
     );
     assert_eq!(
         rows.values().filter(|row| row.status == "Pending").count(),
-        5,
+        3,
     );
 
     for (id, row) in &rows {
@@ -52,10 +52,12 @@ fn m4_matrix_distinguishes_executable_green_evidence_from_pending_dependencies()
             "M4-DIAGRAM-DECL-LOCAL",
             "M4-PRATT-DIAGRAM",
             "M4-LEGACY-RUNTIME-TOY",
+            "M4-LEGACY-RUNTIME-ARITH",
             "M4-LEGACY-RUNTIME-JSON",
             "M4-LEGACY-RUNTIME-SQL",
             "M4-LEGACY-RUNTIME-OPTQ",
             "M4-LEGACY-RUNTIME-CSKW",
+            "M4-PRETTY-ROUNDTRIP",
         ]),
     );
 
@@ -67,8 +69,6 @@ fn m4_matrix_distinguishes_executable_green_evidence_from_pending_dependencies()
     assert_eq!(
         pending,
         BTreeSet::from([
-            "M4-LEGACY-RUNTIME-ARITH",
-            "M4-PRETTY-ROUNDTRIP",
             "M4-EXPLORER",
             "M4-DEBUG-BUNDLE",
             "M4-FULL-FUNCTIONAL-MATRIX",

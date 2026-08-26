@@ -7,30 +7,13 @@ use tempfile::TempDir;
 const FIXTURE: &str = "tests/fixtures/m4/legacy-grammars";
 
 #[test]
-fn five_non_generic_frozen_legacy_grammar_suites_pass() {
+fn all_six_frozen_legacy_grammar_suites_pass() {
     let workspace = scaffold_fixture();
-    let output = run_fixture(
-        &workspace,
-        &["--workspace", "--exclude", "recursa-legacy-arith"],
-    );
+    let output = run_fixture(&workspace, &["--workspace"]);
     assert!(
         output.status.success(),
         "legacy grammar workspace failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
-#[test]
-fn arithmetic_fixture_pins_the_pretty_blocker_until_ticket_68_lands() {
-    let workspace = scaffold_fixture();
-    let output = run_fixture(&workspace, &["-p", "recursa-legacy-arith"]);
-    assert!(!output.status.success(), "#68 has landed; enable the suite");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains(
-            "Node `Atom` must have exactly one materialized application before compound emission"
-        ),
-        "arithmetic must remain blocked only by the known pre-#68 invariant\nstderr:\n{}",
         String::from_utf8_lossy(&output.stderr),
     );
 }
