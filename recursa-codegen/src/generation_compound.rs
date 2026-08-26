@@ -7955,6 +7955,62 @@ struct B;
         assert_no_transaction_staging(output.path());
     }
 
+    #[test]
+    fn warnings_publish_one_complete_generation_and_remain_on_the_result() {
+        let package = tempfile::tempdir().unwrap();
+        fs::write(
+            package.path().join("grammar.rs"),
+            r#"
+recursa::grammar! { module = crate, max_lookahead = 1 }
+recursa::tokens! { keywords { SELECT => "SELECT" } }
+
+#[derive(recursa::Node)]
+#[tok(SELECT)]
+struct Select;
+
+#[derive(recursa::Node)]
+struct Inner { maybe: Option<Select> }
+
+#[derive(recursa::Node)]
+struct Root {
+    #[sep(SELECT)]
+    items: Vec<Inner>,
+}
+"#,
+        )
+        .unwrap();
+        let success = analyze_source_tree(
+            M3Input::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("warnings retain analyzable output");
+        assert!(success.build_report.warnings().next().is_some());
+        let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default()).unwrap();
+        let rendered = render(&plan).unwrap();
+        let output = tempfile::tempdir().unwrap();
+        publish(output.path(), &plan.identity, &rendered).unwrap();
+
+        let generation = Generation {
+            report: success.build_report,
+        };
+        assert!(generation.report().warnings().next().is_some());
+        assert_eq!(
+            selected_generation(output.path()).as_deref(),
+            Some(plan.identity.as_str())
+        );
+        let published = output.path().join("recursa-generations").join(&plan.identity);
+        assert!(published.join("root.rs").is_file());
+        assert!(published.join("loader-map").is_file());
+        assert_eq!(
+            fs::read_dir(published)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("node-"))
+                .count(),
+            rendered.nodes.len()
+        );
+    }
+
     fn assert_no_transaction_staging(out_dir: &Path) {
         let mut pending = vec![out_dir.to_path_buf()];
         while let Some(directory) = pending.pop() {
