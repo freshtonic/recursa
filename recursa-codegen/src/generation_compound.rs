@@ -11,6 +11,7 @@ use syn::ext::IdentExt as _;
 use syn::spanned::Spanned as _;
 use syn::{GenericArgument, GenericParam, Generics, Ident, PathArguments, Type, Visibility};
 
+use crate::PrattPosition;
 use crate::TypeShape;
 use crate::build_diagnostic::{BuildReport, DiagnosticStage, GenerateError};
 use crate::decision_plan::{
@@ -21,7 +22,8 @@ use crate::lowering::ModuleId;
 use crate::m3::{CargoOutput, M3Input, analyze_source_tree, internal_generate_error};
 use crate::materialization::{
     ClosedType, MaterializedElement, MaterializedNodeApplication, MaterializedNodeBody,
-    MaterializedVariant,
+    MaterializedPrattLed, MaterializedPrattLedPosition, MaterializedPrattNud,
+    MaterializedPrattNudPosition, MaterializedPrattVariant, MaterializedVariant,
 };
 use crate::resolution::{ResolvedFieldStyle, ResolvedNode, ResolvedNodeBody};
 use crate::source_model::TokenDefinitionKind;
@@ -142,6 +144,39 @@ enum NodeBodyPlan {
         variants: Vec<VariantParsePlan>,
         dispatch: PredictiveDispatchPlan,
     },
+    Pratt(Box<PrattParsePlan>),
+}
+
+#[derive(Clone, Debug)]
+struct PrattParsePlan {
+    expected_nud_count: usize,
+    expected_led_count: usize,
+    nud: Vec<PrattNudParsePlan>,
+    led: Vec<PrattLedParsePlan>,
+    nud_dispatch: PredictiveDispatchPlan,
+    led_dispatch: Option<PredictiveDispatchPlan>,
+    nud_failure: PlannedFollow,
+    nud_selection_follow: ExpectedSet,
+    caller_follow_guard: Option<Vec<PrattGuardBranchPlan>>,
+}
+
+#[derive(Clone, Debug)]
+struct PrattNudParsePlan {
+    variant: VariantParsePlan,
+    position: PrattPosition,
+}
+
+#[derive(Clone, Debug)]
+struct PrattLedParsePlan {
+    variant: VariantParsePlan,
+    lhs: ElementParsePlan,
+    position: PrattPosition,
+}
+
+#[derive(Clone, Debug)]
+struct PrattGuardBranchPlan {
+    position: PrattPosition,
+    expected: ExpectedSet,
 }
 
 #[derive(Clone, Debug)]
@@ -211,6 +246,7 @@ enum ElementParseKind {
         container: Box<PlannedContainer>,
         capture: PlannedCapturePolicy,
         child_capture: PlannedCapturePolicy,
+        pratt_min_bp: Option<u8>,
     },
 }
 
@@ -252,7 +288,7 @@ enum PlannedContainer {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum PlannedFollow {
     Caller,
     Static(ExpectedSet),
@@ -333,6 +369,86 @@ impl ExpectedSet {
         self.atoms.extend(other.atoms.iter().copied());
         self.atoms.sort_unstable();
         self.atoms.dedup();
+    }
+    fn is_empty(&self) -> bool {
+        self.words.iter().all(|word| *word == 0) && self.atoms.is_empty()
+    }
+}
+
+impl PrattParsePlan {
+    fn validate(&self) -> Result<(), String> {
+        if self.nud.len() != self.expected_nud_count || self.nud.is_empty() {
+            return Err("the frozen Pratt plan lacks its complete nud dispatch family".to_owned());
+        }
+        if self.led.len() != self.expected_led_count {
+            return Err("the frozen Pratt plan lacks its complete led dispatch family".to_owned());
+        }
+        if matches!(&self.nud_failure, PlannedFollow::Static(expected) if expected.is_empty()) {
+            return Err("the frozen Pratt plan lacks its nud failure family".to_owned());
+        }
+        validate_predictive_dispatch(&self.nud_dispatch, self.nud.len())?;
+        if self.led.is_empty() {
+            if self.caller_follow_guard.is_some()
+                || self.led_dispatch.is_some()
+                || !self.nud_selection_follow.is_empty()
+            {
+                return Err(
+                    "a Pratt plan without led branches has a caller-FOLLOW guard".to_owned(),
+                );
+            }
+            return Ok(());
+        }
+        let Some(guard) = &self.caller_follow_guard else {
+            return Err("the frozen Pratt plan lacks its caller-FOLLOW guard family".to_owned());
+        };
+        let Some(led_dispatch) = &self.led_dispatch else {
+            return Err("the frozen Pratt plan lacks its led dispatch family".to_owned());
+        };
+        validate_predictive_dispatch(led_dispatch, self.led.len())?;
+        if guard.len() != self.led.len() {
+            return Err("the frozen Pratt caller-FOLLOW guard is corrupt".to_owned());
+        }
+        for branch in &self.led {
+            let recursive_bp = branch.variant.elements.iter().find_map(|element| {
+                let ElementParseKind::Semantic { pratt_min_bp, .. } = &element.kind else {
+                    return None;
+                };
+                *pratt_min_bp
+            });
+            match (branch.position, recursive_bp) {
+                (PrattPosition::Infix { rbp, .. }, Some(actual)) if rbp == actual => {}
+                (PrattPosition::Postfix { .. }, None) => {}
+                _ => {
+                    return Err("the frozen Pratt led binding-power family is corrupt".to_owned());
+                }
+            }
+        }
+        if guard.iter().any(|branch| branch.expected.is_empty()) {
+            return Err("the frozen Pratt caller-FOLLOW guard is corrupt".to_owned());
+        }
+        let mut expected_follow = ExpectedSet::empty(self.nud_selection_follow.words.len() * 64);
+        for branch in guard {
+            expected_follow.union_assign(&branch.expected);
+        }
+        if expected_follow != self.nud_selection_follow {
+            return Err("the frozen Pratt nud FOLLOW family is corrupt".to_owned());
+        }
+        for branch in &self.nud {
+            if let PrattPosition::Prefix { bp } = branch.position {
+                let recursive_bp = branch.variant.elements.iter().find_map(|element| {
+                    let ElementParseKind::Semantic { pratt_min_bp, .. } = &element.kind else {
+                        return None;
+                    };
+                    *pratt_min_bp
+                });
+                if recursive_bp != Some(bp) {
+                    return Err(
+                        "the frozen Pratt prefix binding-power family is corrupt".to_owned()
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -520,7 +636,6 @@ impl EmissionPlan {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-
         let mut nodes = Vec::new();
         let mut instrumentation = EmissionInstrumentation::default();
         for node in &resolved.nodes {
@@ -549,6 +664,13 @@ impl EmissionPlan {
             .filter_map(|node| match &node.body {
                 NodeBodyPlan::Enum { dispatch, .. } => Some(dispatch.frozen_sequence_count),
                 NodeBodyPlan::Struct { .. } => None,
+                NodeBodyPlan::Pratt(pratt) => Some(
+                    pratt.nud_dispatch.frozen_sequence_count
+                        + pratt
+                            .led_dispatch
+                            .as_ref()
+                            .map_or(0, |dispatch| dispatch.frozen_sequence_count),
+                ),
             })
             .sum::<usize>();
         let frozen_parse_identity = parse_plan_identity(&nodes);
@@ -789,11 +911,24 @@ impl EmissionPlan {
         }
         let mut frozen_nodes = 0;
         for node in &self.nodes {
-            if let NodeBodyPlan::Enum { variants, dispatch } = &node.body {
-                if dispatch.frozen_sequence_count == 0 {
-                    return Err("the emitted predictive plan has no frozen sequences".to_owned());
+            match &node.body {
+                NodeBodyPlan::Enum { variants, dispatch } => {
+                    if dispatch.frozen_sequence_count == 0 {
+                        return Err(
+                            "the emitted predictive plan has no frozen sequences".to_owned()
+                        );
+                    }
+                    frozen_nodes += validate_predictive_dispatch(dispatch, variants.len())?;
                 }
-                frozen_nodes += validate_predictive_dispatch(dispatch, variants.len())?;
+                NodeBodyPlan::Pratt(pratt) => {
+                    pratt.validate()?;
+                    frozen_nodes += pratt.nud_dispatch.frozen_node_count;
+                    frozen_nodes += pratt
+                        .led_dispatch
+                        .as_ref()
+                        .map_or(0, |dispatch| dispatch.frozen_node_count);
+                }
+                NodeBodyPlan::Struct { .. } => {}
             }
         }
         if self.instrumentation.frozen_dispatch_nodes_consumed != frozen_nodes
@@ -1095,6 +1230,7 @@ fn plan_node(
                 decisions,
                 kind_count,
                 &input_lifetime,
+                None,
             )?,
         },
         (
@@ -1180,6 +1316,7 @@ fn plan_node(
                         decisions,
                         kind_count,
                         &input_lifetime,
+                        None,
                     )?,
                     capture: resolved_variant.capture.map(PlannedCapturePolicy::from),
                 });
@@ -1238,12 +1375,23 @@ fn plan_node(
                 dispatch,
             }
         }
-        (MaterializedNodeBody::Pratt(_), _, _) => {
-            return Err(format!(
-                "Pratt Node `{}` is emitted by ticket #66, not compound ticket #64",
-                node.ident
-            ));
-        }
+        (
+            MaterializedNodeBody::Pratt(materialized),
+            ResolvedNodeBody::Enum { variants: resolved },
+            TypeShape::Pratt { variants: semantic },
+        ) => NodeBodyPlan::Pratt(Box::new(plan_pratt_node(
+            node,
+            application,
+            application_type,
+            materialized,
+            resolved,
+            semantic,
+            lowered,
+            decisions,
+            kind_count,
+            &input_lifetime,
+            instrumentation,
+        )?)),
         _ => {
             return Err(format!(
                 "Node `{}` source shape and frozen M2 shape disagree",
@@ -1266,6 +1414,391 @@ fn plan_node(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn plan_pratt_node(
+    node: &ResolvedNode,
+    application: &MaterializedNodeApplication,
+    application_type: crate::TypeId,
+    materialized: &[MaterializedPrattVariant],
+    resolved_variants: &[crate::resolution::ResolvedNodeVariant],
+    semantic_variants: &[crate::PrattVariant],
+    lowered: &crate::materialization::LoweredGrammar,
+    decisions: &crate::DecisionProducts,
+    kind_count: usize,
+    input_lifetime: &syn::Lifetime,
+    instrumentation: &mut EmissionInstrumentation,
+) -> Result<PrattParsePlan, String> {
+    let nud_dispatch = decisions
+        .dispatches()
+        .iter()
+        .find(|dispatch| {
+            dispatch.owner() == application_type && dispatch.kind() == DispatchKind::PrattNud
+        })
+        .ok_or_else(|| format!("Pratt Node `{}` lacks its nud dispatch plan", node.ident))?;
+    let led_dispatch = decisions.dispatches().iter().find(|dispatch| {
+        dispatch.owner() == application_type && dispatch.kind() == DispatchKind::PrattLed
+    });
+
+    let nud_failure = decisions
+        .failure_edges()
+        .iter()
+        .find(|edge| {
+            edge.owner() == application_type && edge.kind() == FailureEdgeKind::PrattNudDispatch
+        })
+        .ok_or_else(|| format!("Pratt Node `{}` lacks its nud failure edge", node.ident))?;
+    let nud_failure =
+        planned_expected_recipe(nud_failure.expected(), &lowered.grammar, kind_count)?;
+    let guard = decisions.failure_edges().iter().find(|edge| {
+        edge.owner() == application_type && edge.kind() == FailureEdgeKind::PrattCallerFollowGuard
+    });
+    let guard_branches = match guard.map(|edge| edge.expected()) {
+        Some(ExpectedRecipe::PrattExtendersAtOrAboveMinBp { branches }) => Some(branches),
+        Some(_) => return Err("a Pratt caller-FOLLOW guard has the wrong recipe".to_owned()),
+        None => None,
+    };
+
+    let mut nud = Vec::new();
+    let mut led = Vec::new();
+    let mut nud_by_declaration = Vec::new();
+    let mut led_by_declaration = Vec::new();
+    for variant in materialized {
+        let common = match variant {
+            MaterializedPrattVariant::Nud(nud) => &nud.common,
+            MaterializedPrattVariant::Led(led) => &led.common,
+        };
+        let resolved = resolved_variants
+            .iter()
+            .find(|candidate| candidate.id == common.resolved_variant)
+            .ok_or_else(|| "materialized Pratt variant lacks source shape".to_owned())?;
+        let correlation = lowered
+            .lowering_map
+            .variants
+            .iter()
+            .find(|correlation| {
+                correlation.application == application.id
+                    && correlation.variant == common.resolved_variant
+            })
+            .ok_or_else(|| "materialized Pratt variant lacks M2 correlation".to_owned())?;
+        let semantic = semantic_variants
+            .iter()
+            .find(|variant| variant.declaration == correlation.lowered)
+            .ok_or_else(|| "materialized Pratt variant lacks frozen semantic sites".to_owned())?;
+        match variant {
+            MaterializedPrattVariant::Nud(materialized_nud) => {
+                let branch = nud_dispatch
+                    .branches()
+                    .iter()
+                    .find(|branch| branch.declaration() == correlation.lowered)
+                    .ok_or_else(|| "materialized Pratt nud lacks dispatch branch".to_owned())?;
+                validate_pratt_position(branch.position(), materialized_nud)?;
+                let position = branch
+                    .position()
+                    .ok_or_else(|| "a frozen Pratt nud branch lacks a position".to_owned())?;
+                let operand = match position {
+                    PrattPosition::Prefix { bp } => Some((application_type, bp)),
+                    PrattPosition::Atom => None,
+                    PrattPosition::Infix { .. } | PrattPosition::Postfix { .. } => {
+                        return Err("a frozen nud branch has a led position".to_owned());
+                    }
+                };
+                nud_by_declaration.push((branch.declaration(), nud.len()));
+                nud.push(PrattNudParsePlan {
+                    variant: VariantParsePlan {
+                        ident: emitted_ident(&common.name)?,
+                        style: resolved.style,
+                        elements: plan_elements(
+                            node,
+                            Some(&MaterializedVariant {
+                                resolved_variant: common.resolved_variant,
+                                name: common.name.clone(),
+                                elements: materialized_nud.body.clone(),
+                            }),
+                            &materialized_nud.body,
+                            &semantic.sites,
+                            lowered,
+                            decisions,
+                            kind_count,
+                            input_lifetime,
+                            operand,
+                        )?,
+                        capture: resolved.capture.map(PlannedCapturePolicy::from),
+                    },
+                    position,
+                });
+            }
+            MaterializedPrattVariant::Led(materialized_led) => {
+                let dispatch = led_dispatch.ok_or_else(|| {
+                    format!("Pratt Node `{}` lacks its led dispatch plan", node.ident)
+                })?;
+                let branch = dispatch
+                    .branches()
+                    .iter()
+                    .find(|branch| branch.declaration() == correlation.lowered)
+                    .ok_or_else(|| "materialized Pratt led lacks dispatch branch".to_owned())?;
+                validate_pratt_led_position(branch.position(), materialized_led)?;
+                let position = branch
+                    .position()
+                    .ok_or_else(|| "a frozen Pratt led branch lacks a position".to_owned())?;
+                let operand = match position {
+                    PrattPosition::Infix { rbp, .. } => Some((application_type, rbp)),
+                    PrattPosition::Postfix { .. } => None,
+                    PrattPosition::Atom | PrattPosition::Prefix { .. } => {
+                        return Err("a frozen led branch has a nud position".to_owned());
+                    }
+                };
+                let synthetic_variant = MaterializedVariant {
+                    resolved_variant: common.resolved_variant,
+                    name: common.name.clone(),
+                    elements: materialized_led.tail.clone(),
+                };
+                led_by_declaration.push((branch.declaration(), led.len()));
+                led.push(PrattLedParsePlan {
+                    variant: VariantParsePlan {
+                        ident: emitted_ident(&common.name)?,
+                        style: resolved.style,
+                        elements: plan_elements(
+                            node,
+                            Some(&synthetic_variant),
+                            &materialized_led.tail,
+                            &semantic.sites,
+                            lowered,
+                            decisions,
+                            kind_count,
+                            input_lifetime,
+                            operand,
+                        )?,
+                        capture: resolved.capture.map(PlannedCapturePolicy::from),
+                    },
+                    lhs: plan_pratt_lhs(node, resolved, materialized_led, lowered, input_lifetime)?,
+                    position,
+                });
+            }
+        }
+    }
+
+    let nud_dispatch = plan_joined_dispatch(
+        nud_dispatch,
+        &nud_by_declaration,
+        lowered,
+        kind_count,
+        instrumentation,
+    )?;
+    let led_dispatch = led_dispatch
+        .map(|dispatch| {
+            plan_joined_dispatch(
+                dispatch,
+                &led_by_declaration,
+                lowered,
+                kind_count,
+                instrumentation,
+            )
+        })
+        .transpose()?;
+    let mut nud_dispatch_expected = ExpectedSet::empty(kind_count);
+    for edge in &nud_dispatch.root.edges {
+        nud_dispatch_expected.union_assign(&edge.position.expected);
+    }
+    let (nud_failure_expected, nud_failure_uses_caller) = match &nud_failure {
+        PlannedFollow::Caller => (ExpectedSet::empty(kind_count), true),
+        PlannedFollow::Static(expected) => (expected.clone(), false),
+        PlannedFollow::StaticAndCaller(expected) => (expected.clone(), true),
+    };
+    if nud_dispatch_expected != nud_failure_expected
+        || nud_dispatch
+            .root
+            .target
+            .is_some_and(|target| target.on_caller_follow)
+            != nud_failure_uses_caller
+    {
+        return Err("the frozen Pratt nud dispatch and failure products disagree".to_owned());
+    }
+    let caller_follow_guard = match (guard_branches, &led_dispatch) {
+        (Some(branches), Some(dispatch)) => {
+            let frozen_led = decisions
+                .dispatches()
+                .iter()
+                .find(|candidate| {
+                    candidate.owner() == application_type
+                        && candidate.kind() == DispatchKind::PrattLed
+                })
+                .expect("the joined led dispatch came from frozen decisions");
+            if branches.as_slice() != frozen_led.branches() {
+                return Err("the frozen Pratt guard and led dispatch branches disagree".to_owned());
+            }
+            let _ = dispatch;
+            Some(
+                branches
+                    .iter()
+                    .map(|branch| {
+                        let position = branch.position().ok_or_else(|| {
+                            "a frozen Pratt guard branch lacks a position".to_owned()
+                        })?;
+                        let first = branch
+                            .sequences()
+                            .iter()
+                            .filter_map(|sequence| sequence.positions().first().cloned())
+                            .collect::<Vec<_>>();
+                        let expected =
+                            ExpectedSet::from_positions(&first, &lowered.grammar, kind_count)?;
+                        if expected.is_empty() {
+                            return Err("a frozen Pratt guard branch is empty".to_owned());
+                        }
+                        Ok(PrattGuardBranchPlan { position, expected })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+            )
+        }
+        (None, None) => None,
+        _ => return Err("the frozen Pratt led dispatch and guard family disagree".to_owned()),
+    };
+
+    let mut nud_selection_follow = ExpectedSet::empty(kind_count);
+    for branch in caller_follow_guard.iter().flatten() {
+        nud_selection_follow.union_assign(&branch.expected);
+    }
+
+    Ok(PrattParsePlan {
+        expected_nud_count: semantic_variants
+            .iter()
+            .filter(|variant| {
+                matches!(
+                    variant.position,
+                    PrattPosition::Atom | PrattPosition::Prefix { .. }
+                )
+            })
+            .count(),
+        expected_led_count: semantic_variants
+            .iter()
+            .filter(|variant| {
+                matches!(
+                    variant.position,
+                    PrattPosition::Infix { .. } | PrattPosition::Postfix { .. }
+                )
+            })
+            .count(),
+        nud,
+        led,
+        nud_dispatch,
+        led_dispatch,
+        nud_failure,
+        nud_selection_follow,
+        caller_follow_guard,
+    })
+}
+
+fn plan_joined_dispatch(
+    dispatch: &crate::DispatchPlan,
+    variants: &[(crate::DeclId, usize)],
+    lowered: &crate::materialization::LoweredGrammar,
+    kind_count: usize,
+    instrumentation: &mut EmissionInstrumentation,
+) -> Result<PredictiveDispatchPlan, String> {
+    let nodes_before = instrumentation.frozen_dispatch_nodes_consumed;
+    let root = plan_predictive_dispatch_node(
+        dispatch.trie(),
+        variants,
+        &lowered.grammar,
+        kind_count,
+        instrumentation,
+    )?;
+    Ok(PredictiveDispatchPlan {
+        frozen_identity: predictive_dispatch_identity(&root),
+        root,
+        frozen_sequence_count: dispatch
+            .branches()
+            .iter()
+            .map(|branch| branch.sequences().len())
+            .sum(),
+        frozen_node_count: instrumentation.frozen_dispatch_nodes_consumed - nodes_before,
+    })
+}
+
+fn validate_pratt_position(
+    position: Option<PrattPosition>,
+    variant: &MaterializedPrattNud,
+) -> Result<(), String> {
+    let expected = match variant.position {
+        MaterializedPrattNudPosition::Atom => PrattPosition::Atom,
+        MaterializedPrattNudPosition::Prefix { bp } => PrattPosition::Prefix { bp },
+    };
+    if position == Some(expected) {
+        Ok(())
+    } else {
+        Err("the frozen Pratt nud position disagrees with materialized source".to_owned())
+    }
+}
+
+fn validate_pratt_led_position(
+    position: Option<PrattPosition>,
+    variant: &MaterializedPrattLed,
+) -> Result<(), String> {
+    let expected = match variant.position {
+        MaterializedPrattLedPosition::Infix { lbp, rbp } => PrattPosition::Infix { lbp, rbp },
+        MaterializedPrattLedPosition::Postfix { bp } => PrattPosition::Postfix { bp },
+    };
+    if position == Some(expected) {
+        Ok(())
+    } else {
+        Err("the frozen Pratt led position disagrees with materialized source".to_owned())
+    }
+}
+
+fn plan_pratt_lhs(
+    node: &ResolvedNode,
+    resolved_variant: &crate::resolution::ResolvedNodeVariant,
+    led: &MaterializedPrattLed,
+    lowered: &crate::materialization::LoweredGrammar,
+    input_lifetime: &syn::Lifetime,
+) -> Result<ElementParsePlan, String> {
+    let resolved_field = node
+        .fields
+        .iter()
+        .find(|candidate| candidate.id == led.lhs.field)
+        .ok_or_else(|| "materialized Pratt lhs lacks source syntax".to_owned())?;
+    let field_index = resolved_variant
+        .fields
+        .iter()
+        .position(|candidate| *candidate == led.lhs.field)
+        .ok_or_else(|| "materialized Pratt lhs is absent from its source variant".to_owned())?;
+    let base = resolved_field
+        .syntax
+        .ident
+        .clone()
+        .unwrap_or_else(|| format_ident!("field_{field_index}"));
+    let variant_name = snake_case(&resolved_variant.ident);
+    let accessor = if base.unraw() == variant_name {
+        base.clone()
+    } else {
+        format_ident!("{}_{}", variant_name, base)
+    };
+    let variant_capture = resolved_variant
+        .capture
+        .map(PlannedCapturePolicy::from)
+        .or_else(|| node.capture.map(PlannedCapturePolicy::from))
+        .unwrap_or(PlannedCapturePolicy::Inherited);
+    let field_override = resolved_field.capture.map(PlannedCapturePolicy::from);
+    let closed = ClosedType::Boxed(Box::new(ClosedType::Node(led.lhs.owner.clone())));
+    Ok(ElementParsePlan {
+        metadata_name: format!("{}_{}", variant_name, base.unraw()),
+        kind: ElementParseKind::Semantic {
+            field: FieldPlan {
+                ident: resolved_field.syntax.ident.clone(),
+                index: field_index,
+                accessor: Some(accessor),
+            },
+            terminal: Box::new(terminal_type(&closed, lowered, input_lifetime)?),
+            wrappers: vec![FieldWrapper::Boxed],
+            container: Box::new(PlannedContainer::Direct {
+                child_follow: PlannedFollow::Caller,
+                required_failure: PlannedFollow::Caller,
+            }),
+            capture: field_override.unwrap_or(variant_capture),
+            child_capture: field_override.unwrap_or(variant_capture),
+            pratt_min_bp: None,
+        },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn plan_elements(
     node: &ResolvedNode,
     variant: Option<&MaterializedVariant>,
@@ -1275,6 +1808,7 @@ fn plan_elements(
     decisions: &crate::DecisionProducts,
     kind_count: usize,
     input_lifetime: &syn::Lifetime,
+    pratt_operand: Option<(crate::TypeId, u8)>,
 ) -> Result<Vec<ElementParsePlan>, String> {
     if elements.len() != sites.len() {
         return Err(format!(
@@ -1382,12 +1916,34 @@ fn plan_elements(
                     .find(|machine| machine.site() == *site)
                     .ok_or_else(|| format!("field `{field_name}` lacks its container machine"))?;
                 validate_container_wrappers(machine.operation(), &wrappers, &field_name)?;
-                let container = Box::new(planned_container(
+                let mut container = planned_container(
                     machine,
                     decisions,
                     &lowered.grammar,
                     kind_count,
-                )?);
+                )?;
+                let pratt_min_bp = pratt_operand
+                    .filter(|(owner, _)| lowered.grammar.sites[site.index()].target == *owner)
+                    .map(|(_, min_bp)| min_bp);
+                if let Some((owner, min_bp)) = pratt_operand.filter(|_| pratt_min_bp.is_some()) {
+                    let inactive = planned_pratt_extenders(
+                        decisions,
+                        owner,
+                        &lowered.grammar,
+                        kind_count,
+                        |position| pratt_led_lbp(position) < min_bp,
+                    )?;
+                    match &mut container {
+                        PlannedContainer::Direct { child_follow, .. } => {
+                            *child_follow = follow_with_static(child_follow, &inactive);
+                        }
+                        PlannedContainer::Optional { .. } | PlannedContainer::Repeated { .. } => {
+                            return Err(format!(
+                                "Pratt operand field `{field_name}` is not a direct frozen container"
+                            ));
+                        }
+                    }
+                }
                 Ok(ElementParsePlan {
                     metadata_name,
                     kind: ElementParseKind::Semantic {
@@ -1412,14 +1968,41 @@ fn plan_elements(
                         },
                         terminal: Box::new(terminal_type(ty, lowered, input_lifetime)?),
                         wrappers,
-                        container,
+                        container: Box::new(container),
                         capture,
                         child_capture,
+                        pratt_min_bp,
                     },
                 })
             }
         })
         .collect()
+}
+
+fn planned_pratt_extenders(
+    decisions: &crate::DecisionProducts,
+    owner: crate::TypeId,
+    grammar: &crate::GrammarDescription,
+    kind_count: usize,
+    include: impl Fn(PrattPosition) -> bool,
+) -> Result<ExpectedSet, String> {
+    let edge = decisions
+        .failure_edges()
+        .iter()
+        .find(|edge| {
+            edge.owner() == owner && edge.kind() == FailureEdgeKind::PrattCallerFollowGuard
+        })
+        .ok_or_else(|| "a Pratt operand lacks its frozen extender family".to_owned())?;
+    let ExpectedRecipe::PrattExtendersAtOrAboveMinBp { branches } = edge.expected() else {
+        return Err("a Pratt operand has an invalid frozen extender family".to_owned());
+    };
+    let first = branches
+        .iter()
+        .filter(|branch| branch.position().is_some_and(&include))
+        .flat_map(|branch| branch.sequences())
+        .filter_map(|sequence| sequence.positions().first().cloned())
+        .collect::<Vec<_>>();
+    ExpectedSet::from_positions(&first, grammar, kind_count)
 }
 
 fn terminal_node_capture(
@@ -1805,6 +2388,19 @@ fn validate_accessor_names(node: &ResolvedNode, body: &NodeBodyPlan) -> Result<(
                 }
             }
         }
+        NodeBodyPlan::Pratt(pratt) => {
+            for branch in &pratt.nud {
+                for element in &branch.variant.elements {
+                    check(element)?;
+                }
+            }
+            for branch in &pratt.led {
+                check(&branch.lhs)?;
+                for element in &branch.variant.elements {
+                    check(element)?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1961,7 +2557,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let empty_words = vec![0_u64; kind_count.div_ceil(64)];
     let token_starts = plan.tokens.iter().enumerate().map(|(index, token)| {
         let name = format_ident!("__RECURSA_TOKEN_START_{index}");
-        render_expected_static(&name, &token.expected, kind_count, facade)
+        render_expected_static(&name, &token.expected, plan, facade)
     });
     let token_items = plan
         .tokens
@@ -2839,7 +3435,25 @@ fn render_node(
     let metadata = render_metadata(plan, node, node_index);
     let accessors = render_accessors(plan, node);
     let span_elements = render_span_elements(node, node_index);
-    let parse_body = render_node_parse_body(plan, node, node_index, instrumentation);
+    let planned_parse_body = render_node_parse_body(plan, node, node_index, instrumentation);
+    let (parse_body, pratt_helper) = if matches!(&node.body, NodeBodyPlan::Pratt(_)) {
+        (
+            quote!(Self::__recursa_parse_bp(context, 0)),
+            quote! {
+                fn __recursa_parse_bp #inherent_method_generics(
+                    context: &mut #facade::__private::ParseContext<'_, #input_lifetime, A>,
+                    min_bp: u8,
+                ) -> Result<
+                    #facade::__private::ParsedNode<Self>,
+                    #facade::ParseError,
+                > {
+                    #planned_parse_body
+                }
+            },
+        )
+    } else {
+        (planned_parse_body, quote!())
+    };
     let token_bindings = if plan.nodes[..node_index]
         .iter()
         .any(|candidate| candidate.module == node.module)
@@ -2937,6 +3551,8 @@ fn render_node(
 
         #[allow(dead_code)]
         impl #impl_generics #node_ident #type_generics #where_clause {
+            #pratt_helper
+
             pub fn parse #inherent_method_generics(
                 input: &mut #module_anchor::Input<#input_lifetime, A>,
             ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError> {
@@ -2976,6 +3592,26 @@ fn render_metadata(
             });
             quote!(#(#definitions)*)
         }
+        NodeBodyPlan::Pratt(pratt) => {
+            let nud = pratt.nud.iter().enumerate().map(|(index, branch)| {
+                let name = metadata_static(node_index, Some(index));
+                let entries = branch
+                    .variant
+                    .elements
+                    .iter()
+                    .map(|element| render_metadata_entry(facade, element));
+                quote!(static #name: &[#facade::ElementMetadata] = &[#(#entries),*];)
+            });
+            let led_offset = pratt.nud.len();
+            let led = pratt.led.iter().enumerate().map(|(index, branch)| {
+                let name = metadata_static(node_index, Some(led_offset + index));
+                let entries = std::iter::once(&branch.lhs)
+                    .chain(branch.variant.elements.iter())
+                    .map(|element| render_metadata_entry(facade, element));
+                quote!(static #name: &[#facade::ElementMetadata] = &[#(#entries),*];)
+            });
+            quote!(#(#nud)* #(#led)*)
+        }
     }
 }
 
@@ -3003,6 +3639,23 @@ fn render_span_elements(node: &NodeParsePlan, node_index: usize) -> proc_macro2:
                 quote!(#pattern => self.cursor.elements(#metadata),)
             });
             quote!(match self.value { #(#arms)* })
+        }
+        NodeBodyPlan::Pratt(pratt) => {
+            let node_ident = &node.ident;
+            let nud = pratt.nud.iter().enumerate().map(|(index, branch)| {
+                let variant = &branch.variant;
+                let pattern = variant_pattern(node_ident, &variant.ident, variant.style);
+                let metadata = metadata_static(node_index, Some(index));
+                quote!(#pattern => self.cursor.elements(#metadata),)
+            });
+            let led_offset = pratt.nud.len();
+            let led = pratt.led.iter().enumerate().map(|(index, branch)| {
+                let variant = &branch.variant;
+                let pattern = variant_pattern(node_ident, &variant.ident, variant.style);
+                let metadata = metadata_static(node_index, Some(led_offset + index));
+                quote!(#pattern => self.cursor.elements(#metadata),)
+            });
+            quote!(match self.value { #(#nud)* #(#led)* })
         }
     }
 }
@@ -3034,6 +3687,38 @@ fn render_accessors(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::T
                     })
             });
             quote!(#(#methods)*)
+        }
+        NodeBodyPlan::Pratt(pratt) => {
+            let nud = pratt.nud.iter().flat_map(|branch| {
+                let variant = &branch.variant;
+                variant
+                    .elements
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(index, element)| {
+                        render_accessor(
+                            facade,
+                            element,
+                            index,
+                            Some((node_ident, &variant.ident, variant.style)),
+                        )
+                    })
+            });
+            let led = pratt.led.iter().flat_map(|branch| {
+                let variant = &branch.variant;
+                std::iter::once(&branch.lhs)
+                    .chain(variant.elements.iter())
+                    .enumerate()
+                    .filter_map(move |(index, element)| {
+                        render_accessor(
+                            facade,
+                            element,
+                            index,
+                            Some((node_ident, &variant.ident, variant.style)),
+                        )
+                    })
+            });
+            quote!(#(#nud)* #(#led)*)
         }
     }
 }
@@ -3255,7 +3940,7 @@ fn render_node_parse_body(
 ) -> proc_macro2::TokenStream {
     match &node.body {
         NodeBodyPlan::Struct { style, elements } => {
-            render_sequence_parse(plan, node_index, None, *style, elements, None)
+            render_sequence_parse(plan, node_index, None, *style, elements, None, None)
         }
         NodeBodyPlan::Enum { variants, dispatch } => {
             let mut expected_index = 1_000_000;
@@ -3268,6 +3953,9 @@ fn render_node_parse_body(
                 &mut expected_index,
                 instrumentation,
             )
+        }
+        NodeBodyPlan::Pratt(pratt) => {
+            render_pratt_parse(plan, node, node_index, pratt, instrumentation)
         }
     }
 }
@@ -3292,6 +3980,7 @@ fn render_predictive_dispatch(
             variant.style,
             &variant.elements,
             variant.capture,
+            None,
         );
     }
     let facade = &plan.facade;
@@ -3301,8 +3990,7 @@ fn render_predictive_dispatch(
     }
     let expected_name = expected_static(node_index, *expected_index, "dispatch");
     *expected_index += 1;
-    let expected_definition =
-        render_expected_static(&expected_name, &expected, plan.kind_count, facade);
+    let expected_definition = render_expected_static(&expected_name, &expected, plan, facade);
 
     let target = node.target.map(|target| {
         let variant = &variants[target.variant];
@@ -3313,6 +4001,7 @@ fn render_predictive_dispatch(
             variant.style,
             &variant.elements,
             variant.capture,
+            None,
         );
         debug_assert!(target.on_caller_follow);
         quote! {
@@ -3329,12 +4018,8 @@ fn render_predictive_dispatch(
     let edges = node.edges.iter().map(|edge| {
         let position_name = expected_static(node_index, *expected_index, "position");
         *expected_index += 1;
-        let position_definition = render_expected_static(
-            &position_name,
-            &edge.position.expected,
-            plan.kind_count,
-            facade,
-        );
+        let position_definition =
+            render_expected_static(&position_name, &edge.position.expected, plan, facade);
         let matches = render_dispatch_position_match(
             plan,
             &position_name,
@@ -3417,6 +4102,324 @@ fn render_dispatch_position_match(
     }
 }
 
+fn render_predictive_selection(
+    plan: &EmissionPlan,
+    node_index: usize,
+    node: &DispatchTrieNodePlan,
+    depth: usize,
+    caller_follow: &proc_macro2::TokenStream,
+    expected_index: &mut usize,
+    instrumentation: &mut RenderInstrumentation,
+) -> proc_macro2::TokenStream {
+    instrumentation.frozen_dispatch_nodes_rendered += 1;
+    let fallback = node.target.map_or_else(
+        || quote!(None),
+        |target| {
+            let variant = target.variant;
+            if target.on_caller_follow {
+                quote! {
+                    if context.peek(#depth).is_none()
+                        || context
+                            .peek(#depth)
+                            .is_some_and(|record| #caller_follow.contains(record.kind))
+                    {
+                        Some(#variant)
+                    } else {
+                        None
+                    }
+                }
+            } else {
+                debug_assert!(node.edges.is_empty());
+                quote!(Some(#variant))
+            }
+        },
+    );
+    node.edges.iter().rev().fold(fallback, |otherwise, edge| {
+        let position_name = expected_static(node_index, *expected_index, "pratt_position");
+        *expected_index += 1;
+        let position_definition =
+            render_expected_static(&position_name, &edge.position.expected, plan, &plan.facade);
+        let matches = render_dispatch_position_match(
+            plan,
+            &position_name,
+            &edge.position.text_predicate,
+            depth,
+        );
+        let selected = render_predictive_selection(
+            plan,
+            node_index,
+            &edge.next,
+            depth + 1,
+            caller_follow,
+            expected_index,
+            instrumentation,
+        );
+        quote! {{
+            #position_definition
+            if #matches { #selected } else { #otherwise }
+        }}
+    })
+}
+
+fn render_pratt_parse(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    node_index: usize,
+    pratt: &PrattParsePlan,
+    instrumentation: &mut RenderInstrumentation,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let owner = &node.ident;
+    let expression_start = format_ident!("__recursa_expression_start");
+    let mut expected_index = 2_000_000;
+    let nud_follow_name = expected_static(node_index, 3_200_000, "pratt_nud_follow");
+    let nud_follow_definition =
+        render_expected_static(&nud_follow_name, &pratt.nud_selection_follow, plan, facade);
+    let nud_follow_value = format_ident!("__recursa_pratt_nud_follow");
+    let nud_selection = render_predictive_selection(
+        plan,
+        node_index,
+        &pratt.nud_dispatch.root,
+        0,
+        &quote!(#nud_follow_value),
+        &mut expected_index,
+        instrumentation,
+    );
+    let nud_failure_name = expected_static(node_index, 3_100_000, "pratt_nud_failure");
+    let (nud_failure_definition, nud_failure_value) =
+        render_follow_value(plan, &nud_failure_name, &pratt.nud_failure);
+    let nud_branches = pratt.nud.iter().enumerate().map(|(index, branch)| {
+        let variant = &branch.variant;
+        let body = render_sequence_parse(
+            plan,
+            node_index,
+            Some((index, &variant.ident)),
+            variant.style,
+            &variant.elements,
+            variant.capture,
+            Some(owner),
+        );
+        quote!(Some(#index) => { #body? })
+    });
+
+    if pratt.led.is_empty() {
+        return quote! {
+            #nud_failure_definition
+            #nud_follow_definition
+            let _ = min_bp;
+            let #nud_follow_value = #nud_follow_name
+                .union(context.follow())
+                .expect("matching generated Pratt FOLLOW widths");
+            let #expression_start = context.cursor();
+            let parsed = match { #nud_selection } {
+                #(#nud_branches,)*
+                None => return Err(context.unexpected(&#nud_failure_value)),
+                Some(_) => unreachable!("frozen Pratt dispatch selected an unknown branch"),
+            };
+            let _ = #expression_start;
+            Ok(parsed)
+        };
+    }
+
+    let led_selection = render_predictive_selection(
+        plan,
+        node_index,
+        &pratt
+            .led_dispatch
+            .as_ref()
+            .expect("validated led plan has a frozen dispatch")
+            .root,
+        0,
+        &quote!(context.follow()),
+        &mut expected_index,
+        instrumentation,
+    );
+    let guard = pratt
+        .caller_follow_guard
+        .as_ref()
+        .expect("validated led plan has a caller-FOLLOW guard");
+    let guard_definitions = guard.iter().enumerate().map(|(index, branch)| {
+        let name = expected_static(node_index, 3_000_000 + index, "pratt_guard");
+        render_expected_static(&name, &branch.expected, plan, &plan.facade)
+    });
+    let guard_additions = guard.iter().enumerate().map(|(index, branch)| {
+        let name = expected_static(node_index, 3_000_000 + index, "pratt_guard");
+        let bp = pratt_led_lbp(branch.position);
+        quote! {
+            if #bp >= min_bp {
+                __recursa_pratt_guard = Some(match __recursa_pratt_guard {
+                    Some(expected) => expected
+                        .union(&#name)
+                        .expect("matching generated Pratt expectation widths"),
+                    None => #name.clone(),
+                });
+            }
+        }
+    });
+    let led_offset = pratt.nud.len();
+    let mut led_branches = Vec::new();
+    for (index, branch) in pratt.led.iter().enumerate() {
+        let metadata_index = led_offset + index;
+        let lbp = pratt_led_lbp(branch.position);
+        let body = render_pratt_led_parse(
+            plan,
+            node_index,
+            metadata_index,
+            owner,
+            branch,
+            &expression_start,
+        );
+        led_branches.push(quote! {
+            Some(#index) => {
+                if #lbp < min_bp { break; }
+                if context.next_is(context.follow()) {
+                    return Err(context.pratt_ambiguity(
+                        __recursa_pratt_guard
+                            .as_ref()
+                            .expect("an active extender contributes an expectation"),
+                    ));
+                }
+                lhs = { #body };
+                continue;
+            }
+        });
+    }
+
+    quote! {
+        #nud_failure_definition
+        #nud_follow_definition
+        #(#guard_definitions)*
+        let #nud_follow_value = #nud_follow_name
+            .union(context.follow())
+            .expect("matching generated Pratt FOLLOW widths");
+        let #expression_start = context.cursor();
+        let mut lhs = match { #nud_selection } {
+            #(#nud_branches,)*
+            None => return Err(context.unexpected(&#nud_failure_value)),
+            Some(_) => unreachable!("frozen Pratt dispatch selected an unknown branch"),
+        };
+        let mut __recursa_pratt_guard: Option<#facade::__private::FollowSet> = None;
+        #(#guard_additions)*
+        loop {
+            match { #led_selection } {
+                #(#led_branches)*
+                None => break,
+                Some(_) => unreachable!("frozen Pratt dispatch selected an unknown branch"),
+            }
+        }
+        Ok(lhs)
+    }
+}
+
+fn pratt_led_lbp(position: PrattPosition) -> u8 {
+    match position {
+        PrattPosition::Infix { lbp, .. } => lbp,
+        PrattPosition::Postfix { bp } => bp,
+        PrattPosition::Atom | PrattPosition::Prefix { .. } => {
+            unreachable!("a Pratt led plan has a nud position")
+        }
+    }
+}
+
+fn render_pratt_led_parse(
+    plan: &EmissionPlan,
+    node_index: usize,
+    variant_index: usize,
+    owner: &Ident,
+    branch: &PrattLedParsePlan,
+    expression_start: &Ident,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let variant = &branch.variant;
+    let lhs_value = format_ident!("__recursa_lhs_value");
+    let lhs_occurrence = format_ident!("__recursa_lhs_occurrence");
+    let ElementParseKind::Semantic {
+        field: lhs_field,
+        wrappers: lhs_wrappers,
+        capture: lhs_capture,
+        ..
+    } = &branch.lhs.kind
+    else {
+        unreachable!("a planned Pratt lhs is semantic")
+    };
+    let wrapped_lhs = render_wrapped_value(quote!(parsed_lhs), lhs_wrappers);
+    let lhs_capture = lhs_capture.render(facade);
+    let mut definitions = vec![quote! {
+        let (parsed_lhs, parsed_lhs_occurrence) = lhs.into_parts();
+        let parsed_lhs_span = context.consumed_span_from(#expression_start);
+        let #lhs_occurrence = context.finish_group(
+            #lhs_capture,
+            parsed_lhs_span,
+            [parsed_lhs_occurrence],
+        )?;
+        let #lhs_value = #wrapped_lhs;
+    }];
+    let mut values = vec![(lhs_field.clone(), lhs_value)];
+    let mut occurrences = vec![lhs_occurrence];
+    for (tail_index, element) in variant.elements.iter().enumerate() {
+        let element_index = tail_index + 1;
+        let value = format_ident!("__recursa_value_{element_index}");
+        let occurrence = format_ident!("__recursa_occurrence_{element_index}");
+        occurrences.push(occurrence.clone());
+        let unique_index = variant_index * 1000 + element_index;
+        match &element.kind {
+            ElementParseKind::Fixed { expected, capture } => {
+                let expected_name = expected_static(node_index, unique_index, "fixed");
+                let expected_definition =
+                    render_expected_static(&expected_name, expected, plan, facade);
+                let capture = capture.render(facade);
+                definitions.push(quote! {
+                    #expected_definition
+                    let #occurrence = context.parse_fixed(&#expected_name, #capture)?;
+                });
+            }
+            ElementParseKind::Semantic {
+                field,
+                terminal,
+                wrappers,
+                container,
+                capture,
+                child_capture,
+                pratt_min_bp,
+            } => {
+                definitions.push(render_semantic_parse(
+                    plan,
+                    node_index,
+                    unique_index,
+                    &value,
+                    &occurrence,
+                    terminal,
+                    wrappers,
+                    container,
+                    *capture,
+                    *child_capture,
+                    Some(owner),
+                    *pratt_min_bp,
+                ));
+                values.push((field.clone(), value));
+            }
+        }
+    }
+    let construction = render_construction(Some(&variant.ident), variant.style, &values);
+    let finish = variant.capture.map_or_else(
+        || quote!(context.finish_with_children(#construction, span, [#(#occurrences),*])),
+        |capture| {
+            let capture = capture.render(facade);
+            quote!(context.finish_with_children_policy(
+                #construction,
+                span,
+                #capture,
+                [#(#occurrences),*],
+            ))
+        },
+    );
+    quote! {
+        #(#definitions)*
+        let span = context.consumed_span_from(#expression_start);
+        #finish?
+    }
+}
+
 fn render_sequence_parse(
     plan: &EmissionPlan,
     node_index: usize,
@@ -3424,6 +4427,7 @@ fn render_sequence_parse(
     style: ResolvedFieldStyle,
     elements: &[ElementParsePlan],
     capture: Option<PlannedCapturePolicy>,
+    pratt_owner: Option<&Ident>,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let start = format_ident!("__recursa_start");
@@ -3439,7 +4443,7 @@ fn render_sequence_parse(
             ElementParseKind::Fixed { expected, capture } => {
                 let expected_name = expected_static(node_index, unique_index, "fixed");
                 let expected_definition =
-                    render_expected_static(&expected_name, expected, plan.kind_count, facade);
+                    render_expected_static(&expected_name, expected, plan, facade);
                 let capture = capture.render(facade);
                 definitions.push(quote! {
                     #expected_definition
@@ -3453,6 +4457,7 @@ fn render_sequence_parse(
                 container,
                 capture,
                 child_capture,
+                pratt_min_bp,
             } => {
                 definitions.push(render_semantic_parse(
                     plan,
@@ -3465,6 +4470,8 @@ fn render_sequence_parse(
                     container,
                     *capture,
                     *child_capture,
+                    pratt_owner,
+                    *pratt_min_bp,
                 ));
                 values.push((field.clone(), value));
             }
@@ -3511,6 +4518,8 @@ fn render_semantic_parse(
     container: &PlannedContainer,
     capture: PlannedCapturePolicy,
     child_capture: PlannedCapturePolicy,
+    pratt_owner: Option<&Ident>,
+    pratt_min_bp: Option<u8>,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let capture = capture.render(facade);
@@ -3527,13 +4536,21 @@ fn render_semantic_parse(
             let (failure_definition, failure_value) =
                 render_follow_value(plan, &failure_name, required_failure);
             let wrapped = render_wrapped_value(quote!(parsed_value), wrappers);
+            let parse_child = match (pratt_owner, pratt_min_bp) {
+                (Some(owner), Some(min_bp)) => quote! {
+                    context.parse_generated(&#follow_value, #child_capture, |context| {
+                        #owner::__recursa_parse_bp(context, #min_bp)
+                    })
+                },
+                _ => quote! {
+                    context.parse_node::<#terminal>(&#follow_value, #child_capture)
+                },
+            };
             quote! {
                 #follow_definition
                 #failure_definition
                 let element_start = context.cursor();
-                let (parsed_value, child_occurrence) = match context
-                    .parse_node::<#terminal>(&#follow_value, #child_capture)
-                {
+                let (parsed_value, child_occurrence) = match #parse_child {
                     Ok(parsed) => parsed.into_parts(),
                     Err(error)
                         if context.cursor() == element_start
@@ -3561,7 +4578,7 @@ fn render_semantic_parse(
         } => {
             let selector_name = expected_static(node_index, unique_index, "optional");
             let selector_definition =
-                render_expected_static(&selector_name, selector, plan.kind_count, facade);
+                render_expected_static(&selector_name, selector, plan, facade);
             let follow_name = expected_static(node_index, unique_index, "child_follow");
             let (follow_definition, follow_value) =
                 render_follow_value(plan, &follow_name, child_follow);
@@ -3656,8 +4673,7 @@ fn render_repeated_parse(
     let wrapped_item = render_wrapped_value(quote!(parsed_value), inner);
 
     let element_name = expected_static(node_index, unique_index, "element");
-    let element_definition =
-        render_expected_static(&element_name, element_selector, plan.kind_count, facade);
+    let element_definition = render_expected_static(&element_name, element_selector, plan, facade);
     let stop_name = expected_static(node_index, unique_index, "stop");
     let (stop_definition, stop_value) = render_follow_value(plan, &stop_name, stop);
     let child_follow_name = expected_static(node_index, unique_index, "child_follow");
@@ -3711,7 +4727,7 @@ fn render_repeated_parse(
     let continuation = if let Some(separator_selector) = separator_selector {
         let separator_name = expected_static(node_index, unique_index, "separator");
         let separator_definition =
-            render_expected_static(&separator_name, separator_selector, plan.kind_count, facade);
+            render_expected_static(&separator_name, separator_selector, plan, facade);
         let trailing = if optional_trailing {
             quote! {
                 if context.is_eof() || context.next_is(&#stop_value) {
@@ -3829,14 +4845,14 @@ fn render_follow_value(
             quote!(#value),
         ),
         PlannedFollow::Static(expected) => {
-            let definition = render_expected_static(name, expected, plan.kind_count, facade);
+            let definition = render_expected_static(name, expected, plan, facade);
             (
                 quote!(#definition let #value = #name.clone();),
                 quote!(#value),
             )
         }
         PlannedFollow::StaticAndCaller(expected) => {
-            let definition = render_expected_static(name, expected, plan.kind_count, facade);
+            let definition = render_expected_static(name, expected, plan, facade);
             (
                 quote! {
                     #definition
@@ -4028,7 +5044,7 @@ fn variant_pattern(
 fn render_expected_static(
     name: &Ident,
     expected: &ExpectedSet,
-    kind_count: usize,
+    plan: &EmissionPlan,
     facade: &Ident,
 ) -> proc_macro2::TokenStream {
     let words = &expected.words;
@@ -4036,6 +5052,7 @@ fn render_expected_static(
         .atoms
         .iter()
         .map(|atom| quote!(#facade::__private::ExpectedAtomId(#atom)));
+    let kind_count = plan.kind_count;
     quote! {
         static #name: #facade::__private::FollowSet = #facade::__private::follow_set(
             #kind_count as u32,
@@ -4386,7 +5403,7 @@ struct B;
             .iter_mut()
             .find_map(|node| match &mut node.body {
                 NodeBodyPlan::Enum { dispatch, .. } => Some(dispatch),
-                NodeBodyPlan::Struct { .. } => None,
+                NodeBodyPlan::Struct { .. } | NodeBodyPlan::Pratt(_) => None,
             })
             .expect("fixture contains one predictive dispatch");
         dispatch.root.edges[0].position.text_predicate =
@@ -4402,6 +5419,114 @@ struct B;
         };
         assert_eq!(diagnostic.code().as_str(), "RCA9105");
         assert!(!package.path().join(SELECTED_GENERATION).exists());
+    }
+
+    fn joined_pratt_fixture() -> (tempfile::TempDir, EmissionPlan) {
+        let package = tempfile::tempdir().expect("temporary Pratt plan fixture");
+        fs::write(
+            package.path().join("grammar.rs"),
+            include_str!("../tests/fixtures/m4/pratt/src/grammar.rs"),
+        )
+        .expect("write Pratt plan fixture");
+        let success = analyze_source_tree(
+            M3Input::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("analyze Pratt plan fixture");
+        let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+            .expect("join a complete Pratt Emission plan");
+        render(&plan).expect("a complete Pratt plan renders");
+        (package, plan)
+    }
+
+    fn assert_corrupt_pratt_plan_is_unselectable(package: &Path, plan: &EmissionPlan) {
+        let detail = match render(plan) {
+            Err(detail) => detail,
+            Ok(_) => panic!("corrupt Pratt plans cannot reach publication"),
+        };
+        let error = failure(Path::new("grammar.rs"), &detail);
+        let [diagnostic] = error.report().diagnostics() else {
+            panic!("one pre-publication invariant diagnostic is required");
+        };
+        assert_eq!(diagnostic.code().as_str(), "RCA9105");
+        assert_eq!(diagnostic.stage(), DiagnosticStage::Emission);
+        assert!(!package.join(SELECTED_GENERATION).exists());
+    }
+
+    #[test]
+    fn corrupted_pratt_branch_follow_and_failure_identities_fail_before_publication() {
+        let (package, mut missing_plan) = joined_pratt_fixture();
+        let pratt = missing_plan
+            .nodes
+            .iter_mut()
+            .find_map(|node| match &mut node.body {
+                NodeBodyPlan::Pratt(pratt) => Some(pratt),
+                NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
+            })
+            .expect("fixture contains a Pratt plan");
+        pratt.nud.clear();
+        assert_corrupt_pratt_plan_is_unselectable(package.path(), &missing_plan);
+
+        let (package, mut branch_plan) = joined_pratt_fixture();
+        let pratt = branch_plan
+            .nodes
+            .iter_mut()
+            .find_map(|node| match &mut node.body {
+                NodeBodyPlan::Pratt(pratt) => Some(pratt),
+                NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
+            })
+            .expect("fixture contains a Pratt plan");
+        let variant_count = pratt.nud.len();
+        let mut pending = vec![&mut pratt.nud_dispatch.root];
+        let target = loop {
+            let node = pending.pop().expect("nud dispatch contains a terminal");
+            if let Some(target) = &mut node.target {
+                break target;
+            }
+            pending.extend(node.edges.iter_mut().map(|edge| &mut edge.next));
+        };
+        target.variant = (target.variant + 1) % variant_count;
+        assert_corrupt_pratt_plan_is_unselectable(package.path(), &branch_plan);
+
+        let (package, mut follow_plan) = joined_pratt_fixture();
+        let pratt = follow_plan
+            .nodes
+            .iter_mut()
+            .find_map(|node| match &mut node.body {
+                NodeBodyPlan::Pratt(pratt) => Some(pratt),
+                NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
+            })
+            .expect("fixture contains a Pratt plan");
+        let follow = pratt
+            .led
+            .iter_mut()
+            .flat_map(|branch| &mut branch.variant.elements)
+            .find_map(|element| match &mut element.kind {
+                ElementParseKind::Semantic {
+                    container,
+                    pratt_min_bp: Some(_),
+                    ..
+                } => match container.as_mut() {
+                    PlannedContainer::Direct { child_follow, .. } => Some(child_follow),
+                    PlannedContainer::Optional { .. } | PlannedContainer::Repeated { .. } => None,
+                },
+                ElementParseKind::Fixed { .. } | ElementParseKind::Semantic { .. } => None,
+            })
+            .expect("fixture contains a recursive Pratt operand FOLLOW");
+        *follow = PlannedFollow::Caller;
+        assert_corrupt_pratt_plan_is_unselectable(package.path(), &follow_plan);
+
+        let (package, mut failure_plan) = joined_pratt_fixture();
+        let pratt = failure_plan
+            .nodes
+            .iter_mut()
+            .find_map(|node| match &mut node.body {
+                NodeBodyPlan::Pratt(pratt) => Some(pratt),
+                NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
+            })
+            .expect("fixture contains a Pratt plan");
+        pratt.nud_failure = PlannedFollow::Caller;
+        assert_corrupt_pratt_plan_is_unselectable(package.path(), &failure_plan);
     }
 
     #[test]

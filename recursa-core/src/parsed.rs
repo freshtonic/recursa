@@ -699,6 +699,11 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         ParseError::unexpected_at(self.input, expected, distance)
     }
 
+    /// Reports the dynamic D3 ambiguity at the current Pratt extender.
+    pub fn pratt_ambiguity(&self, expected: &FollowSet) -> ParseError {
+        ParseError::pratt_ambiguity(self.input, expected)
+    }
+
     pub fn next_is(&self, expected: &FollowSet) -> bool {
         self.peek(0)
             .is_some_and(|record| expected.contains(record.kind))
@@ -831,6 +836,17 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         }
         let mut child = ParseContext::new(&mut *self.input, follow, policy, self.request);
         T::parse(&mut child)
+    }
+
+    /// Runs one generated recursive parser with its planned FOLLOW and capture policy.
+    pub fn parse_generated<T>(
+        &mut self,
+        follow: &FollowSet,
+        policy: CapturePolicy,
+        parse: impl FnOnce(&mut ParseContext<'_, 'input, A>) -> Result<ParsedNode<T>, ParseError>,
+    ) -> Result<ParsedNode<T>, ParseError> {
+        let mut child = ParseContext::new(&mut *self.input, follow, policy, self.request);
+        parse(&mut child)
     }
 }
 
