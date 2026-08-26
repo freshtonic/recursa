@@ -1,13 +1,8 @@
 //! Grammar-erased explorer contracts backed by generated adapters.
 
 use crate::parsed::ViewCursor;
-use crate::{ElementRole, ParseError, ParseErrorKind, Parsed, Span};
+use crate::{ElementRole, FollowSet, Input, ParseError, ParseErrorKind, Parsed, Span};
 use std::fmt;
-
-/// Returns the generated explorer adapter for one source-visible root Node.
-pub fn adapter<T: ExplorerRoot>() -> Adapter {
-    T::__recursa_explorer_adapter()
-}
 
 /// Grammar-erased parsing, lexing, rendering, and sampling entry point.
 #[derive(Clone, Copy)]
@@ -209,6 +204,13 @@ impl Schema {
             remaining: self.data.elements,
         }
     }
+
+    /// Every declared enum or Pratt variant, including inactive variants.
+    pub fn variants(self) -> SchemaVariants {
+        SchemaVariants {
+            remaining: self.data.variants,
+        }
+    }
 }
 
 /// Opaque read-only handle to one Node or content-token occurrence.
@@ -317,6 +319,7 @@ pub enum Cardinality {
     Optional,
     ZeroOrMore,
     OneOrMore,
+    OptionalOneOrMore,
 }
 
 /// Explorer-facing lexical classification without a grammar-local identity.
@@ -404,6 +407,28 @@ impl Iterator for SchemaElements {
 
 impl ExactSizeIterator for SchemaElements {}
 impl std::iter::FusedIterator for SchemaElements {}
+
+/// Exact-size fused iterator over every declared variant schema.
+pub struct SchemaVariants {
+    remaining: &'static [&'static SchemaData],
+}
+
+impl Iterator for SchemaVariants {
+    type Item = Schema;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (data, remaining) = self.remaining.split_first()?;
+        self.remaining = remaining;
+        Some(Schema { data })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining.len(), Some(self.remaining.len()))
+    }
+}
+
+impl ExactSizeIterator for SchemaVariants {}
+impl std::iter::FusedIterator for SchemaVariants {}
 
 /// Grammar-erased lexical record class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -537,6 +562,7 @@ pub struct SchemaData {
     name: &'static str,
     variant: Option<&'static str>,
     elements: &'static [ElementSchemaData],
+    variants: &'static [&'static SchemaData],
 }
 
 #[doc(hidden)]
@@ -573,15 +599,14 @@ pub struct LexRecordData {
 }
 
 /// Private protocol implemented by generated Node and content-token bodies.
+///
+/// # Safety
+///
+/// Implementations must preserve the active generated schema, source-order
+/// element layout, and occurrence-cursor correlation for their Generation.
 #[doc(hidden)]
-pub trait ExplorerNode {
+pub unsafe trait ExplorerNode {
     fn __recursa_explorer_node(&self, cursor: ViewCursor<'_>) -> NodeData;
-}
-
-/// Sealed entry capability generated only for source-visible Visit roots.
-#[doc(hidden)]
-pub trait ExplorerRoot {
-    fn __recursa_explorer_adapter() -> Adapter;
 }
 
 #[doc(hidden)]
@@ -589,11 +614,13 @@ pub const fn schema(
     name: &'static str,
     variant: Option<&'static str>,
     elements: &'static [ElementSchemaData],
+    variants: &'static [&'static SchemaData],
 ) -> SchemaData {
     SchemaData {
         name,
         variant,
         elements,
+        variants,
     }
 }
 
@@ -661,7 +688,11 @@ pub fn document<'input, T: ExplorerNode>(
 }
 
 #[doc(hidden)]
-pub const fn construct_adapter(
+/// # Safety
+///
+/// Every function pointer and schema must belong to the same validated
+/// Generation. Only matching Recursa-generated code may construct an adapter.
+pub const unsafe fn construct_adapter(
     schema: &'static SchemaData,
     pretty: bool,
     arbitrary: bool,
@@ -693,5 +724,14 @@ pub fn lex_result<'input>(
         source,
         tokens: tokens.into_iter().collect(),
         errors: errors.into_iter().collect(),
+    }
+}
+
+#[doc(hidden)]
+pub fn require_eof<A>(input: &Input<'_, A>, expected: &FollowSet) -> Result<(), ParseError> {
+    if input.is_eof() {
+        Ok(())
+    } else {
+        Err(ParseError::unexpected(input, expected))
     }
 }

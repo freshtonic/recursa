@@ -35,12 +35,12 @@ pub use visitor::{
 pub mod __private {
     #[cfg(feature = "explorer")]
     pub use crate::explorer::{
-        ElementSchemaData as ExplorerElementSchemaData, ExplorerNode, ExplorerRoot,
-        NodeData as ExplorerNodeData, SchemaData as ExplorerSchemaData,
-        construct_adapter as explorer_adapter, document as explorer_document,
-        element as explorer_element, element_schema as explorer_element_schema,
-        lex_record as explorer_lex_record, lex_result as explorer_lex_result,
-        node as explorer_node, schema as explorer_schema,
+        ElementSchemaData as ExplorerElementSchemaData, ExplorerNode, NodeData as ExplorerNodeData,
+        SchemaData as ExplorerSchemaData, construct_adapter as explorer_adapter,
+        document as explorer_document, element as explorer_element,
+        element_schema as explorer_element_schema, lex_record as explorer_lex_record,
+        lex_result as explorer_lex_result, node as explorer_node,
+        require_eof as explorer_require_eof, schema as explorer_schema,
     };
     pub use crate::grammar::{ExpectedAtomId, FollowSet, FollowSetError, GrammarInfo, TokenKind};
     pub use crate::input::{Input, LexResult, TokenRecord};
