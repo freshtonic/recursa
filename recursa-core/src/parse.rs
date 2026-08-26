@@ -18,6 +18,8 @@ pub enum ParseErrorKind {
     UnexpectedToken,
     UnexpectedEof,
     LexicalError,
+    InvalidTokenSpan,
+    GrammarMismatch,
 }
 
 impl ParseError {
@@ -48,6 +50,41 @@ impl ParseError {
         }
     }
 
+    pub(crate) fn invalid_token_span<A>(
+        input: &Input<'_, A>,
+        span: Span,
+        found: Option<TokenKind>,
+    ) -> Self {
+        Self {
+            kind: ParseErrorKind::InvalidTokenSpan,
+            span,
+            found,
+            expected: Vec::new(),
+            grammar: input.grammar(),
+        }
+    }
+
+    pub(crate) fn grammar_mismatch<A>(input: &Input<'_, A>) -> Self {
+        let (span, found) = input.peek(0).map_or_else(
+            || {
+                let position = input.byte_position();
+                (
+                    Span::new(position, position)
+                        .expect("lexing input must fit Recursa's checked span range"),
+                    None,
+                )
+            },
+            |record| (record.span, Some(record.kind)),
+        );
+        Self {
+            kind: ParseErrorKind::GrammarMismatch,
+            span,
+            found,
+            expected: Vec::new(),
+            grammar: input.grammar(),
+        }
+    }
+
     pub fn kind(&self) -> ParseErrorKind {
         self.kind
     }
@@ -74,6 +111,10 @@ impl fmt::Display for ParseError {
         match self.kind {
             ParseErrorKind::UnexpectedEof => formatter.write_str("unexpected end of input"),
             ParseErrorKind::LexicalError => formatter.write_str("lexical error"),
+            ParseErrorKind::InvalidTokenSpan => formatter.write_str("invalid token span"),
+            ParseErrorKind::GrammarMismatch => {
+                formatter.write_str("input belongs to a different grammar")
+            }
             ParseErrorKind::UnexpectedToken => {
                 let found = self
                     .found
