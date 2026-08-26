@@ -377,6 +377,7 @@ pub(crate) enum MaterializationDiagnosticKind {
     InvalidContainer,
     InvalidPrattShape,
     InapplicablePrettyHint,
+    UnsafePrettyBoundary,
     AliasCycle,
     NonRegularRecursion,
 }
@@ -475,6 +476,12 @@ struct PrettyBoundarySummary {
     first: Vec<MaterializedPrettyBoundary>,
     last: Vec<MaterializedPrettyBoundary>,
     nullable: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum PrettyBoundarySite {
+    Fixed(TokenUseId),
+    Field(ResolvedFieldId),
 }
 
 pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> MaterializationReport {
@@ -582,50 +589,80 @@ impl Materializer {
                             .any(|selection| selection.recipe == ConfiguredTraitRecipe::Pretty)
                     })
             })
-            .filter(|application| self.body_changes_pretty_lexing(&application.body))
-            .map(|application| application.node)
-            .collect::<BTreeSet<_>>();
-        for node_id in invalid {
+            .filter_map(|application| {
+                self.body_pretty_lexing_violation(&application.body)
+                    .map(|site| (application.node, site))
+            })
+            .collect::<BTreeMap<_, _>>();
+        for (node_id, site) in invalid {
             let node = self.resolved().nodes[node_id.index()].clone();
-            self.push_node_diagnostic(
-                &node,
-                MaterializationDiagnosticKind::InapplicablePrettyHint,
-                format!(
-                    "a closed Pretty boundary in Node `{}` would change tokenization",
-                    node.key.segments.join("::")
-                ),
+            let message = format!(
+                "a closed Pretty boundary in Node `{}` would change tokenization",
+                node.key.segments.join("::")
             );
+            match site {
+                PrettyBoundarySite::Fixed(token_use) => {
+                    let site = self.source_model().token_uses[token_use.index()]
+                        .site
+                        .clone();
+                    self.push_diagnostic_in_module(
+                        Some(site.module),
+                        site.source,
+                        Some(site.range),
+                        MaterializationDiagnosticKind::UnsafePrettyBoundary,
+                        message,
+                    );
+                }
+                PrettyBoundarySite::Field(field) => {
+                    let field = self.resolved_field(field).clone();
+                    self.push_diagnostic_in_module(
+                        Some(node.module),
+                        field.ty.source,
+                        Some(field.range),
+                        MaterializationDiagnosticKind::UnsafePrettyBoundary,
+                        message,
+                    );
+                }
+            }
         }
     }
 
-    fn body_changes_pretty_lexing(&self, body: &MaterializedNodeBody) -> bool {
+    fn body_pretty_lexing_violation(
+        &self,
+        body: &MaterializedNodeBody,
+    ) -> Option<PrettyBoundarySite> {
         match body {
             MaterializedNodeBody::Struct(elements) | MaterializedNodeBody::Presence(elements) => {
-                self.sequence_changes_pretty_lexing(elements)
+                self.sequence_pretty_lexing_violation(elements)
             }
             MaterializedNodeBody::Enum(variants) => variants
                 .iter()
-                .any(|variant| self.sequence_changes_pretty_lexing(&variant.elements)),
-            MaterializedNodeBody::Pratt(variants) => variants.iter().any(|variant| match variant {
-                MaterializedPrattVariant::Nud(nud) => {
-                    self.sequence_changes_pretty_lexing(&nud.body)
-                }
-                MaterializedPrattVariant::Led(led) => {
-                    self.sequence_changes_pretty_lexing(&led.tail)
-                }
-            }),
+                .find_map(|variant| self.sequence_pretty_lexing_violation(&variant.elements)),
+            MaterializedNodeBody::Pratt(variants) => {
+                variants.iter().find_map(|variant| match variant {
+                    MaterializedPrattVariant::Nud(nud) => {
+                        self.sequence_pretty_lexing_violation(&nud.body)
+                    }
+                    MaterializedPrattVariant::Led(led) => {
+                        self.sequence_pretty_lexing_violation(&led.tail)
+                    }
+                })
+            }
         }
     }
 
-    fn sequence_changes_pretty_lexing(&self, elements: &[MaterializedElement]) -> bool {
+    fn sequence_pretty_lexing_violation(
+        &self,
+        elements: &[MaterializedElement],
+    ) -> Option<PrettyBoundarySite> {
         let mut trailing = Vec::new();
         for element in elements {
             if self.attachment_changes_pretty_lexing(element) {
-                return true;
+                return Some(Self::element_pretty_boundary_site(element));
             }
             let summary = self.element_pretty_boundaries(element, &mut BTreeSet::new());
             if self.pretty_boundary_pairs_change_lexing(&trailing, &summary.first) {
-                return true;
+                return Some(Self::element_pretty_boundary_site(element));
             }
             if summary.nullable {
                 trailing.extend(summary.last);
@@ -633,7 +670,14 @@ impl Materializer {
                 trailing = summary.last;
             }
         }
-        false
+        None
+    }
+
+    fn element_pretty_boundary_site(element: &MaterializedElement) -> PrettyBoundarySite {
+        match element {
+            MaterializedElement::FixedToken { token_use } => PrettyBoundarySite::Fixed(*token_use),
+            MaterializedElement::SemanticField { field, .. } => PrettyBoundarySite::Field(*field),
+        }
     }
 
     fn attachment_changes_pretty_lexing(&self, element: &MaterializedElement) -> bool {
@@ -2652,8 +2696,7 @@ mod tests {
 
     #[test]
     fn closed_generic_pretty_boundaries_recheck_concrete_lexical_languages() {
-        let unsafe_report = materialize(resolve(
-            r#"
+        let unsafe_source = r#"
 recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { punctuation { LBRACE => "{" } }
 
@@ -2679,13 +2722,30 @@ struct Attached<T> {
 struct Root<'input> {
     value: Attached<Name<'input>>,
 }
-"#,
-        ));
+"#;
+        let unsafe_report = materialize(resolve(unsafe_source));
         assert!(unsafe_report.lowered.is_none());
-        assert!(unsafe_report.diagnostics.iter().any(|diagnostic| {
+        let diagnostic = unsafe_report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.kind == MaterializationDiagnosticKind::UnsafePrettyBoundary
+                    && diagnostic.message.contains("closed Pretty boundary")
+            })
+            .expect("the unsafe concrete attachment boundary is diagnosed");
+        assert_eq!(crate::m3::materialization_code(diagnostic.kind), "RCA3211");
+        assert!(!unsafe_report.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == MaterializationDiagnosticKind::InapplicablePrettyHint
                 && diagnostic.message.contains("closed Pretty boundary")
         }));
+        let range = diagnostic
+            .range
+            .clone()
+            .expect("boundary has a source range");
+        assert!(
+            unsafe_source[range.start as usize..range.end as usize].contains('T'),
+            "diagnostic must point at the authored boundary field: {diagnostic:?}"
+        );
 
         let safe_report = materialize(resolve(
             r#"
@@ -2733,7 +2793,7 @@ struct Attached<T> {
         ));
         assert!(fixed_report.lowered.is_none());
         assert!(fixed_report.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == MaterializationDiagnosticKind::InapplicablePrettyHint
+            diagnostic.kind == MaterializationDiagnosticKind::UnsafePrettyBoundary
                 && diagnostic.message.contains("closed Pretty boundary")
         }));
 
@@ -2751,7 +2811,7 @@ struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
         ));
         assert!(trivia_report.lowered.is_none());
         assert!(trivia_report.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == MaterializationDiagnosticKind::InapplicablePrettyHint
+            diagnostic.kind == MaterializationDiagnosticKind::UnsafePrettyBoundary
                 && diagnostic.message.contains("closed Pretty boundary")
         }));
 

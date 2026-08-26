@@ -934,6 +934,7 @@ pub(crate) const fn materialization_code(kind: MaterializationDiagnosticKind) ->
         MaterializationDiagnosticKind::InvalidContainer => "RCA3206",
         MaterializationDiagnosticKind::InvalidPrattShape => "RCA3209",
         MaterializationDiagnosticKind::InapplicablePrettyHint => "RCA3210",
+        MaterializationDiagnosticKind::UnsafePrettyBoundary => "RCA3211",
         MaterializationDiagnosticKind::AliasCycle => "RCA3207",
         MaterializationDiagnosticKind::NonRegularRecursion => "RCA3208",
     }
