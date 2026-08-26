@@ -997,8 +997,7 @@ impl Materializer {
                     };
                     let (_, container) = terminal_and_container(&evaluated.closed, None);
                     let semantics = container.semantics();
-                    let pretty_break_opportunity = *attachment_before > 0
-                        || *attachment_after > 0
+                    let pretty_break_opportunity = attachment.is_some()
                         || semantics.is_some_and(|semantics| semantics.cardinality.is_repeated());
                     if (pretty.group.is_some() || pretty.indent) && !pretty_break_opportunity {
                         self.push_diagnostic(
@@ -3741,5 +3740,41 @@ struct Root {
                 (crate::RepetitionCardinality::OneOrMore, true),
             ],
         );
+    }
+
+    #[test]
+    fn generic_alias_pretty_applicability_is_checked_per_closed_application() {
+        let valid = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::pretty, derives(Pretty) }
+#[derive(recursa::Node)] struct Leaf { #[lex(pattern = "x")] text: Text }
+type Alias<T> = T;
+#[derive(recursa::Node)]
+struct Generic<T> { #[pretty(group = inconsistent)] values: Alias<T> }
+#[derive(recursa::Node)]
+struct Root { value: Generic<Vec<Leaf>> }
+"#,
+        ));
+        assert!(valid.diagnostics.is_empty(), "{:?}", valid.diagnostics);
+        assert!(valid.lowered.is_some());
+
+        let invalid = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::pretty, derives(Pretty) }
+#[derive(recursa::Node)] struct Leaf { #[lex(pattern = "x")] text: Text }
+type Alias<T> = T;
+#[derive(recursa::Node)]
+struct Generic<T> { #[pretty(group = consistent)] value: Alias<T> }
+#[derive(recursa::Node)]
+struct Root { value: Generic<Leaf> }
+"#,
+        ));
+        assert!(invalid.lowered.is_none());
+        assert!(invalid.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == MaterializationDiagnosticKind::InapplicablePrettyHint
+                && diagnostic
+                    .message
+                    .contains("materialized break opportunity")
+        }));
     }
 }

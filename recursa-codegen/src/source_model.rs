@@ -968,7 +968,7 @@ impl SourceModelBuilder<'_> {
     ) {
         self.validate_pretty_scope_facts(
             pretty,
-            Self::pretty_scope_has_soft_opportunity(elements),
+            self.pretty_scope_has_soft_opportunity(elements, &mut Vec::new()),
             scope,
             diagnostics,
         );
@@ -1022,21 +1022,127 @@ impl SourceModelBuilder<'_> {
         scope: &str,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
-        let has_soft_opportunity = variants.any(Self::pretty_scope_has_soft_opportunity);
+        let has_soft_opportunity = variants
+            .any(|elements| self.pretty_scope_has_soft_opportunity(elements, &mut Vec::new()));
         self.validate_pretty_scope_facts(pretty, has_soft_opportunity, scope, diagnostics);
     }
 
-    fn pretty_scope_has_soft_opportunity(elements: &[GrammarElement]) -> bool {
-        elements.len() > 1
-            || elements.iter().any(|element| {
-                matches!(
-                    element,
-                    GrammarElement::SemanticField {
-                        separator: Some(_),
-                        ..
-                    }
+    fn pretty_scope_has_soft_opportunity(
+        &self,
+        elements: &[GrammarElement],
+        visiting: &mut Vec<NodeId>,
+    ) -> bool {
+        if matches!(
+            (elements.first(), elements.last()),
+            (
+                Some(GrammarElement::FixedToken { token_use: open, .. }),
+                Some(GrammarElement::FixedToken { token_use: close, .. })
+            ) if matches!(
+                (
+                    self.fixed_definition_for_use(*open).spelling.as_str(),
+                    self.fixed_definition_for_use(*close).spelling.as_str(),
+                ),
+                ("(", ")") | ("[", "]") | ("{", "}")
+            )
+        ) {
+            return true;
+        }
+        if elements.iter().any(|element| {
+            let GrammarElement::SemanticField {
+                resolved_field,
+                separator,
+                ..
+            } = element
+            else {
+                return false;
+            };
+            separator.is_some()
+                || self.field_has_repetition(*resolved_field).unwrap_or(true)
+                || self.pretty_type_has_soft_opportunity(
+                    &self.resolved_field(*resolved_field).ty,
+                    visiting,
                 )
+        }) {
+            return true;
+        }
+        elements.windows(2).any(|adjacent| {
+            let [left, right] = adjacent else {
+                unreachable!()
+            };
+            let left =
+                self.pretty_element_boundaries(left, PrettyBoundarySide::Last, &mut Vec::new());
+            let right =
+                self.pretty_element_boundaries(right, PrettyBoundarySide::First, &mut Vec::new());
+            left.iter().any(|left| {
+                right
+                    .iter()
+                    .any(|right| self.pretty_boundary_emits_soft_break(left, right))
             })
+        })
+    }
+
+    fn pretty_type_has_soft_opportunity(
+        &self,
+        ty: &ResolvedType,
+        visiting: &mut Vec<NodeId>,
+    ) -> bool {
+        match &ty.kind {
+            ResolvedTypeKind::Semantic {
+                target, arguments, ..
+            } => match target {
+                SemanticTarget::Node(node) => {
+                    if visiting.contains(node) {
+                        return false;
+                    }
+                    visiting.push(*node);
+                    let result = self
+                        .nodes
+                        .iter()
+                        .find(|candidate| candidate.resolved_node == *node)
+                        .is_some_and(|node| match &node.body {
+                            NodeBody::Struct(elements) | NodeBody::Presence(elements) => {
+                                self.pretty_scope_has_soft_opportunity(elements, visiting)
+                            }
+                            NodeBody::Enum(variants) => variants.iter().any(|variant| {
+                                self.pretty_scope_has_soft_opportunity(&variant.elements, visiting)
+                            }),
+                            NodeBody::Pratt(variants) => variants.iter().any(|variant| {
+                                self.pretty_scope_has_soft_opportunity(
+                                    &variant.common.elements,
+                                    visiting,
+                                )
+                            }),
+                        });
+                    visiting.pop();
+                    result
+                }
+                SemanticTarget::Catalog(CatalogType::Vec | CatalogType::Vec1) => true,
+                SemanticTarget::Catalog(CatalogType::Box | CatalogType::Option) => arguments
+                    .iter()
+                    .find_map(|argument| match argument {
+                        ResolvedGenericArgument::Type(inner) => {
+                            Some(self.pretty_type_has_soft_opportunity(inner, visiting))
+                        }
+                        ResolvedGenericArgument::Lifetime(_)
+                        | ResolvedGenericArgument::Unsupported(_) => None,
+                    })
+                    .unwrap_or(false),
+                SemanticTarget::TypeAlias(alias) => self
+                    .resolved
+                    .type_aliases
+                    .iter()
+                    .find(|candidate| candidate.id == *alias)
+                    .and_then(|alias| alias.target.as_ref())
+                    .is_some_and(|target| self.pretty_type_has_soft_opportunity(target, visiting)),
+                SemanticTarget::ContentToken(_) | SemanticTarget::GenericParameter(_) => false,
+            },
+            ResolvedTypeKind::Group(inner)
+            | ResolvedTypeKind::Parenthesized(inner)
+            | ResolvedTypeKind::Reference(inner) => {
+                self.pretty_type_has_soft_opportunity(inner, visiting)
+            }
+            ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => false,
+        }
     }
 
     fn is_pretty_pratt_grouping(&self, node: NodeId, variant: &Variant) -> bool {
@@ -1109,10 +1215,9 @@ impl SourceModelBuilder<'_> {
         for (index, element) in elements.iter().enumerate() {
             let GrammarElement::SemanticField {
                 resolved_field,
+                attachment,
                 separator,
                 pretty,
-                attachment_before,
-                attachment_after,
                 site,
                 ..
             } = element
@@ -1138,10 +1243,16 @@ impl SourceModelBuilder<'_> {
                         .to_owned(),
                 });
             }
-            let has_internal_break = *attachment_before > 0
-                || *attachment_after > 0
-                || separator.is_some()
-                || self.field_has_repetition(*resolved_field).unwrap_or(true);
+            let attachment_start = index;
+            let attachment_end = index;
+            let attachment_has_soft_opportunity = attachment.as_ref().is_some_and(|attachment| {
+                self.pretty_attachment_has_soft_opportunity(*resolved_field, attachment)
+            });
+            let has_internal_break = separator.is_some()
+                || self.field_has_repetition(*resolved_field).unwrap_or(true)
+                || attachment_has_soft_opportunity
+                || self
+                    .pretty_scope_has_soft_opportunity(&elements[index..=index], &mut Vec::new());
             if pretty.group.is_some() && !has_internal_break {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
@@ -1156,8 +1267,6 @@ impl SourceModelBuilder<'_> {
                     message: "Pretty `indent` on field has no possible break".to_owned(),
                 });
             }
-            let attachment_start = index.saturating_sub(*attachment_before);
-            let attachment_end = index.saturating_add(*attachment_after);
             if pretty.break_before.is_some() && attachment_start == 0 {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
@@ -1173,22 +1282,26 @@ impl SourceModelBuilder<'_> {
                     message: "Pretty `break_after` requires a following grammar element".to_owned(),
                 });
             }
+            let boundary_is_tight = |left: &GrammarElement, right: &GrammarElement| {
+                let left =
+                    self.pretty_element_boundaries(left, PrettyBoundarySide::Last, &mut Vec::new());
+                let right = self.pretty_element_boundaries(
+                    right,
+                    PrettyBoundarySide::First,
+                    &mut Vec::new(),
+                );
+                left.iter()
+                    .any(|left| self.pretty_boundary_forces_tight_after(left))
+                    || right
+                        .iter()
+                        .any(|right| self.pretty_boundary_forces_tight_before(right))
+            };
             let tight_before = attachment_start.checked_sub(1).is_some_and(|before| {
-                matches!(
-                    elements[before],
-                    GrammarElement::FixedToken { token_use, .. }
-                        if self.fixed_definition_for_use(token_use).pretty_spacing
-                            == PrettySpacing::Tight
-                )
+                boundary_is_tight(&elements[before], &elements[attachment_start])
             });
-            let tight_after = elements.get(attachment_end + 1).is_some_and(|after| {
-                matches!(
-                    after,
-                    GrammarElement::FixedToken { token_use, .. }
-                        if self.fixed_definition_for_use(*token_use).pretty_spacing
-                            == PrettySpacing::Tight
-                )
-            });
+            let tight_after = elements
+                .get(attachment_end + 1)
+                .is_some_and(|after| boundary_is_tight(&elements[attachment_end], after));
             if (pretty.break_before.is_some() && tight_before)
                 || (pretty.break_after.is_some() && tight_after)
             {
@@ -1224,6 +1337,52 @@ impl SourceModelBuilder<'_> {
                 }
             }
         }
+    }
+
+    fn pretty_attachment_has_soft_opportunity(
+        &self,
+        field: ResolvedFieldId,
+        attachment: &FixedTokenAttachment,
+    ) -> bool {
+        let fixed = |token: &AttachedFixedToken| PrettyBoundary {
+            kind: PrettyBoundaryKind::Fixed(self.tokens.uses[token.token_use.index()].definition),
+            site: token.site.clone(),
+        };
+        let before = attachment.before.iter().map(fixed).collect::<Vec<_>>();
+        let after = attachment.after.iter().map(fixed).collect::<Vec<_>>();
+        let site = attachment
+            .before
+            .first()
+            .or_else(|| attachment.after.first())
+            .map(|token| token.site.clone())
+            .expect("an attachment has fixed syntax");
+        let first = self.pretty_type_boundaries(
+            &self.resolved_field(field).ty,
+            PrettyBoundarySide::First,
+            &site,
+            &mut Vec::new(),
+        );
+        let last = self.pretty_type_boundaries(
+            &self.resolved_field(field).ty,
+            PrettyBoundarySide::Last,
+            &site,
+            &mut Vec::new(),
+        );
+        before
+            .windows(2)
+            .any(|pair| self.pretty_boundary_emits_soft_break(&pair[0], &pair[1]))
+            || after
+                .windows(2)
+                .any(|pair| self.pretty_boundary_emits_soft_break(&pair[0], &pair[1]))
+            || before.last().is_some_and(|left| {
+                first
+                    .iter()
+                    .any(|right| self.pretty_boundary_emits_soft_break(left, right))
+            })
+            || after.first().is_some_and(|right| {
+                last.iter()
+                    .any(|left| self.pretty_boundary_emits_soft_break(left, right))
+            })
     }
 
     fn pretty_trivia_supports_breaks(&self) -> bool {
@@ -1440,6 +1599,82 @@ impl SourceModelBuilder<'_> {
 
     fn fixed_definition_for_use(&self, id: TokenUseId) -> &FixedTokenDefinition {
         self.fixed_definition_by_id(self.tokens.uses[id.index()].definition)
+    }
+
+    fn pretty_boundary_emits_soft_break(
+        &self,
+        left: &PrettyBoundary,
+        right: &PrettyBoundary,
+    ) -> bool {
+        let fixed = |boundary: &PrettyBoundary| match boundary.kind {
+            PrettyBoundaryKind::Fixed(id) => Some(self.fixed_definition_by_id(id)),
+            PrettyBoundaryKind::Dynamic(_) => None,
+        };
+        let left_fixed = fixed(left);
+        let right_fixed = fixed(right);
+        if right_fixed.is_some_and(|right| {
+            matches!(
+                right.pretty_spacing,
+                PrettySpacing::Before | PrettySpacing::Around
+            )
+        }) {
+            return true;
+        }
+        if left_fixed.is_some_and(|left| {
+            matches!(
+                left.pretty_spacing,
+                PrettySpacing::After | PrettySpacing::Around
+            )
+        }) {
+            return true;
+        }
+        if left_fixed.is_some_and(|left| {
+            matches!(
+                left.pretty_spacing,
+                PrettySpacing::Tight | PrettySpacing::Before
+            ) || (left.pretty_spacing == PrettySpacing::Auto
+                && matches!(left.spelling.as_str(), "(" | "[" | "{"))
+        }) {
+            return false;
+        }
+        match right_fixed {
+            None => true,
+            Some(right) if right.pretty_spacing != PrettySpacing::Auto => false,
+            Some(right) => {
+                let right_word = right
+                    .spelling
+                    .chars()
+                    .next()
+                    .is_some_and(unicode_ident::is_xid_start)
+                    && right.spelling.chars().all(unicode_ident::is_xid_continue);
+                if left_fixed.is_none() {
+                    right_word
+                } else {
+                    true
+                }
+            }
+        }
+    }
+
+    fn pretty_boundary_spacing(&self, boundary: &PrettyBoundary) -> Option<PrettySpacing> {
+        match boundary.kind {
+            PrettyBoundaryKind::Fixed(id) => Some(self.fixed_definition_by_id(id).pretty_spacing),
+            PrettyBoundaryKind::Dynamic(_) => None,
+        }
+    }
+
+    fn pretty_boundary_forces_tight_after(&self, boundary: &PrettyBoundary) -> bool {
+        matches!(
+            self.pretty_boundary_spacing(boundary),
+            Some(PrettySpacing::Tight | PrettySpacing::Before)
+        )
+    }
+
+    fn pretty_boundary_forces_tight_before(&self, boundary: &PrettyBoundary) -> bool {
+        matches!(
+            self.pretty_boundary_spacing(boundary),
+            Some(PrettySpacing::Tight | PrettySpacing::After)
+        )
     }
 
     fn pretty_element_boundaries(
@@ -5638,6 +5873,11 @@ struct Root;
 "#,
         );
         assert!(unknown.source_modeled.is_none());
+        assert_code(
+            &unknown,
+            SourceModelDiagnosticKind::InvalidPrettyHint,
+            "RCA3118",
+        );
         assert!(unknown.diagnostics.iter().any(|diagnostic| diagnostic.kind
             == SourceModelDiagnosticKind::InvalidPrettyHint
             && diagnostic.message.contains("unknown Pretty hint")));
@@ -5676,6 +5916,45 @@ struct Root { #[pretty(separator = leading, trailing_separator = never)] value: 
                 .count()
                 >= 2
         );
+        assert_code(
+            &inapplicable,
+            SourceModelDiagnosticKind::InapplicablePrettyHint,
+            "RCA3210",
+        );
+
+        let duplicate = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+#[derive(recursa::Node)]
+#[pretty(group = consistent)]
+#[pretty(group = inconsistent)]
+struct Root { first: Leaf, second: Leaf }
+#[derive(recursa::Node)] struct Leaf;
+"#,
+        );
+        assert!(duplicate.source_modeled.is_none());
+        assert!(duplicate.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidPrettyHint
+                && diagnostic.message.contains("duplicate")
+        }));
+
+        let cfg_selected = model_with_cfg(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { keywords { A => "a", B => "b" } }
+#[derive(recursa::Node)]
+#[cfg_attr(feature = "pretty-layout", pretty(group = inconsistent))]
+#[tok(A, B)]
+struct Root;
+"#,
+            &CargoCfgSnapshot::default().with_value("feature", "pretty-layout"),
+        );
+        assert!(
+            cfg_selected.diagnostics.is_empty(),
+            "{:?}",
+            cfg_selected.diagnostics
+        );
+        assert!(cfg_selected.source_modeled.is_some());
 
         let empty_scopes = model(
             r#"
@@ -5720,6 +5999,11 @@ struct Root {
 "#,
         );
         assert!(report.source_modeled.is_none());
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::UnsafePrettyHint,
+            "RCA3211",
+        );
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == SourceModelDiagnosticKind::UnsafePrettyHint
                 && diagnostic.message.contains("mandatory-tight")
@@ -5811,6 +6095,77 @@ enum Choice {
                 .filter(|diagnostic| diagnostic.kind == SourceModelDiagnosticKind::UnsafePrettyHint)
                 .count()
                 >= 3
+        );
+    }
+
+    #[test]
+    fn pretty_grouping_requires_real_soft_breaks_and_break_safety_follows_nested_sides() {
+        let no_soft = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"\s+"
+    punctuation { LEFT => "<", spacing = tight, RIGHT => ">", spacing = tight }
+}
+#[derive(recursa::Node)]
+#[pretty(group = consistent)]
+#[tok(LEFT, RIGHT)]
+struct AllTight;
+#[derive(recursa::Node)]
+#[pretty(group = inconsistent, break_before = hard)]
+struct HardOnly;
+"#,
+        );
+        assert!(no_soft.source_modeled.is_none());
+        assert!(
+            no_soft
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.kind
+                    == SourceModelDiagnosticKind::InapplicablePrettyHint
+                    && diagnostic.message.contains("no soft-break opportunity"))
+                .count()
+                >= 2
+        );
+
+        let nested = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \n]+"
+    punctuation {
+        BEFORE => "@", spacing = before,
+        AFTER => "%", spacing = after,
+    }
+}
+#[derive(recursa::Node)] #[tok(BEFORE)] struct EndsBefore;
+#[derive(recursa::Node)] #[tok(AFTER)] struct StartsAfter;
+#[derive(recursa::Node)] struct Empty;
+#[derive(recursa::Node)]
+struct BreakBefore {
+    left: EndsBefore,
+    #[pretty(break_before = hard)] right: Empty,
+}
+#[derive(recursa::Node)]
+struct BreakAfter {
+    #[pretty(break_after = hard)] left: Empty,
+    right: StartsAfter,
+}
+"#,
+        );
+        assert!(nested.source_modeled.is_none());
+        assert!(
+            nested
+                .diagnostics
+                .iter()
+                .filter(
+                    |diagnostic| diagnostic.kind == SourceModelDiagnosticKind::UnsafePrettyHint
+                        && diagnostic.message.contains("mandatory-tight")
+                )
+                .count()
+                >= 2,
+            "{:?}",
+            nested.diagnostics
         );
     }
 }

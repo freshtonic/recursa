@@ -184,6 +184,8 @@ enum PrettyTokenBehavior {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PrettyNodeBehavior {
+    pretty: PrettyHints,
+    variant_pretty: Vec<PrettyHints>,
     variants: Vec<Vec<PrettyElementBehavior>>,
 }
 
@@ -199,7 +201,16 @@ enum PrettyElementBehavior {
         attachment: Option<PrettyAttachmentBehavior>,
         opaque_provenance: bool,
         top_level_break: bool,
+        pretty: PrettyHints,
+        presence: PrettyPresence,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrettyPresence {
+    Always,
+    Optional,
+    NonEmpty,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2137,6 +2148,17 @@ fn emitted_pretty_plan(nodes: &[NodeParsePlan], tokens: &[TokenParsePlan]) -> Pr
 }
 
 fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBehavior {
+    let variant_pretty = match &node.body {
+        NodeBodyPlan::Struct { .. } => vec![PrettyHints::default()],
+        NodeBodyPlan::Enum { variants, .. } => variants
+            .iter()
+            .map(|variant| variant.pretty.clone())
+            .collect(),
+        NodeBodyPlan::Pratt(_) => trait_variants(&node.body)
+            .iter()
+            .map(|variant| variant.pretty.clone())
+            .collect(),
+    };
     let variants = match &node.body {
         NodeBodyPlan::Struct { elements, .. } => vec![emitted_pretty_elements(elements)],
         NodeBodyPlan::Enum { variants, .. } => variants
@@ -2148,7 +2170,11 @@ fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBehavior {
             .map(|variant| emitted_pretty_elements(&variant.elements))
             .collect(),
     };
-    PrettyNodeBehavior { variants }
+    PrettyNodeBehavior {
+        pretty: node.pretty.clone(),
+        variant_pretty,
+        variants,
+    }
 }
 
 fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBehavior> {
@@ -2163,10 +2189,12 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
             },
             ElementParseKind::Semantic {
                 container,
+                wrappers,
                 attachment,
                 separator,
                 opaque_provenance,
                 repetition_break,
+                pretty,
                 ..
             } => PrettyElementBehavior::Semantic {
                 repeated: matches!(container.as_ref(), PlannedContainer::Repeated { .. }),
@@ -2198,9 +2226,27 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
                     PlannedRepetitionBreak::TopLevelStatement(_)
                         | PlannedRepetitionBreak::TopLevelStatementFamily(_)
                 ),
+                pretty: pretty.clone(),
+                presence: pretty_presence(wrappers),
             },
         })
         .collect()
+}
+
+fn pretty_presence(wrappers: &[FieldWrapper]) -> PrettyPresence {
+    if wrappers
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+    {
+        PrettyPresence::Optional
+    } else if wrappers
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::ZeroOrMore))
+    {
+        PrettyPresence::NonEmpty
+    } else {
+        PrettyPresence::Always
+    }
 }
 
 fn authoritative_pretty_plan(
@@ -2267,6 +2313,17 @@ fn authoritative_pretty_node_behavior(
     resolved_node: &ResolvedNode,
     source_node: &SourceNode,
 ) -> Result<PrettyNodeBehavior, String> {
+    let variant_pretty = match &source_node.body {
+        SourceNodeBody::Struct(_) | SourceNodeBody::Presence(_) => vec![PrettyHints::default()],
+        SourceNodeBody::Enum(variants) => variants
+            .iter()
+            .map(|variant| variant.pretty.clone())
+            .collect(),
+        SourceNodeBody::Pratt(variants) => variants
+            .iter()
+            .map(|variant| variant.common.pretty.clone())
+            .collect(),
+    };
     let variants = match &source_node.body {
         SourceNodeBody::Struct(elements) | SourceNodeBody::Presence(elements) => {
             vec![authoritative_pretty_elements(
@@ -2286,7 +2343,11 @@ fn authoritative_pretty_node_behavior(
             })
             .collect::<Result<Vec<_>, String>>()?,
     };
-    Ok(PrettyNodeBehavior { variants })
+    Ok(PrettyNodeBehavior {
+        pretty: source_node.pretty.clone(),
+        variant_pretty,
+        variants,
+    })
 }
 
 fn authoritative_pretty_elements(
@@ -2317,6 +2378,7 @@ fn authoritative_pretty_elements(
                 resolved_field,
                 attachment,
                 separator,
+                pretty,
                 ..
             } => {
                 let field = resolved_node
@@ -2362,6 +2424,8 @@ fn authoritative_pretty_elements(
                             ResolvedNodeBody::Enum { .. }
                         )
                     }),
+                    pretty: pretty.clone(),
+                    presence: pretty_presence(&projection.wrappers),
                 })
             }
         })
@@ -7646,7 +7710,7 @@ fn render_pratt_node_pretty(
                 context: &mut #facade::PrettyContext,
             ) -> ::core::fmt::Result {
                 context.configure_defaults(#max_width, #indent);
-                context.group(|context| { #rendered_node Ok(()) })
+                context.baseline_group(|context| { #rendered_node Ok(()) })
             }
         }
     }
@@ -7805,7 +7869,12 @@ fn render_node_pretty(
                                             pretty,
                                         )
                                     };
-                                    render_pretty_presence(pretty, wrappers, quote!(#binding), rendered)
+                                    render_pretty_presence(
+                                        pretty,
+                                        wrappers,
+                                        quote!(#binding),
+                                        rendered,
+                                    )
                                 }
                                 (
                                     ElementParseKind::Fixed { .. },
@@ -7833,7 +7902,7 @@ fn render_node_pretty(
                 context: &mut #facade::PrettyContext,
             ) -> ::core::fmt::Result {
                 context.configure_defaults(#max_width, #indent);
-                context.group(|context| { #body Ok(()) })
+                context.baseline_group(|context| { #body Ok(()) })
             }
         }
     }
@@ -7850,13 +7919,17 @@ fn render_pretty_semantic(
     pretty: &PrettyHints,
 ) -> proc_macro2::TokenStream {
     let render_value = if matches!(container, PlannedContainer::Repeated { .. }) {
+        let space_before_separator = separator.is_some_and(is_word_shaped);
         let separator =
             separator.map_or_else(|| quote!(None), |separator| quote!(Some(#separator)));
         let hard_break = top_level_break;
-        let trailing = matches!(pretty.trailing_separator, Some(PrettyTrailingSeparator::Always));
+        let trailing = matches!(
+            pretty.trailing_separator,
+            Some(PrettyTrailingSeparator::Always)
+        );
         let leading = matches!(pretty.separator, Some(PrettySeparatorPosition::Leading));
         quote! {
-            context.with_repetition_style(#separator, #trailing, #hard_break, #leading, |context| {
+            context.with_repetition_style(#separator, #trailing, #hard_break, #leading, #space_before_separator, |context| {
                 #facade::Pretty::pretty(#value, context)
             })
         }

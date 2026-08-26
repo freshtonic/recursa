@@ -1,7 +1,7 @@
 recursa::grammar! {
     module = crate::grammar,
     derives(Pretty, Visit, VisitMut),
-    keyword_matching = sensitive,
+    keyword_matching = ascii_insensitive,
     max_lookahead = 1,
     spans = __RECURSA_SPANS_MODE__,
 }
@@ -38,6 +38,9 @@ recursa::tokens! {
         ATTACHED_NONEMPTY => "attachednonempty",
         NODE_HINT => "nodehint",
         ENUM_HINT => "enumhint",
+        CONSISTENT_HINT => "consistent",
+        INCONSISTENT_HINT => "inconsistent",
+        WORD_SEP => "or",
     }
     punctuation {
         COMMA => ",",
@@ -51,6 +54,8 @@ recursa::tokens! {
         SEMICOLON => ";",
         TIGHT_OPEN => ":", spacing = tight,
         TIGHT_CLOSE => "?", spacing = tight,
+        ATTACH_OPEN => "<",
+        ATTACH_CLOSE => ">",
     }
 }
 
@@ -177,7 +182,14 @@ pub struct MixedMany {
 #[derive(recursa::Node)]
 pub struct MixedProgram {
     #[sep(SEMICOLON)]
+    #[pretty(separator = leading)]
     pub values: Vec<MixedCapture>,
+}
+
+#[derive(recursa::Node)]
+pub struct WordSeparated<'input> {
+    #[sep(WORD_SEP)]
+    pub values: Vec<Box<Item<'input>>>,
 }
 
 #[derive(recursa::Node)]
@@ -223,9 +235,36 @@ pub struct TrailingPretty<'input> {
 #[derive(recursa::Node)]
 pub struct AttachmentPretty<'input> {
     pub before: Marker,
-    #[tok(TIGHT_OPEN, BOXED, this, DOT, TIGHT_CLOSE)]
+    #[tok(ATTACH_OPEN, TIGHT_OPEN, BOXED, this, DOT, TIGHT_CLOSE, ATTACH_CLOSE)]
     #[pretty(group = inconsistent, indent, break_before = hard, break_after = hard)]
     pub value: Box<Item<'input>>,
+    pub after: Marker,
+}
+
+#[derive(recursa::Node)]
+pub struct HintAttachedOptional<'input> {
+    pub before: Marker,
+    #[tok(ATTACH_OPEN, TIGHT_OPEN, BOXED, this, DOT, TIGHT_CLOSE, ATTACH_CLOSE)]
+    #[pretty(break_before = hard, break_after = hard)]
+    pub value: Option<Box<Item<'input>>>,
+    pub after: Marker,
+}
+
+#[derive(recursa::Node)]
+pub struct HintAttachedMany<'input> {
+    pub before: Marker,
+    #[tok(ATTACH_OPEN, TIGHT_OPEN, MANY, this, DOT, TIGHT_CLOSE, ATTACH_CLOSE)]
+    #[pretty(break_before = hard, break_after = hard)]
+    pub values: Vec<Box<Item<'input>>>,
+    pub after: Marker,
+}
+
+#[derive(recursa::Node)]
+pub struct AttachedMaybeMany<'input> {
+    pub before: Marker,
+    #[tok(ATTACH_OPEN, TIGHT_OPEN, MAYBE, this, DOT, TIGHT_CLOSE, ATTACH_CLOSE)]
+    #[pretty(break_before = hard, break_after = hard)]
+    pub values: Option<Box<recursa::Vec1<Box<Item<'input>>>>>,
     pub after: Marker,
 }
 
@@ -242,6 +281,32 @@ pub enum VariantGroupPretty<'input> {
     #[tok(ENUM_HINT, this)]
     #[pretty(group = inconsistent)]
     Value(Box<Item<'input>>, Box<Item<'input>>),
+}
+
+#[derive(recursa::Node)]
+#[tok(CONSISTENT_HINT, this)]
+#[pretty(group = consistent, indent)]
+pub struct ConsistentIndentPretty<'input> {
+    pub first: Box<Item<'input>>,
+    pub second: Box<Item<'input>>,
+    pub third: Box<Item<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(INCONSISTENT_HINT, this)]
+#[pretty(group = inconsistent, indent)]
+pub struct InconsistentIndentPretty<'input> {
+    pub first: Box<Item<'input>>,
+    pub second: Box<Item<'input>>,
+    pub third: Box<Item<'input>>,
+}
+
+pub type PrettyAlias<T> = Vec<Box<T>>;
+
+#[derive(recursa::Node)]
+pub struct GenericAliasOutput<'input> {
+    #[pretty(group = inconsistent)]
+    pub values: PrettyAlias<Item<'input>>,
 }
 
 #[derive(recursa::Node)]

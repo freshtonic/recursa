@@ -83,7 +83,7 @@ const fn evidence_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticEvide
         3006 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticEvidenceSchema::InternalInvariant,
         1..=301 => DiagnosticEvidenceSchema::AnalysisWitness,
-        1001..=3209 => DiagnosticEvidenceSchema::SourceFacts,
+        1001..=3211 => DiagnosticEvidenceSchema::SourceFacts,
         _ => DiagnosticEvidenceSchema::InternalInvariant,
     }
 }
@@ -104,7 +104,7 @@ const fn remedy_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticRemedyS
         3006 => DiagnosticRemedySchema::ResolveLexicalPolicy(LexicalEvidenceClass::PriorityTie),
         9101..=9105 => DiagnosticRemedySchema::ReportInternalFailure,
         1..=301 => DiagnosticRemedySchema::ResolveAnalysisConflict,
-        1001..=3209 => DiagnosticRemedySchema::CorrectAuthoredInput,
+        1001..=3211 => DiagnosticRemedySchema::CorrectAuthoredInput,
         _ => DiagnosticRemedySchema::ReportInternalFailure,
     }
 }
@@ -197,12 +197,15 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA3115", Lowering, Error),
     diagnostic_spec!("RCA3116", Lowering, Error),
     diagnostic_spec!("RCA3117", Lowering, Error),
+    diagnostic_spec!("RCA3118", Lowering, Error),
     diagnostic_spec!("RCA3202", Lowering, Error),
     diagnostic_spec!("RCA3203", Lowering, Error),
     diagnostic_spec!("RCA3204", Lowering, Error),
     diagnostic_spec!("RCA3205", Lowering, Error),
     diagnostic_spec!("RCA3206", Lowering, Error),
     diagnostic_spec!("RCA3209", Lowering, Error),
+    diagnostic_spec!("RCA3210", Lowering, Error),
+    diagnostic_spec!("RCA3211", Lowering, Error),
     diagnostic_spec!("RCA3207", Lowering, Error),
     diagnostic_spec!("RCA3208", Lowering, Error),
     // M3-owned internal failures. RCA9001-RCA9005 retain their distinct M4
