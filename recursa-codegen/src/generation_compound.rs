@@ -92,6 +92,7 @@ struct EmissionPlan {
     kind_count: usize,
     lexical_error_kind: u16,
     kind_variants: Vec<Ident>,
+    kind_static_texts: Vec<Option<String>>,
     kind_names: Vec<String>,
     atom_names: Vec<String>,
     nodes: Vec<NodeParsePlan>,
@@ -204,6 +205,7 @@ struct TokenParsePlan {
     ident: Ident,
     kind: u16,
     kind_variant: Ident,
+    accepted_kind_variants: Vec<Ident>,
     expected: ExpectedSet,
     capture: PlannedCapturePolicy,
 }
@@ -372,6 +374,15 @@ impl EmissionPlan {
         let lexical_error_kind = u16::try_from(lowered.grammar.kind_count)
             .map_err(|_| "generated lexical-error kind exceeds runtime width".to_owned())?;
         let kind_variants = planned_kind_variants(lowered)?;
+        let kind_static_texts = lowered
+            .lexical_plan
+            .token_kinds
+            .iter()
+            .map(|kind| match &kind.identity {
+                TokenKindIdentity::Fixed(text) => Some(text.clone()),
+                TokenKindIdentity::ContentBase(_) => None,
+            })
+            .collect::<Vec<_>>();
         let mut kind_names = lowered
             .grammar
             .kinds
@@ -414,7 +425,8 @@ impl EmissionPlan {
             };
             let kind = u16::try_from(target.base_kind.index())
                 .map_err(|_| "generated token kind exceeds runtime width".to_owned())?;
-            let mut expected = ExpectedSet::from_kinds(&target.accepted_kinds(), kind_count);
+            let accepted_kinds = target.accepted_kinds();
+            let mut expected = ExpectedSet::from_kinds(&accepted_kinds, kind_count);
             expected.atoms.push(atom.index().try_into().map_err(|_| {
                 "generated content-token expectation exceeds runtime width".to_owned()
             })?);
@@ -422,6 +434,10 @@ impl EmissionPlan {
                 ident: format_ident!("__RecursaContentToken{index}"),
                 kind,
                 kind_variant: kind_variants[target.base_kind.index()].clone(),
+                accepted_kind_variants: accepted_kinds
+                    .iter()
+                    .map(|kind| kind_variants[kind.index()].clone())
+                    .collect(),
                 expected,
                 capture: resolved.build_inputs.spans.into(),
             });
@@ -573,10 +589,11 @@ impl EmissionPlan {
         }
         for token in &tokens {
             canonical.push_str(&format!(
-                ";token={}:{}:{}",
+                ";token={}:{}:{}:{:?}",
                 token.ident,
                 token.kind,
-                token.capture.canonical_name()
+                token.capture.canonical_name(),
+                token.accepted_kind_variants,
             ));
         }
         for binding in &token_bindings {
@@ -625,6 +642,7 @@ impl EmissionPlan {
             kind_count,
             lexical_error_kind,
             kind_variants,
+            kind_static_texts,
             kind_names,
             atom_names,
             nodes,
@@ -643,6 +661,7 @@ impl EmissionPlan {
             return Err("the Emission plan lacks a Generation identity or Nodes".to_owned());
         }
         if self.kind_variants.len() + 1 != self.kind_count
+            || self.kind_static_texts.len() + 1 != self.kind_count
             || self.kind_names.len() != self.kind_count
         {
             return Err("the generated token-kind plan has inconsistent width".to_owned());
@@ -1474,6 +1493,24 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         let index = index as u16;
         quote!(TokenKind::#variant => #index,)
     });
+    let kind_static_arms = kind_variants
+        .iter()
+        .zip(&plan.kind_static_texts)
+        .filter_map(|(variant, text)| {
+            let text = text.as_ref()?;
+            Some(quote!(TokenKind::#variant => Some(#text),))
+        });
+    let kind_display_arms =
+        kind_variants
+            .iter()
+            .zip(&plan.kind_static_texts)
+            .map(|(variant, text)| {
+                if let Some(text) = text {
+                    quote!(TokenKind::#variant => formatter.write_str(#text),)
+                } else {
+                    quote!(TokenKind::#variant => formatter.write_str(stringify!(#variant)),)
+                }
+            });
     let keyword_classifiers = plan.keyword_classifiers.iter().map(|classifier| {
         let canonical = &classifier.canonical_spelling;
         let kind = classifier.kind;
@@ -1606,11 +1643,30 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             ),*
         ];
 
-        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         #[allow(non_camel_case_types)]
         pub enum TokenKind {
             #(#kind_variants,)*
             LexicalError,
+        }
+
+        impl TokenKind {
+            /// Static spelling for a data-free fixed token kind.
+            pub const fn static_text(self) -> Option<&'static str> {
+                match self {
+                    #(#kind_static_arms)*
+                    _ => None,
+                }
+            }
+        }
+
+        impl ::core::fmt::Display for TokenKind {
+            fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                match self {
+                    #(#kind_display_arms)*
+                    TokenKind::LexicalError => formatter.write_str("LexicalError"),
+                }
+            }
         }
 
         /// The complete set of decisions a lexer callback can make.
@@ -1749,6 +1805,12 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             }
         }
 
+        impl ::core::fmt::Display for Token<'_> {
+            fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                formatter.write_str(self.source.get(self.record.span.range()).ok_or(::core::fmt::Error)?)
+            }
+        }
+
         pub struct Tokens<'lexed, 'input> {
             source: &'input str,
             records: ::core::slice::Iter<'lexed, #facade::__private::TokenRecord>,
@@ -1800,6 +1862,12 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
             pub fn span(self) -> #facade::Span {
                 self.record.span
+            }
+        }
+
+        impl ::core::fmt::Display for LexError<'_> {
+            fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                formatter.write_str(self.source.get(self.record.span.range()).ok_or(::core::fmt::Error)?)
             }
         }
 
@@ -2184,6 +2252,39 @@ fn render_token(
     let ident = &token.ident;
     let view = sibling_ident(ident, "View");
     let kind_variant = &token.kind_variant;
+    let stores_kind = token.accepted_kind_variants.len() > 1;
+    let accepted_kind_variants = &token.accepted_kind_variants;
+    let kind_field = stores_kind.then(|| quote!(kind: #module_anchor::TokenKind,));
+    let new_kind = stores_kind.then(|| quote!(kind: #module_anchor::TokenKind::#kind_variant,));
+    let with_kind = stores_kind.then(|| {
+        quote! {
+            pub fn with_kind(
+                kind: #module_anchor::TokenKind,
+                text: impl Into<Box<str>>,
+            ) -> Result<Self, #module_anchor::TokenKind> {
+                match kind {
+                    #(#module_anchor::TokenKind::#accepted_kind_variants)|* => Ok(Self {
+                        text: #facade::__private::ContentText::owned(text.into()),
+                        kind,
+                    }),
+                    rejected => Err(rejected),
+                }
+            }
+        }
+    });
+    let kind_method = if stores_kind {
+        quote! {
+            pub const fn kind(&self) -> #module_anchor::TokenKind { self.kind }
+        }
+    } else {
+        quote! {
+            pub const fn kind(&self) -> #module_anchor::TokenKind {
+                #module_anchor::TokenKind::#kind_variant
+            }
+        }
+    };
+    let parsed_kind =
+        stores_kind.then(|| quote!(kind: #module_anchor::__recursa_typed_kind(record.kind),));
     let expected = format_ident!("__RECURSA_TOKEN_START_{index}");
     let capture = token.capture.render(facade);
     quote! {
@@ -2191,17 +2292,20 @@ fn render_token(
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct #ident<'input> {
             text: #facade::__private::ContentText<'input>,
+            #kind_field
         }
 
         impl<'input> #ident<'input> {
             pub fn new(text: impl Into<Box<str>>) -> Self {
-                Self { text: #facade::__private::ContentText::owned(text.into()) }
+                Self {
+                    text: #facade::__private::ContentText::owned(text.into()),
+                    #new_kind
+                }
             }
 
+            #with_kind
             pub fn text(&self) -> &str { self.text.as_str() }
-            pub const fn kind(&self) -> #module_anchor::TokenKind {
-                #module_anchor::TokenKind::#kind_variant
-            }
+            #kind_method
         }
 
         #[doc(hidden)]
@@ -2247,7 +2351,7 @@ fn render_token(
                 }
                 context.advance();
                 let text = context.matched_text(record)?;
-                context.finish(Self { text }, record.span)
+                context.finish(Self { text, #parsed_kind }, record.span)
             }
         }
         impl<'input, A> #facade::__private::ParseSealed<#module_anchor::Input<'input, A>>
