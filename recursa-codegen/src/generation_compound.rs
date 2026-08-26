@@ -141,7 +141,7 @@ struct EmissionPlan {
     pretty: PrettyEmissionPlan,
     #[cfg(feature = "diagrams")]
     diagrams: Option<DiagramPlan>,
-    explorer: Option<ExplorerPlan>,
+    explorer: Option<ExtensionEmissionPlan>,
     instrumentation: EmissionInstrumentation,
     plan_families: EmissionPlanFamilies,
 }
@@ -314,6 +314,32 @@ enum PrettyFixedRendering {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct ExtensionEmissionPlan {
+    artifacts: Vec<ExtensionArtifactPlan>,
+    explorer: ExplorerPlan,
+}
+
+impl std::ops::Deref for ExtensionEmissionPlan {
+    type Target = ExplorerPlan;
+
+    fn deref(&self) -> &Self::Target {
+        &self.explorer
+    }
+}
+
+impl std::ops::DerefMut for ExtensionEmissionPlan {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.explorer
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExtensionArtifactPlan {
+    logical_name: String,
+    content: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ExplorerPlan {
     roots: Vec<ExplorerRootPlan>,
     nodes: Vec<ExplorerNodePlan>,
@@ -475,6 +501,7 @@ struct NodeApplicationParsePlan {
     node: NodeId,
     parse_index: usize,
     ty: Type,
+    static_ty: Type,
     body: NodeBodyPlan,
 }
 
@@ -1227,6 +1254,12 @@ impl EmissionPlan {
                         lowered,
                         &syn::parse_quote!('__recursa_input),
                     )?,
+                    static_ty: materialized_application_type(
+                        application,
+                        &authored_lifetimes,
+                        lowered,
+                        &syn::parse_quote!('static),
+                    )?,
                     body: planned.body.clone(),
                 });
                 if source_plan.is_none() {
@@ -1397,14 +1430,22 @@ impl EmissionPlan {
         #[cfg(not(feature = "diagrams"))]
         let frozen_diagrams = None;
         let private_abi = emitted_private_abi_plan();
-        let explorer = emitted_explorer_plan(&nodes, &tokens);
+        let explorer =
+            emitted_explorer_plan(&nodes, &tokens).map(|explorer| ExtensionEmissionPlan {
+                artifacts: Vec::new(),
+                explorer,
+            });
         if explorer.is_some() {
             validate_explorer_collisions(resolved, cfg, &nodes, &tokens)?;
         }
         let pretty = emitted_pretty_plan(&nodes, &tokens);
         let capabilities =
             emitted_capability_plan(&nodes, &tokens, diagram_enabled, explorer.is_some());
-        let authoritative_explorer = authoritative_explorer_plan(lowered)?;
+        let authoritative_explorer =
+            authoritative_explorer_plan(lowered)?.map(|explorer| ExtensionEmissionPlan {
+                artifacts: Vec::new(),
+                explorer,
+            });
         let plan_families = EmissionPlanFamilies {
             configured_traits: authoritative_configured_trait_identity(lowered, resolved),
             private_abi: plan_family_identity(&authoritative_private_abi_plan()),
@@ -3172,21 +3213,32 @@ fn emitted_explorer_plan(
     let mut roots = nodes
         .iter()
         .filter(|node| explorer_emitted_application_is_eligible(node))
-        .map(|node| ExplorerRootPlan {
-            node: node.source_node,
-            application: node.application,
-            capabilities: ExplorerCapabilityPlan {
-                pretty: node
-                    .configured_traits
-                    .contains(&ConfiguredTraitRecipe::Pretty),
-                arbitrary: node
-                    .configured_traits
-                    .contains(&ConfiguredTraitRecipe::Arbitrary),
-            },
+        .flat_map(|node| {
+            node.parse_applications
+                .iter()
+                .map(move |application| ExplorerRootPlan {
+                    node: node.node,
+                    application: application.application,
+                    capabilities: ExplorerCapabilityPlan {
+                        pretty: node
+                            .configured_traits
+                            .contains(&ConfiguredTraitRecipe::Pretty),
+                        arbitrary: node
+                            .configured_traits
+                            .contains(&ConfiguredTraitRecipe::Arbitrary),
+                    },
+                })
         })
         .collect::<Vec<_>>();
     roots.sort_by_key(|root| root.application.index());
-    let mut planned_nodes = nodes.iter().map(emitted_explorer_node).collect::<Vec<_>>();
+    let mut planned_nodes = nodes
+        .iter()
+        .flat_map(|node| {
+            node.parse_applications
+                .iter()
+                .map(move |application| emitted_explorer_node(node, application))
+        })
+        .collect::<Vec<_>>();
     planned_nodes.sort_by_key(|node| node.application.index());
     (!roots.is_empty()).then(|| ExplorerPlan {
         roots,
@@ -3280,7 +3332,6 @@ fn explorer_emitted_application_is_eligible(node: &NodeParsePlan) -> bool {
         && node
             .configured_traits
             .contains(&ConfiguredTraitRecipe::Visit)
-        && explorer_application_entry_shape_is_supported(&node.generics)
 }
 
 fn explorer_source_application_is_eligible(
@@ -3295,21 +3346,13 @@ fn explorer_source_application_is_eligible(
             .effective
             .iter()
             .any(|selection| selection.recipe == ConfiguredTraitRecipe::Visit)
-        && explorer_application_entry_shape_is_supported(&node.generics)
 }
 
-fn explorer_application_entry_shape_is_supported(generics: &Generics) -> bool {
-    // Ticket #68 will populate one entry per closed application. The current
-    // emitter can name only declarations whose closed application differs by
-    // input lifetimes, so keep that limitation isolated at the application seam.
-    generics
-        .params
-        .iter()
-        .all(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
-}
-
-fn emitted_explorer_node(node: &NodeParsePlan) -> ExplorerNodePlan {
-    let body = match &node.body {
+fn emitted_explorer_node(
+    node: &NodeParsePlan,
+    application: &NodeApplicationParsePlan,
+) -> ExplorerNodePlan {
+    let body = match &application.body {
         NodeBodyPlan::Struct { elements, .. } => {
             ExplorerNodeBodyPlan::Struct(emitted_explorer_variant(None, None, elements.iter()))
         }
@@ -3347,8 +3390,8 @@ fn emitted_explorer_node(node: &NodeParsePlan) -> ExplorerNodePlan {
         ),
     };
     ExplorerNodePlan {
-        node: node.source_node,
-        application: node.application,
+        node: node.node,
+        application: application.application,
         schema_name: node.ident.unraw().to_string(),
         display: ExplorerDisplayPlan::None,
         body,
@@ -3428,8 +3471,8 @@ fn authoritative_explorer_node(
                 })
                 .collect::<Result<Vec<_>, String>>()?,
         ),
-        MaterializedNodeBody::Pratt(variants) => ExplorerNodeBodyPlan::Pratt(
-            variants
+        MaterializedNodeBody::Pratt(variants) => {
+            let mut planned = variants
                 .iter()
                 .map(|variant| match variant {
                     MaterializedPrattVariant::Nud(nud) => authoritative_explorer_variant(
@@ -3494,8 +3537,22 @@ fn authoritative_explorer_node(
                         Ok(planned)
                     }
                 })
-                .collect::<Result<Vec<_>, String>>()?,
-        ),
+                .collect::<Result<Vec<_>, String>>()?;
+            planned.sort_by_key(|planned| {
+                variants
+                    .iter()
+                    .find(|variant| match variant {
+                        MaterializedPrattVariant::Nud(nud) => {
+                            Some(nud.common.resolved_variant) == planned.variant
+                        }
+                        MaterializedPrattVariant::Led(led) => {
+                            Some(led.common.resolved_variant) == planned.variant
+                        }
+                    })
+                    .is_some_and(|variant| matches!(variant, MaterializedPrattVariant::Led(_)))
+            });
+            ExplorerNodeBodyPlan::Pratt(planned)
+        }
     };
     Ok(ExplorerNodePlan {
         node: node.id,
@@ -4432,6 +4489,7 @@ fn structural_body(
                         .find(|resolved| resolved.id == variant.resolved_variant)
                         .ok_or_else(|| "authored enum variant lacks resolved shape".to_owned())?;
                     Ok(VariantParsePlan {
+                        resolved_variant: resolved_variant.id,
                         ident: emitted_ident(&variant.name)?,
                         style: resolved_variant.style,
                         elements: declaration_elements(
@@ -4465,6 +4523,7 @@ fn structural_body(
                     .find(|resolved| resolved.id == source_variant.common.resolved_variant)
                     .ok_or_else(|| "authored Pratt variant lacks resolved shape".to_owned())?;
                 let mut variant = VariantParsePlan {
+                    resolved_variant: resolved_variant.id,
                     ident: emitted_ident(&source_variant.common.name)?,
                     style: resolved_variant.style,
                     elements: declaration_elements(
@@ -4569,6 +4628,7 @@ fn declaration_elements(
                 };
                 let name = fixed_element_name(node, usage, definition, fixed);
                 Ok(ElementParsePlan {
+                    explorer_source: ExplorerElementSource::Fixed(*token_use),
                     metadata_name: name.clone(),
                     kind: ElementParseKind::Fixed {
                         expected: ExpectedSet::empty(kind_count),
@@ -4664,6 +4724,7 @@ fn declaration_elements(
                     .map(PlannedRepetitionBreak::TopLevelStatementFamily)
                     .unwrap_or(PlannedRepetitionBreak::Soft);
                 Ok(ElementParsePlan {
+                    explorer_source: ExplorerElementSource::Semantic(*resolved_field),
                     metadata_name,
                     kind: ElementParseKind::Semantic {
                         field: FieldPlan {
@@ -4674,6 +4735,11 @@ fn declaration_elements(
                         terminal: Box::new(projection.terminal),
                         terminal_node: projection.terminal_node,
                         terminal_application: None,
+                        explorer_terminal: declaration_explorer_terminal(
+                            lowered,
+                            node.id,
+                            *resolved_field,
+                        )?,
                         wrappers: projection.wrappers,
                         container: Box::new(declaration_container(
                             operation,
@@ -4741,6 +4807,42 @@ fn declaration_fixed_attachment(
             .map(|attached| plan_fixed(attached.token_use))
             .collect::<Result<_, _>>()?,
     })
+}
+
+fn declaration_explorer_terminal(
+    lowered: &crate::materialization::LoweredGrammar,
+    node: NodeId,
+    field: ResolvedFieldId,
+) -> Result<ExplorerTerminalPlan, String> {
+    let application = lowered
+        .applications
+        .iter()
+        .find(|application| application.node == node)
+        .ok_or_else(|| "an authored explorer field lacks a closed Node application".to_owned())?;
+    let explorer = authoritative_explorer_node(lowered, application)?;
+    let variants: Vec<&ExplorerVariantPlan> = match &explorer.body {
+        ExplorerNodeBodyPlan::Struct(variant) => vec![variant],
+        ExplorerNodeBodyPlan::Enum(variants) | ExplorerNodeBodyPlan::Pratt(variants) => {
+            variants.iter().collect()
+        }
+    };
+    variants
+        .into_iter()
+        .flat_map(|variant| &variant.elements)
+        .find_map(|element| {
+            matches!(
+                element.source,
+                ExplorerElementSource::Semantic(candidate)
+                    | ExplorerElementSource::PrattLhs(candidate)
+                    if candidate == field
+            )
+            .then_some(&element.occurrence)
+        })
+        .and_then(|occurrence| match occurrence {
+            ExplorerOccurrencePlan::Children { terminal, .. } => Some(*terminal),
+            ExplorerOccurrencePlan::Leaf => None,
+        })
+        .ok_or_else(|| "an authored explorer field lacks a materialized terminal".to_owned())
 }
 
 fn declaration_container_operation(wrappers: &[FieldWrapper]) -> ContainerOperation {
@@ -8351,8 +8453,8 @@ fn render_node_parse_application(
     }
 }
 
-fn explorer_elements_for_node(node: &NodeParsePlan) -> Vec<&ElementParsePlan> {
-    match &node.body {
+fn explorer_elements_for_body(body: &NodeBodyPlan) -> Vec<&ElementParsePlan> {
+    match body {
         NodeBodyPlan::Struct { elements, .. } => elements.iter().collect(),
         NodeBodyPlan::Enum { variants, .. } => variants
             .iter()
@@ -8369,10 +8471,11 @@ fn explorer_elements_for_node(node: &NodeParsePlan) -> Vec<&ElementParsePlan> {
     }
 }
 
-fn explorer_impl_generics(plan: &EmissionPlan, node: &NodeParsePlan) -> Generics {
-    let mut generics = node.generics.clone();
+fn explorer_impl_generics(plan: &EmissionPlan, application: &NodeApplicationParsePlan) -> Generics {
+    let mut generics = Generics::default();
+    generics.params.push(syn::parse_quote!('__recursa_input));
     let mut terminals = BTreeSet::new();
-    for element in explorer_elements_for_node(node) {
+    for element in explorer_elements_for_body(&application.body) {
         let ElementParseKind::Semantic {
             terminal,
             explorer_terminal,
@@ -8383,7 +8486,7 @@ fn explorer_impl_generics(plan: &EmissionPlan, node: &NodeParsePlan) -> Generics
         };
         if matches!(
             explorer_terminal,
-            ExplorerTerminalPlan::Node(application) if *application == node.application
+            ExplorerTerminalPlan::Node(candidate) if *candidate == application.application
         ) {
             continue;
         }
@@ -8446,27 +8549,42 @@ fn explorer_variant_pattern_and_bindings(
 fn render_node_explorer(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
-    node_index: usize,
+    _node_index: usize,
 ) -> proc_macro2::TokenStream {
     let Some(explorer_plan) = &plan.explorer else {
         return quote!();
     };
+    let applications = node.parse_applications.iter().map(|application| {
+        render_node_application_explorer(plan, explorer_plan, node, application)
+    });
+    quote!(#(#applications)*)
+}
+
+fn render_node_application_explorer(
+    plan: &EmissionPlan,
+    explorer_plan: &ExplorerPlan,
+    node: &NodeParsePlan,
+    application: &NodeApplicationParsePlan,
+) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let node_ident = &node.ident;
+    let node_index = application.parse_index;
+    let ty = &application.ty;
+    let static_ty = &application.static_ty;
     let explorer_node = explorer_plan
         .nodes
         .iter()
         .find(|candidate| {
-            candidate.node == node.source_node && candidate.application == node.application
+            candidate.node == node.node && candidate.application == application.application
         })
         .expect("typed explorer plan retains every materialized Node application");
     let schema_definitions = render_explorer_schema(plan, explorer_node, node_index);
     let node_display = render_explorer_display(&explorer_node.display);
-    let explorer_generics = explorer_impl_generics(plan, node);
-    let (impl_generics, type_generics, where_clause) = explorer_generics.split_for_impl();
+    let explorer_generics = explorer_impl_generics(plan, application);
+    let (impl_generics, _, where_clause) = explorer_generics.split_for_impl();
 
-    let body = match (&node.body, &explorer_node.body) {
+    let body = match (&application.body, &explorer_node.body) {
         (NodeBodyPlan::Struct { elements, .. }, ExplorerNodeBodyPlan::Struct(explorer)) => {
             let schema = explorer_schema_static(node_index, None);
             let occurrences =
@@ -8586,52 +8704,22 @@ fn render_node_explorer(
     let root = explorer_plan
         .roots
         .iter()
-        .find(|root| root.node == node.source_node && root.application == node.application);
+        .find(|root| root.node == node.node && root.application == application.application);
     let entry =
         root.map(|root| {
             let root_schema = explorer_schema_static(node_index, None);
             let parse = format_ident!("__recursa_explorer_parse_{node_index}");
             let sample = format_ident!("__recursa_explorer_sample_{node_index}");
-            let lifetime_arguments = node
-                .generics
-                .params
-                .iter()
-                .map(|parameter| match parameter {
-                    GenericParam::Lifetime(_) => quote!('__recursa_input),
-                    GenericParam::Type(_) | GenericParam::Const(_) => {
-                        unreachable!("explorer roots are closed except for input lifetimes")
-                    }
-                })
-                .collect::<Vec<_>>();
-            let static_arguments = node
-                .generics
-                .params
-                .iter()
-                .map(|parameter| match parameter {
-                    GenericParam::Lifetime(_) => quote!('static),
-                    GenericParam::Type(_) | GenericParam::Const(_) => unreachable!(),
-                })
-                .collect::<Vec<_>>();
-            let parse_type = if lifetime_arguments.is_empty() {
-                quote!(#node_ident)
-            } else {
-                quote!(#node_ident<#(#lifetime_arguments),*>)
-            };
-            let static_type = if static_arguments.is_empty() {
-                quote!(#node_ident)
-            } else {
-                quote!(#node_ident<#(#static_arguments),*>)
-            };
             let pretty = root.capabilities.pretty;
             let pretty_parse = pretty.then(|| {
                 quote! {
-                    document.__set_pretty(#facade::Pretty::render(&parsed));
+                    document.__set_pretty(#facade::Pretty::render_mapped(&parsed));
                 }
             });
             let arbitrary = root.capabilities.arbitrary;
             let sample_function = arbitrary.then(|| {
             let pretty_sample = pretty.then(|| quote! {
-                document.__set_pretty(#facade::Pretty::render(&parsed));
+                document.__set_pretty(#facade::Pretty::render_mapped(&parsed));
             });
             quote! {
                 __recursa_if_arbitrary! {
@@ -8647,7 +8735,7 @@ fn render_node_explorer(
                             *byte = state as u8;
                         }
                         let mut input = #facade::__private::arbitrary::Unstructured::new(&bytes);
-                        let value = <#static_type as #facade::Arbitrary>::arbitrary(&mut input)
+                        let value = <#static_ty as #facade::Arbitrary>::arbitrary(&mut input)
                             .map_err(|error| #facade::explorer::Error::Sample {
                                 message: error.to_string().into_boxed_str(),
                             })?;
@@ -8683,7 +8771,7 @@ fn render_node_explorer(
                 > {
                 let lexed = #module_anchor::lex(source);
                 let mut input = lexed.input();
-                let parsed = <#parse_type>::parse_spanned(&mut input)?;
+                let parsed = <#ty>::parse_spanned(&mut input)?;
                 #facade::__private::explorer_require_eof(
                     &input.inner,
                     &#module_anchor::__RECURSA_EMPTY_FOLLOW,
@@ -8698,7 +8786,7 @@ fn render_node_explorer(
 
                 #sample_function
 
-                impl #impl_generics #node_ident #type_generics #where_clause {
+                impl #impl_generics #ty #where_clause {
                     /// Returns this source-visible Node family's opaque explorer adapter.
                     pub fn explorer() -> #facade::explorer::Adapter {
                         #arbitrary_binding
@@ -8722,7 +8810,7 @@ fn render_node_explorer(
             #schema_definitions
 
             unsafe impl #impl_generics #facade::__private::ExplorerNode
-                for #node_ident #type_generics #where_clause
+                for #ty #where_clause
             {
                 fn __recursa_explorer_node(
                     &self,
@@ -13310,6 +13398,18 @@ struct B;
             .capabilities
             .pretty ^= true;
         assert_plan_family_is_unselectable(package.path(), &explorer, "explorer");
+
+        let (package, mut explorer_artifact) = joined_pratt_fixture();
+        explorer_artifact
+            .explorer
+            .as_mut()
+            .expect("Visit fixture has an extension emission plan")
+            .artifacts
+            .push(ExtensionArtifactPlan {
+                logical_name: "grammar-index".to_owned(),
+                content: "corrupt explorer artifact".to_owned(),
+            });
+        assert_plan_family_is_unselectable(package.path(), &explorer_artifact, "explorer");
 
         let (package, mut explorer_schema) = joined_pratt_fixture();
         explorer_schema

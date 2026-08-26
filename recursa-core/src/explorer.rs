@@ -1,7 +1,7 @@
 //! Grammar-erased explorer contracts backed by generated adapters.
 
 use crate::parsed::ViewCursor;
-use crate::{ElementRole, FollowSet, Input, ParseError, ParseErrorKind, Parsed, Span};
+use crate::{ElementRole, FollowSet, Input, ParseError, ParseErrorKind, Parsed, SourceMap, Span};
 use std::fmt;
 
 /// Grammar-erased parsing, lexing, rendering, and sampling entry point.
@@ -151,7 +151,7 @@ pub enum Provenance {
 pub struct Document<'input> {
     source: Option<&'input str>,
     root: NodeData,
-    pretty: Option<String>,
+    pretty: Option<(String, SourceMap)>,
     provenance: Provenance,
 }
 
@@ -173,13 +173,22 @@ impl<'input> Document<'input> {
 
     pub fn pretty(&self) -> Result<&str, Error> {
         self.pretty
-            .as_deref()
+            .as_ref()
+            .map(|(rendered, _)| rendered.as_str())
+            .ok_or(Error::Unsupported(Operation::Pretty))
+    }
+
+    /// Token-level source provenance for the Pretty output.
+    pub fn pretty_source_map(&self) -> Result<&SourceMap, Error> {
+        self.pretty
+            .as_ref()
+            .map(|(_, source_map)| source_map)
             .ok_or(Error::Unsupported(Operation::Pretty))
     }
 
     /// Attaches generated Pretty output without exposing the document storage.
     #[doc(hidden)]
-    pub fn __set_pretty(&mut self, rendered: String) {
+    pub fn __set_pretty(&mut self, rendered: (String, SourceMap)) {
         self.pretty = Some(rendered);
     }
 }

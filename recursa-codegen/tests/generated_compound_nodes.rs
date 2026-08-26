@@ -135,7 +135,11 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
 
     let document = adapter.parse("ReCoRd:alpha 42").expect("explorer parse");
     assert_eq!(document.provenance(), recursa::explorer::Provenance::Parsed);
-    assert_eq!(document.pretty().unwrap(), "ReCoRd : alpha 42");
+    assert_eq!(document.pretty().unwrap(), "ReCoRd:alpha 42");
+    let pretty_map = document.pretty_source_map().unwrap();
+    assert_eq!(pretty_map.source_at(0), Some(recursa::Span::new(0, 6).unwrap()));
+    assert_eq!(pretty_map.source_at(6), Some(recursa::Span::new(6, 7).unwrap()));
+    assert_eq!(pretty_map.source_at(7), Some(recursa::Span::new(7, 12).unwrap()));
     let root = document.root();
     assert_eq!(root.schema().name(), "Record");
     assert_eq!(root.span(), Some(recursa::Span::new(0, 15).unwrap()));

@@ -56,12 +56,17 @@ fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() 
         [
             ("Integer", 1),
             ("Name", 1),
-            ("Paren", 3),
+            ("MultiGroup", 1),
+            ("Paren", 1),
             ("Neg", 2),
+            ("NotExists", 3),
             ("Factorial", 2),
             ("Power", 3),
             ("Multiply", 3),
             ("Add", 3),
+            ("IsNot", 4),
+            ("Cast", 3),
+            ("IsNull", 3),
         ],
     );
     let parsed = explorer.parse("a + 2 * 3").expect("Pratt explorer parse");
