@@ -239,6 +239,11 @@ impl PrettyContext {
     /// Emits an opening delimiter tightly and suppresses spacing after it.
     #[doc(hidden)]
     pub fn opening_token(&mut self, text: &str) -> fmt::Result {
+        if self.previous_auto_punctuation && !text.is_empty() {
+            self.sink
+                .events
+                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+        }
         self.tight_token(text)?;
         self.needs_separator = false;
         Ok(())

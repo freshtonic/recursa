@@ -1,0 +1,482 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use tempfile::TempDir;
+
+use quote::ToTokens as _;
+use syn::punctuated::Punctuated;
+use syn::{GenericArgument, Item, PathArguments, Type};
+
+struct Golden {
+    fixture: &'static str,
+    module: &'static str,
+    root: &'static str,
+    source: &'static str,
+    expected: &'static str,
+    fingerprint: &'static str,
+}
+
+const GOLDENS: &[Golden] = &[
+    Golden {
+        fixture: "toy",
+        module: "toy",
+        root: "IdentHolder",
+        source: "alpha",
+        expected: "alpha",
+        fingerprint: r#"
+fn fingerprint(value: &toy::IdentHolder<'_>) -> String {
+    format!("ident:{}", value.ident.text())
+}
+"#,
+    },
+    Golden {
+        fixture: "json",
+        module: "json",
+        root: "Value",
+        source: r#"{"a":[true,null]}"#,
+        expected: r#"{"a": [true, null]}"#,
+        fingerprint: r#"
+fn fingerprint(value: &json::Value<'_>) -> String {
+    match value {
+        json::Value::Object(object) => format!(
+            "object({})",
+            object.members.iter().map(|member| format!(
+                "{}:{}",
+                member.key.text(),
+                fingerprint(&member.value),
+            )).collect::<Vec<_>>().join(","),
+        ),
+        json::Value::Array(array) => format!(
+            "array({})",
+            array.values.iter().map(fingerprint).collect::<Vec<_>>().join(","),
+        ),
+        json::Value::String(text) => format!("string:{}", text.text()),
+        json::Value::Number(text) => format!("number:{}", text.text()),
+        json::Value::Bool(json::Bool::True) => "true".to_owned(),
+        json::Value::Bool(json::Bool::False) => "false".to_owned(),
+        json::Value::Null => "null".to_owned(),
+    }
+}
+"#,
+    },
+    Golden {
+        fixture: "sql",
+        module: "sql",
+        root: "Statement",
+        source: "CREATE TABLE thing",
+        expected: "CREATE TABLE thing",
+        fingerprint: r#"
+fn fingerprint(value: &sql::Statement<'_>) -> String {
+    match value {
+        sql::Statement::CreateTable(node) => format!("create-table:{}", node.rest.text()),
+        sql::Statement::CreateView(node) => format!("create-view:{}", node.rest.text()),
+        sql::Statement::CreateIndex(node) => format!("create-index:{}", node.rest.text()),
+        sql::Statement::CreateSchema(node) => format!("create-schema:{}", node.rest.text()),
+        sql::Statement::CreateFunction(node) => format!("create-function:{}", node.rest.text()),
+        sql::Statement::CreateProcedure(node) => format!("create-procedure:{}", node.rest.text()),
+        sql::Statement::DropTable(node) => format!("drop-table:{}", node.rest.text()),
+        sql::Statement::DropView(node) => format!("drop-view:{}", node.rest.text()),
+        sql::Statement::DropIndex(node) => format!("drop-index:{}", node.rest.text()),
+        sql::Statement::DropSchema(node) => format!("drop-schema:{}", node.rest.text()),
+        sql::Statement::DropFunction(node) => format!("drop-function:{}", node.rest.text()),
+        sql::Statement::DropProcedure(node) => format!("drop-procedure:{}", node.rest.text()),
+    }
+}
+"#,
+    },
+    Golden {
+        fixture: "optq",
+        module: "optq",
+        root: "Stmt",
+        source: "DEBUG PRINT thing",
+        expected: "DEBUG PRINT thing",
+        fingerprint: r#"
+fn fingerprint(value: &optq::Stmt<'_>) -> String {
+    match value {
+        optq::Stmt::Print(node) => format!("print:{}:{}", node.debug.is_some(), node.rest.text()),
+        optq::Stmt::Read(node) => format!("read:{}:{}", node.debug.is_some(), node.rest.text()),
+        optq::Stmt::Set(node) => format!("set:{}:{}", node.debug.is_some(), node.rest.text()),
+    }
+}
+"#,
+    },
+    Golden {
+        fixture: "cskw",
+        module: "cskw",
+        root: "Stmt",
+        source: "select a,b from t",
+        expected: "select a, b from t",
+        fingerprint: r#"
+fn fingerprint(value: &cskw::Stmt<'_>) -> String {
+    match value {
+        cskw::Stmt::Select(node) => format!(
+            "select:{}:from:{}",
+            node.cols.iter().map(|column| match &column.as_alias {
+                Some(alias) => format!("{} as {}", column.name.text(), alias.alias.text()),
+                None => column.name.text().to_owned(),
+            }).collect::<Vec<_>>().join(","),
+            node.table.text(),
+        ),
+    }
+}
+"#,
+    },
+    Golden {
+        fixture: "arith",
+        module: "arith",
+        root: "Expr",
+        source: "1+2*3",
+        expected: "1 + 2 * 3",
+        fingerprint: r#"
+fn fingerprint(value: &arith::Expr<'_>) -> String {
+    match value {
+        arith::Expr::IntLit(atom) => format!("int:{}", atom.value.value.text()),
+        arith::Expr::Ident(atom) => format!("ident:{}", atom.value.value.text()),
+        arith::Expr::Paren(inner) => format!("paren({})", fingerprint(inner)),
+        arith::Expr::Neg(inner) => format!("neg({})", fingerprint(inner)),
+        arith::Expr::Add(left, right) => format!("add({},{})", fingerprint(left), fingerprint(right)),
+        arith::Expr::Sub(left, right) => format!("sub({},{})", fingerprint(left), fingerprint(right)),
+        arith::Expr::Mul(left, right) => format!("mul({},{})", fingerprint(left), fingerprint(right)),
+        arith::Expr::Div(left, right) => format!("div({},{})", fingerprint(left), fingerprint(right)),
+    }
+}
+"#,
+    },
+];
+
+#[test]
+fn all_six_representative_grammars_have_semantic_pretty_goldens() {
+    let selected = std::env::var("RECURSA_PRETTY_GOLDEN").ok();
+    for golden in GOLDENS {
+        if selected
+            .as_deref()
+            .is_some_and(|selected| selected != golden.fixture)
+        {
+            continue;
+        }
+        let package = scaffold(golden);
+        let output = run(&package);
+        assert!(
+            output.status.success(),
+            "{} Pretty golden failed\nstdout:\n{}\nstderr:\n{}",
+            golden.fixture,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+}
+
+fn scaffold(golden: &Golden) -> TempDir {
+    let package = tempfile::tempdir().expect("temporary representative grammar package");
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir
+        .parent()
+        .expect("codegen belongs to the workspace");
+    let source = fs::read_to_string(
+        manifest_dir
+            .join("tests/fixtures/m3")
+            .join(golden.fixture)
+            .join("grammar.rs"),
+    )
+    .expect("read representative grammar");
+    let source = source.replacen(
+        "recursa::grammar! {",
+        "recursa::grammar! {\n    derives(Pretty),",
+        1,
+    );
+    let source = add_input_lifetimes(&source);
+
+    fs::create_dir_all(package.path().join("src")).expect("create package source directory");
+    fs::write(
+        package.path().join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "recursa-pretty-golden-{}"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+build = "build.rs"
+
+[dependencies]
+recursa = {{ path = {:?} }}
+
+[build-dependencies]
+recursa-codegen = {{ path = {:?} }}
+
+[workspace]
+"#,
+            golden.fixture,
+            workspace.join("recursa"),
+            workspace.join("recursa-codegen"),
+        ),
+    )
+    .expect("write package manifest");
+    fs::write(
+        package.path().join("build.rs"),
+        format!(
+            "fn main() -> Result<(), recursa_codegen::GenerateError> {{ recursa_codegen::generate(\"src/{}.rs\")?; Ok(()) }}\n",
+            golden.module,
+        ),
+    )
+    .expect("write build script");
+    fs::write(
+        package.path().join("src/lib.rs"),
+        format!("pub mod {};\n", golden.module),
+    )
+    .expect("write library root");
+    fs::write(
+        package
+            .path()
+            .join("src")
+            .join(format!("{}.rs", golden.module)),
+        source,
+    )
+    .expect("write grammar source");
+    fs::write(package.path().join("src/main.rs"), main_source(golden))
+        .expect("write golden executable");
+    package
+}
+
+fn main_source(golden: &Golden) -> String {
+    format!(
+        r#"use recursa::Pretty as _;
+use recursa_pretty_golden_{crate_name}::{module};
+
+fn parse(source: &str) -> recursa::Parsed<'_, {module}::{root}<'_>> {{
+    let lexed = {module}::lex(source);
+    assert!(lexed.errors().next().is_none());
+    let mut input = lexed.input();
+    let parsed = {module}::{root}::parse_spanned(&mut input).expect("golden parses");
+    assert!(input.is_eof(), "Pretty round trip requires explicit EOF");
+    parsed
+}}
+
+{fingerprint}
+
+fn main() {{
+    let parsed = parse({source:?});
+    let formatted = parsed.render();
+    assert_eq!(formatted, {expected:?});
+    let meaning = fingerprint(&parsed.into_ast());
+    let reparsed = parse(&formatted);
+    assert_eq!(reparsed.render(), formatted, "Pretty rendering is idempotent");
+    assert_eq!(
+        fingerprint(&reparsed.into_ast()),
+        meaning,
+        "parse/format/parse preserves AST meaning",
+    );
+}}
+"#,
+        crate_name = golden.fixture.replace('-', "_"),
+        module = golden.module,
+        root = golden.root,
+        source = golden.source,
+        expected = golden.expected,
+        fingerprint = golden.fingerprint,
+    )
+}
+
+fn add_input_lifetimes(source: &str) -> String {
+    let mut file = syn::parse_file(source).expect("representative grammar is valid Rust");
+    let mut dependencies = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut required = BTreeSet::new();
+    let mut content_tokens = BTreeSet::new();
+    for item in &file.items {
+        let Some((name, fields)) = node_fields(item) else {
+            continue;
+        };
+        let mut used = BTreeSet::new();
+        for field in fields {
+            collect_type_idents(&field.ty, &mut used);
+            if field
+                .attrs
+                .iter()
+                .any(|attribute| attribute.path().is_ident("lex"))
+            {
+                required.insert(name.clone());
+                collect_type_idents(&field.ty, &mut content_tokens);
+            }
+        }
+        dependencies.insert(name, used);
+    }
+    required.extend(
+        dependencies
+            .iter()
+            .filter(|(_, used)| used.iter().any(|used| content_tokens.contains(used)))
+            .map(|(name, _)| name.clone()),
+    );
+    loop {
+        let additions = dependencies
+            .iter()
+            .filter(|(name, used)| {
+                !required.contains(*name) && used.iter().any(|used| required.contains(used))
+            })
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        if additions.is_empty() {
+            break;
+        }
+        required.extend(additions);
+    }
+
+    let lifetime_types = required
+        .iter()
+        .chain(&content_tokens)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    for item in &mut file.items {
+        let name = match item {
+            Item::Struct(item) if is_node(&item.attrs) => Some(item.ident.to_string()),
+            Item::Enum(item) if is_node(&item.attrs) => Some(item.ident.to_string()),
+            _ => None,
+        };
+        let Some(name) = name else { continue };
+        if required.contains(&name) {
+            match item {
+                Item::Struct(item) => item.generics.params.insert(0, syn::parse_quote!('input)),
+                Item::Enum(item) => item.generics.params.insert(0, syn::parse_quote!('input)),
+                _ => unreachable!(),
+            }
+        }
+        match item {
+            Item::Struct(item) => {
+                for field in &mut item.fields {
+                    add_lifetimes_to_field(field, &lifetime_types);
+                }
+            }
+            Item::Enum(item) => {
+                for variant in &mut item.variants {
+                    for field in &mut variant.fields {
+                        add_lifetimes_to_field(field, &lifetime_types);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    file.into_token_stream().to_string()
+}
+
+fn is_node(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("derive")
+            && attribute
+                .meta
+                .to_token_stream()
+                .to_string()
+                .contains("Node")
+    })
+}
+
+fn node_fields(item: &Item) -> Option<(String, Vec<&syn::Field>)> {
+    match item {
+        Item::Struct(item) if is_node(&item.attrs) => {
+            Some((item.ident.to_string(), item.fields.iter().collect()))
+        }
+        Item::Enum(item) if is_node(&item.attrs) => Some((
+            item.ident.to_string(),
+            item.variants
+                .iter()
+                .flat_map(|variant| &variant.fields)
+                .collect(),
+        )),
+        _ => None,
+    }
+}
+
+fn collect_type_idents(ty: &Type, output: &mut BTreeSet<String>) {
+    match ty {
+        Type::Path(path) => {
+            for segment in &path.path.segments {
+                output.insert(segment.ident.to_string());
+                if let PathArguments::AngleBracketed(arguments) = &segment.arguments {
+                    for argument in &arguments.args {
+                        if let GenericArgument::Type(ty) = argument {
+                            collect_type_idents(ty, output);
+                        }
+                    }
+                }
+            }
+        }
+        Type::Tuple(tuple) => {
+            for element in &tuple.elems {
+                collect_type_idents(element, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn add_lifetimes_to_field(field: &mut syn::Field, required: &BTreeSet<String>) {
+    if field
+        .attrs
+        .iter()
+        .any(|attribute| attribute.path().is_ident("lex"))
+    {
+        add_lifetime_to_terminal(&mut field.ty);
+    }
+    add_required_lifetimes(&mut field.ty, required);
+}
+
+fn add_lifetime_to_terminal(ty: &mut Type) {
+    let Type::Path(path) = ty else { return };
+    let Some(segment) = path.path.segments.last_mut() else {
+        return;
+    };
+    if matches!(segment.arguments, PathArguments::None) {
+        segment.arguments = input_lifetime_arguments();
+    }
+}
+
+fn add_required_lifetimes(ty: &mut Type, required: &BTreeSet<String>) {
+    let Type::Path(path) = ty else { return };
+    for segment in &mut path.path.segments {
+        if let PathArguments::AngleBracketed(arguments) = &mut segment.arguments {
+            for argument in &mut arguments.args {
+                if let GenericArgument::Type(ty) = argument {
+                    add_required_lifetimes(ty, required);
+                }
+            }
+        }
+        if required.contains(&segment.ident.to_string())
+            && matches!(segment.arguments, PathArguments::None)
+        {
+            segment.arguments = input_lifetime_arguments();
+        }
+    }
+}
+
+fn input_lifetime_arguments() -> PathArguments {
+    let mut arguments = Punctuated::new();
+    arguments.push(GenericArgument::Lifetime(syn::parse_quote!('input)));
+    PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+        colon2_token: None,
+        lt_token: Default::default(),
+        args: arguments,
+        gt_token: Default::default(),
+    })
+}
+
+fn run(package: &TempDir) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    Command::new(cargo)
+        .arg("run")
+        .arg("--offline")
+        .arg("--quiet")
+        .current_dir(package.path())
+        .env_remove("RECURSA_GENERATION")
+        .env("RUSTC_WRAPPER", "")
+        .env("RUSTC_WORKSPACE_WRAPPER", "")
+        .env("CARGO_PROFILE_DEV_DEBUG", "0")
+        .env("CARGO_INCREMENTAL", "0")
+        .env("CARGO_TARGET_DIR", target_dir(package))
+        .output()
+        .expect("run representative Pretty golden")
+}
+
+fn target_dir(package: &TempDir) -> PathBuf {
+    package.path().join("target")
+}
