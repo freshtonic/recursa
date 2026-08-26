@@ -23,6 +23,40 @@ fn a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text() {
     );
 }
 
+#[test]
+fn grammar_hooks_cannot_bypass_generated_lexical_validation() {
+    let package = scaffold_fixture();
+    let grammar_path = package.path().join("src/grammar.rs");
+    let mut grammar = fs::read_to_string(&grammar_path).expect("read copied grammar fixture");
+    grammar.push_str(
+        r#"
+pub fn attempt_raw_mutation(
+    context: &mut LexContext<'_>,
+    editor: &mut LexEditor<'_>,
+    builder: &mut LexBuilder<'_>,
+) {
+    let _ = context.end;
+    editor.records.clear();
+    builder.records.clear();
+}
+"#,
+    );
+    fs::write(grammar_path, grammar).expect("write privacy-negative grammar fixture");
+
+    let output = check_fixture(&package);
+    assert!(
+        !output.status.success(),
+        "raw lexical mutation unexpectedly compiled"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for field in ["end", "records"] {
+        assert!(
+            stderr.contains(&format!("field `{field}`")) && stderr.contains("private"),
+            "missing privacy error for `{field}`\nstderr:\n{stderr}",
+        );
+    }
+}
+
 fn scaffold_fixture() -> TempDir {
     let package = tempfile::tempdir().expect("temporary generated lexing package");
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -75,6 +109,20 @@ fn run_fixture(package: &TempDir) -> Output {
         .env_remove("RECURSA_GENERATION")
         .env("CARGO_TARGET_DIR", target_dir(package));
     command.output().expect("run generated lexing fixture")
+}
+
+fn check_fixture(package: &TempDir) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(cargo);
+    command
+        .arg("check")
+        .arg("--offline")
+        .arg("--locked")
+        .arg("--quiet")
+        .current_dir(package.path())
+        .env_remove("RECURSA_GENERATION")
+        .env("CARGO_TARGET_DIR", target_dir(package));
+    command.output().expect("check generated lexing fixture")
 }
 
 fn target_dir(package: &TempDir) -> PathBuf {

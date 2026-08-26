@@ -99,7 +99,8 @@ struct EmissionPlan {
     tokens: Vec<TokenParsePlan>,
     token_bindings: Vec<TokenBindingPlan>,
     lexical_rules: Vec<LexRulePlan>,
-    keyword_classifiers: Vec<KeywordClassifierPlan>,
+    word_classifiers: Vec<WordClassifierPlan>,
+    word_candidate_kinds: Vec<u16>,
     post_lex: Option<syn::Path>,
 }
 
@@ -333,6 +334,13 @@ struct KeywordClassifierPlan {
     ascii_insensitive: bool,
 }
 
+#[derive(Clone)]
+struct WordClassifierPlan {
+    canonical_spelling: String,
+    kind: u16,
+    ascii_insensitive: bool,
+}
+
 fn fixed_lexical_pattern(spelling: &str, equivalence: TextEquivalence) -> String {
     let mut characters = spelling.chars();
     let word_shaped = characters.next().is_some_and(|first| {
@@ -562,6 +570,34 @@ impl EmissionPlan {
                     }))
                 })
                 .collect::<Result<Vec<_>, String>>()?;
+        let word_classifiers = lowered
+            .lexical_plan
+            .keywords
+            .iter()
+            .map(|keyword| {
+                Ok(WordClassifierPlan {
+                    canonical_spelling: keyword.canonical_spelling.clone(),
+                    kind: keyword
+                        .kind
+                        .index()
+                        .try_into()
+                        .map_err(|_| "generated token kind exceeds runtime width".to_owned())?,
+                    ascii_insensitive: resolved.build_inputs.text_equivalence
+                        == TextEquivalence::AsciiInsensitive,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let word_candidate_kinds = lowered
+            .lexical_plan
+            .content_bases
+            .iter()
+            .map(|base| {
+                base.kind
+                    .index()
+                    .try_into()
+                    .map_err(|_| "generated token kind exceeds runtime width".to_owned())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
 
         let mut canonical = format!(
             "{EMITTER_IDENTITY};release={};protocol={PRIVATE_PROTOCOL};facade={facade};anchor={};kinds={kind_count};edition={:?};cfg={:?};",
@@ -627,6 +663,13 @@ impl EmissionPlan {
                 classifier.ascii_insensitive,
             ));
         }
+        for classifier in &word_classifiers {
+            canonical.push_str(&format!(
+                ";classify_word={:?}:{}:{}",
+                classifier.canonical_spelling, classifier.kind, classifier.ascii_insensitive,
+            ));
+        }
+        canonical.push_str(&format!(";word_candidates={word_candidate_kinds:?}"));
         if let Some(post_lex) = &lowered.source_modeled.source_model().post_lex {
             canonical.push_str(&format!(
                 ";post_lex={}",
@@ -649,7 +692,8 @@ impl EmissionPlan {
             tokens,
             token_bindings,
             lexical_rules,
-            keyword_classifiers,
+            word_classifiers,
+            word_candidate_kinds,
             post_lex: lowered.source_modeled.source_model().post_lex.clone(),
         };
         plan.validate()?;
@@ -1511,20 +1555,19 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                     quote!(TokenKind::#variant => formatter.write_str(stringify!(#variant)),)
                 }
             });
-    let keyword_classifiers = plan.keyword_classifiers.iter().map(|classifier| {
+    let word_candidate_kinds = &plan.word_candidate_kinds;
+    let word_classifiers = plan.word_classifiers.iter().map(|classifier| {
         let canonical = &classifier.canonical_spelling;
         let kind = classifier.kind;
-        let carriers = &classifier.carriers;
         let matches = if classifier.ascii_insensitive {
             quote!(text.eq_ignore_ascii_case(#canonical))
         } else {
             quote!(text == #canonical)
         };
         quote! {
-            if [#(#carriers),*].contains(&record.kind)
-                && source
-                    .get(record.span.range())
-                    .is_some_and(|text| #matches)
+            if source
+                .get(record.span.range())
+                .is_some_and(|text| #matches)
             {
                 record.kind = #kind;
                 return;
@@ -1630,18 +1673,6 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 &[],
             );
         #(#token_starts)*
-        static __RECURSA_LEX_RULES: &[#facade::__private::LexRule] = &[
-            #(
-                #facade::__private::LexRule {
-                    pattern: #patterns,
-                    kind: #kinds,
-                    skip: #skips,
-                    callback: #callbacks,
-                    fixed: #fixed,
-                    priority: #priorities,
-                }
-            ),*
-        ];
 
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         #[allow(non_camel_case_types)]
@@ -1681,6 +1712,45 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             /// Emit this grammar's lexical-error record.
             Error,
         }
+
+        /// A cursor bound to this generated grammar's token identities.
+        pub struct Input<'input, A = ()> {
+            pub(crate) inner: #facade::__private::Input<'input, A>,
+        }
+
+        impl<'input, A> Input<'input, A> {
+            pub fn source(&self) -> &'input str {
+                self.inner.source()
+            }
+
+            pub fn builder(&mut self) -> &mut A {
+                self.inner.builder()
+            }
+
+            pub fn cursor(&self) -> usize {
+                self.inner.cursor()
+            }
+
+            pub fn is_eof(&self) -> bool {
+                self.inner.is_eof()
+            }
+        }
+
+        mod __recursa_lexical {
+            use super::{Input, LexAction, TokenKind};
+
+            static __RECURSA_LEX_RULES: &[#facade::__private::LexRule] = &[
+                #(
+                    #facade::__private::LexRule {
+                        pattern: #patterns,
+                        kind: #kinds,
+                        skip: #skips,
+                        callback: #callbacks,
+                        fixed: #fixed,
+                        priority: #priorities,
+                    }
+                ),*
+            ];
 
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct LexBumpError {
@@ -1751,8 +1821,10 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             source: &str,
             record: &mut #facade::__private::TokenRecord,
         ) {
-            let _ = (&source, &record);
-            #(#keyword_classifiers)*
+            if ![#(#word_candidate_kinds),*].contains(&record.kind) {
+                return;
+            }
+            #(#word_classifiers)*
         }
 
         fn __recursa_finalize<'input>(
@@ -1773,7 +1845,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
         impl GrammarInfo {
             pub fn name(&self) -> &'static str {
-                __RECURSA_GRAMMAR.name()
+                super::__RECURSA_GRAMMAR.name()
             }
         }
 
@@ -2077,6 +2149,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                     return Err(LexEditError::MissingRecord { index });
                 };
                 record.kind = __recursa_raw_kind(kind);
+                __recursa_classify(self.source, record);
                 Ok(())
             }
 
@@ -2091,7 +2164,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 let Some(original) = self.records.get(index).copied() else {
                     return Err(LexEditError::MissingRecord { index });
                 };
-                let replacement = replacement
+                let mut replacement = replacement
                     .into_iter()
                     .map(|(kind, span)| #facade::__private::TokenRecord {
                         kind: __recursa_raw_kind(kind),
@@ -2119,6 +2192,9 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                     }
                     previous = Some(record.span);
                 }
+                for record in &mut replacement {
+                    __recursa_classify(self.source, record);
+                }
                 self.records.splice(index..index + 1, replacement);
                 Ok(())
             }
@@ -2143,29 +2219,6 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 };
                 __recursa_classify(self.source, record);
                 Ok(())
-            }
-        }
-
-        /// A cursor bound to this generated grammar's token identities.
-        pub struct Input<'input, A = ()> {
-            pub(crate) inner: #facade::__private::Input<'input, A>,
-        }
-
-        impl<'input, A> Input<'input, A> {
-            pub fn source(&self) -> &'input str {
-                self.inner.source()
-            }
-
-            pub fn builder(&mut self) -> &mut A {
-                self.inner.builder()
-            }
-
-            pub fn cursor(&self) -> usize {
-                self.inner.cursor()
-            }
-
-            pub fn is_eof(&self) -> bool {
-                self.inner.is_eof()
             }
         }
 
@@ -2196,13 +2249,13 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
             pub fn input(&self) -> Input<'input> {
                 Input {
-                    inner: self.inner.input(&__RECURSA_GRAMMAR),
+                    inner: self.inner.input(&super::__RECURSA_GRAMMAR),
                 }
             }
 
             pub fn input_with_builder<A>(&self, builder: A) -> Input<'input, A> {
                 Input {
-                    inner: self.inner.input_with_builder(&__RECURSA_GRAMMAR, builder),
+                    inner: self.inner.input_with_builder(&super::__RECURSA_GRAMMAR, builder),
                 }
             }
         }
@@ -2216,6 +2269,13 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             let records = #facade::__private::lex_records(&scanned).to_vec();
             LexResult { inner: __recursa_finalize(source, records) }
         }
+
+        }
+
+        pub use __recursa_lexical::{
+            GrammarInfo, LexBuildError, LexBuilder, LexBumpError, LexContext, LexEditError,
+            LexEditor, LexError, LexErrors, LexRecord, LexResult, Token, Tokens, grammar_info, lex,
+        };
 
         #(#token_items)*
 
@@ -2283,8 +2343,23 @@ fn render_token(
             }
         }
     };
-    let parsed_kind =
-        stores_kind.then(|| quote!(kind: #module_anchor::__recursa_typed_kind(record.kind),));
+    let parsed_kind = stores_kind.then(|| {
+        let typed_kind_arms = accepted_kind_variants.iter().map(|variant| {
+            let index = plan
+                .kind_variants
+                .iter()
+                .position(|candidate| candidate == variant)
+                .expect("an accepted token kind must have an emitted variant")
+                as u16;
+            quote!(#index => #module_anchor::TokenKind::#variant,)
+        });
+        quote! {
+            kind: match record.kind {
+                #(#typed_kind_arms)*
+                _ => unreachable!("the parser admitted an unexpected token kind"),
+            },
+        }
+    });
     let expected = format_ident!("__RECURSA_TOKEN_START_{index}");
     let capture = token.capture.render(facade);
     quote! {
