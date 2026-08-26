@@ -17,6 +17,7 @@ pub struct ParseError {
 pub enum ParseErrorKind {
     UnexpectedToken,
     UnexpectedEof,
+    PrattAmbiguity,
     LexicalError,
     InvalidTokenSpan,
     GrammarMismatch,
@@ -72,6 +73,19 @@ impl ParseError {
         }
     }
 
+    pub(crate) fn pratt_ambiguity<A>(input: &Input<'_, A>, expected: &FollowSet) -> Self {
+        let record = input
+            .peek(0)
+            .expect("a Pratt ambiguity is reported only for a matched extender");
+        Self {
+            kind: ParseErrorKind::PrattAmbiguity,
+            span: record.span,
+            found: Some(record.kind),
+            expected: expected.expected().to_vec(),
+            grammar: input.grammar(),
+        }
+    }
+
     pub(crate) fn grammar_mismatch<A>(input: &Input<'_, A>) -> Self {
         let (span, found) = input.peek(0).map_or_else(
             || {
@@ -118,6 +132,9 @@ impl fmt::Display for ParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
             ParseErrorKind::UnexpectedEof => formatter.write_str("unexpected end of input"),
+            ParseErrorKind::PrattAmbiguity => {
+                formatter.write_str("Pratt extender overlaps caller FOLLOW")
+            }
             ParseErrorKind::LexicalError => formatter.write_str("lexical error"),
             ParseErrorKind::InvalidTokenSpan => formatter.write_str("invalid token span"),
             ParseErrorKind::GrammarMismatch => {
