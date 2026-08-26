@@ -27,8 +27,9 @@ use crate::materialization::{
     MaterializedPrattNudPosition, MaterializedPrattVariant, MaterializedVariant,
 };
 use crate::resolution::{
-    ResolvedFieldId, ResolvedFieldStyle, ResolvedGenericArgument, ResolvedNode, ResolvedNodeBody,
-    ResolvedType, ResolvedTypeKind, SemanticTarget,
+    CatalogType, GenericParameterId, ResolvedFieldId, ResolvedFieldStyle, ResolvedGenericArgument,
+    ResolvedNode, ResolvedNodeBody, ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind,
+    SemanticOwner, SemanticTarget,
 };
 use crate::source_model::{ConfiguredTraitRecipe, PrettySpacing, TokenDefinitionKind};
 use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, span_range};
@@ -264,7 +265,6 @@ struct NodeParsePlan {
 struct NodeApplicationParsePlan {
     parse_index: usize,
     ty: Type,
-    input_lifetime: syn::Lifetime,
     body: NodeBodyPlan,
 }
 
@@ -995,9 +995,8 @@ impl EmissionPlan {
                         application,
                         &authored_lifetimes,
                         lowered,
-                        &planned.input_lifetime,
+                        &syn::parse_quote!('__recursa_input),
                     )?,
-                    input_lifetime: planned.input_lifetime.clone(),
                     body: planned.body.clone(),
                 });
                 if source_plan.is_none() {
@@ -1006,7 +1005,7 @@ impl EmissionPlan {
             }
             let mut planned = source_plan
                 .ok_or_else(|| format!("Node `{}` lacks an application plan", node.ident))?;
-            planned.body = structural_body(node, &application_plans)?;
+            planned.body = structural_body(node, &application_plans, resolved)?;
             planned.parse_applications.append(&mut application_plans);
             planned.configured_traits = configured_traits;
             nodes.push(planned);
@@ -1424,21 +1423,48 @@ fn plan_diagrams(
                 })?;
             let public_path = node_is_publicly_linkable(resolved, source)
                 .then(|| format!("crate::{}", node.semantic_key));
-            let application = lowered
+            let applications = lowered
                 .applications
                 .iter()
-                .find(|application| application.node == source.id)
-                .ok_or_else(|| {
-                    format!(
-                        "diagram plan cannot find the materialized application for `{}`",
-                        node.semantic_key
-                    )
-                })?;
+                .filter(|application| application.node == source.id)
+                .collect::<Vec<_>>();
+            if applications.len() != node.parse_applications.len() {
+                return Err(format!(
+                    "diagram plan cannot correlate every materialized application for `{}`",
+                    node.semantic_key
+                ));
+            }
+            let mut productions = applications
+                .into_iter()
+                .zip(&node.parse_applications)
+                .map(|(materialized, planned)| {
+                    Ok((
+                        materialized.display_name.clone(),
+                        diagram_production(
+                            &node.ident,
+                            &node.semantic_key,
+                            &planned.body,
+                            materialized,
+                            lowered,
+                        )?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            productions.sort_by(|left, right| left.0.cmp(&right.0));
+            let production = if productions.len() == 1 {
+                productions.pop().expect("one diagram production").1
+            } else {
+                productions
+                    .into_iter()
+                    .map(|(application, production)| format!("{application} => {production}"))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            };
             Ok(NodeDiagramPlan {
                 semantic_key: node.semantic_key.clone(),
                 ident: node.ident.unraw().to_string(),
                 public_path,
-                production: diagram_production(node, application, lowered)?,
+                production,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -1479,11 +1505,13 @@ fn node_is_publicly_linkable(
 
 #[cfg(feature = "diagrams")]
 fn diagram_production(
-    node: &NodeParsePlan,
+    node_ident: &Ident,
+    semantic_key: &str,
+    body: &NodeBodyPlan,
     application: &MaterializedNodeApplication,
     lowered: &crate::materialization::LoweredGrammar,
 ) -> Result<String, String> {
-    let right = match (&node.body, &application.body) {
+    let right = match (body, &application.body) {
         (
             NodeBodyPlan::Struct { elements, .. },
             MaterializedNodeBody::Struct(materialized)
@@ -1517,11 +1545,11 @@ fn diagram_production(
         _ => {
             return Err(format!(
                 "Node `{}` diagram and materialized shapes disagree",
-                node.semantic_key
+                semantic_key
             ));
         }
     };
-    Ok(format!("{} ::= {right}", node.ident.unraw()))
+    Ok(format!("{} ::= {right}", node_ident.unraw()))
 }
 
 #[cfg(feature = "diagrams")]
@@ -2506,7 +2534,7 @@ fn plan_node(
     let physical_source = normalized_source_identity(&source.path)?;
     let (line, column) = source_line_column(&source.text, node.range.start)?;
     let loader_anchor = declaration_loader_anchor(&physical_source, line, column, &node.ident);
-    let input_lifetime = node
+    let declaration_input_lifetime = node
         .generics
         .params
         .iter()
@@ -2514,8 +2542,8 @@ fn plan_node(
             GenericParam::Lifetime(parameter) => Some(parameter.lifetime.clone()),
             GenericParam::Type(_) | GenericParam::Const(_) => None,
         })
-        .or_else(|| application_input_lifetime(application))
         .unwrap_or_else(|| syn::parse_quote!('__recursa_input));
+    let input_lifetime: syn::Lifetime = syn::parse_quote!('__recursa_input);
 
     let body = match (
         &application.body,
@@ -2718,7 +2746,7 @@ fn plan_node(
         ),
         loader_anchor,
         generics: node.generics.clone(),
-        input_lifetime,
+        input_lifetime: declaration_input_lifetime,
         body,
         parse_applications: Vec::new(),
         capture: inherited_capture.into(),
@@ -2729,26 +2757,13 @@ fn plan_node(
 fn structural_body(
     node: &ResolvedNode,
     applications: &[NodeApplicationParsePlan],
+    resolved: &ResolvedSourceGrammar,
 ) -> Result<NodeBodyPlan, String> {
     let mut body = applications
         .first()
         .ok_or_else(|| format!("Node `{}` lacks an application plan", node.ident))?
         .body
         .clone();
-    let mut terminals = BTreeMap::<usize, BTreeSet<String>>::new();
-    for application in applications {
-        for_each_element(&application.body, &mut |element| {
-            if let ElementParseKind::Semantic {
-                field, terminal, ..
-            } = &element.kind
-            {
-                terminals
-                    .entry(field.source.index())
-                    .or_default()
-                    .insert(terminal.to_token_stream().to_string());
-            }
-        });
-    }
     for_each_element_mut(&mut body, &mut |element| {
         let ElementParseKind::Semantic {
             field,
@@ -2764,13 +2779,9 @@ fn structural_body(
             .iter()
             .find(|candidate| candidate.id == field.source)
             .ok_or_else(|| "planned field has no authored source field".to_owned())?;
-        if terminals
-            .get(&field.source.index())
-            .is_some_and(|types| types.len() > 1)
-            || resolved_type_uses_generic_parameter(&source.ty)
-        {
-            **terminal = authored_terminal_type(&source.syntax.ty, wrappers)?;
-        }
+        let projection = authored_projection(&source.ty, resolved)?;
+        **terminal = projection.terminal;
+        *wrappers = projection.wrappers;
         Ok(())
     })?;
     disambiguate_fixed_accessors(&mut body)?;
@@ -2778,25 +2789,123 @@ fn structural_body(
     Ok(body)
 }
 
-fn resolved_type_uses_generic_parameter(ty: &ResolvedType) -> bool {
+#[derive(Clone)]
+struct AuthoredProjection {
+    terminal: Type,
+    wrappers: Vec<FieldWrapper>,
+}
+
+fn authored_projection(
+    ty: &ResolvedType,
+    resolved: &ResolvedSourceGrammar,
+) -> Result<AuthoredProjection, String> {
+    authored_projection_with(ty, resolved, &BTreeMap::new(), &mut BTreeSet::new())
+}
+
+fn authored_projection_with(
+    ty: &ResolvedType,
+    resolved: &ResolvedSourceGrammar,
+    bindings: &BTreeMap<GenericParameterId, ResolvedType>,
+    active_aliases: &mut BTreeSet<usize>,
+) -> Result<AuthoredProjection, String> {
     match &ty.kind {
+        ResolvedTypeKind::Group(inner) | ResolvedTypeKind::Parenthesized(inner) => {
+            authored_projection_with(inner, resolved, bindings, active_aliases)
+        }
         ResolvedTypeKind::Semantic {
             target, arguments, ..
-        } => {
-            matches!(target, SemanticTarget::GenericParameter(_))
-                || arguments.iter().any(|argument| match argument {
-                    ResolvedGenericArgument::Type(ty) => resolved_type_uses_generic_parameter(ty),
+        } => match target {
+            SemanticTarget::GenericParameter(parameter) => bindings.get(parameter).map_or_else(
+                || {
+                    Ok(AuthoredProjection {
+                        terminal: ty.syntax.clone(),
+                        wrappers: Vec::new(),
+                    })
+                },
+                |bound| authored_projection_with(bound, resolved, bindings, active_aliases),
+            ),
+            SemanticTarget::Catalog(catalog) => {
+                let argument = arguments.iter().find_map(|argument| match argument {
+                    ResolvedGenericArgument::Type(ty) => Some(ty),
                     ResolvedGenericArgument::Lifetime(_)
-                    | ResolvedGenericArgument::Unsupported(_) => false,
-                })
+                    | ResolvedGenericArgument::Unsupported(_) => None,
+                });
+                let argument = argument.ok_or_else(|| {
+                    format!("authored catalog type `{:?}` has no type argument", catalog)
+                })?;
+                let mut projected =
+                    authored_projection_with(argument, resolved, bindings, active_aliases)?;
+                let wrapper = match catalog {
+                    CatalogType::Option => FieldWrapper::Optional,
+                    CatalogType::Box => FieldWrapper::Boxed,
+                    CatalogType::Vec => FieldWrapper::ZeroOrMore,
+                    CatalogType::Vec1 => FieldWrapper::OneOrMore,
+                };
+                projected.wrappers.insert(0, wrapper);
+                Ok(projected)
+            }
+            SemanticTarget::TypeAlias(alias_id) => {
+                if !active_aliases.insert(alias_id.index()) {
+                    return Err("an authored type-alias projection contains a cycle".to_owned());
+                }
+                let alias = &resolved.type_aliases[alias_id.index()];
+                let parameter_ids = resolved
+                    .generic_parameters
+                    .iter()
+                    .filter(|parameter| parameter.owner == SemanticOwner::TypeAlias(*alias_id))
+                    .map(|parameter| (parameter.ident.as_str(), parameter.id))
+                    .collect::<BTreeMap<_, _>>();
+                let mut supplied = arguments.iter().filter_map(|argument| match argument {
+                    ResolvedGenericArgument::Type(ty) => Some(ty),
+                    ResolvedGenericArgument::Lifetime(_)
+                    | ResolvedGenericArgument::Unsupported(_) => None,
+                });
+                let mut alias_bindings = bindings.clone();
+                for parameter in alias.generics.type_params() {
+                    let id = parameter_ids
+                        .get(parameter.ident.to_string().as_str())
+                        .ok_or_else(|| {
+                            format!(
+                                "type alias `{}` lost generic parameter identity",
+                                alias.ident
+                            )
+                        })?;
+                    let argument = supplied
+                        .next()
+                        .cloned()
+                        .or_else(|| {
+                            alias
+                                .defaults
+                                .iter()
+                                .find(|default| default.parameter == *id)
+                                .map(|default| default.ty.clone())
+                        })
+                        .ok_or_else(|| {
+                            format!(
+                                "type alias `{}` leaves `{}` open",
+                                alias.ident, parameter.ident
+                            )
+                        })?;
+                    alias_bindings.insert(*id, argument);
+                }
+                let target = alias.target.as_ref().ok_or_else(|| {
+                    format!("type alias `{}` has no resolved target", alias.ident)
+                })?;
+                let projected =
+                    authored_projection_with(target, resolved, &alias_bindings, active_aliases);
+                active_aliases.remove(&alias_id.index());
+                projected
+            }
+            SemanticTarget::Node(_) | SemanticTarget::ContentToken(_) => Ok(AuthoredProjection {
+                terminal: ty.syntax.clone(),
+                wrappers: Vec::new(),
+            }),
+        },
+        ResolvedTypeKind::Reference(_)
+        | ResolvedTypeKind::Tuple(_)
+        | ResolvedTypeKind::Unsupported => {
+            Err("an authored semantic field has no supported declaration projection".to_owned())
         }
-        ResolvedTypeKind::Group(inner)
-        | ResolvedTypeKind::Parenthesized(inner)
-        | ResolvedTypeKind::Reference(inner) => resolved_type_uses_generic_parameter(inner),
-        ResolvedTypeKind::Tuple(elements) => {
-            elements.iter().any(resolved_type_uses_generic_parameter)
-        }
-        ResolvedTypeKind::Unsupported => false,
     }
 }
 
@@ -2851,54 +2960,6 @@ fn for_each_element_mut(
         }
     }
     Ok(())
-}
-
-fn authored_terminal_type(authored: &Type, wrappers: &[FieldWrapper]) -> Result<Type, String> {
-    fn ungroup(ty: &Type) -> &Type {
-        match ty {
-            Type::Group(group) => ungroup(&group.elem),
-            Type::Paren(paren) => ungroup(&paren.elem),
-            _ => ty,
-        }
-    }
-
-    let mut terminal = authored.clone();
-    for wrapper in wrappers {
-        let expected = match wrapper {
-            FieldWrapper::Boxed => "Box",
-            FieldWrapper::Optional => "Option",
-            FieldWrapper::ZeroOrMore => "Vec",
-            FieldWrapper::OneOrMore => "Vec1",
-        };
-        let Type::Path(path) = ungroup(&terminal) else {
-            return Err(format!(
-                "authored generic field wrapper `{expected}` is not a type path"
-            ));
-        };
-        let segment = path
-            .path
-            .segments
-            .last()
-            .ok_or_else(|| "authored generic field type path is empty".to_owned())?;
-        if segment.ident.unraw() != expected {
-            return Err(format!(
-                "authored generic field expected `{expected}`, found `{}`",
-                segment.ident
-            ));
-        }
-        let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
-            return Err(format!("authored `{expected}` field has no type argument"));
-        };
-        terminal = arguments
-            .args
-            .iter()
-            .find_map(|argument| match argument {
-                GenericArgument::Type(ty) => Some(ty.clone()),
-                _ => None,
-            })
-            .ok_or_else(|| format!("authored `{expected}` field has no type argument"))?;
-    }
-    Ok(terminal)
 }
 
 fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<(), String> {
@@ -2985,21 +3046,6 @@ fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn application_input_lifetime(application: &MaterializedNodeApplication) -> Option<syn::Lifetime> {
-    fn first(closed: &ClosedType) -> Option<syn::Lifetime> {
-        match closed {
-            ClosedType::Node(node) => node.lifetimes.first().cloned(),
-            ClosedType::Boxed(inner)
-            | ClosedType::Optional(inner)
-            | ClosedType::ZeroOrMore(inner)
-            | ClosedType::OneOrMore(inner) => first(inner),
-            ClosedType::ContentToken(_) => None,
-        }
-    }
-
-    application.type_arguments.iter().find_map(first)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4099,19 +4145,20 @@ fn materialized_application_type(
         .segments
         .last_mut()
         .ok_or_else(|| "materialized application path is empty".to_owned())?;
-    let mut lifetime_arguments = lifetimes.iter();
+    let lifetime_parameter_count = node.generics.lifetimes().count();
+    if lifetimes.len() != lifetime_parameter_count {
+        return Err(format!(
+            "materialized application `{}` has {} lifetime arguments for {lifetime_parameter_count} parameters",
+            application.display_name,
+            lifetimes.len(),
+        ));
+    }
     let mut type_arguments = application.type_arguments.iter();
     let mut arguments = syn::punctuated::Punctuated::new();
     for parameter in &node.generics.params {
         match parameter {
             GenericParam::Lifetime(_) => {
-                let lifetime = lifetime_arguments.next().ok_or_else(|| {
-                    format!(
-                        "materialized application `{}` lacks an authored lifetime argument",
-                        application.display_name
-                    )
-                })?;
-                arguments.push(GenericArgument::Lifetime(lifetime.clone()));
+                arguments.push(GenericArgument::Lifetime(input_lifetime.clone()));
             }
             GenericParam::Type(_) => {
                 let argument = type_arguments.next().ok_or_else(|| {
@@ -4131,7 +4178,7 @@ fn materialized_application_type(
             }
         }
     }
-    if lifetime_arguments.next().is_some() || type_arguments.next().is_some() {
+    if type_arguments.next().is_some() {
         return Err(format!(
             "materialized application `{}` has excess generic arguments",
             application.display_name
@@ -5917,15 +5964,16 @@ fn render_node_parse_application(
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
-    let input_lifetime = &application.input_lifetime;
+    let input_lifetime: syn::Lifetime = syn::parse_quote!('__recursa_input);
     let ty = &application.ty;
     let mut parse_generics = Generics::default();
     let mut helper_generics = Generics::default();
-    if input_lifetime.ident != "static" {
-        let lifetime = input_lifetime.clone();
-        parse_generics.params.push(syn::parse_quote!(#lifetime));
-        helper_generics.params.push(syn::parse_quote!(#lifetime));
-    }
+    parse_generics
+        .params
+        .push(syn::parse_quote!(#input_lifetime));
+    helper_generics
+        .params
+        .push(syn::parse_quote!(#input_lifetime));
     parse_generics.params.push(syn::parse_quote!(A));
     let (parse_impl_generics, _, parse_where_clause) = parse_generics.split_for_impl();
     let (helper_impl_generics, _, helper_where_clause) = helper_generics.split_for_impl();
@@ -6650,8 +6698,8 @@ fn render_pratt_node_pretty(
                     binding_index += 1;
                     let current_semantic = semantic_index;
                     semantic_index += 1;
-                    let recursive =
-                        terminal_path_ident(terminal).is_some_and(|ident| ident == node_ident);
+                    let recursive = terminal_path_ident(terminal)
+                        .is_some_and(|ident| ident == node_ident || ident.unraw() == "Self");
                     let semantic = if recursive {
                         let (minimum, next) = match position {
                             PrattPosition::Atom => (quote!(0u16), quote!(None)),
@@ -7275,6 +7323,16 @@ fn render_node_serde(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::
         derives.push(quote!(#facade::__private::serde::Deserialize));
     }
     let generics = &node.generics;
+    let (_, node_type_generics, _) = generics.split_for_impl();
+    let recursive_type: Type = syn::parse_quote!(#node_ident #node_type_generics);
+    let field_type = |terminal: &Type, wrappers: &[FieldWrapper]| {
+        let terminal = if is_recursive_terminal(node, terminal) {
+            &recursive_type
+        } else {
+            terminal
+        };
+        render_wrapped_type(facade, terminal, wrappers)
+    };
     let helper_body = match &node.body {
         NodeBodyPlan::Struct { style, elements } => {
             let fields = elements.iter().filter_map(|element| {
@@ -7287,7 +7345,7 @@ fn render_node_serde(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::
                 else {
                     return None;
                 };
-                Some((field, render_wrapped_type(facade, terminal, wrappers)))
+                Some((field, field_type(terminal, wrappers)))
             });
             match style {
                 ResolvedFieldStyle::Named => {
@@ -7318,7 +7376,7 @@ fn render_node_serde(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::
                     else {
                         return None;
                     };
-                    Some((field, render_wrapped_type(facade, terminal, wrappers)))
+                    Some((field, field_type(terminal, wrappers)))
                 });
                 match variant.style {
                     ResolvedFieldStyle::Named => {
@@ -7428,6 +7486,9 @@ fn is_recursive_terminal(node: &NodeParsePlan, terminal: &Type) -> bool {
         .iter()
         .map(|segment| segment.ident.unraw().to_string())
         .collect::<Vec<_>>();
+    if segments.last().is_some_and(|segment| segment == "Self") {
+        return true;
+    }
     let segments = segments
         .strip_prefix(&["crate".to_owned()])
         .unwrap_or(&segments);
@@ -7607,12 +7668,14 @@ fn render_span_elements(node: &NodeParsePlan, node_index: usize) -> proc_macro2:
 fn render_accessors(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let node_ident = &node.ident;
+    let (_, type_generics, _) = node.generics.split_for_impl();
+    let self_type: Type = syn::parse_quote!(#node_ident #type_generics);
+    let self_type = &self_type;
     match &node.body {
         NodeBodyPlan::Struct { elements, .. } => {
-            let methods = elements
-                .iter()
-                .enumerate()
-                .filter_map(|(index, element)| render_accessor(facade, element, index, None));
+            let methods = elements.iter().enumerate().filter_map(|(index, element)| {
+                render_accessor(facade, self_type, element, index, None)
+            });
             quote!(#(#methods)*)
         }
         NodeBodyPlan::Enum { variants, .. } => {
@@ -7624,6 +7687,7 @@ fn render_accessors(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::T
                     .filter_map(move |(index, element)| {
                         render_accessor(
                             facade,
+                            self_type,
                             element,
                             index,
                             Some((node_ident, &variant.ident, variant.style)),
@@ -7642,6 +7706,7 @@ fn render_accessors(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::T
                     .filter_map(move |(index, element)| {
                         render_accessor(
                             facade,
+                            self_type,
                             element,
                             index,
                             Some((node_ident, &variant.ident, variant.style)),
@@ -7656,6 +7721,7 @@ fn render_accessors(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::T
                     .filter_map(move |(index, element)| {
                         render_accessor(
                             facade,
+                            self_type,
                             element,
                             index,
                             Some((node_ident, &variant.ident, variant.style)),
@@ -7669,6 +7735,7 @@ fn render_accessors(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::T
 
 fn render_accessor(
     facade: &Ident,
+    self_type: &Type,
     element: &ElementParsePlan,
     element_index: usize,
     variant: Option<(&Ident, &Ident, ResolvedFieldStyle)>,
@@ -7696,6 +7763,12 @@ fn render_accessor(
             attachment,
             ..
         } => {
+            let terminal =
+                if terminal_path_ident(terminal).is_some_and(|ident| ident.unraw() == "Self") {
+                    self_type
+                } else {
+                    terminal
+                };
             let accessor = field.accessor.as_ref()?;
             if let Some(repeat_index) = wrappers.iter().position(|wrapper| {
                 matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)

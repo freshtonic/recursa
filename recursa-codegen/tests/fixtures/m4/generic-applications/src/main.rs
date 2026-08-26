@@ -43,5 +43,20 @@ fn main() {
     assert_eq!(synthetic_integer.render(), "7");
     assert_eq!(synthetic_name.render(), "alpha");
 
+    fn assert_generic_declarations<T: recursa::Pretty>() {
+        fn assert_pretty<U: recursa::Pretty>() {}
+        assert_pretty::<grammar::OptionalOnly<T>>();
+        assert_pretty::<grammar::Aliased<T>>();
+        assert_pretty::<grammar::Chain<T>>();
+    }
+    assert_generic_declarations::<grammar::Name<'static>>();
+
+    let audit = grammar::lex("(alpha)[7]{1{2}}{a{b}}(3,c)");
+    let mut audit_input = audit.input();
+    let parsed = grammar::AuditRoot::parse_spanned(&mut audit_input)
+        .expect("authored generic declaration cases parse");
+    assert!(audit_input.is_eof());
+    assert_eq!(parsed.render(), "(alpha)[7]{1{2}}{a{b}}(3, c)");
+
     println!("generic-applications-ok");
 }

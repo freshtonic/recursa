@@ -16,6 +16,25 @@ fn a_generic_node_can_be_parsed_through_multiple_closed_applications() {
         String::from_utf8(output.stdout).unwrap().trim(),
         "generic-applications-ok"
     );
+
+    let permuted = scaffold_fixture();
+    let grammar = permuted.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read generic application permutation");
+    let source = source.replace(
+        "    Integer(Atom<Integer<'input>>),\n    Name(Atom<Name<'input>>),",
+        "    Name(Atom<Name<'input>>),\n    Integer(Atom<Integer<'input>>),",
+    );
+    assert_ne!(
+        source,
+        fs::read_to_string(&grammar).expect("reread unpermuted grammar")
+    );
+    fs::write(grammar, source).expect("write generic application permutation");
+    let output = run_fixture(&permuted);
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "generic-applications-ok"
+    );
 }
 
 fn scaffold_fixture() -> TempDir {
