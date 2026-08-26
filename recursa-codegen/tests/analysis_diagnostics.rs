@@ -202,7 +202,7 @@ fn mutually_left_recursive() -> GrammarDescription {
 
 #[test]
 fn direct_container_left_recursion_has_a_located_structured_snapshot() {
-    let report = analyze(left_recursive_through_box());
+    let report = analyze(&left_recursive_through_box());
 
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
@@ -229,7 +229,7 @@ fn direct_container_left_recursion_has_a_located_structured_snapshot() {
 
 #[test]
 fn mutual_left_recursion_has_one_deterministic_cycle_snapshot() {
-    let report = analyze(mutually_left_recursive());
+    let report = analyze(&mutually_left_recursive());
 
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
@@ -252,14 +252,14 @@ fn pratt_led_recursion_is_excluded_but_prefix_recursion_is_not() {
     let prefix = recursive_pratt(PrattPosition::Prefix { bp: 20 });
     let atom = recursive_pratt(PrattPosition::Atom);
 
-    assert!(analyze(led).diagnostics.is_empty());
-    let prefix_report = analyze(prefix);
+    assert!(analyze(&led).diagnostics.is_empty());
+    let prefix_report = analyze(&prefix);
     assert!(prefix_report.output.is_none());
     assert_eq!(
         prefix_report.diagnostics[0].code,
         DiagnosticCode::LeftRecursion
     );
-    let atom_report = analyze(atom);
+    let atom_report = analyze(&atom);
     assert!(atom_report.output.is_none());
     assert_eq!(
         atom_report.diagnostics[0].code,
@@ -321,7 +321,7 @@ fn invalid_references_are_reported_before_dependent_semantics() {
     let mut grammar = left_recursive_through_box();
     grammar.entry_types.insert(0, TypeId::new(99));
 
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
 
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
@@ -371,8 +371,8 @@ fn independent_recursive_components_are_collected_in_source_order() {
         TypeShape::Alias { site: second_site },
     ));
 
-    let first_run = analyze(grammar.clone());
-    let second_run = analyze(grammar);
+    let first_run = analyze(&grammar);
+    let second_run = analyze(&grammar);
 
     assert_eq!(first_run.diagnostics, second_run.diagnostics);
     assert_eq!(first_run.diagnostics.len(), 2);
@@ -387,7 +387,7 @@ fn independent_structural_failures_are_collected_before_recursion_analysis() {
     let mut grammar = left_recursive_through_box();
     grammar.entry_types = vec![TypeId::new(99), TypeId::new(98)];
 
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
 
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 2);
@@ -443,8 +443,8 @@ fn independent_atom_membership_cycles_are_each_reported_once() {
         AtomExpression::Class(vec![recursa_codegen::AtomId::new(2)]),
     ));
 
-    let first = analyze(grammar.clone());
-    let repeated = analyze(grammar);
+    let first = analyze(&grammar);
+    let repeated = analyze(&grammar);
 
     assert!(first.output.is_none());
     assert_eq!(first.diagnostics, repeated.diagnostics);

@@ -8,6 +8,7 @@ mod diagnostic;
 mod ids;
 mod ir;
 mod kind_set;
+mod lowering;
 mod provenance;
 
 pub use analysis::{

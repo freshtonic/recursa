@@ -174,7 +174,7 @@ fn empty_and_multiple_roots_seed_eof_separately_and_deterministically() {
         },
     ));
 
-    let empty = analyze(builder.grammar.clone());
+    let empty = analyze(&builder.grammar);
     let empty_output = empty.output.as_ref().unwrap();
     assert!(
         empty_output
@@ -190,9 +190,9 @@ fn empty_and_multiple_roots_seed_eof_separately_and_deterministically() {
     );
 
     builder.grammar.entry_types = vec![a, b];
-    let canonical = analyze(builder.grammar.clone());
+    let canonical = analyze(&builder.grammar);
     builder.grammar.entry_types.reverse();
-    let shuffled = analyze(builder.grammar);
+    let shuffled = analyze(&builder.grammar);
     let output = canonical.output.as_ref().unwrap();
     assert!(output.follow(a).unwrap().eof());
     assert!(output.follow(b).unwrap().eof());
@@ -214,7 +214,7 @@ fn empty_and_multiple_roots_seed_eof_separately_and_deterministically() {
 #[test]
 fn nested_nullable_tail_warning_is_predicate_aware_and_keeps_output() {
     let (grammar, maybe_site) = nested_nullable_follow(true);
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
 
     assert!(report.output.is_some());
     assert_eq!(report.diagnostics.len(), 2);
@@ -284,7 +284,7 @@ fn nested_nullable_tail_warning_is_predicate_aware_and_keeps_output() {
     );
 
     let (refined, _) = nested_nullable_follow(false);
-    assert!(analyze(refined).diagnostics.is_empty());
+    assert!(analyze(&refined).diagnostics.is_empty());
 }
 
 #[test]
@@ -360,7 +360,7 @@ fn containers_separators_variants_and_nullable_sccs_propagate_follow() {
     ));
     builder.grammar.entry_types.push(root);
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     let output = report.output.as_ref().unwrap();
     assert!(report.diagnostics.is_empty());
     assert_eq!(
@@ -451,7 +451,7 @@ fn nullable_separator_closes_repeat_item_separator_and_outer_follow() {
     ));
     builder.grammar.entry_types.push(root);
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     let output = report.output.as_ref().unwrap();
     let all = vec![KindId::new(0), KindId::new(1), KindId::new(2)];
     assert_eq!(
@@ -505,7 +505,7 @@ fn recursive_follow_scc_propagates_eof_without_conflicting_with_it() {
     ));
     builder.grammar.entry_types.push(node);
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     let output = report.output.as_ref().unwrap();
     assert!(report.diagnostics.is_empty());
     assert!(output.follow(node).unwrap().eof());
@@ -564,7 +564,7 @@ fn multi_node_follow_scc_converges_before_provenance() {
     );
     builder.grammar.entry_types.push(a);
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     let output = report.output.as_ref().unwrap();
     assert!(output.follow(a).unwrap().eof());
     assert!(output.follow(b).unwrap().eof());
@@ -612,7 +612,7 @@ fn static_error_kinds_suppress_duplicate_nullable_follow_warnings() {
     ));
     builder.grammar.entry_types.push(owner);
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     assert!(report.output.is_none());
     assert_eq!(report.diagnostics.len(), 1);
     assert_eq!(
@@ -689,8 +689,8 @@ fn shared_declaration_warning_grammar(reverse_roots: bool) -> GrammarDescription
 
 #[test]
 fn warnings_dedup_by_class_and_declaration_after_partial_static_subtraction() {
-    let forward = analyze(shared_declaration_warning_grammar(false));
-    let reverse = analyze(shared_declaration_warning_grammar(true));
+    let forward = analyze(&shared_declaration_warning_grammar(false));
+    let reverse = analyze(&shared_declaration_warning_grammar(true));
     assert_eq!(forward.diagnostics, reverse.diagnostics);
     assert_eq!(forward.proofs(), reverse.proofs());
     assert_eq!(forward.diagnostics.len(), 4);
@@ -859,7 +859,7 @@ fn pratt_follow_warnings_filter_extenders_by_site_min_bp() {
     ));
     builder.grammar.entry_types = vec![low_context, high_context, post_context];
 
-    let report = analyze(builder.grammar);
+    let report = analyze(&builder.grammar);
     assert!(report.output.is_some());
     assert_eq!(report.diagnostics.len(), 2);
     assert!(
@@ -945,7 +945,7 @@ fn pratt_follow_warnings_filter_extenders_by_site_min_bp() {
 #[test]
 fn every_follow_membership_has_exactly_one_proof() {
     let (grammar, _) = nested_nullable_follow(true);
-    let report = analyze(grammar);
+    let report = analyze(&grammar);
     let output = report.output.unwrap();
 
     for facts in output
