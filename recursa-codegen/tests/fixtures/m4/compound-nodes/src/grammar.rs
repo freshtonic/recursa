@@ -76,6 +76,15 @@ pub mod public_right {
     pub struct Duplicate;
 }
 
+#[derive(recursa::Node)]
+#[tok(EMPTY)]
+pub struct Opaque;
+
+#[allow(non_camel_case_types)]
+#[derive(recursa::Node)]
+#[tok(PAIR)]
+pub struct __RecursaTarget_11_public_left_9_Duplicate;
+
 impl<'input> Clone for Count<'input> {
     fn clone(&self) -> Self {
         Self {

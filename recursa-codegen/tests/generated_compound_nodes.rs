@@ -241,6 +241,87 @@ impl<'input> recursa::Visitor<grammar::LabelText<'input>> for StaticRetainer {
 }
 
 #[test]
+fn root_visit_selection_keeps_event_families_when_every_node_omits_the_impl() {
+    let package = scaffold_fixture();
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::grammar,
+    derives(Visit, VisitMut),
+}
+
+recursa::tokens! {
+    keywords { ONLY => "only" }
+}
+
+#[derive(recursa::Node)]
+#[node(omit(Visit, VisitMut))]
+#[tok(ONLY)]
+pub struct Only;
+
+impl recursa::Visit for Only {
+    type Events = __RecursaVisitEvents<'static>;
+
+    fn visit<V>(
+        &self,
+        visitor: &mut V,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<V::Error>>
+    where
+        V: recursa::TotalVisitor<Self::Events>,
+    {
+        match visitor.total_enter(__RecursaVisitEvent::__RecursaTarget_4_Only(self)) {
+            std::ops::ControlFlow::Continue(())
+            | std::ops::ControlFlow::Break(recursa::VisitBreak::SkipChildren) => {}
+            other => return other,
+        }
+        visitor.total_exit(__RecursaVisitEvent::__RecursaTarget_4_Only(self))
+    }
+}
+
+impl recursa::VisitMut for Only {
+    type EventsMut = __RecursaVisitEventsMut<'static>;
+
+    fn visit_mut<V>(
+        &mut self,
+        visitor: &mut V,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<V::Error>>
+    where
+        V: recursa::TotalVisitorMut<Self::EventsMut>,
+    {
+        match visitor.total_enter_mut(
+            __RecursaVisitEventMut::__RecursaTarget_4_Only(self),
+        ) {
+            std::ops::ControlFlow::Continue(())
+            | std::ops::ControlFlow::Break(recursa::VisitBreak::SkipChildren) => {}
+            other => return other,
+        }
+        visitor.total_exit_mut(__RecursaVisitEventMut::__RecursaTarget_4_Only(self))
+    }
+}
+"#,
+    )
+    .expect("write all-omitted visitor grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa_generated_compound_nodes::grammar;
+
+fn main() {
+    fn assert_visit<T: recursa::Visit + recursa::VisitMut>() {}
+    assert_visit::<grammar::Only>();
+}
+"#,
+    )
+    .expect("write all-omitted visitor consumer");
+
+    let output = run_fixture(&package);
+    assert!(
+        output.status.success(),
+        "source-owned visitors need the generated event families\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn parsed_values_and_views_exclude_owned_or_mutable_semantic_traits() {
     let package = scaffold_fixture();
     let main = package.path().join("src/main.rs");

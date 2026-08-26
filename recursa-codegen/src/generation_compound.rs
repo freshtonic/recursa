@@ -107,6 +107,7 @@ struct EmissionPlan {
     word_classifiers: Vec<WordClassifierPlan>,
     word_candidate_kinds: Vec<u16>,
     post_lex: Option<syn::Path>,
+    root_configured_traits: Vec<ConfiguredTraitRecipe>,
     instrumentation: EmissionInstrumentation,
     frozen_parse_identity: u64,
 }
@@ -525,11 +526,7 @@ struct WordClassifierPlan {
 }
 
 fn fixed_lexical_pattern(spelling: &str, equivalence: TextEquivalence) -> String {
-    let mut characters = spelling.chars();
-    let word_shaped = characters.next().is_some_and(|first| {
-        (first == '_' || unicode_ident::is_xid_start(first))
-            && characters.all(unicode_ident::is_xid_continue)
-    });
+    let word_shaped = is_word_shaped(spelling);
     if equivalence != TextEquivalence::AsciiInsensitive || !word_shaped {
         return regex_syntax::escape(spelling);
     }
@@ -547,6 +544,22 @@ fn fixed_lexical_pattern(spelling: &str, equivalence: TextEquivalence) -> String
             }
         })
         .collect()
+}
+
+fn is_word_shaped(spelling: &str) -> bool {
+    let mut characters = spelling.chars();
+    characters.next().is_some_and(|first| {
+        (first == '_' || unicode_ident::is_xid_start(first))
+            && characters.all(unicode_ident::is_xid_continue)
+    })
+}
+
+fn fixed_pretty_spelling(spelling: &str, equivalence: TextEquivalence) -> String {
+    if equivalence == TextEquivalence::AsciiInsensitive && is_word_shaped(spelling) {
+        spelling.to_ascii_uppercase()
+    } else {
+        spelling.to_owned()
+    }
 }
 
 fn lexical_pattern_witness(pattern: &str) -> Result<String, String> {
@@ -630,6 +643,18 @@ impl EmissionPlan {
         let decisions = output.decisions();
         let module_anchor = emitted_crate_path(&resolved.build_inputs.module_anchor.segments)?;
         let facade = emitted_ident(&resolved.build_inputs.facade.ident)?;
+        let root_configured_traits = resolved
+            .configuration
+            .syntax
+            .derives
+            .iter()
+            .filter_map(|path| {
+                crate::source_model::configured_trait_recipe(
+                    path,
+                    &resolved.build_inputs.facade.ident,
+                )
+            })
+            .collect::<Vec<_>>();
         let kind_count = lowered.grammar.kind_count + 1;
         let lexical_error_kind = u16::try_from(lowered.grammar.kind_count)
             .map_err(|_| "generated lexical-error kind exceeds runtime width".to_owned())?;
@@ -1038,6 +1063,7 @@ impl EmissionPlan {
             word_classifiers,
             word_candidate_kinds,
             post_lex: lowered.source_modeled.source_model().post_lex.clone(),
+            root_configured_traits,
             instrumentation,
             frozen_parse_identity,
         };
@@ -2019,7 +2045,10 @@ fn plan_elements(
                     kind: ElementParseKind::Fixed {
                         expected,
                         capture,
-                        spelling: fixed.spelling.clone(),
+                        spelling: fixed_pretty_spelling(
+                            &fixed.spelling,
+                            lowered.grammar.text_equivalence,
+                        ),
                     },
                 })
             }
@@ -3488,11 +3517,7 @@ fn visit_variant_name(anchor: &str, semantic_key: &str) -> String {
         .skip(anchor_index)
         .collect::<Vec<_>>()
         .join("::");
-    if !relative.contains("::") {
-        relative
-    } else {
-        visit_nested_variant(&relative)
-    }
+    visit_nested_variant(&relative)
 }
 
 fn visit_nested_variant(relative: &str) -> String {
@@ -3508,25 +3533,31 @@ fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let visit = plan
-        .nodes
-        .iter()
-        .flat_map(|node| node.configured_traits.iter())
-        .chain(
-            plan.tokens
-                .iter()
-                .flat_map(|token| token.configured_traits.iter()),
-        )
-        .any(|recipe| *recipe == ConfiguredTraitRecipe::Visit);
+        .root_configured_traits
+        .contains(&ConfiguredTraitRecipe::Visit)
+        || plan
+            .nodes
+            .iter()
+            .flat_map(|node| node.configured_traits.iter())
+            .chain(
+                plan.tokens
+                    .iter()
+                    .flat_map(|token| token.configured_traits.iter()),
+            )
+            .any(|recipe| *recipe == ConfiguredTraitRecipe::Visit);
     let visit_mut = plan
-        .nodes
-        .iter()
-        .flat_map(|node| node.configured_traits.iter())
-        .chain(
-            plan.tokens
-                .iter()
-                .flat_map(|token| token.configured_traits.iter()),
-        )
-        .any(|recipe| *recipe == ConfiguredTraitRecipe::VisitMut);
+        .root_configured_traits
+        .contains(&ConfiguredTraitRecipe::VisitMut)
+        || plan
+            .nodes
+            .iter()
+            .flat_map(|node| node.configured_traits.iter())
+            .chain(
+                plan.tokens
+                    .iter()
+                    .flat_map(|token| token.configured_traits.iter()),
+            )
+            .any(|recipe| *recipe == ConfiguredTraitRecipe::VisitMut);
     let node_variants = plan.nodes.iter().filter_map(|node| {
         let variant = typed_visit_node_variant(plan, node)?;
         let mut path = syn::parse_str::<syn::Path>(&format!("crate::{}", node.semantic_key))
@@ -3615,7 +3646,10 @@ fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             {
                 #(#node_variants)*
                 #(#token_variants)*
-                Opaque(&'__recursa_visit dyn #facade::__private::VisitNode),
+                Opaque(
+                    &'__recursa_visit dyn #facade::__private::VisitNode,
+                    ::core::marker::PhantomData<&'__recursa_input ()>,
+                ),
             }
         }
     });
@@ -3645,7 +3679,10 @@ fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             {
                 #(#node_variants_mut)*
                 #(#token_variants_mut)*
-                Opaque(&'__recursa_visit mut dyn #facade::__private::VisitNode),
+                Opaque(
+                    &'__recursa_visit mut dyn #facade::__private::VisitNode,
+                    ::core::marker::PhantomData<&'__recursa_input ()>,
+                ),
             }
         }
     });
@@ -3736,12 +3773,12 @@ fn render_token(
     let visit_variant = typed_visit_token_binding(plan, index)
         .map(|binding| visit_variant_ident(plan, &binding.semantic_key));
     let enter_event = visit_variant.as_ref().map_or_else(
-        || quote!(#visit_event::Opaque(self)),
+        || quote!(#visit_event::Opaque(self, ::core::marker::PhantomData)),
         |variant| quote!(#visit_event::#variant(self)),
     );
     let exit_event = enter_event.clone();
     let enter_event_mut = visit_variant.as_ref().map_or_else(
-        || quote!(#visit_event_mut::Opaque(self)),
+        || quote!(#visit_event_mut::Opaque(self, ::core::marker::PhantomData)),
         |variant| quote!(#visit_event_mut::#variant(self)),
     );
     let exit_event_mut = enter_event_mut.clone();
@@ -4690,7 +4727,7 @@ fn render_node_visit(
         let event = quote!(#module_anchor::__RecursaVisitEventMut);
         let events = quote!(#module_anchor::__RecursaVisitEventsMut);
         let enter = variant.as_ref().map_or_else(
-            || quote!(#event::Opaque(self)),
+            || quote!(#event::Opaque(self, ::core::marker::PhantomData)),
             |variant| quote!(#event::#variant(self)),
         );
         let exit = enter.clone();
@@ -4718,7 +4755,7 @@ fn render_node_visit(
         let event = quote!(#module_anchor::__RecursaVisitEvent);
         let events = quote!(#module_anchor::__RecursaVisitEvents);
         let enter = variant.as_ref().map_or_else(
-            || quote!(#event::Opaque(self)),
+            || quote!(#event::Opaque(self, ::core::marker::PhantomData)),
             |variant| quote!(#event::#variant(self)),
         );
         let exit = enter.clone();
@@ -6917,10 +6954,41 @@ mod tests {
     }
 
     #[test]
+    fn root_visit_variants_are_encoded_away_from_reserved_and_nested_names() {
+        assert_eq!(
+            visit_variant_name("grammar", "grammar::Opaque"),
+            "__RecursaTarget_6_Opaque"
+        );
+        assert_ne!(
+            visit_variant_name(
+                "grammar",
+                "grammar::__RecursaTarget_11_public_left_9_Duplicate"
+            ),
+            visit_variant_name("grammar", "grammar::public_left::Duplicate")
+        );
+    }
+
+    #[test]
     fn snake_case_produces_stable_generated_element_names() {
         assert_eq!(snake_case("RECORD"), "record");
         assert_eq!(snake_case("LabelColon"), "label_colon");
         assert_eq!(snake_case(":"), "element");
+    }
+
+    #[test]
+    fn synthetic_fixed_spelling_uppercases_only_ascii_insensitive_keywords() {
+        assert_eq!(
+            fixed_pretty_spelling("record", TextEquivalence::AsciiInsensitive),
+            "RECORD"
+        );
+        assert_eq!(
+            fixed_pretty_spelling(":", TextEquivalence::AsciiInsensitive),
+            ":"
+        );
+        assert_eq!(
+            fixed_pretty_spelling("record", TextEquivalence::Sensitive),
+            "record"
+        );
     }
 
     #[test]
