@@ -30,6 +30,61 @@ fn repeated_generation_of_the_pratt_grammar_is_deterministic() {
 }
 
 #[test]
+fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() {
+    let package = scaffold_fixture();
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read Pratt manifest");
+    fs::write(
+        &manifest,
+        source.replace(
+            "features = [\"arbitrary\", \"serde\"]",
+            "features = [\"arbitrary\", \"serde\", \"explorer\"]",
+        ),
+    )
+    .expect("enable Pratt explorer facade payload");
+    let main = package.path().join("src/main.rs");
+    let source = fs::read_to_string(&main).expect("read Pratt consumer");
+    let assertions = r#"
+    let explorer = grammar::Expr::explorer();
+    let variants = explorer
+        .schema()
+        .variants()
+        .map(|variant| (variant.variant().unwrap(), variant.elements().len()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        variants,
+        [
+            ("Integer", 1),
+            ("Name", 1),
+            ("Paren", 3),
+            ("Neg", 2),
+            ("Factorial", 2),
+            ("Power", 3),
+            ("Multiply", 3),
+            ("Add", 3),
+        ],
+    );
+    let parsed = explorer.parse("a + 2 * 3").expect("Pratt explorer parse");
+    assert_eq!(parsed.root().schema().variant(), Some("Add"));
+    assert_eq!(parsed.root().elements().len(), 3);
+    assert_eq!(
+        parsed.root().elements().next().unwrap().children().len(),
+        1,
+    );
+"#;
+    fs::write(
+        main,
+        source.replace(
+            "    println!(\"pratt-ok\");",
+            &format!("{assertions}\n    println!(\"pratt-ok\");"),
+        ),
+    )
+    .expect("add Pratt explorer assertions");
+
+    assert_success(&run_fixture(&package));
+}
+
+#[test]
 fn pratt_diagrams_render_frozen_roles_binding_powers_and_operands() {
     let package = scaffold_fixture();
     configure_diagrams(&package);

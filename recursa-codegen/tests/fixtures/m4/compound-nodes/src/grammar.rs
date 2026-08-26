@@ -91,6 +91,18 @@ pub mod public_right {
     pub struct Duplicate;
 }
 
+pub mod node_named_like_token {
+    #[derive(recursa::Node)]
+    #[tok(LEFT)]
+    pub struct SharedText;
+
+    #[derive(recursa::Node)]
+    #[tok(RIGHT, this)]
+    pub struct UsesNode {
+        pub value: SharedText,
+    }
+}
+
 #[derive(recursa::Node)]
 #[tok(EMPTY)]
 pub struct Opaque;
