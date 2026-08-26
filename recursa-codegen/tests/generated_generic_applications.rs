@@ -50,10 +50,15 @@ fn explorer_adapters_are_generated_for_each_closed_generic_application() {
     let source = fs::read_to_string(&manifest).expect("read generic explorer manifest");
     fs::write(
         &manifest,
-        source.replace(
-            "features = [\"serde\", \"diagrams\"]",
-            "features = [\"serde\", \"diagrams\", \"explorer\"]",
-        ),
+        source
+            .replace(
+                "features = [\"serde\", \"diagrams\"]",
+                "features = [\"serde\", \"diagrams\", \"explorer\"]",
+            )
+            .replace(
+                "recursa-codegen = { path = \"",
+                "recursa-codegen = { features = [\"diagrams\", \"explorer\"], path = \"",
+            ),
     )
     .expect("enable explorer facade payload");
 

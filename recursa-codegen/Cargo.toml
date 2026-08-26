@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 default = []
 diagrams = []
+explorer = []
 
 [dependencies]
 proc-macro2 = { version = "1", features = ["span-locations"] }
