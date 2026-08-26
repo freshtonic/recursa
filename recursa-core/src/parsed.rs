@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 
 use crate::{FollowSet, GrammarInfo, HasSpan, Input, ParseError, Span, TokenRecord};
 
@@ -124,6 +125,91 @@ pub struct Elements<'view> {
     cursor: ViewCursor<'view>,
     index: usize,
 }
+
+/// A semantic repetition paired with its aggregate occurrence provenance.
+pub struct Repeated<'view, T: Node, U> {
+    values: &'view [U],
+    cursor: ViewCursor<'view>,
+    project: fn(&U) -> &T,
+    marker: PhantomData<&'view T>,
+}
+
+impl<'view, T: Node, U> Repeated<'view, T, U> {
+    #[doc(hidden)]
+    pub fn new(values: &'view [U], cursor: ViewCursor<'view>, project: fn(&U) -> &T) -> Self {
+        Self {
+            values,
+            cursor,
+            project,
+            marker: PhantomData,
+        }
+    }
+
+    pub const fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn get(&self, index: usize) -> Option<T::View<'view>>
+    where
+        T: 'view,
+    {
+        self.values
+            .get(index)
+            .map(|value| (self.project)(value).__view(self.cursor.child(index)))
+    }
+
+    pub fn iter(&self) -> RepeatedIter<'view, T, U>
+    where
+        T: 'view,
+    {
+        RepeatedIter {
+            values: self.values.iter(),
+            cursor: self.cursor,
+            project: self.project,
+            index: 0,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Node, U> crate::output::span_seal::Sealed for Repeated<'_, T, U> {}
+
+impl<T: Node, U> HasSpan for Repeated<'_, T, U> {
+    fn span(&self) -> Option<Span> {
+        self.cursor.span()
+    }
+}
+
+/// Exact-size iterator over the child views of one repetition occurrence.
+pub struct RepeatedIter<'view, T: Node, U> {
+    values: std::slice::Iter<'view, U>,
+    cursor: ViewCursor<'view>,
+    project: fn(&U) -> &T,
+    index: usize,
+    marker: PhantomData<&'view T>,
+}
+
+impl<'view, T: Node + 'view, U> Iterator for RepeatedIter<'view, T, U> {
+    type Item = T::View<'view>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let value = self.values.next()?;
+        let index = self.index;
+        self.index += 1;
+        Some((self.project)(value).__view(self.cursor.child(index)))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.values.size_hint()
+    }
+}
+
+impl<T: Node, U> ExactSizeIterator for RepeatedIter<'_, T, U> {}
+impl<T: Node, U> std::iter::FusedIterator for RepeatedIter<'_, T, U> {}
 
 impl<'view> Elements<'view> {
     fn empty() -> Self {
@@ -402,18 +488,63 @@ impl CapturePolicy {
 /// Opaque move-owned occurrence produced alongside a recursive value.
 #[doc(hidden)]
 pub struct Occurrence {
-    node: OccurrenceNode,
+    node: Option<OccurrenceNode>,
 }
 
 impl Occurrence {
     /// Represents an authored element that has no active occurrence.
     pub fn absent() -> Self {
+        Self { node: None }
+    }
+
+    /// Whether this occurrence retains any captured extent or descendant.
+    pub fn is_captured(&self) -> bool {
+        self.node.is_some()
+    }
+}
+
+/// Lazy ordinal accumulator for runtime-sized child occurrence sequences.
+#[doc(hidden)]
+pub struct Occurrences {
+    leading_absent: usize,
+    retained: Vec<Occurrence>,
+}
+
+impl Occurrences {
+    pub const fn new() -> Self {
         Self {
-            node: OccurrenceNode {
-                span: None,
-                children: Box::new([]),
-            },
+            leading_absent: 0,
+            retained: Vec::new(),
         }
+    }
+
+    pub fn push(&mut self, occurrence: Occurrence) {
+        if occurrence.is_captured() {
+            if self.retained.is_empty() {
+                self.retained
+                    .extend((0..self.leading_absent).map(|_| Occurrence::absent()));
+            }
+            self.retained.push(occurrence);
+        } else if self.retained.is_empty() {
+            self.leading_absent += 1;
+        } else {
+            self.retained.push(occurrence);
+        }
+    }
+}
+
+impl Default for Occurrences {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IntoIterator for Occurrences {
+    type Item = Occurrence;
+    type IntoIter = std::vec::IntoIter<Occurrence>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.retained.into_iter()
     }
 }
 
@@ -447,25 +578,47 @@ impl ProvenanceCollector {
         source: &str,
         policy: CapturePolicy,
         request: CaptureRequest,
-        span: Span,
+        span: Option<Span>,
         children: impl IntoIterator<Item = Occurrence>,
     ) -> Result<Occurrence, ()> {
-        source.get(span.range()).ok_or(())?;
-        let span = policy.captures(request).then_some(span);
-        let children = children
-            .into_iter()
-            .map(|occurrence| occurrence.node)
-            .collect::<Vec<_>>();
-        let retain_children = span.is_some() || children.iter().any(OccurrenceNode::is_captured);
+        if let Some(span) = span {
+            source.get(span.range()).ok_or(())?;
+        }
+        let span = policy.captures(request).then_some(span).flatten();
+        let mut leading_absent = 0;
+        let mut retained = Vec::new();
+        for occurrence in children {
+            match occurrence.node {
+                Some(node) => {
+                    if retained.is_empty() {
+                        retained.extend((0..leading_absent).map(|_| OccurrenceNode {
+                            span: None,
+                            children: Box::new([]),
+                        }));
+                    }
+                    retained.push(node);
+                }
+                None if retained.is_empty() => leading_absent += 1,
+                None => retained.push(OccurrenceNode {
+                    span: None,
+                    children: Box::new([]),
+                }),
+            }
+        }
+        if span.is_none() && retained.is_empty() {
+            return Ok(Occurrence::absent());
+        }
+        if span.is_some() && retained.is_empty() && leading_absent != 0 {
+            retained.extend((0..leading_absent).map(|_| OccurrenceNode {
+                span: None,
+                children: Box::new([]),
+            }));
+        }
         Ok(Occurrence {
-            node: OccurrenceNode {
+            node: Some(OccurrenceNode {
                 span,
-                children: if retain_children {
-                    children.into_boxed_slice()
-                } else {
-                    Box::new([])
-                },
-            },
+                children: retained.into_boxed_slice(),
+            }),
         })
     }
 }
@@ -534,6 +687,10 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         self.follow
     }
 
+    pub const fn capture_policy(&self) -> CapturePolicy {
+        self.policy
+    }
+
     pub fn unexpected(&self, expected: &FollowSet) -> ParseError {
         ParseError::unexpected(self.input, expected)
     }
@@ -541,6 +698,10 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
     pub fn next_is(&self, expected: &FollowSet) -> bool {
         self.peek(0)
             .is_some_and(|record| expected.contains(record.kind))
+    }
+
+    pub fn is_eof(&self) -> bool {
+        self.peek(0).is_none()
     }
 
     /// Consumes one fixed element and returns its occurrence provenance.
@@ -561,7 +722,7 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
                 self.input.source(),
                 policy,
                 self.request,
-                record.span,
+                Some(record.span),
                 std::iter::empty(),
             )
             .map_err(|()| ParseError::invalid_token_span(self.input, record.span, None))
@@ -580,7 +741,7 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
                 self.input.source(),
                 self.policy,
                 self.request,
-                span,
+                Some(span),
                 std::iter::empty(),
             )
             .map_err(|()| ParseError::invalid_token_span(self.input, span, None))?;
@@ -600,11 +761,50 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
                 self.input.source(),
                 self.policy,
                 self.request,
-                span,
+                Some(span),
                 children,
             )
             .map_err(|()| ParseError::invalid_token_span(self.input, span, None))?;
         Ok(ParsedNode { value, occurrence })
+    }
+
+    /// Completes a locally overridden Node/variant capture boundary.
+    pub fn finish_with_children_policy<T>(
+        &self,
+        value: T,
+        span: Span,
+        policy: CapturePolicy,
+        children: impl IntoIterator<Item = Occurrence>,
+    ) -> Result<ParsedNode<T>, ParseError> {
+        let occurrence = self
+            .provenance
+            .finish(
+                self.input.source(),
+                policy,
+                self.request,
+                Some(span),
+                children,
+            )
+            .map_err(|()| ParseError::invalid_token_span(self.input, span, None))?;
+        Ok(ParsedNode { value, occurrence })
+    }
+
+    /// Completes one authored element slot, including repeated child occurrences.
+    pub fn finish_group(
+        &self,
+        policy: CapturePolicy,
+        span: Option<Span>,
+        children: impl IntoIterator<Item = Occurrence>,
+    ) -> Result<Occurrence, ParseError> {
+        self.provenance
+            .finish(self.input.source(), policy, self.request, span, children)
+            .map_err(|()| {
+                ParseError::invalid_token_span(
+                    self.input,
+                    span.expect("only a concrete invalid span can fail validation"),
+                    None,
+                )
+            })
     }
 
     /// Invokes a generated child parser with its own FOLLOW and capture policy.
@@ -666,15 +866,21 @@ where
     if !std::ptr::eq(input.grammar(), T::grammar()) {
         return Err(ParseError::grammar_mismatch(input));
     }
+    let checkpoint = input.cursor();
     let source = input.source();
     let mut context = ParseContext::new(input, T::root_follow(), T::CAPTURE_POLICY, request);
-    let ParsedNode { value, occurrence } = T::parse(&mut context)?;
-    let origin = if occurrence.node.is_captured() {
+    let ParsedNode { value, occurrence } = match T::parse(&mut context) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            input.restore(checkpoint);
+            return Err(error);
+        }
+    };
+    let origin = if let Some(root) = occurrence.node {
+        debug_assert!(root.is_captured());
         Origin::Captured {
             source,
-            provenance: Box::new(Provenance {
-                root: occurrence.node,
-            }),
+            provenance: Box::new(Provenance { root }),
         }
     } else {
         Origin::Uncaptured
@@ -842,6 +1048,29 @@ mod tests {
     }
 
     #[test]
+    fn occurrence_sequences_allocate_only_after_capture_and_preserve_ordinals() {
+        let mut occurrences = Occurrences::new();
+        occurrences.push(Occurrence::absent());
+        occurrences.push(Occurrence::absent());
+        assert_eq!(occurrences.retained.capacity(), 0);
+
+        occurrences.push(Occurrence {
+            node: Some(OccurrenceNode {
+                span: Some(Span::new(4, 5).unwrap()),
+                children: Box::new([]),
+            }),
+        });
+        occurrences.push(Occurrence::absent());
+
+        let retained = occurrences.into_iter().collect::<Vec<_>>();
+        assert_eq!(retained.len(), 4);
+        assert!(!retained[0].is_captured());
+        assert!(!retained[1].is_captured());
+        assert!(retained[2].is_captured());
+        assert!(!retained[3].is_captured());
+    }
+
+    #[test]
     fn root_capture_policy_and_request_cover_all_six_combinations() {
         macro_rules! assert_case {
             ($token:ident, $spanned:expr, $captured:expr) => {{
@@ -920,7 +1149,7 @@ mod tests {
         assert!(parse::<FailsAfterOccurrence, _>(&mut input).is_err());
         let parsed = parse_spanned::<OptionalToken<'_>, _>(&mut input).unwrap();
 
-        assert_eq!(parsed.root().value().text.as_str(), "b");
-        assert_eq!(parsed.root().span(), Some(Span::new(2, 3).unwrap()));
+        assert_eq!(parsed.root().value().text.as_str(), "a");
+        assert_eq!(parsed.root().span(), Some(Span::new(0, 1).unwrap()));
     }
 }

@@ -21,8 +21,9 @@ use crate::lowering::{
     BuildInputs, DiscoveryInputs, FacadeMapping, ModuleId, NodeId, SelectedRootAnchor,
 };
 use crate::source_syntax::{
-    CargoCfgSnapshot, GrammarConfigSyntax, configured_attribute_metas as configured_metas,
-    item_attributes as item_attrs, path_text, span_range,
+    CaptureMode, CargoCfgSnapshot, GrammarConfigSyntax, capture_override,
+    configured_attribute_metas as configured_metas, item_attributes as item_attrs, path_text,
+    span_range,
 };
 
 macro_rules! resolution_id {
@@ -107,6 +108,7 @@ pub(crate) struct ResolvedNode {
     pub(crate) range: Range<u32>,
     pub(crate) generics: syn::Generics,
     pub(crate) metas: Vec<Meta>,
+    pub(crate) capture: Option<CaptureMode>,
     pub(crate) body: ResolvedNodeBody,
     pub(crate) fields: Vec<ResolvedNodeField>,
 }
@@ -131,6 +133,7 @@ pub(crate) struct ResolvedNodeVariant {
     pub(crate) style: ResolvedFieldStyle,
     pub(crate) range: Range<u32>,
     pub(crate) metas: Vec<Meta>,
+    pub(crate) capture: Option<CaptureMode>,
     pub(crate) fields: Vec<ResolvedFieldId>,
 }
 
@@ -139,6 +142,7 @@ pub(crate) struct ResolvedNodeField {
     pub(crate) id: ResolvedFieldId,
     pub(crate) syntax: Field,
     pub(crate) metas: Vec<Meta>,
+    pub(crate) capture: Option<CaptureMode>,
     pub(crate) range: Range<u32>,
     pub(crate) ty: ResolvedType,
 }
@@ -443,6 +447,7 @@ struct PendingContentTokenSite {
 struct ConfiguredNodeField {
     field: Field,
     metas: Vec<Meta>,
+    capture: Option<CaptureMode>,
 }
 
 struct ConfiguredNodeVariant {
@@ -450,6 +455,7 @@ struct ConfiguredNodeVariant {
     style: ResolvedFieldStyle,
     range: Range<u32>,
     metas: Vec<Meta>,
+    capture: Option<CaptureMode>,
     fields: Vec<ConfiguredNodeField>,
 }
 
@@ -475,6 +481,7 @@ struct PendingNodeField {
     id: ResolvedFieldId,
     syntax: Field,
     metas: Vec<Meta>,
+    capture: Option<CaptureMode>,
     range: Range<u32>,
 }
 
@@ -533,6 +540,7 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         facade: facade.clone(),
         text_equivalence: configuration.syntax.text_equivalence,
         max_lookahead: configuration.syntax.max_lookahead,
+        spans: configuration.syntax.spans,
     };
     let mut resolver = Resolver {
         cfg: input.cfg,
@@ -688,6 +696,19 @@ impl Resolver<'_> {
                     (!is_node && !is_type_alias).then(|| self.allocate_opaque_target());
                 let kind = if is_node {
                     let id = NodeId::next(self.nodes.len());
+                    let capture = match capture_override(&configured) {
+                        Ok(capture) => capture,
+                        Err(error) => {
+                            self.push_site_diagnostic(
+                                ResolutionDiagnosticKind::InvalidConfiguration,
+                                inclusion.id,
+                                inclusion.source,
+                                Some(span_range(error.span())),
+                                error.to_string(),
+                            );
+                            continue;
+                        }
+                    };
                     let configured_body = configured_node_body(
                         &item,
                         self.cfg,
@@ -732,6 +753,7 @@ impl Resolver<'_> {
                                         style: variant.style,
                                         range: variant.range,
                                         metas: variant.metas,
+                                        capture: variant.capture,
                                         fields: field_ids,
                                     }
                                 })
@@ -765,6 +787,7 @@ impl Resolver<'_> {
                             range: span_range(ident.span()),
                             generics,
                             metas: configured.clone(),
+                            capture,
                             body,
                             fields: Vec::new(),
                         },
@@ -820,6 +843,7 @@ impl Resolver<'_> {
             range: span_range(configured.field.ty.span()),
             syntax: configured.field,
             metas: configured.metas,
+            capture: configured.capture,
         }
     }
 
@@ -1837,6 +1861,7 @@ impl Resolver<'_> {
                         id: field.id,
                         syntax: field.syntax.clone(),
                         metas: field.metas.clone(),
+                        capture: field.capture,
                         range: field.range.clone(),
                         ty,
                     });
@@ -2534,7 +2559,26 @@ fn configured_node_body(
         fields
             .into_iter()
             .filter_map(|field| match configured_metas(&field.attrs, cfg) {
-                Ok(Some(metas)) => Some(ConfiguredNodeField { field, metas }),
+                Ok(Some(metas)) => match capture_override(&metas) {
+                    Ok(capture) => Some(ConfiguredNodeField {
+                        field,
+                        metas,
+                        capture,
+                    }),
+                    Err(error) => {
+                        diagnostics.push(ResolutionDiagnostic {
+                            kind: ResolutionDiagnosticKind::InvalidConfiguration,
+                            module: Some(module),
+                            logical_module: Some(
+                                tree.inclusions[module.index()].logical_path.clone(),
+                            ),
+                            path: tree.files[source.index()].path.clone(),
+                            range: Some(span_range(error.span())),
+                            message: error.to_string(),
+                        });
+                        None
+                    }
+                },
                 Ok(None) => None,
                 Err(error) => {
                     diagnostics.push(ResolutionDiagnostic {
@@ -2568,20 +2612,36 @@ fn configured_node_body(
                 .variants
                 .iter()
                 .filter_map(|variant| match configured_metas(&variant.attrs, cfg) {
-                    Ok(Some(metas)) => Some(ConfiguredNodeVariant {
-                        ident: variant.ident.unraw().to_string(),
-                        style: resolved_field_style(&variant.fields),
-                        range: span_range(variant.ident.span()),
-                        metas,
-                        fields: configured_fields(
-                            variant.fields.iter().cloned(),
-                            cfg,
-                            diagnostics,
-                            tree,
-                            module,
-                            source,
-                        ),
-                    }),
+                    Ok(Some(metas)) => match capture_override(&metas) {
+                        Ok(capture) => Some(ConfiguredNodeVariant {
+                            ident: variant.ident.unraw().to_string(),
+                            style: resolved_field_style(&variant.fields),
+                            range: span_range(variant.ident.span()),
+                            metas,
+                            capture,
+                            fields: configured_fields(
+                                variant.fields.iter().cloned(),
+                                cfg,
+                                diagnostics,
+                                tree,
+                                module,
+                                source,
+                            ),
+                        }),
+                        Err(error) => {
+                            diagnostics.push(ResolutionDiagnostic {
+                                kind: ResolutionDiagnosticKind::InvalidConfiguration,
+                                module: Some(module),
+                                logical_module: Some(
+                                    tree.inclusions[module.index()].logical_path.clone(),
+                                ),
+                                path: tree.files[source.index()].path.clone(),
+                                range: Some(span_range(error.span())),
+                                message: error.to_string(),
+                            });
+                            None
+                        }
+                    },
                     Ok(None) => None,
                     Err(error) => {
                         diagnostics.push(ResolutionDiagnostic {

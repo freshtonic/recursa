@@ -13,7 +13,8 @@ pub(crate) use input::{Input, LexResult, TokenRecord};
 pub use output::{HasSpan, Vec1};
 pub use parse::{ParseError, ParseErrorKind};
 pub use parsed::{
-    ElementMetadata, ElementRole, ElementView, Elements, Node, NodeView, Parse, Parsed,
+    ElementMetadata, ElementRole, ElementView, Elements, Node, NodeView, Parse, Parsed, Repeated,
+    RepeatedIter,
 };
 pub use span::{OffsetOverflow, Span};
 
@@ -30,8 +31,8 @@ pub mod __private {
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     pub use crate::parsed::{
         CapturePolicy, ContentText, ElementMetadata, GeneratedParse as Parse, NodeViewFactory,
-        Occurrence, ParseContext, ParsedNode, ViewCursor, parse, parse_seal::Sealed as ParseSealed,
-        parse_spanned,
+        Occurrence, Occurrences, ParseContext, ParsedNode, Repeated, RepeatedIter, ViewCursor,
+        parse, parse_seal::Sealed as ParseSealed, parse_spanned,
     };
 
     /// Constructs one generated element descriptor without exposing its fields.

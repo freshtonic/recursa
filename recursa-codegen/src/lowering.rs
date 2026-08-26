@@ -14,7 +14,7 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned as _;
 use syn::{Attribute, Fields, Item, LitStr, Path as SynPath, Token, Type};
 
-use crate::source_syntax::GrammarConfigSyntax;
+use crate::source_syntax::{CaptureMode, GrammarConfigSyntax};
 use crate::{
     AnalysisReport, AtomDescription, AtomExpression, AtomId, ContainerShape, DeclId, Declaration,
     Diagnostic, GrammarDescription, KindDescription, KindId, Location, LocationId, ParseSite,
@@ -189,6 +189,7 @@ pub(crate) struct BuildInputs {
     pub(crate) facade: FacadeMapping,
     pub(crate) text_equivalence: TextEquivalence,
     pub(crate) max_lookahead: usize,
+    pub(crate) spans: CaptureMode,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1159,6 +1160,7 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
                 },
                 text_equivalence: config.text_equivalence,
                 max_lookahead: config.max_lookahead,
+                spans: config.spans,
             },
             grammar,
             source_model,
