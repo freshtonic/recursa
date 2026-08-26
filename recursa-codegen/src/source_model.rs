@@ -17,8 +17,9 @@ use crate::lowering::{
     ElementId as GrammarElementId, ModuleId, NodeId, TokenDefinitionId, TokenUseId,
 };
 use crate::resolution::{
-    CatalogType, ContentTokenId, ResolvedFieldId, ResolvedFieldStyle, ResolvedNodeBody,
-    ResolvedNodeField, ResolvedSourceGrammar, ResolvedTypeKind, ResolvedVariantId, SemanticTarget,
+    CatalogType, ContentTokenId, ResolvedFieldId, ResolvedFieldStyle, ResolvedGenericArgument,
+    ResolvedNodeBody, ResolvedNodeField, ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind,
+    ResolvedVariantId, SemanticTarget,
 };
 use crate::source_syntax::{
     CargoCfgSnapshot, configured_attribute_metas as configured_metas,
@@ -549,6 +550,27 @@ impl SourceModelBuilder<'_> {
                     }
                 }
                 NodeBody::Pratt(variants) => {
+                    let requires_grouping = variants
+                        .iter()
+                        .any(|variant| !matches!(variant.position, SourcePrattPosition::Atom));
+                    let has_grouping = variants.iter().any(|variant| {
+                        matches!(variant.position, SourcePrattPosition::Atom)
+                            && self.is_pretty_pratt_grouping(node.resolved_node, &variant.common)
+                    });
+                    if requires_grouping && !has_grouping {
+                        diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                            sites: variants
+                                .first()
+                                .map(|variant| variant.common.site.clone())
+                                .into_iter()
+                                .collect(),
+                            message: format!(
+                                "Pretty cannot repair precedence for Pratt Node `{}` because its grammar has no atom that encloses Self between fixed tokens",
+                                node.name,
+                            ),
+                        });
+                    }
                     for variant in variants {
                         self.validate_pretty_element_boundaries(
                             &variant.common.elements,
@@ -559,6 +581,55 @@ impl SourceModelBuilder<'_> {
             }
         }
         self.diagnostics.extend(diagnostics);
+    }
+
+    fn is_pretty_pratt_grouping(&self, node: NodeId, variant: &Variant) -> bool {
+        let [
+            GrammarElement::FixedToken { .. },
+            GrammarElement::SemanticField { resolved_field, .. },
+            GrammarElement::FixedToken { .. },
+        ] = variant.elements.as_slice()
+        else {
+            return false;
+        };
+        self.is_direct_recursive_operand(&self.resolved_field(*resolved_field).ty, node)
+    }
+
+    fn is_direct_recursive_operand(&self, ty: &ResolvedType, node: NodeId) -> bool {
+        match &ty.kind {
+            ResolvedTypeKind::Semantic {
+                target, arguments, ..
+            } => match target {
+                SemanticTarget::Node(candidate) => *candidate == node,
+                SemanticTarget::Catalog(CatalogType::Box) => {
+                    let mut types = arguments.iter().filter_map(|argument| match argument {
+                        ResolvedGenericArgument::Type(ty) => Some(ty),
+                        ResolvedGenericArgument::Lifetime(_)
+                        | ResolvedGenericArgument::Unsupported(_) => None,
+                    });
+                    let Some(inner) = types.next() else {
+                        return false;
+                    };
+                    types.next().is_none() && self.is_direct_recursive_operand(inner, node)
+                }
+                SemanticTarget::TypeAlias(alias) => self
+                    .resolved
+                    .type_aliases
+                    .iter()
+                    .find(|candidate| candidate.id == *alias)
+                    .and_then(|alias| alias.target.as_ref())
+                    .is_some_and(|ty| self.is_direct_recursive_operand(ty, node)),
+                SemanticTarget::Catalog(
+                    CatalogType::Option | CatalogType::Vec | CatalogType::Vec1,
+                )
+                | SemanticTarget::ContentToken(_)
+                | SemanticTarget::GenericParameter(_) => false,
+            },
+            ResolvedTypeKind::Group(inner)
+            | ResolvedTypeKind::Parenthesized(inner)
+            | ResolvedTypeKind::Reference(inner) => self.is_direct_recursive_operand(inner, node),
+            ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => false,
+        }
     }
 
     fn validate_pretty_element_boundaries(
@@ -4421,6 +4492,103 @@ struct Root;
                 && diagnostic
                     .message
                     .contains("spacing must be auto, tight, before, after, or around")
+        }));
+    }
+
+    #[test]
+    fn pretty_pratt_requires_authored_grouping_syntax() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { PLUS => "+" } }
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("cannot repair precedence")
+        }));
+    }
+
+    #[test]
+    fn pretty_pratt_accepts_grammar_owned_grouping_syntax() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    keywords { BEGIN => "begin", END => "end" }
+    punctuation { PLUS => "+" }
+}
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    Group(#[tok(BEGIN, this, END)] Box<Self>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.source_modeled.is_some());
+    }
+
+    #[test]
+    fn pretty_pratt_rejects_optional_grouping_like_atoms() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { OPEN => "[", CLOSE => "]", PLUS => "+" }
+}
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    NotAGroup(#[tok(OPEN, this, CLOSE)] Option<Box<Self>>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("cannot repair precedence")
         }));
     }
 }

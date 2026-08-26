@@ -297,6 +297,15 @@ struct PrattParsePlan {
     nud_failure: PlannedFollow,
     nud_selection_follow: ExpectedSet,
     caller_follow_guard: Option<Vec<PrattGuardBranchPlan>>,
+    grouping: Option<PrattGroupingPlan>,
+}
+
+#[derive(Clone, Debug)]
+struct PrattGroupingPlan {
+    open: String,
+    open_spacing: PrettySpacing,
+    close: String,
+    close_spacing: PrettySpacing,
 }
 
 #[derive(Clone, Debug)]
@@ -2863,6 +2872,46 @@ fn structural_body(
                     }
                 }
             }
+            let grouping = nud.iter().find_map(|branch| {
+                if !matches!(branch.position, PrattPosition::Atom) {
+                    return None;
+                }
+                let [
+                    ElementParsePlan {
+                        kind:
+                            ElementParseKind::Fixed {
+                                spelling: open,
+                                spacing: open_spacing,
+                                ..
+                            },
+                        ..
+                    },
+                    ElementParsePlan {
+                        kind: ElementParseKind::Semantic { terminal, .. },
+                        ..
+                    },
+                    ElementParsePlan {
+                        kind:
+                            ElementParseKind::Fixed {
+                                spelling: close,
+                                spacing: close_spacing,
+                                ..
+                            },
+                        ..
+                    },
+                ] = branch.variant.elements.as_slice()
+                else {
+                    return None;
+                };
+                terminal_path_ident(terminal)
+                    .is_some_and(|ident| ident == &node.ident || ident.unraw() == "Self")
+                    .then(|| PrattGroupingPlan {
+                        open: open.clone(),
+                        open_spacing: *open_spacing,
+                        close: close.clone(),
+                        close_spacing: *close_spacing,
+                    })
+            });
             NodeBodyPlan::Pratt(Box::new(PrattParsePlan {
                 expected_nud_count: nud.len(),
                 expected_led_count: led.len(),
@@ -2873,6 +2922,7 @@ fn structural_body(
                 nud_failure: PlannedFollow::Caller,
                 nud_selection_follow: ExpectedSet::empty(kind_count),
                 caller_follow_guard: None,
+                grouping,
             }))
         }
         _ => {
@@ -3782,6 +3832,47 @@ fn plan_pratt_node(
         nud_selection_follow.union_assign(&branch.expected);
     }
 
+    let grouping = nud.iter().find_map(|branch| {
+        if !matches!(branch.position, PrattPosition::Atom) {
+            return None;
+        }
+        let [
+            ElementParsePlan {
+                kind:
+                    ElementParseKind::Fixed {
+                        spelling: open,
+                        spacing: open_spacing,
+                        ..
+                    },
+                ..
+            },
+            ElementParsePlan {
+                kind: ElementParseKind::Semantic { terminal, .. },
+                ..
+            },
+            ElementParsePlan {
+                kind:
+                    ElementParseKind::Fixed {
+                        spelling: close,
+                        spacing: close_spacing,
+                        ..
+                    },
+                ..
+            },
+        ] = branch.variant.elements.as_slice()
+        else {
+            return None;
+        };
+        terminal_path_ident(terminal)
+            .is_some_and(|ident| ident == &node.ident)
+            .then(|| PrattGroupingPlan {
+                open: open.clone(),
+                open_spacing: *open_spacing,
+                close: close.clone(),
+                close_spacing: *close_spacing,
+            })
+    });
+
     Ok(PrattParsePlan {
         expected_nud_count: semantic_variants
             .iter()
@@ -3808,6 +3899,7 @@ fn plan_pratt_node(
         nud_failure,
         nud_selection_follow,
         caller_follow_guard,
+        grouping,
     })
 }
 
@@ -7194,32 +7286,20 @@ fn render_pratt_node_pretty(
                     PrettyElementBehavior::Fixed { spelling, spacing },
                 ) => {
                     let infix = matches!(position, PrattPosition::Infix { .. });
-                    let prefix = matches!(position, PrattPosition::Prefix { .. });
+                    let run_start = index == 0
+                        || matches!(
+                            variant.elements[index - 1].kind,
+                            ElementParseKind::Semantic { .. }
+                        );
+                    let run_end = index + 1 == variant.elements.len()
+                        || matches!(
+                            variant.elements[index + 1].kind,
+                            ElementParseKind::Semantic { .. }
+                        );
                     let fixed = render_pretty_fixed(plan, index, spelling, *spacing);
-                    if infix && *spacing == PrettySpacing::Auto {
-                        quote! {
-                            context.soft_break(" ")?;
-                            #fixed
-                            context.soft_break(" ")?;
-                        }
-                    } else if prefix && *spacing == PrettySpacing::Auto {
-                        let fallback = if plan.text_equivalence
-                            == TextEquivalence::AsciiInsensitive
-                            && is_word_shaped(spelling)
-                        {
-                            spelling.to_ascii_uppercase()
-                        } else {
-                            spelling.clone()
-                        };
-                        quote! {
-                            context.with_child(#index, |context| {
-                                let matched = context.matched_text();
-                                context.opening_token(matched.as_deref().unwrap_or(#fallback))
-                            })?;
-                        }
-                    } else {
-                        fixed
-                    }
+                    let before = (infix && run_start).then(|| quote!(context.soft_break(" ")?;));
+                    let after = (infix && run_end).then(|| quote!(context.soft_break(" ")?;));
+                    quote!(#before #fixed #after)
                 }
                 (
                     ElementParseKind::Semantic {
@@ -7306,18 +7386,24 @@ fn render_pratt_node_pretty(
                 PrattPosition::Postfix { bp } => (Some(u16::from(bp)), 256_u16),
             };
             let entry_check = entry.map_or_else(|| quote!(false), |entry| quote!(#entry < min_bp));
+            let group_open = pratt.grouping.as_ref().map(|grouping| {
+                render_pretty_synthetic_fixed(plan, &grouping.open, grouping.open_spacing)
+            });
+            let group_close = pratt.grouping.as_ref().map(|grouping| {
+                render_pretty_synthetic_fixed(plan, &grouping.close, grouping.close_spacing)
+            });
             quote! {
                 #pattern => {
                     let __recursa_parenthesize = #entry_check
                         || next_lbp.is_some_and(|next| next >= #exit);
                     if __recursa_parenthesize {
-                        context.opening_token("(")?;
+                        #group_open
                     }
                     let __recursa_inner_min = if __recursa_parenthesize { 0 } else { min_bp };
                     let __recursa_inner_next = if __recursa_parenthesize { None } else { next_lbp };
                     #rendered
                     if __recursa_parenthesize {
-                        context.tight_token(")")?;
+                        #group_close
                     }
                     Ok(())
                 }
@@ -7383,6 +7469,7 @@ fn render_node_pretty(
                     (
                         ElementParseKind::Semantic {
                             field,
+                            terminal,
                             wrappers,
                             container,
                             ..
@@ -7408,9 +7495,11 @@ fn render_node_pretty(
                             );
                         }
                         render_pretty_semantic(
+                            plan,
                             facade,
                             index,
                             quote!(&#value),
+                            terminal,
                             container,
                             separator.as_deref(),
                             *opaque_provenance,
@@ -7456,6 +7545,7 @@ fn render_node_pretty(
                                 ) => render_pretty_fixed(plan, index, spelling, *spacing),
                                 (
                                     ElementParseKind::Semantic {
+                                        terminal,
                                         wrappers,
                                         container,
                                         ..
@@ -7482,9 +7572,11 @@ fn render_node_pretty(
                                         );
                                     }
                                     render_pretty_semantic(
+                                        plan,
                                         facade,
                                         index,
                                         quote!(#binding),
+                                        terminal,
                                         container,
                                         separator.as_deref(),
                                         *opaque_provenance,
@@ -7521,24 +7613,23 @@ fn render_node_pretty(
 }
 
 fn render_pretty_semantic(
+    plan: &EmissionPlan,
     facade: &Ident,
     index: usize,
     value: proc_macro2::TokenStream,
+    terminal: &Type,
     container: &PlannedContainer,
     separator: Option<&str>,
     opaque_provenance: bool,
 ) -> proc_macro2::TokenStream {
     let render_value = if matches!(container, PlannedContainer::Repeated { .. }) {
-        separator.map_or_else(
-            || quote!(#facade::Pretty::pretty(#value, context)),
-            |separator| {
-                quote! {
-                    context.with_repetition(#separator, false, |context| {
-                        #facade::Pretty::pretty(#value, context)
-                    })
-                }
-            },
-        )
+        let separator = separator.map_or_else(|| quote!(None), |separator| quote!(Some(#separator)));
+        let hard_break = repeated_terminal_is_dispatch(plan, terminal);
+        quote! {
+            context.with_repetition(#separator, false, #hard_break, |context| {
+                #facade::Pretty::pretty(#value, context)
+            })
+        }
     } else {
         quote!(#facade::Pretty::pretty(#value, context))
     };
@@ -7561,13 +7652,43 @@ fn render_pretty_semantic(
     }
 }
 
+fn repeated_terminal_is_dispatch(plan: &EmissionPlan, terminal: &Type) -> bool {
+    let Some(ident) = terminal_path_ident(terminal) else {
+        return false;
+    };
+    plan.nodes
+        .iter()
+        .any(|node| node.ident == *ident && matches!(node.body, NodeBodyPlan::Enum { .. }))
+}
+
 fn render_pretty_fixed(
     plan: &EmissionPlan,
     index: usize,
     spelling: &str,
     spacing: PrettySpacing,
 ) -> proc_macro2::TokenStream {
-    let method = match spacing {
+    let method = pretty_fixed_method(spelling, spacing);
+    let fallback = pretty_fixed_fallback(plan, spelling);
+    quote! {
+        context.with_child(#index, |context| {
+            let matched = context.matched_text();
+            context.#method(matched.as_deref().unwrap_or(#fallback))
+        })?;
+    }
+}
+
+fn render_pretty_synthetic_fixed(
+    plan: &EmissionPlan,
+    spelling: &str,
+    spacing: PrettySpacing,
+) -> proc_macro2::TokenStream {
+    let method = pretty_fixed_method(spelling, spacing);
+    let fallback = pretty_fixed_fallback(plan, spelling);
+    quote!(context.#method(#fallback)?;)
+}
+
+fn pretty_fixed_method(spelling: &str, spacing: PrettySpacing) -> syn::Ident {
+    match spacing {
         PrettySpacing::Tight => format_ident!("tight_sequence_token"),
         PrettySpacing::Before => format_ident!("before_token"),
         PrettySpacing::After => format_ident!("after_token"),
@@ -7577,18 +7698,14 @@ fn render_pretty_fixed(
         }
         PrettySpacing::Auto if is_word_shaped(spelling) => format_ident!("token"),
         PrettySpacing::Auto => format_ident!("punctuation_token"),
-    };
-    let fallback =
-        if plan.text_equivalence == TextEquivalence::AsciiInsensitive && is_word_shaped(spelling) {
-            spelling.to_ascii_uppercase()
-        } else {
-            spelling.to_owned()
-        };
-    quote! {
-        context.with_child(#index, |context| {
-            let matched = context.matched_text();
-            context.#method(matched.as_deref().unwrap_or(#fallback))
-        })?;
+    }
+}
+
+fn pretty_fixed_fallback(plan: &EmissionPlan, spelling: &str) -> String {
+    if plan.text_equivalence == TextEquivalence::AsciiInsensitive && is_word_shaped(spelling) {
+        spelling.to_ascii_uppercase()
+    } else {
+        spelling.to_owned()
     }
 }
 

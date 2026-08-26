@@ -160,8 +160,9 @@ pub struct PrettyContext {
 
 #[derive(Clone)]
 struct RepetitionLayout {
-    separator: String,
+    separator: Option<String>,
     trailing: bool,
+    hard_break: bool,
 }
 
 impl Default for PrettyContext {
@@ -361,13 +362,15 @@ impl PrettyContext {
     #[doc(hidden)]
     pub fn with_repetition<R>(
         &mut self,
-        separator: &str,
+        separator: Option<&str>,
         trailing: bool,
+        hard_break: bool,
         render: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let previous = self.repetition.replace(RepetitionLayout {
-            separator: separator.to_owned(),
+            separator: separator.map(str::to_owned),
             trailing,
+            hard_break,
         });
         let result = render(self);
         self.repetition = previous;
@@ -385,9 +388,11 @@ impl PrettyContext {
             if let Some(layout) = &layout
                 && (index + 1 < length || layout.trailing)
             {
-                self.tight_token(&layout.separator)?;
+                if let Some(separator) = &layout.separator {
+                    self.tight_token(separator)?;
+                }
                 if index + 1 < length {
-                    if layout.separator == ";" {
+                    if layout.hard_break {
                         self.hard_break()?;
                     } else {
                         self.soft_break(" ")?;
@@ -574,7 +579,8 @@ mod tests {
         impl Pretty for Words {
             fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
                 context.group(|context| {
-                    context.with_repetition(",", false, |context| self.0.pretty(context))
+                    context
+                        .with_repetition(Some(","), false, false, |context| self.0.pretty(context))
                 })
             }
         }
@@ -584,6 +590,37 @@ mod tests {
         assert_eq!(
             words.render_with(PrettyConfig::new(12, 2)),
             "alpha,\nbeta,\ngamma"
+        );
+    }
+
+    #[test]
+    fn semantic_repetition_breaks_do_not_depend_on_separator_spelling() {
+        struct Word(&'static str);
+        impl Pretty for Word {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.tight_token(self.0)
+            }
+        }
+        struct Statements(Vec<Word>);
+        impl Pretty for Statements {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.with_repetition(Some("GO"), false, true, |context| self.0.pretty(context))
+            }
+        }
+        struct Dispatch(Vec<Word>);
+        impl Pretty for Dispatch {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.with_repetition(None, false, true, |context| self.0.pretty(context))
+            }
+        }
+
+        assert_eq!(
+            Statements(vec![Word("one"), Word("two")]).render(),
+            "oneGO\ntwo"
+        );
+        assert_eq!(
+            Dispatch(vec![Word("one"), Word("two")]).render(),
+            "one\ntwo"
         );
     }
 
