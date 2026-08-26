@@ -22,12 +22,12 @@ use crate::lexical::{KeywordRecognition, LexicalMatcher, LexicalPriority, TokenK
 use crate::lowering::ModuleId;
 use crate::m3::{CargoOutput, M3Input, analyze_source_tree, internal_generate_error};
 use crate::materialization::{
-    ClosedType, MaterializedElement, MaterializedNodeApplication, MaterializedNodeBody,
-    MaterializedPrattLed, MaterializedPrattLedPosition, MaterializedPrattNud,
+    ClosedType, MaterializedElement, MaterializedFixedAttachment, MaterializedNodeApplication,
+    MaterializedNodeBody, MaterializedPrattLed, MaterializedPrattLedPosition, MaterializedPrattNud,
     MaterializedPrattNudPosition, MaterializedPrattVariant, MaterializedVariant,
 };
 use crate::resolution::{ResolvedFieldStyle, ResolvedNode, ResolvedNodeBody};
-use crate::source_model::{ConfiguredTraitRecipe, TokenDefinitionKind};
+use crate::source_model::{ConfiguredTraitRecipe, PrettySpacing, TokenDefinitionKind};
 use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, span_range};
 use crate::{AtomExpression, FirstPosition, KindSet, SiteId, TextEquivalence, TextPredicate};
 
@@ -178,7 +178,23 @@ struct PrettyNodeBehavior {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PrettyElementBehavior {
     Fixed { spelling: String },
-    Semantic { repeated: bool },
+    Semantic {
+        repeated: bool,
+        attachment: Option<PrettyAttachmentBehavior>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PrettyAttachmentBehavior {
+    before: Vec<PrettyAttachedFixedBehavior>,
+    after: Vec<PrettyAttachedFixedBehavior>,
+    separator: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PrettyAttachedFixedBehavior {
+    spelling: String,
+    spacing: PrettySpacing,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -336,6 +352,21 @@ struct ElementParsePlan {
 }
 
 #[derive(Clone, Debug)]
+struct FixedAttachmentParsePlan {
+    before: Vec<AttachedFixedParsePlan>,
+    semantic: Box<PlannedContainer>,
+    after: Vec<AttachedFixedParsePlan>,
+}
+
+#[derive(Clone, Debug)]
+struct AttachedFixedParsePlan {
+    expected: ExpectedSet,
+    capture: PlannedCapturePolicy,
+    spelling: String,
+    spacing: PrettySpacing,
+}
+
+#[derive(Clone, Debug)]
 enum ElementParseKind {
     Fixed {
         expected: ExpectedSet,
@@ -350,6 +381,8 @@ enum ElementParseKind {
         capture: PlannedCapturePolicy,
         child_capture: PlannedCapturePolicy,
         pratt_min_bp: Option<u8>,
+        separator: Option<String>,
+        attachment: Option<Box<FixedAttachmentParsePlan>>,
     },
 }
 
@@ -1578,10 +1611,28 @@ fn diagram_sequence(
                     MaterializedElement::FixedToken { .. },
                 ) => Ok(format!("{spelling:?}")),
                 (
-                    ElementParseKind::Semantic { container, .. },
-                    MaterializedElement::SemanticField { ty, separator, .. },
+                    ElementParseKind::Semantic {
+                        container,
+                        attachment: planned_attachment,
+                        ..
+                    },
+                    MaterializedElement::SemanticField {
+                        ty,
+                        attachment,
+                        separator,
+                        ..
+                    },
                 ) => {
+                    if planned_attachment.is_some() != attachment.is_some() {
+                        return Err(
+                            "a diagram attachment diverges from the frozen parse plan".to_owned()
+                        );
+                    }
                     let terminal = diagram_terminal_name(ty, lowered)?;
+                    let terminal = attachment.as_ref().map_or_else(
+                        || Ok(terminal.clone()),
+                        |attachment| diagram_attachment_unit(&terminal, attachment, lowered),
+                    )?;
                     let separator = diagram_separator_spelling(separator.as_ref(), lowered)?;
                     diagram_semantic_element(&terminal, separator.as_deref(), container)
                 }
@@ -1589,6 +1640,36 @@ fn diagram_sequence(
             },
         )
         .collect::<Result<Vec<_>, String>>()
+        .map(|elements| elements.join(" "))
+}
+
+#[cfg(feature = "diagrams")]
+fn diagram_attachment_unit(
+    terminal: &str,
+    attachment: &MaterializedFixedAttachment,
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Result<String, String> {
+    let source = lowered.source_modeled.source_model();
+    let spelling = |token_use: crate::lowering::TokenUseId| {
+        let usage = &source.token_uses[token_use.index()];
+        let definition = &source.token_definitions[usage.definition.index()];
+        let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+            return Err("a diagram attachment is not fixed syntax".to_owned());
+        };
+        Ok(format!("{:?}", fixed.spelling))
+    };
+    attachment
+        .before
+        .iter()
+        .map(|token_use| spelling(*token_use))
+        .chain(std::iter::once(Ok(terminal.to_owned())))
+        .chain(
+            attachment
+                .after
+                .iter()
+                .map(|token_use| spelling(*token_use)),
+        )
+        .collect::<Result<Vec<_>, _>>()
         .map(|elements| elements.join(" "))
 }
 
@@ -1857,8 +1938,32 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
             ElementParseKind::Fixed { spelling, .. } => PrettyElementBehavior::Fixed {
                 spelling: spelling.clone(),
             },
-            ElementParseKind::Semantic { container, .. } => PrettyElementBehavior::Semantic {
+            ElementParseKind::Semantic {
+                container,
+                attachment,
+                separator,
+                ..
+            } => PrettyElementBehavior::Semantic {
                 repeated: matches!(container.as_ref(), PlannedContainer::Repeated { .. }),
+                attachment: attachment.as_ref().map(|attachment| PrettyAttachmentBehavior {
+                    before: attachment
+                        .before
+                        .iter()
+                        .map(|fixed| PrettyAttachedFixedBehavior {
+                            spelling: fixed.spelling.clone(),
+                            spacing: fixed.spacing,
+                        })
+                        .collect(),
+                    after: attachment
+                        .after
+                        .iter()
+                        .map(|fixed| PrettyAttachedFixedBehavior {
+                            spelling: fixed.spelling.clone(),
+                            spacing: fixed.spacing,
+                        })
+                        .collect(),
+                    separator: separator.clone(),
+                }),
             },
         })
         .collect()
@@ -1952,7 +2057,10 @@ fn authoritative_pretty_node_behavior(
                     authoritative_pretty_elements(lowered, &nud.body)
                 }
                 MaterializedPrattVariant::Led(led) => {
-                    let mut elements = vec![PrettyElementBehavior::Semantic { repeated: false }];
+                    let mut elements = vec![PrettyElementBehavior::Semantic {
+                        repeated: false,
+                        attachment: None,
+                    }];
                     elements.extend(authoritative_pretty_elements(lowered, &led.tail)?);
                     Ok(elements)
                 }
@@ -1985,14 +2093,75 @@ fn authoritative_pretty_elements(
                     ),
                 })
             }
-            MaterializedElement::SemanticField { ty, .. } => {
+            MaterializedElement::SemanticField {
+                ty,
+                attachment,
+                separator,
+                ..
+            } => {
                 let repeated = field_wrappers(ty)?.iter().any(|wrapper| {
                     matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)
                 });
-                Ok(PrettyElementBehavior::Semantic { repeated })
+                Ok(PrettyElementBehavior::Semantic {
+                    repeated,
+                    attachment: attachment
+                        .as_ref()
+                        .map(|attachment| {
+                            authoritative_pretty_attachment(lowered, attachment, separator.as_ref())
+                        })
+                        .transpose()?,
+                })
             }
         })
         .collect()
+}
+
+fn authoritative_pretty_attachment(
+    lowered: &crate::materialization::LoweredGrammar,
+    attachment: &MaterializedFixedAttachment,
+    separator: Option<&crate::source_model::Separator>,
+) -> Result<PrettyAttachmentBehavior, String> {
+    let source = lowered.source_modeled.source_model();
+    let fixed = |token_use: crate::lowering::TokenUseId| {
+        let usage = &source.token_uses[token_use.index()];
+        let definition = &source.token_definitions[usage.definition.index()];
+        let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+            return Err("an attached Pretty element is not fixed syntax".to_owned());
+        };
+        Ok(PrettyAttachedFixedBehavior {
+            spelling: fixed_pretty_spelling(
+                &fixed.spelling,
+                lowered.grammar.text_equivalence,
+            ),
+            spacing: fixed.pretty_spacing,
+        })
+    };
+    let separator = separator
+        .map(|separator| {
+            let usage = &source.token_uses[separator.token_use.index()];
+            let definition = &source.token_definitions[usage.definition.index()];
+            let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+                return Err("an attached Pretty separator is not fixed syntax".to_owned());
+            };
+            Ok(fixed_pretty_spelling(
+                &fixed.spelling,
+                lowered.grammar.text_equivalence,
+            ))
+        })
+        .transpose()?;
+    Ok(PrettyAttachmentBehavior {
+        before: attachment
+            .before
+            .iter()
+            .map(|token_use| fixed(*token_use))
+            .collect::<Result<_, _>>()?,
+        after: attachment
+            .after
+            .iter()
+            .map(|token_use| fixed(*token_use))
+            .collect::<Result<_, _>>()?,
+        separator,
+    })
 }
 
 fn pretty_family_identity(plan: &PrettyEmissionPlan) -> Option<u64> {
@@ -2866,6 +3035,8 @@ fn plan_pratt_lhs(
             capture: field_override.unwrap_or(variant_capture),
             child_capture: field_override.unwrap_or(variant_capture),
             pratt_min_bp: None,
+            separator: None,
+            attachment: None,
         },
     })
 }
@@ -2941,7 +3112,13 @@ fn plan_elements(
                     },
                 })
             }
-            MaterializedElement::SemanticField { field, ty, .. } => {
+            MaterializedElement::SemanticField {
+                field,
+                ty,
+                attachment,
+                separator,
+                ..
+            } => {
                 let resolved_field = node
                     .fields
                     .iter()
@@ -3002,7 +3179,7 @@ fn plan_elements(
                     kind_count,
                 )?;
                 let pratt_min_bp = pratt_operand
-                    .filter(|(owner, _)| lowered.grammar.sites[site.index()].target == *owner)
+                    .filter(|(owner, _)| parse_site_targets(&lowered.grammar, *site, *owner))
                     .map(|(_, min_bp)| min_bp);
                 if let Some((owner, min_bp)) = pratt_operand.filter(|_| pratt_min_bp.is_some()) {
                     let inactive = planned_pratt_extenders(
@@ -3051,11 +3228,140 @@ fn plan_elements(
                         capture,
                         child_capture,
                         pratt_min_bp,
+                        separator: separator
+                            .as_ref()
+                            .map(|separator| {
+                                let source = lowered.source_modeled.source_model();
+                                let token_use = &source.token_uses[separator.token_use.index()];
+                                let definition =
+                                    &source.token_definitions[token_use.definition.index()];
+                                match &definition.kind {
+                                    TokenDefinitionKind::Fixed(fixed) => Ok(fixed.spelling.clone()),
+                                    _ => Err(
+                                        "a repetition separator is not fixed syntax".to_owned()
+                                    ),
+                                }
+                            })
+                            .transpose()?,
+                        attachment: attachment
+                            .as_ref()
+                            .map(|attachment| {
+                                plan_fixed_attachment(
+                                    resolved_field,
+                                    attachment,
+                                    *site,
+                                    lowered,
+                                    decisions,
+                                    kind_count,
+                                    variant_capture,
+                                )
+                                .map(Box::new)
+                            })
+                            .transpose()?,
                     },
                 })
             }
         })
         .collect()
+}
+
+fn parse_site_targets(
+    grammar: &crate::GrammarDescription,
+    site: SiteId,
+    target: crate::TypeId,
+) -> bool {
+    let site = &grammar.sites[site.index()];
+    if site.target == target {
+        return true;
+    }
+    let TypeShape::Sequence { sites } = &grammar.types[site.target.index()].shape else {
+        return false;
+    };
+    sites
+        .iter()
+        .any(|site| grammar.sites[site.index()].target == target)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_fixed_attachment(
+    field: &crate::resolution::ResolvedNodeField,
+    attachment: &MaterializedFixedAttachment,
+    outer_site: SiteId,
+    lowered: &crate::materialization::LoweredGrammar,
+    decisions: &crate::DecisionProducts,
+    kind_count: usize,
+    variant_capture: PlannedCapturePolicy,
+) -> Result<FixedAttachmentParsePlan, String> {
+    let grammar = &lowered.grammar;
+    let correlation = lowered
+        .lowering_map
+        .attachments
+        .iter()
+        .find(|correlation| correlation.outer == outer_site)
+        .ok_or_else(|| "a fixed attachment lacks its typed M2 correlation".to_owned())?;
+    if correlation.sites.len() != attachment.before.len() + 1 + attachment.after.len() {
+        return Err("a fixed attachment has mismatched source and M2 unit elements".to_owned());
+    }
+    let capture = field
+        .capture
+        .map(PlannedCapturePolicy::from)
+        .unwrap_or(variant_capture);
+    let source = lowered.source_modeled.source_model();
+    let plan_fixed = |token_use: crate::lowering::TokenUseId,
+                      site: SiteId|
+     -> Result<AttachedFixedParsePlan, String> {
+        let token_use = &source.token_uses[token_use.index()];
+        let definition = &source.token_definitions[token_use.definition.index()];
+        let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+            return Err("an attached fixed element did not reference fixed syntax".to_owned());
+        };
+        let PlannedFollow::Static(expected) = planned_failure_edge(
+            decisions,
+            site,
+            FailureEdgeKind::RequiredSite,
+            grammar,
+            kind_count,
+        )?
+        else {
+            return Err("an attached fixed element has a dynamic failure recipe".to_owned());
+        };
+        Ok(AttachedFixedParsePlan {
+            expected,
+            capture,
+            spelling: fixed_pretty_spelling(&fixed.spelling, grammar.text_equivalence),
+            spacing: fixed.pretty_spacing,
+        })
+    };
+    let before = attachment
+        .before
+        .iter()
+        .zip(&correlation.sites)
+        .map(|(token_use, site)| plan_fixed(*token_use, *site))
+        .collect::<Result<Vec<_>, _>>()?;
+    let semantic_site = correlation.sites[correlation.semantic_index];
+    let machine = decisions
+        .container_machines()
+        .iter()
+        .find(|machine| machine.site() == semantic_site)
+        .ok_or_else(|| {
+            "an attachment semantic site lacks its direct container machine".to_owned()
+        })?;
+    if machine.operation() != ContainerOperation::Direct {
+        return Err("an attachment semantic site is not a direct frozen container".to_owned());
+    }
+    let semantic = Box::new(planned_container(machine, decisions, grammar, kind_count)?);
+    let after_start = correlation.semantic_index + 1;
+    let after = attachment
+        .after
+        .iter()
+        .zip(&correlation.sites[after_start..])
+        .map(|(token_use, site)| plan_fixed(*token_use, *site))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(FixedAttachmentParsePlan {
+        before,
+        semantic,
+        after,
+    })
 }
 
 fn planned_pratt_extenders(
@@ -5814,10 +6120,29 @@ fn render_node_pretty(
                         }
                     }
                     (
-                        ElementParseKind::Semantic { field, .. },
-                        PrettyElementBehavior::Semantic { repeated },
+                        ElementParseKind::Semantic {
+                            field,
+                            wrappers,
+                            container,
+                            ..
+                        },
+                        PrettyElementBehavior::Semantic {
+                            repeated,
+                            attachment,
+                        },
                     ) => {
                         let value = field_access(base.clone(), field.ident.as_ref(), field.index);
+                        if let Some(attachment) = attachment {
+                            return render_pretty_attached_semantic(
+                                facade,
+                                index,
+                                value,
+                                false,
+                                wrappers,
+                                container,
+                                attachment,
+                            );
+                        }
                         if *repeated {
                             quote! {
                                 context.with_child(#index, |context| {
@@ -5871,11 +6196,29 @@ fn render_node_pretty(
                                 }
                             }
                             (
-                                ElementParseKind::Semantic { .. },
-                                PrettyElementBehavior::Semantic { repeated },
+                                ElementParseKind::Semantic {
+                                    wrappers,
+                                    container,
+                                    ..
+                                },
+                                PrettyElementBehavior::Semantic {
+                                    repeated,
+                                    attachment,
+                                },
                             ) => {
                                 let binding = &bindings[binding_index];
                                 binding_index += 1;
+                                if let Some(attachment) = attachment {
+                                    return render_pretty_attached_semantic(
+                                        facade,
+                                        index,
+                                        quote!(#binding),
+                                        true,
+                                        wrappers,
+                                        container,
+                                        attachment,
+                                    );
+                                }
                                 if *repeated {
                                     quote! {
                                         context.with_child(#index, |context| {
@@ -5916,6 +6259,177 @@ fn render_node_pretty(
                 #body
             }
         }
+    }
+}
+
+fn render_pretty_attached_fixed(
+    index: usize,
+    fixed: &PrettyAttachedFixedBehavior,
+) -> proc_macro2::TokenStream {
+    let method = match fixed.spacing {
+        PrettySpacing::Tight => format_ident!("tight_sequence_token"),
+        PrettySpacing::Before => format_ident!("before_token"),
+        PrettySpacing::After => format_ident!("after_token"),
+        PrettySpacing::Around => format_ident!("token"),
+        PrettySpacing::Auto if matches!(fixed.spelling.as_str(), "(" | "[" | "{") => {
+            format_ident!("opening_token")
+        }
+        PrettySpacing::Auto if is_word_shaped(&fixed.spelling) => format_ident!("token"),
+        PrettySpacing::Auto => format_ident!("tight_token"),
+    };
+    let spelling = &fixed.spelling;
+    quote! {
+        context.with_child(#index, |context| {
+            let matched = context.matched_text();
+            context.#method(matched.as_deref().unwrap_or(#spelling))
+        })?;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_pretty_attached_semantic(
+    facade: &Ident,
+    element_index: usize,
+    value: proc_macro2::TokenStream,
+    value_is_reference: bool,
+    wrappers: &[FieldWrapper],
+    container: &PlannedContainer,
+    attachment: &PrettyAttachmentBehavior,
+) -> proc_macro2::TokenStream {
+    let render_unit = |terminal: proc_macro2::TokenStream| {
+        let before = attachment
+            .before
+            .iter()
+            .enumerate()
+            .map(|(index, fixed)| render_pretty_attached_fixed(index, fixed))
+            .collect::<Vec<_>>();
+        let semantic_index = before.len();
+        let semantic = quote! {
+            context.with_child(#semantic_index, |context| {
+                #facade::Pretty::pretty(#terminal, context)
+            })?;
+        };
+        let after = attachment
+            .after
+            .iter()
+            .enumerate()
+            .map(|(index, fixed)| {
+                render_pretty_attached_fixed(semantic_index + 1 + index, fixed)
+            })
+            .collect::<Vec<_>>();
+        let delimited = attachment
+            .before
+            .first()
+            .and_then(|open| delimiter_close(&open.spelling))
+            .is_some_and(|close| {
+                attachment
+                    .after
+                    .last()
+                    .is_some_and(|fixed| fixed.spelling == close)
+            });
+        if delimited {
+            let open = &before[0];
+            let leading = &before[1..];
+            let close = after
+                .last()
+                .expect("delimited attachment has a close token");
+            let trailing = &after[..after.len() - 1];
+            quote! {
+                #open
+                context.indented(|context| {
+                    context.soft_break("")?;
+                    #(#leading)*
+                    #semantic
+                    #(#trailing)*
+                    Ok(())
+                })?;
+                context.soft_break("")?;
+                #close
+            }
+        } else {
+            quote!(#(#before)* #semantic #(#after)*)
+        }
+    };
+
+    if matches!(container, PlannedContainer::Repeated { .. }) {
+        let repeat_index = wrappers
+            .iter()
+            .position(|wrapper| {
+                matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)
+            })
+            .expect("repeated attached field has a repetition wrapper");
+        let outer = &wrappers[..repeat_index];
+        let inner = &wrappers[repeat_index + 1..];
+        let item = render_terminal_reference(quote!(item), inner, true);
+        let unit = render_unit(item);
+        let render_collection = |collection: proc_macro2::TokenStream| {
+            let separator = attachment.separator.as_ref().map(|separator| {
+                quote! {
+                    if item_index + 1 < item_count {
+                        context.tight_token(#separator)?;
+                        context.soft_break(" ")?;
+                    }
+                }
+            });
+            quote! {
+                let item_count = (#collection).len();
+                for (item_index, item) in (#collection).iter().enumerate() {
+                    context.with_child(item_index, |context| { #unit Ok(()) })?;
+                    #separator
+                }
+            }
+        };
+        let outer_optional = outer
+            .iter()
+            .any(|wrapper| matches!(wrapper, FieldWrapper::Optional));
+        let body = if outer_optional {
+            let collection = render_optional_view_reference(value, outer, value_is_reference);
+            let rendered = render_collection(quote!(collection));
+            quote! {
+                if let Some(collection) = #collection {
+                    #rendered
+                }
+            }
+        } else {
+            let collection = render_terminal_reference(value, outer, value_is_reference);
+            render_collection(collection)
+        };
+        quote! {
+            context.with_child(#element_index, |context| {
+                #body
+                Ok(())
+            })?;
+        }
+    } else if wrappers
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+    {
+        let terminal = render_optional_view_reference(value, wrappers, value_is_reference);
+        let unit = render_unit(quote!(terminal));
+        quote! {
+            if let Some(terminal) = #terminal {
+                context.with_child(#element_index, |context| {
+                    context.with_child(0, |context| { #unit Ok(()) })
+                })?;
+            }
+        }
+    } else {
+        let terminal = render_terminal_reference(value, wrappers, value_is_reference);
+        let unit = render_unit(terminal);
+        quote! {
+            context.with_child(#element_index, |context| {
+                context.with_child(0, |context| { #unit Ok(()) })
+            })?;
+        }
+    }
+}
+
+fn delimiter_close(open: &str) -> Option<&'static str> {
+    match open {
+        "(" => Some(")"),
+        "[" => Some("]"),
+        "{" => Some("}"),
+        _ => None,
     }
 }
 
@@ -6436,6 +6950,7 @@ fn render_accessor(
             field,
             terminal,
             wrappers,
+            attachment,
             ..
         } => {
             let accessor = field.accessor.as_ref()?;
@@ -6451,11 +6966,18 @@ fn render_accessor(
                     repeat_index,
                     element_index,
                     variant,
+                    attachment.as_deref(),
                 ));
             }
             let is_optional = wrappers
                 .iter()
                 .any(|wrapper| matches!(wrapper, FieldWrapper::Optional));
+            let semantic_child = attachment
+                .as_ref()
+                .map(|attachment| attachment.before.len());
+            let semantic_cursor = |cursor: proc_macro2::TokenStream| {
+                semantic_child.map_or(cursor.clone(), |child| quote!((#cursor).child(#child)))
+            };
             if let Some((node, variant_ident, style)) = variant {
                 let binding = format_ident!("__recursa_field");
                 let active_pattern = field_binding_pattern(
@@ -6469,20 +6991,24 @@ fn render_accessor(
                 let value = if is_optional {
                     let optional_reference =
                         render_optional_view_reference(quote!(#binding), wrappers, true);
+                    let cursor =
+                        semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
                     quote! {
                         #optional_reference.map(|value| {
                             #facade::__private::NodeViewFactory::view(
                                 value,
-                                self.cursor.child(#element_index).child(0),
+                                #cursor,
                             )
                         })
                     }
                 } else {
                     let reference = render_terminal_reference(quote!(#binding), wrappers, true);
+                    let cursor =
+                        semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
                     quote! {
                         Some(#facade::__private::NodeViewFactory::view(
                             #reference,
-                            self.cursor.child(#element_index).child(0),
+                            #cursor,
                         ))
                     }
                 };
@@ -6499,6 +7025,7 @@ fn render_accessor(
             } else if is_optional {
                 let reference = field_access(quote!(self.value), field.ident.as_ref(), field.index);
                 let optional_reference = render_optional_view_reference(reference, wrappers, false);
+                let cursor = semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
                 Some(quote! {
                     pub fn #accessor(
                         &self,
@@ -6506,7 +7033,7 @@ fn render_accessor(
                         #optional_reference.map(|value| {
                             #facade::__private::NodeViewFactory::view(
                                 value,
-                                self.cursor.child(#element_index).child(0),
+                                #cursor,
                             )
                         })
                     }
@@ -6514,13 +7041,14 @@ fn render_accessor(
             } else {
                 let reference = field_access(quote!(self.value), field.ident.as_ref(), field.index);
                 let reference = render_terminal_reference(reference, wrappers, false);
+                let cursor = semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
                 Some(quote! {
                     pub fn #accessor(
                         &self,
                     ) -> impl #facade::NodeView<Value = #terminal> + 'view {
                         #facade::__private::NodeViewFactory::view(
                             #reference,
-                            self.cursor.child(#element_index).child(0),
+                            #cursor,
                         )
                     }
                 })
@@ -6539,6 +7067,7 @@ fn render_repeated_accessor(
     repeat_index: usize,
     element_index: usize,
     variant: Option<(&Ident, &Ident, ResolvedFieldStyle)>,
+    attachment: Option<&FixedAttachmentParsePlan>,
 ) -> proc_macro2::TokenStream {
     let outer = &wrappers[..repeat_index];
     let inner = &wrappers[repeat_index + 1..];
@@ -6546,13 +7075,28 @@ fn render_repeated_accessor(
     let project = render_terminal_reference(quote!(value), inner, true);
     let cursor = quote!(self.cursor.child(#element_index));
     let repeated = |collection: proc_macro2::TokenStream| {
-        quote! {
-            #facade::Repeated::new(
-                (#collection).as_slice(),
-                #cursor,
-                |value: &#item_type| -> &#terminal { #project },
-            )
-        }
+        attachment.map_or_else(
+            || {
+                quote! {
+                    #facade::Repeated::new(
+                        (#collection).as_slice(),
+                        #cursor,
+                        |value: &#item_type| -> &#terminal { #project },
+                    )
+                }
+            },
+            |attachment| {
+                let semantic_child = attachment.before.len();
+                quote! {
+                    #facade::Repeated::new_attached(
+                        (#collection).as_slice(),
+                        #cursor,
+                        |value: &#item_type| -> &#terminal { #project },
+                        #semantic_child,
+                    )
+                }
+            },
+        )
     };
     let outer_optional = outer
         .iter()
@@ -7069,6 +7613,8 @@ fn render_pratt_led_parse(
                 capture,
                 child_capture,
                 pratt_min_bp,
+                attachment,
+                ..
             } => {
                 definitions.push(render_semantic_parse(
                     plan,
@@ -7083,6 +7629,7 @@ fn render_pratt_led_parse(
                     *child_capture,
                     Some(owner),
                     *pratt_min_bp,
+                    attachment.as_deref(),
                 ));
                 values.push((field.clone(), value));
             }
@@ -7148,6 +7695,8 @@ fn render_sequence_parse(
                 capture,
                 child_capture,
                 pratt_min_bp,
+                attachment,
+                ..
             } => {
                 definitions.push(render_semantic_parse(
                     plan,
@@ -7162,6 +7711,7 @@ fn render_sequence_parse(
                     *child_capture,
                     pratt_owner,
                     *pratt_min_bp,
+                    attachment.as_deref(),
                 ));
                 values.push((field.clone(), value));
             }
@@ -7210,6 +7760,7 @@ fn render_semantic_parse(
     child_capture: PlannedCapturePolicy,
     pratt_owner: Option<&Ident>,
     pratt_min_bp: Option<u8>,
+    attachment: Option<&FixedAttachmentParsePlan>,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let capture = capture.render(facade);
@@ -7226,7 +7777,7 @@ fn render_semantic_parse(
             let (failure_definition, failure_value) =
                 render_follow_value(plan, &failure_name, required_failure);
             let wrapped = render_wrapped_value(quote!(parsed_value), wrappers);
-            let parse_child = match (pratt_owner, pratt_min_bp) {
+            let direct_child = match (pratt_owner, pratt_min_bp) {
                 (Some(owner), Some(min_bp)) => quote! {
                     context.parse_generated(&#follow_value, #child_capture, |context| {
                         #owner::__recursa_parse_bp(context, #min_bp)
@@ -7236,9 +7787,26 @@ fn render_semantic_parse(
                     context.parse_node::<#terminal>(&#follow_value, #child_capture)
                 },
             };
+            let (attachment_definitions, parse_child) = attachment.map_or_else(
+                || (quote!(), direct_child),
+                |attachment| {
+                    render_attachment_child(
+                        plan,
+                        node_index,
+                        unique_index,
+                        terminal,
+                        attachment,
+                        &follow_value,
+                        &child_capture,
+                        pratt_owner,
+                        pratt_min_bp,
+                    )
+                },
+            );
             quote! {
                 #follow_definition
                 #failure_definition
+                #attachment_definitions
                 let element_start = context.cursor();
                 let (parsed_value, child_occurrence) = match #parse_child {
                     Ok(parsed) => parsed.into_parts(),
@@ -7274,14 +7842,33 @@ fn render_semantic_parse(
                 render_follow_value(plan, &follow_name, child_follow);
             let wrapped = render_wrapped_value(quote!(parsed_value), wrappers);
             let absent = render_absent_value(wrappers);
+            let direct_child = quote!(context.parse_node::<#terminal>(
+                &#follow_value,
+                #child_capture,
+            ));
+            let (attachment_definitions, parse_child) = attachment.map_or_else(
+                || (quote!(), direct_child),
+                |attachment| {
+                    render_attachment_child(
+                        plan,
+                        node_index,
+                        unique_index,
+                        terminal,
+                        attachment,
+                        &follow_value,
+                        &child_capture,
+                        pratt_owner,
+                        pratt_min_bp,
+                    )
+                },
+            );
             quote! {
                 #selector_definition
                 #follow_definition
                 let (#value, #occurrence) = if context.next_is(&#selector_name) {
                     let element_start = context.cursor();
-                    let (parsed_value, child_occurrence) = context
-                        .parse_node::<#terminal>(&#follow_value, #child_capture)?
-                        .into_parts();
+                    #attachment_definitions
+                    let (parsed_value, child_occurrence) = #parse_child?.into_parts();
                     let element_span = context.consumed_span_from(element_start);
                     let occurrence = context.finish_group(
                         #capture,
@@ -7327,8 +7914,131 @@ fn render_semantic_parse(
             after_separator_failure.as_deref(),
             capture,
             child_capture,
+            attachment,
         ),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_attachment_child(
+    plan: &EmissionPlan,
+    node_index: usize,
+    unique_index: usize,
+    terminal: &Type,
+    attachment: &FixedAttachmentParsePlan,
+    outer_follow: &proc_macro2::TokenStream,
+    child_capture: &proc_macro2::TokenStream,
+    pratt_owner: Option<&Ident>,
+    pratt_min_bp: Option<u8>,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let facade = &plan.facade;
+    let PlannedContainer::Direct {
+        child_follow,
+        required_failure,
+    } = attachment.semantic.as_ref()
+    else {
+        unreachable!("attachment semantic sites are frozen direct containers")
+    };
+    let semantic_follow_name =
+        expected_static(node_index, unique_index, "attachment_semantic_follow");
+    let (semantic_follow_definition, semantic_follow_value) =
+        render_follow_value(plan, &semantic_follow_name, child_follow);
+    let semantic_failure_name =
+        expected_static(node_index, unique_index, "attachment_semantic_failure");
+    let (semantic_failure_definition, semantic_failure_value) =
+        render_follow_value(plan, &semantic_failure_name, required_failure);
+    let semantic_parse = match (pratt_owner, pratt_min_bp) {
+        (Some(owner), Some(min_bp)) => quote! {
+            context.parse_generated(&#semantic_follow_value, #child_capture, |context| {
+                #owner::__recursa_parse_bp(context, #min_bp)
+            })
+        },
+        _ => quote! {
+            context.parse_node::<#terminal>(&#semantic_follow_value, #child_capture)
+        },
+    };
+    let before = attachment
+        .before
+        .iter()
+        .enumerate()
+        .map(|(index, fixed)| {
+            let name = expected_static(
+                node_index,
+                unique_index,
+                &format!("attachment_before_{index}"),
+            );
+            let definition = render_expected_static(&name, &fixed.expected, plan, facade);
+            let occurrence = format_ident!("__recursa_attachment_before_{index}");
+            let capture = fixed.capture.render(facade);
+            (
+                quote! {
+                    #definition
+                    let #occurrence = context.parse_fixed(&#name, #capture)?;
+                },
+                occurrence,
+            )
+        })
+        .collect::<Vec<_>>();
+    let after = attachment
+        .after
+        .iter()
+        .enumerate()
+        .map(|(index, fixed)| {
+            let name = expected_static(
+                node_index,
+                unique_index,
+                &format!("attachment_after_{index}"),
+            );
+            let definition = render_expected_static(&name, &fixed.expected, plan, facade);
+            let occurrence = format_ident!("__recursa_attachment_after_{index}");
+            let capture = fixed.capture.render(facade);
+            (
+                quote! {
+                    #definition
+                    let #occurrence = context.parse_fixed(&#name, #capture)?;
+                },
+                occurrence,
+            )
+        })
+        .collect::<Vec<_>>();
+    let before_statements = before.iter().map(|(statement, _)| statement);
+    let before_occurrences = before.iter().map(|(_, occurrence)| occurrence);
+    let after_statements = after.iter().map(|(statement, _)| statement);
+    let after_occurrences = after.iter().map(|(_, occurrence)| occurrence);
+    let parse = quote! {
+        context.parse_generated(&#outer_follow, #child_capture, |context| {
+            #semantic_follow_definition
+            #semantic_failure_definition
+            let attachment_start = context.cursor();
+            #(#before_statements)*
+            let semantic_start = context.cursor();
+            let (parsed_value, semantic_occurrence) = match #semantic_parse {
+                Ok(parsed) => parsed.into_parts(),
+                Err(error)
+                    if context.cursor() == semantic_start
+                        && context.peek(0).map_or_else(
+                            || error.span().start() as usize == context.source().len(),
+                            |record| error.span() == record.span,
+                        ) =>
+                {
+                    return Err(context.unexpected(&#semantic_failure_value));
+                }
+                Err(error) => return Err(error),
+            };
+            #(#after_statements)*
+            let attachment_span = context.consumed_span_from(attachment_start);
+            context.finish_with_children(
+                parsed_value,
+                attachment_span,
+                [
+                    #(#before_occurrences,)*
+                    semantic_occurrence,
+                    #(#after_occurrences,)*
+                ],
+            )
+        })
+    };
+    (quote!(), parse)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7351,6 +8061,7 @@ fn render_repeated_parse(
     after_separator_failure: Option<&PlannedFollow>,
     capture: proc_macro2::TokenStream,
     child_capture: proc_macro2::TokenStream,
+    attachment: Option<&FixedAttachmentParsePlan>,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let repeat_index = wrappers
@@ -7382,10 +8093,28 @@ fn render_repeated_parse(
         || (quote!(), quote!()),
         |failure| render_follow_value(plan, &after_separator_name, failure),
     );
+    let direct_child = quote!(context.parse_node::<#terminal>(
+        &#child_follow_value,
+        #child_capture,
+    ));
+    let (attachment_definitions, parse_child) = attachment.map_or_else(
+        || (quote!(), direct_child),
+        |attachment| {
+            render_attachment_child(
+                plan,
+                node_index,
+                unique_index,
+                terminal,
+                attachment,
+                &child_follow_value,
+                &child_capture,
+                None,
+                None,
+            )
+        },
+    );
     let parse_item = quote! {
-        let (parsed_value, child_occurrence) = context
-            .parse_node::<#terminal>(&#child_follow_value, #child_capture)?
-            .into_parts();
+        let (parsed_value, child_occurrence) = #parse_child?.into_parts();
         parsed_values.push(#wrapped_item);
         child_occurrences.push(child_occurrence);
     };
@@ -7504,6 +8233,7 @@ fn render_repeated_parse(
         #minimum_definition
         #continuation_definition
         #after_separator_definition
+        #attachment_definitions
         let element_start = context.cursor();
         let mut parsed_values = Vec::new();
         let mut child_occurrences = #facade::__private::Occurrences::new();
@@ -8390,7 +9120,7 @@ struct B;
             .expect("the trait fixture contains Pretty behavior");
         match element {
             PrettyElementBehavior::Fixed { spelling } => spelling.push_str("-corrupt"),
-            PrettyElementBehavior::Semantic { repeated } => *repeated = !*repeated,
+            PrettyElementBehavior::Semantic { repeated, .. } => *repeated = !*repeated,
         }
         assert_plan_family_is_unselectable(package.path(), &pretty, "Pretty");
 

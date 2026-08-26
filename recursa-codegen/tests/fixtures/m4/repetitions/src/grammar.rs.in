@@ -33,10 +33,19 @@ recursa::tokens! {
         MIXED => "mixed",
         MIX_OFF => "off",
         MIX_ON => "on",
+        ATTACHED_OPTIONAL => "attachedoptional",
+        ATTACHED_MANY => "attachedmany",
+        ATTACHED_NONEMPTY => "attachednonempty",
     }
     punctuation {
         COMMA => ",",
         DOT => ".",
+        LPAREN => "(",
+        RPAREN => ")",
+        LBRACKET => "[",
+        RBRACKET => "]",
+        LBRACE => "{",
+        RBRACE => "}",
     }
 }
 
@@ -209,4 +218,27 @@ pub enum Choice<'input> {
 pub struct Strict<'input> {
     #[sep(COMMA)]
     pub values: recursa::Vec1<Box<Item<'input>>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(ATTACHED_OPTIONAL, this)]
+pub struct AttachedOptional<'input> {
+    #[tok(LPAREN, this, RPAREN)]
+    pub value: Option<Box<Item<'input>>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(ATTACHED_MANY, this)]
+pub struct AttachedMany<'input> {
+    #[tok(LBRACKET, this, RBRACKET)]
+    #[sep(COMMA, trailing)]
+    pub values: Vec<Box<Item<'input>>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(ATTACHED_NONEMPTY, this)]
+pub struct AttachedNonEmpty<'input> {
+    #[tok(LBRACE, this, RBRACE)]
+    #[sep(COMMA, trailing)]
+    pub values: Option<recursa::Vec1<Box<Item<'input>>>>,
 }

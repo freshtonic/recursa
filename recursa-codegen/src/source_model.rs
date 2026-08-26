@@ -234,9 +234,22 @@ pub(crate) enum GrammarElement {
         id: GrammarElementId,
         resolved_field: ResolvedFieldId,
         name: Option<String>,
+        attachment: Option<FixedTokenAttachment>,
         separator: Option<Separator>,
         site: SourceSite,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FixedTokenAttachment {
+    pub(crate) before: Vec<AttachedFixedToken>,
+    pub(crate) after: Vec<AttachedFixedToken>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AttachedFixedToken {
+    pub(crate) token_use: TokenUseId,
+    pub(crate) site: SourceSite,
 }
 
 impl GrammarElement {
@@ -262,6 +275,13 @@ impl GrammarElement {
     pub(crate) fn separator(&self) -> Option<&Separator> {
         match self {
             Self::SemanticField { separator, .. } => separator.as_ref(),
+            Self::FixedToken { .. } => None,
+        }
+    }
+
+    pub(crate) fn attachment(&self) -> Option<&FixedTokenAttachment> {
+        match self {
+            Self::SemanticField { attachment, .. } => attachment.as_ref(),
             Self::FixedToken { .. } => None,
         }
     }
@@ -801,6 +821,7 @@ impl SourceModelBuilder<'_> {
                 id: GrammarElementId::next(0),
                 resolved_field: resolved_field.id,
                 name: field.ident.as_ref().map(|ident| ident.unraw().to_string()),
+                attachment: None,
                 separator: SeparatorPlanner::lower(
                     &self.resolved,
                     &self.semantic_facts,
@@ -1466,7 +1487,7 @@ impl PositionalTokenPlanner {
         diagnostics: &mut Vec<SourceModelDiagnostic>,
         origin: SourceOrigin,
         metas: &[Meta],
-        body: Vec<GrammarElement>,
+        mut body: Vec<GrammarElement>,
         attachment: TokenAttachment,
     ) -> Vec<GrammarElement> {
         Self::reject_legacy_syntax(resolved, origin, metas, diagnostics);
@@ -1553,6 +1574,45 @@ impl PositionalTokenPlanner {
         }
 
         if !this_sites.is_empty() {
+            if matches!(attachment, TokenAttachment::Field) {
+                let mut before = Vec::new();
+                let mut after = Vec::new();
+                let mut seen_this = false;
+                for entry in sequence.0 {
+                    match entry {
+                        TokenSequenceEntry::This(_) => seen_this = true,
+                        token => {
+                            if let Some(element) =
+                                tokens.fixed_element(resolved, diagnostics, origin, token)
+                            {
+                                let GrammarElement::FixedToken {
+                                    token_use, site, ..
+                                } = element
+                                else {
+                                    unreachable!("fixed-element lowering returns fixed syntax")
+                                };
+                                let attached = AttachedFixedToken { token_use, site };
+                                if seen_this {
+                                    after.push(attached);
+                                } else {
+                                    before.push(attached);
+                                }
+                            }
+                        }
+                    }
+                }
+                let [
+                    GrammarElement::SemanticField {
+                        attachment: field_attachment,
+                        ..
+                    },
+                ] = body.as_mut_slice()
+                else {
+                    unreachable!("a field attachment owns exactly one semantic element")
+                };
+                *field_attachment = Some(FixedTokenAttachment { before, after });
+                return body;
+            }
             let mut output = Vec::new();
             for entry in sequence.0 {
                 match entry {
@@ -2508,7 +2568,16 @@ fn assign_ordered_elements(
             GrammarElement::FixedToken { token_use, .. } => {
                 *token_use = use_remap[token_use.index()];
             }
-            GrammarElement::SemanticField { separator, .. } => {
+            GrammarElement::SemanticField {
+                attachment,
+                separator,
+                ..
+            } => {
+                if let Some(attachment) = attachment {
+                    for fixed in attachment.before.iter_mut().chain(&mut attachment.after) {
+                        fixed.token_use = use_remap[fixed.token_use.index()];
+                    }
+                }
                 if let Some(separator) = separator {
                     separator.token_use = use_remap[separator.token_use.index()];
                 }
@@ -2698,6 +2767,55 @@ struct Present;
                 .map(|definition| definition.name.as_str())
                 .collect::<Vec<_>>(),
             ["(", ")", "PRESENT"],
+        );
+    }
+
+    #[test]
+    fn preserves_field_positional_syntax_as_one_semantic_attachment() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+
+#[derive(recursa::Node)]
+struct Root {
+    #[tok("?", this, "!")]
+    value: Option<Present>,
+}
+
+#[derive(recursa::Node)]
+#[tok("PRESENT")]
+struct Present;
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let model = completed(report);
+        assert_eq!(
+            model.nodes[0]
+                .elements()
+                .iter()
+                .map(|element| element.kind())
+                .collect::<Vec<_>>(),
+            [GrammarElementKind::SemanticField],
+        );
+        let attachment = model.nodes[0].elements()[0]
+            .attachment()
+            .expect("field positional syntax is retained as an attachment");
+        assert_eq!(attachment.before.len(), 1);
+        assert_eq!(attachment.after.len(), 1);
+        assert_eq!(
+            model.token_definitions[model.token_uses[attachment.before[0].token_use.index()]
+                .definition
+                .index()]
+            .name,
+            "?",
+        );
+        assert_eq!(
+            model.token_definitions[model.token_uses[attachment.after[0].token_use.index()]
+                .definition
+                .index()]
+            .name,
+            "!",
         );
     }
 
@@ -3518,20 +3636,22 @@ enum Expr {
         );
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let model = completed(report);
+        let elements = &model.nodes[0].pratt_variants()[0].common.elements;
         assert_eq!(
-            completed(report).nodes[0].pratt_variants()[0]
-                .common
-                .elements
+            elements
                 .iter()
-                .map(|element| element.kind())
+                .map(GrammarElement::kind)
                 .collect::<Vec<_>>(),
             [
                 GrammarElementKind::FixedToken,
-                GrammarElementKind::FixedToken,
                 GrammarElementKind::SemanticField,
-                GrammarElementKind::FixedToken,
             ],
         );
+        let attachment = elements[1]
+            .attachment()
+            .expect("Pratt operand keeps its positional attachment");
+        assert_eq!((attachment.before.len(), attachment.after.len()), (1, 1));
     }
 
     #[test]

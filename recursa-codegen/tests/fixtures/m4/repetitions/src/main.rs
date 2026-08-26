@@ -344,6 +344,57 @@ fn assert_repetition_behavior() {
     assert_eq!(synthetic.source(), None);
     assert_eq!(synthetic.root().span(), None);
     assert_eq!(synthetic.root().values().span(), None);
+
+    let attached_absent = parse_spanned!(grammar::AttachedOptional<'_>, "attachedoptional");
+    assert!(attached_absent.root().value().is_none());
+    assert_eq!(attached_absent.render(), "attachedoptional");
+
+    let attached_present =
+        parse_spanned!(grammar::AttachedOptional<'_>, "attachedoptional (alpha)");
+    assert_eq!(attached_present.render(), "attachedoptional(alpha)");
+    assert_eq!(
+        attached_present
+            .root()
+            .value()
+            .and_then(|value| value.span()),
+        recursa::Span::new(18, 23).ok(),
+    );
+    let rendered = attached_present.render();
+    let reparsed = parse_spanned!(grammar::AttachedOptional<'_>, rendered.as_str());
+    assert_eq!(reparsed.render(), rendered);
+
+    let attached_many_empty = parse_spanned!(grammar::AttachedMany<'_>, "attachedmany");
+    assert!(attached_many_empty.root().values().is_empty());
+    assert_eq!(attached_many_empty.render(), "attachedmany");
+
+    let attached_many =
+        parse_spanned!(grammar::AttachedMany<'_>, "attachedmany [one],[two],");
+    assert_eq!(attached_many.root().values().len(), 2);
+    assert_eq!(
+        attached_many.root().values().get(0).unwrap().span(),
+        recursa::Span::new(14, 17).ok(),
+    );
+    assert_eq!(
+        attached_many.root().values().get(1).unwrap().span(),
+        recursa::Span::new(20, 23).ok(),
+    );
+    assert_eq!(attached_many.render(), "attachedmany[one], [two]");
+    let rendered = attached_many.render();
+    let reparsed = parse_spanned!(grammar::AttachedMany<'_>, rendered.as_str());
+    assert_eq!(reparsed.render(), rendered);
+
+    let attached_nonempty_absent =
+        parse_spanned!(grammar::AttachedNonEmpty<'_>, "attachednonempty");
+    assert!(attached_nonempty_absent.root().values().is_none());
+    let attached_nonempty = parse_spanned!(
+        grammar::AttachedNonEmpty<'_>,
+        "attachednonempty {left},{right},"
+    );
+    assert_eq!(attached_nonempty.root().values().unwrap().len(), 2);
+    assert_eq!(
+        attached_nonempty.render(),
+        "attachednonempty{left}, {right}"
+    );
 }
 
 fn main() {

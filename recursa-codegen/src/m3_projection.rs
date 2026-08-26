@@ -127,7 +127,9 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
         let source = source_field_name(lowered, correlation.application, correlation.field);
         let target = match correlation.lowered {
             MaterializedFieldLowering::ParseSite(site) => {
-                format!("parse-site({})", semantic_site_name(site, grammar))
+                let site =
+                    projected_field_site(lowered, correlation.application, correlation.field, site);
+                format!("parse-site({})", projected_site_name(site, grammar))
             }
             MaterializedFieldLowering::PrattLhs { owner, variant } => format!(
                 "pratt-lhs(owner={}, variant={})",
@@ -143,6 +145,7 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
         .types
         .iter()
         .enumerate()
+        .filter(|(_, description)| !is_attachment_type(description))
         .map(|(index, description)| (description.name.as_str(), index))
         .collect::<Vec<_>>();
     facts.sort_unstable();
@@ -176,60 +179,183 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
         .iter()
         .enumerate()
     {
-        writeln!(
-            rendered,
-            "follow {} {}",
-            semantic_site_name(SiteId::new(index as u32), grammar),
-            render_follow_recipe(recipe, grammar),
-        )
-        .expect("writing to a String cannot fail");
-    }
-    for machine in output.decisions().container_machines() {
-        writeln!(
-            rendered,
-            "container {} {:?} element=[{}] separator={} separator-first=[{}] trailing={} stop={}",
-            semantic_site_name(machine.site(), grammar),
-            machine.operation(),
-            render_positions(machine.element_first(), grammar),
-            machine
-                .separator()
-                .map_or("-", |separator| grammar.types[separator.type_id.index()]
-                    .name
-                    .as_str()),
-            render_positions(machine.separator_first(), grammar),
-            machine.optional_trailing(),
-            render_follow_recipe(machine.stop(), grammar),
-        )
-        .expect("writing to a String cannot fail");
-        for transition in machine.transitions() {
+        let site = SiteId::new(index as u32);
+        if let Some((outer, _)) = attachment_outer_for_inner(site, grammar) {
+            if direct_attachment_unit(outer, grammar).is_some() {
+                continue;
+            }
             writeln!(
                 rendered,
-                "  transition {:?} --{:?}/{}--> {:?}",
-                transition.from(),
-                transition.action(),
-                render_expected(transition.selector(), grammar),
-                transition.to(),
+                "follow {} {}",
+                projected_site_name(site, grammar),
+                render_follow_recipe(recipe, grammar),
+            )
+            .expect("writing to a String cannot fail");
+            continue;
+        }
+        if let Some(inner) = direct_attachment_unit(site, grammar) {
+            for inner_site in inner {
+                writeln!(
+                    rendered,
+                    "follow {} {}",
+                    projected_site_name(*inner_site, grammar),
+                    render_follow_recipe(
+                        &output.decisions().follow_recipes_by_site()[inner_site.index()],
+                        grammar,
+                    ),
+                )
+                .expect("writing to a String cannot fail");
+            }
+        } else {
+            writeln!(
+                rendered,
+                "follow {} {}",
+                semantic_site_name(site, grammar),
+                render_follow_recipe(recipe, grammar),
             )
             .expect("writing to a String cannot fail");
         }
     }
+    for machine in output.decisions().container_machines() {
+        if let Some((outer, _)) = attachment_outer_for_inner(machine.site(), grammar) {
+            if direct_attachment_unit(outer, grammar).is_some() {
+                continue;
+            }
+            render_container_machine(&mut rendered, machine, grammar, true);
+            continue;
+        }
+        if let Some(inner) = direct_attachment_unit(machine.site(), grammar) {
+            for inner_site in inner {
+                let inner_machine = output
+                    .decisions()
+                    .container_machines()
+                    .iter()
+                    .find(|candidate| candidate.site() == *inner_site)
+                    .expect("attachment unit site has a frozen container machine");
+                render_container_machine(&mut rendered, inner_machine, grammar, true);
+            }
+            continue;
+        }
+        render_container_machine(&mut rendered, machine, grammar, false);
+    }
 
     rendered.push_str("\n[failures]\n");
     for edge in output.decisions().failure_edges() {
-        let site_name = edge
-            .site()
-            .map_or_else(|| "-".to_owned(), |site| semantic_site_name(site, grammar));
+        if let Some(site) = edge.site()
+            && let Some((outer, _)) = attachment_outer_for_inner(site, grammar)
+        {
+            if direct_attachment_unit(outer, grammar).is_none() {
+                render_failure_edge(&mut rendered, edge, grammar, true);
+            }
+            continue;
+        }
+        if let Some(site) = edge.site()
+            && let Some(inner) = direct_attachment_unit(site, grammar)
+        {
+            for inner_site in inner {
+                for inner_edge in output
+                    .decisions()
+                    .failure_edges()
+                    .iter()
+                    .filter(|candidate| candidate.site() == Some(*inner_site))
+                {
+                    render_failure_edge(&mut rendered, inner_edge, grammar, true);
+                }
+            }
+            continue;
+        }
+        render_failure_edge(&mut rendered, edge, grammar, false);
+    }
+    rendered
+}
+
+fn projected_field_site(
+    lowered: &LoweredGrammar,
+    application: crate::materialization::MaterializedApplicationId,
+    field: crate::resolution::ResolvedFieldId,
+    outer: SiteId,
+) -> SiteId {
+    let Some(inner) = direct_attachment_unit(outer, &lowered.grammar) else {
+        return outer;
+    };
+    let before = lowered.applications[application.index()]
+        .parsed_fields()
+        .find_map(|element| match element {
+            crate::materialization::MaterializedElement::SemanticField {
+                field: candidate,
+                attachment: Some(attachment),
+                ..
+            } if *candidate == field => Some(attachment.before.len()),
+            _ => None,
+        })
+        .expect("an attachment field correlation retains materialized attachment syntax");
+    inner[before]
+}
+
+fn render_container_machine(
+    rendered: &mut String,
+    machine: &crate::decision_plan::ContainerMachine,
+    grammar: &GrammarDescription,
+    projected_attachment: bool,
+) {
+    writeln!(
+        rendered,
+        "container {} {:?} element=[{}] separator={} separator-first=[{}] trailing={} stop={}",
+        if projected_attachment {
+            projected_site_name(machine.site(), grammar)
+        } else {
+            semantic_site_name(machine.site(), grammar)
+        },
+        machine.operation(),
+        render_positions(machine.element_first(), grammar),
+        machine
+            .separator()
+            .map_or("-", |separator| grammar.types[separator.type_id.index()]
+                .name
+                .as_str()),
+        render_positions(machine.separator_first(), grammar),
+        machine.optional_trailing(),
+        render_follow_recipe(machine.stop(), grammar),
+    )
+    .expect("writing to a String cannot fail");
+    for transition in machine.transitions() {
         writeln!(
             rendered,
-            "failure {} {} {:?} expected={}",
-            grammar.types[edge.owner().index()].name,
-            site_name,
-            edge.kind(),
-            render_expected(edge.expected(), grammar),
+            "  transition {:?} --{:?}/{}--> {:?}",
+            transition.from(),
+            transition.action(),
+            render_expected(transition.selector(), grammar),
+            transition.to(),
         )
         .expect("writing to a String cannot fail");
     }
-    rendered
+}
+
+fn render_failure_edge(
+    rendered: &mut String,
+    edge: &crate::decision_plan::FailureEdge,
+    grammar: &GrammarDescription,
+    projected_attachment: bool,
+) {
+    let site_name = edge.site().map_or_else(
+        || "-".to_owned(),
+        |site| {
+            if projected_attachment {
+                projected_site_name(site, grammar)
+            } else {
+                semantic_site_name(site, grammar)
+            }
+        },
+    );
+    writeln!(
+        rendered,
+        "failure {} {} {:?} expected={}",
+        projected_owner_name(edge.owner(), grammar),
+        site_name,
+        edge.kind(),
+        render_expected(edge.expected(), grammar),
+    )
+    .expect("writing to a String cannot fail");
 }
 
 fn source_field_name(
@@ -321,7 +447,7 @@ fn render_shape(owner: crate::TypeId, shape: &TypeShape, grammar: &GrammarDescri
             "sequence({})",
             sites
                 .iter()
-                .map(|site| render_site(*site, grammar))
+                .flat_map(|site| render_projected_sites(*site, grammar))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -335,7 +461,7 @@ fn render_shape(owner: crate::TypeId, shape: &TypeShape, grammar: &GrammarDescri
                     alternative
                         .sites
                         .iter()
-                        .map(|site| render_site(*site, grammar))
+                        .flat_map(|site| render_projected_sites(*site, grammar))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ))
@@ -353,7 +479,7 @@ fn render_shape(owner: crate::TypeId, shape: &TypeShape, grammar: &GrammarDescri
                     variant
                         .sites
                         .iter()
-                        .map(|site| render_site(*site, grammar))
+                        .flat_map(|site| render_projected_sites(*site, grammar))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ))
@@ -364,6 +490,18 @@ fn render_shape(owner: crate::TypeId, shape: &TypeShape, grammar: &GrammarDescri
     .replace(
         &format!("type[{}]", owner.index()),
         &grammar.types[owner.index()].name,
+    )
+}
+
+fn render_projected_sites(site: SiteId, grammar: &GrammarDescription) -> Vec<String> {
+    direct_attachment_unit(site, grammar).map_or_else(
+        || vec![render_site(site, grammar)],
+        |inner| {
+            inner
+                .iter()
+                .map(|inner| render_site(*inner, grammar))
+                .collect()
+        },
     )
 }
 
@@ -381,11 +519,31 @@ fn render_site(site: SiteId, grammar: &GrammarDescription) -> String {
         ContainerCardinality::OneOrMore => "one-or-more",
         ContainerCardinality::OptionalOneOrMore => "optional-one-or-more",
     };
+    let target = &grammar.types[site.target.index()];
+    let target_name = if is_attachment_type(target) {
+        let TypeShape::Sequence { sites } = &target.shape else {
+            unreachable!("attachment types are synthetic sequences")
+        };
+        format!(
+            "attachment({})",
+            sites
+                .iter()
+                .map(
+                    |site| grammar.types[grammar.sites[site.index()].target.index()]
+                        .name
+                        .as_str()
+                )
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    } else {
+        target.name.clone()
+    };
     format!(
         "{}:{} target={} cardinality={} separator={} min_bp={}",
-        semantic_site_name(site_id, grammar),
-        grammar.types[site.owner.index()].name,
-        grammar.types[site.target.index()].name,
+        projected_site_name(site_id, grammar),
+        projected_owner_name(site.owner, grammar),
+        target_name,
         cardinality,
         semantics.separator.map_or("-", |separator| {
             grammar.types[separator.type_id.index()].name.as_str()
@@ -492,6 +650,77 @@ fn render_expected(expected: &ExpectedRecipe, grammar: &GrammarDescription) -> S
 
 fn declaration_name(id: crate::DeclId, grammar: &GrammarDescription) -> &str {
     &grammar.declarations[id.index()].name
+}
+
+fn is_attachment_type(description: &crate::TypeDescription) -> bool {
+    description.name.ends_with("::__recursa_attachment")
+}
+
+fn direct_attachment_unit(site: SiteId, grammar: &GrammarDescription) -> Option<&[SiteId]> {
+    let site = &grammar.sites[site.index()];
+    if site
+        .container
+        .semantics()
+        .is_none_or(|semantics| semantics.cardinality != ContainerCardinality::One)
+    {
+        return None;
+    }
+    let target = &grammar.types[site.target.index()];
+    if !is_attachment_type(target) {
+        return None;
+    }
+    let TypeShape::Sequence { sites } = &target.shape else {
+        unreachable!("attachment types are synthetic sequences")
+    };
+    Some(sites)
+}
+
+fn attachment_outer_for_inner(
+    site: SiteId,
+    grammar: &GrammarDescription,
+) -> Option<(SiteId, usize)> {
+    let owner = grammar.sites[site.index()].owner;
+    is_attachment_type(&grammar.types[owner.index()]).then(|| {
+        let outer = grammar
+            .sites
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| candidate.target == owner)
+            .map(|(index, _)| SiteId::new(index as u32))
+            .expect("an attachment unit has one authored outer site");
+        let TypeShape::Sequence { sites } = &grammar.types[owner.index()].shape else {
+            unreachable!("attachment types are synthetic sequences")
+        };
+        let index = sites
+            .iter()
+            .position(|candidate| *candidate == site)
+            .expect("attachment owner contains its inner site");
+        (outer, index)
+    })
+}
+
+fn projected_site_name(site: SiteId, grammar: &GrammarDescription) -> String {
+    let Some((outer, inner_index)) = attachment_outer_for_inner(site, grammar) else {
+        return semantic_site_name(site, grammar);
+    };
+    let outer_name = semantic_site_name(outer, grammar);
+    let Some((prefix, index)) = outer_name.rsplit_once("::element") else {
+        return format!("{outer_name}::attachment-element{inner_index}");
+    };
+    let base = index.parse::<usize>().unwrap_or(0);
+    format!("{prefix}::element{}", base + inner_index)
+}
+
+fn projected_owner_name(owner: crate::TypeId, grammar: &GrammarDescription) -> &str {
+    if !is_attachment_type(&grammar.types[owner.index()]) {
+        return &grammar.types[owner.index()].name;
+    }
+    grammar
+        .sites
+        .iter()
+        .find(|site| site.target == owner)
+        .map(|site| grammar.types[site.owner.index()].name.as_str())
+        .expect("an attachment unit has one authored owner")
 }
 
 fn semantic_site_name(site: SiteId, grammar: &GrammarDescription) -> String {
