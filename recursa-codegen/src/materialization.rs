@@ -2797,6 +2797,30 @@ struct Attached<T> {
                 && diagnostic.message.contains("closed Pretty boundary")
         }));
 
+        let mixed_case_report = materialize(resolve(
+            r#"
+recursa::grammar! {
+    module = crate,
+    derives(Pretty),
+    keyword_matching = ascii_insensitive,
+}
+recursa::tokens! {
+    keywords { WORD => "word" }
+    punctuation { COLON => ":" }
+    lexer_tokens { MIXED_MERGED => r"WoRd:" }
+}
+#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
+#[derive(recursa::Node)]
+struct Attached<T> { #[tok(WORD, this)] value: T }
+#[derive(recursa::Node)] struct Root { value: Attached<Colon> }
+"#,
+        ));
+        assert!(mixed_case_report.lowered.is_none());
+        assert!(mixed_case_report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == MaterializationDiagnosticKind::UnsafePrettyBoundary
+                && diagnostic.message.contains("closed Pretty boundary")
+        }));
+
         let trivia_report = materialize(resolve(
             r#"
 recursa::grammar! { module = crate, derives(Pretty) }
@@ -2815,10 +2839,29 @@ struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
                 && diagnostic.message.contains("closed Pretty boundary")
         }));
 
-        let trivia_safe_report = materialize(resolve(
+        let trivia_narrow_report = materialize(resolve(
             r#"
 recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! { ignore = r"[ ]+" }
+#[derive(recursa::Node)]
+struct Number<'input> { #[lex(pattern = r"[0-9]+")] text: NumberText<'input> }
+#[derive(recursa::Node)]
+struct Name<'input> { #[lex(pattern = r"[A-Za-z]+")] text: NameText<'input> }
+#[derive(recursa::Node)] struct Pair<A, B> { left: A, right: B }
+#[derive(recursa::Node)]
+struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
+"#,
+        ));
+        assert!(trivia_narrow_report.lowered.is_none());
+        assert!(trivia_narrow_report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == MaterializationDiagnosticKind::UnsafePrettyBoundary
+                && diagnostic.message.contains("closed Pretty boundary")
+        }));
+
+        let trivia_safe_report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { ignore = r"[ \t\r\n]+" }
 #[derive(recursa::Node)]
 struct Number<'input> { #[lex(pattern = r"[0-9]+")] text: NumberText<'input> }
 #[derive(recursa::Node)]
