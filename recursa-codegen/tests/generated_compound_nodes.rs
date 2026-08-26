@@ -137,6 +137,27 @@ fn diagrams_are_published_in_aggregate_and_declaration_local_rustdoc() {
         !aggregate.1.contains("struct.Hidden.html"),
         "the public aggregate must not link a private Node"
     );
+    assert!(
+        aggregate
+            .1
+            .contains("Pair ::= \"pair\" grammar::Label Option&lt;grammar::Count&gt;"),
+        "tuple fields must use referenced frozen terminal names:\n{}",
+        aggregate.1,
+    );
+    assert!(
+        aggregate.1.contains(
+            "ManyLabels ::= \"left\" Vec&lt;grammar::Label&gt; separated by \":\" (optional trailing \":\")"
+        ),
+        "zero-or-more separator semantics must be rendered:\n{}",
+        aggregate.1,
+    );
+    assert!(
+        aggregate.1.contains(
+            "SomeCounts ::= \"right\" Option&lt;Vec1&lt;grammar::Count&gt;&gt; separated by \":\""
+        ),
+        "OptionalOneOrMore semantics must remain distinct:\n{}",
+        aggregate.1,
+    );
 
     let record = docs
         .iter()
@@ -219,6 +240,37 @@ fn a_core_generation_does_not_claim_an_unselected_diagram_payload() {
     assert!(!output.status.success(), "unselected diagrams must fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(stderr.matches("error: error[RCA9005]").count(), 1);
+}
+
+#[test]
+fn an_unused_generator_diagram_capability_does_not_change_core_identity() {
+    let core = scaffold_fixture();
+    let output = run_fixture(&core);
+    assert!(
+        output.status.success(),
+        "core fixture failed\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let core_identity = only_generation_identity(&core);
+
+    let capable = scaffold_fixture();
+    let manifest = capable.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read fixture manifest");
+    fs::write(
+        manifest,
+        source.replace(
+            "recursa-codegen = { path = \"",
+            "recursa-codegen = { features = [\"diagrams\"], path = \"",
+        ),
+    )
+    .expect("enable the unused generator capability");
+    let output = run_fixture_unlocked(&capable);
+    assert!(
+        output.status.success(),
+        "capable core fixture failed\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(core_identity, only_generation_identity(&capable));
 }
 
 #[test]
@@ -802,4 +854,15 @@ fn generation_directories(root: &Path) -> BTreeSet<PathBuf> {
         }
     }
     found
+}
+
+fn only_generation_identity(package: &TempDir) -> std::ffi::OsString {
+    let generations = generation_directories(&target_dir(package));
+    assert_eq!(generations.len(), 1, "generations={generations:?}");
+    generations
+        .iter()
+        .next()
+        .and_then(|path| path.file_name())
+        .expect("published Generation identity")
+        .to_owned()
 }
