@@ -1,6 +1,20 @@
 use recursa::{HasSpan as _, NodeView as _, Pretty as _};
 use recursa_generated_repetitions::grammar;
 
+fn assert_mapping(
+    source_map: &recursa::SourceMap,
+    output: std::ops::Range<usize>,
+    source: recursa::Span,
+) {
+    assert!(
+        source_map
+            .entries()
+            .iter()
+            .any(|entry| entry.output() == output && entry.source() == source),
+        "missing exact Pretty mapping {source:?}",
+    );
+}
+
 macro_rules! parse_spanned {
     ($ty:ty, $source:expr) => {{
         let lexed = grammar::lex($source);
@@ -199,10 +213,30 @@ fn assert_capture_configuration(mode: CaptureMode) {
     assert_eq!(values.get(0).unwrap().span(), None);
 
     let program = parse_spanned!(grammar::MixedProgram, "off;on;off");
-    assert_eq!(program.render(), "OFF\n; on\n; OFF");
+    let (rendered_program, program_map) = program.render_mapped();
+    assert_eq!(rendered_program, "OFF\n; on\n; OFF");
+    assert_mapping(
+        &program_map,
+        4..5,
+        recursa::Span::new(3, 4).expect("real span"),
+    );
+    assert_mapping(
+        &program_map,
+        9..10,
+        recursa::Span::new(6, 7).expect("real span"),
+    );
 
-    let words = parse_spanned!(grammar::WordSeparated<'_>, "alpha or beta");
-    assert_eq!(words.render(), "alpha OR beta");
+    let words = parse_spanned!(grammar::WordSeparated<'_>, "alpha oR beta");
+    assert_eq!(words.source().is_some(), mode != CaptureMode::Off);
+    let (rendered_words, words_map) = words.render_mapped();
+    assert_eq!(rendered_words, "alpha oR beta");
+    assert_mapping(
+        &words_map,
+        6..8,
+        recursa::Span::new(6, 8).expect("real span"),
+    );
+    let reparsed_words = parse_spanned!(grammar::WordSeparated<'_>, rendered_words.as_str());
+    assert_eq!(reparsed_words.render(), rendered_words);
 
     let choices = parse_spanned!(grammar::OrdinaryChoices, "off on off");
     assert_eq!(choices.render(), "OFF on OFF");
@@ -220,17 +254,94 @@ fn assert_capture_configuration(mode: CaptureMode) {
     let leading = parse_spanned!(grammar::LeadingPretty<'_>, "marks alpha,beta");
     let marks = if mode == CaptureMode::Off { "MARKS" } else { "marks" };
     assert_eq!(leading.render(), format!("{marks} alpha, beta,"));
+    let (mapped_leading, leading_map) = leading.render_mapped();
+    assert_eq!(mapped_leading, leading.render());
+    assert_mapping(
+        &leading_map,
+        11..12,
+        recursa::Span::new(11, 12).expect("real span"),
+    );
+    assert_mapping(&leading_map, 17..18, recursa::Span::SYNTHETIC);
     assert_eq!(
         leading.render_with(recursa::PrettyConfig::new(12, 2)),
         format!("{marks} alpha\n, beta,")
     );
+    let (broken_leading, broken_leading_map) =
+        leading.render_mapped_with(recursa::PrettyConfig::new(12, 2));
+    assert_eq!(broken_leading, format!("{marks} alpha\n, beta,"));
+    assert_mapping(
+        &broken_leading_map,
+        12..13,
+        recursa::Span::new(11, 12).expect("real span"),
+    );
+    assert_mapping(&broken_leading_map, 18..19, recursa::Span::SYNTHETIC);
+    let reparsed_leading =
+        parse_spanned!(grammar::LeadingPretty<'_>, mapped_leading.as_str());
+    assert_eq!(reparsed_leading.render(), mapped_leading);
+    let rerendered_leading = reparsed_leading.render();
+    let reparsed_leading_again =
+        parse_spanned!(grammar::LeadingPretty<'_>, rerendered_leading.as_str());
+    assert_eq!(reparsed_leading_again.render(), rerendered_leading);
+
+    let captured_trailing =
+        parse_spanned!(grammar::LeadingPretty<'_>, "marks alpha,beta,");
+    let (captured_trailing_rendered, captured_trailing_map) =
+        captured_trailing.render_mapped();
+    assert_eq!(captured_trailing_rendered, format!("{marks} alpha, beta,"));
+    assert_mapping(
+        &captured_trailing_map,
+        11..12,
+        recursa::Span::new(11, 12).expect("real span"),
+    );
+    assert_mapping(
+        &captured_trailing_map,
+        17..18,
+        recursa::Span::new(16, 17).expect("real span"),
+    );
 
     let trailing = parse_spanned!(grammar::TrailingPretty<'_>, "marks alpha,beta,");
     assert_eq!(trailing.render(), format!("{marks} alpha, beta"));
+    let (mapped_trailing, trailing_map) = trailing.render_mapped();
+    assert_eq!(mapped_trailing, trailing.render());
+    assert_mapping(
+        &trailing_map,
+        11..12,
+        recursa::Span::new(11, 12).expect("real span"),
+    );
+    assert!(
+        trailing_map
+            .entries()
+            .iter()
+            .all(|entry| entry.source() != recursa::Span::new(16, 17).expect("real span")),
+        "trailing_separator = never must not map the suppressed source separator",
+    );
     assert_eq!(
         trailing.render_with(recursa::PrettyConfig::new(12, 2)),
         format!("{marks} alpha,\nbeta")
     );
+    let (broken_trailing, broken_trailing_map) =
+        trailing.render_mapped_with(recursa::PrettyConfig::new(12, 2));
+    assert_eq!(broken_trailing, format!("{marks} alpha,\nbeta"));
+    assert_mapping(
+        &broken_trailing_map,
+        11..12,
+        recursa::Span::new(11, 12).expect("real span"),
+    );
+
+    let synthetic_leading = grammar::LeadingPretty {
+        values: vec![
+            Box::new(grammar::Item {
+                text: grammar::ItemText::new("alpha"),
+            }),
+            Box::new(grammar::Item {
+                text: grammar::ItemText::new("beta"),
+            }),
+        ],
+    };
+    let (synthetic_rendered, synthetic_map) = synthetic_leading.render_mapped();
+    assert_eq!(synthetic_rendered, "MARKS alpha, beta,");
+    assert_mapping(&synthetic_map, 11..12, recursa::Span::SYNTHETIC);
+    assert_mapping(&synthetic_map, 17..18, recursa::Span::SYNTHETIC);
 
     let attachment = parse_spanned!(grammar::AttachmentPretty<'_>, ". <:boxed alpha.?> .");
     let boxed = if mode == CaptureMode::Off { "BOXED" } else { "boxed" };

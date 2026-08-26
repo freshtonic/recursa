@@ -108,6 +108,14 @@ struct Provenance {
 struct OccurrenceNode {
     span: Option<Span>,
     children: Box<[OccurrenceNode]>,
+    repetition_separators: Box<[RepetitionSeparatorNode]>,
+}
+
+/// Fixed separator provenance belongs to a repetition occurrence, not to its
+/// semantic child sequence. Keeping the two shapes distinct prevents runtime
+/// separator count from changing generated child ordinals.
+struct RepetitionSeparatorNode {
+    span: Span,
 }
 
 /// Authored role of one generated grammar element.
@@ -351,7 +359,13 @@ impl std::iter::FusedIterator for Elements<'_> {}
 
 impl OccurrenceNode {
     fn is_captured(&self) -> bool {
-        self.span.is_some() || self.children.iter().any(Self::is_captured)
+        self.span.is_some()
+            || self.children.iter().any(Self::is_captured)
+            || !self.repetition_separators.is_empty()
+    }
+
+    fn has_public_capture(&self) -> bool {
+        self.span.is_some() || self.children.iter().any(Self::has_public_capture)
     }
 }
 
@@ -367,7 +381,10 @@ impl<'input, T> Parsed<'input, T> {
     /// Returns captured source text, if this parse captured provenance.
     pub fn source(&self) -> Option<&'input str> {
         match &self.origin {
-            Origin::Captured { source, .. } => Some(*source),
+            Origin::Captured { source, provenance } if provenance.root.has_public_capture() => {
+                Some(*source)
+            }
+            Origin::Captured { .. } => None,
             Origin::Synthetic | Origin::Uncaptured => None,
         }
     }
@@ -500,10 +517,27 @@ impl<'view> ViewCursor<'view> {
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        let repetition_separators = occurrence
+            .repetition_separators
+            .iter()
+            .map(|separator| {
+                let text = self
+                    .source
+                    .and_then(|source| source.get(separator.span.range()))
+                    .expect("captured separator spans were validated against their source")
+                    .to_owned();
+                crate::pretty::RepetitionSeparatorProvenance {
+                    text,
+                    span: separator.span,
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Some(crate::pretty::PrettyProvenance::new(
             text,
             occurrence.span,
             children,
+            repetition_separators,
         ))
     }
 
@@ -641,6 +675,16 @@ impl Occurrence {
     }
 }
 
+/// Opaque fixed-token provenance produced only for repetition separators.
+///
+/// This matching-version type intentionally cannot be converted into an
+/// [`Occurrence`], so generated separator capture cannot alter semantic child
+/// ordinals or any public Node view.
+#[doc(hidden)]
+pub struct RepetitionSeparatorOccurrence {
+    node: RepetitionSeparatorNode,
+}
+
 /// Lazy ordinal accumulator for runtime-sized child occurrence sequences.
 #[doc(hidden)]
 pub struct Occurrences {
@@ -719,6 +763,18 @@ impl ProvenanceCollector {
         span: Option<Span>,
         children: impl IntoIterator<Item = Occurrence>,
     ) -> Result<Occurrence, ()> {
+        self.finish_repeated(source, policy, request, span, children, std::iter::empty())
+    }
+
+    fn finish_repeated(
+        &self,
+        source: &str,
+        policy: CapturePolicy,
+        request: CaptureRequest,
+        span: Option<Span>,
+        children: impl IntoIterator<Item = Occurrence>,
+        separators: impl IntoIterator<Item = RepetitionSeparatorOccurrence>,
+    ) -> Result<Occurrence, ()> {
         if let Some(span) = span {
             source.get(span.range()).ok_or(())?;
         }
@@ -732,6 +788,7 @@ impl ProvenanceCollector {
                         retained.extend((0..leading_absent).map(|_| OccurrenceNode {
                             span: None,
                             children: Box::new([]),
+                            repetition_separators: Box::new([]),
                         }));
                     }
                     retained.push(node);
@@ -740,22 +797,30 @@ impl ProvenanceCollector {
                 None => retained.push(OccurrenceNode {
                     span: None,
                     children: Box::new([]),
+                    repetition_separators: Box::new([]),
                 }),
             }
         }
-        if span.is_none() && retained.is_empty() {
+        let repetition_separators = separators
+            .into_iter()
+            .map(|separator| separator.node)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        if span.is_none() && retained.is_empty() && repetition_separators.is_empty() {
             return Ok(Occurrence::absent());
         }
         if span.is_some() && retained.is_empty() && leading_absent != 0 {
             retained.extend((0..leading_absent).map(|_| OccurrenceNode {
                 span: None,
                 children: Box::new([]),
+                repetition_separators: Box::new([]),
             }));
         }
         Ok(Occurrence {
             node: Some(OccurrenceNode {
                 span,
                 children: retained.into_boxed_slice(),
+                repetition_separators,
             }),
         })
     }
@@ -875,6 +940,29 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
             .map_err(|()| ParseError::invalid_token_span(self.input, record.span, None))
     }
 
+    /// Consumes one fixed repetition separator into its dedicated provenance
+    /// channel. Separator source text remains available to Pretty regardless
+    /// of the semantic Node capture policy.
+    pub fn parse_repetition_separator(
+        &mut self,
+        expected: &FollowSet,
+    ) -> Result<RepetitionSeparatorOccurrence, ParseError> {
+        let Some(record) = self.peek(0) else {
+            return Err(self.unexpected(expected));
+        };
+        if !expected.contains(record.kind) {
+            return Err(self.unexpected(expected));
+        }
+        self.input
+            .source()
+            .get(record.span.range())
+            .ok_or_else(|| ParseError::invalid_token_span(self.input, record.span, None))?;
+        self.advance();
+        Ok(RepetitionSeparatorOccurrence {
+            node: RepetitionSeparatorNode { span: record.span },
+        })
+    }
+
     pub fn matched_text(&self, record: TokenRecord) -> Result<ContentText<'input>, ParseError> {
         ContentText::matched(self.input.source(), record.span).ok_or_else(|| {
             ParseError::invalid_token_span(self.input, record.span, Some(record.kind))
@@ -951,6 +1039,33 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
     ) -> Result<Occurrence, ParseError> {
         self.provenance
             .finish(self.input.source(), policy, self.request, span, children)
+            .map_err(|()| {
+                ParseError::invalid_token_span(
+                    self.input,
+                    span.expect("only a concrete invalid span can fail validation"),
+                    None,
+                )
+            })
+    }
+
+    /// Completes one repeated authored element while keeping fixed separator
+    /// occurrences separate from the semantic child sequence.
+    pub fn finish_repeated_group(
+        &self,
+        policy: CapturePolicy,
+        span: Option<Span>,
+        children: impl IntoIterator<Item = Occurrence>,
+        separators: impl IntoIterator<Item = RepetitionSeparatorOccurrence>,
+    ) -> Result<Occurrence, ParseError> {
+        self.provenance
+            .finish_repeated(
+                self.input.source(),
+                policy,
+                self.request,
+                span,
+                children,
+                separators,
+            )
             .map_err(|()| {
                 ParseError::invalid_token_span(
                     self.input,
@@ -1222,6 +1337,7 @@ mod tests {
             node: Some(OccurrenceNode {
                 span: Some(Span::new(4, 5).unwrap()),
                 children: Box::new([]),
+                repetition_separators: Box::new([]),
             }),
         });
         occurrences.push(Occurrence::absent());
