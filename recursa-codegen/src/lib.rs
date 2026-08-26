@@ -12,6 +12,7 @@ mod kind_set;
 mod lowering;
 mod provenance;
 mod resolution;
+mod source_model;
 mod source_syntax;
 
 pub use analysis::{

@@ -7,14 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::PathBuf;
 
-use proc_macro2::Span;
 use syn::ext::IdentExt as _;
 use syn::parse::Parser as _;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned as _;
 use syn::{
-    Attribute, Field, GenericArgument, Item, Meta, Path, PathArguments, Token, Type, UseTree,
-    Visibility,
+    Field, GenericArgument, Item, Meta, Path, PathArguments, Token, Type, UseTree, Visibility,
 };
 
 use crate::SourceId;
@@ -22,7 +20,10 @@ use crate::discovery::{DiscoveredModuleTree, ModuleInclusion};
 use crate::lowering::{
     BuildInputs, DiscoveryInputs, FacadeMapping, ModuleId, NodeId, SelectedRootAnchor,
 };
-use crate::source_syntax::{CargoCfgSnapshot, GrammarConfigSyntax, configure_attributes};
+use crate::source_syntax::{
+    CargoCfgSnapshot, GrammarConfigSyntax, configured_attribute_metas as configured_metas,
+    item_attributes as item_attrs, path_text, span_range,
+};
 
 macro_rules! resolution_id {
     ($name:ident) => {
@@ -67,6 +68,7 @@ pub(crate) struct ResolutionReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedSourceGrammar {
     pub(crate) build_inputs: BuildInputs,
+    pub(crate) configuration: SelectedGrammarConfiguration,
     pub(crate) tree: DiscoveredModuleTree,
     pub(crate) nodes: Vec<ResolvedNode>,
     pub(crate) generic_parameters: Vec<ResolvedGenericParameter>,
@@ -76,6 +78,13 @@ pub(crate) struct ResolvedSourceGrammar {
     pub(crate) uses: Vec<SemanticUse>,
     pub(crate) resolutions: Vec<SemanticResolution>,
     pub(crate) traces: Vec<ResolutionTrace>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SelectedGrammarConfiguration {
+    pub(crate) syntax: GrammarConfigSyntax,
+    pub(crate) source: SourceId,
+    pub(crate) range: Range<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -344,6 +353,7 @@ struct PendingNode {
 struct Resolver<'cfg> {
     cfg: &'cfg CargoCfgSnapshot,
     build_inputs: BuildInputs,
+    configuration: SelectedGrammarConfiguration,
     tree: DiscoveredModuleTree,
     items: BTreeMap<ModuleId, Vec<Item>>,
     bindings: Vec<Binding>,
@@ -372,7 +382,7 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
         .map(|module| (module.id, module.items.clone()))
         .collect();
     let (config, mut diagnostics) = find_grammar_config(&input.tree, &items, input.cfg);
-    let Some((anchor, facade)) = config else {
+    let Some((anchor, facade, configuration)) = config else {
         return ResolutionReport {
             discovery_inputs,
             build_inputs: None,
@@ -388,6 +398,7 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
     let mut resolver = Resolver {
         cfg: input.cfg,
         build_inputs,
+        configuration,
         tree: input.tree,
         items,
         bindings: Vec::new(),
@@ -419,6 +430,7 @@ impl Resolver<'_> {
     fn finish(self) -> ResolutionReport {
         let resolved = self.diagnostics.is_empty().then(|| ResolvedSourceGrammar {
             build_inputs: self.build_inputs.clone(),
+            configuration: self.configuration,
             tree: self.tree,
             nodes: self.nodes.into_iter().map(|node| node.resolved).collect(),
             generic_parameters: self.generic_parameters,
@@ -467,12 +479,12 @@ impl Resolver<'_> {
                 let configured = match configured_metas(item_attrs(&item), self.cfg) {
                     Ok(Some(metas)) => metas,
                     Ok(None) => continue,
-                    Err((range, message)) => {
+                    Err(error) => {
                         self.push_site_diagnostic(
                             ResolutionDiagnosticKind::InvalidConfiguration,
                             inclusion.source,
-                            Some(range),
-                            message,
+                            Some(error.range),
+                            error.message,
                         );
                         continue;
                     }
@@ -1920,7 +1932,11 @@ fn find_grammar_config(
     items: &BTreeMap<ModuleId, Vec<Item>>,
     cfg: &CargoCfgSnapshot,
 ) -> (
-    Option<(SelectedRootAnchor, FacadeMapping)>,
+    Option<(
+        SelectedRootAnchor,
+        FacadeMapping,
+        SelectedGrammarConfiguration,
+    )>,
     Vec<ResolutionDiagnostic>,
 ) {
     let mut diagnostics = Vec::new();
@@ -1946,12 +1962,12 @@ fn find_grammar_config(
             let configured = match configured_metas(&item.attrs, cfg) {
                 Ok(Some(_)) => true,
                 Ok(None) => false,
-                Err((range, message)) => {
+                Err(error) => {
                     diagnostics.push(ResolutionDiagnostic {
                         kind: ResolutionDiagnosticKind::InvalidConfiguration,
                         path: tree.files[inclusion.source.index()].path.clone(),
-                        range: Some(range),
-                        message,
+                        range: Some(error.range),
+                        message: error.message,
                     });
                     false
                 }
@@ -2007,7 +2023,9 @@ fn find_grammar_config(
         }
         return (None, diagnostics);
     }
-    let (inclusion, _, syntax) = &configurations[0];
+    let (inclusion, item, syntax) = configurations
+        .pop()
+        .expect("exactly one grammar configuration remains");
     let anchor = match selected_anchor(&syntax.module) {
         Some(anchor) => anchor,
         None => {
@@ -2021,7 +2039,15 @@ fn find_grammar_config(
         }
     };
     let facade = syntax.facade.unraw().to_string();
-    (Some((anchor, FacadeMapping { ident: facade })), diagnostics)
+    let configuration = SelectedGrammarConfiguration {
+        syntax,
+        source: inclusion.source,
+        range: span_range(item.span()),
+    };
+    (
+        Some((anchor, FacadeMapping { ident: facade }, configuration)),
+        diagnostics,
+    )
 }
 
 fn selected_anchor(path: &Path) -> Option<SelectedRootAnchor> {
@@ -2042,37 +2068,6 @@ fn selected_anchor(path: &Path) -> Option<SelectedRootAnchor> {
             .map(|segment| segment.ident.unraw().to_string())
             .collect(),
     })
-}
-
-fn configured_metas(
-    attributes: &[Attribute],
-    cfg: &CargoCfgSnapshot,
-) -> Result<Option<Vec<Meta>>, (Range<u32>, String)> {
-    configure_attributes(attributes, cfg)
-        .map(|configured| configured.map(|configured| configured.metas))
-        .map_err(|error| (error.range, error.message))
-}
-
-fn item_attrs(item: &Item) -> &[Attribute] {
-    match item {
-        Item::Const(item) => &item.attrs,
-        Item::Enum(item) => &item.attrs,
-        Item::ExternCrate(item) => &item.attrs,
-        Item::Fn(item) => &item.attrs,
-        Item::ForeignMod(item) => &item.attrs,
-        Item::Impl(item) => &item.attrs,
-        Item::Macro(item) => &item.attrs,
-        Item::Mod(item) => &item.attrs,
-        Item::Static(item) => &item.attrs,
-        Item::Struct(item) => &item.attrs,
-        Item::Trait(item) => &item.attrs,
-        Item::TraitAlias(item) => &item.attrs,
-        Item::Type(item) => &item.attrs,
-        Item::Union(item) => &item.attrs,
-        Item::Use(item) => &item.attrs,
-        Item::Verbatim(_) => &[],
-        _ => &[],
-    }
 }
 
 fn item_declaration(item: &Item) -> Option<(syn::Ident, Visibility, syn::Generics, bool)> {
@@ -2132,12 +2127,12 @@ fn configured_node_fields(
             .filter_map(|variant| match configured_metas(&variant.attrs, cfg) {
                 Ok(Some(_)) => Some(variant.fields.iter().collect::<Vec<_>>()),
                 Ok(None) => None,
-                Err((range, message)) => {
+                Err(error) => {
                     diagnostics.push(ResolutionDiagnostic {
                         kind: ResolutionDiagnosticKind::InvalidConfiguration,
                         path: tree.files[source.index()].path.clone(),
-                        range: Some(range),
-                        message,
+                        range: Some(error.range),
+                        message: error.message,
                     });
                     None
                 }
@@ -2154,12 +2149,12 @@ fn configured_node_fields(
                 metas,
             }),
             Ok(None) => None,
-            Err((range, message)) => {
+            Err(error) => {
                 diagnostics.push(ResolutionDiagnostic {
                     kind: ResolutionDiagnosticKind::InvalidConfiguration,
                     path: tree.files[source.index()].path.clone(),
-                    range: Some(range),
-                    message,
+                    range: Some(error.range),
+                    message: error.message,
                 });
                 None
             }
@@ -2386,19 +2381,6 @@ fn catalog_path(names: &[String], facade: &str) -> Option<CatalogType> {
         [root, name] if root == facade && name == "Vec1" => Some(CatalogType::Vec1),
         _ => None,
     }
-}
-
-fn path_text(path: &Path) -> String {
-    path.segments
-        .iter()
-        .map(|segment| segment.ident.unraw().to_string())
-        .collect::<Vec<_>>()
-        .join("::")
-}
-
-fn span_range(span: Span) -> Range<u32> {
-    let range = span.byte_range();
-    range.start.try_into().unwrap_or(u32::MAX)..range.end.try_into().unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
