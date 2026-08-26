@@ -13,7 +13,9 @@ use syn::parse::{Parse, ParseStream, Parser as _};
 use syn::spanned::Spanned as _;
 use syn::{Item, LitStr, Meta, Token};
 
-use crate::lowering::{ElementId as GrammarElementId, NodeId, TokenDefinitionId, TokenUseId};
+use crate::lowering::{
+    ElementId as GrammarElementId, ModuleId, NodeId, TokenDefinitionId, TokenUseId,
+};
 use crate::resolution::{
     CatalogType, ContentTokenId, ResolvedFieldId, ResolvedNodeBody, ResolvedNodeField,
     ResolvedSourceGrammar, ResolvedTypeKind, ResolvedVariantId, SemanticTarget,
@@ -49,6 +51,32 @@ impl SourceModeledGrammar {
     pub(crate) const fn source_model(&self) -> &SourceModel {
         &self.source_model
     }
+
+    #[cfg(test)]
+    pub(crate) fn source_model_mut(&mut self) -> &mut SourceModel {
+        &mut self.source_model
+    }
+
+    pub(crate) fn source_order_key(&self, site: &SourceSite) -> SourceOrderKey {
+        canonical_source_order_key(site)
+    }
+
+    pub(crate) fn grammar_configuration_site(&self, range: Range<u32>) -> SourceSite {
+        let root = self
+            .resolved
+            .tree
+            .inclusions
+            .first()
+            .expect("a resolved grammar has a root module inclusion");
+        source_site(
+            &self.resolved,
+            SourceOrigin {
+                module: root.id,
+                source: self.resolved.configuration.source,
+            },
+            range,
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,7 +84,20 @@ pub(crate) struct SourceModel {
     pub(crate) grammar_trait_defaults: Vec<ConfiguredTraitSelection>,
     pub(crate) nodes: Vec<Node>,
     pub(crate) token_definitions: Vec<TokenDefinition>,
+    pub(crate) lexer_records: Vec<NonTokenLexerRecord>,
     pub(crate) token_uses: Vec<TokenUse>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NonTokenLexerRecord {
+    pub(crate) pattern: String,
+    pub(crate) outcome: NonTokenLexerOutcome,
+    pub(crate) site: SourceSite,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NonTokenLexerOutcome {
+    NonEmitting,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -240,21 +281,44 @@ pub(crate) struct TokenDefinition {
 pub(crate) enum TokenDefinitionKind {
     Fixed(FixedTokenDefinition),
     Content(ContentTokenDefinition),
+    LexicalBase(LexicalBaseTokenDefinition),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FixedTokenDefinition {
     pub(crate) spelling: String,
+    pub(crate) authored_classifications: Vec<AuthoredFixedClassification>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AuthoredFixedTokenClass {
+    Keyword,
+    Punctuation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AuthoredFixedClassification {
+    pub(crate) class: AuthoredFixedTokenClass,
+    pub(crate) site: SourceSite,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ContentTokenDefinition {
     pub(crate) semantic: ContentTokenId,
     pub(crate) pattern: String,
+    pub(crate) callback: Option<syn::Path>,
+    pub(crate) priority: Option<u32>,
     pub(crate) admission_set: Vec<TokenDefinitionId>,
     pub(crate) authored_admissions: Vec<AuthoredAdmissions>,
     pub(crate) text: ContentTextStorage,
     pub(crate) configured_traits: ConfiguredTraitPlan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LexicalBaseTokenDefinition {
+    pub(crate) pattern: String,
+    pub(crate) callback: Option<syn::Path>,
+    pub(crate) priority: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -285,9 +349,31 @@ pub(crate) enum TokenUseRole {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SourceSite {
+    pub(crate) module: ModuleId,
     pub(crate) source: crate::SourceId,
     pub(crate) path: PathBuf,
     pub(crate) range: Range<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct SourceOrderKey {
+    module: usize,
+    start: u32,
+    end: u32,
+}
+
+impl SourceOrderKey {
+    pub(crate) const LAST: Self = Self {
+        module: usize::MAX,
+        start: u32::MAX,
+        end: u32::MAX,
+    };
+}
+
+#[derive(Clone, Copy)]
+struct SourceOrigin {
+    module: ModuleId,
+    source: crate::SourceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -303,7 +389,6 @@ pub(crate) enum SourceModelDiagnosticKind {
     ConflictingTraitDelta,
     InvalidContentToken,
     ContentDisplayOverride,
-    ConflictingTokenDefinition,
     InvalidSeparator,
     UnsupportedFixedSyntax,
     InvalidTokenPlacement,
@@ -334,6 +419,7 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         diagnostics,
     };
     builder.reject_misplaced_content_declarations();
+    builder.lower_central_content_definitions();
     builder.lower_nodes();
     builder.finish()
 }
@@ -381,6 +467,29 @@ impl LoweredFields {
 }
 
 impl SourceModelBuilder<'_> {
+    fn lower_central_content_definitions(&mut self) {
+        for definition in std::mem::take(&mut self.tokens.central_content) {
+            if let Some(semantic) = definition.semantic {
+                self.tokens.define_content(
+                    semantic,
+                    definition.name,
+                    definition.pattern,
+                    definition.callback,
+                    None,
+                    Vec::new(),
+                    AuthoredAdmissions {
+                        site: definition.site.clone(),
+                        definitions: Vec::new(),
+                    },
+                    definition.site,
+                    &self.trait_planner.grammar_defaults,
+                );
+            } else {
+                self.tokens.define_lexical_base(definition);
+            }
+        }
+    }
+
     fn finish(mut self) -> SourceModelReport {
         normalize_source_order(&mut self.nodes, &mut self.tokens);
         let source_modeled = self.diagnostics.is_empty().then(|| SourceModeledGrammar {
@@ -389,6 +498,7 @@ impl SourceModelBuilder<'_> {
                 grammar_trait_defaults: self.trait_planner.grammar_defaults,
                 nodes: self.nodes,
                 token_definitions: self.tokens.definitions,
+                lexer_records: self.tokens.lexer_records,
                 token_uses: self.tokens.uses,
             },
         });
@@ -400,6 +510,10 @@ impl SourceModelBuilder<'_> {
 
     fn reject_misplaced_content_declarations(&mut self) {
         for inclusion in self.resolved.tree.inclusions.clone() {
+            let origin = SourceOrigin {
+                module: inclusion.id,
+                source: inclusion.source,
+            };
             for item in &inclusion.items {
                 let configured = match configured_metas(item_attrs(item), self.cfg) {
                     Ok(Some(configured)) => configured,
@@ -407,7 +521,7 @@ impl SourceModelBuilder<'_> {
                     Err(error) => {
                         self.diagnostics.push(SourceModelDiagnostic {
                             kind: SourceModelDiagnosticKind::InvalidConfiguration,
-                            sites: vec![self.site(inclusion.source, error.range)],
+                            sites: vec![self.site(origin, error.range)],
                             message: error.message,
                         });
                         continue;
@@ -415,7 +529,7 @@ impl SourceModelBuilder<'_> {
                 };
                 reject_misplaced_content_declarations(
                     &self.resolved,
-                    inclusion.source,
+                    origin,
                     &configured,
                     &mut self.diagnostics,
                 );
@@ -427,7 +541,7 @@ impl SourceModelBuilder<'_> {
                             Err(error) => {
                                 self.diagnostics.push(SourceModelDiagnostic {
                                     kind: SourceModelDiagnosticKind::InvalidConfiguration,
-                                    sites: vec![self.site(inclusion.source, error.range)],
+                                    sites: vec![self.site(origin, error.range)],
                                     message: error.message,
                                 });
                                 continue;
@@ -435,7 +549,7 @@ impl SourceModelBuilder<'_> {
                         };
                         reject_misplaced_content_declarations(
                             &self.resolved,
-                            inclusion.source,
+                            origin,
                             &configured,
                             &mut self.diagnostics,
                         );
@@ -447,17 +561,20 @@ impl SourceModelBuilder<'_> {
 
     fn lower_nodes(&mut self) {
         for node in self.resolved.nodes.clone() {
-            let source = node.source;
+            let origin = SourceOrigin {
+                module: node.module,
+                source: node.source,
+            };
             let configured = &node.metas;
             let body = match &node.body {
                 ResolvedNodeBody::Struct { unit } => {
                     let field_ids = node.fields.iter().map(|field| field.id).collect::<Vec<_>>();
-                    let fields = self.lower_fields(source, &field_ids).into_elements();
+                    let fields = self.lower_fields(origin, &field_ids).into_elements();
                     let elements = PositionalTokenPlanner::lower(
                         &self.resolved,
                         &mut self.tokens,
                         &mut self.diagnostics,
-                        source,
+                        origin,
                         configured,
                         fields,
                         TokenAttachment::StructBody,
@@ -478,7 +595,7 @@ impl SourceModelBuilder<'_> {
                 } => {
                     PositionalTokenPlanner::reject_legacy_syntax(
                         &self.resolved,
-                        source,
+                        origin,
                         configured,
                         &mut self.diagnostics,
                     );
@@ -487,7 +604,7 @@ impl SourceModelBuilder<'_> {
                     {
                         self.diagnostics.push(SourceModelDiagnostic {
                             kind: SourceModelDiagnosticKind::InvalidTokenPlacement,
-                            sites: vec![self.site(source, span_range(token_meta.span()))],
+                            sites: vec![self.site(origin, span_range(token_meta.span()))],
                             message: "#[tok] belongs on each enum variant, not on the enum body"
                                 .to_owned(),
                         });
@@ -499,18 +616,18 @@ impl SourceModelBuilder<'_> {
                             .map(|variant| {
                                 let pratt_role = PrattRole::from_attributes(
                                     &self.resolved,
-                                    source,
+                                    origin,
                                     &variant.metas,
                                     is_pratt,
                                     &mut self.diagnostics,
                                 );
-                                let body = self.lower_fields(source, &variant.fields);
+                                let body = self.lower_fields(origin, &variant.fields);
                                 let second_field_attachment = body.second_attachment_start();
                                 let elements = PositionalTokenPlanner::lower(
                                     &self.resolved,
                                     &mut self.tokens,
                                     &mut self.diagnostics,
-                                    source,
+                                    origin,
                                     &variant.metas,
                                     body.into_elements(),
                                     if is_pratt {
@@ -527,7 +644,7 @@ impl SourceModelBuilder<'_> {
                                     name: variant.ident.clone(),
                                     elements: reassign_element_ids(elements),
                                     pratt_role,
-                                    site: self.site(source, variant.range.clone()),
+                                    site: self.site(origin, variant.range.clone()),
                                 }
                             })
                             .collect(),
@@ -536,13 +653,13 @@ impl SourceModelBuilder<'_> {
             };
             let configured_traits = self.trait_planner.node_plan(
                 &self.resolved,
-                source,
+                origin,
                 configured,
                 &mut self.diagnostics,
             );
             self.trait_planner.validate_ordinary_derive_ownership(
                 &self.resolved,
-                source,
+                origin,
                 configured,
                 &configured_traits,
                 &mut self.diagnostics,
@@ -556,22 +673,18 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    fn lower_fields(
-        &mut self,
-        source: crate::SourceId,
-        fields: &[ResolvedFieldId],
-    ) -> LoweredFields {
+    fn lower_fields(&mut self, origin: SourceOrigin, fields: &[ResolvedFieldId]) -> LoweredFields {
         let mut body = LoweredFields::default();
         for field in fields {
             let resolved_field = self.resolved_field(*field).clone();
             let field = &resolved_field.syntax;
             let field_configured = &resolved_field.metas;
-            let site = self.site(source, span_range(field.span()));
+            let site = self.site(origin, span_range(field.span()));
             self.tokens.lower_content_definition(
                 &self.resolved,
                 &self.semantic_facts,
                 &self.trait_planner.grammar_defaults,
-                source,
+                origin,
                 field_configured,
                 &resolved_field,
                 &mut self.diagnostics,
@@ -585,7 +698,7 @@ impl SourceModelBuilder<'_> {
                     &self.semantic_facts,
                     &mut self.tokens,
                     &mut self.diagnostics,
-                    source,
+                    origin,
                     field_configured,
                     &resolved_field,
                 ),
@@ -595,7 +708,7 @@ impl SourceModelBuilder<'_> {
                 &self.resolved,
                 &mut self.tokens,
                 &mut self.diagnostics,
-                source,
+                origin,
                 field_configured,
                 vec![semantic],
                 TokenAttachment::Field,
@@ -613,8 +726,8 @@ impl SourceModelBuilder<'_> {
             .expect("resolved Node body owns every field identity")
     }
 
-    fn site(&self, source: crate::SourceId, range: Range<u32>) -> SourceSite {
-        source_site(&self.resolved, source, range)
+    fn site(&self, origin: SourceOrigin, range: Range<u32>) -> SourceSite {
+        source_site(&self.resolved, origin, range)
     }
 }
 
@@ -665,9 +778,18 @@ impl SemanticFacts {
 struct TokenCatalog {
     definitions: Vec<TokenDefinition>,
     fixed_by_name: BTreeMap<String, TokenDefinitionId>,
-    content_by_name: BTreeMap<String, TokenDefinitionId>,
-    content_conflict_by_name: BTreeMap<String, usize>,
+    content_by_name: BTreeMap<String, Vec<TokenDefinitionId>>,
+    central_content: Vec<CentralContentDefinition>,
+    lexer_records: Vec<NonTokenLexerRecord>,
     uses: Vec<TokenUse>,
+}
+
+struct CentralContentDefinition {
+    semantic: Option<ContentTokenId>,
+    name: String,
+    pattern: String,
+    callback: Option<syn::Path>,
+    site: SourceSite,
 }
 
 impl TokenCatalog {
@@ -677,20 +799,32 @@ impl TokenCatalog {
         cfg: &CargoCfgSnapshot,
     ) {
         for inclusion in &resolved.tree.inclusions {
+            let origin = SourceOrigin {
+                module: inclusion.id,
+                source: inclusion.source,
+            };
             for item in &inclusion.items {
                 let Ok(Some(metas)) = configured_metas(item_attrs(item), cfg) else {
                     continue;
                 };
-                self.collect_fixed_definitions_from_metas(resolved, inclusion.source, &metas);
+                if let Item::Macro(item_macro) = item
+                    && item_macro
+                        .mac
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "tokens")
+                    && let Ok(syntax) =
+                        syn::parse2::<CentralTokensSyntax>(item_macro.mac.tokens.clone())
+                {
+                    self.collect_central_definitions(resolved, origin, syntax);
+                }
+                self.collect_fixed_definitions_from_metas(resolved, origin, &metas);
                 match item {
                     Item::Struct(item) => {
                         for field in &item.fields {
                             if let Ok(Some(metas)) = configured_metas(&field.attrs, cfg) {
-                                self.collect_fixed_definitions_from_metas(
-                                    resolved,
-                                    inclusion.source,
-                                    &metas,
-                                );
+                                self.collect_fixed_definitions_from_metas(resolved, origin, &metas);
                             }
                         }
                     }
@@ -699,17 +833,11 @@ impl TokenCatalog {
                             let Ok(Some(metas)) = configured_metas(&variant.attrs, cfg) else {
                                 continue;
                             };
-                            self.collect_fixed_definitions_from_metas(
-                                resolved,
-                                inclusion.source,
-                                &metas,
-                            );
+                            self.collect_fixed_definitions_from_metas(resolved, origin, &metas);
                             for field in &variant.fields {
                                 if let Ok(Some(metas)) = configured_metas(&field.attrs, cfg) {
                                     self.collect_fixed_definitions_from_metas(
-                                        resolved,
-                                        inclusion.source,
-                                        &metas,
+                                        resolved, origin, &metas,
                                     );
                                 }
                             }
@@ -724,7 +852,7 @@ impl TokenCatalog {
     fn collect_fixed_definitions_from_metas(
         &mut self,
         resolved: &ResolvedSourceGrammar,
-        source: crate::SourceId,
+        origin: SourceOrigin,
         metas: &[Meta],
     ) {
         for meta in metas {
@@ -739,30 +867,93 @@ impl TokenCatalog {
                 let TokenSequenceEntry::Definition(spelling) = entry else {
                     continue;
                 };
-                self.define_fixed(resolved, source, spelling);
+                self.define_fixed(resolved, origin, spelling.value(), spelling, None);
             }
         }
+    }
+
+    fn collect_central_definitions(
+        &mut self,
+        resolved: &ResolvedSourceGrammar,
+        origin: SourceOrigin,
+        syntax: CentralTokensSyntax,
+    ) {
+        for fixed in syntax.fixed {
+            self.define_fixed(
+                resolved,
+                origin,
+                fixed.name.unraw().to_string(),
+                fixed.spelling,
+                Some(fixed.authored_class),
+            );
+        }
+        for content in syntax.content {
+            let name = content.name.unraw().to_string();
+            let semantic = resolved
+                .content_tokens
+                .iter()
+                .find_map(|token| (token.ident == name).then_some(token.id));
+            self.central_content.push(CentralContentDefinition {
+                semantic,
+                name,
+                pattern: content.pattern.value(),
+                callback: content.callback,
+                site: source_site(resolved, origin, span_range(content.name.span())),
+            });
+        }
+        self.lexer_records
+            .extend(
+                syntax
+                    .non_token_lexer_records
+                    .into_iter()
+                    .map(|record| NonTokenLexerRecord {
+                        pattern: record.pattern.value(),
+                        outcome: record.outcome,
+                        site: source_site(resolved, origin, span_range(record.pattern.span())),
+                    }),
+            );
     }
 
     fn define_fixed(
         &mut self,
         resolved: &ResolvedSourceGrammar,
-        source: crate::SourceId,
+        origin: SourceOrigin,
+        name: String,
         spelling: LitStr,
+        authored_class: Option<AuthoredFixedTokenClass>,
     ) {
-        let site = source_site(resolved, source, span_range(spelling.span()));
+        let site = source_site(resolved, origin, span_range(spelling.span()));
         let spelling = spelling.value();
-        let name = spelling.clone();
         if let Some(id) = self.fixed_by_name.get(&name).copied() {
-            self.definitions[id.index()].definition_sites.push(site);
-            return;
+            let definition = &mut self.definitions[id.index()];
+            let TokenDefinitionKind::Fixed(existing) = &mut definition.kind else {
+                unreachable!("fixed namespace points only to fixed definitions")
+            };
+            if existing.spelling == spelling {
+                definition.definition_sites.push(site.clone());
+                if let Some(class) = authored_class {
+                    existing
+                        .authored_classifications
+                        .push(AuthoredFixedClassification { class, site });
+                }
+                return;
+            }
         }
         let id = TokenDefinitionId::next(self.definitions.len());
-        self.fixed_by_name.insert(name.clone(), id);
+        self.fixed_by_name.entry(name.clone()).or_insert(id);
         self.definitions.push(TokenDefinition {
             id,
             name,
-            kind: TokenDefinitionKind::Fixed(FixedTokenDefinition { spelling }),
+            kind: TokenDefinitionKind::Fixed(FixedTokenDefinition {
+                spelling,
+                authored_classifications: authored_class
+                    .map(|class| AuthoredFixedClassification {
+                        class,
+                        site: site.clone(),
+                    })
+                    .into_iter()
+                    .collect(),
+            }),
             definition_sites: vec![site],
         });
     }
@@ -791,12 +982,12 @@ impl TokenCatalog {
         &mut self,
         resolved: &ResolvedSourceGrammar,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
-        source: crate::SourceId,
+        origin: SourceOrigin,
         token: TokenSequenceEntry,
     ) -> Option<GrammarElement> {
         let (definition, site) = match token {
             TokenSequenceEntry::Definition(spelling) => {
-                let site = source_site(resolved, source, span_range(spelling.span()));
+                let site = source_site(resolved, origin, span_range(spelling.span()));
                 let name = spelling.value();
                 let definition = self
                     .fixed_definition(&name)
@@ -804,7 +995,7 @@ impl TokenCatalog {
                 (definition, site)
             }
             TokenSequenceEntry::Reference(ident) => {
-                let site = source_site(resolved, source, span_range(ident.span()));
+                let site = source_site(resolved, origin, span_range(ident.span()));
                 let name = ident.unraw().to_string();
                 let Some(definition) = self.fixed_definition(&name) else {
                     diagnostics.push(SourceModelDiagnostic {
@@ -836,10 +1027,18 @@ impl TraitPlanner {
         resolved: &ResolvedSourceGrammar,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) -> Self {
-        let source = resolved.configuration.source;
+        let origin = SourceOrigin {
+            module: resolved
+                .tree
+                .inclusions
+                .first()
+                .expect("a resolved grammar has a root module inclusion")
+                .id,
+            source: resolved.configuration.source,
+        };
         let mut grammar_defaults = Vec::new();
         for path in resolved.configuration.syntax.derives.clone() {
-            let site = source_site(resolved, source, span_range(path.span()));
+            let site = source_site(resolved, origin, span_range(path.span()));
             let Some(recipe) = configured_trait_recipe(&path, &resolved.build_inputs.facade.ident)
             else {
                 diagnostics.push(SourceModelDiagnostic {
@@ -868,7 +1067,7 @@ impl TraitPlanner {
     fn node_plan(
         &self,
         resolved: &ResolvedSourceGrammar,
-        source: crate::SourceId,
+        origin: SourceOrigin,
         metas: &[Meta],
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) -> ConfiguredTraitPlan {
@@ -881,7 +1080,7 @@ impl TraitPlanner {
                 kind: SourceModelDiagnosticKind::InvalidTraitDelta,
                 sites: node_metas
                     .iter()
-                    .map(|meta| source_site(resolved, source, span_range(meta.span())))
+                    .map(|meta| source_site(resolved, origin, span_range(meta.span())))
                     .collect(),
                 message: "a Node accepts at most one #[node(...)] trait delta".to_owned(),
             });
@@ -894,7 +1093,7 @@ impl TraitPlanner {
             let Meta::List(list) = meta else {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InvalidTraitDelta,
-                    sites: vec![source_site(resolved, source, span_range(meta.span()))],
+                    sites: vec![source_site(resolved, origin, span_range(meta.span()))],
                     message: "#[node] must use parentheses".to_owned(),
                 });
                 return self.grammar_default_plan();
@@ -904,7 +1103,7 @@ impl TraitPlanner {
                 Err(error) => {
                     diagnostics.push(SourceModelDiagnostic {
                         kind: SourceModelDiagnosticKind::InvalidTraitDelta,
-                        sites: vec![source_site(resolved, source, span_range(error.span()))],
+                        sites: vec![source_site(resolved, origin, span_range(error.span()))],
                         message: error.to_string(),
                     });
                     return self.grammar_default_plan();
@@ -912,7 +1111,7 @@ impl TraitPlanner {
             };
             additions = self.normalize_paths(
                 resolved,
-                source,
+                origin,
                 syntax.additions,
                 ConfiguredTraitOwnership::LocalAddition,
                 diagnostics,
@@ -920,7 +1119,7 @@ impl TraitPlanner {
             omissions = self
                 .normalize_paths(
                     resolved,
-                    source,
+                    origin,
                     syntax.omissions,
                     ConfiguredTraitOwnership::LocalOmission,
                     diagnostics,
@@ -942,7 +1141,7 @@ impl TraitPlanner {
                     kind: SourceModelDiagnosticKind::ConflictingTraitDelta,
                     sites: node_metas
                         .iter()
-                        .map(|meta| source_site(resolved, source, span_range(meta.span())))
+                        .map(|meta| source_site(resolved, origin, span_range(meta.span())))
                         .collect(),
                     message: format!(
                         "`{:?}` cannot be both added and omitted on one Node",
@@ -991,7 +1190,7 @@ impl TraitPlanner {
     fn normalize_paths(
         &self,
         resolved: &ResolvedSourceGrammar,
-        source: crate::SourceId,
+        origin: SourceOrigin,
         paths: Vec<syn::Path>,
         ownership: ConfiguredTraitOwnership,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
@@ -1002,7 +1201,7 @@ impl TraitPlanner {
             else {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::UnsupportedConfiguredTrait,
-                    sites: vec![source_site(resolved, source, span_range(path.span()))],
+                    sites: vec![source_site(resolved, origin, span_range(path.span()))],
                     message: format!(
                         "`{}` is not a supported configured trait recipe",
                         path_text(&path),
@@ -1023,7 +1222,7 @@ impl TraitPlanner {
     fn validate_ordinary_derive_ownership(
         &self,
         resolved: &ResolvedSourceGrammar,
-        source: crate::SourceId,
+        origin: SourceOrigin,
         metas: &[Meta],
         configured: &ConfiguredTraitPlan,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
@@ -1050,7 +1249,7 @@ impl TraitPlanner {
                 {
                     diagnostics.push(SourceModelDiagnostic {
                         kind: SourceModelDiagnosticKind::ConfiguredOrdinaryDeriveConflict,
-                        sites: vec![source_site(resolved, source, span_range(path.span()))],
+                        sites: vec![source_site(resolved, origin, span_range(path.span()))],
                         message: format!(
                             "`{}` is owned by both configured generation and ordinary #[derive]",
                             path_text(&path),
@@ -1071,7 +1270,7 @@ impl SeparatorPlanner {
         semantic_facts: &SemanticFacts,
         tokens: &mut TokenCatalog,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
-        source: crate::SourceId,
+        origin: SourceOrigin,
         metas: &[Meta],
         field: &ResolvedNodeField,
     ) -> Option<Separator> {
@@ -1087,7 +1286,7 @@ impl SeparatorPlanner {
                 kind: SourceModelDiagnosticKind::InvalidSeparator,
                 sites: separator_metas
                     .iter()
-                    .map(|meta| source_site(resolved, source, span_range(meta.span())))
+                    .map(|meta| source_site(resolved, origin, span_range(meta.span())))
                     .collect(),
                 message: "a repeated field accepts at most one #[sep(...)]".to_owned(),
             });
@@ -1097,7 +1296,7 @@ impl SeparatorPlanner {
         let Meta::List(list) = meta else {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::InvalidSeparator,
-                sites: vec![source_site(resolved, source, span_range(meta.span()))],
+                sites: vec![source_site(resolved, origin, span_range(meta.span()))],
                 message: "#[sep] must use parentheses".to_owned(),
             });
             return None;
@@ -1107,7 +1306,7 @@ impl SeparatorPlanner {
             Err(error) => {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InvalidSeparator,
-                    sites: vec![source_site(resolved, source, span_range(error.span()))],
+                    sites: vec![source_site(resolved, origin, span_range(error.span()))],
                     message: error.to_string(),
                 });
                 return None;
@@ -1117,11 +1316,11 @@ impl SeparatorPlanner {
         let (name, site) = match syntax.token {
             FixedTokenSyntax::Definition(spelling) => (
                 spelling.value(),
-                source_site(resolved, source, span_range(spelling.span())),
+                source_site(resolved, origin, span_range(spelling.span())),
             ),
             FixedTokenSyntax::Reference(ident) => (
                 ident.unraw().to_string(),
-                source_site(resolved, source, span_range(ident.span())),
+                source_site(resolved, origin, span_range(ident.span())),
             ),
         };
         let Some(definition) = tokens.fixed_definition(&name) else {
@@ -1148,12 +1347,12 @@ impl PositionalTokenPlanner {
         resolved: &ResolvedSourceGrammar,
         tokens: &mut TokenCatalog,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
-        source: crate::SourceId,
+        origin: SourceOrigin,
         metas: &[Meta],
         body: Vec<GrammarElement>,
         attachment: TokenAttachment,
     ) -> Vec<GrammarElement> {
-        Self::reject_legacy_syntax(resolved, source, metas, diagnostics);
+        Self::reject_legacy_syntax(resolved, origin, metas, diagnostics);
         let token_metas = metas
             .iter()
             .filter(|meta| meta.path().is_ident("tok"))
@@ -1163,7 +1362,7 @@ impl PositionalTokenPlanner {
                 kind: SourceModelDiagnosticKind::MultipleTokenSequences,
                 sites: token_metas
                     .iter()
-                    .map(|meta| source_site(resolved, source, span_range(meta.span())))
+                    .map(|meta| source_site(resolved, origin, span_range(meta.span())))
                     .collect(),
                 message: "an attachment accepts at most one #[tok(...)] sequence".to_owned(),
             });
@@ -1175,7 +1374,7 @@ impl PositionalTokenPlanner {
         let Meta::List(list) = meta else {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::EmptyTokenSequence,
-                sites: vec![source_site(resolved, source, span_range(meta.span()))],
+                sites: vec![source_site(resolved, origin, span_range(meta.span()))],
                 message: "#[tok] must contain one non-empty sequence".to_owned(),
             });
             return body;
@@ -1185,7 +1384,7 @@ impl PositionalTokenPlanner {
             Err(error) => {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::EmptyTokenSequence,
-                    sites: vec![source_site(resolved, source, span_range(error.span()))],
+                    sites: vec![source_site(resolved, origin, span_range(error.span()))],
                     message: error.to_string(),
                 });
                 return body;
@@ -1194,7 +1393,7 @@ impl PositionalTokenPlanner {
         if sequence.0.is_empty() {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::EmptyTokenSequence,
-                sites: vec![source_site(resolved, source, span_range(meta.span()))],
+                sites: vec![source_site(resolved, origin, span_range(meta.span()))],
                 message: "#[tok] must contain one non-empty sequence".to_owned(),
             });
             return body;
@@ -1212,7 +1411,7 @@ impl PositionalTokenPlanner {
                 kind: SourceModelDiagnosticKind::MultipleThisAnchors,
                 sites: this_sites
                     .iter()
-                    .map(|span| source_site(resolved, source, span_range(*span)))
+                    .map(|span| source_site(resolved, origin, span_range(*span)))
                     .collect(),
                 message: "a #[tok(...)] sequence may contain at most one `this`".to_owned(),
             });
@@ -1221,7 +1420,7 @@ impl PositionalTokenPlanner {
         if matches!(attachment, TokenAttachment::PrattVariant { .. }) && !this_sites.is_empty() {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-                sites: vec![source_site(resolved, source, span_range(this_sites[0]))],
+                sites: vec![source_site(resolved, origin, span_range(this_sites[0]))],
                 message: "`this` is prohibited on Pratt variants; attach interleaved syntax to operand fields"
                     .to_owned(),
             });
@@ -1230,7 +1429,7 @@ impl PositionalTokenPlanner {
         if !this_sites.is_empty() && body.is_empty() {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::EmptyThisAnchor,
-                sites: vec![source_site(resolved, source, span_range(this_sites[0]))],
+                sites: vec![source_site(resolved, origin, span_range(this_sites[0]))],
                 message: "`this` cannot anchor an empty semantic body".to_owned(),
             });
             return body;
@@ -1243,7 +1442,7 @@ impl PositionalTokenPlanner {
                     TokenSequenceEntry::This(_) => output.extend(body.clone()),
                     token => {
                         if let Some(element) =
-                            tokens.fixed_element(resolved, diagnostics, source, token)
+                            tokens.fixed_element(resolved, diagnostics, origin, token)
                         {
                             output.push(element);
                         }
@@ -1256,7 +1455,7 @@ impl PositionalTokenPlanner {
         let fixed = sequence
             .0
             .into_iter()
-            .filter_map(|token| tokens.fixed_element(resolved, diagnostics, source, token))
+            .filter_map(|token| tokens.fixed_element(resolved, diagnostics, origin, token))
             .collect::<Vec<_>>();
         Self::place_anchorless(fixed, body, attachment)
     }
@@ -1297,7 +1496,7 @@ impl PositionalTokenPlanner {
 
     fn reject_legacy_syntax(
         resolved: &ResolvedSourceGrammar,
-        source: crate::SourceId,
+        origin: SourceOrigin,
         metas: &[Meta],
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
@@ -1309,7 +1508,7 @@ impl PositionalTokenPlanner {
         }) {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::UnsupportedFixedSyntax,
-                sites: vec![source_site(resolved, source, span_range(meta.span()))],
+                sites: vec![source_site(resolved, origin, span_range(meta.span()))],
                 message: format!(
                     "#[{}] is unsupported; #[tok(...)] is the sole fixed-token syntax",
                     path_text(meta.path()),
@@ -1322,7 +1521,7 @@ impl PositionalTokenPlanner {
 impl PrattRole {
     fn from_attributes(
         resolved: &ResolvedSourceGrammar,
-        source: crate::SourceId,
+        origin: SourceOrigin,
         metas: &[Meta],
         is_pratt: bool,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
@@ -1342,7 +1541,7 @@ impl PrattRole {
                 kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
                 sites: parse_metas
                     .iter()
-                    .map(|meta| source_site(resolved, source, span_range(meta.span())))
+                    .map(|meta| source_site(resolved, origin, span_range(meta.span())))
                     .collect(),
                 message: "a Pratt variant accepts at most one #[parse(...)] operator role"
                     .to_owned(),
@@ -1353,7 +1552,7 @@ impl PrattRole {
         let Meta::List(list) = meta else {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-                sites: vec![source_site(resolved, source, span_range(meta.span()))],
+                sites: vec![source_site(resolved, origin, span_range(meta.span()))],
                 message: "a Pratt #[parse] role must use parentheses".to_owned(),
             });
             return None;
@@ -1363,7 +1562,7 @@ impl PrattRole {
             Err(error) => {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InvalidPrattTokenPlacement,
-                    sites: vec![source_site(resolved, source, span_range(error.span()))],
+                    sites: vec![source_site(resolved, origin, span_range(error.span()))],
                     message: error.to_string(),
                 });
                 None
@@ -1374,14 +1573,14 @@ impl PrattRole {
 
 fn reject_misplaced_content_declarations(
     resolved: &ResolvedSourceGrammar,
-    source: crate::SourceId,
+    origin: SourceOrigin,
     metas: &[Meta],
     diagnostics: &mut Vec<SourceModelDiagnostic>,
 ) {
     for meta in metas.iter().filter(|meta| meta.path().is_ident("lex")) {
         diagnostics.push(SourceModelDiagnostic {
             kind: SourceModelDiagnosticKind::InvalidContentToken,
-            sites: vec![source_site(resolved, source, span_range(meta.span()))],
+            sites: vec![source_site(resolved, origin, span_range(meta.span()))],
             message: "#[lex(...)] declares a content-token field and is valid only on a field"
                 .to_owned(),
         });
@@ -1390,24 +1589,60 @@ fn reject_misplaced_content_declarations(
 
 fn source_site(
     resolved: &ResolvedSourceGrammar,
-    source: crate::SourceId,
+    origin: SourceOrigin,
     range: Range<u32>,
 ) -> SourceSite {
     SourceSite {
-        source,
-        path: resolved.tree.files[source.index()].path.clone(),
+        module: origin.module,
+        source: origin.source,
+        path: resolved.tree.files[origin.source.index()].path.clone(),
         range,
     }
 }
 
+fn canonical_source_order_key(site: &SourceSite) -> SourceOrderKey {
+    SourceOrderKey {
+        module: site.module.index(),
+        start: site.range.start,
+        end: site.range.end,
+    }
+}
+
 impl TokenCatalog {
+    fn define_lexical_base(&mut self, definition: CentralContentDefinition) {
+        if let Some(existing) = self.definitions.iter_mut().find(|existing| {
+            existing.name == definition.name
+                && matches!(
+                    &existing.kind,
+                    TokenDefinitionKind::LexicalBase(base)
+                        if base.pattern == definition.pattern
+                            && base.callback == definition.callback
+                            && base.priority.is_none()
+                )
+        }) {
+            existing.definition_sites.push(definition.site);
+            return;
+        }
+        let id = TokenDefinitionId::next(self.definitions.len());
+        self.definitions.push(TokenDefinition {
+            id,
+            name: definition.name,
+            kind: TokenDefinitionKind::LexicalBase(LexicalBaseTokenDefinition {
+                pattern: definition.pattern,
+                callback: definition.callback,
+                priority: None,
+            }),
+            definition_sites: vec![definition.site],
+        });
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn lower_content_definition(
         &mut self,
         resolved: &ResolvedSourceGrammar,
         semantic_facts: &SemanticFacts,
         grammar_defaults: &[ConfiguredTraitSelection],
-        source: crate::SourceId,
+        origin: SourceOrigin,
         metas: &[Meta],
         field: &ResolvedNodeField,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
@@ -1424,7 +1659,7 @@ impl TokenCatalog {
                 kind: SourceModelDiagnosticKind::InvalidContentToken,
                 sites: lex_metas
                     .iter()
-                    .map(|meta| source_site(resolved, source, span_range(meta.span())))
+                    .map(|meta| source_site(resolved, origin, span_range(meta.span())))
                     .collect(),
                 message: "a field accepts at most one #[lex(...)] declaration".to_owned(),
             });
@@ -1434,7 +1669,7 @@ impl TokenCatalog {
         let Meta::List(list) = meta else {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::InvalidContentToken,
-                sites: vec![source_site(resolved, source, span_range(meta.span()))],
+                sites: vec![source_site(resolved, origin, span_range(meta.span()))],
                 message: "#[lex] must use parentheses".to_owned(),
             });
             return;
@@ -1444,7 +1679,7 @@ impl TokenCatalog {
             Err(error) => {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InvalidContentToken,
-                    sites: vec![source_site(resolved, source, span_range(error.span()))],
+                    sites: vec![source_site(resolved, origin, span_range(error.span()))],
                     message: error.to_string(),
                 });
                 return;
@@ -1453,7 +1688,7 @@ impl TokenCatalog {
         if let Some(display) = syntax.display {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::ContentDisplayOverride,
-                sites: vec![source_site(resolved, source, span_range(display.span()))],
+                sites: vec![source_site(resolved, origin, span_range(display.span()))],
                 message: "content tokens always display their exact matched text; `display` is unsupported"
                     .to_owned(),
             });
@@ -1462,7 +1697,7 @@ impl TokenCatalog {
         let Some((semantic, name)) = semantic_facts.content_token(field) else {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::InvalidContentToken,
-                sites: vec![source_site(resolved, source, field.range.clone())],
+                sites: vec![source_site(resolved, origin, field.range.clone())],
                 message: "#[lex] requires a resolved content-token field target".to_owned(),
             });
             return;
@@ -1470,7 +1705,7 @@ impl TokenCatalog {
 
         let mut authored_definitions = Vec::new();
         for reference in syntax.admissions {
-            let site = source_site(resolved, source, span_range(reference.span()));
+            let site = source_site(resolved, origin, span_range(reference.span()));
             let fixed_name = reference.unraw().to_string();
             let Some(definition) = self.fixed_definition(&fixed_name) else {
                 diagnostics.push(SourceModelDiagnostic {
@@ -1484,7 +1719,7 @@ impl TokenCatalog {
             self.record_use(definition, TokenUseRole::ContentAdmission, site);
         }
 
-        let definition_site = source_site(resolved, source, span_range(meta.span()));
+        let definition_site = source_site(resolved, origin, span_range(meta.span()));
         let mut admission_set = authored_definitions.clone();
         admission_set.sort_unstable();
         admission_set.dedup();
@@ -1496,11 +1731,12 @@ impl TokenCatalog {
             semantic,
             name,
             syntax.pattern.value(),
+            syntax.callback,
+            syntax.priority,
             admission_set,
             authored,
             definition_site,
             grammar_defaults,
-            diagnostics,
         );
     }
 
@@ -1510,55 +1746,49 @@ impl TokenCatalog {
         semantic: ContentTokenId,
         name: String,
         pattern: String,
+        callback: Option<syn::Path>,
+        priority: Option<u32>,
         admission_set: Vec<TokenDefinitionId>,
         authored: AuthoredAdmissions,
         site: SourceSite,
         grammar_defaults: &[ConfiguredTraitSelection],
-        diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
-        if let Some(id) = self.content_by_name.get(&name).copied() {
+        let compatible = self.content_by_name.get(&name).and_then(|definitions| {
+            definitions.iter().copied().find(|id| {
+                matches!(
+                    &self.definitions[id.index()].kind,
+                    TokenDefinitionKind::Content(content)
+                        if content.semantic == semantic
+                            && content.pattern == pattern
+                            && content.callback == callback
+                            && content.priority == priority
+                            && content.admission_set == admission_set
+                )
+            })
+        });
+        if let Some(id) = compatible {
             let definition = &mut self.definitions[id.index()];
-            let compatible = matches!(
-                &definition.kind,
-                TokenDefinitionKind::Content(content)
-                    if content.semantic == semantic
-                        && content.pattern == pattern
-                        && content.admission_set == admission_set
-            );
             definition.definition_sites.push(site);
             let TokenDefinitionKind::Content(content) = &mut definition.kind else {
                 unreachable!("content namespace points only to content definitions");
             };
             content.authored_admissions.push(authored);
-            if !compatible {
-                let diagnostic = SourceModelDiagnostic {
-                    kind: SourceModelDiagnosticKind::ConflictingTokenDefinition,
-                    sites: definition.definition_sites.clone(),
-                    message: format!(
-                        "content token `{name}` has incompatible declarations at every listed site"
-                    ),
-                };
-                if let Some(index) = self.content_conflict_by_name.get(&name).copied() {
-                    diagnostics[index] = diagnostic;
-                } else {
-                    let index = diagnostics.len();
-                    diagnostics.push(diagnostic);
-                    self.content_conflict_by_name.insert(name, index);
-                }
-            } else if let Some(index) = self.content_conflict_by_name.get(&name).copied() {
-                diagnostics[index].sites = definition.definition_sites.clone();
-            }
             return;
         }
 
         let id = TokenDefinitionId::next(self.definitions.len());
-        self.content_by_name.insert(name.clone(), id);
+        self.content_by_name
+            .entry(name.clone())
+            .or_default()
+            .push(id);
         self.definitions.push(TokenDefinition {
             id,
             name,
             kind: TokenDefinitionKind::Content(ContentTokenDefinition {
                 semantic,
                 pattern,
+                callback,
+                priority,
                 admission_set,
                 authored_admissions: vec![authored],
                 text: ContentTextStorage::BorrowedOrOwnedMatchedText,
@@ -1571,6 +1801,120 @@ impl TokenCatalog {
             definition_sites: vec![site],
         });
     }
+}
+
+struct CentralTokensSyntax {
+    fixed: Vec<CentralFixedSyntax>,
+    content: Vec<CentralContentSyntax>,
+    non_token_lexer_records: Vec<CentralNonTokenLexerRecordSyntax>,
+}
+
+struct CentralNonTokenLexerRecordSyntax {
+    pattern: LitStr,
+    outcome: NonTokenLexerOutcome,
+}
+
+struct CentralFixedSyntax {
+    name: syn::Ident,
+    spelling: LitStr,
+    authored_class: AuthoredFixedTokenClass,
+}
+
+struct CentralContentSyntax {
+    name: syn::Ident,
+    pattern: LitStr,
+    callback: Option<syn::Path>,
+}
+
+impl Parse for CentralTokensSyntax {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut fixed = Vec::new();
+        let mut content = Vec::new();
+        let mut non_token_lexer_records = Vec::new();
+        while !input.is_empty() {
+            let section = syn::Ident::parse_any(input)?;
+            if input.peek(Token![=]) {
+                input.parse::<Token![=]>()?;
+                if section == "ignore" {
+                    non_token_lexer_records.push(CentralNonTokenLexerRecordSyntax {
+                        pattern: input.parse()?,
+                        outcome: NonTokenLexerOutcome::NonEmitting,
+                    });
+                } else {
+                    input.parse::<syn::Expr>()?;
+                }
+            } else {
+                let body;
+                syn::braced!(body in input);
+                if section == "keywords" || section == "punctuation" {
+                    let authored_class = if section == "keywords" {
+                        AuthoredFixedTokenClass::Keyword
+                    } else {
+                        AuthoredFixedTokenClass::Punctuation
+                    };
+                    while !body.is_empty() {
+                        let name = syn::Ident::parse_any(&body)?;
+                        body.parse::<Token![=>]>()?;
+                        let spelling = body.parse()?;
+                        fixed.push(CentralFixedSyntax {
+                            name,
+                            spelling,
+                            authored_class,
+                        });
+                        skip_central_entry_tail(&body)?;
+                    }
+                } else if section == "literals" || section == "lexer_tokens" {
+                    while !body.is_empty() {
+                        let name = syn::Ident::parse_any(&body)?;
+                        body.parse::<Token![=>]>()?;
+                        let pattern = body.parse()?;
+                        let callback = if body.peek(syn::Ident) {
+                            let marker = syn::Ident::parse_any(&body)?;
+                            if marker != "with" {
+                                return Err(syn::Error::new(
+                                    marker.span(),
+                                    "central token entries accept only `with path` after the pattern",
+                                ));
+                            }
+                            Some(body.parse()?)
+                        } else {
+                            None
+                        };
+                        content.push(CentralContentSyntax {
+                            name,
+                            pattern,
+                            callback,
+                        });
+                        if body.peek(Token![,]) {
+                            body.parse::<Token![,]>()?;
+                        } else if !body.is_empty() {
+                            return Err(body.error("expected `,` after central token entry"));
+                        }
+                    }
+                } else {
+                    body.parse::<proc_macro2::TokenStream>()?;
+                }
+            }
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+        }
+        Ok(Self {
+            fixed,
+            content,
+            non_token_lexer_records,
+        })
+    }
+}
+
+fn skip_central_entry_tail(input: ParseStream<'_>) -> syn::Result<()> {
+    while !input.is_empty() && !input.peek(Token![,]) {
+        input.parse::<proc_macro2::TokenTree>()?;
+    }
+    if input.peek(Token![,]) {
+        input.parse::<Token![,]>()?;
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -1655,6 +1999,8 @@ impl Parse for SeparatorSyntax {
 
 struct LexSyntax {
     pattern: LitStr,
+    callback: Option<syn::Path>,
+    priority: Option<u32>,
     admissions: Vec<syn::Ident>,
     display: Option<LitStr>,
 }
@@ -1662,6 +2008,8 @@ struct LexSyntax {
 impl Parse for LexSyntax {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut pattern = None;
+        let mut callback = None;
+        let mut priority = None;
         let mut admissions = None;
         let mut display = None;
         while !input.is_empty() {
@@ -1670,6 +2018,17 @@ impl Parse for LexSyntax {
                 input.parse::<Token![=]>()?;
                 if pattern.replace(input.parse()?).is_some() {
                     return Err(syn::Error::new(key.span(), "duplicate lex pattern"));
+                }
+            } else if key == "callback" {
+                input.parse::<Token![=]>()?;
+                if callback.replace(input.parse()?).is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate lex callback"));
+                }
+            } else if key == "priority" {
+                input.parse::<Token![=]>()?;
+                let value: syn::LitInt = input.parse()?;
+                if priority.replace(value.base10_parse()?).is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate lex priority"));
                 }
             } else if key == "admits" {
                 let content;
@@ -1697,6 +2056,8 @@ impl Parse for LexSyntax {
         }
         Ok(Self {
             pattern: pattern.ok_or_else(|| input.error("#[lex] requires pattern = r\"...\""))?,
+            callback,
+            priority,
             admissions: admissions.unwrap_or_default(),
             display,
         })
@@ -1806,22 +2167,29 @@ fn configured_trait_recipe(path: &syn::Path, facade: &str) -> Option<ConfiguredT
 }
 
 fn normalize_source_order(nodes: &mut [Node], tokens: &mut TokenCatalog) {
-    let site_key = |site: &SourceSite| (site.source.index(), site.range.start, site.range.end);
-
+    tokens
+        .lexer_records
+        .sort_by_key(|record| canonical_source_order_key(&record.site));
     for definition in &mut tokens.definitions {
-        definition.definition_sites.sort_by_key(&site_key);
-        if let TokenDefinitionKind::Content(content) = &mut definition.kind {
-            content
+        definition
+            .definition_sites
+            .sort_by_key(canonical_source_order_key);
+        match &mut definition.kind {
+            TokenDefinitionKind::Fixed(fixed) => fixed
+                .authored_classifications
+                .sort_by_key(|authored| canonical_source_order_key(&authored.site)),
+            TokenDefinitionKind::Content(content) => content
                 .authored_admissions
-                .sort_by_key(|authored| site_key(&authored.site));
+                .sort_by_key(|authored| canonical_source_order_key(&authored.site)),
+            TokenDefinitionKind::LexicalBase(_) => {}
         }
     }
     tokens.definitions.sort_by_key(|definition| {
         definition
             .definition_sites
             .first()
-            .map(&site_key)
-            .unwrap_or((usize::MAX, u32::MAX, u32::MAX))
+            .map(canonical_source_order_key)
+            .unwrap_or(SourceOrderKey::LAST)
     });
     let mut definition_remap = vec![TokenDefinitionId::next(0); tokens.definitions.len()];
     for (new_index, definition) in tokens.definitions.iter_mut().enumerate() {
@@ -1849,7 +2217,7 @@ fn normalize_source_order(nodes: &mut [Node], tokens: &mut TokenCatalog) {
 
     tokens
         .uses
-        .sort_by_key(|token_use| site_key(&token_use.site));
+        .sort_by_key(|token_use| canonical_source_order_key(&token_use.site));
     let mut use_remap = vec![TokenUseId::next(0); tokens.uses.len()];
     for (new_index, token_use) in tokens.uses.iter_mut().enumerate() {
         let new_id = TokenUseId::next(new_index);
@@ -2091,7 +2459,7 @@ struct Root {
             .iter()
             .find_map(|definition| match &definition.kind {
                 TokenDefinitionKind::Content(content) => Some(content),
-                TokenDefinitionKind::Fixed(_) => None,
+                TokenDefinitionKind::Fixed(_) | TokenDefinitionKind::LexicalBase(_) => None,
             })
             .expect("content token definition");
         assert_eq!(content.pattern, "[A-Za-z_][A-Za-z0-9_]*");
@@ -2257,7 +2625,7 @@ struct Root;
     }
 
     #[test]
-    fn rejects_content_display_misplacement_and_reports_every_conflicting_site() {
+    fn rejects_content_display_and_misplacement_before_lexical_planning() {
         let report = model(
             r#"
 recursa::grammar! { module = crate }
@@ -2288,14 +2656,6 @@ struct Misplaced;
             diagnostic.kind == SourceModelDiagnosticKind::InvalidContentToken
                 && diagnostic.message.contains("field")
         }));
-        let conflict = report
-            .diagnostics
-            .iter()
-            .find(|diagnostic| {
-                diagnostic.kind == SourceModelDiagnosticKind::ConflictingTokenDefinition
-            })
-            .expect("incompatible content definitions conflict");
-        assert_eq!(conflict.sites.len(), 3);
     }
 
     #[test]
@@ -2476,7 +2836,7 @@ struct IfPresence;
                 TokenDefinitionKind::Content(content) => {
                     Some((definition.id, content.admission_set[0]))
                 }
-                TokenDefinitionKind::Fixed(_) => None,
+                TokenDefinitionKind::Fixed(_) | TokenDefinitionKind::LexicalBase(_) => None,
             })
             .unwrap();
         assert_ne!(content_id, admission);
@@ -2766,7 +3126,7 @@ struct ElseToken;
             .iter()
             .find_map(|definition| match &definition.kind {
                 TokenDefinitionKind::Content(content) => Some(content),
-                TokenDefinitionKind::Fixed(_) => None,
+                TokenDefinitionKind::Fixed(_) | TokenDefinitionKind::LexicalBase(_) => None,
             })
             .unwrap();
         assert_eq!(content.admission_set.len(), 2);
