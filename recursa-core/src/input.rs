@@ -92,6 +92,11 @@ impl<'i, A> Input<'i, A> {
         self.cursor
     }
 
+    pub(crate) fn restore(&mut self, cursor: usize) {
+        debug_assert!(cursor <= self.records.len());
+        self.cursor = cursor;
+    }
+
     pub(crate) fn byte_position(&self) -> usize {
         self.peek(0)
             .map_or(self.source.len(), |record| record.span.start() as usize)

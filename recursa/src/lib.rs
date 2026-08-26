@@ -5,7 +5,7 @@
 
 pub use recursa_core::{
     ElementMetadata, ElementRole, ElementView, Elements, HasSpan, Node, NodeView, OffsetOverflow,
-    Parse, ParseError, ParseErrorKind, Parsed, Span, Vec1,
+    Parse, ParseError, ParseErrorKind, Parsed, Repeated, RepeatedIter, Span, Vec1,
 };
 pub use recursa_macros::{Node, grammar, tokens};
 

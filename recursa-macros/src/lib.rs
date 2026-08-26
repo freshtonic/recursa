@@ -11,7 +11,7 @@ const PRIVATE_PROTOCOL: u32 = 1;
 /// Marks a source declaration as a grammar Node and loads its generated body.
 ///
 /// The derive deliberately interprets no fields or grammar helper attributes.
-#[proc_macro_derive(Node, attributes(lex, tok, sep, parse, pratt))]
+#[proc_macro_derive(Node, attributes(lex, tok, sep, parse, pratt, spanned))]
 pub fn node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let ident = input.ident;

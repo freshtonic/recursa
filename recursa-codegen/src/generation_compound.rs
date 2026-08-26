@@ -13,7 +13,7 @@ use syn::{GenericArgument, GenericParam, Generics, Ident, PathArguments, Type, V
 
 use crate::TypeShape;
 use crate::build_diagnostic::{BuildReport, DiagnosticStage, GenerateError};
-use crate::decision_plan::{DispatchKind, FollowRecipe};
+use crate::decision_plan::{ContainerOperation, DispatchKind, FollowRecipe};
 use crate::lexical::{LexicalMatcher, TokenKindIdentity};
 use crate::lowering::ModuleId;
 use crate::m3::{CargoOutput, M3Input, analyze_source_tree, internal_generate_error};
@@ -23,7 +23,7 @@ use crate::materialization::{
 };
 use crate::resolution::{ResolvedFieldStyle, ResolvedNode, ResolvedNodeBody};
 use crate::source_model::TokenDefinitionKind;
-use crate::source_syntax::{CargoCfgSnapshot, span_range};
+use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, span_range};
 use crate::{FirstPosition, KindSet, SiteId, TextEquivalence};
 
 const PRIVATE_PROTOCOL: u32 = 1;
@@ -131,6 +131,7 @@ struct VariantParsePlan {
     style: ResolvedFieldStyle,
     elements: Vec<ElementParsePlan>,
     selector: ExpectedSet,
+    capture: Option<PlannedCapturePolicy>,
 }
 
 #[derive(Clone)]
@@ -149,9 +150,9 @@ enum ElementParseKind {
         field: FieldPlan,
         terminal: Box<Type>,
         wrappers: Vec<FieldWrapper>,
-        follow: PlannedFollow,
-        optional_selector: Option<ExpectedSet>,
+        container: Box<PlannedContainer>,
         capture: PlannedCapturePolicy,
+        child_capture: PlannedCapturePolicy,
     },
 }
 
@@ -166,6 +167,27 @@ struct FieldPlan {
 enum FieldWrapper {
     Boxed,
     Optional,
+    ZeroOrMore,
+    OneOrMore,
+}
+
+#[derive(Clone)]
+enum PlannedContainer {
+    Direct {
+        child_follow: PlannedFollow,
+    },
+    Optional {
+        selector: ExpectedSet,
+        child_follow: PlannedFollow,
+    },
+    Repeated {
+        operation: ContainerOperation,
+        element_selector: ExpectedSet,
+        separator_selector: Option<ExpectedSet>,
+        optional_trailing: bool,
+        stop: PlannedFollow,
+        child_follow: PlannedFollow,
+    },
 }
 
 #[derive(Clone)]
@@ -253,19 +275,38 @@ impl ExpectedSet {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PlannedCapturePolicy {
+    Inherited,
+    Off,
     Optional,
+    Mandatory,
 }
 
 impl PlannedCapturePolicy {
     const fn canonical_name(self) -> &'static str {
         match self {
+            Self::Inherited => "inherited",
+            Self::Off => "off",
             Self::Optional => "optional",
+            Self::Mandatory => "mandatory",
         }
     }
 
     fn render(self, facade: &Ident) -> proc_macro2::TokenStream {
         match self {
+            Self::Inherited => quote!(context.capture_policy()),
+            Self::Off => quote!(#facade::__private::CapturePolicy::Off),
             Self::Optional => quote!(#facade::__private::CapturePolicy::Optional),
+            Self::Mandatory => quote!(#facade::__private::CapturePolicy::Mandatory),
+        }
+    }
+}
+
+impl From<CaptureMode> for PlannedCapturePolicy {
+    fn from(value: CaptureMode) -> Self {
+        match value {
+            CaptureMode::Off => Self::Off,
+            CaptureMode::Optional => Self::Optional,
+            CaptureMode::Mandatory => Self::Mandatory,
         }
     }
 }
@@ -369,7 +410,7 @@ impl EmissionPlan {
                 kind,
                 kind_variant: kind_variants[target.base_kind.index()].clone(),
                 expected,
-                capture: PlannedCapturePolicy::Optional,
+                capture: resolved.build_inputs.spans.into(),
             });
         }
         let token_bindings = resolved
@@ -685,6 +726,9 @@ fn plan_node(
     decisions: &crate::DecisionProducts,
     kind_count: usize,
 ) -> Result<NodeParsePlan, String> {
+    let inherited_capture = node
+        .capture
+        .unwrap_or(lowered.source_modeled.resolved().build_inputs.spans);
     let application_type = lowered
         .lowering_map
         .applications
@@ -809,6 +853,7 @@ fn plan_node(
                         &input_lifetime,
                     )?,
                     selector,
+                    capture: resolved_variant.capture.map(PlannedCapturePolicy::from),
                 });
             }
             NodeBodyPlan::Enum {
@@ -839,7 +884,7 @@ fn plan_node(
         generics: node.generics.clone(),
         input_lifetime,
         body,
-        capture: PlannedCapturePolicy::Optional,
+        capture: inherited_capture.into(),
     })
 }
 
@@ -860,6 +905,20 @@ fn plan_elements(
             node.ident
         ));
     }
+    let node_capture = node
+        .capture
+        .map(PlannedCapturePolicy::from)
+        .unwrap_or(PlannedCapturePolicy::Inherited);
+    let variant_override = variant
+        .and_then(|variant| match &node.body {
+            ResolvedNodeBody::Enum { variants } => variants
+                .iter()
+                .find(|candidate| candidate.id == variant.resolved_variant)
+                .and_then(|variant| variant.capture),
+            ResolvedNodeBody::Struct { .. } => None,
+        })
+        .map(PlannedCapturePolicy::from);
+    let variant_capture = variant_override.unwrap_or(node_capture);
     let mut semantic_index = 0;
     elements
         .iter()
@@ -887,11 +946,15 @@ fn plan_elements(
                         .index();
                     let atom = token_atom(lowered, m2_site.target)?;
                     let name = fixed_element_name(node, token_use, definition, fixed);
+                    let capture = fixed_element_field(node, token_use)
+                        .and_then(|field| field.capture)
+                        .map(PlannedCapturePolicy::from)
+                        .unwrap_or(variant_capture);
                     Ok(ElementParsePlan {
                         metadata_name: name,
                         kind: ElementParseKind::Fixed {
                             expected: ExpectedSet::singleton(kind, atom, kind_count),
-                            capture: PlannedCapturePolicy::Optional,
+                            capture,
                         },
                     })
                 }
@@ -939,29 +1002,21 @@ fn plan_elements(
                         |variant| format!("{}_{}", snake_case(&variant.name), field_name),
                     );
                     let wrappers = field_wrappers(ty)?;
-                    let optional_selector = wrappers
+                    let field_override = resolved_field.capture.map(PlannedCapturePolicy::from);
+                    let capture = field_override.unwrap_or(variant_capture);
+                    let child_capture = field_override
+                        .or(variant_override)
+                        .or(terminal_node_capture(ty, lowered).map(PlannedCapturePolicy::from))
+                        .unwrap_or(node_capture);
+                    let machine = decisions
+                        .container_machines()
                         .iter()
-                        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
-                        .then(|| {
-                            decisions
-                                .container_machines()
-                                .iter()
-                                .find(|machine| machine.site() == *site)
-                                .ok_or_else(|| {
-                                    format!(
-                                        "optional field `{field_name}` lacks its container machine"
-                                    )
-                                })
-                                .and_then(|machine| {
-                                    ExpectedSet::from_positions(machine.element_first(), kind_count)
-                                })
-                        })
-                        .transpose()?;
-                    let follow = decisions
-                        .follow_recipes_by_site()
-                        .get(site.index())
-                        .ok_or_else(|| format!("field `{field_name}` lacks its FOLLOW recipe"))?;
-                    let follow = planned_follow(follow, kind_count)?;
+                        .find(|machine| machine.site() == *site)
+                        .ok_or_else(|| {
+                            format!("field `{field_name}` lacks its container machine")
+                        })?;
+                    validate_container_wrappers(machine.operation(), &wrappers, &field_name)?;
+                    let container = Box::new(planned_container(machine, kind_count)?);
                     Ok(ElementParsePlan {
                         metadata_name,
                         kind: ElementParseKind::Semantic {
@@ -974,21 +1029,49 @@ fn plan_elements(
                                             format_ident!("field_{field_index}")
                                         });
                                     variant.map_or(base.clone(), |variant| {
-                                        format_ident!("{}_{}", snake_case(&variant.name), base)
+                                        let variant_name = snake_case(&variant.name);
+                                        if base.unraw() == variant_name {
+                                            base
+                                        } else {
+                                            format_ident!("{}_{}", variant_name, base)
+                                        }
                                     })
                                 }),
                             },
                             terminal: Box::new(terminal_type(ty, lowered, input_lifetime)?),
                             wrappers,
-                            follow,
-                            optional_selector,
-                            capture: PlannedCapturePolicy::Optional,
+                            container,
+                            capture,
+                            child_capture,
                         },
                     })
                 }
             }
         })
         .collect()
+}
+
+fn terminal_node_capture(
+    ty: &ClosedType,
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Option<CaptureMode> {
+    match ty {
+        ClosedType::Boxed(inner)
+        | ClosedType::Optional(inner)
+        | ClosedType::ZeroOrMore(inner)
+        | ClosedType::OneOrMore(inner) => terminal_node_capture(inner, lowered),
+        ClosedType::Node(node_use) => {
+            let node = lowered.applications[node_use.application.index()].node;
+            lowered
+                .source_modeled
+                .resolved()
+                .nodes
+                .iter()
+                .find(|candidate| candidate.id == node)
+                .and_then(|node| node.capture)
+        }
+        ClosedType::ContentToken(_) => None,
+    }
 }
 
 fn token_atom(
@@ -1009,12 +1092,7 @@ fn fixed_element_name(
     definition: &crate::source_model::TokenDefinition,
     fixed: &crate::source_model::FixedTokenDefinition,
 ) -> String {
-    let field = node.fields.iter().find(|field| {
-        field.metas.iter().any(|meta| {
-            let range = span_range(meta.span());
-            range.start <= token_use.site.range.start && range.end >= token_use.site.range.end
-        })
-    });
+    let field = fixed_element_field(node, token_use);
     let base = if definition.name.starts_with('"') {
         snake_case(&fixed.spelling)
     } else {
@@ -1027,10 +1105,22 @@ fn fixed_element_name(
         })
 }
 
+fn fixed_element_field<'node>(
+    node: &'node ResolvedNode,
+    token_use: &crate::source_model::TokenUse,
+) -> Option<&'node crate::resolution::ResolvedNodeField> {
+    node.fields.iter().find(|field| {
+        field.metas.iter().any(|meta| {
+            let range = span_range(meta.span());
+            range.start <= token_use.site.range.start && range.end >= token_use.site.range.end
+        })
+    })
+}
+
 fn field_wrappers(ty: &ClosedType) -> Result<Vec<FieldWrapper>, String> {
-    fn walk(ty: &ClosedType, output: &mut Vec<FieldWrapper>) -> Result<(), String> {
+    fn walk(ty: &ClosedType, output: &mut Vec<FieldWrapper>) {
         match ty {
-            ClosedType::Node(_) | ClosedType::ContentToken(_) => Ok(()),
+            ClosedType::Node(_) | ClosedType::ContentToken(_) => {}
             ClosedType::Boxed(inner) => {
                 output.push(FieldWrapper::Boxed);
                 walk(inner, output)
@@ -1039,15 +1129,96 @@ fn field_wrappers(ty: &ClosedType) -> Result<Vec<FieldWrapper>, String> {
                 output.push(FieldWrapper::Optional);
                 walk(inner, output)
             }
-            ClosedType::ZeroOrMore(_) | ClosedType::OneOrMore(_) => Err(
-                "repetition containers are emitted by ticket #60, not compound ticket #64"
-                    .to_owned(),
-            ),
+            ClosedType::ZeroOrMore(inner) => {
+                output.push(FieldWrapper::ZeroOrMore);
+                walk(inner, output)
+            }
+            ClosedType::OneOrMore(inner) => {
+                output.push(FieldWrapper::OneOrMore);
+                walk(inner, output)
+            }
         }
     }
     let mut wrappers = Vec::new();
-    walk(ty, &mut wrappers)?;
+    walk(ty, &mut wrappers);
     Ok(wrappers)
+}
+
+fn validate_container_wrappers(
+    operation: ContainerOperation,
+    wrappers: &[FieldWrapper],
+    field_name: &str,
+) -> Result<(), String> {
+    let repetition = wrappers
+        .iter()
+        .position(|wrapper| matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore));
+    let optional_before_repeat = repetition.is_some_and(|index| {
+        wrappers[..index]
+            .iter()
+            .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+    });
+    let inferred = match repetition.map(|index| wrappers[index]) {
+        Some(FieldWrapper::ZeroOrMore) => ContainerOperation::ZeroOrMore,
+        Some(FieldWrapper::OneOrMore) if optional_before_repeat => {
+            ContainerOperation::OptionalOneOrMore
+        }
+        Some(FieldWrapper::OneOrMore) => ContainerOperation::OneOrMore,
+        Some(FieldWrapper::Boxed | FieldWrapper::Optional) => unreachable!(),
+        None if wrappers
+            .iter()
+            .any(|wrapper| matches!(wrapper, FieldWrapper::Optional)) =>
+        {
+            ContainerOperation::Optional
+        }
+        None => ContainerOperation::Direct,
+    };
+    if inferred == operation {
+        Ok(())
+    } else {
+        Err(format!(
+            "field `{field_name}` container wrappers disagree with its frozen machine: {inferred:?} vs {operation:?}"
+        ))
+    }
+}
+
+fn planned_container(
+    machine: &crate::ContainerMachine,
+    kind_count: usize,
+) -> Result<PlannedContainer, String> {
+    let stop = planned_follow(machine.stop(), kind_count)?;
+    let element_selector = ExpectedSet::from_positions(machine.element_first(), kind_count)?;
+    Ok(match machine.operation() {
+        ContainerOperation::Direct => PlannedContainer::Direct { child_follow: stop },
+        ContainerOperation::Optional => PlannedContainer::Optional {
+            selector: element_selector,
+            child_follow: stop,
+        },
+        operation @ (ContainerOperation::ZeroOrMore
+        | ContainerOperation::OneOrMore
+        | ContainerOperation::OptionalOneOrMore) => {
+            let separator_selector = if machine.separator().is_some() {
+                Some(ExpectedSet::from_positions(
+                    machine.separator_first(),
+                    kind_count,
+                )?)
+            } else {
+                None
+            };
+            let continuation = separator_selector
+                .as_ref()
+                .unwrap_or(&element_selector)
+                .clone();
+            let child_follow = follow_with_static(&stop, &continuation);
+            PlannedContainer::Repeated {
+                operation,
+                element_selector,
+                separator_selector,
+                optional_trailing: machine.optional_trailing(),
+                stop,
+                child_follow,
+            }
+        }
+    })
 }
 
 fn terminal_type(
@@ -1129,6 +1300,22 @@ fn planned_follow(recipe: &FollowRecipe, kind_count: usize) -> Result<PlannedFol
             PlannedFollow::StaticAndCaller(ExpectedSet::from_positions(first, kind_count)?)
         }
     })
+}
+
+fn follow_with_static(follow: &PlannedFollow, additional: &ExpectedSet) -> PlannedFollow {
+    match follow {
+        PlannedFollow::Caller => PlannedFollow::StaticAndCaller(additional.clone()),
+        PlannedFollow::Static(expected) => {
+            let mut expected = expected.clone();
+            expected.union_assign(additional);
+            PlannedFollow::Static(expected)
+        }
+        PlannedFollow::StaticAndCaller(expected) => {
+            let mut expected = expected.clone();
+            expected.union_assign(additional);
+            PlannedFollow::StaticAndCaller(expected)
+        }
+    }
 }
 
 fn validate_accessor_names(node: &ResolvedNode, body: &NodeBodyPlan) -> Result<(), String> {
@@ -1822,6 +2009,20 @@ fn render_accessor(
             ..
         } => {
             let accessor = field.accessor.as_ref()?;
+            if let Some(repeat_index) = wrappers.iter().position(|wrapper| {
+                matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)
+            }) {
+                return Some(render_repeated_accessor(
+                    facade,
+                    accessor,
+                    field,
+                    terminal,
+                    wrappers,
+                    repeat_index,
+                    element_index,
+                    variant,
+                ));
+            }
             let is_optional = wrappers
                 .iter()
                 .any(|wrapper| matches!(wrapper, FieldWrapper::Optional));
@@ -1842,7 +2043,7 @@ fn render_accessor(
                         #optional_reference.map(|value| {
                             #facade::__private::NodeViewFactory::view(
                                 value,
-                                self.cursor.child(#element_index),
+                                self.cursor.child(#element_index).child(0),
                             )
                         })
                     }
@@ -1851,7 +2052,7 @@ fn render_accessor(
                     quote! {
                         Some(#facade::__private::NodeViewFactory::view(
                             #reference,
-                            self.cursor.child(#element_index),
+                            self.cursor.child(#element_index).child(0),
                         ))
                     }
                 };
@@ -1875,7 +2076,7 @@ fn render_accessor(
                         #optional_reference.map(|value| {
                             #facade::__private::NodeViewFactory::view(
                                 value,
-                                self.cursor.child(#element_index),
+                                self.cursor.child(#element_index).child(0),
                             )
                         })
                     }
@@ -1889,10 +2090,94 @@ fn render_accessor(
                     ) -> impl #facade::NodeView<Value = #terminal> + 'view {
                         #facade::__private::NodeViewFactory::view(
                             #reference,
-                            self.cursor.child(#element_index),
+                            self.cursor.child(#element_index).child(0),
                         )
                     }
                 })
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_repeated_accessor(
+    facade: &Ident,
+    accessor: &Ident,
+    field: &FieldPlan,
+    terminal: &Type,
+    wrappers: &[FieldWrapper],
+    repeat_index: usize,
+    element_index: usize,
+    variant: Option<(&Ident, &Ident, ResolvedFieldStyle)>,
+) -> proc_macro2::TokenStream {
+    let outer = &wrappers[..repeat_index];
+    let inner = &wrappers[repeat_index + 1..];
+    let item_type = render_wrapped_type(facade, terminal, inner);
+    let project = render_terminal_reference(quote!(value), inner, true);
+    let cursor = quote!(self.cursor.child(#element_index));
+    let repeated = |collection: proc_macro2::TokenStream| {
+        quote! {
+            #facade::Repeated::new(
+                (#collection).as_slice(),
+                #cursor,
+                |value: &#item_type| -> &#terminal { #project },
+            )
+        }
+    };
+    let outer_optional = outer
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional));
+
+    if let Some((node, variant_ident, style)) = variant {
+        let binding = format_ident!("__recursa_field");
+        let active_pattern = field_binding_pattern(
+            node,
+            variant_ident,
+            style,
+            field.ident.as_ref(),
+            field.index,
+            &binding,
+        );
+        let active_value = if outer_optional {
+            let collection = render_optional_view_reference(quote!(#binding), outer, true);
+            let repeated = repeated(quote!(collection));
+            quote!(#collection.map(|collection| #repeated))
+        } else {
+            let collection = render_terminal_reference(quote!(#binding), outer, true);
+            let repeated = repeated(collection);
+            quote!(Some(#repeated))
+        };
+        quote! {
+            pub fn #accessor(
+                &self,
+            ) -> Option<#facade::Repeated<'view, #terminal, #item_type>> {
+                match self.value {
+                    #active_pattern => #active_value,
+                    _ => None,
+                }
+            }
+        }
+    } else {
+        let reference = field_access(quote!(self.value), field.ident.as_ref(), field.index);
+        if outer_optional {
+            let collection = render_optional_view_reference(reference, outer, false);
+            let repeated = repeated(quote!(collection));
+            quote! {
+                pub fn #accessor(
+                    &self,
+                ) -> Option<#facade::Repeated<'view, #terminal, #item_type>> {
+                    #collection.map(|collection| #repeated)
+                }
+            }
+        } else {
+            let collection = render_terminal_reference(reference, outer, false);
+            let repeated = repeated(collection);
+            quote! {
+                pub fn #accessor(
+                    &self,
+                ) -> #facade::Repeated<'view, #terminal, #item_type> {
+                    #repeated
+                }
             }
         }
     }
@@ -1911,7 +2196,7 @@ fn render_node_parse_body(
     let facade = &plan.facade;
     match &node.body {
         NodeBodyPlan::Struct { style, elements } => {
-            render_sequence_parse(plan, node, node_index, None, *style, elements)
+            render_sequence_parse(plan, node_index, None, *style, elements, None)
         }
         NodeBodyPlan::Enum { variants, expected } => {
             let expected_name = expected_static(node_index, usize::MAX, "dispatch");
@@ -1927,11 +2212,11 @@ fn render_node_parse_body(
                 );
                 let body = render_sequence_parse(
                     plan,
-                    node,
                     node_index,
                     Some((index, &variant.ident)),
                     variant.style,
                     &variant.elements,
+                    variant.capture,
                 );
                 quote! {
                     #selector_definition
@@ -1949,11 +2234,11 @@ fn render_node_parse_body(
 
 fn render_sequence_parse(
     plan: &EmissionPlan,
-    _node: &NodeParsePlan,
     node_index: usize,
     variant: Option<(usize, &Ident)>,
     style: ResolvedFieldStyle,
     elements: &[ElementParsePlan],
+    capture: Option<PlannedCapturePolicy>,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let start = format_ident!("__recursa_start");
@@ -1980,55 +2265,40 @@ fn render_sequence_parse(
                 field,
                 terminal,
                 wrappers,
-                follow,
-                optional_selector,
+                container,
                 capture,
+                child_capture,
             } => {
-                let follow_name = expected_static(node_index, unique_index, "follow");
-                let (follow_definition, follow_value) =
-                    render_follow_value(plan, &follow_name, follow);
-                let capture = capture.render(facade);
-                let parsed = quote! {
-                    context
-                        .parse_node::<#terminal>(&#follow_value, #capture)?
-                        .into_parts()
-                };
-                let is_optional = wrappers
-                    .iter()
-                    .any(|wrapper| matches!(wrapper, FieldWrapper::Optional));
-                if is_optional {
-                    let selector = optional_selector
-                        .as_ref()
-                        .expect("an optional field plan has its frozen selector");
-                    let selector_name = expected_static(node_index, unique_index, "optional");
-                    let selector_definition =
-                        render_expected_static(&selector_name, selector, plan.kind_count, facade);
-                    let wrapped = render_wrapped_value(quote!(parsed_value), wrappers);
-                    let render_absent = render_absent_value(wrappers);
-                    definitions.push(quote! {
-                        #follow_definition
-                        #selector_definition
-                        let (#value, #occurrence) = if context.next_is(&#selector_name) {
-                            let (parsed_value, occurrence) = #parsed;
-                            (#wrapped, occurrence)
-                        } else {
-                            (#render_absent, #facade::__private::Occurrence::absent())
-                        };
-                    });
-                } else {
-                    let wrapped = render_wrapped_value(quote!(parsed_value), wrappers);
-                    definitions.push(quote! {
-                        #follow_definition
-                        let (parsed_value, #occurrence) = #parsed;
-                        let #value = #wrapped;
-                    });
-                }
+                definitions.push(render_semantic_parse(
+                    plan,
+                    node_index,
+                    unique_index,
+                    &value,
+                    &occurrence,
+                    terminal,
+                    wrappers,
+                    container,
+                    *capture,
+                    *child_capture,
+                ));
                 values.push((field.clone(), value));
             }
         }
     }
     let target = variant.map(|(_, ident)| ident);
     let construction = render_construction(target, style, &values);
+    let finish = capture.map_or_else(
+        || quote!(context.finish_with_children(#construction, span, [#(#occurrences),*])),
+        |capture| {
+            let capture = capture.render(facade);
+            quote!(context.finish_with_children_policy(
+                #construction,
+                span,
+                #capture,
+                [#(#occurrences),*],
+            ))
+        },
+    );
     if elements.is_empty() {
         quote! {
             let _ = context;
@@ -2041,8 +2311,274 @@ fn render_sequence_parse(
             let span = context
                 .consumed_span_from(#start)
                 .expect("a successful non-empty Node parse consumes one valid token span");
-            context.finish_with_children(#construction, span, [#(#occurrences),*])
+            #finish
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_semantic_parse(
+    plan: &EmissionPlan,
+    node_index: usize,
+    unique_index: usize,
+    value: &Ident,
+    occurrence: &Ident,
+    terminal: &Type,
+    wrappers: &[FieldWrapper],
+    container: &PlannedContainer,
+    capture: PlannedCapturePolicy,
+    child_capture: PlannedCapturePolicy,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let capture = capture.render(facade);
+    let child_capture = child_capture.render(facade);
+    match container {
+        PlannedContainer::Direct { child_follow } => {
+            let follow_name = expected_static(node_index, unique_index, "child_follow");
+            let (follow_definition, follow_value) =
+                render_follow_value(plan, &follow_name, child_follow);
+            let wrapped = render_wrapped_value(quote!(parsed_value), wrappers);
+            quote! {
+                #follow_definition
+                let element_start = context.cursor();
+                let (parsed_value, child_occurrence) = context
+                    .parse_node::<#terminal>(&#follow_value, #child_capture)?
+                    .into_parts();
+                let element_span = context.consumed_span_from(element_start);
+                let #occurrence = context.finish_group(
+                    #capture,
+                    element_span,
+                    [child_occurrence],
+                )?;
+                let #value = #wrapped;
+            }
+        }
+        PlannedContainer::Optional {
+            selector,
+            child_follow,
+        } => {
+            let selector_name = expected_static(node_index, unique_index, "optional");
+            let selector_definition =
+                render_expected_static(&selector_name, selector, plan.kind_count, facade);
+            let follow_name = expected_static(node_index, unique_index, "child_follow");
+            let (follow_definition, follow_value) =
+                render_follow_value(plan, &follow_name, child_follow);
+            let wrapped = render_wrapped_value(quote!(parsed_value), wrappers);
+            let absent = render_absent_value(wrappers);
+            quote! {
+                #selector_definition
+                #follow_definition
+                let (#value, #occurrence) = if context.next_is(&#selector_name) {
+                    let element_start = context.cursor();
+                    let (parsed_value, child_occurrence) = context
+                        .parse_node::<#terminal>(&#follow_value, #child_capture)?
+                        .into_parts();
+                    let element_span = context.consumed_span_from(element_start);
+                    let occurrence = context.finish_group(
+                        #capture,
+                        element_span,
+                        [child_occurrence],
+                    )?;
+                    (#wrapped, occurrence)
+                } else {
+                    (#absent, context.finish_group(
+                        #capture,
+                        None,
+                        ::std::iter::empty(),
+                    )?)
+                };
+            }
+        }
+        PlannedContainer::Repeated {
+            operation,
+            element_selector,
+            separator_selector,
+            optional_trailing,
+            stop,
+            child_follow,
+        } => render_repeated_parse(
+            plan,
+            node_index,
+            unique_index,
+            value,
+            occurrence,
+            terminal,
+            wrappers,
+            *operation,
+            element_selector,
+            separator_selector.as_ref(),
+            *optional_trailing,
+            stop,
+            child_follow,
+            capture,
+            child_capture,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_repeated_parse(
+    plan: &EmissionPlan,
+    node_index: usize,
+    unique_index: usize,
+    value: &Ident,
+    occurrence: &Ident,
+    terminal: &Type,
+    wrappers: &[FieldWrapper],
+    operation: ContainerOperation,
+    element_selector: &ExpectedSet,
+    separator_selector: Option<&ExpectedSet>,
+    optional_trailing: bool,
+    stop: &PlannedFollow,
+    child_follow: &PlannedFollow,
+    capture: proc_macro2::TokenStream,
+    child_capture: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let repeat_index = wrappers
+        .iter()
+        .position(|wrapper| matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore))
+        .expect("a repeated container plan has a repetition wrapper");
+    let outer = &wrappers[..repeat_index];
+    let inner = &wrappers[repeat_index + 1..];
+    let repeated_wrapper = wrappers[repeat_index];
+    let wrapped_item = render_wrapped_value(quote!(parsed_value), inner);
+
+    let element_name = expected_static(node_index, unique_index, "element");
+    let element_definition =
+        render_expected_static(&element_name, element_selector, plan.kind_count, facade);
+    let stop_name = expected_static(node_index, unique_index, "stop");
+    let (stop_definition, stop_value) = render_follow_value(plan, &stop_name, stop);
+    let child_follow_name = expected_static(node_index, unique_index, "child_follow");
+    let (child_follow_definition, child_follow_value) =
+        render_follow_value(plan, &child_follow_name, child_follow);
+    let parse_item = quote! {
+        let (parsed_value, child_occurrence) = context
+            .parse_node::<#terminal>(&#child_follow_value, #child_capture)?
+            .into_parts();
+        parsed_values.push(#wrapped_item);
+        child_occurrences.push(child_occurrence);
+    };
+    let required = matches!(operation, ContainerOperation::OneOrMore);
+    let start = if required {
+        quote! {
+            if !context.next_is(&#element_name) {
+                return Err(context.unexpected(&#element_name));
+            }
+            #parse_item
+        }
+    } else {
+        quote! {
+            if context.next_is(&#element_name) {
+                #parse_item
+            } else if !context.is_eof() && !context.next_is(&#stop_value) {
+                return Err(context.unexpected(&#element_name));
+            }
+        }
+    };
+
+    let continuation = if let Some(separator_selector) = separator_selector {
+        let separator_name = expected_static(node_index, unique_index, "separator");
+        let separator_definition =
+            render_expected_static(&separator_name, separator_selector, plan.kind_count, facade);
+        let trailing = if optional_trailing {
+            quote! {
+                if context.is_eof() || context.next_is(&#stop_value) {
+                    break;
+                }
+            }
+        } else {
+            quote! {}
+        };
+        quote! {
+            #separator_definition
+            loop {
+                if !context.next_is(&#separator_name) {
+                    if context.is_eof() || context.next_is(&#stop_value) {
+                        break;
+                    }
+                    return Err(context.unexpected(&#child_follow_value));
+                }
+                let _separator = context.parse_fixed(
+                    &#separator_name,
+                    #facade::__private::CapturePolicy::Off,
+                )?;
+                if context.next_is(&#element_name) {
+                    #parse_item
+                    continue;
+                }
+                #trailing
+                return Err(context.unexpected(&#element_name));
+            }
+        }
+    } else {
+        quote! {
+            loop {
+                if context.next_is(&#element_name) {
+                    #parse_item
+                    continue;
+                }
+                if context.is_eof() || context.next_is(&#stop_value) {
+                    break;
+                }
+                return Err(context.unexpected(&#child_follow_value));
+            }
+        }
+    };
+
+    let collection = match repeated_wrapper {
+        FieldWrapper::ZeroOrMore => quote!(parsed_values),
+        FieldWrapper::OneOrMore => quote!({
+            let mut values = parsed_values.into_iter();
+            let first = values
+                .next()
+                .expect("a present one-or-more container parsed its first value");
+            let mut non_empty = #facade::Vec1::new(first);
+            for value in values {
+                non_empty.push(value);
+            }
+            non_empty
+        }),
+        FieldWrapper::Boxed | FieldWrapper::Optional => unreachable!(),
+    };
+    let present = render_wrapped_value(collection, outer);
+    let has_values = if operation == ContainerOperation::OptionalOneOrMore {
+        quote!(let has_values = !parsed_values.is_empty();)
+    } else {
+        quote!()
+    };
+    let semantic = if operation == ContainerOperation::OptionalOneOrMore {
+        let absent = render_absent_value(outer);
+        quote! {
+            let #value = if !has_values {
+                #absent
+            } else {
+                #present
+            };
+        }
+    } else {
+        quote!(let #value = #present;)
+    };
+
+    quote! {
+        #element_definition
+        #stop_definition
+        #child_follow_definition
+        let element_start = context.cursor();
+        let mut parsed_values = Vec::new();
+        let mut child_occurrences = #facade::__private::Occurrences::new();
+        #start
+        if !parsed_values.is_empty() {
+            #continuation
+        }
+        let element_span = context.consumed_span_from(element_start);
+        #has_values
+        let #occurrence = context.finish_group(
+            #capture,
+            element_span,
+            child_occurrences,
+        )?;
+        #semantic
     }
 }
 
@@ -2117,6 +2653,9 @@ fn render_wrapped_value(
         .fold(value, |value, wrapper| match wrapper {
             FieldWrapper::Boxed => quote!(Box::new(#value)),
             FieldWrapper::Optional => quote!(Some(#value)),
+            FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore => {
+                unreachable!("a repetition wrapper is constructed separately")
+            }
         })
 }
 
@@ -2131,6 +2670,21 @@ fn render_absent_value(wrappers: &[FieldWrapper]) -> proc_macro2::TokenStream {
         .fold(quote!(None), |value, wrapper| match wrapper {
             FieldWrapper::Boxed => quote!(Box::new(#value)),
             FieldWrapper::Optional => unreachable!("the first optional ends the absent value"),
+            FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore => {
+                unreachable!("an absent outer wrapper cannot contain a repetition")
+            }
+        })
+}
+
+fn render_wrapped_type(facade: &Ident, terminal: &Type, wrappers: &[FieldWrapper]) -> Type {
+    wrappers
+        .iter()
+        .rev()
+        .fold(terminal.clone(), |ty, wrapper| match wrapper {
+            FieldWrapper::Boxed => syn::parse_quote!(Box<#ty>),
+            FieldWrapper::Optional => syn::parse_quote!(Option<#ty>),
+            FieldWrapper::ZeroOrMore => syn::parse_quote!(Vec<#ty>),
+            FieldWrapper::OneOrMore => syn::parse_quote!(#facade::Vec1<#ty>),
         })
 }
 
@@ -2150,6 +2704,9 @@ fn render_terminal_reference(
             FieldWrapper::Boxed => quote!((#reference).as_ref()),
             FieldWrapper::Optional => {
                 unreachable!("non-optional accessors contain no optional wrapper")
+            }
+            FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore => {
+                unreachable!("container access stops at the repetition wrapper")
             }
         })
 }
@@ -2177,6 +2734,9 @@ fn render_optional_view_reference(
             }
             (true, FieldWrapper::Optional) => {
                 reference = quote!((#reference).and_then(|value| value.as_ref()));
+            }
+            (_, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore) => {
+                unreachable!("container access stops at the repetition wrapper")
             }
         }
     }

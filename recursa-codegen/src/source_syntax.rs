@@ -154,7 +154,99 @@ pub(crate) struct GrammarConfigSyntax {
     pub(crate) text_equivalence: TextEquivalence,
     pub(crate) invalid_keyword_matching: Option<InvalidKeywordMatchingSyntax>,
     pub(crate) max_lookahead: usize,
+    pub(crate) spans: CaptureMode,
     pub(crate) derives: Vec<Path>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CaptureMode {
+    Off,
+    Optional,
+    Mandatory,
+}
+
+impl CaptureMode {
+    pub(crate) fn parse(value: syn::Ident) -> syn::Result<Self> {
+        if value == "off" {
+            Ok(Self::Off)
+        } else if value == "optional" {
+            Ok(Self::Optional)
+        } else if value == "mandatory" {
+            Ok(Self::Mandatory)
+        } else {
+            Err(syn::Error::new(
+                value.span(),
+                "span capture must be `off`, `optional`, or `mandatory`",
+            ))
+        }
+    }
+}
+
+pub(crate) fn capture_override(metas: &[Meta]) -> syn::Result<Option<CaptureMode>> {
+    let mut capture = None;
+    for meta in metas.iter().filter(|meta| meta.path().is_ident("spanned")) {
+        if capture.is_some() {
+            return Err(syn::Error::new(
+                meta.span(),
+                "duplicate `spanned` attribute",
+            ));
+        }
+        let Meta::List(list) = meta else {
+            return Err(syn::Error::new(
+                meta.span(),
+                "`spanned` requires one of `off`, `optional`, or `mandatory`",
+            ));
+        };
+        capture = Some(CaptureMode::parse(list.parse_args()?)?);
+    }
+    Ok(capture)
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::{CaptureMode, GrammarConfigSyntax, capture_override};
+
+    #[test]
+    fn grammar_span_modes_are_typed_and_the_compatibility_default_is_optional() {
+        for (authored, expected) in [
+            ("off", CaptureMode::Off),
+            ("optional", CaptureMode::Optional),
+            ("mandatory", CaptureMode::Mandatory),
+        ] {
+            let syntax: GrammarConfigSyntax =
+                syn::parse_str(&format!("module = crate, spans = {authored}"))
+                    .expect("supported span mode parses");
+            assert_eq!(syntax.spans, expected);
+        }
+        let syntax: GrammarConfigSyntax =
+            syn::parse_str("module = crate").expect("default grammar configuration parses");
+        assert_eq!(syntax.spans, CaptureMode::Optional);
+    }
+
+    #[test]
+    fn invalid_span_configuration_messages_are_pinned() {
+        let error =
+            syn::parse_str::<GrammarConfigSyntax>("module = crate, spans = sometimes").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "span capture must be `off`, `optional`, or `mandatory`"
+        );
+
+        let malformed: Vec<syn::Meta> = vec![syn::parse_quote!(spanned)];
+        assert_eq!(
+            capture_override(&malformed).unwrap_err().to_string(),
+            "`spanned` requires one of `off`, `optional`, or `mandatory`"
+        );
+
+        let duplicate: Vec<syn::Meta> = vec![
+            syn::parse_quote!(spanned(off)),
+            syn::parse_quote!(spanned(optional)),
+        ];
+        assert_eq!(
+            capture_override(&duplicate).unwrap_err().to_string(),
+            "duplicate `spanned` attribute"
+        );
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -170,6 +262,7 @@ impl Parse for GrammarConfigSyntax {
         let mut text_equivalence = None;
         let mut invalid_keyword_matching = None;
         let mut max_lookahead = None;
+        let mut spans = None;
         let mut derives = None;
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
@@ -208,6 +301,9 @@ impl Parse for GrammarConfigSyntax {
                     reject_duplicate(&max_lookahead, key.span(), "max_lookahead")?;
                     let value: LitInt = input.parse()?;
                     max_lookahead = Some(value.base10_parse()?);
+                } else if key == "spans" {
+                    reject_duplicate(&spans, key.span(), "spans")?;
+                    spans = Some(CaptureMode::parse(input.parse()?)?);
                 } else {
                     return Err(syn::Error::new(
                         key.span(),
@@ -227,6 +323,8 @@ impl Parse for GrammarConfigSyntax {
             text_equivalence: text_equivalence.unwrap_or(TextEquivalence::Sensitive),
             invalid_keyword_matching,
             max_lookahead: max_lookahead.unwrap_or(1),
+            // Optional preserves the pre-configuration generated API behavior.
+            spans: spans.unwrap_or(CaptureMode::Optional),
             derives: derives.unwrap_or_default(),
         })
     }

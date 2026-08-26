@@ -1,0 +1,211 @@
+recursa::grammar! {
+    module = crate::grammar,
+    keyword_matching = sensitive,
+    max_lookahead = 1,
+    spans = __RECURSA_SPANS_MODE__,
+}
+
+recursa::tokens! {
+    ignore = r"[ \t\n\r]+",
+    keywords {
+        BOXED => "boxed",
+        OPTIONAL => "optional",
+        MANY => "many",
+        MAYBE => "maybe",
+        MARKS => "marks",
+        CHOICE => "choice",
+        EMPTY => "empty",
+        STRICT => "strict",
+        CAPTURE => "capture",
+        NODE_OFF => "nodeoff",
+        NODE_OPTIONAL => "nodeoptional",
+        NODE_MANDATORY => "nodemandatory",
+        FIELD_MANDATORY => "fieldmandatory",
+        FIELD_OFF => "fieldoff",
+        FIELD_OPTIONAL => "fieldoptional",
+        VARIANT_OFF => "variantoff",
+        VARIANT_MANDATORY => "variantmandatory",
+        PARENT_OFF => "parentoff",
+        PARENT_FIELD_OFF => "parentfieldoff",
+        DESCENDANT => "descendant",
+        DESCENDANTS => "descendants",
+        MIXED => "mixed",
+        MIX_OFF => "off",
+        MIX_ON => "on",
+    }
+    punctuation {
+        COMMA => ",",
+        DOT => ".",
+    }
+}
+
+#[derive(recursa::Node)]
+pub struct Item<'input> {
+    #[lex(pattern = r"[A-Za-z]+")]
+    pub text: ItemText<'input>,
+}
+
+#[derive(recursa::Node)]
+#[tok(DOT)]
+pub struct Marker;
+
+#[derive(recursa::Node)]
+#[tok(CAPTURE, this)]
+pub struct InheritedCapture<'input> {
+    pub value: Box<Item<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[spanned(off)]
+#[tok(NODE_OFF, this)]
+pub struct NodeOff<'input> {
+    pub value: Box<Item<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[spanned(optional)]
+#[tok(NODE_OPTIONAL, this)]
+pub struct NodeOptional<'input> {
+    pub value: Box<Item<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[spanned(mandatory)]
+#[tok(NODE_MANDATORY, this)]
+pub struct NodeMandatory<'input> {
+    pub value: Box<Item<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[spanned(off)]
+#[tok(FIELD_MANDATORY, this)]
+pub struct FieldMandatory<'input> {
+    #[spanned(mandatory)]
+    pub value: Box<Item<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[spanned(mandatory)]
+#[tok(FIELD_OFF, this)]
+pub struct FieldOff<'input> {
+    #[spanned(off)]
+    pub value: Box<Item<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[spanned(mandatory)]
+#[tok(FIELD_OPTIONAL, this)]
+pub struct FieldOptional<'input> {
+    #[spanned(optional)]
+    pub value: Box<Item<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub enum VariantCapture<'input> {
+    #[spanned(off)]
+    #[tok(VARIANT_OFF, this)]
+    Off { value: Box<Item<'input>> },
+    #[spanned(mandatory)]
+    #[tok(VARIANT_MANDATORY, this)]
+    Mandatory { value: Box<Item<'input>> },
+}
+
+#[derive(recursa::Node)]
+#[spanned(off)]
+#[tok(PARENT_OFF, this)]
+pub struct ParentOff<'input> {
+    pub child: Box<NodeMandatory<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[spanned(mandatory)]
+#[tok(PARENT_FIELD_OFF, this)]
+pub struct ParentFieldOff<'input> {
+    #[spanned(off)]
+    pub child: Box<NodeMandatory<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[spanned(off)]
+#[tok(DESCENDANT, this)]
+pub struct DescendantMandatory<'input> {
+    #[spanned(mandatory)]
+    pub value: Box<Item<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[spanned(off)]
+#[tok(DESCENDANTS, this)]
+pub struct RepeatedDescendants<'input> {
+    #[sep(COMMA)]
+    pub values: Vec<Box<DescendantMandatory<'input>>>,
+}
+
+#[derive(recursa::Node)]
+pub enum MixedCapture {
+    #[spanned(off)]
+    #[tok(MIX_OFF)]
+    Off,
+    #[spanned(mandatory)]
+    #[tok(MIX_ON)]
+    On,
+}
+
+#[derive(recursa::Node)]
+#[spanned(off)]
+#[tok(MIXED, this)]
+pub struct MixedMany {
+    #[sep(COMMA)]
+    pub values: Vec<MixedCapture>,
+}
+
+#[derive(recursa::Node)]
+#[tok(BOXED, this)]
+pub struct Boxed<'input> {
+    pub value: Box<Item<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(OPTIONAL, this)]
+pub struct Optional<'input> {
+    pub value: Option<Box<Item<'input>>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(MANY, this)]
+pub struct Many<'input> {
+    #[sep(COMMA, trailing)]
+    pub values: Vec<Box<Item<'input>>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(MAYBE, this)]
+pub struct MaybeMany<'input> {
+    #[sep(COMMA, trailing)]
+    pub values: Option<Box<recursa::Vec1<Box<Item<'input>>>>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(MARKS, this)]
+pub struct NonEmptyMarkers {
+    #[sep(COMMA)]
+    pub values: Box<recursa::Vec1<Box<Marker>>>,
+}
+
+#[derive(recursa::Node)]
+pub enum Choice<'input> {
+    #[tok(CHOICE, this)]
+    Items {
+        #[sep(COMMA)]
+        items: recursa::Vec1<Box<Item<'input>>>,
+    },
+    #[tok(EMPTY)]
+    Empty,
+}
+
+#[derive(recursa::Node)]
+#[tok(STRICT, this)]
+pub struct Strict<'input> {
+    #[sep(COMMA)]
+    pub values: recursa::Vec1<Box<Item<'input>>>,
+}
