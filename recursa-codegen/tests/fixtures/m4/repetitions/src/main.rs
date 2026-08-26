@@ -248,6 +248,26 @@ fn assert_repetition_behavior() {
     let many = move_many(many);
     assert_eq!(many.values.len(), 2);
     assert_eq!(many.values[0].text.text(), many.values[1].text.text());
+    struct Counter(usize);
+    impl recursa::TotalVisitor for Counter {
+        type Error = ();
+        fn total_enter<N>(
+            &mut self,
+            _node: &N,
+        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+            self.0 += 1;
+            std::ops::ControlFlow::Continue(())
+        }
+        fn total_exit<N>(
+            &mut self,
+            _node: &N,
+        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+            std::ops::ControlFlow::Continue(())
+        }
+    }
+    let mut counter = Counter(0);
+    assert!(recursa::Visit::visit(&many, &mut counter).is_continue());
+    assert_eq!(counter.0, 5, "Vec traversal includes Node and token leaves");
 
     let unspanned_lexed = grammar::lex("many left,right");
     let mut unspanned_input = unspanned_lexed.input();
@@ -283,6 +303,11 @@ fn assert_repetition_behavior() {
         marker_values.get(1).unwrap().span(),
         recursa::Span::new(10, 11).ok()
     );
+    let mut counter = Counter(0);
+    assert!(
+        recursa::Visit::visit(markers.root().value(), &mut counter).is_continue()
+    );
+    assert_eq!(counter.0, 3, "Vec1 traversal preserves one-or-more children");
     assert_eq!(markers.into_ast().values.len(), 2);
 
     let choice = parse_spanned!(grammar::Choice<'_>, "choice x,y");

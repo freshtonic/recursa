@@ -25,6 +25,150 @@ fn a_downstream_crate_parses_authored_compound_nodes_and_views() {
 }
 
 #[test]
+fn configured_feature_recipes_require_the_matching_facade_capability_once() {
+    let package = scaffold_fixture();
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read fixture manifest");
+    fs::write(
+        &manifest,
+        source.replace("\", features = [\"arbitrary\", \"serde\"] }", "\" }"),
+    )
+    .expect("disable facade capabilities");
+
+    let output = run_fixture_unlocked(&package);
+    assert!(!output.status.success(), "missing capabilities must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.matches("error: error[RCA9005]").count(),
+        1,
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("E0433"),
+        "root gating suppresses cascades:\n{stderr}"
+    );
+}
+
+#[test]
+fn extra_facade_capabilities_are_harmless() {
+    let package = scaffold_fixture();
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read grammar");
+    fs::write(
+        &grammar,
+        source.replace(", Arbitrary, serde::Serialize, serde::Deserialize", ""),
+    )
+    .expect("remove feature-backed recipes while retaining facade features");
+    let main = package.path().join("src/main.rs");
+    let source = fs::read_to_string(&main).expect("read downstream consumer");
+    fs::write(
+        &main,
+        source.replace(
+            "    fn assert_arbitrary<T: for<'arbitrary> recursa::Arbitrary<'arbitrary>>() {}\n    assert_arbitrary::<grammar::Record<'static>>();\n\n",
+            "",
+        ),
+    )
+    .expect("remove assertion for the removed recipe");
+    let output = run_fixture(&package);
+    assert!(
+        output.status.success(),
+        "extra capabilities failed\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn a_renamed_facade_is_used_by_generated_roots_nodes_and_feature_recipes() {
+    let package = scaffold_fixture();
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read fixture manifest");
+    fs::write(
+        &manifest,
+        source.replacen("recursa = {", "my_recursa = { package = \"recursa\",", 1),
+    )
+    .expect("rename facade dependency");
+    for relative in ["src/grammar.rs", "src/main.rs"] {
+        let path = package.path().join(relative);
+        let source = fs::read_to_string(&path).expect("read fixture source");
+        let mut renamed = source.replace("recursa::", "my_recursa::");
+        if relative == "src/grammar.rs" {
+            renamed = renamed.replace(
+                "module = crate::grammar,",
+                "module = crate::grammar,\n    facade = my_recursa,",
+            );
+        }
+        fs::write(path, renamed).expect("rewrite facade references");
+    }
+
+    let output = run_fixture_unlocked(&package);
+    assert!(
+        output.status.success(),
+        "renamed facade failed\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn private_protocol_mismatch_is_reported_once_at_the_grammar_root() {
+    let package = scaffold_fixture();
+    let first = run_fixture(&package);
+    assert!(
+        first.status.success(),
+        "initial fixture failed\n{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let generation = generation_directories(&target_dir(&package))
+        .into_iter()
+        .next()
+        .expect("published generation");
+    let root = generation.join("root.rs");
+    let source = fs::read_to_string(&root).expect("read generated root");
+    fs::write(&root, source.replace("protocol_1", "protocol_999"))
+        .expect("inject private protocol mismatch");
+
+    let output = run_fixture(&package);
+    assert!(!output.status.success(), "protocol mismatch must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.matches("error: error[RCA9003]").count(),
+        1,
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn parsed_values_and_views_exclude_owned_or_mutable_semantic_traits() {
+    let package = scaffold_fixture();
+    let main = package.path().join("src/main.rs");
+    let source = fs::read_to_string(&main).expect("read downstream consumer");
+    fs::write(
+        &main,
+        source.replace(
+            "let record = parse_spanned!(grammar::Record<'_>, \"ReCoRd:alpha 42\");",
+            r#"let record = parse_spanned!(grammar::Record<'_>, "ReCoRd:alpha 42");
+    fn requires_clone<T: Clone>(_: &T) {}
+    fn requires_visit_mut<T: recursa::VisitMut>(_: &mut T) {}
+    requires_clone(&record);
+    let mut forbidden = record.root();
+    requires_visit_mut(&mut forbidden);"#,
+        ),
+    )
+    .expect("request excluded forwarding traits");
+
+    let output = run_fixture(&package);
+    assert!(!output.status.success(), "excluded traits must not compile");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Parsed<'_, recursa_generated_compound_nodes::grammar::Record<'_>>: Clone"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("RecordView<'_, '_>: VisitMut"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn a_concrete_view_name_collision_is_a_deterministic_generation_error() {
     let package = scaffold_fixture();
     let grammar = package.path().join("src/grammar.rs");
@@ -181,6 +325,19 @@ fn run_fixture(package: &TempDir) -> Output {
         .env("CARGO_TARGET_DIR", target_dir(package))
         .output()
         .expect("run compound grammar fixture")
+}
+
+fn run_fixture_unlocked(package: &TempDir) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    Command::new(cargo)
+        .arg("run")
+        .arg("--offline")
+        .arg("--quiet")
+        .current_dir(package.path())
+        .env_remove("RECURSA_GENERATION")
+        .env("CARGO_TARGET_DIR", target_dir(package))
+        .output()
+        .expect("run compound grammar fixture with a mutated manifest")
 }
 
 fn target_dir(package: &TempDir) -> PathBuf {

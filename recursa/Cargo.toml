@@ -6,6 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+arbitrary = ["recursa-core/arbitrary", "recursa-macros/arbitrary"]
+diagrams = ["recursa-macros/diagrams"]
+explorer = ["recursa-macros/explorer"]
+serde = ["recursa-core/serde", "recursa-macros/serde"]
+
 [dependencies]
 recursa-core = { path = "../recursa-core" }
 recursa-macros = { path = "../recursa-macros" }

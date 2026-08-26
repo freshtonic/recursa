@@ -35,6 +35,60 @@ impl<T: fmt::Debug> fmt::Debug for Parsed<'_, T> {
     }
 }
 
+impl<T: PartialEq> PartialEq for Parsed<'_, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.ast == other.ast
+    }
+}
+
+impl<T: Eq> Eq for Parsed<'_, T> {}
+
+impl<T: PartialOrd> PartialOrd for Parsed<'_, T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.ast.partial_cmp(&other.ast)
+    }
+}
+
+impl<T: Ord> Ord for Parsed<'_, T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.ast.cmp(&other.ast)
+    }
+}
+
+impl<T: Hash> Hash for Parsed<'_, T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ast.hash(state);
+    }
+}
+
+impl<T: crate::Visit> crate::Visit for Parsed<'_, T> {
+    fn visit<V: crate::TotalVisitor>(
+        &self,
+        visitor: &mut V,
+    ) -> std::ops::ControlFlow<crate::VisitBreak<V::Error>> {
+        self.ast.visit(visitor)
+    }
+}
+
+impl<T: crate::Pretty> crate::Pretty for Parsed<'_, T> {
+    fn pretty(&self, context: &mut crate::PrettyContext) -> fmt::Result {
+        if let Origin::Captured { source, provenance } = &self.origin
+            && let Some(span) = provenance.root.span
+            && let Some(text) = source.get(span.range())
+        {
+            return context.exact(text);
+        }
+        self.ast.pretty(context)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<T: serde::Serialize> serde::Serialize for Parsed<'_, T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.ast.serialize(serializer)
+    }
+}
+
 enum Origin<'input> {
     Synthetic,
     Uncaptured,
@@ -298,8 +352,9 @@ impl<T: Node> Parsed<'_, T> {
     pub fn root(&self) -> T::View<'_> {
         self.ast.__view(match &self.origin {
             Origin::Synthetic | Origin::Uncaptured => ViewCursor::absent(),
-            Origin::Captured { provenance, .. } => ViewCursor {
+            Origin::Captured { source, provenance } => ViewCursor {
                 occurrence: Some(&provenance.root),
+                source: Some(*source),
             },
         })
     }
@@ -363,11 +418,15 @@ pub trait NodeViewFactory: Sized {
 #[derive(Clone, Copy)]
 pub struct ViewCursor<'view> {
     occurrence: Option<&'view OccurrenceNode>,
+    source: Option<&'view str>,
 }
 
 impl<'view> ViewCursor<'view> {
     fn absent() -> Self {
-        Self { occurrence: None }
+        Self {
+            occurrence: None,
+            source: None,
+        }
     }
 
     /// Returns the extent for the generated view without exposing sidecar IDs.
@@ -381,7 +440,14 @@ impl<'view> ViewCursor<'view> {
             occurrence: self
                 .occurrence
                 .and_then(|occurrence| occurrence.children.get(index)),
+            source: self.source,
         }
+    }
+
+    /// Exact captured text for this occurrence, when available.
+    pub fn text(self) -> Option<&'view str> {
+        let span = self.span()?;
+        self.source?.get(span.range())
     }
 
     /// Binds this occurrence cursor to generated static element metadata.
@@ -457,6 +523,21 @@ impl Ord for ContentText<'_> {
 impl Hash for ContentText<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.as_str().hash(state);
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for ContentText<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, 'input> serde::Deserialize<'de> for ContentText<'input> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Self::owned(text.into_boxed_str()))
     }
 }
 

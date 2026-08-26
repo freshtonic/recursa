@@ -1,5 +1,6 @@
 recursa::grammar! {
     module = crate::grammar,
+    derives(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Pretty, Visit, VisitMut, Arbitrary, serde::Serialize, serde::Deserialize),
     keyword_matching = ascii_insensitive,
     max_lookahead = 1,
 }
@@ -57,9 +58,18 @@ pub struct Label<'input> {
 }
 
 #[derive(recursa::Node)]
+#[node(omit(Clone))]
 pub struct Count<'input> {
     #[lex(pattern = r"[0-9]+")]
     pub text: CountText<'input>,
+}
+
+impl<'input> Clone for Count<'input> {
+    fn clone(&self) -> Self {
+        Self {
+            text: self.text.clone(),
+        }
+    }
 }
 
 pub fn assert_private_sibling_spans() {
@@ -146,6 +156,7 @@ mod left {
     use recursa::HasSpan as _;
 
     #[derive(recursa::Node)]
+    #[node(derive(Copy))]
     #[tok(LEFT)]
     struct Hidden;
 
@@ -167,6 +178,30 @@ mod left {
             elements.get(0).unwrap().role(),
             recursa::ElementRole::FixedToken
         );
+
+        struct Counter(usize);
+        impl recursa::TotalVisitor for Counter {
+            type Error = ();
+            fn total_enter<N>(
+                &mut self,
+                _node: &N,
+            ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+                self.0 += 1;
+                std::ops::ControlFlow::Continue(())
+            }
+            fn total_exit<N>(
+                &mut self,
+                _node: &N,
+            ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+                std::ops::ControlFlow::Continue(())
+            }
+        }
+        let ast = parsed.into_ast();
+        fn requires_copy<T: Copy>(_: T) {}
+        requires_copy(ast);
+        let mut counter = Counter(0);
+        assert!(recursa::Visit::visit(&ast, &mut counter).is_continue());
+        assert_eq!(counter.0, 1, "private Nodes participate in traversal");
     }
 }
 

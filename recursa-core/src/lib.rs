@@ -6,7 +6,9 @@ mod lex;
 mod output;
 mod parse;
 mod parsed;
+mod pretty;
 mod span;
+mod visitor;
 
 pub(crate) use grammar::{ExpectedAtomId, FollowSet, GrammarInfo, TokenKind};
 pub(crate) use input::{Input, LexResult, TokenRecord};
@@ -16,7 +18,11 @@ pub use parsed::{
     ElementMetadata, ElementRole, ElementView, Elements, Node, NodeView, Parse, Parsed, Repeated,
     RepeatedIter,
 };
+pub use pretty::{Pretty, PrettyContext};
 pub use span::{OffsetOverflow, Span};
+pub use visitor::{
+    TotalVisitor, TotalVisitorMut, Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
+};
 
 /// Runtime operations reserved for Recursa-generated code.
 ///
@@ -34,6 +40,10 @@ pub mod __private {
         Occurrence, Occurrences, ParseContext, ParsedNode, Repeated, RepeatedIter, ViewCursor,
         parse, parse_seal::Sealed as ParseSealed, parse_spanned,
     };
+    #[cfg(feature = "arbitrary")]
+    pub use arbitrary;
+    #[cfg(feature = "serde")]
+    pub use serde;
 
     /// Constructs one generated element descriptor without exposing its fields.
     pub const fn element_metadata(
