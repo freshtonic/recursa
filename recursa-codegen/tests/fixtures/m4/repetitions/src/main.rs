@@ -397,9 +397,35 @@ fn assert_repetition_behavior() {
     );
     assert_eq!(attached_nonempty.root().values().unwrap().len(), 2);
     assert_eq!(
+        attached_nonempty
+            .root()
+            .values()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .span(),
+        recursa::Span::new(18, 22).ok(),
+    );
+    assert_eq!(
+        attached_nonempty
+            .root()
+            .values()
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .span(),
+        recursa::Span::new(25, 30).ok(),
+    );
+    assert_eq!(
         attached_nonempty.render(),
         "attachednonempty{left}, {right}"
     );
+    let rendered = attached_nonempty.render();
+    let reparsed = parse_spanned!(grammar::AttachedNonEmpty<'_>, rendered.as_str());
+    assert_eq!(reparsed.render(), rendered);
+    let rerendered = reparsed.render();
+    let reparsed_again = parse_spanned!(grammar::AttachedNonEmpty<'_>, rerendered.as_str());
+    assert_eq!(reparsed_again.render(), rerendered);
 }
 
 fn main() {
