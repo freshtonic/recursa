@@ -71,6 +71,7 @@ pub(crate) struct LoweringMap {
     pub(crate) applications: Vec<ApplicationTypeCorrelation>,
     pub(crate) variants: Vec<VariantAlternativeCorrelation>,
     pub(crate) fields: Vec<MaterializedFieldCorrelation>,
+    pub(crate) attachments: Vec<AttachmentUnitCorrelation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,6 +104,16 @@ pub(crate) struct MaterializedFieldCorrelation {
 pub(crate) enum MaterializedFieldLowering {
     ParseSite(SiteId),
     PrattLhs { owner: TypeId, variant: DeclId },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AttachmentUnitCorrelation {
+    pub(crate) application: MaterializedApplicationId,
+    pub(crate) field: ResolvedFieldId,
+    pub(crate) outer: SiteId,
+    pub(crate) unit: TypeId,
+    pub(crate) sites: Vec<SiteId>,
+    pub(crate) semantic_index: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1729,6 +1740,34 @@ impl Materializer {
                 unit.id,
             );
         }
+        let attachment_correlations = attachment_units
+            .iter()
+            .map(|unit| {
+                let outer = field_correlations
+                    .iter()
+                    .find_map(|correlation| {
+                        (correlation.application == unit.application
+                            && correlation.field == unit.field)
+                            .then_some(correlation.lowered)
+                    })
+                    .and_then(|lowering| match lowering {
+                        MaterializedFieldLowering::ParseSite(site) => Some(site),
+                        MaterializedFieldLowering::PrattLhs { .. } => None,
+                    })
+                    .expect("an attachment unit has one correlated authored field site");
+                let TypeShape::Sequence { sites } = &grammar.types[unit.id.index()].shape else {
+                    unreachable!("attachment units are synthetic sequences")
+                };
+                AttachmentUnitCorrelation {
+                    application: unit.application,
+                    field: unit.field,
+                    outer,
+                    unit: unit.id,
+                    sites: sites.clone(),
+                    semantic_index: unit.attachment.before.len(),
+                }
+            })
+            .collect();
         (
             grammar,
             LoweringMap {
@@ -1753,6 +1792,7 @@ impl Materializer {
                 applications,
                 variants: variant_correlations,
                 fields: field_correlations,
+                attachments: attachment_correlations,
             },
         )
     }
@@ -3384,6 +3424,13 @@ struct Root {
         let outer = &lowered.grammar.sites[root_sites[0].index()];
         assert!(matches!(outer.container, ContainerShape::Optional(_)));
         let attachment_type = outer.target;
+        let [attachment_correlation] = lowered.lowering_map.attachments.as_slice() else {
+            panic!("one typed private attachment correlation")
+        };
+        assert_eq!(attachment_correlation.application, root.id);
+        assert_eq!(attachment_correlation.outer, root_sites[0]);
+        assert_eq!(attachment_correlation.unit, attachment_type);
+        assert_eq!(attachment_correlation.semantic_index, 1);
         assert!(
             !lowered.grammar.entry_types.contains(&attachment_type),
             "the attachment unit is not an authored entry type",
@@ -3436,6 +3483,87 @@ struct Root {
             panic!("materialization retains the attachment")
         };
         assert_eq!((attachment.before.len(), attachment.after.len()), (1, 1));
+    }
+
+    #[test]
+    fn authored_attachment_suffix_names_remain_visible_in_semantic_projection() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::named }
+#[allow(non_camel_case_types)]
+#[derive(recursa::Node)]
+#[tok("LEAF")]
+struct __recursa_attachment;
+#[derive(recursa::Node)]
+struct Root {
+    value: __recursa_attachment,
+}
+"#,
+        ));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.expect("named grammar materializes");
+        let analysis = crate::analyze(&lowered.grammar);
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:?}",
+            analysis.diagnostics
+        );
+        let projection =
+            crate::m3_projection::canonical_semantic_projection(&crate::m3::AnalyzedGrammar {
+                lowered,
+                analysis,
+            });
+        assert!(projection.contains("type named::__recursa_attachment = sequence("));
+        assert!(projection.contains("target=named::__recursa_attachment"));
+        assert!(projection.contains("facts named::__recursa_attachment "));
+        assert!(!projection.contains("target=attachment(named::"));
+    }
+
+    #[test]
+    fn projected_attachment_ordinals_account_for_every_preceding_expansion() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::ordinals }
+#[derive(recursa::Node)]
+#[tok("LEAF")]
+struct Leaf;
+#[derive(recursa::Node)]
+struct Root {
+    #[tok("[", this, "]")]
+    first: Leaf,
+    second: Leaf,
+}
+"#,
+        ));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report.lowered.expect("ordinal grammar materializes");
+        let analysis = crate::analyze(&lowered.grammar);
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:?}",
+            analysis.diagnostics
+        );
+        let projection =
+            crate::m3_projection::canonical_semantic_projection(&crate::m3::AnalyzedGrammar {
+                lowered,
+                analysis,
+            });
+        for ordinal in 0..4 {
+            assert!(
+                projection.contains(&format!("ordinals::Root::element{ordinal}")),
+                "projection lacks expanded element ordinal {ordinal}:\n{projection}",
+            );
+        }
+        assert!(
+            projection
+                .contains("field ordinals::Root::first -> parse-site(ordinals::Root::element1)")
+        );
+        assert!(
+            projection
+                .contains("field ordinals::Root::second -> parse-site(ordinals::Root::element3)")
+        );
     }
 
     #[test]
