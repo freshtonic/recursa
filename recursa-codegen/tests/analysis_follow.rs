@@ -868,6 +868,12 @@ fn pratt_follow_warnings_filter_extenders_by_site_min_bp() {
             .iter()
             .all(|diagnostic| diagnostic.code == DiagnosticCode::PrattFollowOverlap)
     );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_str() == "RCA0301")
+    );
     let high_warning = report
         .diagnostics
         .iter()

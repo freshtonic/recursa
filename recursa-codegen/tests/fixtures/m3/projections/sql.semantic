@@ -1,0 +1,324 @@
+provenance recursa-spike=b410d2f123cd7510a8a40e9e5b971936a2fd8463 source=src/grammars/sql.rs description=src/descriptions/sql.rs
+transform fixed-wrappers=positional-or-presence sql=flat-ll2 pratt=typed-binding-powers repetitions=typed-cardinality
+recursa-semantic-projection-v1
+grammar edition=Rust2024 anchor=sql max_lookahead=2 equivalence=Sensitive
+
+[lexical]
+equivalence Sensitive
+selection LongestPrefixThenFixedThenAuthoredPatternPriority
+kind content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None
+kind fixed:CREATE
+kind fixed:DROP
+kind fixed:FUNCTION
+kind fixed:INDEX
+kind fixed:PROCEDURE
+kind fixed:SCHEMA
+kind fixed:TABLE
+kind fixed:VIEW
+base content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None pattern="[a-zA-Z_][a-zA-Z0-9_]*" targets=[Rest] priority=0
+keyword CREATE recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+keyword DROP recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+keyword FUNCTION recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+keyword INDEX recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+keyword PROCEDURE recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+keyword SCHEMA recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+keyword TABLE recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+keyword VIEW recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+target Rest base=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None accepts=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+rule Regex("[a-zA-Z_][a-zA-Z0-9_]*") kind=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None priority=Pattern { authored: None }
+non-token Regex("[ \\t\\n\\r]+") outcome=NonEmitting
+
+[source-token-definitions]
+fixed CREATE spelling="CREATE" canonical="CREATE" class=Keyword
+fixed TABLE spelling="TABLE" canonical="TABLE" class=Keyword
+fixed VIEW spelling="VIEW" canonical="VIEW" class=Keyword
+fixed INDEX spelling="INDEX" canonical="INDEX" class=Keyword
+fixed SCHEMA spelling="SCHEMA" canonical="SCHEMA" class=Keyword
+fixed FUNCTION spelling="FUNCTION" canonical="FUNCTION" class=Keyword
+fixed PROCEDURE spelling="PROCEDURE" canonical="PROCEDURE" class=Keyword
+fixed DROP spelling="DROP" canonical="DROP" class=Keyword
+content Rest pattern="[a-zA-Z_][a-zA-Z0-9_]*" text=BorrowedOrOwnedMatchedText
+
+[types]
+type Rest = token(atom=Rest, text=any)
+type fixed:CREATE = token(atom=fixed:CREATE, text=any)
+type fixed:DROP = token(atom=fixed:DROP, text=any)
+type fixed:FUNCTION = token(atom=fixed:FUNCTION, text=any)
+type fixed:INDEX = token(atom=fixed:INDEX, text=any)
+type fixed:PROCEDURE = token(atom=fixed:PROCEDURE, text=any)
+type fixed:SCHEMA = token(atom=fixed:SCHEMA, text=any)
+type fixed:TABLE = token(atom=fixed:TABLE, text=any)
+type fixed:VIEW = token(atom=fixed:VIEW, text=any)
+type sql::Statement = enum(sql::Statement::CreateTable => [sql::Statement::CreateTable::element0:sql::Statement target=sql::CreateTable cardinality=one separator=- min_bp=0]; sql::Statement::CreateView => [sql::Statement::CreateView::element0:sql::Statement target=sql::CreateView cardinality=one separator=- min_bp=0]; sql::Statement::CreateIndex => [sql::Statement::CreateIndex::element0:sql::Statement target=sql::CreateIndex cardinality=one separator=- min_bp=0]; sql::Statement::CreateSchema => [sql::Statement::CreateSchema::element0:sql::Statement target=sql::CreateSchema cardinality=one separator=- min_bp=0]; sql::Statement::CreateFunction => [sql::Statement::CreateFunction::element0:sql::Statement target=sql::CreateFunction cardinality=one separator=- min_bp=0]; sql::Statement::CreateProcedure => [sql::Statement::CreateProcedure::element0:sql::Statement target=sql::CreateProcedure cardinality=one separator=- min_bp=0]; sql::Statement::DropTable => [sql::Statement::DropTable::element0:sql::Statement target=sql::DropTable cardinality=one separator=- min_bp=0]; sql::Statement::DropView => [sql::Statement::DropView::element0:sql::Statement target=sql::DropView cardinality=one separator=- min_bp=0]; sql::Statement::DropIndex => [sql::Statement::DropIndex::element0:sql::Statement target=sql::DropIndex cardinality=one separator=- min_bp=0]; sql::Statement::DropSchema => [sql::Statement::DropSchema::element0:sql::Statement target=sql::DropSchema cardinality=one separator=- min_bp=0]; sql::Statement::DropFunction => [sql::Statement::DropFunction::element0:sql::Statement target=sql::DropFunction cardinality=one separator=- min_bp=0]; sql::Statement::DropProcedure => [sql::Statement::DropProcedure::element0:sql::Statement target=sql::DropProcedure cardinality=one separator=- min_bp=0])
+type sql::CreateTable = sequence(sql::CreateTable::element0:sql::CreateTable target=fixed:CREATE cardinality=one separator=- min_bp=0, sql::CreateTable::element1:sql::CreateTable target=fixed:TABLE cardinality=one separator=- min_bp=0, sql::CreateTable::element2:sql::CreateTable target=Rest cardinality=one separator=- min_bp=0)
+type sql::CreateView = sequence(sql::CreateView::element0:sql::CreateView target=fixed:CREATE cardinality=one separator=- min_bp=0, sql::CreateView::element1:sql::CreateView target=fixed:VIEW cardinality=one separator=- min_bp=0, sql::CreateView::element2:sql::CreateView target=Rest cardinality=one separator=- min_bp=0)
+type sql::CreateIndex = sequence(sql::CreateIndex::element0:sql::CreateIndex target=fixed:CREATE cardinality=one separator=- min_bp=0, sql::CreateIndex::element1:sql::CreateIndex target=fixed:INDEX cardinality=one separator=- min_bp=0, sql::CreateIndex::element2:sql::CreateIndex target=Rest cardinality=one separator=- min_bp=0)
+type sql::CreateSchema = sequence(sql::CreateSchema::element0:sql::CreateSchema target=fixed:CREATE cardinality=one separator=- min_bp=0, sql::CreateSchema::element1:sql::CreateSchema target=fixed:SCHEMA cardinality=one separator=- min_bp=0, sql::CreateSchema::element2:sql::CreateSchema target=Rest cardinality=one separator=- min_bp=0)
+type sql::CreateFunction = sequence(sql::CreateFunction::element0:sql::CreateFunction target=fixed:CREATE cardinality=one separator=- min_bp=0, sql::CreateFunction::element1:sql::CreateFunction target=fixed:FUNCTION cardinality=one separator=- min_bp=0, sql::CreateFunction::element2:sql::CreateFunction target=Rest cardinality=one separator=- min_bp=0)
+type sql::CreateProcedure = sequence(sql::CreateProcedure::element0:sql::CreateProcedure target=fixed:CREATE cardinality=one separator=- min_bp=0, sql::CreateProcedure::element1:sql::CreateProcedure target=fixed:PROCEDURE cardinality=one separator=- min_bp=0, sql::CreateProcedure::element2:sql::CreateProcedure target=Rest cardinality=one separator=- min_bp=0)
+type sql::DropTable = sequence(sql::DropTable::element0:sql::DropTable target=fixed:DROP cardinality=one separator=- min_bp=0, sql::DropTable::element1:sql::DropTable target=fixed:TABLE cardinality=one separator=- min_bp=0, sql::DropTable::element2:sql::DropTable target=Rest cardinality=one separator=- min_bp=0)
+type sql::DropView = sequence(sql::DropView::element0:sql::DropView target=fixed:DROP cardinality=one separator=- min_bp=0, sql::DropView::element1:sql::DropView target=fixed:VIEW cardinality=one separator=- min_bp=0, sql::DropView::element2:sql::DropView target=Rest cardinality=one separator=- min_bp=0)
+type sql::DropIndex = sequence(sql::DropIndex::element0:sql::DropIndex target=fixed:DROP cardinality=one separator=- min_bp=0, sql::DropIndex::element1:sql::DropIndex target=fixed:INDEX cardinality=one separator=- min_bp=0, sql::DropIndex::element2:sql::DropIndex target=Rest cardinality=one separator=- min_bp=0)
+type sql::DropSchema = sequence(sql::DropSchema::element0:sql::DropSchema target=fixed:DROP cardinality=one separator=- min_bp=0, sql::DropSchema::element1:sql::DropSchema target=fixed:SCHEMA cardinality=one separator=- min_bp=0, sql::DropSchema::element2:sql::DropSchema target=Rest cardinality=one separator=- min_bp=0)
+type sql::DropFunction = sequence(sql::DropFunction::element0:sql::DropFunction target=fixed:DROP cardinality=one separator=- min_bp=0, sql::DropFunction::element1:sql::DropFunction target=fixed:FUNCTION cardinality=one separator=- min_bp=0, sql::DropFunction::element2:sql::DropFunction target=Rest cardinality=one separator=- min_bp=0)
+type sql::DropProcedure = sequence(sql::DropProcedure::element0:sql::DropProcedure target=fixed:DROP cardinality=one separator=- min_bp=0, sql::DropProcedure::element1:sql::DropProcedure target=fixed:PROCEDURE cardinality=one separator=- min_bp=0, sql::DropProcedure::element2:sql::DropProcedure target=Rest cardinality=one separator=- min_bp=0)
+
+[lowering-correlations]
+field sql::Statement::CreateTable::field0 -> parse-site(sql::Statement::CreateTable::element0)
+field sql::Statement::CreateView::field0 -> parse-site(sql::Statement::CreateView::element0)
+field sql::Statement::CreateIndex::field0 -> parse-site(sql::Statement::CreateIndex::element0)
+field sql::Statement::CreateSchema::field0 -> parse-site(sql::Statement::CreateSchema::element0)
+field sql::Statement::CreateFunction::field0 -> parse-site(sql::Statement::CreateFunction::element0)
+field sql::Statement::CreateProcedure::field0 -> parse-site(sql::Statement::CreateProcedure::element0)
+field sql::Statement::DropTable::field0 -> parse-site(sql::Statement::DropTable::element0)
+field sql::Statement::DropView::field0 -> parse-site(sql::Statement::DropView::element0)
+field sql::Statement::DropIndex::field0 -> parse-site(sql::Statement::DropIndex::element0)
+field sql::Statement::DropSchema::field0 -> parse-site(sql::Statement::DropSchema::element0)
+field sql::Statement::DropFunction::field0 -> parse-site(sql::Statement::DropFunction::element0)
+field sql::Statement::DropProcedure::field0 -> parse-site(sql::Statement::DropProcedure::element0)
+field sql::CreateTable::rest -> parse-site(sql::CreateTable::element2)
+field sql::CreateView::rest -> parse-site(sql::CreateView::element2)
+field sql::CreateIndex::rest -> parse-site(sql::CreateIndex::element2)
+field sql::CreateSchema::rest -> parse-site(sql::CreateSchema::element2)
+field sql::CreateFunction::rest -> parse-site(sql::CreateFunction::element2)
+field sql::CreateProcedure::rest -> parse-site(sql::CreateProcedure::element2)
+field sql::DropTable::rest -> parse-site(sql::DropTable::element2)
+field sql::DropView::rest -> parse-site(sql::DropView::element2)
+field sql::DropIndex::rest -> parse-site(sql::DropIndex::element2)
+field sql::DropSchema::rest -> parse-site(sql::DropSchema::element2)
+field sql::DropFunction::rest -> parse-site(sql::DropFunction::element2)
+field sql::DropProcedure::rest -> parse-site(sql::DropProcedure::element2)
+
+[analysis]
+facts Rest first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] nullable=false extenders=[-] follow=[EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow
+facts fixed:CREATE first=[fixed:CREATE] nullable=false extenders=[-] follow=[fixed:FUNCTION,fixed:INDEX,fixed:PROCEDURE,fixed:SCHEMA,fixed:TABLE,fixed:VIEW] first^k=fixed:CREATE -> caller-follow
+facts fixed:DROP first=[fixed:DROP] nullable=false extenders=[-] follow=[fixed:FUNCTION,fixed:INDEX,fixed:PROCEDURE,fixed:SCHEMA,fixed:TABLE,fixed:VIEW] first^k=fixed:DROP -> caller-follow
+facts fixed:FUNCTION first=[fixed:FUNCTION] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] first^k=fixed:FUNCTION -> caller-follow
+facts fixed:INDEX first=[fixed:INDEX] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] first^k=fixed:INDEX -> caller-follow
+facts fixed:PROCEDURE first=[fixed:PROCEDURE] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] first^k=fixed:PROCEDURE -> caller-follow
+facts fixed:SCHEMA first=[fixed:SCHEMA] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] first^k=fixed:SCHEMA -> caller-follow
+facts fixed:TABLE first=[fixed:TABLE] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] first^k=fixed:TABLE -> caller-follow
+facts fixed:VIEW first=[fixed:VIEW] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] first^k=fixed:VIEW -> caller-follow
+facts sql::CreateFunction first=[fixed:CREATE] nullable=false extenders=[-] follow=[EOF] first^k=fixed:CREATE fixed:FUNCTION
+facts sql::CreateIndex first=[fixed:CREATE] nullable=false extenders=[-] follow=[EOF] first^k=fixed:CREATE fixed:INDEX
+facts sql::CreateProcedure first=[fixed:CREATE] nullable=false extenders=[-] follow=[EOF] first^k=fixed:CREATE fixed:PROCEDURE
+facts sql::CreateSchema first=[fixed:CREATE] nullable=false extenders=[-] follow=[EOF] first^k=fixed:CREATE fixed:SCHEMA
+facts sql::CreateTable first=[fixed:CREATE] nullable=false extenders=[-] follow=[EOF] first^k=fixed:CREATE fixed:TABLE
+facts sql::CreateView first=[fixed:CREATE] nullable=false extenders=[-] follow=[EOF] first^k=fixed:CREATE fixed:VIEW
+facts sql::DropFunction first=[fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DROP fixed:FUNCTION
+facts sql::DropIndex first=[fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DROP fixed:INDEX
+facts sql::DropProcedure first=[fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DROP fixed:PROCEDURE
+facts sql::DropSchema first=[fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DROP fixed:SCHEMA
+facts sql::DropTable first=[fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DROP fixed:TABLE
+facts sql::DropView first=[fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DROP fixed:VIEW
+facts sql::Statement first=[fixed:CREATE,fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:CREATE fixed:TABLE | fixed:CREATE fixed:VIEW | fixed:CREATE fixed:INDEX | fixed:CREATE fixed:SCHEMA | fixed:CREATE fixed:FUNCTION | fixed:CREATE fixed:PROCEDURE | fixed:DROP fixed:TABLE | fixed:DROP fixed:VIEW | fixed:DROP fixed:INDEX | fixed:DROP fixed:SCHEMA | fixed:DROP fixed:FUNCTION | fixed:DROP fixed:PROCEDURE
+
+[decisions]
+dispatch sql::Statement enum depth=2 caller-fallback=-
+  sql::Statement::CreateFunction: fixed:CREATE fixed:FUNCTION
+  sql::Statement::CreateIndex: fixed:CREATE fixed:INDEX
+  sql::Statement::CreateProcedure: fixed:CREATE fixed:PROCEDURE
+  sql::Statement::CreateSchema: fixed:CREATE fixed:SCHEMA
+  sql::Statement::CreateTable: fixed:CREATE fixed:TABLE
+  sql::Statement::CreateView: fixed:CREATE fixed:VIEW
+  sql::Statement::DropFunction: fixed:DROP fixed:FUNCTION
+  sql::Statement::DropIndex: fixed:DROP fixed:INDEX
+  sql::Statement::DropProcedure: fixed:DROP fixed:PROCEDURE
+  sql::Statement::DropSchema: fixed:DROP fixed:SCHEMA
+  sql::Statement::DropTable: fixed:DROP fixed:TABLE
+  sql::Statement::DropView: fixed:DROP fixed:VIEW
+follow sql::Statement::CreateTable::element0 caller
+follow sql::Statement::CreateView::element0 caller
+follow sql::Statement::CreateIndex::element0 caller
+follow sql::Statement::CreateSchema::element0 caller
+follow sql::Statement::CreateFunction::element0 caller
+follow sql::Statement::CreateProcedure::element0 caller
+follow sql::Statement::DropTable::element0 caller
+follow sql::Statement::DropView::element0 caller
+follow sql::Statement::DropIndex::element0 caller
+follow sql::Statement::DropSchema::element0 caller
+follow sql::Statement::DropFunction::element0 caller
+follow sql::Statement::DropProcedure::element0 caller
+follow sql::CreateTable::element0 static[fixed:TABLE]
+follow sql::CreateTable::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::CreateTable::element2 caller
+follow sql::CreateView::element0 static[fixed:VIEW]
+follow sql::CreateView::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::CreateView::element2 caller
+follow sql::CreateIndex::element0 static[fixed:INDEX]
+follow sql::CreateIndex::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::CreateIndex::element2 caller
+follow sql::CreateSchema::element0 static[fixed:SCHEMA]
+follow sql::CreateSchema::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::CreateSchema::element2 caller
+follow sql::CreateFunction::element0 static[fixed:FUNCTION]
+follow sql::CreateFunction::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::CreateFunction::element2 caller
+follow sql::CreateProcedure::element0 static[fixed:PROCEDURE]
+follow sql::CreateProcedure::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::CreateProcedure::element2 caller
+follow sql::DropTable::element0 static[fixed:TABLE]
+follow sql::DropTable::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::DropTable::element2 caller
+follow sql::DropView::element0 static[fixed:VIEW]
+follow sql::DropView::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::DropView::element2 caller
+follow sql::DropIndex::element0 static[fixed:INDEX]
+follow sql::DropIndex::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::DropIndex::element2 caller
+follow sql::DropSchema::element0 static[fixed:SCHEMA]
+follow sql::DropSchema::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::DropSchema::element2 caller
+follow sql::DropFunction::element0 static[fixed:FUNCTION]
+follow sql::DropFunction::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::DropFunction::element2 caller
+follow sql::DropProcedure::element0 static[fixed:PROCEDURE]
+follow sql::DropProcedure::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow sql::DropProcedure::element2 caller
+container sql::Statement::CreateTable::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::Statement::CreateView::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::Statement::CreateIndex::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::Statement::CreateSchema::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::Statement::CreateFunction::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::Statement::CreateProcedure::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::Statement::DropTable::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::Statement::DropView::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::Statement::DropIndex::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::Statement::DropSchema::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::Statement::DropFunction::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::Statement::DropProcedure::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::CreateTable::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=static[fixed:TABLE]
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::CreateTable::element1 Direct element=[fixed:TABLE] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:TABLE]--> Done
+container sql::CreateTable::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container sql::CreateView::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=static[fixed:VIEW]
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::CreateView::element1 Direct element=[fixed:VIEW] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:VIEW]--> Done
+container sql::CreateView::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container sql::CreateIndex::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=static[fixed:INDEX]
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::CreateIndex::element1 Direct element=[fixed:INDEX] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:INDEX]--> Done
+container sql::CreateIndex::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container sql::CreateSchema::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=static[fixed:SCHEMA]
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::CreateSchema::element1 Direct element=[fixed:SCHEMA] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:SCHEMA]--> Done
+container sql::CreateSchema::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container sql::CreateFunction::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=static[fixed:FUNCTION]
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::CreateFunction::element1 Direct element=[fixed:FUNCTION] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:FUNCTION]--> Done
+container sql::CreateFunction::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container sql::CreateProcedure::element0 Direct element=[fixed:CREATE] separator=- separator-first=[] trailing=false stop=static[fixed:PROCEDURE]
+  transition Start --ParseElement/static[fixed:CREATE]--> Done
+container sql::CreateProcedure::element1 Direct element=[fixed:PROCEDURE] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:PROCEDURE]--> Done
+container sql::CreateProcedure::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container sql::DropTable::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=static[fixed:TABLE]
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::DropTable::element1 Direct element=[fixed:TABLE] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:TABLE]--> Done
+container sql::DropTable::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container sql::DropView::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=static[fixed:VIEW]
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::DropView::element1 Direct element=[fixed:VIEW] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:VIEW]--> Done
+container sql::DropView::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container sql::DropIndex::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=static[fixed:INDEX]
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::DropIndex::element1 Direct element=[fixed:INDEX] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:INDEX]--> Done
+container sql::DropIndex::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container sql::DropSchema::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=static[fixed:SCHEMA]
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::DropSchema::element1 Direct element=[fixed:SCHEMA] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:SCHEMA]--> Done
+container sql::DropSchema::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container sql::DropFunction::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=static[fixed:FUNCTION]
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::DropFunction::element1 Direct element=[fixed:FUNCTION] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:FUNCTION]--> Done
+container sql::DropFunction::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container sql::DropProcedure::element0 Direct element=[fixed:DROP] separator=- separator-first=[] trailing=false stop=static[fixed:PROCEDURE]
+  transition Start --ParseElement/static[fixed:DROP]--> Done
+container sql::DropProcedure::element1 Direct element=[fixed:PROCEDURE] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+  transition Start --ParseElement/static[fixed:PROCEDURE]--> Done
+container sql::DropProcedure::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+
+[failures]
+failure sql::Statement - EnumDispatch expected=static[fixed:CREATE|fixed:DROP]
+failure sql::Statement sql::Statement::CreateTable::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::Statement sql::Statement::CreateView::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::Statement sql::Statement::CreateIndex::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::Statement sql::Statement::CreateSchema::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::Statement sql::Statement::CreateFunction::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::Statement sql::Statement::CreateProcedure::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::Statement sql::Statement::DropTable::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::Statement sql::Statement::DropView::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::Statement sql::Statement::DropIndex::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::Statement sql::Statement::DropSchema::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::Statement sql::Statement::DropFunction::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::Statement sql::Statement::DropProcedure::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::CreateTable sql::CreateTable::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::CreateTable sql::CreateTable::element1 RequiredSite expected=static[fixed:TABLE]
+failure sql::CreateTable sql::CreateTable::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure sql::CreateView sql::CreateView::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::CreateView sql::CreateView::element1 RequiredSite expected=static[fixed:VIEW]
+failure sql::CreateView sql::CreateView::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure sql::CreateIndex sql::CreateIndex::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::CreateIndex sql::CreateIndex::element1 RequiredSite expected=static[fixed:INDEX]
+failure sql::CreateIndex sql::CreateIndex::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure sql::CreateSchema sql::CreateSchema::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::CreateSchema sql::CreateSchema::element1 RequiredSite expected=static[fixed:SCHEMA]
+failure sql::CreateSchema sql::CreateSchema::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure sql::CreateFunction sql::CreateFunction::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::CreateFunction sql::CreateFunction::element1 RequiredSite expected=static[fixed:FUNCTION]
+failure sql::CreateFunction sql::CreateFunction::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure sql::CreateProcedure sql::CreateProcedure::element0 RequiredSite expected=static[fixed:CREATE]
+failure sql::CreateProcedure sql::CreateProcedure::element1 RequiredSite expected=static[fixed:PROCEDURE]
+failure sql::CreateProcedure sql::CreateProcedure::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure sql::DropTable sql::DropTable::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::DropTable sql::DropTable::element1 RequiredSite expected=static[fixed:TABLE]
+failure sql::DropTable sql::DropTable::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure sql::DropView sql::DropView::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::DropView sql::DropView::element1 RequiredSite expected=static[fixed:VIEW]
+failure sql::DropView sql::DropView::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure sql::DropIndex sql::DropIndex::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::DropIndex sql::DropIndex::element1 RequiredSite expected=static[fixed:INDEX]
+failure sql::DropIndex sql::DropIndex::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure sql::DropSchema sql::DropSchema::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::DropSchema sql::DropSchema::element1 RequiredSite expected=static[fixed:SCHEMA]
+failure sql::DropSchema sql::DropSchema::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure sql::DropFunction sql::DropFunction::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::DropFunction sql::DropFunction::element1 RequiredSite expected=static[fixed:FUNCTION]
+failure sql::DropFunction sql::DropFunction::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure sql::DropProcedure sql::DropProcedure::element0 RequiredSite expected=static[fixed:DROP]
+failure sql::DropProcedure sql::DropProcedure::element1 RequiredSite expected=static[fixed:PROCEDURE]
+failure sql::DropProcedure sql::DropProcedure::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]

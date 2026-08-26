@@ -339,6 +339,7 @@ pub struct AnalysisOutput {
     extender_provenance_by_type: Vec<Option<Vec<ProvenancedKindSet>>>,
     follow_by_type: Vec<FollowFacts>,
     follow_by_site: Vec<FollowFacts>,
+    decisions: crate::DecisionProducts,
 }
 
 impl AnalysisOutput {
@@ -388,6 +389,10 @@ impl AnalysisOutput {
 
     pub fn follow_by_site(&self) -> &[FollowFacts] {
         &self.follow_by_site
+    }
+
+    pub const fn decisions(&self) -> &crate::DecisionProducts {
+        &self.decisions
     }
 
     pub fn canonical_facts(&self) -> String {
@@ -472,6 +477,14 @@ pub struct FirstSequence {
     ends: bool,
 }
 
+impl FirstSequence {
+    /// Whether this prefix can exhaust the production and must consult the
+    /// dynamic caller FOLLOW set rather than assuming end-of-input.
+    pub const fn ends(&self) -> bool {
+        self.ends
+    }
+}
+
 pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
     let locations = grammar.locations.clone();
     let diagnostic_context = DiagnosticContext::from_grammar(grammar);
@@ -527,6 +540,21 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
     let has_errors = diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == crate::Severity::Error);
+    let decisions = if has_errors {
+        None
+    } else {
+        match publish_decisions(
+            grammar,
+            &first_by_type,
+            crate::decision_plan::plan_decisions(grammar, &first_by_type),
+        ) {
+            Ok(decisions) => Some(decisions),
+            Err(diagnostic) => {
+                diagnostics.push(*diagnostic);
+                None
+            }
+        }
+    };
     let first_provenance_by_type = first_provenance
         .into_iter()
         .map(|positions| {
@@ -549,13 +577,14 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
         .collect();
     let mut report = AnalysisReport {
         diagnostics,
-        output: (!has_errors).then_some(AnalysisOutput {
+        output: decisions.map(|decisions| AnalysisOutput {
             first_by_type,
             extenders_by_type,
             first_provenance_by_type,
             extender_provenance_by_type,
             follow_by_type,
             follow_by_site,
+            decisions,
         }),
         locations,
         proofs,
@@ -563,6 +592,31 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
     };
     compact_report_proofs(&mut report);
     report
+}
+
+fn publish_decisions(
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    decisions: crate::DecisionProducts,
+) -> Result<crate::DecisionProducts, Box<Diagnostic>> {
+    decisions.validate(grammar, semantic).map_err(|invariant| {
+        Box::new(Diagnostic::internal_analysis_invariant(format!(
+            "invalid frozen decision product: {invariant}"
+        )))
+    })?;
+    Ok(decisions)
+}
+
+pub(crate) fn first_sequences_for_decision_sites(
+    sites: &[SiteId],
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+) -> Vec<FirstSequence> {
+    let previous = semantic
+        .iter()
+        .map(|facts| facts.sequences.clone())
+        .collect::<Vec<_>>();
+    first_sequences_for_sites(sites, grammar, semantic, &previous, grammar.max_lookahead)
 }
 
 fn compact_report_proofs(report: &mut AnalysisReport) {
@@ -1188,7 +1242,7 @@ fn sequences_for_site(
     let target = &previous[site.target.index()];
     let semantics = container_semantics(site);
     let separator = semantics
-        .separator
+        .separator_type()
         .map(|id| previous[id.index()].as_slice());
     let mut sequences = match semantics.cardinality {
         ContainerCardinality::One => target.clone(),
@@ -2151,7 +2205,7 @@ fn reachable_types(grammar: &GrammarDescription) -> Vec<bool> {
         for site_id in sites_of(&grammar.types[type_id.index()].shape) {
             let site = &grammar.sites[site_id.index()];
             pending.push(site.target);
-            if let Some(separator) = container_semantics(site).separator {
+            if let Some(separator) = container_semantics(site).separator_type() {
                 pending.push(separator);
             }
         }
@@ -2191,7 +2245,7 @@ fn collect_semantic_follow_for_sites(
         if !semantics.cardinality.is_repeated() {
             continue;
         }
-        let separator = semantics.separator;
+        let separator = semantics.separator_type();
         if let Some(separator) = separator {
             by_type[site.target.index()]
                 .kinds
@@ -2386,7 +2440,7 @@ fn collect_provenanced_follow_for_sites(
         if !semantics.cardinality.is_repeated() {
             continue;
         }
-        let separator = semantics.separator;
+        let separator = semantics.separator_type();
         if let Some(separator) = separator {
             let separator_positions = wrap_follow_positions(
                 &first_provenance[separator.index()],
@@ -2697,7 +2751,7 @@ impl DecisionState {
                 DecisionItem::Type(site.target),
                 DecisionItem::RepeatTail {
                     target: site.target,
-                    separator: semantics.separator,
+                    separator: semantics.separator_type(),
                 },
             ]
         } else {
@@ -3152,7 +3206,7 @@ fn decision_frontier(
                                 DecisionItem::Type(site.target),
                                 DecisionItem::RepeatTail {
                                     target: site.target,
-                                    separator: semantics.separator,
+                                    separator: semantics.separator_type(),
                                 },
                             ],
                             rest,
@@ -4003,7 +4057,7 @@ fn compare_proof_pairs(
         .then_with(|| proofs.compare(left.1, right.1))
 }
 
-fn predicates_overlap(
+pub(crate) fn predicates_overlap(
     left: Option<TextPredicateId>,
     right: Option<TextPredicateId>,
     predicates: &[TextPredicate],
@@ -4177,5 +4231,22 @@ mod decision_product_tests {
         let parents = BTreeMap::from([(ancestor.clone(), Vec::new())]);
 
         assert_eq!(pumping_ancestor(&ancestor, &successor, &parents), None);
+    }
+
+    #[test]
+    fn invalid_decision_products_are_suppressed_at_the_analysis_publication_boundary() {
+        let grammar = GrammarDescription::new("empty", 0, 1, TextEquivalence::Sensitive);
+        let mut decisions = crate::decision_plan::plan_decisions(&grammar, &[]);
+        decisions.corrupt_site_product_for_test();
+
+        let diagnostic = publish_decisions(&grammar, &[], decisions)
+            .expect_err("invalid decisions cannot become AnalysisOutput");
+        assert_eq!(diagnostic.code, DiagnosticCode::InternalAnalysisInvariant);
+        assert_eq!(diagnostic.severity, crate::Severity::Error);
+        assert!(
+            diagnostic
+                .message
+                .contains("invalid frozen decision product")
+        );
     }
 }

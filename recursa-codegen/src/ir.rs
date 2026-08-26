@@ -247,6 +247,21 @@ pub enum RepetitionCardinality {
     OneOrMore,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct RepeatSeparator {
+    pub type_id: TypeId,
+    pub optional_trailing: bool,
+}
+
+impl RepeatSeparator {
+    pub const fn new(type_id: TypeId, optional_trailing: bool) -> Self {
+        Self {
+            type_id,
+            optional_trailing,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ContainerShape {
     Direct,
@@ -255,7 +270,7 @@ pub enum ContainerShape {
     Repeat {
         element: Box<ContainerShape>,
         cardinality: RepetitionCardinality,
-        separator: Option<TypeId>,
+        separator: Option<RepeatSeparator>,
     },
 }
 
@@ -272,7 +287,7 @@ impl ContainerShape {
         Self::Repeat {
             element: Box::new(element),
             cardinality: RepetitionCardinality::ZeroOrMore,
-            separator,
+            separator: separator.map(|type_id| RepeatSeparator::new(type_id, false)),
         }
     }
 
@@ -280,6 +295,18 @@ impl ContainerShape {
         Self::Repeat {
             element: Box::new(element),
             cardinality: RepetitionCardinality::OneOrMore,
+            separator: separator.map(|type_id| RepeatSeparator::new(type_id, false)),
+        }
+    }
+
+    pub fn repeated_with_separator(
+        element: Self,
+        cardinality: RepetitionCardinality,
+        separator: Option<RepeatSeparator>,
+    ) -> Self {
+        Self::Repeat {
+            element: Box::new(element),
+            cardinality,
             separator,
         }
     }
@@ -336,7 +363,7 @@ impl ContainerShape {
                 element, separator, ..
             } => {
                 if let Some(separator) = separator {
-                    visit(*separator);
+                    visit(separator.type_id);
                 }
                 element.visit_separators(visit);
             }
@@ -407,7 +434,16 @@ impl ContainerCardinality {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ContainerSemantics {
     pub cardinality: ContainerCardinality,
-    pub separator: Option<TypeId>,
+    pub separator: Option<RepeatSeparator>,
+}
+
+impl ContainerSemantics {
+    pub(crate) const fn separator_type(self) -> Option<TypeId> {
+        match self.separator {
+            Some(separator) => Some(separator.type_id),
+            None => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -415,7 +451,7 @@ enum CardinalityLayer {
     Optional,
     Repeat {
         cardinality: RepetitionCardinality,
-        separator: Option<TypeId>,
+        separator: Option<RepeatSeparator>,
     },
 }
 

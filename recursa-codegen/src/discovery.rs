@@ -810,6 +810,7 @@ mod tests {
 
     use super::{DiscoveryDiagnosticKind, DiscoveryInput, ModuleSourceKind, discover_module_tree};
     use crate::lowering::RustEdition;
+    use crate::m3::{M3Input, analyze_source_tree};
     use crate::source_syntax::CargoCfgSnapshot;
 
     fn write(package: &Path, relative: &str, source: &str) {
@@ -829,6 +830,239 @@ mod tests {
             edition: RustEdition::Rust2024,
             cfg,
         })
+    }
+
+    fn assert_m3_codes(manifest_dir: &Path, root: &Path, cfg: CargoCfgSnapshot, expected: &[&str]) {
+        let mut cargo = Vec::new();
+        let error = analyze_source_tree(
+            M3Input::new(manifest_dir, root, RustEdition::Rust2024, cfg),
+            &mut cargo,
+        )
+        .expect_err("fixture must fail before generation");
+        assert_eq!(
+            error
+                .diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.code().as_str())
+                .collect::<Vec<_>>(),
+            expected,
+        );
+    }
+
+    #[test]
+    fn rca1001_reports_an_invalid_manifest_directory() {
+        let package = TempDir::new().unwrap();
+        write(package.path(), "not-a-directory", "");
+
+        assert_m3_codes(
+            &package.path().join("not-a-directory"),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1001"],
+        );
+    }
+
+    #[test]
+    fn rca1002_rejects_an_absolute_selected_root() {
+        let package = TempDir::new().unwrap();
+
+        assert_m3_codes(
+            package.path(),
+            &package.path().join("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1002"],
+        );
+    }
+
+    #[test]
+    fn rca1003_rejects_a_selected_root_that_escapes_the_package() {
+        let package = TempDir::new().unwrap();
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("../outside.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1003"],
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rca1004_rejects_a_selected_root_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let package = TempDir::new().unwrap();
+        write(package.path(), "real/root.rs", "");
+        fs::create_dir_all(package.path().join("grammar")).unwrap();
+        symlink("../real/root.rs", package.path().join("grammar/root.rs")).unwrap();
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1004"],
+        );
+    }
+
+    #[test]
+    fn rca1005_reports_a_missing_selected_root() {
+        let package = TempDir::new().unwrap();
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1005"],
+        );
+    }
+
+    #[test]
+    fn rca1006_reports_an_unreadable_selected_root() {
+        let package = TempDir::new().unwrap();
+        fs::create_dir_all(package.path().join("grammar/root.rs")).unwrap();
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1006"],
+        );
+    }
+
+    #[test]
+    fn rca1007_reports_a_missing_module_candidate() {
+        let package = TempDir::new().unwrap();
+        write(package.path(), "grammar/root.rs", "mod missing;");
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1007"],
+        );
+    }
+
+    #[test]
+    fn rca1008_reports_ambiguous_module_candidates() {
+        let package = TempDir::new().unwrap();
+        write(package.path(), "grammar/root.rs", "mod ambiguous;");
+        write(package.path(), "grammar/ambiguous.rs", "");
+        write(package.path(), "grammar/ambiguous/mod.rs", "");
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1008"],
+        );
+    }
+
+    #[test]
+    fn rca1009_rejects_a_malformed_module_path_attribute() {
+        let package = TempDir::new().unwrap();
+        write(package.path(), "grammar/root.rs", "#[path] mod child;");
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1009"],
+        );
+    }
+
+    #[test]
+    fn rca1010_rejects_multiple_active_module_paths() {
+        let package = TempDir::new().unwrap();
+        write(
+            package.path(),
+            "grammar/root.rs",
+            "#[path = \"one.rs\"] #[path = \"two.rs\"] mod child;",
+        );
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1010"],
+        );
+    }
+
+    #[test]
+    fn rca1011_reports_a_module_ancestor_cycle() {
+        let package = TempDir::new().unwrap();
+        write(
+            package.path(),
+            "grammar/root.rs",
+            "#[path = \"child.rs\"] mod child;",
+        );
+        write(
+            package.path(),
+            "grammar/child.rs",
+            "#[path = \"root.rs\"] mod back_to_root;",
+        );
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1011"],
+        );
+    }
+
+    #[test]
+    fn rca1012_rejects_an_unknown_cfg_predicate() {
+        let package = TempDir::new().unwrap();
+        write(
+            package.path(),
+            "grammar/root.rs",
+            "#[cfg(custom_build_cfg)] mod child;",
+        );
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1012"],
+        );
+    }
+
+    #[test]
+    fn rca1013_rejects_an_invocation_only_cfg_predicate() {
+        let package = TempDir::new().unwrap();
+        write(package.path(), "grammar/root.rs", "#[cfg(test)] mod child;");
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1013"],
+        );
+    }
+
+    #[test]
+    fn rca1014_rejects_a_malformed_cfg_predicate() {
+        let package = TempDir::new().unwrap();
+        write(package.path(), "grammar/root.rs", "#[cfg()] mod child;");
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA1014"],
+        );
+    }
+
+    #[test]
+    fn rca2001_reports_invalid_rust_syntax() {
+        let package = TempDir::new().unwrap();
+        write(package.path(), "grammar/root.rs", "struct Broken {");
+
+        assert_m3_codes(
+            package.path(),
+            Path::new("grammar/root.rs"),
+            CargoCfgSnapshot::default(),
+            &["RCA2001"],
+        );
     }
 
     fn scaffold_cargo_package(package: &Path, features: bool) {
