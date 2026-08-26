@@ -122,11 +122,13 @@ struct EmissionPlan {
     word_candidate_kinds: Vec<u16>,
     post_lex: Option<syn::Path>,
     root_configured_traits: Vec<ConfiguredTraitRecipe>,
+    #[cfg(feature = "diagrams")]
     diagrams: Option<DiagramPlan>,
     instrumentation: EmissionInstrumentation,
     frozen_parse_identity: u64,
 }
 
+#[cfg(feature = "diagrams")]
 #[derive(Clone, Debug)]
 struct DiagramPlan {
     grammar_name: String,
@@ -134,6 +136,7 @@ struct DiagramPlan {
     fixed_tokens: Vec<(String, String)>,
 }
 
+#[cfg(feature = "diagrams")]
 #[derive(Clone, Debug)]
 struct NodeDiagramPlan {
     semantic_key: String,
@@ -991,10 +994,11 @@ impl EmissionPlan {
                     .map_err(|_| "generated token kind exceeds runtime width".to_owned())
             })
             .collect::<Result<Vec<_>, String>>()?;
+        #[cfg(feature = "diagrams")]
         let diagrams = resolved
             .build_inputs
             .diagrams
-            .then(|| plan_diagrams(resolved, &nodes, &kind_names, &kind_static_texts))
+            .then(|| plan_diagrams(lowered, resolved, &nodes, &kind_names, &kind_static_texts))
             .transpose()?;
 
         let mut canonical = format!(
@@ -1068,11 +1072,14 @@ impl EmissionPlan {
             ));
         }
         canonical.push_str(&format!(";word_candidates={word_candidate_kinds:?}"));
+        #[cfg(feature = "diagrams")]
         canonical.push_str(if diagrams.is_some() {
             ";capabilities=core,diagrams"
         } else {
             ";capabilities=core"
         });
+        #[cfg(not(feature = "diagrams"))]
+        canonical.push_str(";capabilities=core");
         canonical.push_str(&format!(
             ";frozen_dispatch_sequences={frozen_dispatch_sequences};frozen_dispatch_nodes={};emitter_dispatch_decisions=0;frozen_parse_identity={frozen_parse_identity:016x}",
             instrumentation.frozen_dispatch_nodes_consumed,
@@ -1104,6 +1111,7 @@ impl EmissionPlan {
             word_candidate_kinds,
             post_lex: lowered.source_modeled.source_model().post_lex.clone(),
             root_configured_traits,
+            #[cfg(feature = "diagrams")]
             diagrams,
             instrumentation,
             frozen_parse_identity,
@@ -1125,6 +1133,7 @@ impl EmissionPlan {
         if self.lexical_rules.is_empty() {
             return Err("the generated lexical plan has no rules".to_owned());
         }
+        #[cfg(feature = "diagrams")]
         if self
             .diagrams
             .as_ref()
@@ -1163,7 +1172,9 @@ impl EmissionPlan {
     }
 }
 
+#[cfg(feature = "diagrams")]
 fn plan_diagrams(
+    lowered: &crate::materialization::LoweredGrammar,
     resolved: &crate::resolution::ResolvedSourceGrammar,
     nodes: &[NodeParsePlan],
     kind_names: &[String],
@@ -1184,11 +1195,21 @@ fn plan_diagrams(
                 })?;
             let public_path = node_is_publicly_linkable(resolved, source)
                 .then(|| format!("crate::{}", node.semantic_key));
+            let application = lowered
+                .applications
+                .iter()
+                .find(|application| application.node == source.id)
+                .ok_or_else(|| {
+                    format!(
+                        "diagram plan cannot find the materialized application for `{}`",
+                        node.semantic_key
+                    )
+                })?;
             Ok(NodeDiagramPlan {
                 semantic_key: node.semantic_key.clone(),
                 ident: node.ident.unraw().to_string(),
                 public_path,
-                production: diagram_production(node),
+                production: diagram_production(node, application, lowered)?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -1208,6 +1229,7 @@ fn plan_diagrams(
     })
 }
 
+#[cfg(feature = "diagrams")]
 fn node_is_publicly_linkable(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     node: &ResolvedNode,
@@ -1226,54 +1248,138 @@ fn node_is_publicly_linkable(
     true
 }
 
-fn diagram_production(node: &NodeParsePlan) -> String {
-    let right = match &node.body {
-        NodeBodyPlan::Struct { elements, .. } => diagram_sequence(elements),
-        NodeBodyPlan::Enum { variants, .. } => variants
-            .iter()
-            .map(|variant| {
-                let sequence = diagram_sequence(&variant.elements);
-                if sequence == "ε" {
-                    variant.ident.unraw().to_string()
-                } else {
-                    format!("{}({sequence})", variant.ident.unraw())
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" | "),
+#[cfg(feature = "diagrams")]
+fn diagram_production(
+    node: &NodeParsePlan,
+    application: &MaterializedNodeApplication,
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Result<String, String> {
+    let right = match (&node.body, &application.body) {
+        (
+            NodeBodyPlan::Struct { elements, .. },
+            MaterializedNodeBody::Struct(materialized)
+            | MaterializedNodeBody::Presence(materialized),
+        ) => diagram_sequence(elements, materialized, lowered)?,
+        (
+            NodeBodyPlan::Enum { variants, .. },
+            MaterializedNodeBody::Enum(materialized_variants),
+        ) => {
+            if variants.len() != materialized_variants.len() {
+                return Err("a diagram enum lost a frozen materialized variant".to_owned());
+            }
+            let alternatives = variants
+                .iter()
+                .zip(materialized_variants)
+                .map(|(variant, materialized)| {
+                    let sequence =
+                        diagram_sequence(&variant.elements, &materialized.elements, lowered)?;
+                    Ok(if sequence == "ε" {
+                        variant.ident.unraw().to_string()
+                    } else {
+                        format!("{}({sequence})", variant.ident.unraw())
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            alternatives.join(" | ")
+        }
+        _ => {
+            return Err(format!(
+                "Node `{}` diagram and materialized shapes disagree",
+                node.semantic_key
+            ));
+        }
     };
-    format!("{} ::= {right}", node.ident.unraw())
+    Ok(format!("{} ::= {right}", node.ident.unraw()))
 }
 
-fn diagram_sequence(elements: &[ElementParsePlan]) -> String {
+#[cfg(feature = "diagrams")]
+fn diagram_sequence(
+    elements: &[ElementParsePlan],
+    materialized: &[MaterializedElement],
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Result<String, String> {
+    if elements.len() != materialized.len() {
+        return Err("a diagram sequence lost a frozen materialized element".to_owned());
+    }
     if elements.is_empty() {
-        return "ε".to_owned();
+        return Ok("ε".to_owned());
     }
     elements
         .iter()
-        .map(|element| match &element.kind {
-            ElementParseKind::Fixed { spelling, .. } => format!("{spelling:?}"),
-            ElementParseKind::Semantic {
-                wrappers, field, ..
-            } => {
-                let name = field
-                    .accessor
-                    .as_ref()
-                    .map_or_else(|| element.metadata_name.clone(), ToString::to_string);
-                let suffix = if wrappers.contains(&FieldWrapper::ZeroOrMore) {
-                    "*"
-                } else if wrappers.contains(&FieldWrapper::OneOrMore) {
-                    "+"
-                } else if wrappers.contains(&FieldWrapper::Optional) {
-                    "?"
-                } else {
-                    ""
-                };
-                format!("<{name}>{suffix}")
+        .zip(materialized)
+        .map(
+            |(element, materialized)| match (&element.kind, materialized) {
+                (
+                    ElementParseKind::Fixed { spelling, .. },
+                    MaterializedElement::FixedToken { .. },
+                ) => Ok(format!("{spelling:?}")),
+                (
+                    ElementParseKind::Semantic { container, .. },
+                    MaterializedElement::SemanticField { ty, separator, .. },
+                ) => {
+                    let terminal = diagram_terminal_name(ty, lowered)?;
+                    let separator = diagram_separator_spelling(separator.as_ref(), lowered)?;
+                    diagram_semantic_element(&terminal, separator.as_deref(), container)
+                }
+                _ => Err("a diagram element and its frozen materialization disagree".to_owned()),
+            },
+        )
+        .collect::<Result<Vec<_>, String>>()
+        .map(|elements| elements.join(" "))
+}
+
+#[cfg(feature = "diagrams")]
+fn diagram_semantic_element(
+    terminal: &str,
+    separator: Option<&str>,
+    container: &PlannedContainer,
+) -> Result<String, String> {
+    match container {
+        PlannedContainer::Direct { .. } => {
+            if separator.is_some() {
+                return Err("a direct diagram element unexpectedly has a separator".to_owned());
             }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+            Ok(terminal.to_owned())
+        }
+        PlannedContainer::Optional { .. } => {
+            if separator.is_some() {
+                return Err("an optional diagram element unexpectedly has a separator".to_owned());
+            }
+            Ok(format!("Option<{terminal}>"))
+        }
+        PlannedContainer::Repeated {
+            operation,
+            separator_selector,
+            optional_trailing,
+            ..
+        } => {
+            if separator.is_some() != separator_selector.is_some() {
+                return Err(
+                    "a diagram separator diverges from the frozen container machine".to_owned(),
+                );
+            }
+            if *optional_trailing && separator.is_none() {
+                return Err("a diagram has optional trailing syntax without a separator".to_owned());
+            }
+            let mut rendered = match operation {
+                ContainerOperation::ZeroOrMore => format!("Vec<{terminal}>"),
+                ContainerOperation::OneOrMore => format!("Vec1<{terminal}>"),
+                ContainerOperation::OptionalOneOrMore => {
+                    format!("Option<Vec1<{terminal}>>")
+                }
+                ContainerOperation::Direct | ContainerOperation::Optional => {
+                    return Err("a repeated diagram element has a scalar operation".to_owned());
+                }
+            };
+            if let Some(separator) = separator {
+                rendered.push_str(&format!(" separated by {separator:?}"));
+                if *optional_trailing {
+                    rendered.push_str(&format!(" (optional trailing {separator:?})"));
+                }
+            }
+            Ok(rendered)
+        }
+    }
 }
 
 fn parse_plan_identity(nodes: &[NodeParsePlan]) -> u64 {
@@ -2379,6 +2485,55 @@ fn terminal_node_capture(
     }
 }
 
+#[cfg(feature = "diagrams")]
+fn diagram_terminal_name(
+    ty: &ClosedType,
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Result<String, String> {
+    match ty {
+        ClosedType::Node(node) => lowered
+            .applications
+            .get(node.application.index())
+            .map(|application| application.display_name.clone())
+            .ok_or_else(|| "diagram terminal references an unknown Node application".to_owned()),
+        ClosedType::ContentToken(token) => lowered
+            .source_modeled
+            .resolved()
+            .content_tokens
+            .iter()
+            .find(|content| content.id == *token)
+            .map(|content| content.ident.clone())
+            .ok_or_else(|| "diagram terminal references an unknown content token".to_owned()),
+        ClosedType::Boxed(inner)
+        | ClosedType::Optional(inner)
+        | ClosedType::ZeroOrMore(inner)
+        | ClosedType::OneOrMore(inner) => diagram_terminal_name(inner, lowered),
+    }
+}
+
+#[cfg(feature = "diagrams")]
+fn diagram_separator_spelling(
+    separator: Option<&crate::source_model::Separator>,
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Result<Option<String>, String> {
+    let Some(separator) = separator else {
+        return Ok(None);
+    };
+    let source_model = lowered.source_modeled.source_model();
+    let token_use = source_model
+        .token_uses
+        .get(separator.token_use.index())
+        .ok_or_else(|| "diagram separator references an unknown token use".to_owned())?;
+    let definition = source_model
+        .token_definitions
+        .get(token_use.definition.index())
+        .ok_or_else(|| "diagram separator references an unknown token definition".to_owned())?;
+    let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+        return Err("diagram separator does not reference fixed-token syntax".to_owned());
+    };
+    Ok(Some(fixed.spelling.clone()))
+}
+
 fn fixed_element_name(
     node: &ResolvedNode,
     token_use: &crate::source_model::TokenUse,
@@ -2798,6 +2953,7 @@ fn render(plan: &EmissionPlan) -> Result<RenderedGeneration, String> {
     })
 }
 
+#[cfg(feature = "diagrams")]
 fn render_aggregate_diagram_document(plan: &DiagramPlan) -> String {
     let mut document = format!(
         "# Generated grammar diagram\n\nRECURSA_GRAMMAR_DIAGRAM\n\nGrammar `{}` is rendered from the frozen semantic Generation plan.\n\n",
@@ -2821,6 +2977,7 @@ fn render_aggregate_diagram_document(plan: &DiagramPlan) -> String {
     document
 }
 
+#[cfg(feature = "diagrams")]
 fn render_node_diagram_document(node: &NodeDiagramPlan) -> String {
     format!(
         "## Generated grammar diagram\n\nRECURSA_NODE_DIAGRAM: {}\n\n{}\n\nFixed tokens shown as quoted terminals are syntax-only. They shape parsing but do not add fields to the authored Node or retain matched text.\n",
@@ -2829,6 +2986,7 @@ fn render_node_diagram_document(node: &NodeDiagramPlan) -> String {
     )
 }
 
+#[cfg(feature = "diagrams")]
 fn diagram_svg(production: &str, label: &str) -> String {
     let width = 40_usize
         .saturating_add(production.chars().count().saturating_mul(9))
@@ -2841,6 +2999,7 @@ fn diagram_svg(production: &str, label: &str) -> String {
     )
 }
 
+#[cfg(feature = "diagrams")]
 fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -2859,6 +3018,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let release = format_ident!("{release}");
     let protocol = format_ident!("protocol_{PRIVATE_PROTOCOL}");
     let grammar_name = &plan.grammar_name;
+    #[cfg(feature = "diagrams")]
     let aggregate_diagram = plan.diagrams.as_ref().map(|diagrams| {
         let documentation = syn::LitStr::new(
             &render_aggregate_diagram_document(diagrams),
@@ -2869,6 +3029,8 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             pub mod grammar_docs {}
         }
     });
+    #[cfg(not(feature = "diagrams"))]
+    let aggregate_diagram = proc_macro2::TokenStream::new();
     let kind_count = plan.kind_count;
     let lexical_error_kind = plan.lexical_error_kind;
     let kind_names = &plan.kind_names;
@@ -3020,7 +3182,10 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let mut accepted_capabilities = Vec::new();
     // This Generation emits the selected core or diagram payload. Explorer
     // Generations extend this exact handshake with their requested bit.
+    #[cfg(feature = "diagrams")]
     let diagrams = usize::from(plan.diagrams.is_some());
+    #[cfg(not(feature = "diagrams"))]
+    let diagrams = 0;
     let explorer = 0;
     for arbitrary in 0..=1 {
         for serde in 0..=1 {
@@ -4332,6 +4497,7 @@ fn render_node(
             .collect::<Vec<_>>()
     };
     let configured_traits = render_node_configured_traits(plan, node);
+    #[cfg(feature = "diagrams")]
     let diagram_documentation = plan.diagrams.as_ref().map(|diagrams| {
         let diagram = &diagrams.nodes[node_index];
         syn::LitStr::new(
@@ -4339,9 +4505,12 @@ fn render_node(
             proc_macro2::Span::call_site(),
         )
     });
+    #[cfg(feature = "diagrams")]
     let diagram_attribute = diagram_documentation
         .as_ref()
         .map(|documentation| quote!(#[doc = #documentation]));
+    #[cfg(not(feature = "diagrams"))]
+    let diagram_attribute = proc_macro2::TokenStream::new();
     let view_pretty = node
         .configured_traits
         .contains(&ConfiguredTraitRecipe::Pretty)

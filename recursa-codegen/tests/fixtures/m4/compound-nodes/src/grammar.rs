@@ -41,6 +41,20 @@ pub type MaybeCount<'input> = Box<Option<Box<Count<'input>>>>;
 pub struct Pair<'input>(pub Box<Label<'input>>, pub Option<Box<Count<'input>>>);
 
 #[derive(recursa::Node)]
+#[tok(LEFT, this)]
+pub struct ManyLabels<'input> {
+    #[sep(COLON, trailing)]
+    pub values: Vec<Box<Label<'input>>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(RIGHT, this)]
+pub struct SomeCounts<'input> {
+    #[sep(COLON)]
+    pub values: Option<Box<recursa::Vec1<Box<Count<'input>>>>>,
+}
+
+#[derive(recursa::Node)]
 pub enum Entry<'input> {
     Record {
         value: Box<Box<Record<'input>>>,
