@@ -347,6 +347,12 @@ impl PrettyContext {
         self.with_provenance(provenance, render)
     }
 
+    /// Runs structured rendering without assuming a source occurrence shape.
+    #[doc(hidden)]
+    pub fn without_provenance<R>(&mut self, render: impl FnOnce(&mut Self) -> R) -> R {
+        self.with_provenance(None, render)
+    }
+
     /// Returns the exact matched text at the active occurrence, when captured.
     #[doc(hidden)]
     pub fn matched_text(&self) -> Option<String> {

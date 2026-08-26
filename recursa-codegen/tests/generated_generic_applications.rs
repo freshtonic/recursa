@@ -24,6 +24,10 @@ fn a_generic_node_can_be_parsed_through_multiple_closed_applications() {
         "    Integer(Atom<Integer<'input>>),\n    Name(Atom<Name<'input>>),",
         "    Name(Atom<Name<'input>>),\n    Integer(Atom<Integer<'input>>),",
     );
+    let source = source.replace(
+        "    Direct(#[tok(LPAREN, this, RPAREN)] Wrap<Name<'input>>),\n    Repeated(#[tok(LBRACKET, this, RBRACKET)] Wrap<Vec<Name<'input>>>),",
+        "    Repeated(#[tok(LBRACKET, this, RBRACKET)] Wrap<Vec<Name<'input>>>),\n    Direct(#[tok(LPAREN, this, RPAREN)] Wrap<Name<'input>>),",
+    );
     assert_ne!(
         source,
         fs::read_to_string(&grammar).expect("reread unpermuted grammar")
