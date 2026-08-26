@@ -2227,15 +2227,17 @@ fn parse_fixed_pretty_spacing(
             ));
         }
     };
-    if spacing == PrettySpacing::Tight
-        && spelling
-            .value()
-            .chars()
-            .all(|character| character == '_' || character.is_alphanumeric())
+    if matches!(
+        spacing,
+        PrettySpacing::Tight | PrettySpacing::Before | PrettySpacing::After
+    ) && spelling
+        .value()
+        .chars()
+        .all(|character| character == '_' || character.is_alphanumeric())
     {
         return Err(syn::Error::new(
             mode.span(),
-            "tight spacing is unsafe for a word-shaped fixed token",
+            "this spacing mode is unsafe for a word-shaped fixed token",
         ));
     }
     if input.peek(Token![,]) {
@@ -4187,7 +4189,7 @@ struct Leaf;
         .expect("unsafe keyword spacing is rejected");
         assert_eq!(
             unsafe_keyword.to_string(),
-            "tight spacing is unsafe for a word-shaped fixed token"
+            "this spacing mode is unsafe for a word-shaped fixed token"
         );
     }
 }
