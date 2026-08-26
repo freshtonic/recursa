@@ -17,8 +17,8 @@ use crate::lowering::{
     ElementId as GrammarElementId, ModuleId, NodeId, TokenDefinitionId, TokenUseId,
 };
 use crate::resolution::{
-    CatalogType, ContentTokenId, ResolvedFieldId, ResolvedNodeBody, ResolvedNodeField,
-    ResolvedSourceGrammar, ResolvedTypeKind, ResolvedVariantId, SemanticTarget,
+    CatalogType, ContentTokenId, ResolvedFieldId, ResolvedFieldStyle, ResolvedNodeBody,
+    ResolvedNodeField, ResolvedSourceGrammar, ResolvedTypeKind, ResolvedVariantId, SemanticTarget,
 };
 use crate::source_syntax::{
     CargoCfgSnapshot, configured_attribute_metas as configured_metas,
@@ -584,7 +584,7 @@ impl SourceModelBuilder<'_> {
             };
             let configured = &node.metas;
             let body = match &node.body {
-                ResolvedNodeBody::Struct { unit } => {
+                ResolvedNodeBody::Struct { style } => {
                     reject_pratt_marker(
                         &self.resolved,
                         origin,
@@ -609,7 +609,7 @@ impl SourceModelBuilder<'_> {
                         fields,
                         TokenAttachment::StructBody,
                     );
-                    if *unit
+                    if *style == ResolvedFieldStyle::Unit
                         && elements
                             .iter()
                             .all(|element| element.kind() == GrammarElementKind::FixedToken)
@@ -2505,7 +2505,9 @@ mod tests {
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
-    use crate::resolution::{ResolutionInput, resolve_local_semantics};
+    use crate::resolution::{
+        ResolutionInput, ResolvedFieldStyle, ResolvedNodeBody, resolve_local_semantics,
+    };
     use crate::source_syntax::CargoCfgSnapshot;
 
     fn model_with_cfg(source: &str, cfg: &CargoCfgSnapshot) -> super::SourceModelReport {
@@ -2612,6 +2614,95 @@ struct Present;
                 .map(|definition| definition.name.as_str())
                 .collect::<Vec<_>>(),
             ["(", ")", "PRESENT"],
+        );
+    }
+
+    #[test]
+    fn source_modeled_grammar_retains_visibility_and_field_styles_for_emission() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+
+#[derive(recursa::Node)]
+pub struct Named { value: Leaf }
+
+#[derive(recursa::Node)]
+pub(crate) struct Tuple(Leaf);
+
+#[derive(recursa::Node)]
+struct Unit;
+
+#[derive(recursa::Node)]
+pub enum Choice {
+    Named { value: Leaf },
+    Tuple(Leaf),
+    Unit,
+}
+
+#[derive(recursa::Node)]
+struct Leaf;
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let source_modeled = report.source_modeled.unwrap();
+        let resolved = source_modeled.resolved();
+        let named = resolved
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Named")
+            .unwrap();
+        let tuple = resolved
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Tuple")
+            .unwrap();
+        let unit = resolved
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Unit")
+            .unwrap();
+        let choice = resolved
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Choice")
+            .unwrap();
+
+        assert_eq!(named.visibility, syn::parse_quote!(pub));
+        assert_eq!(tuple.visibility, syn::parse_quote!(pub(crate)));
+        assert_eq!(unit.visibility, syn::Visibility::Inherited);
+        assert_eq!(choice.visibility, syn::parse_quote!(pub));
+        assert!(matches!(
+            named.body,
+            ResolvedNodeBody::Struct {
+                style: ResolvedFieldStyle::Named
+            }
+        ));
+        assert!(matches!(
+            tuple.body,
+            ResolvedNodeBody::Struct {
+                style: ResolvedFieldStyle::Unnamed
+            }
+        ));
+        assert!(matches!(
+            unit.body,
+            ResolvedNodeBody::Struct {
+                style: ResolvedFieldStyle::Unit
+            }
+        ));
+        let ResolvedNodeBody::Enum { variants } = &choice.body else {
+            panic!("Choice remains an enum")
+        };
+        assert_eq!(
+            variants
+                .iter()
+                .map(|variant| (variant.ident.as_str(), variant.style))
+                .collect::<Vec<_>>(),
+            [
+                ("Named", ResolvedFieldStyle::Named),
+                ("Tuple", ResolvedFieldStyle::Unnamed),
+                ("Unit", ResolvedFieldStyle::Unit),
+            ]
         );
     }
 

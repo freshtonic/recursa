@@ -10,7 +10,7 @@ mod build_diagnostic;
 mod decision_plan;
 mod diagnostic;
 mod discovery;
-mod generation;
+mod generation_compound;
 mod ids;
 mod ir;
 mod kind_set;
@@ -49,7 +49,7 @@ pub use diagnostic::{
     ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic, DiagnosticCode, DiagnosticLabel,
     LookaheadWitnessPosition, Remedy, Severity, SharedPrefixEvidence,
 };
-pub use generation::{Generation, generate};
+pub use generation_compound::{Generation, generate};
 pub use ids::{
     AtomId, DeclId, KindId, LocationId, ProofId, SiteId, SourceId, TextPredicateId, TypeId,
 };
