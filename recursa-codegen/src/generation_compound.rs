@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -123,8 +124,12 @@ struct EmissionPlan {
     word_candidate_kinds: Vec<u16>,
     post_lex: Option<syn::Path>,
     root_configured_traits: Vec<ConfiguredTraitRecipe>,
+    private_abi: PrivateAbiPlan,
+    capabilities: Vec<FacadeCapability>,
+    pretty: PrettyEmissionPlan,
     #[cfg(feature = "diagrams")]
     diagrams: Option<DiagramPlan>,
+    explorer: Option<ExtensionEmissionPlan>,
     instrumentation: EmissionInstrumentation,
     plan_families: EmissionPlanFamilies,
 }
@@ -132,16 +137,59 @@ struct EmissionPlan {
 #[derive(Clone, Debug)]
 struct EmissionPlanFamilies {
     configured_traits: u64,
+    private_abi: u64,
+    capabilities: u64,
     pretty: Option<u64>,
     parse: u64,
-    diagrams: Option<ExtensionPlanFamily>,
-    explorer: Option<ExtensionPlanFamily>,
+    diagrams: Option<u64>,
+    explorer: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ExtensionPlanFamily {
-    frozen_identity: u64,
-    planned_identity: u64,
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PrivateAbiPlan {
+    release: String,
+    protocol: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct FacadeCapability {
+    diagrams: bool,
+    explorer: bool,
+    arbitrary: bool,
+    serde: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PrettyEmissionPlan {
+    tokens: Vec<Option<PrettyTokenBehavior>>,
+    nodes: Vec<Option<PrettyNodeBehavior>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrettyTokenBehavior {
+    MatchedOrStoredText,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PrettyNodeBehavior {
+    variants: Vec<Vec<PrettyElementBehavior>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PrettyElementBehavior {
+    Fixed { spelling: String },
+    Semantic { repeated: bool },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExtensionEmissionPlan {
+    artifacts: Vec<ExtensionArtifactPlan>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExtensionArtifactPlan {
+    logical_name: String,
+    content: String,
 }
 
 #[cfg(feature = "diagrams")]
@@ -897,14 +945,6 @@ impl EmissionPlan {
             })
             .sum::<usize>();
         let frozen_parse_identity = parse_plan_identity(&nodes);
-        let plan_families = EmissionPlanFamilies {
-            configured_traits: configured_trait_plan_identity(&nodes, &tokens, false),
-            pretty: configured_traits_include(&nodes, &tokens, ConfiguredTraitRecipe::Pretty)
-                .then(|| configured_trait_plan_identity(&nodes, &tokens, true)),
-            parse: frozen_parse_identity,
-            diagrams: None,
-            explorer: None,
-        };
         // M3 has already decided whether each fixed token remains a standalone
         // rule or is recognized through one or more proven carriers. Preserve
         // that decision here instead of reconstructing fixed rules from source.
@@ -1019,11 +1059,46 @@ impl EmissionPlan {
             })
             .collect::<Result<Vec<_>, String>>()?;
         #[cfg(feature = "diagrams")]
+        let authoritative_diagrams = resolved
+            .build_inputs
+            .diagrams
+            .then(|| plan_diagrams(lowered, resolved, &nodes, &kind_names, &kind_static_texts))
+            .transpose()?;
+        #[cfg(feature = "diagrams")]
         let diagrams = resolved
             .build_inputs
             .diagrams
             .then(|| plan_diagrams(lowered, resolved, &nodes, &kind_names, &kind_static_texts))
             .transpose()?;
+        #[cfg(feature = "diagrams")]
+        let diagram_enabled = diagrams.is_some();
+        #[cfg(not(feature = "diagrams"))]
+        let diagram_enabled = false;
+        #[cfg(feature = "diagrams")]
+        let frozen_diagrams = authoritative_diagrams.as_ref().map(plan_family_identity);
+        #[cfg(not(feature = "diagrams"))]
+        let frozen_diagrams = None;
+        let private_abi = emitted_private_abi_plan();
+        let explorer = None;
+        let pretty = emitted_pretty_plan(&nodes, &tokens);
+        let capabilities =
+            emitted_capability_plan(&nodes, &tokens, diagram_enabled, explorer.is_some());
+        let authoritative_explorer = authoritative_explorer_plan(resolved);
+        let plan_families = EmissionPlanFamilies {
+            configured_traits: authoritative_configured_trait_identity(lowered, resolved),
+            private_abi: plan_family_identity(&authoritative_private_abi_plan()),
+            capabilities: plan_family_identity(&authoritative_capability_plan(
+                lowered,
+                resolved.build_inputs.diagrams,
+                authoritative_explorer.is_some(),
+            )),
+            pretty: authoritative_pretty_plan(lowered, resolved)?
+                .as_ref()
+                .map(plan_family_identity),
+            parse: frozen_parse_identity,
+            diagrams: frozen_diagrams,
+            explorer: authoritative_explorer.as_ref().map(plan_family_identity),
+        };
 
         let mut canonical = format!(
             "{EMITTER_IDENTITY};release={};protocol={PRIVATE_PROTOCOL};facade={facade};anchor={};kinds={kind_count};edition={:?};cfg={:?};",
@@ -1135,8 +1210,12 @@ impl EmissionPlan {
             word_candidate_kinds,
             post_lex: lowered.source_modeled.source_model().post_lex.clone(),
             root_configured_traits,
+            private_abi,
+            capabilities,
+            pretty,
             #[cfg(feature = "diagrams")]
             diagrams,
+            explorer,
             instrumentation,
             plan_families,
         };
@@ -1198,27 +1277,32 @@ impl EmissionPlan {
 
     fn validate_plan_families(&self) -> Result<(), String> {
         if self.plan_families.configured_traits
-            != configured_trait_plan_identity(&self.nodes, &self.tokens, false)
+            != configured_trait_plan_identity(&self.nodes, &self.tokens)
         {
             return Err(
                 "the configured-trait plan family diverges from its frozen identity".to_owned(),
             );
         }
-        let pretty =
-            configured_traits_include(&self.nodes, &self.tokens, ConfiguredTraitRecipe::Pretty)
-                .then(|| configured_trait_plan_identity(&self.nodes, &self.tokens, true));
+        if self.plan_families.private_abi != plan_family_identity(&self.private_abi) {
+            return Err("the private ABI plan family diverges from its frozen identity".to_owned());
+        }
+        let pretty = pretty_family_identity(&self.pretty);
         if self.plan_families.pretty != pretty {
             return Err("the Pretty plan family diverges from its frozen identity".to_owned());
         }
-        for (name, family) in [
-            ("diagram", self.plan_families.diagrams),
-            ("explorer", self.plan_families.explorer),
-        ] {
-            if family.is_some_and(|family| family.frozen_identity != family.planned_identity) {
-                return Err(format!(
-                    "the {name} plan family diverges from its frozen identity"
-                ));
-            }
+        #[cfg(feature = "diagrams")]
+        if self.plan_families.diagrams != self.diagrams.as_ref().map(plan_family_identity) {
+            return Err("the diagram plan family diverges from its frozen identity".to_owned());
+        }
+        #[cfg(not(feature = "diagrams"))]
+        if self.plan_families.diagrams.is_some() {
+            return Err("the diagram plan family diverges from its frozen identity".to_owned());
+        }
+        if self.plan_families.explorer != self.explorer.as_ref().map(plan_family_identity) {
+            return Err("the explorer plan family diverges from its frozen identity".to_owned());
+        }
+        if self.plan_families.capabilities != plan_family_identity(&self.capabilities) {
+            return Err("the capability plan family diverges from its frozen identity".to_owned());
         }
         Ok(())
     }
@@ -1566,44 +1650,362 @@ fn parse_plan_identity(nodes: &[NodeParsePlan]) -> u64 {
     stable_hash(format!("{nodes:?}").as_bytes())
 }
 
-fn configured_traits_include(
-    nodes: &[NodeParsePlan],
-    tokens: &[TokenParsePlan],
-    recipe: ConfiguredTraitRecipe,
-) -> bool {
-    nodes
-        .iter()
-        .flat_map(|node| &node.configured_traits)
-        .chain(tokens.iter().flat_map(|token| &token.configured_traits))
-        .any(|candidate| *candidate == recipe)
+fn plan_family_identity(value: &impl std::fmt::Debug) -> u64 {
+    stable_hash(format!("{value:?}").as_bytes())
 }
 
-fn configured_trait_plan_identity(
-    nodes: &[NodeParsePlan],
-    tokens: &[TokenParsePlan],
-    pretty_only: bool,
+fn emitted_private_abi_plan() -> PrivateAbiPlan {
+    PrivateAbiPlan {
+        release: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol: PRIVATE_PROTOCOL,
+    }
+}
+
+fn authoritative_private_abi_plan() -> PrivateAbiPlan {
+    // This contract belongs to the facade/codegen release, independently of
+    // the mutable emission plan which later renders the handshake.
+    PrivateAbiPlan {
+        release: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol: PRIVATE_PROTOCOL,
+    }
+}
+
+fn authoritative_configured_trait_identity(
+    lowered: &crate::materialization::LoweredGrammar,
+    resolved: &crate::resolution::ResolvedSourceGrammar,
 ) -> u64 {
+    let source = lowered.source_modeled.source_model();
     let mut canonical = String::new();
-    for node in nodes {
-        canonical.push_str(&node.semantic_key);
-        canonical.push(':');
-        for recipe in &node.configured_traits {
-            if !pretty_only || *recipe == ConfiguredTraitRecipe::Pretty {
-                canonical.push_str(&format!("{recipe:?},"));
+    for (index, resolved_node) in resolved.nodes.iter().enumerate() {
+        canonical.push_str(&format!("node-{index}:"));
+        if let Some(node) = source
+            .nodes
+            .iter()
+            .find(|node| node.resolved_node == resolved_node.id)
+        {
+            for selection in &node.configured_traits.effective {
+                canonical.push_str(&format!("{:?},", selection.recipe));
             }
+        } else {
+            canonical.push_str("<missing>");
+        }
+        canonical.push(';');
+    }
+    for (index, content) in resolved.content_tokens.iter().enumerate() {
+        canonical.push_str(&format!("token-{index}:"));
+        if let Some(token) =
+            source
+                .token_definitions
+                .iter()
+                .find_map(|definition| match &definition.kind {
+                    TokenDefinitionKind::Content(token) if token.semantic == content.id => {
+                        Some(token)
+                    }
+                    TokenDefinitionKind::Content(_)
+                    | TokenDefinitionKind::Fixed(_)
+                    | TokenDefinitionKind::LexicalBase(_) => None,
+                })
+        {
+            for selection in &token.configured_traits.effective {
+                canonical.push_str(&format!("{:?},", selection.recipe));
+            }
+        } else {
+            canonical.push_str("<missing>");
+        }
+        canonical.push(';');
+    }
+    stable_hash(canonical.as_bytes())
+}
+
+fn configured_trait_plan_identity(nodes: &[NodeParsePlan], tokens: &[TokenParsePlan]) -> u64 {
+    let mut canonical = String::new();
+    for (index, node) in nodes.iter().enumerate() {
+        canonical.push_str(&format!("node-{index}:"));
+        for recipe in &node.configured_traits {
+            canonical.push_str(&format!("{recipe:?},"));
         }
         canonical.push(';');
     }
     for (index, token) in tokens.iter().enumerate() {
         canonical.push_str(&format!("token-{index}:"));
         for recipe in &token.configured_traits {
-            if !pretty_only || *recipe == ConfiguredTraitRecipe::Pretty {
-                canonical.push_str(&format!("{recipe:?},"));
-            }
+            canonical.push_str(&format!("{recipe:?},"));
         }
         canonical.push(';');
     }
     stable_hash(canonical.as_bytes())
+}
+
+fn accepted_capabilities(
+    requested_arbitrary: bool,
+    requested_serde: bool,
+    diagrams: bool,
+    explorer: bool,
+) -> Vec<FacadeCapability> {
+    let mut accepted = Vec::new();
+    for arbitrary in [false, true] {
+        for serde in [false, true] {
+            if (!requested_arbitrary || arbitrary) && (!requested_serde || serde) {
+                accepted.push(FacadeCapability {
+                    diagrams,
+                    explorer,
+                    arbitrary,
+                    serde,
+                });
+            }
+        }
+    }
+    accepted
+}
+
+fn emitted_capability_plan(
+    nodes: &[NodeParsePlan],
+    tokens: &[TokenParsePlan],
+    diagrams: bool,
+    explorer: bool,
+) -> Vec<FacadeCapability> {
+    let recipes = nodes
+        .iter()
+        .flat_map(|node| &node.configured_traits)
+        .chain(tokens.iter().flat_map(|token| &token.configured_traits));
+    capability_plan_from_recipes(recipes.copied(), diagrams, explorer)
+}
+
+fn authoritative_capability_plan(
+    lowered: &crate::materialization::LoweredGrammar,
+    diagrams: bool,
+    explorer: bool,
+) -> Vec<FacadeCapability> {
+    let source = lowered.source_modeled.source_model();
+    let recipes = source
+        .nodes
+        .iter()
+        .flat_map(|node| &node.configured_traits.effective)
+        .chain(
+            source
+                .token_definitions
+                .iter()
+                .flat_map(|definition| match &definition.kind {
+                    TokenDefinitionKind::Content(token) => {
+                        token.configured_traits.effective.as_slice()
+                    }
+                    TokenDefinitionKind::Fixed(_) | TokenDefinitionKind::LexicalBase(_) => &[],
+                }),
+        )
+        .map(|selection| selection.recipe);
+    capability_plan_from_recipes(recipes, diagrams, explorer)
+}
+
+fn capability_plan_from_recipes(
+    recipes: impl Iterator<Item = ConfiguredTraitRecipe>,
+    diagrams: bool,
+    explorer: bool,
+) -> Vec<FacadeCapability> {
+    let mut requested_arbitrary = false;
+    let mut requested_serde = false;
+    for recipe in recipes {
+        requested_arbitrary |= recipe == ConfiguredTraitRecipe::Arbitrary;
+        requested_serde |= matches!(
+            recipe,
+            ConfiguredTraitRecipe::Serialize | ConfiguredTraitRecipe::Deserialize
+        );
+    }
+    accepted_capabilities(requested_arbitrary, requested_serde, diagrams, explorer)
+}
+
+fn emitted_pretty_plan(nodes: &[NodeParsePlan], tokens: &[TokenParsePlan]) -> PrettyEmissionPlan {
+    PrettyEmissionPlan {
+        tokens: tokens
+            .iter()
+            .map(|token| {
+                token
+                    .configured_traits
+                    .contains(&ConfiguredTraitRecipe::Pretty)
+                    .then_some(PrettyTokenBehavior::MatchedOrStoredText)
+            })
+            .collect(),
+        nodes: nodes
+            .iter()
+            .map(|node| {
+                node.configured_traits
+                    .contains(&ConfiguredTraitRecipe::Pretty)
+                    .then(|| emitted_pretty_node_behavior(node))
+            })
+            .collect(),
+    }
+}
+
+fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBehavior {
+    let variants = match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => vec![emitted_pretty_elements(elements)],
+        NodeBodyPlan::Enum { variants, .. } => variants
+            .iter()
+            .map(|variant| emitted_pretty_elements(&variant.elements))
+            .collect(),
+        NodeBodyPlan::Pratt(_) => trait_variants(&node.body)
+            .iter()
+            .map(|variant| emitted_pretty_elements(&variant.elements))
+            .collect(),
+    };
+    PrettyNodeBehavior { variants }
+}
+
+fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBehavior> {
+    elements
+        .iter()
+        .map(|element| match &element.kind {
+            ElementParseKind::Fixed { spelling, .. } => PrettyElementBehavior::Fixed {
+                spelling: spelling.clone(),
+            },
+            ElementParseKind::Semantic { container, .. } => PrettyElementBehavior::Semantic {
+                repeated: matches!(container.as_ref(), PlannedContainer::Repeated { .. }),
+            },
+        })
+        .collect()
+}
+
+fn authoritative_pretty_plan(
+    lowered: &crate::materialization::LoweredGrammar,
+    resolved: &crate::resolution::ResolvedSourceGrammar,
+) -> Result<Option<PrettyEmissionPlan>, String> {
+    let source = lowered.source_modeled.source_model();
+    let tokens = resolved
+        .content_tokens
+        .iter()
+        .map(|content| {
+            source
+                .token_definitions
+                .iter()
+                .find_map(|definition| match &definition.kind {
+                    TokenDefinitionKind::Content(token) if token.semantic == content.id => {
+                        Some(token)
+                    }
+                    TokenDefinitionKind::Content(_)
+                    | TokenDefinitionKind::Fixed(_)
+                    | TokenDefinitionKind::LexicalBase(_) => None,
+                })
+                .is_some_and(|token| {
+                    token
+                        .configured_traits
+                        .effective
+                        .iter()
+                        .any(|selection| selection.recipe == ConfiguredTraitRecipe::Pretty)
+                })
+                .then_some(PrettyTokenBehavior::MatchedOrStoredText)
+        })
+        .collect::<Vec<_>>();
+    let nodes = resolved
+        .nodes
+        .iter()
+        .map(|resolved_node| {
+            let source_node = source
+                .nodes
+                .iter()
+                .find(|node| node.resolved_node == resolved_node.id)
+                .ok_or_else(|| {
+                    format!(
+                        "Node `{}` lacks an authoritative Pretty plan",
+                        resolved_node.ident
+                    )
+                })?;
+            if !source_node
+                .configured_traits
+                .effective
+                .iter()
+                .any(|selection| selection.recipe == ConfiguredTraitRecipe::Pretty)
+            {
+                return Ok(None);
+            }
+            let application = lowered
+                .applications
+                .iter()
+                .find(|application| application.node == resolved_node.id)
+                .ok_or_else(|| {
+                    format!(
+                        "Node `{}` lacks an authoritative application",
+                        resolved_node.ident
+                    )
+                })?;
+            authoritative_pretty_node_behavior(lowered, application).map(Some)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let plan = PrettyEmissionPlan { tokens, nodes };
+    Ok(pretty_family_identity(&plan).map(|_| plan))
+}
+
+fn authoritative_pretty_node_behavior(
+    lowered: &crate::materialization::LoweredGrammar,
+    application: &MaterializedNodeApplication,
+) -> Result<PrettyNodeBehavior, String> {
+    let variants = match &application.body {
+        MaterializedNodeBody::Struct(elements) | MaterializedNodeBody::Presence(elements) => {
+            vec![authoritative_pretty_elements(lowered, elements)?]
+        }
+        MaterializedNodeBody::Enum(variants) => variants
+            .iter()
+            .map(|variant| authoritative_pretty_elements(lowered, &variant.elements))
+            .collect::<Result<Vec<_>, String>>()?,
+        MaterializedNodeBody::Pratt(variants) => variants
+            .iter()
+            .map(|variant| match variant {
+                MaterializedPrattVariant::Nud(nud) => {
+                    authoritative_pretty_elements(lowered, &nud.body)
+                }
+                MaterializedPrattVariant::Led(led) => {
+                    let mut elements = vec![PrettyElementBehavior::Semantic { repeated: false }];
+                    elements.extend(authoritative_pretty_elements(lowered, &led.tail)?);
+                    Ok(elements)
+                }
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+    };
+    Ok(PrettyNodeBehavior { variants })
+}
+
+fn authoritative_pretty_elements(
+    lowered: &crate::materialization::LoweredGrammar,
+    elements: &[MaterializedElement],
+) -> Result<Vec<PrettyElementBehavior>, String> {
+    let source = lowered.source_modeled.source_model();
+    elements
+        .iter()
+        .map(|element| match element {
+            MaterializedElement::FixedToken { token_use } => {
+                let usage = &source.token_uses[token_use.index()];
+                let definition = &source.token_definitions[usage.definition.index()];
+                let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+                    return Err(
+                        "a materialized fixed Pretty element is not a fixed token".to_owned()
+                    );
+                };
+                Ok(PrettyElementBehavior::Fixed {
+                    spelling: fixed_pretty_spelling(
+                        &fixed.spelling,
+                        lowered.grammar.text_equivalence,
+                    ),
+                })
+            }
+            MaterializedElement::SemanticField { ty, .. } => {
+                let repeated = field_wrappers(ty)?.iter().any(|wrapper| {
+                    matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)
+                });
+                Ok(PrettyElementBehavior::Semantic { repeated })
+            }
+        })
+        .collect()
+}
+
+fn pretty_family_identity(plan: &PrettyEmissionPlan) -> Option<u64> {
+    (plan.tokens.iter().any(Option::is_some) || plan.nodes.iter().any(Option::is_some))
+        .then(|| plan_family_identity(plan))
+}
+
+fn authoritative_explorer_plan(
+    _resolved: &crate::resolution::ResolvedSourceGrammar,
+) -> Option<ExtensionEmissionPlan> {
+    // The current resolved grammar has no explorer request. Ticket #70 extends
+    // this authoritative seam with its resolved explorer plan.
+    None
 }
 
 fn planned_kind_variants(
@@ -3240,10 +3642,11 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
     let generation = format_ident!("{}", plan.identity);
-    let release_text = env!("CARGO_PKG_VERSION");
+    let release_text = &plan.private_abi.release;
     let release = format!("release_{release_text}").replace(['.', '-'], "_");
     let release = format_ident!("{release}");
-    let protocol = format_ident!("protocol_{PRIVATE_PROTOCOL}");
+    let private_protocol = plan.private_abi.protocol;
+    let protocol = format_ident!("protocol_{private_protocol}");
     let grammar_name = &plan.grammar_name;
     #[cfg(feature = "diagrams")]
     let aggregate_diagram = plan.diagrams.as_ref().map(|diagrams| {
@@ -3381,54 +3784,17 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             };
         }
     });
-    let requested_arbitrary = plan
-        .nodes
-        .iter()
-        .flat_map(|node| node.configured_traits.iter())
-        .chain(
-            plan.tokens
-                .iter()
-                .flat_map(|token| token.configured_traits.iter()),
-        )
-        .any(|recipe| *recipe == ConfiguredTraitRecipe::Arbitrary);
-    let requested_serde = plan
-        .nodes
-        .iter()
-        .flat_map(|node| node.configured_traits.iter())
-        .chain(
-            plan.tokens
-                .iter()
-                .flat_map(|token| token.configured_traits.iter()),
-        )
-        .any(|recipe| {
-            matches!(
-                recipe,
-                ConfiguredTraitRecipe::Serialize | ConfiguredTraitRecipe::Deserialize
-            )
-        });
-    let mut accepted_capabilities = Vec::new();
-    // This Generation emits the selected core or diagram payload. Explorer
-    // Generations extend this exact handshake with their requested bit.
-    #[cfg(feature = "diagrams")]
-    let diagrams = usize::from(plan.diagrams.is_some());
-    #[cfg(not(feature = "diagrams"))]
-    let diagrams = 0;
-    let explorer = 0;
-    for arbitrary in 0..=1 {
-        for serde in 0..=1 {
-            if (!requested_arbitrary || arbitrary == 1) && (!requested_serde || serde == 1) {
-                accepted_capabilities.push(format_ident!(
-                    "cap_core_d{diagrams}_e{explorer}_a{arbitrary}_s{serde}"
-                ));
-            }
-        }
-    }
-    let capability_arms = accepted_capabilities.iter().map(|capability| {
+    let capability_arms = plan.capabilities.iter().map(|capability| {
+        let diagrams = u8::from(capability.diagrams);
+        let explorer = u8::from(capability.explorer);
+        let arbitrary = u8::from(capability.arbitrary);
+        let serde = u8::from(capability.serde);
+        let capability = format_ident!("cap_core_d{diagrams}_e{explorer}_a{arbitrary}_s{serde}");
         quote! {
             (#release, #protocol, #capability) => {
                 const _: #facade::__private::FacadeCompatibility<
                     { #facade::__private::release_stamp(#release_text) },
-                    #PRIVATE_PROTOCOL,
+                    #private_protocol,
                 > = #facade::__private::FACADE_COMPATIBILITY;
             };
         }
@@ -4453,33 +4819,35 @@ fn render_token(
                 }
             }
         });
-    let pretty_impl = token
-        .configured_traits
-        .contains(&ConfiguredTraitRecipe::Pretty)
-        .then(|| {
-            quote! {
-                impl<'input> #facade::Pretty for #ident<'input> {
-                    fn pretty(
-                        &self,
-                        context: &mut #facade::PrettyContext,
-                    ) -> ::core::fmt::Result {
-                        let matched = context.matched_text();
-                        context.token(matched.as_deref().unwrap_or_else(|| self.text()))
-                    }
-                }
-
-                impl<'input> #facade::Pretty for #view<'_, 'input> {
-                    fn pretty(
-                        &self,
-                        context: &mut #facade::PrettyContext,
-                    ) -> ::core::fmt::Result {
-                        context.with_cursor(self.cursor, |context| {
-                            #facade::Pretty::pretty(self.value, context)
-                        })
-                    }
+    let pretty_impl = plan.pretty.tokens[index].map(|behavior| {
+        let value = match behavior {
+            PrettyTokenBehavior::MatchedOrStoredText => quote! {
+                let matched = context.matched_text();
+                context.token(matched.as_deref().unwrap_or_else(|| self.text()))
+            },
+        };
+        quote! {
+            impl<'input> #facade::Pretty for #ident<'input> {
+                fn pretty(
+                    &self,
+                    context: &mut #facade::PrettyContext,
+                ) -> ::core::fmt::Result {
+                    #value
                 }
             }
-        });
+
+            impl<'input> #facade::Pretty for #view<'_, 'input> {
+                fn pretty(
+                    &self,
+                    context: &mut #facade::PrettyContext,
+                ) -> ::core::fmt::Result {
+                    context.with_cursor(self.cursor, |context| {
+                        #facade::Pretty::pretty(self.value, context)
+                    })
+                }
+            }
+        }
+    });
     let arbitrary_impl = token
         .configured_traits
         .contains(&ConfiguredTraitRecipe::Arbitrary)
@@ -4723,7 +5091,7 @@ fn render_node(
             .map(|binding| render_token_binding(plan, binding))
             .collect::<Vec<_>>()
     };
-    let configured_traits = render_node_configured_traits(plan, node);
+    let configured_traits = render_node_configured_traits(plan, node, node_index);
     #[cfg(feature = "diagrams")]
     let diagram_documentation = plan.diagrams.as_ref().map(|diagrams| {
         let diagram = &diagrams.nodes[node_index];
@@ -4738,25 +5106,22 @@ fn render_node(
         .map(|documentation| quote!(#[doc = #documentation]));
     #[cfg(not(feature = "diagrams"))]
     let diagram_attribute = proc_macro2::TokenStream::new();
-    let view_pretty = node
-        .configured_traits
-        .contains(&ConfiguredTraitRecipe::Pretty)
-        .then(|| {
-            quote! {
-                impl #view_impl_generics #facade::Pretty
-                    for #view_ident #view_type_generics #view_where_clause
-                {
-                    fn pretty(
-                        &self,
-                        context: &mut #facade::PrettyContext,
-                    ) -> ::core::fmt::Result {
-                        context.with_cursor(self.cursor, |context| {
-                            #facade::Pretty::pretty(self.value, context)
-                        })
-                    }
+    let view_pretty = plan.pretty.nodes[node_index].is_some().then(|| {
+        quote! {
+            impl #view_impl_generics #facade::Pretty
+                for #view_ident #view_type_generics #view_where_clause
+            {
+                fn pretty(
+                    &self,
+                    context: &mut #facade::PrettyContext,
+                ) -> ::core::fmt::Result {
+                    context.with_cursor(self.cursor, |context| {
+                        #facade::Pretty::pretty(self.value, context)
+                    })
                 }
             }
-        });
+        }
+    });
 
     quote! {
         __recursa_generation_handshake!(#generation);
@@ -4866,6 +5231,7 @@ fn render_node(
 fn render_node_configured_traits(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
+    node_index: usize,
 ) -> proc_macro2::TokenStream {
     let mut implementations = Vec::new();
     for recipe in [
@@ -4896,11 +5262,8 @@ fn render_node_configured_traits(
     {
         implementations.push(render_node_arbitrary(plan, node));
     }
-    if node
-        .configured_traits
-        .contains(&ConfiguredTraitRecipe::Pretty)
-    {
-        implementations.push(render_node_pretty(plan, node));
+    if plan.pretty.nodes[node_index].is_some() {
+        implementations.push(render_node_pretty(plan, node, node_index));
     }
     if node
         .configured_traits
@@ -5424,94 +5787,123 @@ fn render_node_visit(
     }
 }
 
-fn render_node_pretty(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::TokenStream {
+fn render_node_pretty(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    node_index: usize,
+) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let node_ident = &node.ident;
+    let behavior = plan.pretty.nodes[node_index]
+        .as_ref()
+        .expect("validated Pretty Node behavior");
     let (impl_generics, type_generics, where_clause) =
         trait_impl_parts(facade, node, quote!(#facade::Pretty));
-    let elements = |elements: &[ElementParsePlan], base: proc_macro2::TokenStream| {
-        let rendered = elements
-            .iter()
-            .enumerate()
-            .map(|(index, element)| match &element.kind {
-                ElementParseKind::Fixed { spelling, .. } => {
-                    let text = spelling;
-                    quote! {
-                        context.with_child(#index, |context| {
-                            let matched = context.matched_text();
-                            context.token(matched.as_deref().unwrap_or(#text))
-                        })?;
-                    }
-                }
-                ElementParseKind::Semantic {
-                    field, container, ..
-                } => {
-                    let value = field_access(base.clone(), field.ident.as_ref(), field.index);
-                    if matches!(container.as_ref(), PlannedContainer::Repeated { .. }) {
+    let elements =
+        |elements: &[ElementParsePlan],
+         behavior: &[PrettyElementBehavior],
+         base: proc_macro2::TokenStream| {
+            let rendered = elements.iter().zip(behavior).enumerate().map(
+                |(index, (element, behavior))| match (&element.kind, behavior) {
+                    (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Fixed { spelling }) => {
                         quote! {
                             context.with_child(#index, |context| {
-                                #facade::Pretty::pretty(&#value, context)
+                                let matched = context.matched_text();
+                                context.token(matched.as_deref().unwrap_or(#spelling))
                             })?;
                         }
-                    } else {
-                        quote! {
-                            context.with_child(#index, |context| {
-                                context.with_child(0, |context| {
+                    }
+                    (
+                        ElementParseKind::Semantic { field, .. },
+                        PrettyElementBehavior::Semantic { repeated },
+                    ) => {
+                        let value = field_access(base.clone(), field.ident.as_ref(), field.index);
+                        if *repeated {
+                            quote! {
+                                context.with_child(#index, |context| {
                                     #facade::Pretty::pretty(&#value, context)
-                                })
-                            })?;
+                                })?;
+                            }
+                        } else {
+                            quote! {
+                                context.with_child(#index, |context| {
+                                    context.with_child(0, |context| {
+                                        #facade::Pretty::pretty(&#value, context)
+                                    })
+                                })?;
+                            }
                         }
                     }
-                }
-            });
-        quote!(#(#rendered)*)
-    };
+                    (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Semantic { .. })
+                    | (ElementParseKind::Semantic { .. }, PrettyElementBehavior::Fixed { .. }) => {
+                        unreachable!("validated Pretty element behavior")
+                    }
+                },
+            );
+            quote!(#(#rendered)*)
+        };
     let body = match &node.body {
         NodeBodyPlan::Struct {
             elements: fields, ..
         } => {
-            let rendered = elements(fields, quote!(self));
+            let rendered = elements(fields, &behavior.variants[0], quote!(self));
             quote!({ #rendered Ok(()) })
         }
         NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
             let variants = trait_variants(&node.body);
-            let arms = variants.iter().map(|variant| {
-                let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty");
-                let mut binding_index = 0;
-                let rendered = variant.elements.iter().enumerate().map(|(index, element)| {
-                    match &element.kind {
-                        ElementParseKind::Fixed { spelling, .. } => {
-                            let text = spelling;
-                            quote! {
-                                context.with_child(#index, |context| {
-                                    let matched = context.matched_text();
-                                    context.token(matched.as_deref().unwrap_or(#text))
-                                })?;
-                            }
-                        }
-                        ElementParseKind::Semantic { container, .. } => {
-                            let binding = &bindings[binding_index];
-                            binding_index += 1;
-                            if matches!(container.as_ref(), PlannedContainer::Repeated { .. }) {
+            let arms = variants
+                .iter()
+                .zip(&behavior.variants)
+                .map(|(variant, behavior)| {
+                    let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty");
+                    let mut binding_index = 0;
+                    let rendered = variant.elements.iter().zip(behavior).enumerate().map(
+                        |(index, (element, behavior))| match (&element.kind, behavior) {
+                            (
+                                ElementParseKind::Fixed { .. },
+                                PrettyElementBehavior::Fixed { spelling },
+                            ) => {
                                 quote! {
                                     context.with_child(#index, |context| {
-                                        #facade::Pretty::pretty(#binding, context)
+                                        let matched = context.matched_text();
+                                        context.token(matched.as_deref().unwrap_or(#spelling))
                                     })?;
                                 }
-                            } else {
-                                quote! {
-                                    context.with_child(#index, |context| {
-                                        context.with_child(0, |context| {
+                            }
+                            (
+                                ElementParseKind::Semantic { .. },
+                                PrettyElementBehavior::Semantic { repeated },
+                            ) => {
+                                let binding = &bindings[binding_index];
+                                binding_index += 1;
+                                if *repeated {
+                                    quote! {
+                                        context.with_child(#index, |context| {
                                             #facade::Pretty::pretty(#binding, context)
-                                        })
-                                    })?;
+                                        })?;
+                                    }
+                                } else {
+                                    quote! {
+                                        context.with_child(#index, |context| {
+                                            context.with_child(0, |context| {
+                                                #facade::Pretty::pretty(#binding, context)
+                                            })
+                                        })?;
+                                    }
                                 }
                             }
-                        }
-                    }
+                            (
+                                ElementParseKind::Fixed { .. },
+                                PrettyElementBehavior::Semantic { .. },
+                            )
+                            | (
+                                ElementParseKind::Semantic { .. },
+                                PrettyElementBehavior::Fixed { .. },
+                            ) => unreachable!("validated Pretty element behavior"),
+                        },
+                    );
+                    quote!(#pattern => { #(#rendered)* Ok(()) })
                 });
-                quote!(#pattern => { #(#rendered)* Ok(()) })
-            });
             quote!(match self { #(#arms),* })
         }
     };
@@ -7508,9 +7900,24 @@ fn invalidate_selection(out_dir: &Path) -> Result<(), String> {
     match fs::remove_file(&selected) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "cannot invalidate the previously selected Generation: {error}"
-        )),
+        Err(error) => {
+            let detail = format!("cannot invalidate the previously selected Generation: {error}");
+            let poison = "// recursa-generation-invalid\ncompile_error!(\"previous Recursa Generation selection could not be invalidated\");\n";
+            let poisoned = fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&selected)
+                .and_then(|mut selector| {
+                    selector.write_all(poison.as_bytes())?;
+                    selector.sync_all()
+                });
+            match poisoned {
+                Ok(()) => Err(detail),
+                Err(poison_error) => Err(format!(
+                    "{detail}; cannot poison the stale Generation selector: {poison_error}"
+                )),
+            }
+        }
     }
 }
 
@@ -7834,12 +8241,22 @@ struct B;
     }
 
     fn joined_pratt_fixture() -> (tempfile::TempDir, EmissionPlan) {
+        joined_pratt_fixture_from(include_str!("../tests/fixtures/m4/pratt/src/grammar.rs"))
+    }
+
+    #[cfg(feature = "diagrams")]
+    fn joined_pratt_diagram_fixture() -> (tempfile::TempDir, EmissionPlan) {
+        let source = include_str!("../tests/fixtures/m4/pratt/src/grammar.rs").replacen(
+            "module = crate::grammar,",
+            "module = crate::grammar,\n    diagrams,",
+            1,
+        );
+        joined_pratt_fixture_from(&source)
+    }
+
+    fn joined_pratt_fixture_from(source: &str) -> (tempfile::TempDir, EmissionPlan) {
         let package = tempfile::tempdir().expect("temporary Pratt plan fixture");
-        fs::write(
-            package.path().join("grammar.rs"),
-            include_str!("../tests/fixtures/m4/pratt/src/grammar.rs"),
-        )
-        .expect("write Pratt plan fixture");
+        fs::write(package.path().join("grammar.rs"), source).expect("write Pratt plan fixture");
         let success = analyze_source_tree(
             M3Input::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
@@ -7942,7 +8359,7 @@ struct B;
     }
 
     #[test]
-    fn corrupted_trait_pretty_and_extension_plan_families_fail_before_publication() {
+    fn corrupted_real_plan_family_content_fails_before_publication() {
         let (package, mut traits) = joined_pratt_fixture();
         traits.nodes[0]
             .configured_traits
@@ -7950,27 +8367,59 @@ struct B;
             .expect("the trait fixture configures recipes");
         assert_plan_family_is_unselectable(package.path(), &traits, "configured-trait");
 
+        let (package, mut private_abi) = joined_pratt_fixture();
+        private_abi.private_abi.protocol += 1;
+        assert_plan_family_is_unselectable(package.path(), &private_abi, "private ABI");
+
+        let (package, mut capabilities) = joined_pratt_fixture();
+        capabilities
+            .capabilities
+            .pop()
+            .expect("the fixture accepts at least one exact facade capability");
+        assert_plan_family_is_unselectable(package.path(), &capabilities, "capability");
+
         let (package, mut pretty) = joined_pratt_fixture();
-        *pretty
-            .plan_families
+        let element = pretty
             .pretty
-            .as_mut()
-            .expect("the trait fixture configures Pretty") ^= 1;
+            .nodes
+            .iter_mut()
+            .flatten()
+            .flat_map(|node| &mut node.variants)
+            .flat_map(|variant| variant.iter_mut())
+            .next()
+            .expect("the trait fixture contains Pretty behavior");
+        match element {
+            PrettyElementBehavior::Fixed { spelling } => spelling.push_str("-corrupt"),
+            PrettyElementBehavior::Semantic { repeated } => *repeated = !*repeated,
+        }
         assert_plan_family_is_unselectable(package.path(), &pretty, "Pretty");
 
-        for extension in ["diagram", "explorer"] {
-            let (package, mut plan) = joined_pratt_fixture();
-            let corrupt = Some(ExtensionPlanFamily {
-                frozen_identity: 1,
-                planned_identity: 2,
-            });
-            if extension == "diagram" {
-                plan.plan_families.diagrams = corrupt;
-            } else {
-                plan.plan_families.explorer = corrupt;
-            }
-            assert_plan_family_is_unselectable(package.path(), &plan, extension);
+        #[cfg(feature = "diagrams")]
+        {
+            let (package, mut diagram) = joined_pratt_diagram_fixture();
+            diagram
+                .diagrams
+                .as_mut()
+                .expect("diagram request creates emitted content")
+                .nodes[0]
+                .production
+                .push_str(" corrupt");
+            assert_plan_family_is_unselectable(package.path(), &diagram, "diagram");
         }
+        #[cfg(not(feature = "diagrams"))]
+        {
+            let (_, plan) = joined_pratt_fixture();
+            assert_eq!(plan.plan_families.diagrams, None);
+        }
+
+        let (package, mut explorer) = joined_pratt_fixture();
+        explorer.explorer = Some(ExtensionEmissionPlan {
+            artifacts: vec![ExtensionArtifactPlan {
+                logical_name: "grammar-index".to_owned(),
+                content: "corrupt explorer plan".to_owned(),
+            }],
+        });
+        assert_plan_family_is_unselectable(package.path(), &explorer, "explorer");
     }
 
     fn assert_plan_family_is_unselectable(package: &Path, plan: &EmissionPlan, family: &str) {
@@ -8066,6 +8515,38 @@ struct B;
                     .is_file()
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filesystem_invalidation_failure_poisons_stale_selection_and_recovers() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let output = tempfile::tempdir().unwrap();
+        let old = publication_fixture("g_old");
+        publish_with_checkpoint(output.path(), "g_old", &old, |_| Ok(())).unwrap();
+        assert_eq!(selected_generation(output.path()).as_deref(), Some("g_old"));
+
+        let original_permissions = fs::metadata(output.path()).unwrap().permissions();
+        let mut non_writable = original_permissions.clone();
+        non_writable.set_mode(0o555);
+        fs::set_permissions(output.path(), non_writable).unwrap();
+        let error = invalidate_selection(output.path()).unwrap_err();
+        fs::set_permissions(output.path(), original_permissions).unwrap();
+
+        assert!(error.contains("cannot invalidate"), "{error}");
+        assert_eq!(selected_generation(output.path()), None);
+        let poisoned = fs::read_to_string(output.path().join(SELECTED_GENERATION)).unwrap();
+        assert!(poisoned.contains("compile_error!"));
+        assert!(!poisoned.contains("recursa-generation:g_old"));
+
+        invalidate_selection(output.path()).unwrap();
+        let next = publication_fixture("g_next");
+        publish_with_checkpoint(output.path(), "g_next", &next, |_| Ok(())).unwrap();
+        assert_eq!(
+            selected_generation(output.path()).as_deref(),
+            Some("g_next")
+        );
     }
 
     #[test]
