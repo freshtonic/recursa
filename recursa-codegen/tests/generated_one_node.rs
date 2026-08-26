@@ -240,6 +240,14 @@ fn debug_directory_changes_rerun_generation_without_changing_compiled_output() {
     );
 
     let bundle = first_index.parent().unwrap();
+    fs::write(bundle.join("root.rs"), "human inspection notes").unwrap();
+    fs::write(bundle.join("extra-notes.txt"), "temporary notes").unwrap();
+    assert_success(&run_fixture_with_debug(&package, first_destination.path()));
+    assert_eq!(fs::read_to_string(&selected).unwrap(), selector);
+    assert!(!bundle.join("extra-notes.txt").exists());
+    syn::parse_file(&fs::read_to_string(bundle.join("root.rs")).unwrap())
+        .expect("a rerun replaces human edits instead of loading them");
+
     for line in fs::read_to_string(&first_index).unwrap().lines().skip(2) {
         let private_name = line.split('\t').nth(2).expect("indexed private filename");
         syn::parse_file(&fs::read_to_string(bundle.join(private_name)).unwrap())
