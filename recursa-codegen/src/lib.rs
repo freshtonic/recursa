@@ -42,8 +42,9 @@ pub use build_diagnostic::{
 };
 pub use decision_plan::{
     ContainerAction, ContainerMachine, ContainerOperation, ContainerState, ContainerTransition,
-    DecisionProducts, DispatchBranch, DispatchKind, DispatchPlan, DispatchSequence, ExpectedRecipe,
-    FailureEdge, FailureEdgeKind, FollowRecipe,
+    DecisionProducts, DispatchBranch, DispatchKind, DispatchPlan, DispatchSequence,
+    DispatchTerminal, DispatchTrieEdge, DispatchTrieNode, ExpectedRecipe, FailureEdge,
+    FailureEdgeKind, FollowRecipe,
 };
 pub use diagnostic::{
     ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic, DiagnosticCode, DiagnosticLabel,
