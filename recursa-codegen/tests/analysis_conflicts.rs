@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use recursa_codegen::{
-    Alternative, AtomDescription, AtomExpression, ConflictRemedy, Declaration, DiagnosticCode,
-    GrammarDescription, KindDescription, KindId, KindSet, Location, ParseSite, ProofId,
-    ProvenanceStep, SiteContainer, SourceId, TextPredicate, TypeDescription, TypeId, TypeShape,
-    analyze,
+    Alternative, AtomDescription, AtomExpression, ConflictRemedy, ContainerShape, Declaration,
+    DiagnosticCode, GrammarDescription, KindDescription, KindId, KindSet, Location, ParseSite,
+    ProofId, ProvenanceStep, SourceId, TextEquivalence, TextPredicate, TypeDescription, TypeId,
+    TypeShape, analyze,
 };
 
 struct Builder {
@@ -16,7 +16,12 @@ struct Builder {
 impl Builder {
     fn new(name: &str, kinds: &[&str]) -> Self {
         let mut builder = Self {
-            grammar: GrammarDescription::new(name, kinds.len(), 1),
+            grammar: GrammarDescription::new(
+                name,
+                kinds.len(),
+                1,
+                TextEquivalence::AsciiInsensitive,
+            ),
             next_byte: 0,
             direct_atoms: Vec::new(),
         };
@@ -80,7 +85,7 @@ impl Builder {
                     owner,
                     *target,
                     declaration,
-                    SiteContainer::Direct,
+                    ContainerShape::Direct,
                 ));
                 Alternative {
                     declaration,
@@ -189,16 +194,16 @@ fn nullable_tail(required_tail: bool) -> GrammarDescription {
         owner,
         token,
         first_decl,
-        SiteContainer::Optional,
+        ContainerShape::optional(ContainerShape::Direct),
     ));
     let tail = builder.grammar.push_site(ParseSite::new(
         owner,
         token,
         tail_decl,
         if required_tail {
-            SiteContainer::Direct
+            ContainerShape::Direct
         } else {
-            SiteContainer::Optional
+            ContainerShape::optional(ContainerShape::Direct)
         },
     ));
     builder.grammar.push_type(TypeDescription::new(
@@ -266,20 +271,26 @@ fn nullable_run(fully_nullable: bool) -> GrammarDescription {
     let a_decl = builder.declaration("a");
     let b_decl = builder.declaration("b");
     let c_decl = builder.declaration("c");
-    let a = builder
-        .grammar
-        .push_site(ParseSite::new(owner, a, a_decl, SiteContainer::Optional));
-    let b = builder
-        .grammar
-        .push_site(ParseSite::new(owner, b, b_decl, SiteContainer::Optional));
+    let a = builder.grammar.push_site(ParseSite::new(
+        owner,
+        a,
+        a_decl,
+        ContainerShape::optional(ContainerShape::Direct),
+    ));
+    let b = builder.grammar.push_site(ParseSite::new(
+        owner,
+        b,
+        b_decl,
+        ContainerShape::optional(ContainerShape::Direct),
+    ));
     let c = builder.grammar.push_site(ParseSite::new(
         owner,
         c,
         c_decl,
         if fully_nullable {
-            SiteContainer::Optional
+            ContainerShape::optional(ContainerShape::Direct)
         } else {
-            SiteContainer::Direct
+            ContainerShape::Direct
         },
     ));
     builder.grammar.push_type(TypeDescription::new(
@@ -292,14 +303,23 @@ fn nullable_run(fully_nullable: bool) -> GrammarDescription {
     builder.grammar
 }
 
-fn predicate_pair(left: Option<TextPredicate>, right: Option<TextPredicate>) -> GrammarDescription {
+fn predicate_pair_with_equivalence(
+    left: Option<TextPredicate>,
+    right: Option<TextPredicate>,
+    equivalence: TextEquivalence,
+) -> GrammarDescription {
     let mut builder = Builder::new("predicates", &["Word"]);
+    builder.grammar.text_equivalence = equivalence;
     let left = left.map(|predicate| builder.grammar.push_text_predicate(predicate));
     let right = right.map(|predicate| builder.grammar.push_text_predicate(predicate));
     let left = builder.token("Left", builder.direct_atoms[0], left);
     let right = builder.token("Right", builder.direct_atoms[0], right);
     builder.choice("Choice", &[left, right]);
     builder.grammar
+}
+
+fn predicate_pair(left: Option<TextPredicate>, right: Option<TextPredicate>) -> GrammarDescription {
+    predicate_pair_with_equivalence(left, right, TextEquivalence::AsciiInsensitive)
 }
 
 fn delayed_shorter_proof() -> (GrammarDescription, TypeId, TypeId) {
@@ -330,13 +350,13 @@ fn delayed_shorter_proof() -> (GrammarDescription, TypeId, TypeId) {
         owner,
         long,
         long_decl,
-        SiteContainer::Optional,
+        ContainerShape::optional(ContainerShape::Direct),
     ));
     let short_site = builder.grammar.push_site(ParseSite::new(
         owner,
         short_alias,
         short_decl,
-        SiteContainer::Optional,
+        ContainerShape::optional(ContainerShape::Direct),
     ));
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(
@@ -354,7 +374,7 @@ fn delayed_shorter_proof() -> (GrammarDescription, TypeId, TypeId) {
         short_alias,
         short_token,
         alias_site_decl,
-        SiteContainer::Direct,
+        ContainerShape::Direct,
     ));
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(
@@ -380,7 +400,8 @@ fn singleton_enum_overlap() -> GrammarDescription {
 }
 
 fn source_ranked_members(equal_source: bool) -> (GrammarDescription, recursa_codegen::AtomId) {
-    let mut grammar = GrammarDescription::new("proof-ranking", 1, 1);
+    let mut grammar =
+        GrammarDescription::new("proof-ranking", 1, 1, TextEquivalence::AsciiInsensitive);
     let source = SourceId::new(0);
     let kind_location = grammar.push_location(Location::new(source, 0..1));
     let first_location = grammar.push_location(Location::new(
@@ -724,6 +745,41 @@ fn text_predicate_overlap_matrix_refines_shared_kinds() {
             "unexpected predicate overlap result",
         );
     }
+}
+
+#[test]
+fn exact_text_predicates_use_their_explicit_equivalence() {
+    let sensitive = analyze(predicate_pair_with_equivalence(
+        Some(TextPredicate::Exact("SELECT".into())),
+        Some(TextPredicate::Exact("select".into())),
+        TextEquivalence::Sensitive,
+    ));
+    assert!(sensitive.diagnostics.is_empty());
+
+    let ascii_insensitive = analyze(predicate_pair_with_equivalence(
+        Some(TextPredicate::Exact("SELECT".into())),
+        Some(TextPredicate::Exact("select".into())),
+        TextEquivalence::AsciiInsensitive,
+    ));
+    assert_eq!(ascii_insensitive.diagnostics.len(), 1);
+    assert_eq!(
+        ascii_insensitive.diagnostics[0].code,
+        DiagnosticCode::EnumFirstOverlap,
+    );
+
+    let sensitive_set = analyze(predicate_pair_with_equivalence(
+        Some(TextPredicate::OneOf(vec!["SELECT".into()])),
+        Some(TextPredicate::NotIn(vec!["select".into()])),
+        TextEquivalence::Sensitive,
+    ));
+    assert_eq!(sensitive_set.diagnostics.len(), 1);
+
+    let ascii_insensitive_set = analyze(predicate_pair_with_equivalence(
+        Some(TextPredicate::OneOf(vec!["SELECT".into()])),
+        Some(TextPredicate::NotIn(vec!["select".into()])),
+        TextEquivalence::AsciiInsensitive,
+    ));
+    assert!(ascii_insensitive_set.diagnostics.is_empty());
 }
 
 #[test]

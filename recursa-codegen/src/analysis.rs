@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use crate::ir::{ContainerCardinality, ContainerSemantics};
 use crate::{
     AtomExpression, AtomId, ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic,
     DiagnosticCode, GrammarDescription, KindId, KindSet, Location, PrattPosition, ProofArena,
-    ProofId, ProvenanceStep, ProvenancedKindSet, SiteContainer, SiteId, TextPredicate,
+    ProofId, ProvenanceStep, ProvenancedKindSet, SiteId, TextEquivalence, TextPredicate,
     TextPredicateId, TypeId, TypeShape,
 };
 
@@ -715,17 +716,30 @@ fn validate(grammar: &GrammarDescription) -> Vec<Diagnostic> {
             format_args!("site {index}"),
             &mut diagnostics,
         );
-        if let SiteContainer::Repeat {
-            separator: Some(separator),
-            ..
-        } = site.container
-            && separator.index() >= grammar.types.len()
-        {
-            diagnostics.push(Diagnostic::invalid_reference(format!(
-                "site {index} references missing separator type {}",
-                separator.get(),
-            )));
+        if site.container.semantics().is_none() {
+            let message = format!(
+                "site {index} has unsupported container shape {}; expected T, Option<T>, Vec<T>, Vec1<T>, or Option<Vec1<T>> after ignoring Box",
+                site.container,
+            );
+            let mut diagnostic = Diagnostic::invalid_grammar(message.clone());
+            if let Some(location) = grammar
+                .declarations
+                .get(site.declaration.index())
+                .map(|declaration| declaration.location)
+                .filter(|location| location.index() < grammar.locations.len())
+            {
+                diagnostic.primary = crate::DiagnosticLabel::located(location, message);
+            }
+            diagnostics.push(diagnostic);
         }
+        site.container.visit_separators(&mut |separator| {
+            if separator.index() >= grammar.types.len() {
+                diagnostics.push(Diagnostic::invalid_reference(format!(
+                    "site {index} references missing separator type {}",
+                    separator.get(),
+                )));
+            }
+        });
     }
 
     for (index, description) in grammar.types.iter().enumerate() {
@@ -1021,11 +1035,18 @@ fn first_for_sites(
 }
 
 fn site_nullable(site: &crate::ParseSite, target: &FirstFacts) -> bool {
-    match site.container {
-        SiteContainer::Direct | SiteContainer::Boxed => target.nullable,
-        SiteContainer::Optional => true,
-        SiteContainer::Repeat { at_least_one, .. } => !at_least_one || target.nullable,
+    match container_semantics(site).cardinality {
+        ContainerCardinality::One | ContainerCardinality::OneOrMore => target.nullable,
+        ContainerCardinality::Optional
+        | ContainerCardinality::ZeroOrMore
+        | ContainerCardinality::OptionalOneOrMore => true,
     }
+}
+
+fn container_semantics(site: &crate::ParseSite) -> ContainerSemantics {
+    site.container
+        .semantics()
+        .expect("container shapes are validated before analysis")
 }
 
 fn merge_positions(into: &mut Vec<FirstPosition>, from: &[FirstPosition]) {
@@ -1165,18 +1186,18 @@ fn sequences_for_site(
     max_depth: usize,
 ) -> Vec<FirstSequence> {
     let target = &previous[site.target.index()];
-    let mut sequences = match &site.container {
-        SiteContainer::Direct | SiteContainer::Boxed => target.clone(),
-        SiteContainer::Optional => with_empty_sequence(target.clone()),
-        SiteContainer::Repeat {
-            at_least_one,
-            separator,
-        } => repeat_sequences(
-            target,
-            separator.map(|id| previous[id.index()].as_slice()),
-            *at_least_one,
-            max_depth,
-        ),
+    let semantics = container_semantics(site);
+    let separator = semantics
+        .separator
+        .map(|id| previous[id.index()].as_slice());
+    let mut sequences = match semantics.cardinality {
+        ContainerCardinality::One => target.clone(),
+        ContainerCardinality::Optional => with_empty_sequence(target.clone()),
+        ContainerCardinality::ZeroOrMore => repeat_sequences(target, separator, false, max_depth),
+        ContainerCardinality::OneOrMore => repeat_sequences(target, separator, true, max_depth),
+        ContainerCardinality::OptionalOneOrMore => {
+            with_empty_sequence(repeat_sequences(target, separator, true, max_depth))
+        }
     }
     .into_iter()
     .filter(|sequence| {
@@ -2130,11 +2151,7 @@ fn reachable_types(grammar: &GrammarDescription) -> Vec<bool> {
         for site_id in sites_of(&grammar.types[type_id.index()].shape) {
             let site = &grammar.sites[site_id.index()];
             pending.push(site.target);
-            if let SiteContainer::Repeat {
-                separator: Some(separator),
-                ..
-            } = site.container
-            {
+            if let Some(separator) = container_semantics(site).separator {
                 pending.push(separator);
             }
         }
@@ -2170,9 +2187,11 @@ fn collect_semantic_follow_for_sites(
             });
         }
 
-        let SiteContainer::Repeat { separator, .. } = site.container else {
+        let semantics = container_semantics(site);
+        if !semantics.cardinality.is_repeated() {
             continue;
-        };
+        }
+        let separator = semantics.separator;
         if let Some(separator) = separator {
             by_type[site.target.index()]
                 .kinds
@@ -2363,9 +2382,11 @@ fn collect_provenanced_follow_for_sites(
             proofs,
         );
 
-        let SiteContainer::Repeat { separator, .. } = site.container else {
+        let semantics = container_semantics(site);
+        if !semantics.cardinality.is_repeated() {
             continue;
-        };
+        }
+        let separator = semantics.separator;
         if let Some(separator) = separator {
             let separator_positions = wrap_follow_positions(
                 &first_provenance[separator.index()],
@@ -2670,17 +2691,17 @@ impl DecisionState {
     }
 
     fn consuming_site_and_tail(site: &crate::ParseSite, tail: &[SiteId]) -> Self {
-        let mut items = match site.container {
-            SiteContainer::Direct | SiteContainer::Boxed | SiteContainer::Optional => {
-                vec![DecisionItem::Type(site.target)]
-            }
-            SiteContainer::Repeat { separator, .. } => vec![
+        let semantics = container_semantics(site);
+        let mut items = if semantics.cardinality.is_repeated() {
+            vec![
                 DecisionItem::Type(site.target),
                 DecisionItem::RepeatTail {
                     target: site.target,
-                    separator,
+                    separator: semantics.separator,
                 },
-            ],
+            ]
+        } else {
+            vec![DecisionItem::Type(site.target)]
         };
         items.extend(tail.iter().copied().map(DecisionItem::Site));
         Self(items)
@@ -2924,6 +2945,7 @@ fn paired_decision_successors(
                 left.position.text_predicate,
                 right.position.text_predicate,
                 &grammar.text_predicates,
+                grammar.text_equivalence,
             ) {
                 continue;
             }
@@ -2982,7 +3004,7 @@ fn decision_items_equivalent(
         (DecisionItem::Site(left), DecisionItem::Site(right)) => {
             let left = &grammar.sites[left.index()];
             let right = &grammar.sites[right.index()];
-            left.target == right.target && left.container == right.container
+            left.target == right.target && left.container.semantics() == right.container.semantics()
         }
         (
             DecisionItem::RepeatTail {
@@ -3084,15 +3106,16 @@ fn decision_frontier(
             }
             DecisionItem::Site(site_id) => {
                 let site = &grammar.sites[site_id.index()];
-                match site.container {
-                    SiteContainer::Direct | SiteContainer::Boxed => queue_decision_expansion(
+                let semantics = container_semantics(site);
+                match semantics.cardinality {
+                    ContainerCardinality::One => queue_decision_expansion(
                         vec![DecisionItem::Type(site.target)],
                         rest,
                         minimum_stack_depth,
                         &mut best_minimum_depth,
                         &mut queue,
                     ),
-                    SiteContainer::Optional => {
+                    ContainerCardinality::Optional => {
                         queue_decision_expansion(
                             Vec::new(),
                             rest,
@@ -3108,11 +3131,14 @@ fn decision_frontier(
                             &mut queue,
                         );
                     }
-                    SiteContainer::Repeat {
-                        at_least_one,
-                        separator,
-                    } => {
-                        if !at_least_one {
+                    ContainerCardinality::ZeroOrMore
+                    | ContainerCardinality::OneOrMore
+                    | ContainerCardinality::OptionalOneOrMore => {
+                        if matches!(
+                            semantics.cardinality,
+                            ContainerCardinality::ZeroOrMore
+                                | ContainerCardinality::OptionalOneOrMore
+                        ) {
                             queue_decision_expansion(
                                 Vec::new(),
                                 rest,
@@ -3126,7 +3152,7 @@ fn decision_frontier(
                                 DecisionItem::Type(site.target),
                                 DecisionItem::RepeatTail {
                                     target: site.target,
-                                    separator,
+                                    separator: semantics.separator,
                                 },
                             ],
                             rest,
@@ -3918,6 +3944,7 @@ fn overlap_evidence_excluding(
                 left_position.text_predicate,
                 right_position.text_predicate,
                 &grammar.text_predicates,
+                grammar.text_equivalence,
             ) {
                 continue;
             }
@@ -3980,6 +4007,7 @@ fn predicates_overlap(
     left: Option<TextPredicateId>,
     right: Option<TextPredicateId>,
     predicates: &[TextPredicate],
+    equivalence: TextEquivalence,
 ) -> bool {
     let Some(left) = left else {
         return true;
@@ -3991,22 +4019,30 @@ fn predicates_overlap(
     let right = &predicates[right.index()];
     match (left, right) {
         (TextPredicate::Any, _) | (_, TextPredicate::Any) => true,
-        (TextPredicate::Exact(left), TextPredicate::Exact(right)) => text_eq(left, right),
+        (TextPredicate::Exact(left), TextPredicate::Exact(right)) => {
+            equivalence.equivalent(left, right)
+        }
         (TextPredicate::Exact(exact), TextPredicate::OneOf(options))
-        | (TextPredicate::OneOf(options), TextPredicate::Exact(exact)) => {
-            options.iter().any(|option| text_eq(exact, option))
-        }
+        | (TextPredicate::OneOf(options), TextPredicate::Exact(exact)) => options
+            .iter()
+            .any(|option| equivalence.equivalent(exact, option)),
         (TextPredicate::Exact(exact), TextPredicate::NotIn(excluded))
-        | (TextPredicate::NotIn(excluded), TextPredicate::Exact(exact)) => {
-            !excluded.iter().any(|value| text_eq(exact, value))
-        }
-        (TextPredicate::OneOf(left), TextPredicate::OneOf(right)) => left
+        | (TextPredicate::NotIn(excluded), TextPredicate::Exact(exact)) => !excluded
             .iter()
-            .any(|left| right.iter().any(|right| text_eq(left, right))),
+            .any(|value| equivalence.equivalent(exact, value)),
+        (TextPredicate::OneOf(left), TextPredicate::OneOf(right)) => left.iter().any(|left| {
+            right
+                .iter()
+                .any(|right| equivalence.equivalent(left, right))
+        }),
         (TextPredicate::OneOf(options), TextPredicate::NotIn(excluded))
-        | (TextPredicate::NotIn(excluded), TextPredicate::OneOf(options)) => options
-            .iter()
-            .any(|option| !excluded.iter().any(|value| text_eq(option, value))),
+        | (TextPredicate::NotIn(excluded), TextPredicate::OneOf(options)) => {
+            options.iter().any(|option| {
+                !excluded
+                    .iter()
+                    .any(|value| equivalence.equivalent(option, value))
+            })
+        }
         (TextPredicate::NotIn(_), TextPredicate::NotIn(_)) => true,
     }
 }
@@ -4015,13 +4051,14 @@ pub fn disambiguation_depth(
     left: &[FirstSequence],
     right: &[FirstSequence],
     predicates: &[TextPredicate],
+    equivalence: TextEquivalence,
     max_depth: usize,
 ) -> Option<usize> {
     (1..=max_depth).find(|depth| {
         !left.iter().any(|left| {
-            right
-                .iter()
-                .any(|right| first_sequences_overlap_within(left, right, predicates, *depth))
+            right.iter().any(|right| {
+                first_sequences_overlap_within(left, right, predicates, equivalence, *depth)
+            })
         })
     })
 }
@@ -4030,6 +4067,7 @@ fn first_sequences_overlap_within(
     left: &FirstSequence,
     right: &FirstSequence,
     predicates: &[TextPredicate],
+    equivalence: TextEquivalence,
     depth: usize,
 ) -> bool {
     let left_length = left.positions.len().min(depth);
@@ -4050,12 +4088,13 @@ fn first_sequences_overlap_within(
                 .intersection(&right.kinds)
                 .expect("FIRST positions have the grammar width")
                 .is_empty()
-                && predicates_overlap(left.text_predicate, right.text_predicate, predicates)
+                && predicates_overlap(
+                    left.text_predicate,
+                    right.text_predicate,
+                    predicates,
+                    equivalence,
+                )
         })
-}
-
-fn text_eq(left: &str, right: &str) -> bool {
-    left.eq_ignore_ascii_case(right)
 }
 
 fn compute_extenders(

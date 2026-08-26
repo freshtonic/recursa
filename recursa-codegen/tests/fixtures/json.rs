@@ -1,5 +1,5 @@
 use recursa_codegen::{
-    Alternative, GrammarDescription, SiteContainer, TypeDescription, TypeId, TypeShape,
+    Alternative, ContainerShape, GrammarDescription, TypeDescription, TypeId, TypeShape,
 };
 
 use super::FixtureBuilder;
@@ -50,7 +50,7 @@ pub fn grammar() -> GrammarDescription {
         ("Null", TypeId::new(10)),
     ] {
         let declaration = builder.declaration(name);
-        let site = builder.site(VALUE, target, declaration, SiteContainer::Direct);
+        let site = builder.site(VALUE, target, declaration, ContainerShape::Direct);
         value_alternatives.push(Alternative {
             declaration,
             sites: vec![site],
@@ -72,7 +72,7 @@ pub fn grammar() -> GrammarDescription {
         ("NumberLiteral", NUMBER_LITERAL, TypeId::new(7)),
     ] {
         let declaration = builder.declaration(name);
-        let site = builder.site(owner, target, declaration, SiteContainer::Direct);
+        let site = builder.site(owner, target, declaration, ContainerShape::Direct);
         assert_eq!(
             builder.grammar.push_type(TypeDescription::new(
                 name,
@@ -87,7 +87,7 @@ pub fn grammar() -> GrammarDescription {
     let mut bool_alternatives = Vec::new();
     for (name, target) in [("True", TypeId::new(8)), ("False", TypeId::new(9))] {
         let declaration = builder.declaration(name);
-        let site = builder.site(BOOL_LITERAL, target, declaration, SiteContainer::Direct);
+        let site = builder.site(BOOL_LITERAL, target, declaration, ContainerShape::Direct);
         bool_alternatives.push(Alternative {
             declaration,
             sites: vec![site],
@@ -120,7 +120,7 @@ fn push_sequence(builder: &mut FixtureBuilder, name: &str, owner: TypeId, target
     let declaration = builder.declaration(name);
     let sites = targets
         .iter()
-        .map(|target| builder.site(owner, *target, declaration, SiteContainer::Direct))
+        .map(|target| builder.site(owner, *target, declaration, ContainerShape::Direct))
         .collect();
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(

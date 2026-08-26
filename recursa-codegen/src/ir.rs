@@ -7,6 +7,7 @@ pub struct GrammarDescription {
     pub name: String,
     pub kind_count: usize,
     pub max_lookahead: usize,
+    pub text_equivalence: TextEquivalence,
     pub source_count: u32,
     pub entry_types: Vec<TypeId>,
     pub kinds: Vec<KindDescription>,
@@ -19,11 +20,17 @@ pub struct GrammarDescription {
 }
 
 impl GrammarDescription {
-    pub fn new(name: impl Into<String>, kind_count: usize, max_lookahead: usize) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        kind_count: usize,
+        max_lookahead: usize,
+        text_equivalence: TextEquivalence,
+    ) -> Self {
         Self {
             name: name.into(),
             kind_count,
             max_lookahead,
+            text_equivalence,
             source_count: 1,
             entry_types: Vec::new(),
             kinds: Vec::new(),
@@ -180,6 +187,21 @@ impl AtomExpression {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum TextEquivalence {
+    Sensitive,
+    AsciiInsensitive,
+}
+
+impl TextEquivalence {
+    pub fn equivalent(self, left: &str, right: &str) -> bool {
+        match self {
+            Self::Sensitive => left == right,
+            Self::AsciiInsensitive => left.eq_ignore_ascii_case(right),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TextPredicate {
     Any,
@@ -193,7 +215,7 @@ pub struct ParseSite {
     pub owner: TypeId,
     pub target: TypeId,
     pub declaration: DeclId,
-    pub container: SiteContainer,
+    pub container: ContainerShape,
     pub min_bp: u8,
 }
 
@@ -202,7 +224,7 @@ impl ParseSite {
         owner: TypeId,
         target: TypeId,
         declaration: DeclId,
-        container: SiteContainer,
+        container: ContainerShape,
     ) -> Self {
         Self {
             owner,
@@ -219,13 +241,180 @@ impl ParseSite {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum RepetitionCardinality {
+    ZeroOrMore,
+    OneOrMore,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SiteContainer {
+pub enum ContainerShape {
     Direct,
-    Boxed,
+    Boxed(Box<ContainerShape>),
+    Optional(Box<ContainerShape>),
+    Repeat {
+        element: Box<ContainerShape>,
+        cardinality: RepetitionCardinality,
+        separator: Option<TypeId>,
+    },
+}
+
+impl ContainerShape {
+    pub fn boxed(element: Self) -> Self {
+        Self::Boxed(Box::new(element))
+    }
+
+    pub fn optional(element: Self) -> Self {
+        Self::Optional(Box::new(element))
+    }
+
+    pub fn zero_or_more(element: Self, separator: Option<TypeId>) -> Self {
+        Self::Repeat {
+            element: Box::new(element),
+            cardinality: RepetitionCardinality::ZeroOrMore,
+            separator,
+        }
+    }
+
+    pub fn one_or_more(element: Self, separator: Option<TypeId>) -> Self {
+        Self::Repeat {
+            element: Box::new(element),
+            cardinality: RepetitionCardinality::OneOrMore,
+            separator,
+        }
+    }
+
+    pub(crate) fn semantics(&self) -> Option<ContainerSemantics> {
+        let mut layers = Vec::new();
+        self.collect_cardinality_layers(&mut layers);
+        match layers.as_slice() {
+            [] => Some(ContainerSemantics {
+                cardinality: ContainerCardinality::One,
+                separator: None,
+            }),
+            [CardinalityLayer::Optional] => Some(ContainerSemantics {
+                cardinality: ContainerCardinality::Optional,
+                separator: None,
+            }),
+            [
+                CardinalityLayer::Repeat {
+                    cardinality: RepetitionCardinality::ZeroOrMore,
+                    separator,
+                },
+            ] => Some(ContainerSemantics {
+                cardinality: ContainerCardinality::ZeroOrMore,
+                separator: *separator,
+            }),
+            [
+                CardinalityLayer::Repeat {
+                    cardinality: RepetitionCardinality::OneOrMore,
+                    separator,
+                },
+            ] => Some(ContainerSemantics {
+                cardinality: ContainerCardinality::OneOrMore,
+                separator: *separator,
+            }),
+            [
+                CardinalityLayer::Optional,
+                CardinalityLayer::Repeat {
+                    cardinality: RepetitionCardinality::OneOrMore,
+                    separator,
+                },
+            ] => Some(ContainerSemantics {
+                cardinality: ContainerCardinality::OptionalOneOrMore,
+                separator: *separator,
+            }),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn visit_separators(&self, visit: &mut impl FnMut(TypeId)) {
+        match self {
+            Self::Direct => {}
+            Self::Boxed(element) | Self::Optional(element) => element.visit_separators(visit),
+            Self::Repeat {
+                element, separator, ..
+            } => {
+                if let Some(separator) = separator {
+                    visit(*separator);
+                }
+                element.visit_separators(visit);
+            }
+        }
+    }
+
+    fn collect_cardinality_layers(&self, layers: &mut Vec<CardinalityLayer>) {
+        match self {
+            Self::Direct => {}
+            Self::Boxed(element) => element.collect_cardinality_layers(layers),
+            Self::Optional(element) => {
+                layers.push(CardinalityLayer::Optional);
+                element.collect_cardinality_layers(layers);
+            }
+            Self::Repeat {
+                element,
+                cardinality,
+                separator,
+            } => {
+                layers.push(CardinalityLayer::Repeat {
+                    cardinality: *cardinality,
+                    separator: *separator,
+                });
+                element.collect_cardinality_layers(layers);
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for ContainerShape {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Direct => formatter.write_str("T"),
+            Self::Boxed(element) => write!(formatter, "Box<{element}>"),
+            Self::Optional(element) => write!(formatter, "Option<{element}>"),
+            Self::Repeat {
+                element,
+                cardinality: RepetitionCardinality::ZeroOrMore,
+                ..
+            } => write!(formatter, "Vec<{element}>"),
+            Self::Repeat {
+                element,
+                cardinality: RepetitionCardinality::OneOrMore,
+                ..
+            } => write!(formatter, "Vec1<{element}>"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ContainerCardinality {
+    One,
+    Optional,
+    ZeroOrMore,
+    OneOrMore,
+    OptionalOneOrMore,
+}
+
+impl ContainerCardinality {
+    pub(crate) const fn is_repeated(self) -> bool {
+        matches!(
+            self,
+            Self::ZeroOrMore | Self::OneOrMore | Self::OptionalOneOrMore
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ContainerSemantics {
+    pub cardinality: ContainerCardinality,
+    pub separator: Option<TypeId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CardinalityLayer {
     Optional,
     Repeat {
-        at_least_one: bool,
+        cardinality: RepetitionCardinality,
         separator: Option<TypeId>,
     },
 }
