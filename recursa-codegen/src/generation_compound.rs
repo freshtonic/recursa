@@ -1492,8 +1492,8 @@ impl EmissionPlan {
         });
         #[cfg(not(feature = "explorer"))]
         let explorer: Option<ExtensionEmissionPlan> = None;
-        if explorer.is_some() {
-            validate_explorer_collisions(resolved, cfg, &nodes, &tokens)?;
+        if let Some(explorer) = explorer.as_ref() {
+            validate_explorer_collisions(resolved, cfg, &nodes, &explorer.explorer)?;
         }
         let pretty = emitted_pretty_plan(&nodes, &tokens);
         let capabilities =
@@ -3990,7 +3990,7 @@ fn validate_explorer_collisions(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     cfg: &CargoCfgSnapshot,
     nodes: &[NodeParsePlan],
-    tokens: &[TokenParsePlan],
+    explorer: &ExplorerPlan,
 ) -> Result<(), String> {
     let mut occupied = BTreeSet::<(ModuleId, String)>::new();
     for inclusion in &resolved.tree.inclusions {
@@ -4037,89 +4037,85 @@ fn validate_explorer_collisions(
         Ok(())
     };
 
-    reserve(root_module, "__recursa_explorer_lex".to_owned())?;
-    for index in 0..tokens.len() {
+    reserve(root_module, explorer_lex_function().to_string())?;
+    reserve(root_module, explorer_node_schemas_static().to_string())?;
+    reserve(root_module, explorer_token_schemas_static().to_string())?;
+    for token in &explorer.tokens {
         reserve(
             root_module,
-            format!("__RECURSA_EXPLORER_TOKEN_SCHEMA_{index}"),
+            explorer_token_schema_static(token.kind_index).to_string(),
         )?;
     }
-    for (node_index, node) in nodes.iter().enumerate() {
+    for explorer_node in &explorer.nodes {
+        let (_, application) = explorer_application_parse_plan(nodes, explorer_node.application);
+        let parse_index = application.parse_index;
         reserve(
-            node.module,
-            format!("__RECURSA_EXPLORER_SCHEMA_{node_index}"),
+            root_module,
+            explorer_schema_static(parse_index, None).to_string(),
         )?;
-        let variants = match &node.body {
-            NodeBodyPlan::Struct { elements, .. } => vec![(None, elements.len())],
-            NodeBodyPlan::Enum { variants, .. } => variants
-                .iter()
-                .enumerate()
-                .map(|(index, variant)| (Some(index), variant.elements.len()))
-                .collect(),
-            NodeBodyPlan::Pratt(pratt) => pratt
-                .nud
-                .iter()
-                .enumerate()
-                .map(|(index, branch)| (Some(index), branch.variant.elements.len()))
-                .chain(pratt.led.iter().enumerate().map(|(index, branch)| {
-                    (
-                        Some(pratt.nud.len() + index),
-                        branch.variant.elements.len() + 1,
-                    )
-                }))
-                .collect(),
+        let variants = match &explorer_node.body {
+            ExplorerNodeBodyPlan::Struct(variant) => vec![(None, variant.elements.len())],
+            ExplorerNodeBodyPlan::Enum(variants) | ExplorerNodeBodyPlan::Pratt(variants) => {
+                variants
+                    .iter()
+                    .enumerate()
+                    .map(|(index, variant)| (Some(index), variant.elements.len()))
+                    .collect()
+            }
         };
         for (variant, element_count) in variants {
             if let Some(variant) = variant {
                 reserve(
-                    node.module,
-                    format!("__RECURSA_EXPLORER_SCHEMA_{node_index}_{variant}"),
+                    root_module,
+                    explorer_schema_static(parse_index, Some(variant)).to_string(),
                 )?;
             }
             for element in 0..element_count {
-                let name = variant.map_or_else(
-                    || format!("__RECURSA_EXPLORER_ELEMENT_SCHEMA_{node_index}_{element}"),
-                    |variant| {
-                        format!(
-                            "__RECURSA_EXPLORER_ELEMENT_SCHEMA_{node_index}_{variant}_{element}"
-                        )
-                    },
-                );
-                reserve(node.module, name)?;
-            }
-        }
-        if node.publicly_materialized
-            && node
-                .configured_traits
-                .contains(&ConfiguredTraitRecipe::Visit)
-            && node
-                .generics
-                .params
-                .iter()
-                .all(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
-        {
-            reserve(
-                node.module,
-                format!("__recursa_explorer_parse_{node_index}"),
-            )?;
-            if node
-                .configured_traits
-                .contains(&ConfiguredTraitRecipe::Arbitrary)
-            {
                 reserve(
-                    node.module,
-                    format!("__recursa_explorer_sample_{node_index}"),
+                    root_module,
+                    explorer_element_schema_static(parse_index, variant, element).to_string(),
                 )?;
-            }
-            if authored_inherent_method(resolved, cfg, node.module, &node.ident, "explorer") {
-                return Err(format!(
-                    "generated explorer entry method `{}::explorer` collides with an authored inherent method",
-                    node.ident
-                ));
             }
         }
     }
+    let mut checked_root_nodes = BTreeSet::new();
+    for root in &explorer.roots {
+        let (node, application) = explorer_application_parse_plan(nodes, root.application);
+        reserve(
+            root_module,
+            explorer_grammar_schema_static(application.parse_index).to_string(),
+        )?;
+        if root.capabilities.arbitrary {
+            reserve(
+                node.module,
+                explorer_sample_function(application.parse_index).to_string(),
+            )?;
+        }
+        if checked_root_nodes.insert(root.node)
+            && authored_inherent_method(resolved, cfg, node.module, &node.ident, "explorer")
+        {
+            return Err(format!(
+                "generated explorer entry method `{}::explorer` collides with an authored inherent method",
+                node.ident
+            ));
+        }
+    }
     Ok(())
+}
+
+fn explorer_application_parse_plan(
+    nodes: &[NodeParsePlan],
+    application: MaterializedApplicationId,
+) -> (&NodeParsePlan, &NodeApplicationParsePlan) {
+    nodes
+        .iter()
+        .find_map(|node| {
+            node.parse_applications
+                .iter()
+                .find(|candidate| candidate.application == application)
+                .map(|application| (node, application))
+        })
+        .expect("typed explorer plan retains its materialized application")
 }
 
 fn value_item_ident(item: &syn::Item) -> Option<String> {
@@ -7072,6 +7068,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         .as_ref()
         .map(|explorer| render_explorer_static_schema(plan, explorer));
     let explorer_lex = plan.explorer.as_ref().map(|_| {
+        let explorer_lex = explorer_lex_function();
         let records = plan
             .kind_variants
             .iter()
@@ -7084,7 +7081,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             });
         quote! {
             __recursa_if_explorer! {
-                fn __recursa_explorer_lex(
+                fn #explorer_lex(
                     source: &str,
                 ) -> #facade::explorer::LexResult<'_> {
                     let lexed = lex(source);
@@ -8898,7 +8895,8 @@ fn render_node_application_explorer(
         .find(|root| root.node == node.node && root.application == application.application);
     let entry = root.map(|root| {
         let grammar_schema = explorer_grammar_schema_static(node_index);
-        let sample = format_ident!("__recursa_explorer_sample_{node_index}");
+        let sample = explorer_sample_function(node_index);
+        let explorer_lex = explorer_lex_function();
         let pretty = root.capabilities.pretty;
         let pretty_body = if pretty {
             quote! {
@@ -8973,7 +8971,7 @@ fn render_node_application_explorer(
                             &#module_anchor::#grammar_schema,
                             #pretty,
                             arbitrary,
-                            #module_anchor::__recursa_explorer_lex,
+                            #module_anchor::#explorer_lex,
                             sample,
                         )
                     }
@@ -10896,6 +10894,14 @@ fn explorer_schema_static(node_index: usize, variant: Option<usize>) -> Ident {
     }
 }
 
+fn explorer_lex_function() -> Ident {
+    format_ident!("__recursa_explorer_lex")
+}
+
+fn explorer_sample_function(node_index: usize) -> Ident {
+    format_ident!("__recursa_explorer_sample_{node_index}")
+}
+
 fn explorer_token_schema_static(kind_index: u16) -> Ident {
     format_ident!("__RECURSA_EXPLORER_TOKEN_SCHEMA_{kind_index}")
 }
@@ -10958,12 +10964,8 @@ fn render_explorer_static_schema(
     let facade = &plan.facade;
     let tokens = render_explorer_token_schemas(plan, explorer);
     let nodes = explorer.nodes.iter().map(|node| {
-        let node_index = plan
-            .nodes
-            .iter()
-            .flat_map(|node| &node.parse_applications)
-            .find(|application| application.application == node.application)
-            .expect("explorer schema retains every parse application")
+        let node_index = explorer_application_parse_plan(&plan.nodes, node.application)
+            .1
             .parse_index;
         render_explorer_schema(plan, node, node_index)
     });
@@ -10990,12 +10992,8 @@ fn render_explorer_static_schema(
     let token_schemas_static = explorer_token_schemas_static();
     let grammars = explorer.roots.iter().map(|root| {
         let root_schema = explorer_application_schema_static(plan, root.application);
-        let node_index = plan
-            .nodes
-            .iter()
-            .flat_map(|node| &node.parse_applications)
-            .find(|application| application.application == root.application)
-            .expect("explorer root retains its parse application")
+        let node_index = explorer_application_parse_plan(&plan.nodes, root.application)
+            .1
             .parse_index;
         let grammar_schema = explorer_grammar_schema_static(node_index);
         quote! {
@@ -11025,12 +11023,8 @@ fn explorer_application_schema_static(
     plan: &EmissionPlan,
     application: MaterializedApplicationId,
 ) -> Ident {
-    let parse_index = plan
-        .nodes
-        .iter()
-        .flat_map(|node| &node.parse_applications)
-        .find(|candidate| candidate.application == application)
-        .expect("typed explorer target retains its materialized application")
+    let parse_index = explorer_application_parse_plan(&plan.nodes, application)
+        .1
         .parse_index;
     explorer_schema_static(parse_index, None)
 }

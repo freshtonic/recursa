@@ -121,6 +121,105 @@ fn explorer_adapters_are_generated_for_each_closed_generic_application() {
     assert_success(&output);
 }
 
+#[test]
+fn a_generic_explorer_entry_method_collision_is_diagnosed_before_emission() {
+    let package = scaffold_fixture();
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read generic explorer manifest");
+    fs::write(
+        &manifest,
+        source
+            .replace(
+                "features = [\"serde\", \"diagrams\"]",
+                "features = [\"serde\", \"diagrams\", \"explorer\"]",
+            )
+            .replace(
+                "features = [\"diagrams\"]",
+                "features = [\"diagrams\", \"explorer\"]",
+            ),
+    )
+    .expect("enable explorer facade payload");
+
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read generic explorer grammar");
+    fs::write(
+        &grammar,
+        format!(
+            "{}\nimpl<T> Atom<T> {{ pub fn explorer() {{}} }}\n",
+            source
+                .replace(
+                    "PartialEq, Pretty, serde::Serialize",
+                    "PartialEq, Pretty, Visit, serde::Serialize",
+                )
+                .replace(
+                    "pub struct Pair<'left, 'right>",
+                    "#[node(omit(Visit))]\npub struct Pair<'left, 'right>",
+                ),
+        ),
+    )
+    .expect("insert generic explorer method collision");
+
+    let output = run_fixture(&package);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "explorer collision must fail");
+    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("generated explorer entry method `Atom::explorer` collides"),
+        "stderr:\n{stderr}",
+    );
+}
+
+#[test]
+fn a_secondary_generic_application_schema_collision_is_diagnosed_before_emission() {
+    let package = scaffold_fixture();
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read generic explorer manifest");
+    fs::write(
+        &manifest,
+        source
+            .replace(
+                "features = [\"serde\", \"diagrams\"]",
+                "features = [\"serde\", \"diagrams\", \"explorer\"]",
+            )
+            .replace(
+                "features = [\"diagrams\"]",
+                "features = [\"diagrams\", \"explorer\"]",
+            ),
+    )
+    .expect("enable explorer facade payload");
+
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read generic explorer grammar");
+    fs::write(
+        &grammar,
+        source
+            .replace(
+                "PartialEq, Pretty, serde::Serialize",
+                "PartialEq, Pretty, Visit, serde::Serialize",
+            )
+            .replace(
+                "pub struct Pair<'left, 'right>",
+                "#[node(omit(Visit))]\npub struct Pair<'left, 'right>",
+            )
+            .replace(
+                "#[derive(recursa::Node)]\npub struct Integer<'input>",
+                "static __RECURSA_EXPLORER_SCHEMA_3: () = ();\n\n#[derive(recursa::Node)]\npub struct Integer<'input>",
+            ),
+    )
+    .expect("insert secondary generic application schema collision");
+
+    let output = run_fixture(&package);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "explorer collision must fail");
+    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains(
+            "generated explorer item `__RECURSA_EXPLORER_SCHEMA_3` collides with an authored value"
+        ),
+        "stderr:\n{stderr}",
+    );
+}
+
 fn assert_application_qualified_diagrams(package: &TempDir) {
     let output = run_fixture_doc(package);
     assert_success(&output);
