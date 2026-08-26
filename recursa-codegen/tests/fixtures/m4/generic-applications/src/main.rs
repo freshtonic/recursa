@@ -88,7 +88,14 @@ fn main() {
     let parsed = grammar::AuditRoot::parse_spanned(&mut audit_input)
         .expect("authored generic declaration cases parse");
     assert!(audit_input.is_eof());
-    assert_eq!(parsed.render(), "(alpha)[7]{1{2}}{a{b}}(3, c)");
+    let rendered = parsed.render();
+    assert_eq!(rendered, "(alpha)[7]{1{2}}{a{b}}(3, c)");
+    let reparsed = grammar::lex(&rendered);
+    let mut reparsed_input = reparsed.input();
+    let reparsed = grammar::AuditRoot::parse_spanned(&mut reparsed_input)
+        .expect("Pretty output for adjacent generic applications reparses");
+    assert!(reparsed_input.is_eof());
+    assert_eq!(reparsed.render(), rendered);
 
     for (source, expected) in [("(MiXeD)", "(MiXeD)"), ("[One TWO]", "[One TWO]")] {
         let lexed = grammar::lex(source);

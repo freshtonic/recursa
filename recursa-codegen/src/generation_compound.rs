@@ -23,9 +23,10 @@ use crate::lexical::{KeywordRecognition, LexicalMatcher, LexicalPriority, TokenK
 use crate::lowering::{ModuleId, NodeId};
 use crate::m3::{CargoOutput, M3Input, analyze_source_tree, internal_generate_error};
 use crate::materialization::{
-    ClosedType, MaterializedElement, MaterializedFixedAttachment, MaterializedNodeApplication,
-    MaterializedNodeBody, MaterializedPrattLed, MaterializedPrattLedPosition, MaterializedPrattNud,
-    MaterializedPrattNudPosition, MaterializedPrattVariant, MaterializedVariant,
+    ClosedType, MaterializedApplicationId, MaterializedElement, MaterializedFixedAttachment,
+    MaterializedNodeApplication, MaterializedNodeBody, MaterializedPrattLed,
+    MaterializedPrattLedPosition, MaterializedPrattNud, MaterializedPrattNudPosition,
+    MaterializedPrattVariant, MaterializedVariant,
 };
 use crate::resolution::{
     CatalogType, GenericParameterId, ResolvedFieldStyle, ResolvedGenericArgument, ResolvedNode,
@@ -196,6 +197,7 @@ enum PrettyElementBehavior {
         separator: Option<String>,
         attachment: Option<PrettyAttachmentBehavior>,
         opaque_provenance: bool,
+        top_level_break: bool,
     },
 }
 
@@ -268,6 +270,8 @@ struct NodeParsePlan {
 
 #[derive(Clone, Debug)]
 struct NodeApplicationParsePlan {
+    application: MaterializedApplicationId,
+    node: NodeId,
     parse_index: usize,
     ty: Type,
     body: NodeBodyPlan,
@@ -410,6 +414,7 @@ enum ElementParseKind {
     Semantic {
         field: FieldPlan,
         terminal: Box<Type>,
+        terminal_application: Option<MaterializedApplicationId>,
         wrappers: Vec<FieldWrapper>,
         container: Box<PlannedContainer>,
         capture: PlannedCapturePolicy,
@@ -418,7 +423,15 @@ enum ElementParseKind {
         separator: Option<String>,
         attachment: Option<Box<FixedAttachmentParsePlan>>,
         opaque_provenance: bool,
+        repetition_break: PlannedRepetitionBreak,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlannedRepetitionBreak {
+    Soft,
+    TopLevelStatement(MaterializedApplicationId),
+    TopLevelStatementFamily(NodeId),
 }
 
 #[derive(Clone, Debug)]
@@ -1005,6 +1018,8 @@ impl EmissionPlan {
                     &mut instrumentation,
                 )?;
                 application_plans.push(NodeApplicationParsePlan {
+                    application: application.id,
+                    node: application.node,
                     parse_index: 0,
                     ty: materialized_application_type(
                         application,
@@ -1351,8 +1366,14 @@ impl EmissionPlan {
         }
         self.validate_plan_families()?;
         let mut frozen_nodes = 0;
+        let mut applications = BTreeSet::new();
         for node in &self.nodes {
             for application in &node.parse_applications {
+                if !applications.insert(application.application) {
+                    return Err(
+                        "the Pretty plan contains a duplicate materialized application".to_owned(),
+                    );
+                }
                 match &application.body {
                     NodeBodyPlan::Enum { variants, dispatch } => {
                         if dispatch.frozen_sequence_count == 0 {
@@ -1371,6 +1392,98 @@ impl EmissionPlan {
                             .map_or(0, |dispatch| dispatch.frozen_node_count);
                     }
                     NodeBodyPlan::Struct { .. } => {}
+                }
+                let pretty_element_sets = match &application.body {
+                    NodeBodyPlan::Struct { elements, .. } => vec![elements.as_slice()],
+                    NodeBodyPlan::Enum { variants, .. } => variants
+                        .iter()
+                        .map(|variant| variant.elements.as_slice())
+                        .collect(),
+                    NodeBodyPlan::Pratt(_) => Vec::new(),
+                };
+                for elements in pretty_element_sets {
+                    for element in elements {
+                        let ElementParseKind::Semantic {
+                            terminal_application,
+                            repetition_break,
+                            ..
+                        } = &element.kind
+                        else {
+                            continue;
+                        };
+                        if let PlannedRepetitionBreak::TopLevelStatement(application) =
+                            repetition_break
+                            && (*terminal_application != Some(*application)
+                                || !self.nodes.iter().any(|candidate| {
+                                    candidate.parse_applications.iter().any(|candidate| {
+                                        candidate.application == *application
+                                            && matches!(candidate.body, NodeBodyPlan::Enum { .. })
+                                    })
+                                }))
+                        {
+                            return Err(
+                                "the frozen Pretty statement-break family lacks its exact enum application"
+                                .to_owned(),
+                            );
+                        }
+                        if matches!(
+                            repetition_break,
+                            PlannedRepetitionBreak::TopLevelStatementFamily(_)
+                        ) {
+                            return Err(
+                                "a closed Pretty application contains a declaration-family break"
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                }
+            }
+            let declaration_elements = match &node.body {
+                NodeBodyPlan::Struct { elements, .. } => vec![elements.as_slice()],
+                NodeBodyPlan::Enum { variants, .. } => variants
+                    .iter()
+                    .map(|variant| variant.elements.as_slice())
+                    .collect(),
+                NodeBodyPlan::Pratt(_) => Vec::new(),
+            };
+            for elements in declaration_elements {
+                for element in elements {
+                    let ElementParseKind::Semantic {
+                        terminal_application,
+                        repetition_break,
+                        ..
+                    } = &element.kind
+                    else {
+                        continue;
+                    };
+                    match repetition_break {
+                        PlannedRepetitionBreak::Soft => {}
+                        PlannedRepetitionBreak::TopLevelStatement(_) => {
+                            return Err(
+                                "a source declaration contains an application-specific Pretty break"
+                                    .to_owned(),
+                            );
+                        }
+                        PlannedRepetitionBreak::TopLevelStatementFamily(family) => {
+                            let applications = self
+                                .nodes
+                                .iter()
+                                .flat_map(|candidate| &candidate.parse_applications)
+                                .filter(|candidate| candidate.node == *family)
+                                .collect::<Vec<_>>();
+                            if terminal_application.is_some()
+                                || applications.is_empty()
+                                || applications.iter().any(|candidate| {
+                                    !matches!(candidate.body, NodeBodyPlan::Enum { .. })
+                                })
+                            {
+                                return Err(
+                                    "the source-derived Pretty statement break lacks its typed enum family"
+                                        .to_owned(),
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2049,6 +2162,7 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
                 attachment,
                 separator,
                 opaque_provenance,
+                repetition_break,
                 ..
             } => PrettyElementBehavior::Semantic {
                 repeated: matches!(container.as_ref(), PlannedContainer::Repeated { .. }),
@@ -2075,6 +2189,11 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
                         separator: separator.clone(),
                     }),
                 opaque_provenance: *opaque_provenance,
+                top_level_break: matches!(
+                    repetition_break,
+                    PlannedRepetitionBreak::TopLevelStatement(_)
+                        | PlannedRepetitionBreak::TopLevelStatementFamily(_)
+                ),
             },
         })
         .collect()
@@ -2221,6 +2340,24 @@ fn authoritative_pretty_elements(
                         resolved_node,
                         resolved,
                     ),
+                    top_level_break: separator.as_ref().is_some_and(|separator| {
+                        let usage = &source.token_uses[separator.token_use.index()];
+                        let definition = &source.token_definitions[usage.definition.index()];
+                        matches!(
+                            &definition.kind,
+                            TokenDefinitionKind::Fixed(fixed) if fixed.spelling == ";"
+                        )
+                    }) && matches!(
+                        declaration_container_operation(&projection.wrappers),
+                        ContainerOperation::ZeroOrMore
+                            | ContainerOperation::OneOrMore
+                            | ContainerOperation::OptionalOneOrMore
+                    ) && projection.terminal_node.is_some_and(|node_id| {
+                        matches!(
+                            resolved.nodes[node_id.index()].body,
+                            ResolvedNodeBody::Enum { .. }
+                        )
+                    }),
                 })
             }
         })
@@ -2876,41 +3013,7 @@ fn structural_body(
                 if !matches!(branch.position, PrattPosition::Atom) {
                     return None;
                 }
-                let [
-                    ElementParsePlan {
-                        kind:
-                            ElementParseKind::Fixed {
-                                spelling: open,
-                                spacing: open_spacing,
-                                ..
-                            },
-                        ..
-                    },
-                    ElementParsePlan {
-                        kind: ElementParseKind::Semantic { terminal, .. },
-                        ..
-                    },
-                    ElementParsePlan {
-                        kind:
-                            ElementParseKind::Fixed {
-                                spelling: close,
-                                spacing: close_spacing,
-                                ..
-                            },
-                        ..
-                    },
-                ] = branch.variant.elements.as_slice()
-                else {
-                    return None;
-                };
-                terminal_path_ident(terminal)
-                    .is_some_and(|ident| ident == &node.ident || ident.unraw() == "Self")
-                    .then(|| PrattGroupingPlan {
-                        open: open.clone(),
-                        open_spacing: *open_spacing,
-                        close: close.clone(),
-                        close_spacing: *close_spacing,
-                    })
+                pratt_grouping_from_elements(&node.ident, &branch.variant.elements)
             });
             NodeBodyPlan::Pratt(Box::new(PrattParsePlan {
                 expected_nud_count: nud.len(),
@@ -3047,6 +3150,23 @@ fn declaration_elements(
                         }
                     })
                     .transpose()?;
+                let repetition_break = projection
+                    .terminal_node
+                    .filter(|terminal_node| {
+                        separator_spelling.as_deref() == Some(";")
+                            && matches!(
+                                operation,
+                                ContainerOperation::ZeroOrMore
+                                    | ContainerOperation::OneOrMore
+                                    | ContainerOperation::OptionalOneOrMore
+                            )
+                            && matches!(
+                                resolved.nodes[terminal_node.index()].body,
+                                ResolvedNodeBody::Enum { .. }
+                            )
+                    })
+                    .map(PlannedRepetitionBreak::TopLevelStatementFamily)
+                    .unwrap_or(PlannedRepetitionBreak::Soft);
                 Ok(ElementParsePlan {
                     metadata_name,
                     kind: ElementParseKind::Semantic {
@@ -3056,6 +3176,7 @@ fn declaration_elements(
                             accessor: Some(accessor),
                         },
                         terminal: Box::new(projection.terminal),
+                        terminal_application: None,
                         wrappers: projection.wrappers,
                         container: Box::new(declaration_container(
                             operation,
@@ -3079,6 +3200,7 @@ fn declaration_elements(
                         opaque_provenance: authored_type_depends_on_node_generics(
                             &field.ty, node, resolved,
                         ),
+                        repetition_break,
                     },
                 })
             }
@@ -3183,6 +3305,7 @@ fn declaration_container(
 #[derive(Clone)]
 struct AuthoredProjection {
     terminal: Type,
+    terminal_node: Option<NodeId>,
     wrappers: Vec<FieldWrapper>,
 }
 
@@ -3266,6 +3389,7 @@ fn authored_projection_with(
                     || {
                         Ok(AuthoredProjection {
                             terminal: ty.syntax.clone(),
+                            terminal_node: None,
                             wrappers: Vec::new(),
                         })
                     },
@@ -3393,10 +3517,12 @@ fn authored_projection_with(
                     bindings,
                     active_aliases,
                 )?,
+                terminal_node: Some(*node_id),
                 wrappers: Vec::new(),
             }),
             SemanticTarget::ContentToken(_) => Ok(AuthoredProjection {
                 terminal: ty.syntax.clone(),
+                terminal_node: None,
                 wrappers: Vec::new(),
             }),
         },
@@ -3836,41 +3962,7 @@ fn plan_pratt_node(
         if !matches!(branch.position, PrattPosition::Atom) {
             return None;
         }
-        let [
-            ElementParsePlan {
-                kind:
-                    ElementParseKind::Fixed {
-                        spelling: open,
-                        spacing: open_spacing,
-                        ..
-                    },
-                ..
-            },
-            ElementParsePlan {
-                kind: ElementParseKind::Semantic { terminal, .. },
-                ..
-            },
-            ElementParsePlan {
-                kind:
-                    ElementParseKind::Fixed {
-                        spelling: close,
-                        spacing: close_spacing,
-                        ..
-                    },
-                ..
-            },
-        ] = branch.variant.elements.as_slice()
-        else {
-            return None;
-        };
-        terminal_path_ident(terminal)
-            .is_some_and(|ident| ident == &node.ident)
-            .then(|| PrattGroupingPlan {
-                open: open.clone(),
-                open_spacing: *open_spacing,
-                close: close.clone(),
-                close_spacing: *close_spacing,
-            })
+        pratt_grouping_from_elements(&node.ident, &branch.variant.elements)
     });
 
     Ok(PrattParsePlan {
@@ -3960,6 +4052,68 @@ fn validate_pratt_led_position(
     }
 }
 
+fn pratt_grouping_from_elements(
+    node_ident: &str,
+    elements: &[ElementParsePlan],
+) -> Option<PrattGroupingPlan> {
+    let recursive = |terminal: &Type| {
+        terminal_path_ident(terminal)
+            .is_some_and(|ident| ident.unraw() == node_ident || ident.unraw() == "Self")
+    };
+    match elements {
+        [
+            ElementParsePlan {
+                kind:
+                    ElementParseKind::Semantic {
+                        terminal,
+                        attachment: Some(attachment),
+                        ..
+                    },
+                ..
+            },
+        ] if recursive(terminal) => {
+            let open = attachment.before.first()?;
+            let close = attachment.after.last()?;
+            Some(PrattGroupingPlan {
+                open: open.spelling.clone(),
+                open_spacing: open.spacing,
+                close: close.spelling.clone(),
+                close_spacing: close.spacing,
+            })
+        }
+        [
+            ElementParsePlan {
+                kind:
+                    ElementParseKind::Fixed {
+                        spelling: open,
+                        spacing: open_spacing,
+                        ..
+                    },
+                ..
+            },
+            ElementParsePlan {
+                kind: ElementParseKind::Semantic { terminal, .. },
+                ..
+            },
+            ElementParsePlan {
+                kind:
+                    ElementParseKind::Fixed {
+                        spelling: close,
+                        spacing: close_spacing,
+                        ..
+                    },
+                ..
+            },
+        ] if recursive(terminal) => Some(PrattGroupingPlan {
+            open: open.clone(),
+            open_spacing: *open_spacing,
+            close: close.clone(),
+            close_spacing: *close_spacing,
+        }),
+        _ => None,
+    }
+}
+
 fn plan_pratt_lhs(
     node: &ResolvedNode,
     resolved_variant: &crate::resolution::ResolvedNodeVariant,
@@ -4004,6 +4158,7 @@ fn plan_pratt_lhs(
                 accessor: Some(accessor),
             },
             terminal: Box::new(terminal_type(&closed, lowered, input_lifetime)?),
+            terminal_application: Some(led.lhs.owner.application),
             wrappers: vec![FieldWrapper::Boxed],
             container: Box::new(PlannedContainer::Direct {
                 child_follow: PlannedFollow::Caller,
@@ -4015,6 +4170,7 @@ fn plan_pratt_lhs(
             separator: None,
             attachment: None,
             opaque_provenance: false,
+            repetition_break: PlannedRepetitionBreak::Soft,
         },
     })
 }
@@ -4181,6 +4337,33 @@ fn plan_elements(
                         }
                     }
                 }
+                let separator = separator
+                    .as_ref()
+                    .map(|separator| {
+                        let source = lowered.source_modeled.source_model();
+                        let token_use = &source.token_uses[separator.token_use.index()];
+                        let definition = &source.token_definitions[token_use.definition.index()];
+                        match &definition.kind {
+                            TokenDefinitionKind::Fixed(fixed) => Ok(fixed_pretty_spelling(
+                                &fixed.spelling,
+                                lowered.grammar.text_equivalence,
+                            )),
+                            _ => Err("a repetition separator is not fixed syntax".to_owned()),
+                        }
+                    })
+                    .transpose()?;
+                let terminal_application = closed_terminal_application(ty);
+                let repetition_break = terminal_application
+                    .filter(|application| {
+                        separator.as_deref() == Some(";")
+                            && matches!(container, PlannedContainer::Repeated { .. })
+                            && lowered.applications.iter().any(|candidate| {
+                                candidate.id == *application
+                                    && matches!(candidate.body, MaterializedNodeBody::Enum(_))
+                            })
+                    })
+                    .map(PlannedRepetitionBreak::TopLevelStatement)
+                    .unwrap_or(PlannedRepetitionBreak::Soft);
                 Ok(ElementParsePlan {
                     metadata_name,
                     kind: ElementParseKind::Semantic {
@@ -4204,29 +4387,13 @@ fn plan_elements(
                             }),
                         },
                         terminal: Box::new(terminal_type(ty, lowered, input_lifetime)?),
+                        terminal_application,
                         wrappers,
                         container: Box::new(container),
                         capture,
                         child_capture,
                         pratt_min_bp,
-                        separator: separator
-                            .as_ref()
-                            .map(|separator| {
-                                let source = lowered.source_modeled.source_model();
-                                let token_use = &source.token_uses[separator.token_use.index()];
-                                let definition =
-                                    &source.token_definitions[token_use.definition.index()];
-                                match &definition.kind {
-                                    TokenDefinitionKind::Fixed(fixed) => Ok(fixed_pretty_spelling(
-                                        &fixed.spelling,
-                                        lowered.grammar.text_equivalence,
-                                    )),
-                                    _ => Err(
-                                        "a repetition separator is not fixed syntax".to_owned()
-                                    ),
-                                }
-                            })
-                            .transpose()?,
+                        separator,
                         attachment: attachment
                             .as_ref()
                             .map(|attachment| {
@@ -4243,6 +4410,7 @@ fn plan_elements(
                             })
                             .transpose()?,
                         opaque_provenance: false,
+                        repetition_break,
                     },
                 })
             }
@@ -4709,6 +4877,17 @@ fn terminal_type(
             });
             Ok(Type::Path(syn::TypePath { qself: None, path }))
         }
+    }
+}
+
+fn closed_terminal_application(closed: &ClosedType) -> Option<MaterializedApplicationId> {
+    match closed {
+        ClosedType::Node(node) => Some(node.application),
+        ClosedType::Boxed(inner)
+        | ClosedType::Optional(inner)
+        | ClosedType::ZeroOrMore(inner)
+        | ClosedType::OneOrMore(inner) => closed_terminal_application(inner),
+        ClosedType::ContentToken(_) => None,
     }
 }
 
@@ -7286,6 +7465,7 @@ fn render_pratt_node_pretty(
                     PrettyElementBehavior::Fixed { spelling, spacing },
                 ) => {
                     let infix = matches!(position, PrattPosition::Infix { .. });
+                    let prefix = matches!(position, PrattPosition::Prefix { .. });
                     let run_start = index == 0
                         || matches!(
                             variant.elements[index - 1].kind,
@@ -7296,9 +7476,24 @@ fn render_pratt_node_pretty(
                             variant.elements[index + 1].kind,
                             ElementParseKind::Semantic { .. }
                         );
-                    let fixed = render_pretty_fixed(plan, index, spelling, *spacing);
-                    let before = (infix && run_start).then(|| quote!(context.soft_break(" ")?;));
-                    let after = (infix && run_end).then(|| quote!(context.soft_break(" ")?;));
+                    let fixed = if prefix
+                        && run_end
+                        && *spacing == PrettySpacing::Auto
+                        && !is_word_shaped(spelling)
+                    {
+                        render_pretty_fixed_with_method(
+                            plan,
+                            index,
+                            spelling,
+                            format_ident!("opening_token"),
+                        )
+                    } else {
+                        render_pretty_fixed(plan, index, spelling, *spacing)
+                    };
+                    let before = (infix && run_start && *spacing == PrettySpacing::Auto)
+                        .then(|| quote!(context.soft_break(" ")?;));
+                    let after = (infix && run_end && *spacing == PrettySpacing::Auto)
+                        .then(|| quote!(context.soft_break(" ")?;));
                     quote!(#before #fixed #after)
                 }
                 (
@@ -7469,7 +7664,6 @@ fn render_node_pretty(
                     (
                         ElementParseKind::Semantic {
                             field,
-                            terminal,
                             wrappers,
                             container,
                             ..
@@ -7478,6 +7672,7 @@ fn render_node_pretty(
                             separator,
                             attachment,
                             opaque_provenance,
+                            top_level_break,
                             ..
                         },
                     ) => {
@@ -7495,13 +7690,12 @@ fn render_node_pretty(
                             );
                         }
                         render_pretty_semantic(
-                            plan,
                             facade,
                             index,
                             quote!(&#value),
-                            terminal,
                             container,
                             separator.as_deref(),
+                            *top_level_break,
                             *opaque_provenance,
                         )
                     }
@@ -7545,7 +7739,6 @@ fn render_node_pretty(
                                 ) => render_pretty_fixed(plan, index, spelling, *spacing),
                                 (
                                     ElementParseKind::Semantic {
-                                        terminal,
                                         wrappers,
                                         container,
                                         ..
@@ -7554,6 +7747,7 @@ fn render_node_pretty(
                                         separator,
                                         attachment,
                                         opaque_provenance,
+                                        top_level_break,
                                         ..
                                     },
                                 ) => {
@@ -7572,13 +7766,12 @@ fn render_node_pretty(
                                         );
                                     }
                                     render_pretty_semantic(
-                                        plan,
                                         facade,
                                         index,
                                         quote!(#binding),
-                                        terminal,
                                         container,
                                         separator.as_deref(),
+                                        *top_level_break,
                                         *opaque_provenance,
                                     )
                                 }
@@ -7613,18 +7806,18 @@ fn render_node_pretty(
 }
 
 fn render_pretty_semantic(
-    plan: &EmissionPlan,
     facade: &Ident,
     index: usize,
     value: proc_macro2::TokenStream,
-    terminal: &Type,
     container: &PlannedContainer,
     separator: Option<&str>,
+    top_level_break: bool,
     opaque_provenance: bool,
 ) -> proc_macro2::TokenStream {
     let render_value = if matches!(container, PlannedContainer::Repeated { .. }) {
-        let separator = separator.map_or_else(|| quote!(None), |separator| quote!(Some(#separator)));
-        let hard_break = repeated_terminal_is_dispatch(plan, terminal);
+        let separator =
+            separator.map_or_else(|| quote!(None), |separator| quote!(Some(#separator)));
+        let hard_break = top_level_break;
         quote! {
             context.with_repetition(#separator, false, #hard_break, |context| {
                 #facade::Pretty::pretty(#value, context)
@@ -7652,15 +7845,6 @@ fn render_pretty_semantic(
     }
 }
 
-fn repeated_terminal_is_dispatch(plan: &EmissionPlan, terminal: &Type) -> bool {
-    let Some(ident) = terminal_path_ident(terminal) else {
-        return false;
-    };
-    plan.nodes
-        .iter()
-        .any(|node| node.ident == *ident && matches!(node.body, NodeBodyPlan::Enum { .. }))
-}
-
 fn render_pretty_fixed(
     plan: &EmissionPlan,
     index: usize,
@@ -7668,6 +7852,15 @@ fn render_pretty_fixed(
     spacing: PrettySpacing,
 ) -> proc_macro2::TokenStream {
     let method = pretty_fixed_method(spelling, spacing);
+    render_pretty_fixed_with_method(plan, index, spelling, method)
+}
+
+fn render_pretty_fixed_with_method(
+    plan: &EmissionPlan,
+    index: usize,
+    spelling: &str,
+    method: syn::Ident,
+) -> proc_macro2::TokenStream {
     let fallback = pretty_fixed_fallback(plan, spelling);
     quote! {
         context.with_child(#index, |context| {
@@ -7736,6 +7929,7 @@ fn render_pretty_sequence(
             })?;
             context.soft_break("")?;
             #close
+            context.close_delimiter();
         }
     } else {
         quote!(#(#rendered)*)
@@ -10945,6 +11139,113 @@ struct B;
                 .expect_err("raw word separator must diverge from Pretty authority")
                 .contains("Pretty plan family")
         );
+    }
+
+    #[test]
+    fn generic_top_level_breaks_keep_typed_family_and_closed_application_authority() {
+        let package = tempfile::tempdir().expect("temporary generic top-level fixture");
+        fs::write(
+            package.path().join("grammar.rs"),
+            r#"
+                recursa::grammar! {
+                    module = crate::grammar,
+                    derives(Pretty),
+                    keyword_matching = sensitive,
+                    max_lookahead = 1,
+                }
+
+                recursa::tokens! {
+                    ignore = r"[ \t\n\r]+",
+                    punctuation { SEMICOLON => ";" }
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Name<'input> {
+                    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+                    pub value: NameText<'input>,
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Integer<'input> {
+                    #[lex(pattern = r"[0-9]+")]
+                    pub value: IntegerText<'input>,
+                }
+
+                #[derive(recursa::Node)]
+                pub enum Statement<T> { Value(T) }
+
+                #[derive(recursa::Node)]
+                pub struct Program<T> {
+                    #[sep(SEMICOLON)]
+                    pub statements: Vec<Statement<T>>,
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Root<'input> {
+                    pub names: Program<Name<'input>>,
+                    pub integers: Program<Integer<'input>>,
+                }
+            "#,
+        )
+        .expect("write generic top-level fixture");
+        let success = analyze_source_tree(
+            M3Input::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("analyze generic top-level fixture");
+        let lowered = &success.analyzed.lowered;
+        let authority = authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
+            .expect("derive generic top-level Pretty authority");
+        let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+            .expect("join generic top-level applications");
+        assert_eq!(Some(plan.pretty.clone()), authority);
+
+        let program = plan
+            .nodes
+            .iter()
+            .find(|node| node.ident == "Program")
+            .expect("Program declaration plan");
+        let NodeBodyPlan::Struct { elements, .. } = &program.body else {
+            panic!("Program is a struct declaration")
+        };
+        let ElementParseKind::Semantic {
+            repetition_break: PlannedRepetitionBreak::TopLevelStatementFamily(statement_family),
+            terminal_application: None,
+            ..
+        } = &elements[0].kind
+        else {
+            panic!("generic Program declaration keeps an application-independent enum-family break")
+        };
+
+        let closed_breaks = program
+            .parse_applications
+            .iter()
+            .map(|application| {
+                let NodeBodyPlan::Struct { elements, .. } = &application.body else {
+                    panic!("Program application is a struct")
+                };
+                let ElementParseKind::Semantic {
+                    terminal_application: Some(terminal_application),
+                    repetition_break: PlannedRepetitionBreak::TopLevelStatement(break_application),
+                    ..
+                } = &elements[0].kind
+                else {
+                    panic!("closed Program application keeps an exact enum-application break")
+                };
+                assert_eq!(terminal_application, break_application);
+                (*terminal_application, application.application)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(closed_breaks.len(), 2);
+        assert_ne!(closed_breaks[0].0, closed_breaks[1].0);
+        assert!(plan.nodes.iter().any(|node| {
+            node.parse_applications.iter().any(|application| {
+                application.node == *statement_family
+                    && matches!(application.body, NodeBodyPlan::Enum { .. })
+            })
+        }));
+        plan.validate()
+            .expect("typed generic break family validates");
     }
 
     fn assert_plan_family_is_unselectable(package: &Path, plan: &EmissionPlan, family: &str) {

@@ -510,6 +510,65 @@ struct LoweredFields {
     attachment_starts: Vec<usize>,
 }
 
+#[derive(Clone)]
+enum PrettyBoundaryKind {
+    Fixed(TokenDefinitionId),
+    Dynamic(String),
+}
+
+#[derive(Clone)]
+struct PrettyBoundary {
+    kind: PrettyBoundaryKind,
+    site: SourceSite,
+}
+
+#[derive(Clone, Copy)]
+enum PrettyBoundarySide {
+    First,
+    Last,
+}
+
+fn pattern_may_emit_any(pattern: &str, spelling: &str) -> bool {
+    let Ok(hir) = regex_syntax::Parser::new().parse(pattern) else {
+        return true;
+    };
+    spelling
+        .chars()
+        .any(|character| hir_may_emit(&hir, &|candidate| candidate == character))
+}
+
+fn pattern_may_emit_xid(pattern: &str) -> bool {
+    let Ok(hir) = regex_syntax::Parser::new().parse(pattern) else {
+        return true;
+    };
+    hir_may_emit(&hir, &unicode_ident::is_xid_continue)
+}
+
+fn hir_may_emit(hir: &regex_syntax::hir::Hir, predicate: &impl Fn(char) -> bool) -> bool {
+    use regex_syntax::hir::{Class, HirKind};
+
+    match hir.kind() {
+        HirKind::Empty | HirKind::Look(_) => false,
+        HirKind::Literal(literal) => std::str::from_utf8(&literal.0)
+            .map(|text| text.chars().any(predicate))
+            .unwrap_or(true),
+        HirKind::Class(Class::Unicode(class)) => class.ranges().iter().any(|range| {
+            (u32::from(range.start())..=u32::from(range.end()))
+                .filter_map(char::from_u32)
+                .any(predicate)
+        }),
+        HirKind::Class(Class::Bytes(class)) => class
+            .ranges()
+            .iter()
+            .any(|range| (range.start()..=range.end()).any(|byte| predicate(char::from(byte)))),
+        HirKind::Repetition(repetition) => hir_may_emit(&repetition.sub, predicate),
+        HirKind::Capture(capture) => hir_may_emit(&capture.sub, predicate),
+        HirKind::Concat(parts) | HirKind::Alternation(parts) => {
+            parts.iter().any(|part| hir_may_emit(part, predicate))
+        }
+    }
+}
+
 impl LoweredFields {
     fn push_attachment(&mut self, elements: Vec<GrammarElement>) {
         self.attachment_starts.push(self.elements.len());
@@ -584,6 +643,19 @@ impl SourceModelBuilder<'_> {
     }
 
     fn is_pretty_pratt_grouping(&self, node: NodeId, variant: &Variant) -> bool {
+        if let [
+            GrammarElement::SemanticField {
+                resolved_field,
+                attachment: Some(attachment),
+                ..
+            },
+        ] = variant.elements.as_slice()
+        {
+            return !attachment.before.is_empty()
+                && !attachment.after.is_empty()
+                && self
+                    .is_direct_recursive_operand(&self.resolved_field(*resolved_field).ty, node);
+        }
         let [
             GrammarElement::FixedToken { .. },
             GrammarElement::SemanticField { resolved_field, .. },
@@ -641,40 +713,148 @@ impl SourceModelBuilder<'_> {
             let [left, right] = adjacent else {
                 unreachable!()
             };
-            let (Some((left_fixed, left_site)), Some((right_fixed, right_site))) = (
-                self.pretty_fixed_element(left),
-                self.pretty_fixed_element(right),
-            ) else {
-                continue;
-            };
-            let left_requests_space = matches!(
-                left_fixed.pretty_spacing,
-                PrettySpacing::After | PrettySpacing::Around
-            );
-            let right_requests_space = matches!(
-                right_fixed.pretty_spacing,
-                PrettySpacing::Before | PrettySpacing::Around
-            );
-            if left_requests_space || right_requests_space {
-                continue;
+            let left_boundaries =
+                self.pretty_element_boundaries(left, PrettyBoundarySide::Last, &mut Vec::new());
+            let right_boundaries =
+                self.pretty_element_boundaries(right, PrettyBoundarySide::First, &mut Vec::new());
+            for left in &left_boundaries {
+                for right in &right_boundaries {
+                    self.validate_pretty_boundary(left, right, diagnostics);
+                }
             }
-            let forced_tight = matches!(
-                left_fixed.pretty_spacing,
-                PrettySpacing::Tight | PrettySpacing::Before
-            ) || matches!(
-                right_fixed.pretty_spacing,
-                PrettySpacing::Tight | PrettySpacing::After
-            );
-            if !forced_tight {
-                continue;
-            }
+        }
+    }
 
-            let left_tail = left_fixed.spelling.chars().next_back();
-            let right_head = right_fixed.spelling.chars().next();
-            if left_tail.is_some_and(unicode_ident::is_xid_continue)
-                && right_head.is_some_and(unicode_ident::is_xid_continue)
-            {
-                diagnostics.push(SourceModelDiagnostic {
+    fn validate_pretty_boundary(
+        &self,
+        left: &PrettyBoundary,
+        right: &PrettyBoundary,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) {
+        let left_fixed = match left.kind {
+            PrettyBoundaryKind::Fixed(id) => Some(self.fixed_definition_by_id(id)),
+            PrettyBoundaryKind::Dynamic(_) => None,
+        };
+        let right_fixed = match right.kind {
+            PrettyBoundaryKind::Fixed(id) => Some(self.fixed_definition_by_id(id)),
+            PrettyBoundaryKind::Dynamic(_) => None,
+        };
+        let left_requests_space = matches!(
+            left_fixed.map(|fixed| fixed.pretty_spacing),
+            Some(PrettySpacing::After | PrettySpacing::Around)
+        );
+        let right_requests_space = matches!(
+            right_fixed.map(|fixed| fixed.pretty_spacing),
+            Some(PrettySpacing::Before | PrettySpacing::Around)
+        );
+        if left_requests_space || right_requests_space {
+            return;
+        }
+        let forced_tight = matches!(
+            left_fixed.map(|fixed| fixed.pretty_spacing),
+            Some(PrettySpacing::Tight | PrettySpacing::Before)
+        ) || matches!(
+            right_fixed.map(|fixed| fixed.pretty_spacing),
+            Some(PrettySpacing::Tight | PrettySpacing::After)
+        );
+        if !forced_tight {
+            return;
+        }
+
+        match (&left.kind, &right.kind) {
+            (PrettyBoundaryKind::Fixed(_), PrettyBoundaryKind::Fixed(_)) => {
+                self.validate_pretty_fixed_boundary(
+                    left_fixed.expect("fixed boundary"),
+                    &left.site,
+                    right_fixed.expect("fixed boundary"),
+                    &right.site,
+                    diagnostics,
+                );
+            }
+            (PrettyBoundaryKind::Dynamic(pattern), PrettyBoundaryKind::Fixed(_)) => {
+                let right_fixed = right_fixed.expect("fixed boundary");
+                if pattern_may_emit_xid(pattern)
+                    && right_fixed
+                        .spelling
+                        .chars()
+                        .next()
+                        .is_some_and(unicode_ident::is_xid_continue)
+                {
+                    diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                            sites: vec![left.site.clone(), right.site.clone()],
+                            message: "Pretty spacing would suppress a Unicode identifier boundary involving regex-backed content".to_owned(),
+                        });
+                } else if pattern_may_emit_any(pattern, &right_fixed.spelling) {
+                    diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                            sites: vec![left.site.clone(), right.site.clone()],
+                            message: "Pretty spacing would create an unproved lexer boundary involving regex-backed content".to_owned(),
+                        });
+                }
+            }
+            (PrettyBoundaryKind::Fixed(_), PrettyBoundaryKind::Dynamic(pattern)) => {
+                let left_fixed = left_fixed.expect("fixed boundary");
+                if left_fixed
+                    .spelling
+                    .chars()
+                    .next_back()
+                    .is_some_and(unicode_ident::is_xid_continue)
+                    && pattern_may_emit_xid(pattern)
+                {
+                    diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                            sites: vec![left.site.clone(), right.site.clone()],
+                            message: "Pretty spacing would suppress a Unicode identifier boundary involving regex-backed content".to_owned(),
+                        });
+                } else if pattern_may_emit_any(pattern, &left_fixed.spelling) {
+                    diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::InvalidConfiguration,
+                            sites: vec![left.site.clone(), right.site.clone()],
+                            message: "Pretty spacing would create an unproved lexer boundary involving regex-backed content".to_owned(),
+                        });
+                }
+            }
+            (PrettyBoundaryKind::Dynamic(_), PrettyBoundaryKind::Dynamic(_)) => {}
+        }
+    }
+
+    fn validate_pretty_fixed_boundary(
+        &self,
+        left_fixed: &FixedTokenDefinition,
+        left_site: &SourceSite,
+        right_fixed: &FixedTokenDefinition,
+        right_site: &SourceSite,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) {
+        let left_requests_space = matches!(
+            left_fixed.pretty_spacing,
+            PrettySpacing::After | PrettySpacing::Around
+        );
+        let right_requests_space = matches!(
+            right_fixed.pretty_spacing,
+            PrettySpacing::Before | PrettySpacing::Around
+        );
+        if left_requests_space || right_requests_space {
+            return;
+        }
+        let forced_tight = matches!(
+            left_fixed.pretty_spacing,
+            PrettySpacing::Tight | PrettySpacing::Before
+        ) || matches!(
+            right_fixed.pretty_spacing,
+            PrettySpacing::Tight | PrettySpacing::After
+        );
+        if !forced_tight {
+            return;
+        }
+
+        let left_tail = left_fixed.spelling.chars().next_back();
+        let right_head = right_fixed.spelling.chars().next();
+        if left_tail.is_some_and(unicode_ident::is_xid_continue)
+            && right_head.is_some_and(unicode_ident::is_xid_continue)
+        {
+            diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InvalidConfiguration,
                     sites: vec![left_site.clone(), right_site.clone()],
                     message: format!(
@@ -682,19 +862,19 @@ impl SourceModelBuilder<'_> {
                         left_fixed.spelling, right_fixed.spelling,
                     ),
                 });
-                continue;
-            }
+            return;
+        }
 
-            let combined = format!("{}{}", left_fixed.spelling, right_fixed.spelling);
-            if let Some(longer) = self.tokens.definitions.iter().find_map(|definition| {
-                let TokenDefinitionKind::Fixed(candidate) = &definition.kind else {
-                    return None;
-                };
-                (candidate.spelling.len() > left_fixed.spelling.len()
-                    && combined.starts_with(&candidate.spelling))
-                .then_some(candidate)
-            }) {
-                diagnostics.push(SourceModelDiagnostic {
+        let combined = format!("{}{}", left_fixed.spelling, right_fixed.spelling);
+        if let Some(longer) = self.tokens.definitions.iter().find_map(|definition| {
+            let TokenDefinitionKind::Fixed(candidate) = &definition.kind else {
+                return None;
+            };
+            (candidate.spelling.len() > left_fixed.spelling.len()
+                && combined.starts_with(&candidate.spelling))
+            .then_some(candidate)
+        }) {
+            diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InvalidConfiguration,
                     sites: vec![left_site.clone(), right_site.clone()],
                     message: format!(
@@ -702,8 +882,155 @@ impl SourceModelBuilder<'_> {
                         left_fixed.spelling, right_fixed.spelling, longer.spelling,
                     ),
                 });
+        }
+    }
+
+    fn fixed_definition_by_id(&self, id: TokenDefinitionId) -> &FixedTokenDefinition {
+        let TokenDefinitionKind::Fixed(fixed) = &self.tokens.definitions[id.index()].kind else {
+            unreachable!("fixed boundary points to fixed syntax")
+        };
+        fixed
+    }
+
+    fn pretty_element_boundaries(
+        &self,
+        element: &GrammarElement,
+        side: PrettyBoundarySide,
+        visiting: &mut Vec<NodeId>,
+    ) -> Vec<PrettyBoundary> {
+        match element {
+            GrammarElement::FixedToken {
+                token_use, site, ..
+            } => vec![PrettyBoundary {
+                kind: PrettyBoundaryKind::Fixed(self.tokens.uses[token_use.index()].definition),
+                site: site.clone(),
+            }],
+            GrammarElement::SemanticField {
+                resolved_field,
+                site,
+                ..
+            } => self.pretty_type_boundaries(
+                &self.resolved_field(*resolved_field).ty,
+                side,
+                site,
+                visiting,
+            ),
+        }
+    }
+
+    fn pretty_type_boundaries(
+        &self,
+        ty: &ResolvedType,
+        side: PrettyBoundarySide,
+        site: &SourceSite,
+        visiting: &mut Vec<NodeId>,
+    ) -> Vec<PrettyBoundary> {
+        match &ty.kind {
+            ResolvedTypeKind::Semantic {
+                target, arguments, ..
+            } => match target {
+                SemanticTarget::Node(node) => {
+                    self.pretty_node_boundaries(*node, side, site, visiting)
+                }
+                SemanticTarget::ContentToken(content) => {
+                    let pattern = self
+                        .tokens
+                        .definitions
+                        .iter()
+                        .find_map(|definition| match &definition.kind {
+                            TokenDefinitionKind::Content(candidate)
+                                if candidate.semantic == *content =>
+                            {
+                                Some(candidate.pattern.clone())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    vec![PrettyBoundary {
+                        kind: PrettyBoundaryKind::Dynamic(pattern),
+                        site: site.clone(),
+                    }]
+                }
+                SemanticTarget::Catalog(_) => arguments
+                    .iter()
+                    .find_map(|argument| match argument {
+                        ResolvedGenericArgument::Type(inner) => {
+                            Some(self.pretty_type_boundaries(inner, side, site, visiting))
+                        }
+                        ResolvedGenericArgument::Lifetime(_)
+                        | ResolvedGenericArgument::Unsupported(_) => None,
+                    })
+                    .unwrap_or_default(),
+                SemanticTarget::TypeAlias(alias) => self
+                    .resolved
+                    .type_aliases
+                    .iter()
+                    .find(|candidate| candidate.id == *alias)
+                    .and_then(|alias| alias.target.as_ref())
+                    .map(|target| self.pretty_type_boundaries(target, side, site, visiting))
+                    .unwrap_or_default(),
+                SemanticTarget::GenericParameter(_) => vec![PrettyBoundary {
+                    kind: PrettyBoundaryKind::Dynamic(String::new()),
+                    site: site.clone(),
+                }],
+            },
+            ResolvedTypeKind::Group(inner)
+            | ResolvedTypeKind::Parenthesized(inner)
+            | ResolvedTypeKind::Reference(inner) => {
+                self.pretty_type_boundaries(inner, side, site, visiting)
+            }
+            ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => vec![PrettyBoundary {
+                kind: PrettyBoundaryKind::Dynamic(String::new()),
+                site: site.clone(),
+            }],
+        }
+    }
+
+    fn pretty_node_boundaries(
+        &self,
+        node: NodeId,
+        side: PrettyBoundarySide,
+        site: &SourceSite,
+        visiting: &mut Vec<NodeId>,
+    ) -> Vec<PrettyBoundary> {
+        if visiting.contains(&node) {
+            return vec![PrettyBoundary {
+                kind: PrettyBoundaryKind::Dynamic(String::new()),
+                site: site.clone(),
+            }];
+        }
+        visiting.push(node);
+        let Some(node) = self
+            .nodes
+            .iter()
+            .find(|candidate| candidate.resolved_node == node)
+        else {
+            visiting.pop();
+            return Vec::new();
+        };
+        let sequences = match &node.body {
+            NodeBody::Struct(elements) | NodeBody::Presence(elements) => vec![elements.as_slice()],
+            NodeBody::Enum(variants) => variants
+                .iter()
+                .map(|variant| variant.elements.as_slice())
+                .collect(),
+            NodeBody::Pratt(variants) => variants
+                .iter()
+                .map(|variant| variant.common.elements.as_slice())
+                .collect(),
+        };
+        let mut boundaries = Vec::new();
+        for elements in sequences {
+            let element = match side {
+                PrettyBoundarySide::First => elements.first(),
+                PrettyBoundarySide::Last => elements.last(),
+            };
+            if let Some(element) = element {
+                boundaries.extend(self.pretty_element_boundaries(element, side, visiting));
             }
         }
+        visiting.pop();
+        boundaries
     }
 
     fn pretty_fixed_element<'model, 'element>(
@@ -4469,6 +4796,85 @@ struct Root;
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         assert!(report.source_modeled.is_some());
+    }
+
+    #[test]
+    fn pretty_spacing_rejects_a_longest_match_across_a_semantic_child_boundary() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation {
+        COLON => ":", spacing = tight,
+        DOUBLE_COLON => "::",
+    }
+}
+
+#[derive(recursa::Node)]
+#[tok(COLON)]
+struct Child;
+
+#[derive(recursa::Node)]
+#[tok(this, COLON)]
+struct Root(Child);
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("longest match `::`")
+        }));
+    }
+
+    #[test]
+    fn pretty_spacing_rejects_an_unproved_regex_boundary() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { COLON => ":", spacing = tight }
+}
+
+#[derive(recursa::Node)]
+#[tok(this, COLON)]
+struct Root<'input> {
+    #[lex(pattern = r"[A-Za-z:]+")]
+    text: RootText<'input>,
+}
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("regex-backed")
+        }));
+    }
+
+    #[test]
+    fn pretty_spacing_rejects_a_unicode_boundary_from_dynamic_content() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { COMBINING_ACUTE => "\u{301}", spacing = after }
+}
+
+#[derive(recursa::Node)]
+#[tok(this, COMBINING_ACUTE)]
+struct Root<'input> {
+    #[lex(pattern = r"[A-Za-z]+")]
+    text: RootText<'input>,
+}
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("Unicode identifier")
+        }));
     }
 
     #[test]

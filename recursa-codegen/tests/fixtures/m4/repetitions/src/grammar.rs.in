@@ -46,6 +46,7 @@ recursa::tokens! {
         RBRACKET => "]",
         LBRACE => "{",
         RBRACE => "}",
+        SEMICOLON => ";",
     }
 }
 
@@ -167,6 +168,36 @@ pub enum MixedCapture {
 pub struct MixedMany {
     #[sep(COMMA)]
     pub values: Vec<MixedCapture>,
+}
+
+#[derive(recursa::Node)]
+pub struct MixedProgram {
+    #[sep(SEMICOLON)]
+    pub values: Vec<MixedCapture>,
+}
+
+#[derive(recursa::Node)]
+pub struct OrdinaryChoices {
+    pub values: Vec<MixedCapture>,
+}
+
+pub mod duplicate_enum {
+    #[derive(recursa::Node)]
+    pub enum Duplicate {
+        #[tok(MIX_OFF)]
+        Off,
+    }
+}
+
+pub mod duplicate_struct {
+    #[derive(recursa::Node)]
+    #[tok(MIX_ON)]
+    pub struct Duplicate;
+}
+
+#[derive(recursa::Node)]
+pub struct DuplicateList {
+    pub values: Vec<duplicate_struct::Duplicate>,
 }
 
 #[derive(recursa::Node)]

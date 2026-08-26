@@ -269,6 +269,12 @@ impl PrettyContext {
         Ok(())
     }
 
+    /// Marks the preceding punctuation token as a grammar-known closing delimiter.
+    #[doc(hidden)]
+    pub fn close_delimiter(&mut self) {
+        self.previous_auto_punctuation = false;
+    }
+
     /// Emits a grammar-validated token tightly on both sides.
     #[doc(hidden)]
     pub fn tight_sequence_token(&mut self, text: &str) -> fmt::Result {
@@ -285,10 +291,18 @@ impl PrettyContext {
     /// Emits a grammar-validated token with space before and tight after.
     #[doc(hidden)]
     pub fn before_token(&mut self, text: &str) -> fmt::Result {
-        if self.has_emitted_token && !self.separator_supplied && !text.is_empty() {
-            self.sink
-                .events
-                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+        if self.has_emitted_token && !text.is_empty() {
+            if self.separator_supplied {
+                if let Some(PrettyEvent::SoftBreak(flat)) = self.sink.events.last_mut()
+                    && flat.is_empty()
+                {
+                    flat.push(' ');
+                }
+            } else {
+                self.sink
+                    .events
+                    .push(PrettyEvent::SoftBreak(" ".to_owned()));
+            }
         }
         self.tight_token(text)?;
         self.needs_separator = false;
@@ -324,6 +338,11 @@ impl PrettyContext {
 
     /// Adds a legal width-dependent break with `flat` text when the group fits.
     pub fn soft_break(&mut self, flat: &str) -> fmt::Result {
+        let flat = if self.requested_space_after && flat.is_empty() {
+            " "
+        } else {
+            flat
+        };
         self.sink
             .events
             .push(PrettyEvent::SoftBreak(flat.to_owned()));
@@ -648,5 +667,29 @@ mod tests {
             }
         }
         assert_eq!(RequestedFloor.render(), "IS !: ?");
+    }
+
+    #[test]
+    fn requested_delimiter_spacing_survives_empty_layout_breaks() {
+        struct Delimited;
+        impl Pretty for Delimited {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.group(|context| {
+                    context.after_token("[")?;
+                    context.indented(|context| {
+                        context.soft_break("")?;
+                        context.token("content")
+                    })?;
+                    context.soft_break("")?;
+                    context.before_token("]")
+                })
+            }
+        }
+
+        assert_eq!(Delimited.render(), "[ content ]");
+        assert_eq!(
+            Delimited.render_with(PrettyConfig::new(4, 2)),
+            "[\n  content\n]"
+        );
     }
 }
