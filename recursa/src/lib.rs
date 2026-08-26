@@ -8,6 +8,7 @@ pub use recursa_core::{
     NodeView, OffsetOverflow, Parse, ParseError, ParseErrorKind, Parsed, Span, SpanBlock,
     TokenKind, TokenRecord, Vec1,
 };
+pub use recursa_macros::{Node, grammar, tokens};
 
 /// Runtime operations reserved for Recursa-generated code.
 ///
@@ -15,4 +16,15 @@ pub use recursa_core::{
 #[doc(hidden)]
 pub mod __private {
     pub use recursa_core::__private::*;
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    #[test]
+    fn facade_reexports_the_exact_release_and_private_protocol_capability() {
+        let _: super::__private::FacadeCompatibility<
+            { super::__private::release_stamp("0.1.0") },
+            1,
+        > = super::__private::FACADE_COMPATIBILITY;
+    }
 }

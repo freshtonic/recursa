@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
 regex-automata = "0.4"
 regex-syntax = "0.8"
 syn = { version = "2", features = ["extra-traits", "full", "parsing", "visit"] }
@@ -15,3 +16,7 @@ unicode-ident = "1"
 
 [dev-dependencies]
 tempfile = "3"
+
+[[test]]
+name = "generated_one_node"
+path = "tests/generated_one_node.rs"

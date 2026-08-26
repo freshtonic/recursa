@@ -103,6 +103,7 @@ name = "recursa"
 version = "0.1.0"
 dependencies = [
  "recursa-core",
+ "recursa-macros",
 ]
 
 [[package]]
@@ -110,6 +111,7 @@ name = "recursa-codegen"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
+ "quote",
  "regex-automata",
  "regex-syntax",
  "syn",
@@ -120,10 +122,22 @@ dependencies = [
 [[package]]
 name = "recursa-core"
 version = "0.1.0"
+dependencies = [
+ "regex-automata",
+]
 
 [[package]]
 name = "recursa-explorer"
 version = "0.1.0"
+
+[[package]]
+name = "recursa-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "recursa-test"

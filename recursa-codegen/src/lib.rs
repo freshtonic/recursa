@@ -1,13 +1,16 @@
-//! Source-independent grammar analysis.
+//! Grammar analysis and Rust-source generation.
 //!
-//! M2 accepts a normalized [`GrammarDescription`]. Rust source discovery,
-//! attribute parsing, and Rust emission belong to later stages.
+//! M2 analyzes normalized [`GrammarDescription`] values. The private M3
+//! pipeline discovers and analyzes Rust grammar sources, and [`generate`]
+//! joins that analyzed output into an M4 emission plan before atomically
+//! publishing one complete generated [`Generation`].
 
 mod analysis;
 mod build_diagnostic;
 mod decision_plan;
 mod diagnostic;
 mod discovery;
+mod generation;
 mod ids;
 mod ir;
 mod kind_set;
@@ -46,6 +49,7 @@ pub use diagnostic::{
     ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic, DiagnosticCode, DiagnosticLabel,
     LookaheadWitnessPosition, Remedy, Severity, SharedPrefixEvidence,
 };
+pub use generation::{Generation, generate};
 pub use ids::{
     AtomId, DeclId, KindId, LocationId, ProofId, SiteId, SourceId, TextPredicateId, TypeId,
 };

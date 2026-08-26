@@ -265,13 +265,14 @@ impl DiagnosticCollector {
     }
 }
 
-fn m3_internal_code(stage: DiagnosticStage) -> &'static str {
+fn internal_code(stage: DiagnosticStage) -> &'static str {
     match stage {
         DiagnosticStage::Discovery => "RCA9101",
         DiagnosticStage::Resolution => "RCA9102",
         DiagnosticStage::Lowering => "RCA9103",
         DiagnosticStage::Analysis => "RCA9104",
-        DiagnosticStage::Emission | DiagnosticStage::Loading => "RCA9104",
+        DiagnosticStage::Emission => "RCA9105",
+        DiagnosticStage::Loading => "RCA9104",
     }
 }
 
@@ -289,8 +290,8 @@ fn internal_diagnostic(
         Err(_) => None,
     };
     make_diagnostic(
-        m3_internal_code(stage),
-        "Recursa detected an internal M3 invariant failure",
+        internal_code(stage),
+        "Recursa detected an internal generation invariant failure",
         location,
         DiagnosticEvidence::InternalInvariant {
             producer: format!("{stage:?}"),
@@ -299,6 +300,18 @@ fn internal_diagnostic(
         DiagnosticRemedy::ReportInternalFailure,
         None,
     )
+}
+
+pub(crate) fn internal_generate_error(
+    stage: DiagnosticStage,
+    detail: &str,
+    selected_root: &Path,
+) -> GenerateError {
+    GenerateError::new(BuildReport::new(vec![internal_diagnostic(
+        stage,
+        detail,
+        selected_root,
+    )]))
 }
 
 pub(crate) fn checked_location(

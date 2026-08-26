@@ -378,6 +378,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         test_name: "typed_registry_contracts_fail_closed_and_cargo_warnings_are_single_directives",
         command: "cargo test -p recursa-codegen m3_contract_tests::typed_registry_contracts_fail_closed_and_cargo_warnings_are_single_directives --locked",
     },
+    ProducerEvidence {
+        codes: &["RCA9105"],
+        producer_source: "src/m3.rs",
+        test_source: "src/generation.rs",
+        test_name: "emission_failures_use_the_registered_m4_code_and_preserve_detail",
+        command: "cargo test -p recursa-codegen generation::tests::emission_failures_use_the_registered_m4_code_and_preserve_detail --locked",
+    },
 ];
 
 #[test]
@@ -931,6 +938,7 @@ fn typed_registry_contracts_fail_closed_and_cargo_warnings_are_single_directives
         (DiagnosticStage::Resolution, "RCA2001", "RCA9102"),
         (DiagnosticStage::Lowering, "RCA3101", "RCA9103"),
         (DiagnosticStage::Analysis, "RCA0300", "RCA9104"),
+        (DiagnosticStage::Emission, "RCA9105", "RCA9105"),
     ] {
         let malformed = RecursaDiagnostic::new(
             stage,
@@ -951,7 +959,10 @@ fn typed_registry_contracts_fail_closed_and_cargo_warnings_are_single_directives
         assert_eq!(emitted, internal);
         internal_codes.push(emitted);
     }
-    assert_eq!(internal_codes, ["RCA9101", "RCA9102", "RCA9103", "RCA9104"]);
+    assert_eq!(
+        internal_codes,
+        ["RCA9101", "RCA9102", "RCA9103", "RCA9104", "RCA9105"]
+    );
 
     let warning = diagnostic(
         DiagnosticStage::Analysis,

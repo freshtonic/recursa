@@ -8,3 +8,4 @@ repository.workspace = true
 
 [dependencies]
 recursa-core = { path = "../recursa-core" }
+recursa-macros = { path = "../recursa-macros" }

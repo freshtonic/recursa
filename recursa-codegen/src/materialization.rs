@@ -1022,7 +1022,10 @@ impl Materializer {
                             None
                         }),
                     SemanticTarget::ContentToken(token) => {
-                        if !arguments.is_empty() {
+                        if !matches!(
+                            arguments.as_slice(),
+                            [] | [ResolvedGenericArgument::Lifetime(_)]
+                        ) {
                             self.push_invalid_arguments(ty, &authored);
                             return None;
                         }

@@ -417,13 +417,23 @@ struct Root { #[lex(pattern = r"\bword")] word: Word }
     }
 
     #[test]
-    fn m3_pipeline_has_no_generation_publication_surface() {
+    fn m3_stays_private_and_m4_owns_the_generation_publication_surface() {
         let root = crate::m3_projection_tests::crate_root();
         let lib = std::fs::read_to_string(root.join("src/lib.rs")).expect("read public seam");
+        let m3 = std::fs::read_to_string(root.join("src/m3.rs")).expect("read M3 implementation");
+        let generation = std::fs::read_to_string(root.join("src/generation.rs"))
+            .expect("read M4 generation implementation");
 
-        assert!(!lib.contains("pub fn generate"));
         assert!(!lib.contains("pub mod m3"));
-        assert!(!lib.contains("OUT_DIR"));
-        assert!(!root.join("src/publication.rs").exists());
+        assert!(lib.contains("mod generation;"));
+        assert!(lib.contains("pub use generation::{Generation, generate};"));
+        assert!(!m3.contains("OUT_DIR"));
+        assert!(!m3.contains("RECURSA_GENERATION"));
+        assert!(!m3.contains("fs::rename"));
+        assert!(generation.contains("pub fn generate"));
+        assert!(generation.contains("OUT_DIR"));
+        assert!(!generation.contains("rustc-env=RECURSA_GENERATION"));
+        assert!(generation.contains("SELECTED_GENERATION"));
+        assert!(generation.contains("fs::rename"));
     }
 }

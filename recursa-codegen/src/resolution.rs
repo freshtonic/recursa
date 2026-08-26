@@ -2604,11 +2604,17 @@ fn pending_content_token_site(
     let Type::Path(path) = &field.ty else {
         return None;
     };
-    if path.qself.is_some()
-        || path.path.leading_colon.is_some()
-        || path.path.segments.len() != 1
-        || !matches!(path.path.segments[0].arguments, PathArguments::None)
-    {
+    if path.qself.is_some() || path.path.leading_colon.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    let arguments_are_content_lifetime = match &path.path.segments[0].arguments {
+        PathArguments::None => true,
+        PathArguments::AngleBracketed(arguments) => {
+            arguments.args.len() == 1 && matches!(arguments.args[0], GenericArgument::Lifetime(_))
+        }
+        PathArguments::Parenthesized(_) => false,
+    };
+    if !arguments_are_content_lifetime {
         return None;
     }
     Some((

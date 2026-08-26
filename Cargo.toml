@@ -4,6 +4,7 @@ members = [
     "recursa",
     "recursa-core",
     "recursa-codegen",
+    "recursa-macros",
     "recursa-test",
     "recursa-explorer",
 ]

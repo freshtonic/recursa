@@ -4,6 +4,7 @@
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::ops::Range;
 
 use proc_macro2::Span;
@@ -35,12 +36,21 @@ impl CargoCfgSnapshot {
         self
     }
 
-    pub(crate) fn from_cargo_environment(
-        variables: impl IntoIterator<Item = (String, String)>,
-    ) -> Self {
+    pub(crate) fn from_cargo_environment<I, K, V>(variables: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<OsString>,
+        V: Into<OsString>,
+    {
         let mut snapshot = Self::default();
         for (name, value) in variables {
+            let Ok(name) = name.into().into_string() else {
+                continue;
+            };
             if let Some(cfg_name) = name.strip_prefix("CARGO_CFG_") {
+                let Ok(value) = value.into().into_string() else {
+                    continue;
+                };
                 let cfg_name = cfg_name.to_ascii_lowercase();
                 if value.is_empty() && !empty_value_cfg(&cfg_name) {
                     snapshot.flags.insert(cfg_name);
