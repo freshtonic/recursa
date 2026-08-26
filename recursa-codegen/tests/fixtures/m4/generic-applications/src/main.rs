@@ -71,6 +71,17 @@ fn main() {
     }
     assert_generic_declarations::<grammar::Name<'static>>();
 
+    fn assert_serde<T>()
+    where
+        T: recursa::__private::serde::Serialize,
+        T: for<'de> recursa::__private::serde::Deserialize<'de>,
+    {
+    }
+    assert_serde::<grammar::OptionalOnly<grammar::Name<'static>>>();
+    assert_serde::<grammar::Aliased<grammar::Integer<'static>>>();
+    assert_serde::<grammar::AliasLifetimeRoot<'static, grammar::Integer<'static>>>();
+    assert_serde::<grammar::Chain<grammar::Name<'static>>>();
+
     let audit = grammar::lex("(alpha)[7]{1{2}}{a{b}}(3,c)");
     let mut audit_input = audit.input();
     let parsed = grammar::AuditRoot::parse_spanned(&mut audit_input)

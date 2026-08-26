@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use quote::{ToTokens as _, format_ident, quote};
 use syn::ext::IdentExt as _;
 use syn::spanned::Spanned as _;
+use syn::visit::{self, Visit as _};
 use syn::{GenericArgument, GenericParam, Generics, Ident, PathArguments, Type, Visibility};
 
 use crate::PrattPosition;
@@ -7987,8 +7988,15 @@ fn render_node_serde(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::
         #helper_body
     };
     let serialize_impl = serialize.then(|| {
-        let (impl_generics, type_generics, where_clause) =
-            trait_impl_parts(facade, node, quote!(#facade::__private::serde::Serialize));
+        let mut impl_generics = node.generics.clone();
+        add_serde_bounds(
+            facade,
+            node,
+            &mut impl_generics,
+            quote!(#facade::__private::serde::Serialize),
+        );
+        let (impl_generics, _, where_clause) = impl_generics.split_for_impl();
+        let (_, type_generics, _) = node.generics.split_for_impl();
         quote! {
             impl #impl_generics #facade::__private::serde::Serialize
                 for #node_ident #type_generics #where_clause
@@ -8007,14 +8015,12 @@ fn render_node_serde(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::
         impl_generics
             .params
             .insert(0, syn::parse_quote!('__recursa_de));
-        for field_type in semantic_field_types(facade, node) {
-            impl_generics
-                .make_where_clause()
-                .predicates
-                .push(syn::parse_quote!(
-                    #field_type: #facade::__private::serde::Deserialize<'__recursa_de>
-                ));
-        }
+        add_serde_bounds(
+            facade,
+            node,
+            &mut impl_generics,
+            quote!(#facade::__private::serde::Deserialize<'__recursa_de>),
+        );
         let (impl_generics, _, where_clause) = impl_generics.split_for_impl();
         let (_, type_generics, _) = node.generics.split_for_impl();
         quote! {
@@ -8036,6 +8042,70 @@ fn render_node_serde(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::
         #deserialize_impl
         }
     }
+}
+
+fn add_serde_bounds(
+    facade: &Ident,
+    node: &NodeParsePlan,
+    generics: &mut Generics,
+    bound: proc_macro2::TokenStream,
+) {
+    for field_type in semantic_field_types(facade, node)
+        .into_iter()
+        .chain(serde_generic_dependencies(node))
+    {
+        generics
+            .make_where_clause()
+            .predicates
+            .push(syn::parse_quote!(#field_type: #bound));
+    }
+}
+
+fn serde_generic_dependencies(node: &NodeParsePlan) -> Vec<Type> {
+    let candidates = node
+        .generics
+        .type_params()
+        .map(|parameter| parameter.ident.unraw().to_string())
+        .collect::<BTreeSet<_>>();
+    let mut dependencies = BTreeSet::new();
+    struct DependencyVisitor<'a> {
+        candidates: &'a BTreeSet<String>,
+        dependencies: &'a mut BTreeSet<String>,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for DependencyVisitor<'_> {
+        fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+            if path.qself.is_none()
+                && path.path.segments.len() == 1
+                && let Some(segment) = path.path.segments.first()
+            {
+                let name = segment.ident.unraw().to_string();
+                if self.candidates.contains(&name) {
+                    self.dependencies.insert(name);
+                }
+            }
+            visit::visit_type_path(self, path);
+        }
+    }
+    for_each_element(&node.body, &mut |element| {
+        let ElementParseKind::Semantic { terminal, .. } = &element.kind else {
+            return;
+        };
+        if !is_recursive_terminal(node, terminal) {
+            DependencyVisitor {
+                candidates: &candidates,
+                dependencies: &mut dependencies,
+            }
+            .visit_type(terminal);
+        }
+    });
+    node.generics
+        .type_params()
+        .filter(|parameter| dependencies.contains(&parameter.ident.unraw().to_string()))
+        .map(|parameter| {
+            let ident = &parameter.ident;
+            syn::parse_quote!(#ident)
+        })
+        .collect()
 }
 
 fn semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<Type> {

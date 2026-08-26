@@ -1,6 +1,7 @@
 recursa::grammar! {
     module = crate::grammar,
-    derives(Debug, Clone, PartialEq, Pretty),
+    diagrams,
+    derives(Debug, Clone, PartialEq, Pretty, serde::Serialize, serde::Deserialize),
     spans = optional,
     keyword_matching = sensitive,
     max_lookahead = 1,
