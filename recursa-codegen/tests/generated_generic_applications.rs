@@ -56,8 +56,8 @@ fn explorer_adapters_are_generated_for_each_closed_generic_application() {
                 "features = [\"serde\", \"diagrams\", \"explorer\"]",
             )
             .replace(
-                "recursa-codegen = { path = \"",
-                "recursa-codegen = { features = [\"diagrams\", \"explorer\"], path = \"",
+                "features = [\"diagrams\"]",
+                "features = [\"diagrams\", \"explorer\"]",
             ),
     )
     .expect("enable explorer facade payload");
@@ -66,10 +66,15 @@ fn explorer_adapters_are_generated_for_each_closed_generic_application() {
     let source = fs::read_to_string(&grammar).expect("read generic explorer grammar");
     fs::write(
         &grammar,
-        source.replace(
-            "#[derive(recursa::Node)]\npub struct Atom<T>",
-            "#[derive(recursa::Node)]\n#[node(derive(Visit))]\npub struct Atom<T>",
-        ),
+        source
+            .replace(
+                "PartialEq, Pretty, serde::Serialize",
+                "PartialEq, Pretty, Visit, serde::Serialize",
+            )
+            .replace(
+                "pub struct Pair<'left, 'right>",
+                "#[node(omit(Visit))]\npub struct Pair<'left, 'right>",
+            ),
     )
     .expect("configure Visit for the generic explorer root family");
 
@@ -77,18 +82,30 @@ fn explorer_adapters_are_generated_for_each_closed_generic_application() {
     let source = fs::read_to_string(&main).expect("read generic explorer consumer");
     let assertions = r#"
     let integer_adapter = grammar::Atom::<grammar::Integer<'static>>::explorer();
-    let integer = integer_adapter.parse("42").expect("integer application explorer parse");
-    assert_eq!(integer.root().schema().name(), "Atom");
-    assert_eq!(integer.pretty().unwrap(), "42");
+    assert_eq!(integer_adapter.schema().root().name(), "Atom");
+    let integer_lexed = grammar::lex("42");
+    let mut integer_input = integer_lexed.input();
+    let integer = grammar::Atom::<grammar::Integer<'_>>::parse_spanned(&mut integer_input)
+        .expect("integer application explorer parse");
+    let integer = recursa::explorer::ExplorerDocument::from_parsed(integer);
+    let integer_pretty = integer.pretty(&recursa::PrettyConfig::default()).unwrap();
+    assert_eq!(integer_pretty.rendered, "42");
     assert_eq!(
-        integer.pretty_source_map().unwrap().source_at(0),
+        integer_pretty.source_map.source_at(0),
         Some(recursa::Span::new(0, 2).unwrap()),
     );
 
     let name_adapter = grammar::Atom::<grammar::Name<'static>>::explorer();
-    let name = name_adapter.parse("alpha").expect("name application explorer parse");
-    assert_eq!(name.root().schema().name(), "Atom");
-    assert_eq!(name.pretty().unwrap(), "alpha");
+    assert_eq!(name_adapter.schema().root().name(), "Atom");
+    let name_lexed = grammar::lex("alpha");
+    let mut name_input = name_lexed.input();
+    let name = grammar::Atom::<grammar::Name<'_>>::parse_spanned(&mut name_input)
+        .expect("name application explorer parse");
+    let name = recursa::explorer::ExplorerDocument::from_parsed(name);
+    assert_eq!(
+        name.pretty(&recursa::PrettyConfig::default()).unwrap().rendered,
+        "alpha",
+    );
     assert_eq!(name.root().elements().next().unwrap().children().len(), 1);
 "#;
     fs::write(

@@ -53,8 +53,9 @@ fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() 
     let explorer = grammar::Expr::explorer();
     let variants = explorer
         .schema()
+        .root()
         .variants()
-        .map(|variant| (variant.variant().unwrap(), variant.elements().len()))
+        .map(|variant| (variant.name(), variant.elements().len()))
         .collect::<Vec<_>>();
     assert_eq!(
         variants,
@@ -74,13 +75,27 @@ fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() 
             ("IsNull", 3),
         ],
     );
-    let parsed = explorer.parse("a + 2 * 3").expect("Pratt explorer parse");
-    assert_eq!(parsed.root().schema().variant(), Some("Add"));
+    let parsed = parse("a + 2 * 3");
+    let parsed = recursa::explorer::ExplorerDocument::from_parsed(parsed);
+    assert_eq!(parsed.root().active_variant().unwrap().name(), "Add");
     assert_eq!(parsed.root().elements().len(), 3);
     assert_eq!(
         parsed.root().elements().next().unwrap().children().len(),
         1,
     );
+    let grouped = recursa::explorer::ExplorerDocument::from_parsed(parse("BEGIN GROUP a END GROUP"));
+    assert_eq!(grouped.root().active_variant().unwrap().name(), "MultiGroup");
+    let grouped_child = grouped.root().elements().next().unwrap().children().next().unwrap();
+    assert_eq!(grouped_child.active_variant().unwrap().name(), "Name");
+    let grouped_token = grouped_child.elements().next().unwrap()
+        .children().next().unwrap()
+        .elements().next().unwrap()
+        .children().next().unwrap();
+    assert_eq!(grouped_token.token_text(), Some("a"));
+    assert!(explorer.schema().tokens().any(|token| {
+        token.canonical_text() == Some("BEGIN")
+            && token.highlight_class() == recursa::explorer::HighlightClass::Keyword
+    }));
 "#;
     fs::write(
         main,

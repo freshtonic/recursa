@@ -371,6 +371,7 @@ struct ExplorerTokenPlan {
     semantic: Option<ContentTokenId>,
     name: String,
     qualified_name: String,
+    kind_name: String,
     kind: ExplorerTokenKindPlan,
     canonical_text: Option<String>,
     highlight: ExplorerHighlightClassPlan,
@@ -378,12 +379,14 @@ struct ExplorerTokenPlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "explorer"), allow(dead_code))]
 enum ExplorerTokenKindPlan {
     Fixed,
     Content,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "explorer"), allow(dead_code))]
 enum ExplorerHighlightClassPlan {
     Keyword,
     Punctuation,
@@ -424,6 +427,7 @@ struct ExplorerElementPlan {
     token_classification: Option<ExplorerTokenClassificationPlan>,
     target: Option<ExplorerElementTargetPlan>,
     token_kind: Option<u16>,
+    attachment_semantic_child: Option<usize>,
     display: ExplorerDisplayPlan,
     occurrence: ExplorerOccurrencePlan,
 }
@@ -463,6 +467,7 @@ enum ExplorerTokenClassificationPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "explorer"), allow(dead_code))]
 enum ExplorerDisplayPlan {
     None,
     Fixed(String),
@@ -662,6 +667,7 @@ struct AttachedFixedParsePlan {
 #[derive(Clone, Debug)]
 enum ElementParseKind {
     Fixed {
+        #[cfg_attr(not(feature = "explorer"), allow(dead_code))]
         kind: u16,
         expected: ExpectedSet,
         capture: PlannedCapturePolicy,
@@ -3260,6 +3266,7 @@ fn pretty_family_identity(plan: &PrettyEmissionPlan) -> Option<u64> {
         .then(|| plan_family_identity(plan))
 }
 
+#[cfg(feature = "explorer")]
 fn emitted_explorer_plan(
     nodes: &[NodeParsePlan],
     lowered: &crate::materialization::LoweredGrammar,
@@ -3295,17 +3302,21 @@ fn emitted_explorer_plan(
         })
         .collect::<Vec<_>>();
     planned_nodes.sort_by_key(|node| node.application.index());
-    Ok((!roots.is_empty()).then(|| ExplorerPlan {
+    if roots.is_empty() {
+        return Ok(None);
+    }
+    let tokens = explorer_token_plans(lowered, kind_variants)?;
+    Ok(Some(ExplorerPlan {
         grammar: ExplorerGrammarPlan {
             name: lowered.grammar.name.clone(),
         },
         roots,
         nodes: planned_nodes,
-        tokens: explorer_token_plans(lowered, kind_variants)
-            .expect("validated lexical kinds produce explorer Token descriptors"),
+        tokens,
     }))
 }
 
+#[cfg(feature = "explorer")]
 fn authoritative_explorer_plan(
     lowered: &crate::materialization::LoweredGrammar,
 ) -> Result<Option<ExplorerPlan>, String> {
@@ -3364,6 +3375,7 @@ fn authoritative_explorer_plan(
     }))
 }
 
+#[cfg(feature = "explorer")]
 fn explorer_token_plans(
     lowered: &crate::materialization::LoweredGrammar,
     kind_variants: &[Ident],
@@ -3421,6 +3433,7 @@ fn explorer_token_plans(
                 semantic,
                 name,
                 qualified_name,
+                kind_name: lowered.grammar.kinds[kind.id.index()].name.clone(),
                 kind: token_kind,
                 canonical_text,
                 highlight,
@@ -3446,10 +3459,12 @@ fn explorer_kind_index(
         .map_err(|_| "an explorer fixed token kind exceeds runtime width".to_owned())
 }
 
+#[cfg(feature = "explorer")]
 fn explorer_emitted_application_is_eligible(node: &NodeParsePlan) -> bool {
     node.publicly_materialized && node.explorer_visit_configured
 }
 
+#[cfg(feature = "explorer")]
 fn explorer_source_application_is_eligible(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     node: &ResolvedNode,
@@ -3469,6 +3484,7 @@ fn explorer_source_application_is_eligible(
                 .any(|omission| omission.recipe == ConfiguredTraitRecipe::Visit))
 }
 
+#[cfg(feature = "explorer")]
 fn emitted_explorer_node(
     node: &NodeParsePlan,
     application: &NodeApplicationParsePlan,
@@ -3524,6 +3540,7 @@ fn emitted_explorer_node(
     }
 }
 
+#[cfg(feature = "explorer")]
 fn emitted_explorer_variant<'a>(
     variant: Option<ResolvedVariantId>,
     name: Option<String>,
@@ -3541,6 +3558,7 @@ fn emitted_explorer_variant<'a>(
     }
 }
 
+#[cfg(feature = "explorer")]
 fn emitted_explorer_element(element: &ElementParsePlan) -> ExplorerElementPlan {
     match &element.kind {
         ElementParseKind::Fixed { kind, spelling, .. } => ExplorerElementPlan {
@@ -3551,12 +3569,14 @@ fn emitted_explorer_element(element: &ElementParsePlan) -> ExplorerElementPlan {
             token_classification: Some(ExplorerTokenClassificationPlan::Fixed),
             target: None,
             token_kind: Some(*kind),
+            attachment_semantic_child: None,
             display: ExplorerDisplayPlan::Fixed(spelling.clone()),
             occurrence: ExplorerOccurrencePlan::Leaf,
         },
         ElementParseKind::Semantic {
             explorer_terminal,
             wrappers,
+            attachment,
             ..
         } => ExplorerElementPlan {
             source: element.explorer_source,
@@ -3574,6 +3594,9 @@ fn emitted_explorer_element(element: &ElementParsePlan) -> ExplorerElementPlan {
                 }
             }),
             token_kind: None,
+            attachment_semantic_child: attachment
+                .as_ref()
+                .map(|attachment| attachment.before.len()),
             display: ExplorerDisplayPlan::None,
             occurrence: ExplorerOccurrencePlan::Children {
                 wrappers: wrappers.clone(),
@@ -3673,6 +3696,7 @@ fn authoritative_explorer_node(
                                     led.lhs.owner.application,
                                 )),
                                 token_kind: None,
+                                attachment_semantic_child: None,
                                 display: ExplorerDisplayPlan::None,
                                 occurrence: ExplorerOccurrencePlan::Children {
                                     wrappers: vec![FieldWrapper::Boxed],
@@ -3752,6 +3776,7 @@ fn authoritative_explorer_element(
                 token_classification: Some(ExplorerTokenClassificationPlan::Fixed),
                 target: None,
                 token_kind: Some(explorer_kind_index(lowered, definition.id)?),
+                attachment_semantic_child: None,
                 display: ExplorerDisplayPlan::Fixed(fixed_pretty_spelling(
                     &fixed.spelling,
                     lowered.grammar.text_equivalence,
@@ -3759,7 +3784,12 @@ fn authoritative_explorer_element(
                 occurrence: ExplorerOccurrencePlan::Leaf,
             })
         }
-        MaterializedElement::SemanticField { field, ty, .. } => {
+        MaterializedElement::SemanticField {
+            field,
+            ty,
+            attachment,
+            ..
+        } => {
             let resolved_field = node
                 .fields
                 .iter()
@@ -3814,6 +3844,9 @@ fn authoritative_explorer_element(
                     }
                 }),
                 token_kind: None,
+                attachment_semantic_child: attachment
+                    .as_ref()
+                    .map(|attachment| attachment.before.len()),
                 display: ExplorerDisplayPlan::None,
                 occurrence: ExplorerOccurrencePlan::Children { wrappers, terminal },
             })
@@ -7034,21 +7067,20 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         .enumerate()
         .map(|(index, token)| render_token(plan, token, index));
     let visit_events = render_visit_events(plan);
+    let explorer_schema = plan
+        .explorer
+        .as_ref()
+        .map(|explorer| render_explorer_static_schema(plan, explorer));
     let explorer_lex = plan.explorer.as_ref().map(|_| {
-        let classes = plan
+        let records = plan
             .kind_variants
             .iter()
-            .zip(&plan.kind_names)
-            .zip(&plan.kind_static_texts)
-            .map(|((variant, name), static_text)| {
-                let class = if static_text.is_some() {
-                    quote!(#facade::explorer::LexicalClass::Fixed)
-                } else {
-                    quote!(#facade::explorer::LexicalClass::Content)
-                };
-                quote! {
-                    TokenKind::#variant => (#name, #class),
-                }
+            .enumerate()
+            .map(|(index, variant)| {
+                let schema = explorer_token_schema_static(
+                    u16::try_from(index).expect("generated token kind fits explorer width"),
+                );
+                quote!(TokenKind::#variant => &#schema,)
             });
         quote! {
             __recursa_if_explorer! {
@@ -7057,15 +7089,14 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 ) -> #facade::explorer::LexResult<'_> {
                     let lexed = lex(source);
                     let tokens = lexed.tokens().map(|token| {
-                        let (name, class) = match token.kind() {
-                            #(#classes)*
+                        let schema = match token.kind() {
+                            #(#records)*
                             TokenKind::LexicalError => unreachable!(
                                 "lexical errors are not explorer token records"
                             ),
                         };
                         #facade::__private::explorer_lex_record(
-                            name,
-                            class,
+                            schema,
                             token.span(),
                         )
                     });
@@ -7735,6 +7766,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         }
 
         #visit_events
+        #explorer_schema
         #explorer_lex
 
         macro_rules! __recursa_root_handshake {
@@ -8213,30 +8245,39 @@ fn render_token(
             .iter()
             .find(|candidate| candidate.semantic == Some(token.semantic))
             .expect("typed explorer plan retains every content token");
-        let schema = format_ident!("__RECURSA_EXPLORER_TOKEN_SCHEMA_{index}");
-        let name = &explorer.name;
-        let display = match explorer.display {
-            ExplorerDisplayPlan::MatchedOrStored => quote!(Some(self.text().into())),
+        let schema = explorer_token_schema_static(explorer.kind_index);
+        match explorer.display {
+            ExplorerDisplayPlan::MatchedOrStored => {}
             ExplorerDisplayPlan::None | ExplorerDisplayPlan::Fixed(_) => {
                 unreachable!("content-token explorer display is frozen as matched-or-stored")
             }
-        };
+        }
         quote! {
             __recursa_if_explorer! {
-                static #schema: #facade::__private::ExplorerSchemaData =
-                    #facade::__private::explorer_schema(#name, None, &[], &[]);
-
                 unsafe impl<'input> #facade::__private::ExplorerNode for #ident<'input> {
-                    fn __recursa_explorer_node(
-                        &self,
-                        cursor: #facade::__private::ViewCursor<'_>,
-                    ) -> #facade::__private::ExplorerNodeData {
-                        #facade::__private::explorer_node(
-                            &#schema,
-                            cursor.span(),
-                            #display,
-                            [],
+                    fn __recursa_explorer_node<'document>(
+                        &'document self,
+                        cursor: #facade::__private::ViewCursor<'document>,
+                    ) -> #facade::__private::ExplorerNodeData<'document> {
+                        #facade::__private::explorer_token_node(
+                            self,
+                            &super::#schema,
+                            cursor,
+                            self.text(),
                         )
+                    }
+
+                    fn __recursa_explorer_child_count(&self, _element: usize) -> usize {
+                        0
+                    }
+
+                    fn __recursa_explorer_child<'document>(
+                        &'document self,
+                        _cursor: #facade::__private::ViewCursor<'document>,
+                        _element: usize,
+                        _child: usize,
+                    ) -> Option<#facade::__private::ExplorerNodeData<'document>> {
+                        None
                     }
                 }
             }
@@ -8742,8 +8783,6 @@ fn render_node_application_explorer(
             candidate.node == node.node && candidate.application == application.application
         })
         .expect("typed explorer plan retains every materialized Node application");
-    let schema_definitions = render_explorer_schema(plan, explorer_node, node_index);
-    let node_display = render_explorer_display(&explorer_node.display);
     let explorer_generics = explorer_impl_generics(plan, application);
     let (impl_generics, _, where_clause) = explorer_generics.split_for_impl();
     let mut entry_generics = explorer_generics.clone();
@@ -8753,98 +8792,73 @@ fn render_node_application_explorer(
         .push(syn::parse_quote!(#ty: #facade::Visit));
     let (entry_impl_generics, _, entry_where_clause) = entry_generics.split_for_impl();
 
-    let body = match (&application.body, &explorer_node.body) {
+    let (node_body, child_count_body, child_body) = match (&application.body, &explorer_node.body) {
         (NodeBodyPlan::Struct { elements, .. }, ExplorerNodeBodyPlan::Struct(explorer)) => {
             let schema = explorer_schema_static(node_index, None);
-            let occurrences =
-                explorer
-                    .elements
-                    .iter()
-                    .enumerate()
-                    .map(|(element_index, element)| {
-                        let field = parse_element_for_explorer(elements, element.source).and_then(
-                            |parse| match &parse.kind {
-                                ElementParseKind::Fixed { .. } => None,
-                                ElementParseKind::Semantic { field, .. } => Some(field_access(
-                                    quote!(&self),
-                                    field.ident.as_ref(),
-                                    field.index,
-                                )),
-                            },
-                        );
-                        render_explorer_element_occurrence(
-                            plan,
-                            node_index,
-                            None,
-                            element_index,
-                            element,
-                            field,
-                        )
-                    });
-            quote! {
-                #facade::__private::explorer_node(
-                    &#schema,
-                    cursor.span(),
-                    #node_display,
-                    [#(#occurrences),*],
-                )
-            }
+            let bindings = elements
+                .iter()
+                .map(|element| match &element.kind {
+                    ElementParseKind::Fixed { .. } => None,
+                    ElementParseKind::Semantic { field, .. } => Some(field_access(
+                        quote!(&self),
+                        field.ident.as_ref(),
+                        field.index,
+                    )),
+                })
+                .collect::<Vec<_>>();
+            let count = render_explorer_variant_child_count(explorer, elements, &bindings);
+            let child = render_explorer_variant_child(facade, explorer, elements, &bindings);
+            (
+                quote!(#facade::__private::explorer_node(self, &#module_anchor::#schema, None, cursor)),
+                count,
+                child,
+            )
         }
         (NodeBodyPlan::Enum { variants, .. }, ExplorerNodeBodyPlan::Enum(explorer_variants)) => {
-            let arms = explorer_variants
-                .iter()
-                .enumerate()
-                .map(|(variant_index, explorer)| {
-                    let variant = variants
-                        .iter()
-                        .find(|variant| Some(variant.resolved_variant) == explorer.variant)
-                        .expect("typed explorer enum variant retains its parse shape");
-                    let (pattern, bindings) =
-                        explorer_variant_pattern_and_bindings(node_ident, variant);
-                    let body = render_explorer_variant_body(
-                        plan,
-                        node_index,
-                        Some(variant_index),
-                        explorer,
-                        &variant.elements,
-                        &bindings,
-                        &explorer_node.display,
-                    );
-                    quote!(#pattern => #body,)
-                });
-            quote!(match self { #(#arms)* })
+            let base = explorer_schema_static(node_index, None);
+            let mut node_arms = Vec::new();
+            let mut count_arms = Vec::new();
+            let mut child_arms = Vec::new();
+            for (variant_index, explorer) in explorer_variants.iter().enumerate() {
+                let variant = variants
+                    .iter()
+                    .find(|variant| Some(variant.resolved_variant) == explorer.variant)
+                    .expect("typed explorer enum variant retains its parse shape");
+                let (pattern, bindings) =
+                    explorer_variant_pattern_and_bindings(node_ident, variant);
+                let bindings = bindings
+                    .into_iter()
+                    .map(|binding| binding.map(|binding| quote!(#binding)))
+                    .collect::<Vec<_>>();
+                let active = explorer_schema_static(node_index, Some(variant_index));
+                let count =
+                    render_explorer_variant_child_count(explorer, &variant.elements, &bindings);
+                let child =
+                    render_explorer_variant_child(facade, explorer, &variant.elements, &bindings);
+                node_arms.push(quote!(#pattern => #facade::__private::explorer_node(self, &#module_anchor::#base, Some(&#module_anchor::#active), cursor),));
+                count_arms.push(quote!(#pattern => #count,));
+                child_arms.push(quote!(#pattern => #child,));
+            }
+            (
+                quote!(match self { #(#node_arms)* }),
+                quote!(match self { #(#count_arms)* }),
+                quote!(match self { #(#child_arms)* }),
+            )
         }
         (NodeBodyPlan::Pratt(pratt), ExplorerNodeBodyPlan::Pratt(explorer_variants)) => {
-            let nud = explorer_variants
-                .iter()
-                .take(pratt.nud.len())
-                .enumerate()
-                .map(|(variant_index, explorer)| {
-                    let variant = pratt
+            let base = explorer_schema_static(node_index, None);
+            let mut node_arms = Vec::new();
+            let mut count_arms = Vec::new();
+            let mut child_arms = Vec::new();
+            for (variant_index, explorer) in explorer_variants.iter().enumerate() {
+                let variant = if variant_index < pratt.nud.len() {
+                    pratt
                         .nud
                         .iter()
-                        .map(|branch| &branch.variant)
+                        .map(|branch| branch.variant.clone())
                         .find(|variant| Some(variant.resolved_variant) == explorer.variant)
-                        .expect("typed explorer Pratt nud retains its parse shape");
-                    let (pattern, bindings) =
-                        explorer_variant_pattern_and_bindings(node_ident, variant);
-                    let body = render_explorer_variant_body(
-                        plan,
-                        node_index,
-                        Some(variant_index),
-                        explorer,
-                        &variant.elements,
-                        &bindings,
-                        &explorer_node.display,
-                    );
-                    quote!(#pattern => #body,)
-                });
-            let led = explorer_variants
-                .iter()
-                .skip(pratt.nud.len())
-                .enumerate()
-                .map(|(index, explorer)| {
-                    let variant_index = pratt.nud.len() + index;
+                        .expect("typed explorer Pratt nud retains its parse shape")
+                } else {
                     let branch = pratt
                         .led
                         .iter()
@@ -8852,20 +8866,28 @@ fn render_node_application_explorer(
                         .expect("typed explorer Pratt led retains its parse shape");
                     let mut variant = branch.variant.clone();
                     variant.elements.insert(0, branch.lhs.clone());
-                    let (pattern, bindings) =
-                        explorer_variant_pattern_and_bindings(node_ident, &variant);
-                    let body = render_explorer_variant_body(
-                        plan,
-                        node_index,
-                        Some(variant_index),
-                        explorer,
-                        &variant.elements,
-                        &bindings,
-                        &explorer_node.display,
-                    );
-                    quote!(#pattern => #body,)
-                });
-            quote!(match self { #(#nud)* #(#led)* })
+                    variant
+                };
+                let (pattern, bindings) =
+                    explorer_variant_pattern_and_bindings(node_ident, &variant);
+                let bindings = bindings
+                    .into_iter()
+                    .map(|binding| binding.map(|binding| quote!(#binding)))
+                    .collect::<Vec<_>>();
+                let active = explorer_schema_static(node_index, Some(variant_index));
+                let count =
+                    render_explorer_variant_child_count(explorer, &variant.elements, &bindings);
+                let child =
+                    render_explorer_variant_child(facade, explorer, &variant.elements, &bindings);
+                node_arms.push(quote!(#pattern => #facade::__private::explorer_node(self, &#module_anchor::#base, Some(&#module_anchor::#active), cursor),));
+                count_arms.push(quote!(#pattern => #count,));
+                child_arms.push(quote!(#pattern => #child,));
+            }
+            (
+                quote!(match self { #(#node_arms)* }),
+                quote!(match self { #(#count_arms)* }),
+                quote!(match self { #(#child_arms)* }),
+            )
         }
         _ => unreachable!("typed explorer and parse Node bodies have identical shapes"),
     };
@@ -8874,118 +8896,115 @@ fn render_node_application_explorer(
         .roots
         .iter()
         .find(|root| root.node == node.node && root.application == application.application);
-    let entry =
-        root.map(|root| {
-            let root_schema = explorer_schema_static(node_index, None);
-            let parse = format_ident!("__recursa_explorer_parse_{node_index}");
-            let sample = format_ident!("__recursa_explorer_sample_{node_index}");
-            let pretty = root.capabilities.pretty;
-            let pretty_parse = pretty.then(|| {
-                quote! {
-                    document.__set_pretty(#facade::Pretty::render_mapped(&parsed));
-                }
-            });
-            let arbitrary = root.capabilities.arbitrary;
-            let sample_function = arbitrary.then(|| {
-            let pretty_sample = pretty.then(|| quote! {
-                document.__set_pretty(#facade::Pretty::render_mapped(&parsed));
-            });
+    let entry = root.map(|root| {
+        let grammar_schema = explorer_grammar_schema_static(node_index);
+        let sample = format_ident!("__recursa_explorer_sample_{node_index}");
+        let pretty = root.capabilities.pretty;
+        let pretty_body = if pretty {
+            quote! {
+                Some(#facade::__private::explorer_pretty_output(
+                    #facade::Pretty::render_mapped_with(parsed, *config),
+                ))
+            }
+        } else {
+            quote!(None)
+        };
+        let arbitrary = root.capabilities.arbitrary;
+        let sample_function = arbitrary.then(|| {
             quote! {
                 __recursa_if_arbitrary! {
                     fn #sample(
-                        seed: u64,
-                    ) -> Result<#facade::explorer::Document<'static>, #facade::explorer::Error> {
-                        let mut state = seed;
-                        let mut bytes = [0_u8; 512];
-                        for byte in &mut bytes {
-                            state ^= state << 13;
-                            state ^= state >> 7;
-                            state ^= state << 17;
-                            *byte = state as u8;
-                        }
+                        bytes: &[u8],
+                    ) -> Result<
+                        #facade::explorer::ExplorerDocument<'static>,
+                        #facade::explorer::SampleError,
+                    > {
                         let mut input = #facade::__private::arbitrary::Unstructured::new(&bytes);
                         let value = <#static_ty as #facade::Arbitrary>::arbitrary(&mut input)
-                            .map_err(|error| #facade::explorer::Error::Sample {
-                                message: error.to_string().into_boxed_str(),
-                            })?;
+                            .map_err(|error| #facade::__private::explorer_sample_error(
+                                error.to_string(),
+                            ))?;
                         let parsed = #facade::Parsed::synthetic(value);
-                        let mut document = #facade::__private::explorer_document(&parsed, None);
-                        #pretty_sample
-                        Ok(document)
+                        Ok(#facade::explorer::ExplorerDocument::from_parsed(parsed))
                     }
                 }
             }
         });
-            let arbitrary_binding = if arbitrary {
-                quote! {
-                    let (arbitrary, sample): (
-                        bool,
-                        Option<fn(u64) -> Result<
-                            #facade::explorer::Document<'static>,
-                            #facade::explorer::Error,
-                        >>,
-                    ) = __recursa_explorer_sample!(#sample);
-                }
-            } else {
-                quote! {
-                    let (arbitrary, sample) = (false, None);
-                }
-            };
+        let arbitrary_binding = if arbitrary {
             quote! {
-                fn #parse<'__recursa_input>(
-                    source: &'__recursa_input str,
-                ) -> Result<
-                    #facade::explorer::Document<'__recursa_input>,
-                    #facade::explorer::Error,
-                > {
-                let lexed = #module_anchor::lex(source);
-                let mut input = lexed.input();
-                let parsed = <#ty>::parse_spanned(&mut input)?;
-                #facade::__private::explorer_require_eof(
-                    &input.inner,
-                    &#module_anchor::__RECURSA_EMPTY_FOLLOW,
-                )?;
-                let mut document = #facade::__private::explorer_document(
-                        &parsed,
-                        parsed.source(),
-                    );
-                    #pretty_parse
-                    Ok(document)
+                let (arbitrary, sample): (
+                    bool,
+                    Option<fn(&[u8]) -> Result<
+                        #facade::explorer::ExplorerDocument<'static>,
+                        #facade::explorer::SampleError,
+                    >>,
+                ) = __recursa_explorer_sample!(#sample);
+            }
+        } else {
+            quote! {
+                let (arbitrary, sample) = (false, None);
+            }
+        };
+        quote! {
+            #sample_function
+
+            unsafe impl #entry_impl_generics #facade::__private::ExplorerRoot
+                for #ty #entry_where_clause
+            {
+                fn __recursa_explorer_schema(
+                ) -> &'static #facade::__private::ExplorerGrammarSchemaData {
+                    &#module_anchor::#grammar_schema
                 }
 
-                #sample_function
+                fn __recursa_explorer_pretty(
+                    parsed: &#facade::Parsed<'_, Self>,
+                    config: &#facade::PrettyConfig,
+                ) -> Option<#facade::explorer::PrettyOutput> {
+                    #pretty_body
+                }
+            }
 
-                impl #entry_impl_generics #ty #entry_where_clause {
-                    /// Returns this source-visible Node family's opaque explorer adapter.
-                    pub fn explorer() -> #facade::explorer::Adapter {
-                        #arbitrary_binding
-                        unsafe {
-                            #facade::__private::explorer_adapter(
-                                &#root_schema,
-                                #pretty,
-                                arbitrary,
-                                #module_anchor::__recursa_explorer_lex,
-                                #parse,
-                                sample,
-                            )
-                        }
+            impl #entry_impl_generics #ty #entry_where_clause {
+                /// Returns this source-visible Node family's opaque explorer adapter.
+                pub fn explorer() -> #facade::explorer::Adapter {
+                    #arbitrary_binding
+                    unsafe {
+                        #facade::__private::explorer_adapter(
+                            &#module_anchor::#grammar_schema,
+                            #pretty,
+                            arbitrary,
+                            #module_anchor::__recursa_explorer_lex,
+                            sample,
+                        )
                     }
                 }
             }
-        });
+        }
+    });
 
     quote! {
         __recursa_if_explorer! {
-            #schema_definitions
-
             unsafe impl #impl_generics #facade::__private::ExplorerNode
                 for #ty #where_clause
             {
-                fn __recursa_explorer_node(
-                    &self,
-                    cursor: #facade::__private::ViewCursor<'_>,
-                ) -> #facade::__private::ExplorerNodeData {
-                    #body
+                fn __recursa_explorer_node<'document>(
+                    &'document self,
+                    cursor: #facade::__private::ViewCursor<'document>,
+                ) -> #facade::__private::ExplorerNodeData<'document> {
+                    #node_body
+                }
+
+                fn __recursa_explorer_child_count(&self, element: usize) -> usize {
+                    #child_count_body
+                }
+
+                fn __recursa_explorer_child<'document>(
+                    &'document self,
+                    cursor: #facade::__private::ViewCursor<'document>,
+                    element: usize,
+                    child: usize,
+                ) -> Option<#facade::__private::ExplorerNodeData<'document>> {
+                    #child_body
                 }
             }
 
@@ -10877,6 +10896,155 @@ fn explorer_schema_static(node_index: usize, variant: Option<usize>) -> Ident {
     }
 }
 
+fn explorer_token_schema_static(kind_index: u16) -> Ident {
+    format_ident!("__RECURSA_EXPLORER_TOKEN_SCHEMA_{kind_index}")
+}
+
+fn explorer_grammar_schema_static(node_index: usize) -> Ident {
+    format_ident!("__RECURSA_EXPLORER_GRAMMAR_SCHEMA_{node_index}")
+}
+
+fn explorer_node_schemas_static() -> Ident {
+    format_ident!("__RECURSA_EXPLORER_NODE_SCHEMAS")
+}
+
+fn explorer_token_schemas_static() -> Ident {
+    format_ident!("__RECURSA_EXPLORER_TOKEN_SCHEMAS")
+}
+
+fn render_explorer_token_schemas(
+    plan: &EmissionPlan,
+    explorer: &ExplorerPlan,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let definitions = explorer.tokens.iter().map(|token| {
+        let schema = explorer_token_schema_static(token.kind_index);
+        let name = &token.name;
+        let qualified_name = &token.qualified_name;
+        let kind_name = &token.kind_name;
+        let canonical_text = token
+            .canonical_text
+            .as_ref()
+            .map_or_else(|| quote!(None), |text| quote!(Some(#text)));
+        let highlight = match token.highlight {
+            ExplorerHighlightClassPlan::Keyword => {
+                quote!(#facade::explorer::HighlightClass::Keyword)
+            }
+            ExplorerHighlightClassPlan::Punctuation => {
+                quote!(#facade::explorer::HighlightClass::Punctuation)
+            }
+            ExplorerHighlightClassPlan::Content => {
+                quote!(#facade::explorer::HighlightClass::Content)
+            }
+        };
+        quote! {
+            pub(crate) static #schema: #facade::__private::ExplorerTokenSchemaData =
+                #facade::__private::explorer_token_schema(
+                    #name,
+                    #qualified_name,
+                    #kind_name,
+                    #canonical_text,
+                    #highlight,
+                );
+        }
+    });
+    quote!(#(#definitions)*)
+}
+
+fn render_explorer_static_schema(
+    plan: &EmissionPlan,
+    explorer: &ExplorerPlan,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let tokens = render_explorer_token_schemas(plan, explorer);
+    let nodes = explorer.nodes.iter().map(|node| {
+        let node_index = plan
+            .nodes
+            .iter()
+            .flat_map(|node| &node.parse_applications)
+            .find(|application| application.application == node.application)
+            .expect("explorer schema retains every parse application")
+            .parse_index;
+        render_explorer_schema(plan, node, node_index)
+    });
+    let grammar_name = &explorer.grammar.name;
+    let all_nodes = explorer
+        .nodes
+        .iter()
+        .map(|node| {
+            let schema = explorer_application_schema_static(plan, node.application);
+            quote!(&#schema)
+        })
+        .collect::<Vec<_>>();
+    let all_tokens = explorer
+        .tokens
+        .iter()
+        .map(|token| {
+            let schema = explorer_token_schema_static(token.kind_index);
+            quote!(&#schema)
+        })
+        .collect::<Vec<_>>();
+    let node_schema_count = all_nodes.len();
+    let token_schema_count = all_tokens.len();
+    let node_schemas_static = explorer_node_schemas_static();
+    let token_schemas_static = explorer_token_schemas_static();
+    let grammars = explorer.roots.iter().map(|root| {
+        let root_schema = explorer_application_schema_static(plan, root.application);
+        let node_index = plan
+            .nodes
+            .iter()
+            .flat_map(|node| &node.parse_applications)
+            .find(|application| application.application == root.application)
+            .expect("explorer root retains its parse application")
+            .parse_index;
+        let grammar_schema = explorer_grammar_schema_static(node_index);
+        quote! {
+            pub(crate) static #grammar_schema: #facade::__private::ExplorerGrammarSchemaData =
+                #facade::__private::explorer_grammar_schema(
+                    #grammar_name,
+                    &#root_schema,
+                    &#node_schemas_static,
+                    &#token_schemas_static,
+                );
+        }
+    });
+    quote! {
+        #tokens
+        #(#nodes)*
+        pub(crate) static #node_schemas_static:
+            [&'static #facade::__private::ExplorerNodeSchemaData; #node_schema_count] =
+            [#(#all_nodes),*];
+        pub(crate) static #token_schemas_static:
+            [&'static #facade::__private::ExplorerTokenSchemaData; #token_schema_count] =
+            [#(#all_tokens),*];
+        #(#grammars)*
+    }
+}
+
+fn explorer_application_schema_static(
+    plan: &EmissionPlan,
+    application: MaterializedApplicationId,
+) -> Ident {
+    let parse_index = plan
+        .nodes
+        .iter()
+        .flat_map(|node| &node.parse_applications)
+        .find(|candidate| candidate.application == application)
+        .expect("typed explorer target retains its materialized application")
+        .parse_index;
+    explorer_schema_static(parse_index, None)
+}
+
+fn explorer_content_token_schema_static(explorer: &ExplorerPlan, token: ContentTokenId) -> Ident {
+    let kind_index = explorer
+        .tokens
+        .iter()
+        .find(|candidate| candidate.semantic == Some(token))
+        .expect("typed explorer target retains its content token")
+        .kind_index;
+    explorer_token_schema_static(kind_index)
+}
+
 fn explorer_element_schema_static(
     node_index: usize,
     variant: Option<usize>,
@@ -10917,22 +11085,46 @@ fn render_explorer_schema_entries(
                 quote!(#facade::explorer::Cardinality::OptionalOneOrMore)
             }
         };
-        let classification = match element.token_classification {
-            Some(ExplorerTokenClassificationPlan::Fixed) => {
-                quote!(Some(#facade::explorer::TokenClassification::Fixed))
+        let target = match element.target {
+            Some(ExplorerElementTargetPlan::Node(application)) => {
+                let target = explorer_application_schema_static(plan, application);
+                quote!(Some(#facade::__private::explorer_node_target(&#target)))
             }
-            Some(ExplorerTokenClassificationPlan::Content) => {
-                quote!(Some(#facade::explorer::TokenClassification::Content))
+            Some(ExplorerElementTargetPlan::ContentToken(token)) => {
+                let target = explorer_content_token_schema_static(
+                    plan.explorer
+                        .as_ref()
+                        .expect("explorer schema rendering has an explorer plan"),
+                    token,
+                );
+                quote!(Some(#facade::__private::explorer_content_token_target(&#target)))
             }
             None => quote!(None),
         };
+        let token = match (element.token_kind, element.target) {
+            (Some(kind), _) => {
+                let token = explorer_token_schema_static(kind);
+                quote!(Some(&#token))
+            }
+            (None, Some(ExplorerElementTargetPlan::ContentToken(token))) => {
+                let token = explorer_content_token_schema_static(
+                    plan.explorer
+                        .as_ref()
+                        .expect("explorer schema rendering has an explorer plan"),
+                    token,
+                );
+                quote!(Some(&#token))
+            }
+            (None, Some(ExplorerElementTargetPlan::Node(_)) | None) => quote!(None),
+        };
         quote! {
-            static #schema: #facade::__private::ExplorerElementSchemaData =
+            pub(crate) static #schema: #facade::__private::ExplorerElementSchemaData =
                 #facade::__private::explorer_element_schema(
-                    Some(#name),
+                    #name,
                     #role,
                     #cardinality,
-                    #classification,
+                    #target,
+                    #token,
                 );
         }
     });
@@ -10946,6 +11138,7 @@ fn render_explorer_schema(
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let node_name = &node.name;
+    let qualified_name = &node.qualified_name;
     match &node.body {
         ExplorerNodeBodyPlan::Struct(variant) => {
             let definitions =
@@ -10955,10 +11148,10 @@ fn render_explorer_schema(
                 .map(|index| explorer_element_schema_static(node_index, None, index));
             quote! {
                 #definitions
-                static #schema: #facade::__private::ExplorerSchemaData =
-                    #facade::__private::explorer_schema(
+                pub(crate) static #schema: #facade::__private::ExplorerNodeSchemaData =
+                    #facade::__private::explorer_node_schema(
                         #node_name,
-                        None,
+                        #qualified_name,
                         &[#(#element_schemas),*],
                         &[],
                     );
@@ -10978,17 +11171,20 @@ fn render_explorer_schema(
                     .name
                     .as_deref()
                     .expect("enum and Pratt explorer variants retain their names");
+                let variant_qualified_name = variant
+                    .qualified_name
+                    .as_deref()
+                    .expect("enum and Pratt variants retain qualified names");
                 let element_schemas = (0..variant.elements.len()).map(|element_index| {
                     explorer_element_schema_static(node_index, Some(variant_index), element_index)
                 });
                 quote! {
                     #entries
-                    static #schema: #facade::__private::ExplorerSchemaData =
-                        #facade::__private::explorer_schema(
-                            #node_name,
-                            Some(#variant_name),
+                    pub(crate) static #schema: #facade::__private::ExplorerVariantSchemaData =
+                        #facade::__private::explorer_variant_schema(
+                            #variant_name,
+                            #variant_qualified_name,
                             &[#(#element_schemas),*],
-                            &[],
                         );
                 }
             });
@@ -10997,10 +11193,10 @@ fn render_explorer_schema(
                 quote!(&#schema)
             });
             quote! {
-                static #base: #facade::__private::ExplorerSchemaData =
-                    #facade::__private::explorer_schema(
+                pub(crate) static #base: #facade::__private::ExplorerNodeSchemaData =
+                    #facade::__private::explorer_node_schema(
                         #node_name,
-                        None,
+                        #qualified_name,
                         &[],
                         &[#(#variant_schemas),*],
                     );
@@ -11010,111 +11206,115 @@ fn render_explorer_schema(
     }
 }
 
-fn render_explorer_element_occurrence(
-    plan: &EmissionPlan,
-    node_index: usize,
-    variant: Option<usize>,
+fn render_explorer_child_count(
+    element: &ExplorerElementPlan,
+    field_value: Option<proc_macro2::TokenStream>,
+) -> proc_macro2::TokenStream {
+    let ExplorerOccurrencePlan::Children { wrappers, .. } = &element.occurrence else {
+        return quote!(0);
+    };
+    let field_value = field_value.expect("semantic explorer elements have field values");
+    if let Some(repeat_index) = wrappers
+        .iter()
+        .position(|wrapper| matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore))
+    {
+        let outer = &wrappers[..repeat_index];
+        if outer
+            .iter()
+            .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+        {
+            let optional = render_optional_view_reference(field_value, outer, true);
+            quote!((#optional).map_or(0, |values| values.len()))
+        } else {
+            let collection = render_terminal_reference(field_value, outer, true);
+            quote!((#collection).len())
+        }
+    } else if wrappers
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+    {
+        let optional = render_optional_view_reference(field_value, wrappers, true);
+        quote!(usize::from((#optional).is_some()))
+    } else {
+        quote!(1)
+    }
+}
+
+fn render_explorer_child(
+    facade: &Ident,
     element_index: usize,
     element: &ExplorerElementPlan,
     field_value: Option<proc_macro2::TokenStream>,
 ) -> proc_macro2::TokenStream {
-    let facade = &plan.facade;
-    let schema = explorer_element_schema_static(node_index, variant, element_index);
-    let cursor = quote!(cursor.child(#element_index));
-    match &element.occurrence {
-        ExplorerOccurrencePlan::Leaf => {
-            let display = render_explorer_display(&element.display);
-            quote! {
-                #facade::__private::explorer_element(
-                    &#schema,
-                    #cursor,
-                    #display,
-                    [],
+    let ExplorerOccurrencePlan::Children { wrappers, .. } = &element.occurrence else {
+        return quote!(None);
+    };
+    let field_value = field_value.expect("semantic explorer elements have field values");
+    let child_cursor = element.attachment_semantic_child.map_or_else(
+        || quote!(cursor.child(#element_index).child(child)),
+        |semantic_child| quote!(cursor.child(#element_index).child(child).child(#semantic_child)),
+    );
+    if let Some(repeat_index) = wrappers
+        .iter()
+        .position(|wrapper| matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore))
+    {
+        let outer = &wrappers[..repeat_index];
+        let inner = &wrappers[repeat_index + 1..];
+        let selected = if outer
+            .iter()
+            .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+        {
+            let optional = render_optional_view_reference(field_value, outer, true);
+            quote!((#optional).and_then(|values| values.get(child)))
+        } else {
+            let collection = render_terminal_reference(field_value, outer, true);
+            quote!((#collection).get(child))
+        };
+        let value = render_terminal_reference(quote!(value), inner, true);
+        quote! {
+            (#selected).map(|value| {
+                #facade::__private::ExplorerNode::__recursa_explorer_node(
+                    #value,
+                    #child_cursor,
                 )
+            })
+        }
+    } else if wrappers
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
+    {
+        let optional = render_optional_view_reference(field_value, wrappers, true);
+        quote! {
+            if child == 0 {
+                (#optional).map(|value| {
+                    #facade::__private::ExplorerNode::__recursa_explorer_node(
+                        value,
+                        #child_cursor,
+                    )
+                })
+            } else {
+                None
             }
         }
-        ExplorerOccurrencePlan::Children { wrappers, terminal } => {
-            let _typed_terminal = terminal;
-            debug_assert!(matches!(element.display, ExplorerDisplayPlan::None));
-            let field_value = field_value.expect("semantic explorer elements have field values");
-            if let Some(repeat_index) = wrappers.iter().position(|wrapper| {
-                matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)
-            }) {
-                let outer = &wrappers[..repeat_index];
-                let inner = &wrappers[repeat_index + 1..];
-                let collection = if outer
-                    .iter()
-                    .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
-                {
-                    let optional = render_optional_view_reference(field_value, outer, true);
-                    quote!((#optional).into_iter().flat_map(|values| values.iter()))
-                } else {
-                    let collection = render_terminal_reference(field_value, outer, true);
-                    quote!((#collection).iter())
-                };
-                let item = render_terminal_reference(quote!(value), inner, true);
-                quote! {
-                    #facade::__private::explorer_element(
-                        &#schema,
-                        #cursor,
-                        None,
-                        #collection.enumerate().map(|(index, value)| {
-                            #facade::__private::ExplorerNode::__recursa_explorer_node(
-                                #item,
-                                #cursor.child(index),
-                            )
-                        }),
-                    )
-                }
-            } else if wrappers
-                .iter()
-                .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
-            {
-                let optional = render_optional_view_reference(field_value, wrappers, true);
-                quote! {
-                    #facade::__private::explorer_element(
-                        &#schema,
-                        #cursor,
-                        None,
-                        (#optional).into_iter().map(|value| {
-                            #facade::__private::ExplorerNode::__recursa_explorer_node(
-                                value,
-                                #cursor.child(0),
-                            )
-                        }),
-                    )
-                }
-            } else {
-                let value = render_terminal_reference(field_value, wrappers, true);
-                quote! {
-                    #facade::__private::explorer_element(
-                        &#schema,
-                        #cursor,
-                        None,
-                        [#facade::__private::ExplorerNode::__recursa_explorer_node(
-                            #value,
-                            #cursor.child(0),
-                        )],
-                    )
-                }
-            }
+    } else {
+        let value = render_terminal_reference(field_value, wrappers, true);
+        quote! {
+            (child == 0).then(|| {
+                #facade::__private::ExplorerNode::__recursa_explorer_node(
+                    #value,
+                    #child_cursor,
+                )
+            })
         }
     }
 }
 
-fn render_explorer_variant_body(
-    plan: &EmissionPlan,
-    node_index: usize,
-    variant_index: Option<usize>,
+fn render_explorer_variant_child_count(
     explorer: &ExplorerVariantPlan,
     parse_elements: &[ElementParsePlan],
-    bindings: &[Option<Ident>],
-    display: &ExplorerDisplayPlan,
+    bindings: &[Option<proc_macro2::TokenStream>],
 ) -> proc_macro2::TokenStream {
-    let facade = &plan.facade;
-    let schema = explorer_schema_static(node_index, variant_index);
-    let display = render_explorer_display(display);
-    let occurrences = explorer
+    let arms = explorer
         .elements
         .iter()
         .enumerate()
@@ -11122,44 +11322,32 @@ fn render_explorer_variant_body(
             let field = parse_elements
                 .iter()
                 .position(|parse| parse.explorer_source == element.source)
-                .and_then(|index| bindings[index].as_ref())
-                .map(|binding| quote!(#binding));
-            render_explorer_element_occurrence(
-                plan,
-                node_index,
-                variant_index,
-                element_index,
-                element,
-                field,
-            )
+                .and_then(|index| bindings[index].clone());
+            let count = render_explorer_child_count(element, field);
+            quote!(#element_index => #count,)
         });
-    quote! {
-        #facade::__private::explorer_node(
-            &#schema,
-            cursor.span(),
-            #display,
-            [#(#occurrences),*],
-        )
-    }
+    quote!(match element { #(#arms)* _ => 0 })
 }
 
-fn render_explorer_display(display: &ExplorerDisplayPlan) -> proc_macro2::TokenStream {
-    match display {
-        ExplorerDisplayPlan::None => quote!(None),
-        ExplorerDisplayPlan::Fixed(spelling) => quote!(Some(Box::<str>::from(#spelling))),
-        ExplorerDisplayPlan::MatchedOrStored => {
-            unreachable!("matched-or-stored display is rendered by content-token implementations")
-        }
-    }
-}
-
-fn parse_element_for_explorer(
-    elements: &[ElementParsePlan],
-    source: ExplorerElementSource,
-) -> Option<&ElementParsePlan> {
-    elements
+fn render_explorer_variant_child(
+    facade: &Ident,
+    explorer: &ExplorerVariantPlan,
+    parse_elements: &[ElementParsePlan],
+    bindings: &[Option<proc_macro2::TokenStream>],
+) -> proc_macro2::TokenStream {
+    let arms = explorer
+        .elements
         .iter()
-        .find(|element| element.explorer_source == source)
+        .enumerate()
+        .map(|(element_index, element)| {
+            let field = parse_elements
+                .iter()
+                .position(|parse| parse.explorer_source == element.source)
+                .and_then(|index| bindings[index].clone());
+            let child = render_explorer_child(facade, element_index, element, field);
+            quote!(#element_index => #child,)
+        });
+    quote!(match element { #(#arms)* _ => None })
 }
 
 fn render_metadata_entry(facade: &Ident, element: &ElementParsePlan) -> proc_macro2::TokenStream {
@@ -13697,14 +13885,17 @@ struct B;
             .expect("fixture contains fixed explorer syntax");
         element.name = "frozen_element".to_owned();
         element.cardinality = ExplorerCardinalityPlan::OptionalOneOrMore;
-        element.display = ExplorerDisplayPlan::Fixed("FROZEN_DISPLAY".to_owned());
+        explorer
+            .tokens
+            .iter_mut()
+            .find(|token| token.canonical_text.is_some())
+            .expect("fixture contains a fixed Token descriptor")
+            .canonical_text = Some("FROZEN_DISPLAY".to_owned());
         plan.plan_families.explorer = Some(plan_family_identity(explorer));
 
         let rendered = render(&plan).expect("self-consistent frozen explorer plan renders");
-        let generated = rendered
-            .nodes
-            .iter()
-            .map(|(_, source)| source.as_str())
+        let generated = std::iter::once(rendered.root.as_str())
+            .chain(rendered.nodes.iter().map(|(_, source)| source.as_str()))
             .collect::<Vec<_>>()
             .join("\n");
         for frozen in [
