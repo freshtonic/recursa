@@ -1255,6 +1255,7 @@ fn run_fixture(package: &TempDir) -> Output {
         .arg("--quiet")
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
         .env("CARGO_TARGET_DIR", target_dir(package))
         .output()
         .expect("run compound grammar fixture")
@@ -1268,6 +1269,7 @@ fn run_fixture_unlocked(package: &TempDir) -> Output {
         .arg("--quiet")
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
         .env("CARGO_TARGET_DIR", target_dir(package))
         .output()
         .expect("run compound grammar fixture with a mutated manifest")
@@ -1288,6 +1290,7 @@ fn run_fixture_doc(package: &TempDir, private_items: bool) -> Output {
     command
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
         .env("RUSTDOCFLAGS", "-D rustdoc::broken_intra_doc_links")
         .env("CARGO_TARGET_DIR", target_dir(package))
         .output()

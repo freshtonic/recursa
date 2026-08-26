@@ -134,6 +134,7 @@ fn run_fixture(package: &TempDir, mode: CaptureMode) -> Output {
         .arg("--quiet")
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
         .env("RECURSA_CAPTURE_MODE", mode.name())
         .env("CARGO_TARGET_DIR", package.path().join("target"));
     command.output().expect("run generated grammar fixture")

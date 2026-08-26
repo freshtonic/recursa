@@ -113,6 +113,7 @@ fn run_fixture(package: &TempDir) -> Output {
         .arg("--quiet")
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
         .env("CARGO_TARGET_DIR", target_dir(package));
     command.output().expect("run predictive fixture")
 }

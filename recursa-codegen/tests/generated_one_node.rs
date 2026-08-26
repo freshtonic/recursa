@@ -202,6 +202,51 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
     assert_success(&run_fixture(&package));
 }
 
+#[test]
+fn debug_directory_changes_rerun_generation_without_changing_compiled_output() {
+    let package = scaffold_fixture();
+    assert_success(&run_fixture(&package));
+    let selected = find_selected_generation(&target_dir(&package));
+    let selector = fs::read_to_string(&selected).unwrap();
+    let identity = selector
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("// recursa-generation:"))
+        .unwrap()
+        .to_owned();
+    let generation = selected
+        .parent()
+        .unwrap()
+        .join("recursa-generations")
+        .join(&identity);
+    let root = fs::read(generation.join("root.rs")).unwrap();
+    let node = fs::read(generation.join("node-0.rs")).unwrap();
+
+    let first_destination = tempfile::tempdir().unwrap();
+    assert_success(&run_fixture_with_debug(&package, first_destination.path()));
+    assert_eq!(fs::read_to_string(&selected).unwrap(), selector);
+    assert_eq!(fs::read(generation.join("root.rs")).unwrap(), root);
+    assert_eq!(fs::read(generation.join("node-0.rs")).unwrap(), node);
+    let first_index = find_one_debug_index(first_destination.path());
+
+    let second_destination = tempfile::tempdir().unwrap();
+    assert_success(&run_fixture_with_debug(&package, second_destination.path()));
+    assert_eq!(fs::read_to_string(&selected).unwrap(), selector);
+    let second_index = find_one_debug_index(second_destination.path());
+    assert_eq!(
+        fs::read_to_string(&first_index).unwrap(),
+        fs::read_to_string(&second_index).unwrap(),
+        "the destination is not part of deterministic debug content"
+    );
+
+    let bundle = first_index.parent().unwrap();
+    for line in fs::read_to_string(&first_index).unwrap().lines().skip(2) {
+        let private_name = line.split('\t').nth(2).expect("indexed private filename");
+        syn::parse_file(&fs::read_to_string(bundle.join(private_name)).unwrap())
+            .expect("every indexed logical output is parseable Rust");
+    }
+}
+
 fn scaffold_fixture() -> TempDir {
     let package = tempfile::tempdir().expect("temporary generated grammar package");
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -248,8 +293,26 @@ fn run_fixture(package: &TempDir) -> Output {
         .arg("--quiet")
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
         .env("CARGO_TARGET_DIR", target_dir(package));
     command.output().expect("run generated grammar fixture")
+}
+
+fn run_fixture_with_debug(package: &TempDir, debug_directory: &Path) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(cargo);
+    command
+        .arg("run")
+        .arg("--offline")
+        .arg("--locked")
+        .arg("--quiet")
+        .current_dir(package.path())
+        .env_remove("RECURSA_GENERATION")
+        .env("RECURSA_DEBUG_DIR", debug_directory)
+        .env("CARGO_TARGET_DIR", target_dir(package));
+    command
+        .output()
+        .expect("run generated grammar fixture with debug emission")
 }
 
 fn target_dir(package: &TempDir) -> PathBuf {
@@ -275,6 +338,13 @@ fn find_named(directory: &Path, name: &str, found: &mut Vec<PathBuf>) {
             found.push(path);
         }
     }
+}
+
+fn find_one_debug_index(directory: &Path) -> PathBuf {
+    let mut found = Vec::new();
+    find_named(directory, "index", &mut found);
+    assert_eq!(found.len(), 1, "one generated-code debug index: {found:?}");
+    found.pop().unwrap()
 }
 
 fn force_consumer_recompile(package: &TempDir, marker: &str) {
