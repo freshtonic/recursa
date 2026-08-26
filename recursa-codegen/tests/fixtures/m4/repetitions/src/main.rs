@@ -206,6 +206,35 @@ fn assert_capture_configuration(mode: CaptureMode) {
 
     let duplicates = parse_spanned!(grammar::DuplicateList, "on on on");
     assert_eq!(duplicates.render(), "on on on");
+
+    let leading = parse_spanned!(grammar::LeadingPretty<'_>, "marks alpha,beta");
+    assert_eq!(leading.render(), "marks alpha, beta,");
+    assert_eq!(
+        leading.render_with(recursa::PrettyConfig::new(12, 2)),
+        "marks alpha\n, beta,"
+    );
+
+    let trailing = parse_spanned!(grammar::TrailingPretty<'_>, "marks alpha,beta,");
+    assert_eq!(trailing.render(), "marks alpha, beta");
+    assert_eq!(
+        trailing.render_with(recursa::PrettyConfig::new(12, 2)),
+        "marks alpha,\nbeta"
+    );
+
+    let attachment = parse_spanned!(grammar::AttachmentPretty<'_>, ". :boxed alpha.? .");
+    assert_eq!(attachment.render(), ".\n:boxed alpha.?\n.");
+
+    let node_group = parse_spanned!(grammar::NodeGroupPretty<'_>, "nodehint alpha beta");
+    assert_eq!(
+        node_group.render_with(recursa::PrettyConfig::new(14, 2)),
+        "nodehint alpha\nbeta"
+    );
+    let variant_group =
+        parse_spanned!(grammar::VariantGroupPretty<'_>, "enumhint alpha beta");
+    assert_eq!(
+        variant_group.render_with(recursa::PrettyConfig::new(14, 2)),
+        "enumhint alpha\nbeta"
+    );
     assert_eq!(
         values.get(1).unwrap().span(),
         recursa::Span::new(10, 12).ok()

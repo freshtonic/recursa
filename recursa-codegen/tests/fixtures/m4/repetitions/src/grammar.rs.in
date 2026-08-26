@@ -36,6 +36,8 @@ recursa::tokens! {
         ATTACHED_OPTIONAL => "attachedoptional",
         ATTACHED_MANY => "attachedmany",
         ATTACHED_NONEMPTY => "attachednonempty",
+        NODE_HINT => "nodehint",
+        ENUM_HINT => "enumhint",
     }
     punctuation {
         COMMA => ",",
@@ -47,6 +49,8 @@ recursa::tokens! {
         LBRACE => "{",
         RBRACE => "}",
         SEMICOLON => ";",
+        TIGHT_OPEN => ":", spacing = tight,
+        TIGHT_CLOSE => "?", spacing = tight,
     }
 }
 
@@ -198,6 +202,46 @@ pub mod duplicate_struct {
 #[derive(recursa::Node)]
 pub struct DuplicateList {
     pub values: Vec<duplicate_struct::Duplicate>,
+}
+
+#[derive(recursa::Node)]
+#[tok(MARKS, this)]
+pub struct LeadingPretty<'input> {
+    #[sep(COMMA, trailing)]
+    #[pretty(separator = leading, trailing_separator = always)]
+    pub values: Vec<Box<Item<'input>>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(MARKS, this)]
+pub struct TrailingPretty<'input> {
+    #[sep(COMMA, trailing)]
+    #[pretty(separator = trailing, trailing_separator = never)]
+    pub values: Vec<Box<Item<'input>>>,
+}
+
+#[derive(recursa::Node)]
+pub struct AttachmentPretty<'input> {
+    pub before: Marker,
+    #[tok(TIGHT_OPEN, BOXED, this, DOT, TIGHT_CLOSE)]
+    #[pretty(group = inconsistent, indent, break_before = hard, break_after = hard)]
+    pub value: Box<Item<'input>>,
+    pub after: Marker,
+}
+
+#[derive(recursa::Node)]
+#[tok(NODE_HINT, this)]
+#[pretty(group = inconsistent)]
+pub struct NodeGroupPretty<'input> {
+    pub first: Box<Item<'input>>,
+    pub second: Box<Item<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub enum VariantGroupPretty<'input> {
+    #[tok(ENUM_HINT, this)]
+    #[pretty(group = inconsistent)]
+    Value(Box<Item<'input>>, Box<Item<'input>>),
 }
 
 #[derive(recursa::Node)]

@@ -47,8 +47,13 @@ impl Default for PrettyConfig {
 enum PrettyEvent {
     Text(String),
     SoftBreak(String),
+    RepetitionBreak {
+        separator: Option<String>,
+        leading: bool,
+    },
     HardBreak,
     BeginGroup,
+    BeginInconsistentGroup,
     EndGroup,
     Indent,
     Dedent,
@@ -73,7 +78,7 @@ impl PrettySink {
         let mut output = String::new();
         let mut column = 0_usize;
         let mut indent = 0_usize;
-        let mut groups = Vec::new();
+        let mut groups = Vec::<GroupMode>::new();
         for (index, event) in self.events.iter().enumerate() {
             match event {
                 PrettyEvent::Text(text) => {
@@ -81,7 +86,17 @@ impl PrettySink {
                     column = column_after(column, text);
                 }
                 PrettyEvent::SoftBreak(flat) => {
-                    if groups.last().copied().unwrap_or(false) {
+                    let broken = match groups.last().copied() {
+                        Some(GroupMode::Consistent(broken)) => broken,
+                        Some(GroupMode::Inconsistent) => {
+                            column
+                                .saturating_add(flat.chars().count())
+                                .saturating_add(flat_width_to_next_break(&self.events, index + 1))
+                                > self.config.max_width
+                        }
+                        None => false,
+                    };
+                    if broken {
                         newline(&mut output, &mut column, indent, self.config.indent);
                     } else {
                         output.push_str(flat);
@@ -91,14 +106,47 @@ impl PrettySink {
                 PrettyEvent::HardBreak => {
                     newline(&mut output, &mut column, indent, self.config.indent);
                 }
+                PrettyEvent::RepetitionBreak { separator, leading } => {
+                    let broken = match groups.last().copied() {
+                        Some(GroupMode::Consistent(broken)) => broken,
+                        Some(GroupMode::Inconsistent) => {
+                            column
+                                .saturating_add(1)
+                                .saturating_add(
+                                    separator.as_ref().map_or(0, |text| text.chars().count()),
+                                )
+                                .saturating_add(flat_width_to_next_break(&self.events, index + 1))
+                                > self.config.max_width
+                        }
+                        None => false,
+                    };
+                    if broken {
+                        if !leading && let Some(separator) = separator {
+                            output.push_str(separator);
+                            column = column_after(column, separator);
+                        }
+                        newline(&mut output, &mut column, indent, self.config.indent);
+                        if *leading && let Some(separator) = separator {
+                            output.push_str(separator);
+                            output.push(' ');
+                            column = column_after(column, separator).saturating_add(1);
+                        }
+                    } else {
+                        if let Some(separator) = separator {
+                            output.push_str(separator);
+                            column = column_after(column, separator);
+                        }
+                        output.push(' ');
+                        column = column.saturating_add(1);
+                    }
+                }
                 PrettyEvent::BeginGroup => {
                     let flat = flat_width(&self.events, index + 1);
-                    groups.push(
-                        flat.is_none_or(|width| {
-                            column.saturating_add(width) > self.config.max_width
-                        }),
-                    );
+                    groups.push(GroupMode::Consistent(flat.is_none_or(|width| {
+                        column.saturating_add(width) > self.config.max_width
+                    })));
                 }
+                PrettyEvent::BeginInconsistentGroup => groups.push(GroupMode::Inconsistent),
                 PrettyEvent::EndGroup => {
                     groups.pop();
                 }
@@ -136,13 +184,47 @@ fn flat_width(events: &[PrettyEvent], start: usize) -> Option<usize> {
                 width = width.saturating_add(text.chars().count());
             }
             PrettyEvent::HardBreak => return None,
-            PrettyEvent::BeginGroup => depth += 1,
+            PrettyEvent::RepetitionBreak { separator, .. } => {
+                width = width
+                    .saturating_add(separator.as_ref().map_or(0, |text| text.chars().count()) + 1);
+            }
+            PrettyEvent::BeginGroup | PrettyEvent::BeginInconsistentGroup => depth += 1,
             PrettyEvent::EndGroup if depth == 0 => return Some(width),
             PrettyEvent::EndGroup => depth -= 1,
             PrettyEvent::Indent | PrettyEvent::Dedent => {}
         }
     }
     Some(width)
+}
+
+#[derive(Clone, Copy)]
+enum GroupMode {
+    Consistent(bool),
+    Inconsistent,
+}
+
+fn flat_width_to_next_break(events: &[PrettyEvent], start: usize) -> usize {
+    let mut depth = 0_usize;
+    let mut width = 0_usize;
+    for event in &events[start..] {
+        match event {
+            PrettyEvent::Text(text) => width = width.saturating_add(text.chars().count()),
+            PrettyEvent::SoftBreak(_) | PrettyEvent::RepetitionBreak { .. } if depth == 0 => break,
+            PrettyEvent::SoftBreak(text) => {
+                width = width.saturating_add(text.chars().count());
+            }
+            PrettyEvent::RepetitionBreak { separator, .. } => {
+                width = width
+                    .saturating_add(separator.as_ref().map_or(0, |text| text.chars().count()) + 1);
+            }
+            PrettyEvent::HardBreak => break,
+            PrettyEvent::BeginGroup | PrettyEvent::BeginInconsistentGroup => depth += 1,
+            PrettyEvent::EndGroup if depth == 0 => break,
+            PrettyEvent::EndGroup => depth -= 1,
+            PrettyEvent::Indent | PrettyEvent::Dedent => {}
+        }
+    }
+    width
 }
 
 /// Rendering state shared by generated and source-owned [`Pretty`] impls.
@@ -163,6 +245,7 @@ struct RepetitionLayout {
     separator: Option<String>,
     trailing: bool,
     hard_break: bool,
+    leading_separator: bool,
 }
 
 impl Default for PrettyContext {
@@ -343,9 +426,17 @@ impl PrettyContext {
         } else {
             flat
         };
-        self.sink
-            .events
-            .push(PrettyEvent::SoftBreak(flat.to_owned()));
+        if self.separator_supplied
+            && let Some(PrettyEvent::SoftBreak(existing)) = self.sink.events.last_mut()
+        {
+            if existing.is_empty() && !flat.is_empty() {
+                *existing = flat.to_owned();
+            }
+        } else {
+            self.sink
+                .events
+                .push(PrettyEvent::SoftBreak(flat.to_owned()));
+        }
         self.separator_supplied = true;
         self.previous_auto_punctuation = false;
         self.requested_space_after = false;
@@ -354,7 +445,17 @@ impl PrettyContext {
 
     /// Adds an unconditional line break.
     pub fn hard_break(&mut self) -> fmt::Result {
-        self.sink.events.push(PrettyEvent::HardBreak);
+        if self.separator_supplied
+            && self
+                .sink
+                .events
+                .last()
+                .is_some_and(|event| matches!(event, PrettyEvent::SoftBreak(_)))
+        {
+            *self.sink.events.last_mut().expect("checked soft break") = PrettyEvent::HardBreak;
+        } else {
+            self.sink.events.push(PrettyEvent::HardBreak);
+        }
         self.separator_supplied = true;
         self.previous_auto_punctuation = false;
         self.requested_space_after = false;
@@ -367,6 +468,40 @@ impl PrettyContext {
         let result = render(self);
         self.sink.events.push(PrettyEvent::EndGroup);
         result
+    }
+
+    /// Emits a fill group whose soft-break opportunities decide independently.
+    #[doc(hidden)]
+    pub fn inconsistent_group<R>(&mut self, render: impl FnOnce(&mut Self) -> R) -> R {
+        self.sink.events.push(PrettyEvent::BeginInconsistentGroup);
+        let result = render(self);
+        self.sink.events.push(PrettyEvent::EndGroup);
+        result
+    }
+
+    #[doc(hidden)]
+    pub fn begin_consistent_group(&mut self) {
+        self.sink.events.push(PrettyEvent::BeginGroup);
+    }
+
+    #[doc(hidden)]
+    pub fn begin_inconsistent_group(&mut self) {
+        self.sink.events.push(PrettyEvent::BeginInconsistentGroup);
+    }
+
+    #[doc(hidden)]
+    pub fn end_group(&mut self) {
+        self.sink.events.push(PrettyEvent::EndGroup);
+    }
+
+    #[doc(hidden)]
+    pub fn begin_indent(&mut self) {
+        self.sink.events.push(PrettyEvent::Indent);
+    }
+
+    #[doc(hidden)]
+    pub fn end_indent(&mut self) {
+        self.sink.events.push(PrettyEvent::Dedent);
     }
 
     /// Emits a document region one configured indentation level deeper.
@@ -390,6 +525,27 @@ impl PrettyContext {
             separator: separator.map(str::to_owned),
             trailing,
             hard_break,
+            leading_separator: false,
+        });
+        let result = render(self);
+        self.repetition = previous;
+        result
+    }
+
+    #[doc(hidden)]
+    pub fn with_repetition_style<R>(
+        &mut self,
+        separator: Option<&str>,
+        trailing: bool,
+        hard_break: bool,
+        leading_separator: bool,
+        render: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.repetition.replace(RepetitionLayout {
+            separator: separator.map(str::to_owned),
+            trailing,
+            hard_break,
+            leading_separator,
         });
         let result = render(self);
         self.repetition = previous;
@@ -407,15 +563,21 @@ impl PrettyContext {
             if let Some(layout) = &layout
                 && (index + 1 < length || layout.trailing)
             {
-                if let Some(separator) = &layout.separator {
-                    self.tight_token(separator)?;
-                }
                 if index + 1 < length {
                     if layout.hard_break {
+                        if let Some(separator) = &layout.separator {
+                            self.tight_token(separator)?;
+                        }
                         self.hard_break()?;
                     } else {
-                        self.soft_break(" ")?;
+                        self.sink.events.push(PrettyEvent::RepetitionBreak {
+                            separator: layout.separator.clone(),
+                            leading: layout.leading_separator,
+                        });
+                        self.separator_supplied = true;
                     }
+                } else if let Some(separator) = &layout.separator {
+                    self.tight_token(separator)?;
                 }
             }
         }
@@ -558,6 +720,31 @@ mod tests {
     fn caller_width_and_indent_overrides_drive_structural_breaks() {
         let rendered = Delimited.render_with(PrettyConfig::new(8, 3));
         assert_eq!(rendered, "[\n   alpha,\n   beta\n]");
+    }
+
+    #[test]
+    fn inconsistent_groups_break_only_the_overflowing_opportunity() {
+        struct Words(bool);
+        impl Pretty for Words {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                let render = |context: &mut PrettyContext| {
+                    context.token("alpha")?;
+                    context.soft_break(" ")?;
+                    context.token("beta")?;
+                    context.soft_break(" ")?;
+                    context.token("c")
+                };
+                if self.0 {
+                    context.group(render)
+                } else {
+                    context.inconsistent_group(render)
+                }
+            }
+        }
+
+        let config = PrettyConfig::new(10, 2);
+        assert_eq!(Words(true).render_with(config), "alpha\nbeta\nc");
+        assert_eq!(Words(false).render_with(config), "alpha beta\nc");
     }
 
     #[test]

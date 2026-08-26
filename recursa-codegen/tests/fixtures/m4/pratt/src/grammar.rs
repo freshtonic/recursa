@@ -42,6 +42,7 @@ pub struct Name<'input> {
 
 #[derive(recursa::Node)]
 #[pratt]
+#[pretty(group = inconsistent)]
 pub enum Expr<'input> {
     Integer(Integer<'input>),
     Name(Name<'input>),
@@ -73,7 +74,8 @@ pub enum Expr<'input> {
 
     #[parse(infix, lbp = 5, rbp = 6)]
     #[tok(IS, KW_NOT)]
-    IsNot(Box<Self>, Box<Self>),
+    #[pretty(group = inconsistent)]
+    IsNot(Box<Self>, #[pretty(break_before = soft)] Box<Self>),
 
     #[parse(infix, lbp = 25, rbp = 26)]
     #[tok(DOUBLE_COLON)]

@@ -616,6 +616,9 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::InvalidPrattTokenPlacement => "RCA3115",
         SourceModelDiagnosticKind::ConfiguredOrdinaryDeriveConflict => "RCA3116",
         SourceModelDiagnosticKind::MultiplePostLexHooks => "RCA3117",
+        SourceModelDiagnosticKind::InvalidPrettyHint => "RCA3118",
+        SourceModelDiagnosticKind::InapplicablePrettyHint => "RCA3210",
+        SourceModelDiagnosticKind::UnsafePrettyHint => "RCA3211",
     }
 }
 
@@ -930,6 +933,7 @@ pub(crate) const fn materialization_code(kind: MaterializationDiagnosticKind) ->
         MaterializationDiagnosticKind::InvalidArguments => "RCA3205",
         MaterializationDiagnosticKind::InvalidContainer => "RCA3206",
         MaterializationDiagnosticKind::InvalidPrattShape => "RCA3209",
+        MaterializationDiagnosticKind::InapplicablePrettyHint => "RCA3210",
         MaterializationDiagnosticKind::AliasCycle => "RCA3207",
         MaterializationDiagnosticKind::NonRegularRecursion => "RCA3208",
     }

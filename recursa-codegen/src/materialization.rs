@@ -129,6 +129,7 @@ pub(crate) struct MaterializedNodeApplication {
     pub(crate) node: NodeId,
     pub(crate) display_name: String,
     pub(crate) type_arguments: Vec<ClosedType>,
+    pub(crate) pretty: crate::source_model::PrettyHints,
     pub(crate) body: MaterializedNodeBody,
 }
 
@@ -197,6 +198,7 @@ impl MaterializedNodeBody {
 pub(crate) struct MaterializedVariant {
     pub(crate) resolved_variant: ResolvedVariantId,
     pub(crate) name: String,
+    pub(crate) pretty: crate::source_model::PrettyHints,
     pub(crate) elements: Vec<MaterializedElement>,
 }
 
@@ -226,6 +228,7 @@ impl MaterializedPrattVariant {
 pub(crate) struct MaterializedPrattCommon {
     pub(crate) resolved_variant: ResolvedVariantId,
     pub(crate) name: String,
+    pub(crate) pretty: crate::source_model::PrettyHints,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -260,6 +263,9 @@ pub(crate) struct MaterializedPrattLhs {
     pub(crate) field: ResolvedFieldId,
     pub(crate) owner: MaterializedNodeUse,
     pub(crate) trace: MaterializationTrace,
+    pub(crate) pretty: crate::source_model::PrettyHints,
+    pub(crate) attachment_before: usize,
+    pub(crate) attachment_after: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -273,6 +279,9 @@ pub(crate) enum MaterializedElement {
         trace: MaterializationTrace,
         attachment: Option<MaterializedFixedAttachment>,
         separator: Option<Separator>,
+        pretty: crate::source_model::PrettyHints,
+        attachment_before: usize,
+        attachment_after: usize,
     },
 }
 
@@ -366,6 +375,7 @@ pub(crate) enum MaterializationDiagnosticKind {
     InvalidArguments,
     InvalidContainer,
     InvalidPrattShape,
+    InapplicablePrettyHint,
     AliasCycle,
     NonRegularRecursion,
 }
@@ -625,6 +635,7 @@ impl Materializer {
             node: node_id,
             display_name,
             type_arguments: closed_type_arguments,
+            pretty: crate::source_model::PrettyHints::default(),
             body: MaterializedNodeBody::Struct(Vec::new()),
         });
         let parameter_ids = self
@@ -684,6 +695,7 @@ impl Materializer {
                         .map(|variant| MaterializedVariant {
                             resolved_variant: variant.resolved_variant,
                             name: variant.name,
+                            pretty: variant.pretty,
                             elements: self.materialize_elements(
                                 &variant.elements,
                                 &current_use,
@@ -701,6 +713,7 @@ impl Materializer {
                         .collect(),
                 ),
             };
+        self.applications[id.index()].pretty = source_node.pretty;
         self.applications[id.index()].body = body;
         let popped = self.active_applications.pop();
         debug_assert!(popped.is_some_and(|application| application.node == node_id));
@@ -716,6 +729,7 @@ impl Materializer {
         let common = MaterializedPrattCommon {
             resolved_variant: variant.common.resolved_variant,
             name: variant.common.name,
+            pretty: variant.common.pretty,
         };
         let mut elements =
             self.materialize_elements(&variant.common.elements, current_application, environment);
@@ -893,6 +907,9 @@ impl Materializer {
             trace,
             attachment,
             separator,
+            pretty,
+            attachment_before,
+            attachment_after,
         } = elements.remove(index)
         else {
             unreachable!("the selected Pratt lhs element is semantic")
@@ -941,6 +958,9 @@ impl Materializer {
             field,
             owner,
             trace,
+            pretty,
+            attachment_before,
+            attachment_after,
         })
     }
 
@@ -962,6 +982,9 @@ impl Materializer {
                     resolved_field,
                     attachment,
                     separator,
+                    pretty,
+                    attachment_before,
+                    attachment_after,
                     ..
                 } => {
                     let field = self.resolved_field(*resolved_field).clone();
@@ -974,6 +997,18 @@ impl Materializer {
                     };
                     let (_, container) = terminal_and_container(&evaluated.closed, None);
                     let semantics = container.semantics();
+                    let pretty_break_opportunity = *attachment_before > 0
+                        || *attachment_after > 0
+                        || semantics.is_some_and(|semantics| semantics.cardinality.is_repeated());
+                    if (pretty.group.is_some() || pretty.indent) && !pretty_break_opportunity {
+                        self.push_diagnostic(
+                            field.ty.source,
+                            Some(field.range.clone()),
+                            MaterializationDiagnosticKind::InapplicablePrettyHint,
+                            "Pretty field grouping or indentation has no materialized break opportunity"
+                                .to_owned(),
+                        );
+                    }
                     if semantics.is_none() {
                         self.push_diagnostic(
                             field.ty.source,
@@ -1037,6 +1072,9 @@ impl Materializer {
                             }
                         }),
                         separator: separator.clone(),
+                        pretty: pretty.clone(),
+                        attachment_before: *attachment_before,
+                        attachment_after: *attachment_after,
                     });
                 }
             }

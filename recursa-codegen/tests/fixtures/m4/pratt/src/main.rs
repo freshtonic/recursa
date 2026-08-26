@@ -113,6 +113,10 @@ fn assert_pretty_pratt_parentheses() {
 fn assert_pretty_multi_token_operators() {
     let infix = grammar::Expr::IsNot(Box::new(name("a")), Box::new(name("b")));
     assert_eq!(infix.render(), "a IS NOT b");
+    assert_eq!(
+        infix.render_with(recursa::PrettyConfig::new(8, 2)),
+        "a IS NOT\nb"
+    );
 
     let prefix = grammar::Expr::NotExists(Box::new(name("a")));
     assert_eq!(prefix.render(), "NEVER EXISTS a");
