@@ -3530,9 +3530,11 @@ recursa::grammar! { module = crate::ordinals }
 struct Leaf;
 #[derive(recursa::Node)]
 struct Root {
-    #[tok("[", this, "]")]
+    #[tok("[", this, "!", "]")]
     first: Leaf,
+    #[tok("(", "+", this, ")")]
     second: Leaf,
+    third: Leaf,
 }
 "#,
         ));
@@ -3550,19 +3552,24 @@ struct Root {
                 lowered,
                 analysis,
             });
-        for ordinal in 0..4 {
+        for ordinal in 0..9 {
             assert!(
                 projection.contains(&format!("ordinals::Root::element{ordinal}")),
                 "projection lacks expanded element ordinal {ordinal}:\n{projection}",
             );
         }
+        assert!(!projection.contains("ordinals::Root::element9"));
         assert!(
             projection
                 .contains("field ordinals::Root::first -> parse-site(ordinals::Root::element1)")
         );
         assert!(
             projection
-                .contains("field ordinals::Root::second -> parse-site(ordinals::Root::element3)")
+                .contains("field ordinals::Root::second -> parse-site(ordinals::Root::element6)")
+        );
+        assert!(
+            projection
+                .contains("field ordinals::Root::third -> parse-site(ordinals::Root::element8)")
         );
     }
 
