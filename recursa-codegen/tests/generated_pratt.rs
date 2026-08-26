@@ -52,6 +52,10 @@ fn pratt_diagrams_render_frozen_roles_binding_powers_and_operands() {
         expression.1,
     );
     assert!(
+        !expression.1.contains("__recursa_attachment"),
+        "private attachment units must not surface in Pratt diagrams",
+    );
+    assert!(
         expression
             .1
             .contains("prefix(bp=35) Neg(\"-\" grammar::Expr)"),

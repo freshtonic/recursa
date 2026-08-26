@@ -110,6 +110,8 @@ struct EmissionPlan {
     module_anchor: syn::Path,
     grammar_name: String,
     text_equivalence: TextEquivalence,
+    pretty_max_width: usize,
+    pretty_indent: usize,
     kind_count: usize,
     lexical_error_kind: u16,
     kind_variants: Vec<Ident>,
@@ -177,9 +179,13 @@ struct PrettyNodeBehavior {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PrettyElementBehavior {
-    Fixed { spelling: String },
+    Fixed {
+        spelling: String,
+        spacing: PrettySpacing,
+    },
     Semantic {
         repeated: bool,
+        separator: Option<String>,
         attachment: Option<PrettyAttachmentBehavior>,
     },
 }
@@ -372,6 +378,7 @@ enum ElementParseKind {
         expected: ExpectedSet,
         capture: PlannedCapturePolicy,
         spelling: String,
+        spacing: PrettySpacing,
     },
     Semantic {
         field: FieldPlan,
@@ -1229,6 +1236,8 @@ impl EmissionPlan {
             module_anchor,
             grammar_name: lowered.grammar.name.clone(),
             text_equivalence: lowered.grammar.text_equivalence,
+            pretty_max_width: resolved.build_inputs.pretty.max_width,
+            pretty_indent: resolved.build_inputs.pretty.indent,
             kind_count,
             lexical_error_kind,
             kind_variants,
@@ -1935,8 +1944,11 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
     elements
         .iter()
         .map(|element| match &element.kind {
-            ElementParseKind::Fixed { spelling, .. } => PrettyElementBehavior::Fixed {
+            ElementParseKind::Fixed {
+                spelling, spacing, ..
+            } => PrettyElementBehavior::Fixed {
                 spelling: spelling.clone(),
+                spacing: *spacing,
             },
             ElementParseKind::Semantic {
                 container,
@@ -1945,25 +1957,28 @@ fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBe
                 ..
             } => PrettyElementBehavior::Semantic {
                 repeated: matches!(container.as_ref(), PlannedContainer::Repeated { .. }),
-                attachment: attachment.as_ref().map(|attachment| PrettyAttachmentBehavior {
-                    before: attachment
-                        .before
-                        .iter()
-                        .map(|fixed| PrettyAttachedFixedBehavior {
-                            spelling: fixed.spelling.clone(),
-                            spacing: fixed.spacing,
-                        })
-                        .collect(),
-                    after: attachment
-                        .after
-                        .iter()
-                        .map(|fixed| PrettyAttachedFixedBehavior {
-                            spelling: fixed.spelling.clone(),
-                            spacing: fixed.spacing,
-                        })
-                        .collect(),
-                    separator: separator.clone(),
-                }),
+                separator: separator.clone(),
+                attachment: attachment
+                    .as_ref()
+                    .map(|attachment| PrettyAttachmentBehavior {
+                        before: attachment
+                            .before
+                            .iter()
+                            .map(|fixed| PrettyAttachedFixedBehavior {
+                                spelling: fixed.spelling.clone(),
+                                spacing: fixed.spacing,
+                            })
+                            .collect(),
+                        after: attachment
+                            .after
+                            .iter()
+                            .map(|fixed| PrettyAttachedFixedBehavior {
+                                spelling: fixed.spelling.clone(),
+                                spacing: fixed.spacing,
+                            })
+                            .collect(),
+                        separator: separator.clone(),
+                    }),
             },
         })
         .collect()
@@ -2059,6 +2074,7 @@ fn authoritative_pretty_node_behavior(
                 MaterializedPrattVariant::Led(led) => {
                     let mut elements = vec![PrettyElementBehavior::Semantic {
                         repeated: false,
+                        separator: None,
                         attachment: None,
                     }];
                     elements.extend(authoritative_pretty_elements(lowered, &led.tail)?);
@@ -2091,6 +2107,7 @@ fn authoritative_pretty_elements(
                         &fixed.spelling,
                         lowered.grammar.text_equivalence,
                     ),
+                    spacing: fixed.pretty_spacing,
                 })
             }
             MaterializedElement::SemanticField {
@@ -2104,6 +2121,7 @@ fn authoritative_pretty_elements(
                 });
                 Ok(PrettyElementBehavior::Semantic {
                     repeated,
+                    separator: authoritative_pretty_separator(lowered, separator.as_ref())?,
                     attachment: attachment
                         .as_ref()
                         .map(|attachment| {
@@ -2114,6 +2132,25 @@ fn authoritative_pretty_elements(
             }
         })
         .collect()
+}
+
+fn authoritative_pretty_separator(
+    lowered: &crate::materialization::LoweredGrammar,
+    separator: Option<&crate::source_model::Separator>,
+) -> Result<Option<String>, String> {
+    let Some(separator) = separator else {
+        return Ok(None);
+    };
+    let source = lowered.source_modeled.source_model();
+    let usage = &source.token_uses[separator.token_use.index()];
+    let definition = &source.token_definitions[usage.definition.index()];
+    let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+        return Err("a Pretty separator is not fixed syntax".to_owned());
+    };
+    Ok(Some(fixed_pretty_spelling(
+        &fixed.spelling,
+        lowered.grammar.text_equivalence,
+    )))
 }
 
 fn authoritative_pretty_attachment(
@@ -2129,26 +2166,11 @@ fn authoritative_pretty_attachment(
             return Err("an attached Pretty element is not fixed syntax".to_owned());
         };
         Ok(PrettyAttachedFixedBehavior {
-            spelling: fixed_pretty_spelling(
-                &fixed.spelling,
-                lowered.grammar.text_equivalence,
-            ),
+            spelling: fixed_pretty_spelling(&fixed.spelling, lowered.grammar.text_equivalence),
             spacing: fixed.pretty_spacing,
         })
     };
-    let separator = separator
-        .map(|separator| {
-            let usage = &source.token_uses[separator.token_use.index()];
-            let definition = &source.token_definitions[usage.definition.index()];
-            let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
-                return Err("an attached Pretty separator is not fixed syntax".to_owned());
-            };
-            Ok(fixed_pretty_spelling(
-                &fixed.spelling,
-                lowered.grammar.text_equivalence,
-            ))
-        })
-        .transpose()?;
+    let separator = authoritative_pretty_separator(lowered, separator)?;
     Ok(PrettyAttachmentBehavior {
         before: attachment
             .before
@@ -3109,6 +3131,7 @@ fn plan_elements(
                             &fixed.spelling,
                             lowered.grammar.text_equivalence,
                         ),
+                        spacing: fixed.pretty_spacing,
                     },
                 })
             }
@@ -5126,6 +5149,8 @@ fn render_token(
             }
         });
     let pretty_impl = plan.pretty.tokens[index].map(|behavior| {
+        let max_width = plan.pretty_max_width;
+        let indent = plan.pretty_indent;
         let value = match behavior {
             PrettyTokenBehavior::MatchedOrStoredText => quote! {
                 let matched = context.matched_text();
@@ -5138,6 +5163,7 @@ fn render_token(
                     &self,
                     context: &mut #facade::PrettyContext,
                 ) -> ::core::fmt::Result {
+                    context.configure_defaults(#max_width, #indent);
                     #value
                 }
             }
@@ -6093,6 +6119,199 @@ fn render_node_visit(
     }
 }
 
+fn render_pratt_node_pretty(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    node_index: usize,
+    pratt: &PrattParsePlan,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let node_ident = &node.ident;
+    let max_width = plan.pretty_max_width;
+    let indent = plan.pretty_indent;
+    let behavior = plan.pretty.nodes[node_index]
+        .as_ref()
+        .expect("validated Pretty Pratt behavior");
+    let (impl_generics, type_generics, where_clause) =
+        trait_impl_parts(facade, node, quote!(#facade::Pretty));
+    let variants = trait_variants(&node.body);
+    let arms = variants
+        .iter()
+        .zip(&behavior.variants)
+        .map(|(variant, behavior)| {
+            let position = pratt
+                .nud
+                .iter()
+                .find(|branch| branch.variant.ident == variant.ident)
+                .map(|branch| branch.position)
+                .or_else(|| {
+                    pratt
+                        .led
+                        .iter()
+                        .find(|branch| branch.variant.ident == variant.ident)
+                        .map(|branch| branch.position)
+                })
+                .expect("every Pratt variant has a frozen position");
+            let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty_pratt");
+            let mut binding_index = 0_usize;
+            let mut semantic_index = 0_usize;
+            let rendered = variant
+            .elements
+            .iter()
+            .zip(behavior)
+            .enumerate()
+            .map(|(index, (element, behavior))| match (&element.kind, behavior) {
+                (
+                    ElementParseKind::Fixed { .. },
+                    PrettyElementBehavior::Fixed { spelling, spacing },
+                ) => {
+                    let infix = matches!(position, PrattPosition::Infix { .. });
+                    let prefix = matches!(position, PrattPosition::Prefix { .. });
+                    let fixed = render_pretty_fixed(plan, index, spelling, *spacing);
+                    if infix && *spacing == PrettySpacing::Auto {
+                        quote! {
+                            context.soft_break(" ")?;
+                            #fixed
+                            context.soft_break(" ")?;
+                        }
+                    } else if prefix && *spacing == PrettySpacing::Auto {
+                        let fallback = if plan.text_equivalence
+                            == TextEquivalence::AsciiInsensitive
+                            && is_word_shaped(spelling)
+                        {
+                            spelling.to_ascii_uppercase()
+                        } else {
+                            spelling.clone()
+                        };
+                        quote! {
+                            context.with_child(#index, |context| {
+                                let matched = context.matched_text();
+                                context.opening_token(matched.as_deref().unwrap_or(#fallback))
+                            })?;
+                        }
+                    } else {
+                        fixed
+                    }
+                }
+                (
+                    ElementParseKind::Semantic {
+                        terminal,
+                        wrappers,
+                        container,
+                        ..
+                    },
+                    PrettyElementBehavior::Semantic { attachment, .. },
+                ) => {
+                    assert!(
+                        matches!(container.as_ref(), PlannedContainer::Direct { .. })
+                            && wrappers
+                                .iter()
+                                .all(|wrapper| matches!(wrapper, FieldWrapper::Boxed)),
+                        "validated Pratt operands are direct and may only use Box storage wrappers",
+                    );
+                    let binding = &bindings[binding_index];
+                    binding_index += 1;
+                    let current_semantic = semantic_index;
+                    semantic_index += 1;
+                    let recursive =
+                        terminal_path_ident(terminal).is_some_and(|ident| ident == node_ident);
+                    let semantic = if recursive {
+                        let (minimum, next) = match position {
+                            PrattPosition::Atom => (quote!(0u16), quote!(None)),
+                            PrattPosition::Prefix { bp } => {
+                                (quote!(#bp as u16), quote!(__recursa_inner_next))
+                            }
+                            PrattPosition::Postfix { bp } => {
+                                (quote!(__recursa_inner_min), quote!(Some(#bp as u16)))
+                            }
+                            PrattPosition::Infix { lbp, .. } if current_semantic == 0 => {
+                                (quote!(__recursa_inner_min), quote!(Some(#lbp as u16)))
+                            }
+                            PrattPosition::Infix { rbp, .. } => {
+                                (quote!(#rbp as u16), quote!(__recursa_inner_next))
+                            }
+                        };
+                        quote!((#binding).__recursa_pretty_pratt(context, #minimum, #next))
+                    } else {
+                        quote!(#facade::Pretty::pretty(#binding, context))
+                    };
+                    if let Some(attachment) = attachment {
+                        let unit = render_pretty_attachment_unit(attachment, semantic);
+                        quote! {
+                            context.with_child(#index, |context| {
+                                context.with_child(0, |context| { #unit Ok(()) })
+                            })?;
+                        }
+                    } else {
+                        quote! {
+                            context.with_child(#index, |context| {
+                                context.with_child(0, |context| { #semantic })
+                            })?;
+                        }
+                    }
+                }
+                (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Semantic { .. })
+                | (ElementParseKind::Semantic { .. }, PrettyElementBehavior::Fixed { .. }) => {
+                    unreachable!("validated Pretty Pratt element behavior")
+                }
+            })
+            .collect::<Vec<_>>();
+            let rendered = render_pretty_sequence(behavior, &rendered);
+            let (entry, exit) = match position {
+                PrattPosition::Atom => (None, 256_u16),
+                PrattPosition::Prefix { bp } => (None, u16::from(bp)),
+                PrattPosition::Infix { lbp, rbp } => (Some(u16::from(lbp)), u16::from(rbp)),
+                PrattPosition::Postfix { bp } => (Some(u16::from(bp)), 256_u16),
+            };
+            let entry_check = entry.map_or_else(|| quote!(false), |entry| quote!(#entry < min_bp));
+            quote! {
+                #pattern => {
+                    let __recursa_parenthesize = #entry_check
+                        || next_lbp.is_some_and(|next| next >= #exit);
+                    if __recursa_parenthesize {
+                        context.opening_token("(")?;
+                    }
+                    let __recursa_inner_min = if __recursa_parenthesize { 0 } else { min_bp };
+                    let __recursa_inner_next = if __recursa_parenthesize { None } else { next_lbp };
+                    #rendered
+                    if __recursa_parenthesize {
+                        context.tight_token(")")?;
+                    }
+                    Ok(())
+                }
+            }
+        });
+    quote! {
+        impl #impl_generics #node_ident #type_generics #where_clause {
+            fn __recursa_pretty_pratt(
+                &self,
+                context: &mut #facade::PrettyContext,
+                min_bp: u16,
+                next_lbp: Option<u16>,
+            ) -> ::core::fmt::Result {
+                match self { #(#arms),* }
+            }
+        }
+
+        impl #impl_generics #facade::Pretty for #node_ident #type_generics #where_clause {
+            fn pretty(
+                &self,
+                context: &mut #facade::PrettyContext,
+            ) -> ::core::fmt::Result {
+                context.configure_defaults(#max_width, #indent);
+                context.group(|context| self.__recursa_pretty_pratt(context, 0, None))
+            }
+        }
+    }
+}
+
+fn terminal_path_ident(terminal: &Type) -> Option<&Ident> {
+    let Type::Path(path) = terminal else {
+        return None;
+    };
+    path.path.segments.last().map(|segment| &segment.ident)
+}
+
 fn render_node_pretty(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -6100,25 +6319,26 @@ fn render_node_pretty(
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let node_ident = &node.ident;
+    let max_width = plan.pretty_max_width;
+    let indent = plan.pretty_indent;
     let behavior = plan.pretty.nodes[node_index]
         .as_ref()
         .expect("validated Pretty Node behavior");
     let (impl_generics, type_generics, where_clause) =
         trait_impl_parts(facade, node, quote!(#facade::Pretty));
-    let elements =
-        |elements: &[ElementParsePlan],
-         behavior: &[PrettyElementBehavior],
-         base: proc_macro2::TokenStream| {
-            let rendered = elements.iter().zip(behavior).enumerate().map(
+    let elements = |elements: &[ElementParsePlan],
+                    behavior: &[PrettyElementBehavior],
+                    base: proc_macro2::TokenStream| {
+        let rendered = elements
+            .iter()
+            .zip(behavior)
+            .enumerate()
+            .map(
                 |(index, (element, behavior))| match (&element.kind, behavior) {
-                    (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Fixed { spelling }) => {
-                        quote! {
-                            context.with_child(#index, |context| {
-                                let matched = context.matched_text();
-                                context.token(matched.as_deref().unwrap_or(#spelling))
-                            })?;
-                        }
-                    }
+                    (
+                        ElementParseKind::Fixed { .. },
+                        PrettyElementBehavior::Fixed { spelling, spacing },
+                    ) => render_pretty_fixed(plan, index, spelling, *spacing),
                     (
                         ElementParseKind::Semantic {
                             field,
@@ -6128,27 +6348,35 @@ fn render_node_pretty(
                         },
                         PrettyElementBehavior::Semantic {
                             repeated,
+                            separator,
                             attachment,
                         },
                     ) => {
                         let value = field_access(base.clone(), field.ident.as_ref(), field.index);
                         if let Some(attachment) = attachment {
                             return render_pretty_attached_semantic(
-                                facade,
-                                index,
-                                value,
-                                false,
-                                wrappers,
-                                container,
-                                attachment,
+                                facade, index, value, false, wrappers, container, attachment,
                             );
                         }
                         if *repeated {
-                            quote! {
-                                context.with_child(#index, |context| {
-                                    #facade::Pretty::pretty(&#value, context)
-                                })?;
-                            }
+                            separator.as_ref().map_or_else(
+                                || {
+                                    quote! {
+                                        context.with_child(#index, |context| {
+                                            #facade::Pretty::pretty(&#value, context)
+                                        })?;
+                                    }
+                                },
+                                |separator| {
+                                    quote! {
+                                        context.with_child(#index, |context| {
+                                            context.with_repetition(#separator, false, |context| {
+                                                #facade::Pretty::pretty(&#value, context)
+                                            })
+                                        })?;
+                                    }
+                                },
+                            )
                         } else {
                             quote! {
                                 context.with_child(#index, |context| {
@@ -6164,9 +6392,10 @@ fn render_node_pretty(
                         unreachable!("validated Pretty element behavior")
                     }
                 },
-            );
-            quote!(#(#rendered)*)
-        };
+            )
+            .collect::<Vec<_>>();
+        render_pretty_sequence(behavior, &rendered)
+    };
     let body = match &node.body {
         NodeBodyPlan::Struct {
             elements: fields, ..
@@ -6174,7 +6403,10 @@ fn render_node_pretty(
             let rendered = elements(fields, &behavior.variants[0], quote!(self));
             quote!({ #rendered Ok(()) })
         }
-        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+        NodeBodyPlan::Pratt(pratt) => {
+            return render_pratt_node_pretty(plan, node, node_index, pratt);
+        }
+        NodeBodyPlan::Enum { .. } => {
             let variants = trait_variants(&node.body);
             let arms = variants
                 .iter()
@@ -6186,15 +6418,8 @@ fn render_node_pretty(
                         |(index, (element, behavior))| match (&element.kind, behavior) {
                             (
                                 ElementParseKind::Fixed { .. },
-                                PrettyElementBehavior::Fixed { spelling },
-                            ) => {
-                                quote! {
-                                    context.with_child(#index, |context| {
-                                        let matched = context.matched_text();
-                                        context.token(matched.as_deref().unwrap_or(#spelling))
-                                    })?;
-                                }
-                            }
+                                PrettyElementBehavior::Fixed { spelling, spacing },
+                            ) => render_pretty_fixed(plan, index, spelling, *spacing),
                             (
                                 ElementParseKind::Semantic {
                                     wrappers,
@@ -6203,6 +6428,7 @@ fn render_node_pretty(
                                 },
                                 PrettyElementBehavior::Semantic {
                                     repeated,
+                                    separator,
                                     attachment,
                                 },
                             ) => {
@@ -6220,11 +6446,20 @@ fn render_node_pretty(
                                     );
                                 }
                                 if *repeated {
-                                    quote! {
-                                        context.with_child(#index, |context| {
-                                            #facade::Pretty::pretty(#binding, context)
-                                        })?;
-                                    }
+                                    separator.as_ref().map_or_else(
+                                        || quote! {
+                                            context.with_child(#index, |context| {
+                                                #facade::Pretty::pretty(#binding, context)
+                                            })?;
+                                        },
+                                        |separator| quote! {
+                                            context.with_child(#index, |context| {
+                                                context.with_repetition(#separator, false, |context| {
+                                                    #facade::Pretty::pretty(#binding, context)
+                                                })
+                                            })?;
+                                        },
+                                    )
                                 } else {
                                     quote! {
                                         context.with_child(#index, |context| {
@@ -6244,8 +6479,9 @@ fn render_node_pretty(
                                 PrettyElementBehavior::Fixed { .. },
                             ) => unreachable!("validated Pretty element behavior"),
                         },
-                    );
-                    quote!(#pattern => { #(#rendered)* Ok(()) })
+                    ).collect::<Vec<_>>();
+                    let rendered = render_pretty_sequence(behavior, &rendered);
+                    quote!(#pattern => { #rendered Ok(()) })
                 });
             quote!(match self { #(#arms),* })
         }
@@ -6256,9 +6492,74 @@ fn render_node_pretty(
                 &self,
                 context: &mut #facade::PrettyContext,
             ) -> ::core::fmt::Result {
-                #body
+                context.configure_defaults(#max_width, #indent);
+                context.group(|context| { #body })
             }
         }
+    }
+}
+
+fn render_pretty_fixed(
+    plan: &EmissionPlan,
+    index: usize,
+    spelling: &str,
+    spacing: PrettySpacing,
+) -> proc_macro2::TokenStream {
+    let method = match spacing {
+        PrettySpacing::Tight => format_ident!("tight_sequence_token"),
+        PrettySpacing::Before => format_ident!("before_token"),
+        PrettySpacing::After => format_ident!("after_token"),
+        PrettySpacing::Around => format_ident!("token"),
+        PrettySpacing::Auto if matches!(spelling, "(" | "[" | "{") => {
+            format_ident!("opening_token")
+        }
+        PrettySpacing::Auto if is_word_shaped(spelling) => format_ident!("token"),
+        PrettySpacing::Auto => format_ident!("tight_token"),
+    };
+    let fallback =
+        if plan.text_equivalence == TextEquivalence::AsciiInsensitive && is_word_shaped(spelling) {
+            spelling.to_ascii_uppercase()
+        } else {
+            spelling.to_owned()
+        };
+    quote! {
+        context.with_child(#index, |context| {
+            let matched = context.matched_text();
+            context.#method(matched.as_deref().unwrap_or(#fallback))
+        })?;
+    }
+}
+
+fn render_pretty_sequence(
+    behavior: &[PrettyElementBehavior],
+    rendered: &[proc_macro2::TokenStream],
+) -> proc_macro2::TokenStream {
+    let delimiter = behavior.first().and_then(|first| {
+        let PrettyElementBehavior::Fixed { spelling, .. } = first else {
+            return None;
+        };
+        delimiter_close(spelling).filter(|close| {
+            behavior.last().is_some_and(|last| {
+                matches!(last, PrettyElementBehavior::Fixed { spelling, .. } if spelling == close)
+            })
+        })
+    });
+    if delimiter.is_some() && rendered.len() >= 2 {
+        let open = &rendered[0];
+        let middle = &rendered[1..rendered.len() - 1];
+        let close = &rendered[rendered.len() - 1];
+        quote! {
+            #open
+            context.indented(|context| {
+                context.soft_break("")?;
+                #(#middle)*
+                Ok(())
+            })?;
+            context.soft_break("")?;
+            #close
+        }
+    } else {
+        quote!(#(#rendered)*)
     }
 }
 
@@ -6286,6 +6587,60 @@ fn render_pretty_attached_fixed(
     }
 }
 
+fn render_pretty_attachment_unit(
+    attachment: &PrettyAttachmentBehavior,
+    semantic_body: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let before = attachment
+        .before
+        .iter()
+        .enumerate()
+        .map(|(index, fixed)| render_pretty_attached_fixed(index, fixed))
+        .collect::<Vec<_>>();
+    let semantic_index = before.len();
+    let semantic = quote! {
+        context.with_child(#semantic_index, |context| { #semantic_body })?;
+    };
+    let after = attachment
+        .after
+        .iter()
+        .enumerate()
+        .map(|(index, fixed)| render_pretty_attached_fixed(semantic_index + 1 + index, fixed))
+        .collect::<Vec<_>>();
+    let delimited = attachment
+        .before
+        .first()
+        .and_then(|open| delimiter_close(&open.spelling))
+        .is_some_and(|close| {
+            attachment
+                .after
+                .last()
+                .is_some_and(|fixed| fixed.spelling == close)
+        });
+    if delimited {
+        let open = &before[0];
+        let leading = &before[1..];
+        let close = after
+            .last()
+            .expect("delimited attachment has a close token");
+        let trailing = &after[..after.len() - 1];
+        quote! {
+            #open
+            context.indented(|context| {
+                context.soft_break("")?;
+                #(#leading)*
+                #semantic
+                #(#trailing)*
+                Ok(())
+            })?;
+            context.soft_break("")?;
+            #close
+        }
+    } else {
+        quote!(#(#before)* #semantic #(#after)*)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_pretty_attached_semantic(
     facade: &Ident,
@@ -6297,58 +6652,10 @@ fn render_pretty_attached_semantic(
     attachment: &PrettyAttachmentBehavior,
 ) -> proc_macro2::TokenStream {
     let render_unit = |terminal: proc_macro2::TokenStream| {
-        let before = attachment
-            .before
-            .iter()
-            .enumerate()
-            .map(|(index, fixed)| render_pretty_attached_fixed(index, fixed))
-            .collect::<Vec<_>>();
-        let semantic_index = before.len();
-        let semantic = quote! {
-            context.with_child(#semantic_index, |context| {
-                #facade::Pretty::pretty(#terminal, context)
-            })?;
-        };
-        let after = attachment
-            .after
-            .iter()
-            .enumerate()
-            .map(|(index, fixed)| {
-                render_pretty_attached_fixed(semantic_index + 1 + index, fixed)
-            })
-            .collect::<Vec<_>>();
-        let delimited = attachment
-            .before
-            .first()
-            .and_then(|open| delimiter_close(&open.spelling))
-            .is_some_and(|close| {
-                attachment
-                    .after
-                    .last()
-                    .is_some_and(|fixed| fixed.spelling == close)
-            });
-        if delimited {
-            let open = &before[0];
-            let leading = &before[1..];
-            let close = after
-                .last()
-                .expect("delimited attachment has a close token");
-            let trailing = &after[..after.len() - 1];
-            quote! {
-                #open
-                context.indented(|context| {
-                    context.soft_break("")?;
-                    #(#leading)*
-                    #semantic
-                    #(#trailing)*
-                    Ok(())
-                })?;
-                context.soft_break("")?;
-                #close
-            }
-        } else {
-            quote!(#(#before)* #semantic #(#after)*)
-        }
+        render_pretty_attachment_unit(
+            attachment,
+            quote!(#facade::Pretty::pretty(#terminal, context)),
+        )
     };
 
     if matches!(container, PlannedContainer::Repeated { .. }) {
@@ -9119,10 +9426,32 @@ struct B;
             .next()
             .expect("the trait fixture contains Pretty behavior");
         match element {
-            PrettyElementBehavior::Fixed { spelling } => spelling.push_str("-corrupt"),
+            PrettyElementBehavior::Fixed { spelling, .. } => spelling.push_str("-corrupt"),
             PrettyElementBehavior::Semantic { repeated, .. } => *repeated = !*repeated,
         }
         assert_plan_family_is_unselectable(package.path(), &pretty, "Pretty");
+
+        let (package, mut attachment) = joined_pratt_fixture();
+        let fixed = attachment
+            .pretty
+            .nodes
+            .iter_mut()
+            .flatten()
+            .flat_map(|node| &mut node.variants)
+            .flat_map(|variant| variant.iter_mut())
+            .find_map(|element| match element {
+                PrettyElementBehavior::Semantic {
+                    attachment: Some(attachment),
+                    ..
+                } => attachment.before.first_mut(),
+                PrettyElementBehavior::Fixed { .. }
+                | PrettyElementBehavior::Semantic {
+                    attachment: None, ..
+                } => None,
+            })
+            .expect("the Pratt fixture contains a fixed attachment");
+        fixed.spelling.push_str("-corrupt");
+        assert_plan_family_is_unselectable(package.path(), &attachment, "Pretty");
 
         #[cfg(feature = "diagrams")]
         {
