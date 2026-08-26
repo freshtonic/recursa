@@ -1,5 +1,62 @@
-use recursa::{HasSpan as _, ParseErrorKind};
+use recursa::{HasSpan as _, ParseErrorKind, Pretty as _};
 use recursa_generated_pratt::grammar;
+use std::hash::{Hash as _, Hasher as _};
+
+struct TraversalCount(usize);
+
+impl<'input> recursa::TotalVisitor<grammar::__RecursaVisitEvents<'input>> for TraversalCount {
+    type Error = ();
+
+    fn total_enter<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEvent<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEvents<'input>: 'visit,
+    {
+        self.0 += 1;
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn total_exit<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEvent<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEvents<'input>: 'visit,
+    {
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+struct TraversalCountMut(usize);
+
+impl<'input> recursa::TotalVisitorMut<grammar::__RecursaVisitEventsMut<'input>>
+    for TraversalCountMut
+{
+    type Error = ();
+
+    fn total_enter_mut<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEventMut<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEventsMut<'input>: 'visit,
+    {
+        self.0 += 1;
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn total_exit_mut<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEventMut<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEventsMut<'input>: 'visit,
+    {
+        std::ops::ControlFlow::Continue(())
+    }
+}
 
 fn expect_error<T>(result: Result<T, recursa::ParseError>) -> recursa::ParseError {
     match result {
@@ -22,6 +79,24 @@ fn parse(source: &str) -> recursa::Parsed<'_, grammar::Expr<'_>> {
 }
 
 fn main() {
+    fn assert_traits<T>()
+    where
+        T: std::fmt::Debug
+            + Clone
+            + PartialEq
+            + Eq
+            + PartialOrd
+            + Ord
+            + std::hash::Hash
+            + recursa::Pretty
+            + recursa::Visit
+            + recursa::VisitMut,
+    {
+    }
+    fn assert_arbitrary<T: for<'arbitrary> recursa::Arbitrary<'arbitrary>>() {}
+    assert_traits::<grammar::Expr<'static>>();
+    assert_arbitrary::<grammar::Expr<'static>>();
+
     let lexed = grammar::lex("alpha + 12");
     assert_eq!(
         lexed.tokens().map(|token| token.text()).collect::<Vec<_>>(),
@@ -29,8 +104,24 @@ fn main() {
     );
 
     let precedence = parse("a + 2 * 3");
+    assert_eq!(precedence.render(), "a + 2 * 3");
+    let mut traversal = TraversalCount(0);
+    assert!(recursa::Visit::visit(&precedence, &mut traversal).is_continue());
+    assert_eq!(traversal.0, 11, "Pratt lhs and rhs both participate");
     assert_eq!(precedence.root().span(), Some(recursa::Span::new(0, 9).unwrap()));
-    match precedence.into_ast() {
+    let mut detached = precedence.into_ast();
+    let cloned = detached.clone();
+    assert_eq!(detached, cloned);
+    assert_eq!(detached.cmp(&cloned), std::cmp::Ordering::Equal);
+    assert!(format!("{detached:?}").starts_with("Add"));
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    detached.hash(&mut hash);
+    assert_ne!(hash.finish(), 0);
+    assert_eq!(recursa::Parsed::synthetic(cloned).render(), "a + 2 * 3");
+    let mut mutations = TraversalCountMut(0);
+    assert!(recursa::VisitMut::visit_mut(&mut detached, &mut mutations).is_continue());
+    assert_eq!(mutations.0, 11, "mutable traversal includes the Pratt lhs");
+    match detached {
         grammar::Expr::Add(lhs, rhs) => {
             match *lhs {
                 grammar::Expr::Name(name) => assert_eq!(name.value.text(), "a"),
@@ -56,6 +147,11 @@ fn main() {
         }
         _ => panic!("addition must bind less tightly than multiplication"),
     }
+
+    assert!(
+        parse("1").into_ast() < parse("1 + 2").into_ast(),
+        "Ord retains authored Pratt variant order"
+    );
 
     let left = parse("1 + 2 + 3").into_ast();
     match left {

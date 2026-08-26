@@ -127,6 +127,7 @@ struct NodeParsePlan {
     module: ModuleId,
     ident: Ident,
     visibility: Visibility,
+    publicly_materialized: bool,
     loader_anchor: String,
     generics: Generics,
     input_lifetime: syn::Lifetime,
@@ -163,12 +164,14 @@ struct PrattParsePlan {
 
 #[derive(Clone, Debug)]
 struct PrattNudParsePlan {
+    source_index: usize,
     variant: VariantParsePlan,
     position: PrattPosition,
 }
 
 #[derive(Clone, Debug)]
 struct PrattLedParsePlan {
+    source_index: usize,
     variant: VariantParsePlan,
     lhs: ElementParsePlan,
     position: PrattPosition,
@@ -305,14 +308,17 @@ struct TokenParsePlan {
     accepted_kind_variants: Vec<Ident>,
     expected: ExpectedSet,
     capture: PlannedCapturePolicy,
+    arbitrary_spelling: String,
     configured_traits: Vec<ConfiguredTraitRecipe>,
 }
 
 #[derive(Clone)]
 struct TokenBindingPlan {
     module: ModuleId,
+    semantic_key: String,
     ident: Ident,
     visibility: Visibility,
+    publicly_materialized: bool,
     token: usize,
 }
 
@@ -543,6 +549,75 @@ fn fixed_lexical_pattern(spelling: &str, equivalence: TextEquivalence) -> String
         .collect()
 }
 
+fn lexical_pattern_witness(pattern: &str) -> Result<String, String> {
+    use regex_syntax::hir::{Class, Hir, HirKind};
+
+    fn render(hir: &Hir) -> Option<String> {
+        match hir.kind() {
+            HirKind::Empty | HirKind::Look(_) => Some(String::new()),
+            HirKind::Literal(literal) => String::from_utf8(literal.0.to_vec()).ok(),
+            HirKind::Class(Class::Unicode(class)) => {
+                class.iter().next().map(|range| range.start().to_string())
+            }
+            HirKind::Class(Class::Bytes(class)) => class.iter().find_map(|range| {
+                (range.start()..=range.end())
+                    .find(|byte| byte.is_ascii())
+                    .map(|byte| char::from(byte).to_string())
+            }),
+            HirKind::Repetition(repetition) => {
+                let item = render(&repetition.sub)?;
+                Some(item.repeat(repetition.min.try_into().ok()?))
+            }
+            HirKind::Capture(capture) => render(&capture.sub),
+            HirKind::Concat(parts) => {
+                let rendered = parts.iter().map(render).collect::<Option<Vec<_>>>()?;
+                Some(rendered.concat())
+            }
+            HirKind::Alternation(parts) => parts
+                .iter()
+                .filter_map(render)
+                .min_by_key(|candidate| candidate.len()),
+        }
+    }
+
+    let hir = regex_syntax::Parser::new()
+        .parse(pattern)
+        .map_err(|error| {
+            format!("validated lexical pattern `{pattern}` no longer parses: {error}")
+        })?;
+    let witness = render(&hir)
+        .ok_or_else(|| format!("lexical pattern `{pattern}` has no UTF-8 synthetic witness"))?;
+    if witness.is_empty() {
+        return Err(format!(
+            "nonempty lexical pattern `{pattern}` produced an empty synthetic witness"
+        ));
+    }
+    Ok(witness)
+}
+
+fn publicly_reachable(
+    tree: &crate::discovery::DiscoveredModuleTree,
+    module: ModuleId,
+    visibility: &Visibility,
+) -> bool {
+    if !is_public(visibility) {
+        return false;
+    }
+    let mut current = module;
+    loop {
+        let Some(inclusion) = tree.inclusions.iter().find(|entry| entry.id == current) else {
+            return false;
+        };
+        let Some(parent) = inclusion.parent else {
+            return true;
+        };
+        if !is_public(&inclusion.visibility) {
+            return false;
+        }
+        current = parent;
+    }
+}
+
 impl EmissionPlan {
     fn join(analyzed: &crate::m3::AnalyzedGrammar, cfg: &CargoCfgSnapshot) -> Result<Self, String> {
         let lowered = &analyzed.lowered;
@@ -625,6 +700,17 @@ impl EmissionPlan {
                     .collect(),
                 expected,
                 capture: resolved.build_inputs.spans.into(),
+                arbitrary_spelling: lexical_pattern_witness(
+                    &lowered
+                        .lexical_plan
+                        .content_bases
+                        .iter()
+                        .find(|base| base.kind == target.base_kind)
+                        .ok_or_else(|| {
+                            format!("content token `{}` lacks a lexical base", content.ident)
+                        })?
+                        .pattern,
+                )?,
                 configured_traits: lowered
                     .source_modeled
                     .source_model()
@@ -657,8 +743,30 @@ impl EmissionPlan {
             .map(|binding| {
                 Ok(TokenBindingPlan {
                     module: binding.module,
+                    semantic_key: resolved
+                        .tree
+                        .inclusions
+                        .iter()
+                        .find(|inclusion| inclusion.id == binding.module)
+                        .map(|inclusion| {
+                            inclusion
+                                .logical_path
+                                .iter()
+                                .chain(std::iter::once(&binding.ident))
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("::")
+                        })
+                        .ok_or_else(|| {
+                            format!("token binding `{}` has no selected module", binding.ident)
+                        })?,
                     ident: emitted_ident(&binding.ident)?,
                     visibility: binding.visibility.clone(),
+                    publicly_materialized: publicly_reachable(
+                        &resolved.tree,
+                        binding.module,
+                        &binding.visibility,
+                    ),
                     token: binding.target.index(),
                 })
             })
@@ -1446,6 +1554,11 @@ fn plan_node(
         module: node.module,
         ident: emitted_ident(&node.ident)?,
         visibility: node.visibility.clone(),
+        publicly_materialized: publicly_reachable(
+            &lowered.source_modeled.resolved().tree,
+            node.module,
+            &node.visibility,
+        ),
         loader_anchor,
         generics: node.generics.clone(),
         input_lifetime,
@@ -1502,7 +1615,7 @@ fn plan_pratt_node(
     let mut led = Vec::new();
     let mut nud_by_declaration = Vec::new();
     let mut led_by_declaration = Vec::new();
-    for variant in materialized {
+    for (source_index, variant) in materialized.iter().enumerate() {
         let common = match variant {
             MaterializedPrattVariant::Nud(nud) => &nud.common,
             MaterializedPrattVariant::Led(led) => &led.common,
@@ -1544,6 +1657,7 @@ fn plan_pratt_node(
                 };
                 nud_by_declaration.push((branch.declaration(), nud.len()));
                 nud.push(PrattNudParsePlan {
+                    source_index,
                     variant: VariantParsePlan {
                         ident: emitted_ident(&common.name)?,
                         style: resolved.style,
@@ -1594,6 +1708,7 @@ fn plan_pratt_node(
                 };
                 led_by_declaration.push((branch.declaration(), led.len()));
                 led.push(PrattLedParsePlan {
+                    source_index,
                     variant: VariantParsePlan {
                         ident: emitted_ident(&common.name)?,
                         style: resolved.style,
@@ -2359,6 +2474,10 @@ fn terminal_type(
                     .push(syn::PathSegment::from(emitted_ident(segment)?));
             }
             path.segments.push(syn::PathSegment {
+                ident: format_ident!("__recursa_content_tokens"),
+                arguments: PathArguments::None,
+            });
+            path.segments.push(syn::PathSegment {
                 ident: format_ident!("__RecursaContentToken{}", token.index()),
                 arguments: PathArguments::AngleBracketed(syn::parse_quote!(<#input_lifetime>)),
             });
@@ -2610,6 +2729,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         .iter()
         .enumerate()
         .map(|(index, token)| render_token(plan, token, index));
+    let visit_events = render_visit_events(plan);
     let loader_arms = plan.nodes.iter().enumerate().map(|(index, node)| {
         let ident = &node.ident;
         let anchor = syn::LitStr::new(&node.loader_anchor, proc_macro2::Span::call_site());
@@ -2646,30 +2766,27 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             )
         });
     let mut accepted_capabilities = Vec::new();
-    for diagrams in 0..=1 {
-        for explorer in 0..=1 {
-            for arbitrary in 0..=1 {
-                for serde in 0..=1 {
-                    if (!requested_arbitrary || arbitrary == 1) && (!requested_serde || serde == 1)
-                    {
-                        accepted_capabilities.push(format_ident!(
-                            "cap_core_d{diagrams}_e{explorer}_a{arbitrary}_s{serde}"
-                        ));
-                    }
-                }
+    // This Generation emits only the core payload. Diagram and explorer
+    // Generations extend this exact handshake with their requested bits.
+    for arbitrary in 0..=1 {
+        for serde in 0..=1 {
+            if (!requested_arbitrary || arbitrary == 1) && (!requested_serde || serde == 1) {
+                accepted_capabilities.push(format_ident!("cap_core_d0_e0_a{arbitrary}_s{serde}"));
             }
         }
     }
-    let capability_arms = accepted_capabilities
-        .iter()
-        .map(|capability| quote!((#release, #protocol, #capability) => {};));
+    let capability_arms = accepted_capabilities.iter().map(|capability| {
+        quote! {
+            (#release, #protocol, #capability) => {
+                const _: #facade::__private::FacadeCompatibility<
+                    { #facade::__private::release_stamp(#release_text) },
+                    #PRIVATE_PROTOCOL,
+                > = #facade::__private::FACADE_COMPATIBILITY;
+            };
+        }
+    });
 
     quote! {
-        const _: #facade::__private::FacadeCompatibility<
-            { #facade::__private::release_stamp(#release_text) },
-            #PRIVATE_PROTOCOL,
-        > = #facade::__private::FACADE_COMPATIBILITY;
-
         #[doc(hidden)]
         pub(crate) struct __RecursaGenerationAnchor;
         const _: fn() = || {
@@ -3295,7 +3412,12 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             LexEditor, LexError, LexErrors, LexRecord, LexResult, Token, Tokens, grammar_info, lex,
         };
 
-        #(#token_items)*
+        #[doc(hidden)]
+        pub(crate) mod __recursa_content_tokens {
+            #(#token_items)*
+        }
+
+        #visit_events
 
         macro_rules! __recursa_root_handshake {
             #(#capability_arms)*
@@ -3321,6 +3443,213 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             };
         }
     }
+}
+
+fn is_public(visibility: &Visibility) -> bool {
+    matches!(visibility, Visibility::Public(_))
+}
+
+fn typed_visit_node_variant(plan: &EmissionPlan, node: &NodeParsePlan) -> Option<Ident> {
+    (node.publicly_materialized
+        && node
+            .generics
+            .params
+            .iter()
+            .all(|parameter| matches!(parameter, GenericParam::Lifetime(_))))
+    .then(|| visit_variant_ident(plan, &node.semantic_key))
+}
+
+fn typed_visit_token_binding(plan: &EmissionPlan, token: usize) -> Option<&TokenBindingPlan> {
+    plan.token_bindings
+        .iter()
+        .find(|binding| binding.token == token && binding.publicly_materialized)
+}
+
+fn visit_variant_ident(plan: &EmissionPlan, semantic_key: &str) -> Ident {
+    let anchor = plan
+        .module_anchor
+        .segments
+        .last()
+        .expect("a module anchor is nonempty")
+        .ident
+        .unraw()
+        .to_string();
+    format_ident!("{}", visit_variant_name(&anchor, semantic_key))
+}
+
+fn visit_variant_name(anchor: &str, semantic_key: &str) -> String {
+    let segments = semantic_key.split("::").collect::<Vec<_>>();
+    let anchor_index = segments
+        .iter()
+        .position(|segment| *segment == anchor)
+        .map_or(0, |index| index + 1);
+    let relative = semantic_key
+        .split("::")
+        .skip(anchor_index)
+        .collect::<Vec<_>>()
+        .join("::");
+    if !relative.contains("::") {
+        relative
+    } else {
+        visit_nested_variant(&relative)
+    }
+}
+
+fn visit_nested_variant(relative: &str) -> String {
+    let suffix = relative
+        .split("::")
+        .map(|segment| format!("{}_{}", segment.len(), segment))
+        .collect::<Vec<_>>()
+        .join("_");
+    format!("__RecursaTarget_{suffix}")
+}
+
+fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
+    let visit = plan
+        .nodes
+        .iter()
+        .flat_map(|node| node.configured_traits.iter())
+        .chain(
+            plan.tokens
+                .iter()
+                .flat_map(|token| token.configured_traits.iter()),
+        )
+        .any(|recipe| *recipe == ConfiguredTraitRecipe::Visit);
+    let visit_mut = plan
+        .nodes
+        .iter()
+        .flat_map(|node| node.configured_traits.iter())
+        .chain(
+            plan.tokens
+                .iter()
+                .flat_map(|token| token.configured_traits.iter()),
+        )
+        .any(|recipe| *recipe == ConfiguredTraitRecipe::VisitMut);
+    let node_variants = plan.nodes.iter().filter_map(|node| {
+        let variant = typed_visit_node_variant(plan, node)?;
+        let mut path = syn::parse_str::<syn::Path>(&format!("crate::{}", node.semantic_key))
+            .expect("a resolved semantic key is a Rust path");
+        let lifetimes = node
+            .generics
+            .params
+            .iter()
+            .filter(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
+            .map(|_| quote!('__recursa_input))
+            .collect::<Vec<_>>();
+        if !lifetimes.is_empty() {
+            path.segments
+                .last_mut()
+                .expect("nonempty semantic path")
+                .arguments = PathArguments::AngleBracketed(syn::parse_quote!(<#(#lifetimes),*>));
+        }
+        let ty = quote!(#path);
+        Some(quote!(#variant(&'__recursa_visit #ty),))
+    });
+    let token_variants = plan.tokens.iter().enumerate().filter_map(|(index, token)| {
+        let binding = typed_visit_token_binding(plan, index)?;
+        let variant = visit_variant_ident(plan, &binding.semantic_key);
+        let canonical = &token.ident;
+        Some(quote! {
+            #variant(
+                &'__recursa_visit
+                    #module_anchor::__recursa_content_tokens::#canonical<'__recursa_input>,
+            ),
+        })
+    });
+    let node_variants_mut = plan.nodes.iter().filter_map(|node| {
+        let variant = typed_visit_node_variant(plan, node)?;
+        let mut path = syn::parse_str::<syn::Path>(&format!("crate::{}", node.semantic_key))
+            .expect("a resolved semantic key is a Rust path");
+        let lifetimes = node
+            .generics
+            .params
+            .iter()
+            .filter(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
+            .map(|_| quote!('__recursa_input))
+            .collect::<Vec<_>>();
+        if !lifetimes.is_empty() {
+            path.segments
+                .last_mut()
+                .expect("nonempty semantic path")
+                .arguments = PathArguments::AngleBracketed(syn::parse_quote!(<#(#lifetimes),*>));
+        }
+        let ty = quote!(#path);
+        Some(quote!(#variant(&'__recursa_visit mut #ty),))
+    });
+    let token_variants_mut = plan.tokens.iter().enumerate().filter_map(|(index, token)| {
+        let binding = typed_visit_token_binding(plan, index)?;
+        let variant = visit_variant_ident(plan, &binding.semantic_key);
+        let canonical = &token.ident;
+        Some(quote! {
+            #variant(
+                &'__recursa_visit mut
+                    #module_anchor::__recursa_content_tokens::#canonical<'__recursa_input>,
+            ),
+        })
+    });
+    let visit_event = visit.then(|| {
+        quote! {
+            #[doc(hidden)]
+            pub struct __RecursaVisitEvents<'__recursa_input>(
+                ::core::marker::PhantomData<
+                    fn(&'__recursa_input ()) -> &'__recursa_input (),
+                >,
+            );
+
+            impl<'__recursa_input> #facade::__private::VisitEventFamily
+                for __RecursaVisitEvents<'__recursa_input>
+            {
+                type Event<'__recursa_visit> =
+                    __RecursaVisitEvent<'__recursa_visit, '__recursa_input>
+                where
+                    Self: '__recursa_visit;
+            }
+
+            #[doc(hidden)]
+            #[allow(non_camel_case_types, private_interfaces)]
+            pub enum __RecursaVisitEvent<'__recursa_visit, '__recursa_input>
+            where
+                '__recursa_input: '__recursa_visit,
+            {
+                #(#node_variants)*
+                #(#token_variants)*
+                Opaque(&'__recursa_visit dyn #facade::__private::VisitNode),
+            }
+        }
+    });
+    let visit_mut_event = visit_mut.then(|| {
+        quote! {
+            #[doc(hidden)]
+            pub struct __RecursaVisitEventsMut<'__recursa_input>(
+                ::core::marker::PhantomData<
+                    fn(&'__recursa_input ()) -> &'__recursa_input (),
+                >,
+            );
+
+            impl<'__recursa_input> #facade::__private::VisitEventFamilyMut
+                for __RecursaVisitEventsMut<'__recursa_input>
+            {
+                type EventMut<'__recursa_visit> =
+                    __RecursaVisitEventMut<'__recursa_visit, '__recursa_input>
+                where
+                    Self: '__recursa_visit;
+            }
+
+            #[doc(hidden)]
+            #[allow(non_camel_case_types, private_interfaces)]
+            pub enum __RecursaVisitEventMut<'__recursa_visit, '__recursa_input>
+            where
+                '__recursa_input: '__recursa_visit,
+            {
+                #(#node_variants_mut)*
+                #(#token_variants_mut)*
+                Opaque(&'__recursa_visit mut dyn #facade::__private::VisitNode),
+            }
+        }
+    });
+    quote!(#visit_event #visit_mut_event)
 }
 
 fn render_token(
@@ -3400,22 +3729,43 @@ fn render_token(
         .collect::<Vec<_>>();
     let standard_derive =
         (!standard_derives.is_empty()).then(|| quote!(#[derive(#(#standard_derives),*)]));
+    let visit_event = quote!(#module_anchor::__RecursaVisitEvent);
+    let visit_event_mut = quote!(#module_anchor::__RecursaVisitEventMut);
+    let visit_events = quote!(#module_anchor::__RecursaVisitEvents);
+    let visit_events_mut = quote!(#module_anchor::__RecursaVisitEventsMut);
+    let visit_variant = typed_visit_token_binding(plan, index)
+        .map(|binding| visit_variant_ident(plan, &binding.semantic_key));
+    let enter_event = visit_variant.as_ref().map_or_else(
+        || quote!(#visit_event::Opaque(self)),
+        |variant| quote!(#visit_event::#variant(self)),
+    );
+    let exit_event = enter_event.clone();
+    let enter_event_mut = visit_variant.as_ref().map_or_else(
+        || quote!(#visit_event_mut::Opaque(self)),
+        |variant| quote!(#visit_event_mut::#variant(self)),
+    );
+    let exit_event_mut = enter_event_mut.clone();
     let visit_impl = token
         .configured_traits
         .contains(&ConfiguredTraitRecipe::Visit)
         .then(|| {
             quote! {
                 impl<'input> #facade::Visit for #ident<'input> {
-                    fn visit<V: #facade::TotalVisitor>(
+                    type Events = #visit_events<'input>;
+
+                    fn visit<V>(
                         &self,
                         visitor: &mut V,
-                    ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>> {
-                        match visitor.total_enter(self) {
+                    ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                    where
+                        V: #facade::TotalVisitor<Self::Events>,
+                    {
+                        match visitor.total_enter(#enter_event) {
                             ::core::ops::ControlFlow::Continue(())
                             | ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
                             other => return other,
                         }
-                        visitor.total_exit(self)
+                        visitor.total_exit(#exit_event)
                     }
                 }
             }
@@ -3426,16 +3776,21 @@ fn render_token(
         .then(|| {
             quote! {
                 impl<'input> #facade::VisitMut for #ident<'input> {
-                    fn visit_mut<V: #facade::TotalVisitorMut>(
+                    type EventsMut = #visit_events_mut<'input>;
+
+                    fn visit_mut<V>(
                         &mut self,
                         visitor: &mut V,
-                    ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>> {
-                        match visitor.total_enter_mut(self) {
+                    ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                    where
+                        V: #facade::TotalVisitorMut<Self::EventsMut>,
+                    {
+                        match visitor.total_enter_mut(#enter_event_mut) {
                             ::core::ops::ControlFlow::Continue(())
                             | ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
                             other => return other,
                         }
-                        visitor.total_exit_mut(self)
+                        visitor.total_exit_mut(#exit_event_mut)
                     }
                 }
             }
@@ -3450,7 +3805,8 @@ fn render_token(
                         &self,
                         context: &mut #facade::PrettyContext,
                     ) -> ::core::fmt::Result {
-                        context.token(self.text())
+                        let matched = context.matched_text();
+                        context.token(matched.as_deref().unwrap_or_else(|| self.text()))
                     }
                 }
 
@@ -3459,11 +3815,9 @@ fn render_token(
                         &self,
                         context: &mut #facade::PrettyContext,
                     ) -> ::core::fmt::Result {
-                        if let Some(text) = self.cursor.text() {
-                            context.exact(text)
-                        } else {
+                        context.with_cursor(self.cursor, |context| {
                             #facade::Pretty::pretty(self.value, context)
-                        }
+                        })
                     }
                 }
             }
@@ -3472,6 +3826,7 @@ fn render_token(
         .configured_traits
         .contains(&ConfiguredTraitRecipe::Arbitrary)
         .then(|| {
+            let spelling = &token.arbitrary_spelling;
             quote! {
                 __recursa_if_arbitrary! {
                 impl<'arbitrary, 'input> #facade::__private::arbitrary::Arbitrary<'arbitrary>
@@ -3480,8 +3835,8 @@ fn render_token(
                     fn arbitrary(
                         input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
                     ) -> #facade::__private::arbitrary::Result<Self> {
-                        let text = <String as #facade::__private::arbitrary::Arbitrary>::arbitrary(input)?;
-                        Ok(Self::new(text))
+                        let _ = input;
+                        Ok(Self::new(#spelling))
                     }
                 }
                 }
@@ -3620,9 +3975,10 @@ fn render_token_binding(
     let canonical = &plan.tokens[binding.token].ident;
     let canonical_view = sibling_ident(canonical, "View");
     quote! {
-        #visibility type #ident<'input> = #module_anchor::#canonical<'input>;
+        #visibility type #ident<'input> =
+            #module_anchor::__recursa_content_tokens::#canonical<'input>;
         #visibility type #view<'view, 'input> =
-            #module_anchor::#canonical_view<'view, 'input>;
+            #module_anchor::__recursa_content_tokens::#canonical_view<'view, 'input>;
     }
 }
 
@@ -3716,11 +4072,9 @@ fn render_node(
                         &self,
                         context: &mut #facade::PrettyContext,
                     ) -> ::core::fmt::Result {
-                        if let Some(text) = self.cursor.text() {
-                            context.exact(text)
-                        } else {
+                        context.with_cursor(self.cursor, |context| {
                             #facade::Pretty::pretty(self.value, context)
-                        }
+                        })
                     }
                 }
             }
@@ -3999,6 +4353,27 @@ fn semantic_fields(elements: &[ElementParsePlan]) -> Vec<&FieldPlan> {
         .collect()
 }
 
+fn trait_variants(body: &NodeBodyPlan) -> Vec<VariantParsePlan> {
+    match body {
+        NodeBodyPlan::Enum { variants, .. } => variants.clone(),
+        NodeBodyPlan::Pratt(pratt) => {
+            let mut variants = pratt
+                .nud
+                .iter()
+                .map(|branch| (branch.source_index, branch.variant.clone()))
+                .chain(pratt.led.iter().map(|branch| {
+                    let mut variant = branch.variant.clone();
+                    variant.elements.insert(0, branch.lhs.clone());
+                    (branch.source_index, variant)
+                }))
+                .collect::<Vec<_>>();
+            variants.sort_by_key(|(source_index, _)| *source_index);
+            variants.into_iter().map(|(_, variant)| variant).collect()
+        }
+        NodeBodyPlan::Struct { .. } => unreachable!("struct Nodes do not have variants"),
+    }
+}
+
 fn render_debug_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
     let node_name = node.ident.unraw().to_string();
     match &node.body {
@@ -4032,7 +4407,8 @@ fn render_debug_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
                 ResolvedFieldStyle::Unit => quote!(formatter.write_str(#node_name)),
             }
         }
-        NodeBodyPlan::Enum { variants, .. } => {
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+            let variants = trait_variants(&node.body);
             let arms = variants.iter().map(|variant| {
                 let name = variant.ident.unraw().to_string();
                 let fields = semantic_fields(&variant.elements);
@@ -4113,7 +4489,8 @@ fn render_clone_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
                 ResolvedFieldStyle::Unit => quote!(Self),
             }
         }
-        NodeBodyPlan::Enum { variants, .. } => {
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+            let variants = trait_variants(&node.body);
             let arms = variants.iter().map(|variant| {
                 let fields = semantic_fields(&variant.elements);
                 let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "clone");
@@ -4149,7 +4526,8 @@ fn render_partial_eq_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
             });
             quote!(true #(&& #comparisons)*)
         }
-        NodeBodyPlan::Enum { variants, .. } => {
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+            let variants = trait_variants(&node.body);
             let arms = variants.iter().map(|variant| {
                 let (left_pattern, left) = variant_bound_pattern(&node.ident, variant, "eq_left");
                 let (right_pattern, right) =
@@ -4210,7 +4588,8 @@ fn render_order_body(node: &NodeParsePlan, partial: bool) -> proc_macro2::TokenS
                 .collect();
             compare_fields(left, right)
         }
-        NodeBodyPlan::Enum { variants, .. } => {
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+            let variants = trait_variants(&node.body);
             let same_variant = variants.iter().map(|variant| {
                 let (left_pattern, left) = variant_bound_pattern(&node.ident, variant, "ord_left");
                 let (right_pattern, right) =
@@ -4255,7 +4634,8 @@ fn render_hash_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
             });
             quote!(#(#hashes)*)
         }
-        NodeBodyPlan::Enum { variants, .. } => {
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+            let variants = trait_variants(&node.body);
             let arms = variants.iter().enumerate().map(|(index, variant)| {
                 let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "hash");
                 let hashes = bindings
@@ -4274,12 +4654,28 @@ fn render_node_visit(
     mutable: bool,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
     let node_ident = &node.ident;
     let mut generics = node.generics.clone();
-    let bound = if mutable {
-        quote!(#facade::VisitMut)
+    let event_input = if node
+        .generics
+        .params
+        .iter()
+        .any(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
+    {
+        let input_lifetime = &node.input_lifetime;
+        quote!(#input_lifetime)
     } else {
-        quote!(#facade::Visit)
+        quote!('static)
+    };
+    let bound = if mutable {
+        quote!(#facade::VisitMut<
+            EventsMut = #module_anchor::__RecursaVisitEventsMut<#event_input>
+        >)
+    } else {
+        quote!(#facade::Visit<
+            Events = #module_anchor::__RecursaVisitEvents<#event_input>
+        >)
     };
     for field_type in semantic_field_types(facade, node) {
         generics
@@ -4289,35 +4685,60 @@ fn render_node_visit(
     }
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
     let children = render_visit_children(facade, node, mutable);
+    let variant = typed_visit_node_variant(plan, node);
     if mutable {
+        let event = quote!(#module_anchor::__RecursaVisitEventMut);
+        let events = quote!(#module_anchor::__RecursaVisitEventsMut);
+        let enter = variant.as_ref().map_or_else(
+            || quote!(#event::Opaque(self)),
+            |variant| quote!(#event::#variant(self)),
+        );
+        let exit = enter.clone();
         quote! {
             impl #impl_generics #facade::VisitMut for #node_ident #type_generics #where_clause {
-                fn visit_mut<V: #facade::TotalVisitorMut>(
+                type EventsMut = #events<#event_input>;
+
+                fn visit_mut<V>(
                     &mut self,
                     visitor: &mut V,
-                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>> {
-                    match visitor.total_enter_mut(self) {
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                where
+                    V: #facade::TotalVisitorMut<Self::EventsMut>,
+                {
+                    match visitor.total_enter_mut(#enter) {
                         ::core::ops::ControlFlow::Continue(()) => { #children }
                         ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
                         other => return other,
                     }
-                    visitor.total_exit_mut(self)
+                    visitor.total_exit_mut(#exit)
                 }
             }
         }
     } else {
+        let event = quote!(#module_anchor::__RecursaVisitEvent);
+        let events = quote!(#module_anchor::__RecursaVisitEvents);
+        let enter = variant.as_ref().map_or_else(
+            || quote!(#event::Opaque(self)),
+            |variant| quote!(#event::#variant(self)),
+        );
+        let exit = enter.clone();
         quote! {
             impl #impl_generics #facade::Visit for #node_ident #type_generics #where_clause {
-                fn visit<V: #facade::TotalVisitor>(
+                type Events = #events<#event_input>;
+
+                fn visit<V>(
                     &self,
                     visitor: &mut V,
-                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>> {
-                    match visitor.total_enter(self) {
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                where
+                    V: #facade::TotalVisitor<Self::Events>,
+                {
+                    match visitor.total_enter(#enter) {
                         ::core::ops::ControlFlow::Continue(()) => { #children }
                         ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
                         other => return other,
                     }
-                    visitor.total_exit(self)
+                    visitor.total_exit(#exit)
                 }
             }
         }
@@ -4330,16 +4751,40 @@ fn render_node_pretty(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2:
     let (impl_generics, type_generics, where_clause) =
         trait_impl_parts(facade, node, quote!(#facade::Pretty));
     let elements = |elements: &[ElementParsePlan], base: proc_macro2::TokenStream| {
-        let rendered = elements.iter().map(|element| match &element.kind {
-            ElementParseKind::Fixed { spelling, .. } => {
-                let text = spelling;
-                quote!(context.token(#text)?;)
-            }
-            ElementParseKind::Semantic { field, .. } => {
-                let value = field_access(base.clone(), field.ident.as_ref(), field.index);
-                quote!(#facade::Pretty::pretty(&#value, context)?;)
-            }
-        });
+        let rendered = elements
+            .iter()
+            .enumerate()
+            .map(|(index, element)| match &element.kind {
+                ElementParseKind::Fixed { spelling, .. } => {
+                    let text = spelling;
+                    quote! {
+                        context.with_child(#index, |context| {
+                            let matched = context.matched_text();
+                            context.token(matched.as_deref().unwrap_or(#text))
+                        })?;
+                    }
+                }
+                ElementParseKind::Semantic {
+                    field, container, ..
+                } => {
+                    let value = field_access(base.clone(), field.ident.as_ref(), field.index);
+                    if matches!(container.as_ref(), PlannedContainer::Repeated { .. }) {
+                        quote! {
+                            context.with_child(#index, |context| {
+                                #facade::Pretty::pretty(&#value, context)
+                            })?;
+                        }
+                    } else {
+                        quote! {
+                            context.with_child(#index, |context| {
+                                context.with_child(0, |context| {
+                                    #facade::Pretty::pretty(&#value, context)
+                                })
+                            })?;
+                        }
+                    }
+                }
+            });
         quote!(#(#rendered)*)
     };
     let body = match &node.body {
@@ -4349,19 +4794,41 @@ fn render_node_pretty(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2:
             let rendered = elements(fields, quote!(self));
             quote!({ #rendered Ok(()) })
         }
-        NodeBodyPlan::Enum { variants, .. } => {
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+            let variants = trait_variants(&node.body);
             let arms = variants.iter().map(|variant| {
                 let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty");
                 let mut binding_index = 0;
-                let rendered = variant.elements.iter().map(|element| match &element.kind {
-                    ElementParseKind::Fixed { spelling, .. } => {
-                        let text = spelling;
-                        quote!(context.token(#text)?;)
-                    }
-                    ElementParseKind::Semantic { .. } => {
-                        let binding = &bindings[binding_index];
-                        binding_index += 1;
-                        quote!(#facade::Pretty::pretty(#binding, context)?;)
+                let rendered = variant.elements.iter().enumerate().map(|(index, element)| {
+                    match &element.kind {
+                        ElementParseKind::Fixed { spelling, .. } => {
+                            let text = spelling;
+                            quote! {
+                                context.with_child(#index, |context| {
+                                    let matched = context.matched_text();
+                                    context.token(matched.as_deref().unwrap_or(#text))
+                                })?;
+                            }
+                        }
+                        ElementParseKind::Semantic { container, .. } => {
+                            let binding = &bindings[binding_index];
+                            binding_index += 1;
+                            if matches!(container.as_ref(), PlannedContainer::Repeated { .. }) {
+                                quote! {
+                                    context.with_child(#index, |context| {
+                                        #facade::Pretty::pretty(#binding, context)
+                                    })?;
+                                }
+                            } else {
+                                quote! {
+                                    context.with_child(#index, |context| {
+                                        context.with_child(0, |context| {
+                                            #facade::Pretty::pretty(#binding, context)
+                                        })
+                                    })?;
+                                }
+                            }
+                        }
                     }
                 });
                 quote!(#pattern => { #(#rendered)* Ok(()) })
@@ -4413,7 +4880,8 @@ fn render_node_arbitrary(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macr
                 ResolvedFieldStyle::Unit => quote!(Self),
             }
         }
-        NodeBodyPlan::Enum { variants, .. } => {
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+            let variants = trait_variants(&node.body);
             let arms = variants.iter().enumerate().map(|(index, variant)| {
                 let fields = semantic_fields(&variant.elements);
                 let values = fields.iter().map(|_| arbitrary_value());
@@ -4507,7 +4975,8 @@ fn render_node_serde(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::
                 ResolvedFieldStyle::Unit => quote!(struct #helper #generics;),
             }
         }
-        NodeBodyPlan::Enum { variants, .. } => {
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+            let variants = trait_variants(&node.body);
             let variants = variants.iter().map(|variant| {
                 let ident = &variant.ident;
                 let fields = variant.elements.iter().filter_map(|element| {
@@ -4600,21 +5069,40 @@ fn render_node_serde(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::
 
 fn semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<Type> {
     let elements = match &node.body {
-        NodeBodyPlan::Struct { elements, .. } => elements.iter().collect::<Vec<_>>(),
-        NodeBodyPlan::Enum { variants, .. } => variants
-            .iter()
-            .flat_map(|variant| variant.elements.iter())
+        NodeBodyPlan::Struct { elements, .. } => elements.clone(),
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => trait_variants(&node.body)
+            .into_iter()
+            .flat_map(|variant| variant.elements)
             .collect(),
     };
     elements
-        .into_iter()
+        .iter()
         .filter_map(|element| match &element.kind {
             ElementParseKind::Semantic {
                 terminal, wrappers, ..
-            } => Some(render_wrapped_type(facade, terminal, wrappers)),
+            } if !is_recursive_terminal(node, terminal) => {
+                Some(render_wrapped_type(facade, terminal, wrappers))
+            }
+            ElementParseKind::Semantic { .. } => None,
             ElementParseKind::Fixed { .. } => None,
         })
         .collect()
+}
+
+fn is_recursive_terminal(node: &NodeParsePlan, terminal: &Type) -> bool {
+    let Type::Path(terminal) = terminal else {
+        return false;
+    };
+    let segments = terminal
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.unraw().to_string())
+        .collect::<Vec<_>>();
+    let segments = segments
+        .strip_prefix(&["crate".to_owned()])
+        .unwrap_or(&segments);
+    segments.join("::") == node.semantic_key
 }
 
 fn render_visit_children(
@@ -4644,7 +5132,8 @@ fn render_visit_children(
             });
             quote!(#(#fields)*)
         }
-        NodeBodyPlan::Enum { variants, .. } => {
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+            let variants = trait_variants(&node.body);
             let node_ident = &node.ident;
             let arms = variants.iter().map(|variant| {
                 let semantic = variant
@@ -5489,7 +5978,9 @@ fn render_pratt_led_parse(
         occurrences.push(occurrence.clone());
         let unique_index = variant_index * 1000 + element_index;
         match &element.kind {
-            ElementParseKind::Fixed { expected, capture } => {
+            ElementParseKind::Fixed {
+                expected, capture, ..
+            } => {
                 let expected_name = expected_static(node_index, unique_index, "fixed");
                 let expected_definition =
                     render_expected_static(&expected_name, expected, plan, facade);
@@ -6416,6 +6907,14 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_visit_variant_uses_the_path_relative_to_the_grammar_module() {
+        assert_eq!(
+            visit_variant_name("grammar", "grammar::public_left::Duplicate"),
+            "__RecursaTarget_11_public_left_9_Duplicate"
+        );
+    }
 
     #[test]
     fn snake_case_produces_stable_generated_element_names() {

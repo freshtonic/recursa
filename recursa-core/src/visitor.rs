@@ -15,7 +15,11 @@ pub enum VisitBreak<E> {
 
 /// Read-only structural traversal implemented by generated AST types.
 pub trait Visit: Sized {
-    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>;
+    type Events: VisitEventFamily;
+
+    fn visit<V>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitor<Self::Events>;
 }
 
 /// Mutable structural traversal implemented by generated AST types.
@@ -23,10 +27,11 @@ pub trait Visit: Sized {
 /// Generated implementations operate only on detached semantic values. A
 /// [`crate::Parsed`] wrapper deliberately does not implement this trait.
 pub trait VisitMut: Sized {
-    fn visit_mut<V: TotalVisitorMut>(
-        &mut self,
-        visitor: &mut V,
-    ) -> ControlFlow<VisitBreak<V::Error>>;
+    type EventsMut: VisitEventFamilyMut;
+
+    fn visit_mut<V>(&mut self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitorMut<Self::EventsMut>;
 }
 
 /// Type-specific read-only visitor hooks.
@@ -55,41 +60,95 @@ pub trait VisitorMut<N: ?Sized> {
     }
 }
 
+/// Grammar-local family of lifetime-preserving read-only traversal events.
+#[doc(hidden)]
+pub trait VisitEventFamily {
+    type Event<'visit>
+    where
+        Self: 'visit;
+}
+
+/// Grammar-local family of lifetime-preserving mutable traversal events.
+#[doc(hidden)]
+pub trait VisitEventFamilyMut {
+    type EventMut<'visit>
+    where
+        Self: 'visit;
+}
+
 /// Universal read-only visitor dispatch used by generated walks.
-pub trait TotalVisitor {
+pub trait TotalVisitor<F: VisitEventFamily> {
     type Error;
 
-    fn total_enter<N>(&mut self, node: &N) -> ControlFlow<VisitBreak<Self::Error>>;
+    fn total_enter<'visit>(
+        &mut self,
+        event: F::Event<'visit>,
+    ) -> ControlFlow<VisitBreak<Self::Error>>
+    where
+        F: 'visit;
 
-    fn total_exit<N>(&mut self, node: &N) -> ControlFlow<VisitBreak<Self::Error>>;
+    fn total_exit<'visit>(
+        &mut self,
+        event: F::Event<'visit>,
+    ) -> ControlFlow<VisitBreak<Self::Error>>
+    where
+        F: 'visit;
 }
 
 /// Universal mutable visitor dispatch used by generated walks.
-pub trait TotalVisitorMut {
+pub trait TotalVisitorMut<F: VisitEventFamilyMut> {
     type Error;
 
-    fn total_enter_mut<N>(&mut self, node: &mut N) -> ControlFlow<VisitBreak<Self::Error>>;
+    fn total_enter_mut<'visit>(
+        &mut self,
+        event: F::EventMut<'visit>,
+    ) -> ControlFlow<VisitBreak<Self::Error>>
+    where
+        F: 'visit;
 
-    fn total_exit_mut<N>(&mut self, node: &mut N) -> ControlFlow<VisitBreak<Self::Error>>;
+    fn total_exit_mut<'visit>(
+        &mut self,
+        event: F::EventMut<'visit>,
+    ) -> ControlFlow<VisitBreak<Self::Error>>
+    where
+        F: 'visit;
 }
 
+/// Type-erased marker carried for traversal-only implementation nodes.
+#[doc(hidden)]
+pub trait VisitNode {}
+
+impl<T: ?Sized> VisitNode for T {}
+
 impl<T: Visit> Visit for Box<T> {
-    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>> {
+    type Events = T::Events;
+
+    fn visit<V>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitor<Self::Events>,
+    {
         (**self).visit(visitor)
     }
 }
 
 impl<T: VisitMut> VisitMut for Box<T> {
-    fn visit_mut<V: TotalVisitorMut>(
-        &mut self,
-        visitor: &mut V,
-    ) -> ControlFlow<VisitBreak<V::Error>> {
+    type EventsMut = T::EventsMut;
+
+    fn visit_mut<V>(&mut self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitorMut<Self::EventsMut>,
+    {
         (**self).visit_mut(visitor)
     }
 }
 
 impl<T: Visit> Visit for Option<T> {
-    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>> {
+    type Events = T::Events;
+
+    fn visit<V>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitor<Self::Events>,
+    {
         if let Some(value) = self {
             value.visit(visitor)?;
         }
@@ -98,10 +157,12 @@ impl<T: Visit> Visit for Option<T> {
 }
 
 impl<T: VisitMut> VisitMut for Option<T> {
-    fn visit_mut<V: TotalVisitorMut>(
-        &mut self,
-        visitor: &mut V,
-    ) -> ControlFlow<VisitBreak<V::Error>> {
+    type EventsMut = T::EventsMut;
+
+    fn visit_mut<V>(&mut self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitorMut<Self::EventsMut>,
+    {
         if let Some(value) = self {
             value.visit_mut(visitor)?;
         }
@@ -110,7 +171,12 @@ impl<T: VisitMut> VisitMut for Option<T> {
 }
 
 impl<T: Visit> Visit for Vec<T> {
-    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>> {
+    type Events = T::Events;
+
+    fn visit<V>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitor<Self::Events>,
+    {
         for value in self {
             value.visit(visitor)?;
         }
@@ -119,10 +185,12 @@ impl<T: Visit> Visit for Vec<T> {
 }
 
 impl<T: VisitMut> VisitMut for Vec<T> {
-    fn visit_mut<V: TotalVisitorMut>(
-        &mut self,
-        visitor: &mut V,
-    ) -> ControlFlow<VisitBreak<V::Error>> {
+    type EventsMut = T::EventsMut;
+
+    fn visit_mut<V>(&mut self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitorMut<Self::EventsMut>,
+    {
         for value in self {
             value.visit_mut(visitor)?;
         }
@@ -131,7 +199,12 @@ impl<T: VisitMut> VisitMut for Vec<T> {
 }
 
 impl<T: Visit> Visit for crate::Vec1<T> {
-    fn visit<V: TotalVisitor>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>> {
+    type Events = T::Events;
+
+    fn visit<V>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitor<Self::Events>,
+    {
         for value in self.iter() {
             value.visit(visitor)?;
         }
@@ -140,10 +213,12 @@ impl<T: Visit> Visit for crate::Vec1<T> {
 }
 
 impl<T: VisitMut> VisitMut for crate::Vec1<T> {
-    fn visit_mut<V: TotalVisitorMut>(
-        &mut self,
-        visitor: &mut V,
-    ) -> ControlFlow<VisitBreak<V::Error>> {
+    type EventsMut = T::EventsMut;
+
+    fn visit_mut<V>(&mut self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
+    where
+        V: TotalVisitorMut<Self::EventsMut>,
+    {
         for value in self.iter_mut() {
             value.visit_mut(visitor)?;
         }

@@ -62,23 +62,26 @@ impl<T: Hash> Hash for Parsed<'_, T> {
 }
 
 impl<T: crate::Visit> crate::Visit for Parsed<'_, T> {
-    fn visit<V: crate::TotalVisitor>(
-        &self,
-        visitor: &mut V,
-    ) -> std::ops::ControlFlow<crate::VisitBreak<V::Error>> {
+    type Events = T::Events;
+
+    fn visit<V>(&self, visitor: &mut V) -> std::ops::ControlFlow<crate::VisitBreak<V::Error>>
+    where
+        V: crate::TotalVisitor<Self::Events>,
+    {
         self.ast.visit(visitor)
     }
 }
 
 impl<T: crate::Pretty> crate::Pretty for Parsed<'_, T> {
     fn pretty(&self, context: &mut crate::PrettyContext) -> fmt::Result {
-        if let Origin::Captured { source, provenance } = &self.origin
-            && let Some(span) = provenance.root.span
-            && let Some(text) = source.get(span.range())
-        {
-            return context.exact(text);
-        }
-        self.ast.pretty(context)
+        let cursor = match &self.origin {
+            Origin::Synthetic | Origin::Uncaptured => ViewCursor::absent(),
+            Origin::Captured { source, provenance } => ViewCursor {
+                occurrence: Some(&provenance.root),
+                source: Some(*source),
+            },
+        };
+        context.with_cursor(cursor, |context| self.ast.pretty(context))
     }
 }
 
@@ -448,6 +451,28 @@ impl<'view> ViewCursor<'view> {
     pub fn text(self) -> Option<&'view str> {
         let span = self.span()?;
         self.source?.get(span.range())
+    }
+
+    pub(crate) fn pretty_provenance(self) -> Option<crate::pretty::PrettyProvenance> {
+        let occurrence = self.occurrence?;
+        let text = occurrence
+            .span
+            .and_then(|span| self.source?.get(span.range()))
+            .map(str::to_owned);
+        let children = occurrence
+            .children
+            .iter()
+            .map(|child| {
+                ViewCursor {
+                    occurrence: Some(child),
+                    source: self.source,
+                }
+                .pretty_provenance()
+                .expect("a child cursor always has an occurrence")
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Some(crate::pretty::PrettyProvenance::new(text, children))
     }
 
     /// Binds this occurrence cursor to generated static element metadata.

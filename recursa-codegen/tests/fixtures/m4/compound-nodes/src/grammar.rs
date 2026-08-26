@@ -64,6 +64,18 @@ pub struct Count<'input> {
     pub text: CountText<'input>,
 }
 
+pub mod public_left {
+    #[derive(recursa::Node)]
+    #[tok(LEFT)]
+    pub struct Duplicate;
+}
+
+pub mod public_right {
+    #[derive(recursa::Node)]
+    #[tok(RIGHT)]
+    pub struct Duplicate;
+}
+
 impl<'input> Clone for Count<'input> {
     fn clone(&self) -> Self {
         Self {
@@ -180,19 +192,25 @@ mod left {
         );
 
         struct Counter(usize);
-        impl recursa::TotalVisitor for Counter {
+        impl<'input> recursa::TotalVisitor<super::__RecursaVisitEvents<'input>> for Counter {
             type Error = ();
-            fn total_enter<N>(
+            fn total_enter<'visit>(
                 &mut self,
-                _node: &N,
-            ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+                _event: super::__RecursaVisitEvent<'visit, 'input>,
+            ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+            where
+                super::__RecursaVisitEvents<'input>: 'visit,
+            {
                 self.0 += 1;
                 std::ops::ControlFlow::Continue(())
             }
-            fn total_exit<N>(
+            fn total_exit<'visit>(
                 &mut self,
-                _node: &N,
-            ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+                _event: super::__RecursaVisitEvent<'visit, 'input>,
+            ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+            where
+                super::__RecursaVisitEvents<'input>: 'visit,
+            {
                 std::ops::ControlFlow::Continue(())
             }
         }

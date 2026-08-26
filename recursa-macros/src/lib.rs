@@ -5,6 +5,7 @@ use quote::quote;
 use std::path::{Component, Path, PathBuf};
 use syn::ext::IdentExt as _;
 use syn::parse::Parse as _;
+use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Type, parse_macro_input};
 
 const PRIVATE_PROTOCOL: u32 = 1;
@@ -111,12 +112,14 @@ struct TotalVisitorInput {
     dispatch: Vec<Type>,
     error: Type,
     facade: syn::Path,
+    event: Option<syn::Path>,
 }
 
 fn total_visitor_input(input: &DeriveInput, attribute: &str) -> syn::Result<TotalVisitorInput> {
     let mut dispatch = None;
     let mut error = None;
     let mut facade = None;
+    let mut event = None;
     for attr in &input.attrs {
         if !attr.path().is_ident(attribute) {
             continue;
@@ -139,8 +142,11 @@ fn total_visitor_input(input: &DeriveInput, attribute: &str) -> syn::Result<Tota
             } else if meta.path.is_ident("facade") {
                 facade = Some(meta.value()?.parse()?);
                 Ok(())
+            } else if meta.path.is_ident("event") {
+                event = Some(meta.value()?.parse()?);
+                Ok(())
             } else {
-                Err(meta.error("expected `dispatch`, `error`, or `facade`"))
+                Err(meta.error("expected `dispatch`, `error`, `facade`, or `event`"))
             }
         })?;
     }
@@ -158,6 +164,7 @@ fn total_visitor_input(input: &DeriveInput, attribute: &str) -> syn::Result<Tota
             )
         })?,
         facade: facade.unwrap_or_else(mapped_facade_path),
+        event,
     })
 }
 
@@ -200,86 +207,239 @@ fn render_total_visitor(
     let name = &input.ident;
     let error = &configuration.error;
     let facade = &configuration.facade;
-    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+    let event_path = configuration
+        .event
+        .clone()
+        .map(|mut event| {
+            if mutable {
+                event
+                    .segments
+                    .last_mut()
+                    .expect("an event path is nonempty")
+                    .ident =
+                    syn::Ident::new("__RecursaVisitEventMut", proc_macro2::Span::call_site());
+            }
+            event
+        })
+        .map_or_else(
+            || total_visitor_event_path(&configuration.dispatch, mutable),
+            Ok,
+        )?;
+    let mut family_path = event_path.clone();
+    family_path
+        .segments
+        .last_mut()
+        .expect("an event path is nonempty")
+        .ident = syn::Ident::new(
+        if mutable {
+            "__RecursaVisitEventsMut"
+        } else {
+            "__RecursaVisitEvents"
+        },
+        proc_macro2::Span::call_site(),
+    );
+    let mut implementation_generics = input.generics.clone();
+    implementation_generics
+        .params
+        .insert(0, syn::parse_quote!('__recursa_input));
+    let dispatch = configuration
+        .dispatch
+        .iter()
+        .map(|ty| visitor_dispatch_type(ty, syn::parse_quote!('__recursa_input)))
+        .collect::<Vec<_>>();
+    for ty in &dispatch {
+        let predicate: syn::WherePredicate = if mutable {
+            syn::parse_quote!(Self: #facade::VisitorMut<#ty, Error = #error>)
+        } else {
+            syn::parse_quote!(Self: #facade::Visitor<#ty, Error = #error>)
+        };
+        implementation_generics
+            .make_where_clause()
+            .predicates
+            .push(predicate);
+    }
+    let (impl_generics, _, where_clause) = implementation_generics.split_for_impl();
+    let (_, type_generics, _) = input.generics.split_for_impl();
     if mutable {
-        let enter = configuration.dispatch.iter().map(|ty| {
-            quote! {
-                if ::core::any::type_name::<N>() == ::core::any::type_name::<#ty>() {
-                    // SAFETY: the accepted traversal contract uses type-name
-                    // dispatch so borrowed AST lifetimes remain supported.
-                    let node = unsafe { &mut *(node as *mut N as *mut #ty) };
-                    return <Self as #facade::VisitorMut<#ty>>::enter_mut(self, node);
-                }
-            }
-        });
-        let exit = configuration.dispatch.iter().map(|ty| {
-            quote! {
-                if ::core::any::type_name::<N>() == ::core::any::type_name::<#ty>() {
-                    // SAFETY: see `total_enter_mut` above.
-                    let node = unsafe { &mut *(node as *mut N as *mut #ty) };
-                    return <Self as #facade::VisitorMut<#ty>>::exit_mut(self, node);
-                }
-            }
-        });
+        let enter = dispatch
+            .iter()
+            .map(|ty| {
+                let variant = visitor_variant(ty, &event_path)?;
+                Ok(quote! {
+                    #event_path::#variant(node) =>
+                        <Self as #facade::VisitorMut<#ty>>::enter_mut(self, node),
+                })
+            })
+            .collect::<syn::Result<Vec<_>>>()?;
+        let exit = dispatch
+            .iter()
+            .map(|ty| {
+                let variant = visitor_variant(ty, &event_path)?;
+                Ok(quote! {
+                    #event_path::#variant(node) =>
+                        <Self as #facade::VisitorMut<#ty>>::exit_mut(self, node),
+                })
+            })
+            .collect::<syn::Result<Vec<_>>>()?;
         Ok(quote! {
-            impl #impl_generics #facade::TotalVisitorMut for #name #type_generics #where_clause {
+            impl #impl_generics
+                #facade::TotalVisitorMut<#family_path<'__recursa_input>>
+                for #name #type_generics #where_clause
+            {
                 type Error = #error;
-                fn total_enter_mut<N>(
+                fn total_enter_mut<'__recursa_visit>(
                     &mut self,
-                    node: &mut N,
-                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<Self::Error>> {
-                    #(#enter)*
-                    ::core::ops::ControlFlow::Continue(())
+                    event: #event_path<'__recursa_visit, '__recursa_input>,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<Self::Error>>
+                where
+                    #family_path<'__recursa_input>: '__recursa_visit,
+                {
+                    match event {
+                        #(#enter)*
+                        _ => ::core::ops::ControlFlow::Continue(()),
+                    }
                 }
-                fn total_exit_mut<N>(
+                fn total_exit_mut<'__recursa_visit>(
                     &mut self,
-                    node: &mut N,
-                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<Self::Error>> {
-                    #(#exit)*
-                    ::core::ops::ControlFlow::Continue(())
+                    event: #event_path<'__recursa_visit, '__recursa_input>,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<Self::Error>>
+                where
+                    #family_path<'__recursa_input>: '__recursa_visit,
+                {
+                    match event {
+                        #(#exit)*
+                        _ => ::core::ops::ControlFlow::Continue(()),
+                    }
                 }
             }
         })
     } else {
-        let enter = configuration.dispatch.iter().map(|ty| {
-            quote! {
-                if ::core::any::type_name::<N>() == ::core::any::type_name::<#ty>() {
-                    // SAFETY: type-name equality identifies the same concrete
-                    // monomorphized Node without requiring a `'static` bound.
-                    let node = unsafe { &*(node as *const N as *const #ty) };
-                    return <Self as #facade::Visitor<#ty>>::enter(self, node);
-                }
-            }
-        });
-        let exit = configuration.dispatch.iter().map(|ty| {
-            quote! {
-                if ::core::any::type_name::<N>() == ::core::any::type_name::<#ty>() {
-                    // SAFETY: see `total_enter` above.
-                    let node = unsafe { &*(node as *const N as *const #ty) };
-                    return <Self as #facade::Visitor<#ty>>::exit(self, node);
-                }
-            }
-        });
+        let enter = dispatch
+            .iter()
+            .map(|ty| {
+                let variant = visitor_variant(ty, &event_path)?;
+                Ok(quote! {
+                    #event_path::#variant(node) =>
+                        <Self as #facade::Visitor<#ty>>::enter(self, node),
+                })
+            })
+            .collect::<syn::Result<Vec<_>>>()?;
+        let exit = dispatch
+            .iter()
+            .map(|ty| {
+                let variant = visitor_variant(ty, &event_path)?;
+                Ok(quote! {
+                    #event_path::#variant(node) =>
+                        <Self as #facade::Visitor<#ty>>::exit(self, node),
+                })
+            })
+            .collect::<syn::Result<Vec<_>>>()?;
         Ok(quote! {
-            impl #impl_generics #facade::TotalVisitor for #name #type_generics #where_clause {
+            impl #impl_generics
+                #facade::TotalVisitor<#family_path<'__recursa_input>>
+                for #name #type_generics #where_clause
+            {
                 type Error = #error;
-                fn total_enter<N>(
+                fn total_enter<'__recursa_visit>(
                     &mut self,
-                    node: &N,
-                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<Self::Error>> {
-                    #(#enter)*
-                    ::core::ops::ControlFlow::Continue(())
+                    event: #event_path<'__recursa_visit, '__recursa_input>,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<Self::Error>>
+                where
+                    #family_path<'__recursa_input>: '__recursa_visit,
+                {
+                    match event {
+                        #(#enter)*
+                        _ => ::core::ops::ControlFlow::Continue(()),
+                    }
                 }
-                fn total_exit<N>(
+                fn total_exit<'__recursa_visit>(
                     &mut self,
-                    node: &N,
-                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<Self::Error>> {
-                    #(#exit)*
-                    ::core::ops::ControlFlow::Continue(())
+                    event: #event_path<'__recursa_visit, '__recursa_input>,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<Self::Error>>
+                where
+                    #family_path<'__recursa_input>: '__recursa_visit,
+                {
+                    match event {
+                        #(#exit)*
+                        _ => ::core::ops::ControlFlow::Continue(()),
+                    }
                 }
             }
         })
     }
+}
+
+fn total_visitor_event_path(dispatch: &[Type], mutable: bool) -> syn::Result<syn::Path> {
+    let first = dispatch.first().ok_or_else(|| {
+        syn::Error::new(proc_macro2::Span::call_site(), "dispatch cannot be empty")
+    })?;
+    let Type::Path(first) = first else {
+        return Err(syn::Error::new_spanned(
+            first,
+            "dispatch types must be paths",
+        ));
+    };
+    let mut event = first.path.clone();
+    event.segments.pop();
+    event.segments.push(syn::PathSegment::from(syn::Ident::new(
+        if mutable {
+            "__RecursaVisitEventMut"
+        } else {
+            "__RecursaVisitEvent"
+        },
+        proc_macro2::Span::call_site(),
+    )));
+    Ok(event)
+}
+
+fn visitor_dispatch_type(ty: &Type, lifetime: syn::Lifetime) -> Type {
+    struct ReplaceLifetime(syn::Lifetime);
+    impl syn::visit_mut::VisitMut for ReplaceLifetime {
+        fn visit_lifetime_mut(&mut self, target: &mut syn::Lifetime) {
+            *target = self.0.clone();
+        }
+    }
+    let mut ty = ty.clone();
+    ReplaceLifetime(lifetime).visit_type_mut(&mut ty);
+    ty
+}
+
+fn visitor_variant(ty: &Type, event: &syn::Path) -> syn::Result<syn::Ident> {
+    let Type::Path(ty) = ty else {
+        unreachable!("dispatch types were validated as paths")
+    };
+    let mut event_module = event.segments.iter().collect::<Vec<_>>();
+    event_module.pop();
+    let target = ty.path.segments.iter().collect::<Vec<_>>();
+    if target.len() <= event_module.len()
+        || !target
+            .iter()
+            .zip(&event_module)
+            .all(|(target, module)| target.ident == module.ident)
+    {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "dispatch type is not beneath the configured grammar event module",
+        ));
+    }
+    let relative = target[event_module.len()..]
+        .iter()
+        .map(|segment| segment.ident.unraw().to_string())
+        .collect::<Vec<_>>()
+        .join("::");
+    Ok(if relative.contains("::") {
+        let suffix = relative
+            .split("::")
+            .map(|segment| format!("{}_{}", segment.len(), segment))
+            .collect::<Vec<_>>()
+            .join("_");
+        syn::Ident::new(
+            &format!("__RecursaTarget_{suffix}"),
+            proc_macro2::Span::call_site(),
+        )
+    } else {
+        syn::Ident::new(&relative, proc_macro2::Span::call_site())
+    })
 }
 
 fn stable_hash(bytes: &[u8]) -> u64 {
@@ -300,4 +460,19 @@ fn normalized_source_identity(path: &Path) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_visit_variant_uses_the_path_relative_to_the_event_module() {
+        let ty = syn::parse_quote!(grammar::public_left::Duplicate);
+        let event = syn::parse_quote!(grammar::__RecursaVisitEvent);
+        assert_eq!(
+            visitor_variant(&ty, &event).unwrap(),
+            "__RecursaTarget_11_public_left_9_Duplicate"
+        );
+    }
 }

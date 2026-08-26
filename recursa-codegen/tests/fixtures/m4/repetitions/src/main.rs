@@ -249,19 +249,25 @@ fn assert_repetition_behavior() {
     assert_eq!(many.values.len(), 2);
     assert_eq!(many.values[0].text.text(), many.values[1].text.text());
     struct Counter(usize);
-    impl recursa::TotalVisitor for Counter {
+    impl<'input> recursa::TotalVisitor<grammar::__RecursaVisitEvents<'input>> for Counter {
         type Error = ();
-        fn total_enter<N>(
+        fn total_enter<'visit>(
             &mut self,
-            _node: &N,
-        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+            _event: grammar::__RecursaVisitEvent<'visit, 'input>,
+        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+        where
+            grammar::__RecursaVisitEvents<'input>: 'visit,
+        {
             self.0 += 1;
             std::ops::ControlFlow::Continue(())
         }
-        fn total_exit<N>(
+        fn total_exit<'visit>(
             &mut self,
-            _node: &N,
-        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>> {
+            _event: grammar::__RecursaVisitEvent<'visit, 'input>,
+        ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+        where
+            grammar::__RecursaVisitEvents<'input>: 'visit,
+        {
             std::ops::ControlFlow::Continue(())
         }
     }
