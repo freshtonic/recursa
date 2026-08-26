@@ -3019,12 +3019,8 @@ fn declaration_elements(
                         attachment: attachment
                             .as_ref()
                             .map(|attachment| {
-                                declaration_fixed_attachment(
-                                    attachment,
-                                    lowered,
-                                    kind_count,
-                                )
-                                .map(Box::new)
+                                declaration_fixed_attachment(attachment, lowered, kind_count)
+                                    .map(Box::new)
                             })
                             .transpose()?,
                         opaque_provenance: authored_type_depends_on_node_generics(
@@ -3052,10 +3048,7 @@ fn declaration_fixed_attachment(
         Ok(AttachedFixedParsePlan {
             expected: ExpectedSet::empty(kind_count),
             capture: PlannedCapturePolicy::Inherited,
-            spelling: fixed_pretty_spelling(
-                &fixed.spelling,
-                lowered.grammar.text_equivalence,
-            ),
+            spelling: fixed_pretty_spelling(&fixed.spelling, lowered.grammar.text_equivalence),
             spacing: fixed.pretty_spacing,
         })
     };
@@ -6654,10 +6647,7 @@ fn pretty_impl_parts(
     )
 }
 
-fn attachment_pretty_terminal(
-    node: &NodeParsePlan,
-    element: &ElementParsePlan,
-) -> Option<Type> {
+fn attachment_pretty_terminal(node: &NodeParsePlan, element: &ElementParsePlan) -> Option<Type> {
     match &element.kind {
         ElementParseKind::Semantic {
             terminal,
@@ -7447,58 +7437,64 @@ fn render_node_pretty(
                 .map(|(variant, behavior)| {
                     let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty");
                     let mut binding_index = 0;
-                    let rendered = variant.elements.iter().zip(behavior).enumerate().map(
-                        |(index, (element, behavior))| match (&element.kind, behavior) {
-                            (
-                                ElementParseKind::Fixed { .. },
-                                PrettyElementBehavior::Fixed { spelling, spacing },
-                            ) => render_pretty_fixed(plan, index, spelling, *spacing),
-                            (
-                                ElementParseKind::Semantic {
-                                    wrappers,
-                                    container,
-                                    ..
-                                },
-                                PrettyElementBehavior::Semantic {
-                                    separator,
-                                    attachment,
-                                    opaque_provenance,
-                                    ..
-                                },
-                            ) => {
-                                let binding = &bindings[binding_index];
-                                binding_index += 1;
-                                if let Some(attachment) = attachment {
-                                    return render_pretty_attached_semantic(
+                    let rendered = variant
+                        .elements
+                        .iter()
+                        .zip(behavior)
+                        .enumerate()
+                        .map(
+                            |(index, (element, behavior))| match (&element.kind, behavior) {
+                                (
+                                    ElementParseKind::Fixed { .. },
+                                    PrettyElementBehavior::Fixed { spelling, spacing },
+                                ) => render_pretty_fixed(plan, index, spelling, *spacing),
+                                (
+                                    ElementParseKind::Semantic {
+                                        wrappers,
+                                        container,
+                                        ..
+                                    },
+                                    PrettyElementBehavior::Semantic {
+                                        separator,
+                                        attachment,
+                                        opaque_provenance,
+                                        ..
+                                    },
+                                ) => {
+                                    let binding = &bindings[binding_index];
+                                    binding_index += 1;
+                                    if let Some(attachment) = attachment {
+                                        return render_pretty_attached_semantic(
+                                            facade,
+                                            index,
+                                            quote!(#binding),
+                                            true,
+                                            wrappers,
+                                            container,
+                                            attachment,
+                                            *opaque_provenance,
+                                        );
+                                    }
+                                    render_pretty_semantic(
                                         facade,
                                         index,
                                         quote!(#binding),
-                                        true,
-                                        wrappers,
                                         container,
-                                        attachment,
+                                        separator.as_deref(),
                                         *opaque_provenance,
-                                    );
+                                    )
                                 }
-                                render_pretty_semantic(
-                                    facade,
-                                    index,
-                                    quote!(#binding),
-                                    container,
-                                    separator.as_deref(),
-                                    *opaque_provenance,
+                                (
+                                    ElementParseKind::Fixed { .. },
+                                    PrettyElementBehavior::Semantic { .. },
                                 )
-                            }
-                            (
-                                ElementParseKind::Fixed { .. },
-                                PrettyElementBehavior::Semantic { .. },
-                            )
-                            | (
-                                ElementParseKind::Semantic { .. },
-                                PrettyElementBehavior::Fixed { .. },
-                            ) => unreachable!("validated Pretty element behavior"),
-                        },
-                    ).collect::<Vec<_>>();
+                                | (
+                                    ElementParseKind::Semantic { .. },
+                                    PrettyElementBehavior::Fixed { .. },
+                                ) => unreachable!("validated Pretty element behavior"),
+                            },
+                        )
+                        .collect::<Vec<_>>();
                     let rendered = render_pretty_sequence(behavior, &rendered);
                     quote!(#pattern => { #rendered Ok(()) })
                 });
@@ -7722,10 +7718,7 @@ fn render_pretty_attached_semantic(
         } else {
             quote!(#facade::Pretty::pretty(#terminal, context))
         };
-        render_pretty_attachment_unit(
-            attachment,
-            semantic,
-        )
+        render_pretty_attachment_unit(attachment, semantic)
     };
 
     if matches!(container, PlannedContainer::Repeated { .. }) {
