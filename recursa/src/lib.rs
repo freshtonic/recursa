@@ -3,11 +3,14 @@
 //! This facade exports the common runtime contracts and authoring macros.
 //! Grammar-bound lexical and input types are generated in each grammar module.
 
+#[cfg(feature = "arbitrary")]
+pub use recursa_core::__private::arbitrary::Arbitrary;
 pub use recursa_core::{
     ElementMetadata, ElementRole, ElementView, Elements, HasSpan, Node, NodeView, OffsetOverflow,
-    Parse, ParseError, ParseErrorKind, Parsed, Repeated, RepeatedIter, Span, Vec1,
+    Parse, ParseError, ParseErrorKind, Parsed, Pretty, PrettyContext, Repeated, RepeatedIter, Span,
+    TotalVisitor, TotalVisitorMut, Vec1, Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
 };
-pub use recursa_macros::{Node, grammar, tokens};
+pub use recursa_macros::{Node, TotalVisitor, TotalVisitorMut, grammar, tokens};
 
 /// Runtime operations reserved for Recursa-generated code.
 ///

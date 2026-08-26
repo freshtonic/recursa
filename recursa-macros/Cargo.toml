@@ -6,10 +6,18 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+arbitrary = []
+diagrams = []
+explorer = []
+serde = []
+
 [lib]
 proc-macro = true
 
 [dependencies]
+proc-macro-crate = "3"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 syn = { version = "2", features = ["full"] }

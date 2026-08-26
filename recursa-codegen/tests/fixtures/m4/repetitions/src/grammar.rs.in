@@ -1,5 +1,6 @@
 recursa::grammar! {
     module = crate::grammar,
+    derives(Visit, VisitMut),
     keyword_matching = sensitive,
     max_lookahead = 1,
     spans = __RECURSA_SPANS_MODE__,

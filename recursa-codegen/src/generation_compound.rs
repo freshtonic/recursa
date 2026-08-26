@@ -26,7 +26,7 @@ use crate::materialization::{
     MaterializedPrattNudPosition, MaterializedPrattVariant, MaterializedVariant,
 };
 use crate::resolution::{ResolvedFieldStyle, ResolvedNode, ResolvedNodeBody};
-use crate::source_model::TokenDefinitionKind;
+use crate::source_model::{ConfiguredTraitRecipe, TokenDefinitionKind};
 use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, span_range};
 use crate::{AtomExpression, FirstPosition, KindSet, SiteId, TextEquivalence, TextPredicate};
 
@@ -132,6 +132,7 @@ struct NodeParsePlan {
     input_lifetime: syn::Lifetime,
     body: NodeBodyPlan,
     capture: PlannedCapturePolicy,
+    configured_traits: Vec<ConfiguredTraitRecipe>,
 }
 
 #[derive(Clone, Debug)]
@@ -238,6 +239,7 @@ enum ElementParseKind {
     Fixed {
         expected: ExpectedSet,
         capture: PlannedCapturePolicy,
+        spelling: String,
     },
     Semantic {
         field: FieldPlan,
@@ -303,6 +305,7 @@ struct TokenParsePlan {
     accepted_kind_variants: Vec<Ident>,
     expected: ExpectedSet,
     capture: PlannedCapturePolicy,
+    configured_traits: Vec<ConfiguredTraitRecipe>,
 }
 
 #[derive(Clone)]
@@ -622,6 +625,30 @@ impl EmissionPlan {
                     .collect(),
                 expected,
                 capture: resolved.build_inputs.spans.into(),
+                configured_traits: lowered
+                    .source_modeled
+                    .source_model()
+                    .token_definitions
+                    .iter()
+                    .find_map(|definition| match &definition.kind {
+                        TokenDefinitionKind::Content(token) if token.semantic == content.id => {
+                            Some(
+                                token
+                                    .configured_traits
+                                    .effective
+                                    .iter()
+                                    .map(|selection| selection.recipe)
+                                    .collect(),
+                            )
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "content token `{}` lacks a configured trait plan",
+                            content.ident
+                        )
+                    })?,
             });
         }
         let token_bindings = resolved
@@ -650,14 +677,28 @@ impl EmissionPlan {
                     node.ident
                 ));
             };
-            nodes.push(plan_node(
+            let configured_traits = lowered
+                .source_modeled
+                .source_model()
+                .nodes
+                .iter()
+                .find(|source_node| source_node.resolved_node == node.id)
+                .ok_or_else(|| format!("Node `{}` lacks a configured trait plan", node.ident))?
+                .configured_traits
+                .effective
+                .iter()
+                .map(|selection| selection.recipe)
+                .collect();
+            let mut planned = plan_node(
                 node,
                 application,
                 lowered,
                 decisions,
                 kind_count,
                 &mut instrumentation,
-            )?);
+            )?;
+            planned.configured_traits = configured_traits;
+            nodes.push(planned);
         }
         let frozen_dispatch_sequences = nodes
             .iter()
@@ -1410,6 +1451,7 @@ fn plan_node(
         input_lifetime,
         body,
         capture: inherited_capture.into(),
+        configured_traits: Vec::new(),
     })
 }
 
@@ -1859,7 +1901,11 @@ fn plan_elements(
                     .unwrap_or(variant_capture);
                 Ok(ElementParsePlan {
                     metadata_name: name,
-                    kind: ElementParseKind::Fixed { expected, capture },
+                    kind: ElementParseKind::Fixed {
+                        expected,
+                        capture,
+                        spelling: fixed.spelling.clone(),
+                    },
                 })
             }
             MaterializedElement::SemanticField { field, ty, .. } => {
@@ -2574,6 +2620,49 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             };
         }
     });
+    let requested_arbitrary = plan
+        .nodes
+        .iter()
+        .flat_map(|node| node.configured_traits.iter())
+        .chain(
+            plan.tokens
+                .iter()
+                .flat_map(|token| token.configured_traits.iter()),
+        )
+        .any(|recipe| *recipe == ConfiguredTraitRecipe::Arbitrary);
+    let requested_serde = plan
+        .nodes
+        .iter()
+        .flat_map(|node| node.configured_traits.iter())
+        .chain(
+            plan.tokens
+                .iter()
+                .flat_map(|token| token.configured_traits.iter()),
+        )
+        .any(|recipe| {
+            matches!(
+                recipe,
+                ConfiguredTraitRecipe::Serialize | ConfiguredTraitRecipe::Deserialize
+            )
+        });
+    let mut accepted_capabilities = Vec::new();
+    for diagrams in 0..=1 {
+        for explorer in 0..=1 {
+            for arbitrary in 0..=1 {
+                for serde in 0..=1 {
+                    if (!requested_arbitrary || arbitrary == 1) && (!requested_serde || serde == 1)
+                    {
+                        accepted_capabilities.push(format_ident!(
+                            "cap_core_d{diagrams}_e{explorer}_a{arbitrary}_s{serde}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let capability_arms = accepted_capabilities
+        .iter()
+        .map(|capability| quote!((#release, #protocol, #capability) => {};));
 
     quote! {
         const _: #facade::__private::FacadeCompatibility<
@@ -3209,7 +3298,10 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         #(#token_items)*
 
         macro_rules! __recursa_root_handshake {
-            (#release, #protocol, core) => {};
+            #(#capability_arms)*
+            (#release, #protocol, $missing_capability:ident) => {
+                compile_error!("error[RCA9005]: generated grammar requires a missing Recursa facade capability");
+            };
             ($other_release:ident, $other_protocol:ident, $other_capability:ident) => {
                 compile_error!("error[RCA9003]: Recursa release/private-protocol mismatch");
             };
@@ -3291,9 +3383,147 @@ fn render_token(
     });
     let expected = format_ident!("__RECURSA_TOKEN_START_{index}");
     let capture = token.capture.render(facade);
+    let standard_derives = token
+        .configured_traits
+        .iter()
+        .filter_map(|recipe| match recipe {
+            ConfiguredTraitRecipe::Debug => Some(quote!(Debug)),
+            ConfiguredTraitRecipe::Clone => Some(quote!(Clone)),
+            ConfiguredTraitRecipe::Copy => Some(quote!(Copy)),
+            ConfiguredTraitRecipe::PartialEq => Some(quote!(PartialEq)),
+            ConfiguredTraitRecipe::Eq => Some(quote!(Eq)),
+            ConfiguredTraitRecipe::PartialOrd => Some(quote!(PartialOrd)),
+            ConfiguredTraitRecipe::Ord => Some(quote!(Ord)),
+            ConfiguredTraitRecipe::Hash => Some(quote!(Hash)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let standard_derive =
+        (!standard_derives.is_empty()).then(|| quote!(#[derive(#(#standard_derives),*)]));
+    let visit_impl = token
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Visit)
+        .then(|| {
+            quote! {
+                impl<'input> #facade::Visit for #ident<'input> {
+                    fn visit<V: #facade::TotalVisitor>(
+                        &self,
+                        visitor: &mut V,
+                    ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>> {
+                        match visitor.total_enter(self) {
+                            ::core::ops::ControlFlow::Continue(())
+                            | ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
+                            other => return other,
+                        }
+                        visitor.total_exit(self)
+                    }
+                }
+            }
+        });
+    let visit_mut_impl = token
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::VisitMut)
+        .then(|| {
+            quote! {
+                impl<'input> #facade::VisitMut for #ident<'input> {
+                    fn visit_mut<V: #facade::TotalVisitorMut>(
+                        &mut self,
+                        visitor: &mut V,
+                    ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>> {
+                        match visitor.total_enter_mut(self) {
+                            ::core::ops::ControlFlow::Continue(())
+                            | ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
+                            other => return other,
+                        }
+                        visitor.total_exit_mut(self)
+                    }
+                }
+            }
+        });
+    let pretty_impl = token
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Pretty)
+        .then(|| {
+            quote! {
+                impl<'input> #facade::Pretty for #ident<'input> {
+                    fn pretty(
+                        &self,
+                        context: &mut #facade::PrettyContext,
+                    ) -> ::core::fmt::Result {
+                        context.token(self.text())
+                    }
+                }
+
+                impl<'input> #facade::Pretty for #view<'_, 'input> {
+                    fn pretty(
+                        &self,
+                        context: &mut #facade::PrettyContext,
+                    ) -> ::core::fmt::Result {
+                        if let Some(text) = self.cursor.text() {
+                            context.exact(text)
+                        } else {
+                            #facade::Pretty::pretty(self.value, context)
+                        }
+                    }
+                }
+            }
+        });
+    let arbitrary_impl = token
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Arbitrary)
+        .then(|| {
+            quote! {
+                __recursa_if_arbitrary! {
+                impl<'arbitrary, 'input> #facade::__private::arbitrary::Arbitrary<'arbitrary>
+                    for #ident<'input>
+                {
+                    fn arbitrary(
+                        input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
+                    ) -> #facade::__private::arbitrary::Result<Self> {
+                        let text = <String as #facade::__private::arbitrary::Arbitrary>::arbitrary(input)?;
+                        Ok(Self::new(text))
+                    }
+                }
+                }
+            }
+        });
+    let serialize_impl = token
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Serialize)
+        .then(|| {
+            quote! {
+                __recursa_if_serde! {
+                    impl<'input> #facade::__private::serde::Serialize for #ident<'input> {
+                        fn serialize<S: #facade::__private::serde::Serializer>(
+                            &self,
+                            serializer: S,
+                        ) -> Result<S::Ok, S::Error> {
+                            serializer.serialize_str(self.text())
+                        }
+                    }
+                }
+            }
+        });
+    let deserialize_impl = token
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Deserialize)
+        .then(|| {
+            quote! {
+                __recursa_if_serde! {
+                    impl<'de, 'input> #facade::__private::serde::Deserialize<'de> for #ident<'input> {
+                        fn deserialize<D: #facade::__private::serde::Deserializer<'de>>(
+                            deserializer: D,
+                        ) -> Result<Self, D::Error> {
+                            let text = <String as #facade::__private::serde::Deserialize>::deserialize(deserializer)?;
+                            Ok(Self::new(text))
+                        }
+                    }
+                }
+            }
+        });
     quote! {
         #[doc(hidden)]
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #standard_derive
         pub struct #ident<'input> {
             text: #facade::__private::ContentText<'input>,
             #kind_field
@@ -3369,6 +3599,13 @@ fn render_token(
                 #facade::__private::parse(&mut input.inner)
             }
         }
+
+        #visit_impl
+        #visit_mut_impl
+        #pretty_impl
+        #arbitrary_impl
+        #serialize_impl
+        #deserialize_impl
     }
 }
 
@@ -3466,6 +3703,28 @@ fn render_node(
             .map(|binding| render_token_binding(plan, binding))
             .collect::<Vec<_>>()
     };
+    let configured_traits = render_node_configured_traits(plan, node);
+    let view_pretty = node
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Pretty)
+        .then(|| {
+            quote! {
+                impl #view_impl_generics #facade::Pretty
+                    for #view_ident #view_type_generics #view_where_clause
+                {
+                    fn pretty(
+                        &self,
+                        context: &mut #facade::PrettyContext,
+                    ) -> ::core::fmt::Result {
+                        if let Some(text) = self.cursor.text() {
+                            context.exact(text)
+                        } else {
+                            #facade::Pretty::pretty(self.value, context)
+                        }
+                    }
+                }
+            }
+        });
 
     quote! {
         __recursa_generation_handshake!(#generation);
@@ -3505,6 +3764,8 @@ fn render_node(
             fn value(&self) -> &Self::Value { self.value }
             fn span_elements(&self) -> #facade::Elements<'_> { #span_elements }
         }
+
+        #view_pretty
 
         impl #impl_generics #facade::__private::NodeViewFactory for #node_ident #type_generics
             #where_clause
@@ -3549,6 +3810,8 @@ fn render_node(
             }
         }
 
+        #configured_traits
+
         #[allow(dead_code)]
         impl #impl_generics #node_ident #type_generics #where_clause {
             #pratt_helper
@@ -3563,6 +3826,869 @@ fn render_node(
             ) -> Result<#facade::Parsed<#input_lifetime, Self>, #facade::ParseError> {
                 #facade::__private::parse_spanned(&mut input.inner)
             }
+        }
+    }
+}
+
+fn render_node_configured_traits(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+) -> proc_macro2::TokenStream {
+    let mut implementations = Vec::new();
+    for recipe in [
+        ConfiguredTraitRecipe::Debug,
+        ConfiguredTraitRecipe::Clone,
+        ConfiguredTraitRecipe::Copy,
+        ConfiguredTraitRecipe::PartialEq,
+        ConfiguredTraitRecipe::Eq,
+        ConfiguredTraitRecipe::PartialOrd,
+        ConfiguredTraitRecipe::Ord,
+        ConfiguredTraitRecipe::Hash,
+    ] {
+        if node.configured_traits.contains(&recipe) {
+            implementations.push(render_node_standard_trait(plan, node, recipe));
+        }
+    }
+    if node.configured_traits.iter().any(|recipe| {
+        matches!(
+            recipe,
+            ConfiguredTraitRecipe::Serialize | ConfiguredTraitRecipe::Deserialize
+        )
+    }) {
+        implementations.push(render_node_serde(plan, node));
+    }
+    if node
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Arbitrary)
+    {
+        implementations.push(render_node_arbitrary(plan, node));
+    }
+    if node
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Pretty)
+    {
+        implementations.push(render_node_pretty(plan, node));
+    }
+    if node
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Visit)
+    {
+        implementations.push(render_node_visit(plan, node, false));
+    }
+    if node
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::VisitMut)
+    {
+        implementations.push(render_node_visit(plan, node, true));
+    }
+    quote!(#(#implementations)*)
+}
+
+fn trait_impl_parts(
+    facade: &Ident,
+    node: &NodeParsePlan,
+    bound: proc_macro2::TokenStream,
+) -> (
+    proc_macro2::TokenStream,
+    proc_macro2::TokenStream,
+    proc_macro2::TokenStream,
+) {
+    let mut generics = node.generics.clone();
+    for field_type in semantic_field_types(facade, node) {
+        generics
+            .make_where_clause()
+            .predicates
+            .push(syn::parse_quote!(#field_type: #bound));
+    }
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    (
+        quote!(#impl_generics),
+        quote!(#type_generics),
+        quote!(#where_clause),
+    )
+}
+
+fn render_node_standard_trait(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    recipe: ConfiguredTraitRecipe,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let node_ident = &node.ident;
+    let trait_path = match recipe {
+        ConfiguredTraitRecipe::Debug => quote!(::core::fmt::Debug),
+        ConfiguredTraitRecipe::Clone => quote!(::core::clone::Clone),
+        ConfiguredTraitRecipe::Copy => quote!(::core::marker::Copy),
+        ConfiguredTraitRecipe::PartialEq => quote!(::core::cmp::PartialEq),
+        ConfiguredTraitRecipe::Eq => quote!(::core::cmp::Eq),
+        ConfiguredTraitRecipe::PartialOrd => quote!(::core::cmp::PartialOrd),
+        ConfiguredTraitRecipe::Ord => quote!(::core::cmp::Ord),
+        ConfiguredTraitRecipe::Hash => quote!(::core::hash::Hash),
+        _ => unreachable!("grammar-aware recipes are rendered separately"),
+    };
+    let (impl_generics, type_generics, where_clause) =
+        trait_impl_parts(facade, node, trait_path.clone());
+    match recipe {
+        ConfiguredTraitRecipe::Debug => {
+            let body = render_debug_body(node);
+            quote! {
+                impl #impl_generics ::core::fmt::Debug for #node_ident #type_generics #where_clause {
+                    fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                        #body
+                    }
+                }
+            }
+        }
+        ConfiguredTraitRecipe::Clone => {
+            let body = render_clone_body(node);
+            quote! {
+                impl #impl_generics ::core::clone::Clone for #node_ident #type_generics #where_clause {
+                    fn clone(&self) -> Self { #body }
+                }
+            }
+        }
+        ConfiguredTraitRecipe::Copy => quote! {
+            impl #impl_generics ::core::marker::Copy for #node_ident #type_generics #where_clause {}
+        },
+        ConfiguredTraitRecipe::PartialEq => {
+            let body = render_partial_eq_body(node);
+            quote! {
+                impl #impl_generics ::core::cmp::PartialEq for #node_ident #type_generics #where_clause {
+                    fn eq(&self, other: &Self) -> bool { #body }
+                }
+            }
+        }
+        ConfiguredTraitRecipe::Eq => quote! {
+            impl #impl_generics ::core::cmp::Eq for #node_ident #type_generics #where_clause {}
+        },
+        ConfiguredTraitRecipe::PartialOrd => {
+            let body = render_order_body(node, true);
+            quote! {
+                impl #impl_generics ::core::cmp::PartialOrd for #node_ident #type_generics #where_clause {
+                    fn partial_cmp(&self, other: &Self) -> Option<::core::cmp::Ordering> { #body }
+                }
+            }
+        }
+        ConfiguredTraitRecipe::Ord => {
+            let body = render_order_body(node, false);
+            quote! {
+                impl #impl_generics ::core::cmp::Ord for #node_ident #type_generics #where_clause {
+                    fn cmp(&self, other: &Self) -> ::core::cmp::Ordering { #body }
+                }
+            }
+        }
+        ConfiguredTraitRecipe::Hash => {
+            let body = render_hash_body(node);
+            quote! {
+                impl #impl_generics ::core::hash::Hash for #node_ident #type_generics #where_clause {
+                    fn hash<H: ::core::hash::Hasher>(&self, state: &mut H) { #body }
+                }
+            }
+        }
+        _ => unreachable!("grammar-aware recipes are rendered separately"),
+    }
+}
+
+fn semantic_fields(elements: &[ElementParsePlan]) -> Vec<&FieldPlan> {
+    elements
+        .iter()
+        .filter_map(|element| match &element.kind {
+            ElementParseKind::Semantic { field, .. } => Some(field),
+            ElementParseKind::Fixed { .. } => None,
+        })
+        .collect()
+}
+
+fn render_debug_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
+    let node_name = node.ident.unraw().to_string();
+    match &node.body {
+        NodeBodyPlan::Struct { style, elements } => {
+            let fields = semantic_fields(elements);
+            match style {
+                ResolvedFieldStyle::Named => {
+                    let entries = fields.iter().map(|field| {
+                        let ident = field.ident.as_ref().expect("named field");
+                        let name = ident.unraw().to_string();
+                        let access = field_access(quote!(self), Some(ident), field.index);
+                        quote!(debug.field(#name, &#access);)
+                    });
+                    quote! {
+                        let mut debug = formatter.debug_struct(#node_name);
+                        #(#entries)*
+                        debug.finish()
+                    }
+                }
+                ResolvedFieldStyle::Unnamed => {
+                    let entries = fields.iter().map(|field| {
+                        let access = field_access(quote!(self), None, field.index);
+                        quote!(debug.field(&#access);)
+                    });
+                    quote! {
+                        let mut debug = formatter.debug_tuple(#node_name);
+                        #(#entries)*
+                        debug.finish()
+                    }
+                }
+                ResolvedFieldStyle::Unit => quote!(formatter.write_str(#node_name)),
+            }
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let arms = variants.iter().map(|variant| {
+                let name = variant.ident.unraw().to_string();
+                let fields = semantic_fields(&variant.elements);
+                let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "debug");
+                match variant.style {
+                    ResolvedFieldStyle::Named => {
+                        let entries = fields.iter().zip(&bindings).map(|(field, binding)| {
+                            let field_name = field.ident.as_ref().expect("named field").unraw().to_string();
+                            quote!(debug.field(#field_name, #binding);)
+                        });
+                        quote!(#pattern => { let mut debug = formatter.debug_struct(#name); #(#entries)* debug.finish() })
+                    }
+                    ResolvedFieldStyle::Unnamed => {
+                        let entries = bindings.iter().map(|binding| quote!(debug.field(#binding);));
+                        quote!(#pattern => { let mut debug = formatter.debug_tuple(#name); #(#entries)* debug.finish() })
+                    }
+                    ResolvedFieldStyle::Unit => quote!(#pattern => formatter.write_str(#name)),
+                }
+            });
+            quote!(match self { #(#arms),* })
+        }
+    }
+}
+
+fn variant_bound_pattern(
+    node: &Ident,
+    variant: &VariantParsePlan,
+    prefix: &str,
+) -> (proc_macro2::TokenStream, Vec<Ident>) {
+    let fields = semantic_fields(&variant.elements);
+    let bindings = fields
+        .iter()
+        .map(|field| format_ident!("__recursa_{prefix}_{}", field.index))
+        .collect::<Vec<_>>();
+    let variant_ident = &variant.ident;
+    let pattern = match variant.style {
+        ResolvedFieldStyle::Named => {
+            let entries = fields.iter().zip(&bindings).map(|(field, binding)| {
+                let ident = field.ident.as_ref().expect("named field");
+                quote!(#ident: #binding)
+            });
+            quote!(#node::#variant_ident { #(#entries),* })
+        }
+        ResolvedFieldStyle::Unnamed => {
+            let field_count = fields
+                .iter()
+                .map(|field| field.index + 1)
+                .max()
+                .unwrap_or(0);
+            let mut entries = (0..field_count).map(|_| quote!(_)).collect::<Vec<_>>();
+            for (field, binding) in fields.iter().zip(&bindings) {
+                entries[field.index] = quote!(#binding);
+            }
+            quote!(#node::#variant_ident(#(#entries),*))
+        }
+        ResolvedFieldStyle::Unit => quote!(#node::#variant_ident),
+    };
+    (pattern, bindings)
+}
+
+fn render_clone_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
+    match &node.body {
+        NodeBodyPlan::Struct { style, elements } => {
+            let fields = semantic_fields(elements);
+            let values = fields.iter().map(|field| {
+                let access = field_access(quote!(self), field.ident.as_ref(), field.index);
+                quote!(::core::clone::Clone::clone(&#access))
+            });
+            match style {
+                ResolvedFieldStyle::Named => {
+                    let entries = fields.iter().zip(values).map(|(field, value)| {
+                        let ident = field.ident.as_ref().expect("named field");
+                        quote!(#ident: #value)
+                    });
+                    quote!(Self { #(#entries),* })
+                }
+                ResolvedFieldStyle::Unnamed => quote!(Self(#(#values),*)),
+                ResolvedFieldStyle::Unit => quote!(Self),
+            }
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let arms = variants.iter().map(|variant| {
+                let fields = semantic_fields(&variant.elements);
+                let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "clone");
+                let values = bindings
+                    .iter()
+                    .map(|binding| quote!(::core::clone::Clone::clone(#binding)));
+                let variant_ident = &variant.ident;
+                let value = match variant.style {
+                    ResolvedFieldStyle::Named => {
+                        let entries = fields.iter().zip(values).map(|(field, value)| {
+                            let ident = field.ident.as_ref().expect("named field");
+                            quote!(#ident: #value)
+                        });
+                        quote!(Self::#variant_ident { #(#entries),* })
+                    }
+                    ResolvedFieldStyle::Unnamed => quote!(Self::#variant_ident(#(#values),*)),
+                    ResolvedFieldStyle::Unit => quote!(Self::#variant_ident),
+                };
+                quote!(#pattern => #value)
+            });
+            quote!(match self { #(#arms),* })
+        }
+    }
+}
+
+fn render_partial_eq_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
+    match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => {
+            let comparisons = semantic_fields(elements).into_iter().map(|field| {
+                let left = field_access(quote!(self), field.ident.as_ref(), field.index);
+                let right = field_access(quote!(other), field.ident.as_ref(), field.index);
+                quote!(::core::cmp::PartialEq::eq(&#left, &#right))
+            });
+            quote!(true #(&& #comparisons)*)
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let arms = variants.iter().map(|variant| {
+                let (left_pattern, left) = variant_bound_pattern(&node.ident, variant, "eq_left");
+                let (right_pattern, right) =
+                    variant_bound_pattern(&node.ident, variant, "eq_right");
+                let comparisons = left
+                    .iter()
+                    .zip(right)
+                    .map(|(left, right)| quote!(::core::cmp::PartialEq::eq(#left, #right)));
+                quote!((#left_pattern, #right_pattern) => true #(&& #comparisons)*)
+            });
+            quote!(match (self, other) { #(#arms,)* _ => false })
+        }
+    }
+}
+
+fn render_order_body(node: &NodeParsePlan, partial: bool) -> proc_macro2::TokenStream {
+    let compare_fields = |left: Vec<proc_macro2::TokenStream>,
+                          right: Vec<proc_macro2::TokenStream>| {
+        let comparisons = left.into_iter().zip(right).map(|(left, right)| {
+            if partial {
+                quote! {
+                    match ::core::cmp::PartialOrd::partial_cmp(#left, #right) {
+                        Some(::core::cmp::Ordering::Equal) => {}
+                        ordering => return ordering,
+                    }
+                }
+            } else {
+                quote! {
+                    match ::core::cmp::Ord::cmp(#left, #right) {
+                        ::core::cmp::Ordering::Equal => {}
+                        ordering => return ordering,
+                    }
+                }
+            }
+        });
+        if partial {
+            quote!({ #(#comparisons)* Some(::core::cmp::Ordering::Equal) })
+        } else {
+            quote!({ #(#comparisons)* ::core::cmp::Ordering::Equal })
+        }
+    };
+    match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => {
+            let fields = semantic_fields(elements);
+            let left = fields
+                .iter()
+                .map(|field| {
+                    let access = field_access(quote!(self), field.ident.as_ref(), field.index);
+                    quote!(&#access)
+                })
+                .collect();
+            let right = fields
+                .iter()
+                .map(|field| {
+                    let access = field_access(quote!(other), field.ident.as_ref(), field.index);
+                    quote!(&#access)
+                })
+                .collect();
+            compare_fields(left, right)
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let same_variant = variants.iter().map(|variant| {
+                let (left_pattern, left) = variant_bound_pattern(&node.ident, variant, "ord_left");
+                let (right_pattern, right) =
+                    variant_bound_pattern(&node.ident, variant, "ord_right");
+                let left = left.iter().map(|binding| quote!(#binding)).collect();
+                let right = right.iter().map(|binding| quote!(#binding)).collect();
+                let body = compare_fields(left, right);
+                quote!((#left_pattern, #right_pattern) => #body)
+            });
+            let left_indices = variants.iter().enumerate().map(|(index, variant)| {
+                let (pattern, _) = variant_bound_pattern(&node.ident, variant, "ord_variant_left");
+                quote!(#pattern => #index)
+            });
+            let right_indices = variants.iter().enumerate().map(|(index, variant)| {
+                let (pattern, _) = variant_bound_pattern(&node.ident, variant, "ord_variant_right");
+                quote!(#pattern => #index)
+            });
+            let differing = if partial {
+                quote! {
+                    let left = match self { #(#left_indices),* };
+                    let right = match other { #(#right_indices),* };
+                    Some(::core::cmp::Ord::cmp(&left, &right))
+                }
+            } else {
+                quote! {
+                    let left = match self { #(#left_indices),* };
+                    let right = match other { #(#right_indices),* };
+                    ::core::cmp::Ord::cmp(&left, &right)
+                }
+            };
+            quote!(match (self, other) { #(#same_variant,)* _ => { #differing } })
+        }
+    }
+}
+
+fn render_hash_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
+    match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => {
+            let hashes = semantic_fields(elements).into_iter().map(|field| {
+                let access = field_access(quote!(self), field.ident.as_ref(), field.index);
+                quote!(::core::hash::Hash::hash(&#access, state);)
+            });
+            quote!(#(#hashes)*)
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let arms = variants.iter().enumerate().map(|(index, variant)| {
+                let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "hash");
+                let hashes = bindings
+                    .iter()
+                    .map(|binding| quote!(::core::hash::Hash::hash(#binding, state);));
+                quote!(#pattern => { ::core::hash::Hash::hash(&#index, state); #(#hashes)* })
+            });
+            quote!(match self { #(#arms),* })
+        }
+    }
+}
+
+fn render_node_visit(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    mutable: bool,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let node_ident = &node.ident;
+    let mut generics = node.generics.clone();
+    let bound = if mutable {
+        quote!(#facade::VisitMut)
+    } else {
+        quote!(#facade::Visit)
+    };
+    for field_type in semantic_field_types(facade, node) {
+        generics
+            .make_where_clause()
+            .predicates
+            .push(syn::parse_quote!(#field_type: #bound));
+    }
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    let children = render_visit_children(facade, node, mutable);
+    if mutable {
+        quote! {
+            impl #impl_generics #facade::VisitMut for #node_ident #type_generics #where_clause {
+                fn visit_mut<V: #facade::TotalVisitorMut>(
+                    &mut self,
+                    visitor: &mut V,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>> {
+                    match visitor.total_enter_mut(self) {
+                        ::core::ops::ControlFlow::Continue(()) => { #children }
+                        ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
+                        other => return other,
+                    }
+                    visitor.total_exit_mut(self)
+                }
+            }
+        }
+    } else {
+        quote! {
+            impl #impl_generics #facade::Visit for #node_ident #type_generics #where_clause {
+                fn visit<V: #facade::TotalVisitor>(
+                    &self,
+                    visitor: &mut V,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>> {
+                    match visitor.total_enter(self) {
+                        ::core::ops::ControlFlow::Continue(()) => { #children }
+                        ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
+                        other => return other,
+                    }
+                    visitor.total_exit(self)
+                }
+            }
+        }
+    }
+}
+
+fn render_node_pretty(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let node_ident = &node.ident;
+    let (impl_generics, type_generics, where_clause) =
+        trait_impl_parts(facade, node, quote!(#facade::Pretty));
+    let elements = |elements: &[ElementParsePlan], base: proc_macro2::TokenStream| {
+        let rendered = elements.iter().map(|element| match &element.kind {
+            ElementParseKind::Fixed { spelling, .. } => {
+                let text = spelling;
+                quote!(context.token(#text)?;)
+            }
+            ElementParseKind::Semantic { field, .. } => {
+                let value = field_access(base.clone(), field.ident.as_ref(), field.index);
+                quote!(#facade::Pretty::pretty(&#value, context)?;)
+            }
+        });
+        quote!(#(#rendered)*)
+    };
+    let body = match &node.body {
+        NodeBodyPlan::Struct {
+            elements: fields, ..
+        } => {
+            let rendered = elements(fields, quote!(self));
+            quote!({ #rendered Ok(()) })
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let arms = variants.iter().map(|variant| {
+                let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty");
+                let mut binding_index = 0;
+                let rendered = variant.elements.iter().map(|element| match &element.kind {
+                    ElementParseKind::Fixed { spelling, .. } => {
+                        let text = spelling;
+                        quote!(context.token(#text)?;)
+                    }
+                    ElementParseKind::Semantic { .. } => {
+                        let binding = &bindings[binding_index];
+                        binding_index += 1;
+                        quote!(#facade::Pretty::pretty(#binding, context)?;)
+                    }
+                });
+                quote!(#pattern => { #(#rendered)* Ok(()) })
+            });
+            quote!(match self { #(#arms),* })
+        }
+    };
+    quote! {
+        impl #impl_generics #facade::Pretty for #node_ident #type_generics #where_clause {
+            fn pretty(
+                &self,
+                context: &mut #facade::PrettyContext,
+            ) -> ::core::fmt::Result {
+                #body
+            }
+        }
+    }
+}
+
+fn render_node_arbitrary(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let node_ident = &node.ident;
+    let mut generics = node.generics.clone();
+    generics.params.insert(0, syn::parse_quote!('arbitrary));
+    for field_type in semantic_field_types(facade, node) {
+        generics
+            .make_where_clause()
+            .predicates
+            .push(syn::parse_quote!(
+                #field_type: #facade::__private::arbitrary::Arbitrary<'arbitrary>
+            ));
+    }
+    let (impl_generics, _, where_clause) = generics.split_for_impl();
+    let (_, type_generics, _) = node.generics.split_for_impl();
+    let arbitrary_value = || quote!(#facade::__private::arbitrary::Arbitrary::arbitrary(input)?);
+    let body = match &node.body {
+        NodeBodyPlan::Struct { style, elements } => {
+            let fields = semantic_fields(elements);
+            let values = fields.iter().map(|_| arbitrary_value());
+            match style {
+                ResolvedFieldStyle::Named => {
+                    let entries = fields.iter().zip(values).map(|(field, value)| {
+                        let ident = field.ident.as_ref().expect("named field");
+                        quote!(#ident: #value)
+                    });
+                    quote!(Self { #(#entries),* })
+                }
+                ResolvedFieldStyle::Unnamed => quote!(Self(#(#values),*)),
+                ResolvedFieldStyle::Unit => quote!(Self),
+            }
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let arms = variants.iter().enumerate().map(|(index, variant)| {
+                let fields = semantic_fields(&variant.elements);
+                let values = fields.iter().map(|_| arbitrary_value());
+                let variant_ident = &variant.ident;
+                let value = match variant.style {
+                    ResolvedFieldStyle::Named => {
+                        let entries = fields.iter().zip(values).map(|(field, value)| {
+                            let ident = field.ident.as_ref().expect("named field");
+                            quote!(#ident: #value)
+                        });
+                        quote!(Self::#variant_ident { #(#entries),* })
+                    }
+                    ResolvedFieldStyle::Unnamed => quote!(Self::#variant_ident(#(#values),*)),
+                    ResolvedFieldStyle::Unit => quote!(Self::#variant_ident),
+                };
+                quote!(#index => #value)
+            });
+            let last = variants.len().saturating_sub(1);
+            quote! {
+                match input.int_in_range(0usize..=#last)? {
+                    #(#arms,)*
+                    _ => unreachable!("the arbitrary variant index is in range"),
+                }
+            }
+        }
+    };
+    quote! {
+        __recursa_if_arbitrary! {
+        impl #impl_generics #facade::__private::arbitrary::Arbitrary<'arbitrary>
+            for #node_ident #type_generics #where_clause
+        {
+            fn arbitrary(
+                input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
+            ) -> #facade::__private::arbitrary::Result<Self> {
+                Ok(#body)
+            }
+        }
+        }
+    }
+}
+
+fn render_node_serde(plan: &EmissionPlan, node: &NodeParsePlan) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let node_ident = &node.ident;
+    let remote = node_ident.unraw().to_string();
+    let helper = format_ident!(
+        "__RecursaSerde_{}",
+        stable_hash(node.semantic_key.as_bytes())
+    );
+    let serde_crate = format!("{}::__private::serde", facade.unraw());
+    let mut derives = Vec::new();
+    let serialize = node
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Serialize);
+    let deserialize = node
+        .configured_traits
+        .contains(&ConfiguredTraitRecipe::Deserialize);
+    if serialize {
+        derives.push(quote!(#facade::__private::serde::Serialize));
+    }
+    if deserialize {
+        derives.push(quote!(#facade::__private::serde::Deserialize));
+    }
+    let generics = &node.generics;
+    let helper_body = match &node.body {
+        NodeBodyPlan::Struct { style, elements } => {
+            let fields = elements.iter().filter_map(|element| {
+                let ElementParseKind::Semantic {
+                    field,
+                    terminal,
+                    wrappers,
+                    ..
+                } = &element.kind
+                else {
+                    return None;
+                };
+                Some((field, render_wrapped_type(facade, terminal, wrappers)))
+            });
+            match style {
+                ResolvedFieldStyle::Named => {
+                    let fields = fields.map(|(field, ty)| {
+                        let ident = field.ident.as_ref().expect("named field");
+                        quote!(#ident: #ty)
+                    });
+                    quote!(struct #helper #generics { #(#fields),* })
+                }
+                ResolvedFieldStyle::Unnamed => {
+                    let fields = fields.map(|(_, ty)| quote!(#ty));
+                    quote!(struct #helper #generics (#(#fields),*);)
+                }
+                ResolvedFieldStyle::Unit => quote!(struct #helper #generics;),
+            }
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let variants = variants.iter().map(|variant| {
+                let ident = &variant.ident;
+                let fields = variant.elements.iter().filter_map(|element| {
+                    let ElementParseKind::Semantic {
+                        field,
+                        terminal,
+                        wrappers,
+                        ..
+                    } = &element.kind
+                    else {
+                        return None;
+                    };
+                    Some((field, render_wrapped_type(facade, terminal, wrappers)))
+                });
+                match variant.style {
+                    ResolvedFieldStyle::Named => {
+                        let fields = fields.map(|(field, ty)| {
+                            let field_ident = field.ident.as_ref().expect("named field");
+                            quote!(#field_ident: #ty)
+                        });
+                        quote!(#ident { #(#fields),* })
+                    }
+                    ResolvedFieldStyle::Unnamed => {
+                        let fields = fields.map(|(_, ty)| quote!(#ty));
+                        quote!(#ident(#(#fields),*))
+                    }
+                    ResolvedFieldStyle::Unit => quote!(#ident),
+                }
+            });
+            quote!(enum #helper #generics { #(#variants),* })
+        }
+    };
+    let helper_definition = quote! {
+        #[derive(#(#derives),*)]
+        #[serde(remote = #remote, crate = #serde_crate)]
+        #[allow(non_camel_case_types)]
+        #helper_body
+    };
+    let serialize_impl = serialize.then(|| {
+        let (impl_generics, type_generics, where_clause) =
+            trait_impl_parts(facade, node, quote!(#facade::__private::serde::Serialize));
+        quote! {
+            impl #impl_generics #facade::__private::serde::Serialize
+                for #node_ident #type_generics #where_clause
+            {
+                fn serialize<S: #facade::__private::serde::Serializer>(
+                    &self,
+                    serializer: S,
+                ) -> Result<S::Ok, S::Error> {
+                    #helper::serialize(self, serializer)
+                }
+            }
+        }
+    });
+    let deserialize_impl = deserialize.then(|| {
+        let mut impl_generics = node.generics.clone();
+        impl_generics
+            .params
+            .insert(0, syn::parse_quote!('__recursa_de));
+        for field_type in semantic_field_types(facade, node) {
+            impl_generics
+                .make_where_clause()
+                .predicates
+                .push(syn::parse_quote!(
+                    #field_type: #facade::__private::serde::Deserialize<'__recursa_de>
+                ));
+        }
+        let (impl_generics, _, where_clause) = impl_generics.split_for_impl();
+        let (_, type_generics, _) = node.generics.split_for_impl();
+        quote! {
+            impl #impl_generics #facade::__private::serde::Deserialize<'__recursa_de>
+                for #node_ident #type_generics #where_clause
+            {
+                fn deserialize<D: #facade::__private::serde::Deserializer<'__recursa_de>>(
+                    deserializer: D,
+                ) -> Result<Self, D::Error> {
+                    #helper::deserialize(deserializer)
+                }
+            }
+        }
+    });
+    quote! {
+        __recursa_if_serde! {
+        #helper_definition
+        #serialize_impl
+        #deserialize_impl
+        }
+    }
+}
+
+fn semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<Type> {
+    let elements = match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => elements.iter().collect::<Vec<_>>(),
+        NodeBodyPlan::Enum { variants, .. } => variants
+            .iter()
+            .flat_map(|variant| variant.elements.iter())
+            .collect(),
+    };
+    elements
+        .into_iter()
+        .filter_map(|element| match &element.kind {
+            ElementParseKind::Semantic {
+                terminal, wrappers, ..
+            } => Some(render_wrapped_type(facade, terminal, wrappers)),
+            ElementParseKind::Fixed { .. } => None,
+        })
+        .collect()
+}
+
+fn render_visit_children(
+    facade: &Ident,
+    node: &NodeParsePlan,
+    mutable: bool,
+) -> proc_macro2::TokenStream {
+    let visit = |value: proc_macro2::TokenStream| {
+        if mutable {
+            quote!(#facade::VisitMut::visit_mut(#value, visitor)?;)
+        } else {
+            quote!(#facade::Visit::visit(#value, visitor)?;)
+        }
+    };
+    match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => {
+            let fields = elements.iter().filter_map(|element| {
+                let ElementParseKind::Semantic { field, .. } = &element.kind else {
+                    return None;
+                };
+                let access = field_access(quote!(self), field.ident.as_ref(), field.index);
+                Some(visit(if mutable {
+                    quote!(&mut #access)
+                } else {
+                    quote!(&#access)
+                }))
+            });
+            quote!(#(#fields)*)
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let node_ident = &node.ident;
+            let arms = variants.iter().map(|variant| {
+                let semantic = variant
+                    .elements
+                    .iter()
+                    .filter_map(|element| match &element.kind {
+                        ElementParseKind::Semantic { field, .. } => Some(field),
+                        ElementParseKind::Fixed { .. } => None,
+                    })
+                    .collect::<Vec<_>>();
+                let bindings = semantic
+                    .iter()
+                    .map(|field| format_ident!("__recursa_visit_field_{}", field.index))
+                    .collect::<Vec<_>>();
+                let variant_ident = &variant.ident;
+                let pattern = match variant.style {
+                    ResolvedFieldStyle::Named => {
+                        let fields = semantic.iter().zip(&bindings).map(|(field, binding)| {
+                            let ident = field
+                                .ident
+                                .as_ref()
+                                .expect("a named variant field has an identifier");
+                            quote!(#ident: #binding)
+                        });
+                        quote!(#node_ident::#variant_ident { #(#fields),* })
+                    }
+                    ResolvedFieldStyle::Unnamed => {
+                        let field_count = semantic
+                            .iter()
+                            .map(|field| field.index + 1)
+                            .max()
+                            .unwrap_or(0);
+                        let mut fields = (0..field_count).map(|_| quote!(_)).collect::<Vec<_>>();
+                        for (field, binding) in semantic.iter().zip(&bindings) {
+                            fields[field.index] = quote!(#binding);
+                        }
+                        quote!(#node_ident::#variant_ident(#(#fields),*))
+                    }
+                    ResolvedFieldStyle::Unit => quote!(#node_ident::#variant_ident),
+                };
+                let visits = bindings.into_iter().map(|binding| visit(quote!(#binding)));
+                quote!(#pattern => { #(#visits)* })
+            });
+            quote!(match self { #(#arms),* })
         }
     }
 }
@@ -4440,7 +5566,9 @@ fn render_sequence_parse(
         occurrences.push(occurrence.clone());
         let unique_index = variant.map_or(index, |(variant, _)| variant * 1000 + index);
         match &element.kind {
-            ElementParseKind::Fixed { expected, capture } => {
+            ElementParseKind::Fixed {
+                expected, capture, ..
+            } => {
                 let expected_name = expected_static(node_index, unique_index, "fixed");
                 let expected_definition =
                     render_expected_static(&expected_name, expected, plan, facade);
