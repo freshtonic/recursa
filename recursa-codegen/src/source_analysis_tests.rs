@@ -429,19 +429,22 @@ struct Root { #[lex(pattern = r"\bword")] word: Word }
         let lib = std::fs::read_to_string(root.join("src/lib.rs")).expect("read public seam");
         let source_analysis = std::fs::read_to_string(root.join("src/source_analysis.rs"))
             .expect("read source-analysis implementation");
-        let generation = std::fs::read_to_string(root.join("src/generation_compound.rs"))
+        let generation = std::fs::read_to_string(root.join("src/generation.rs"))
             .expect("read generation implementation");
+        let publication = std::fs::read_to_string(root.join("src/generation/publication.rs"))
+            .expect("read generation publication implementation");
 
         assert!(!lib.contains("pub mod source_analysis"));
-        assert!(lib.contains("mod generation_compound;"));
-        assert!(lib.contains("pub use generation_compound::{Generation, generate};"));
+        assert!(lib.contains("mod generation;"));
+        assert!(lib.contains("pub use generation::{Generation, generate};"));
         assert!(!source_analysis.contains("OUT_DIR"));
         assert!(!source_analysis.contains("RECURSA_GENERATION"));
         assert!(!source_analysis.contains("fs::rename"));
         assert!(generation.contains("pub fn generate"));
         assert!(generation.contains("OUT_DIR"));
         assert!(!generation.contains("rustc-env=RECURSA_GENERATION"));
-        assert!(generation.contains("SELECTED_GENERATION"));
-        assert!(generation.contains("fs::rename"));
+        assert!(publication.contains("SELECTED_GENERATION"));
+        assert!(generation.contains("mod publication;"));
+        assert!(publication.contains("fs::rename"));
     }
 }

@@ -1,0 +1,211 @@
+//! Private generation protocol, capability handshake, and plan-family identities.
+//!
+//! These values participate in generation identity and loader compatibility. Keeping
+//! their construction together makes protocol drift explicit and reviewable.
+
+use super::*;
+
+/// Private loader protocol understood by generated roots and the facade.
+pub(super) const PRIVATE_PROTOCOL: u32 = 1;
+/// Stable emitter-format identity hashed into every generated family identity.
+pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v3";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Capability-owned private plan data retained in deterministic field and variant order.
+pub(super) struct PrivateAbiPlan {
+    pub(super) release: String,
+    pub(super) protocol: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Capability-owned private plan data retained in deterministic field and variant order.
+pub(super) struct FacadeCapability {
+    pub(super) diagrams: bool,
+    pub(super) explorer: bool,
+    pub(super) arbitrary: bool,
+    pub(super) serde: bool,
+}
+/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+pub(super) fn parse_plan_identity(nodes: &[NodeParsePlan]) -> u64 {
+    stable_hash(format!("{nodes:?}").as_bytes())
+}
+
+/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+pub(super) fn plan_family_identity(value: &impl std::fmt::Debug) -> u64 {
+    stable_hash(format!("{value:?}").as_bytes())
+}
+
+/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+pub(super) fn emitted_private_abi_plan() -> PrivateAbiPlan {
+    PrivateAbiPlan {
+        release: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol: PRIVATE_PROTOCOL,
+    }
+}
+
+/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+pub(super) fn authoritative_private_abi_plan() -> PrivateAbiPlan {
+    // This contract belongs to the facade/codegen release, independently of
+    // the mutable emission plan which later renders the handshake.
+    PrivateAbiPlan {
+        release: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol: PRIVATE_PROTOCOL,
+    }
+}
+
+/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+pub(super) fn authoritative_configured_trait_identity(
+    lowered: &crate::materialization::LoweredGrammar,
+    resolved: &crate::resolution::ResolvedSourceGrammar,
+) -> u64 {
+    let source = lowered.source_modeled.source_model();
+    let mut canonical = String::new();
+    for (index, resolved_node) in resolved.nodes.iter().enumerate() {
+        canonical.push_str(&format!("node-{index}:"));
+        if let Some(node) = source
+            .nodes
+            .iter()
+            .find(|node| node.resolved_node == resolved_node.id)
+        {
+            for selection in &node.configured_traits.effective {
+                canonical.push_str(&format!("{:?},", selection.recipe));
+            }
+        } else {
+            canonical.push_str("<missing>");
+        }
+        canonical.push(';');
+    }
+    for (index, content) in resolved.content_tokens.iter().enumerate() {
+        canonical.push_str(&format!("token-{index}:"));
+        if let Some(token) =
+            source
+                .token_definitions
+                .iter()
+                .find_map(|definition| match &definition.kind {
+                    TokenDefinitionKind::Content(token) if token.semantic == content.id => {
+                        Some(token)
+                    }
+                    TokenDefinitionKind::Content(_)
+                    | TokenDefinitionKind::Fixed(_)
+                    | TokenDefinitionKind::LexicalBase(_) => None,
+                })
+        {
+            for selection in &token.configured_traits.effective {
+                canonical.push_str(&format!("{:?},", selection.recipe));
+            }
+        } else {
+            canonical.push_str("<missing>");
+        }
+        canonical.push(';');
+    }
+    stable_hash(canonical.as_bytes())
+}
+
+/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+pub(super) fn configured_trait_plan_identity(
+    nodes: &[NodeParsePlan],
+    tokens: &[TokenParsePlan],
+) -> u64 {
+    let mut canonical = String::new();
+    for (index, node) in nodes.iter().enumerate() {
+        canonical.push_str(&format!("node-{index}:"));
+        for recipe in &node.configured_traits {
+            canonical.push_str(&format!("{recipe:?},"));
+        }
+        canonical.push(';');
+    }
+    for (index, token) in tokens.iter().enumerate() {
+        canonical.push_str(&format!("token-{index}:"));
+        for recipe in &token.configured_traits {
+            canonical.push_str(&format!("{recipe:?},"));
+        }
+        canonical.push(';');
+    }
+    stable_hash(canonical.as_bytes())
+}
+
+/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+pub(super) fn accepted_capabilities(
+    requested_arbitrary: bool,
+    requested_serde: bool,
+    diagrams: bool,
+    explorer: bool,
+) -> Vec<FacadeCapability> {
+    let mut accepted = Vec::new();
+    for explorer_enabled in [false, true] {
+        for arbitrary in [false, true] {
+            for serde in [false, true] {
+                if (!explorer_enabled || explorer)
+                    && (!requested_arbitrary || arbitrary)
+                    && (!requested_serde || serde)
+                {
+                    accepted.push(FacadeCapability {
+                        diagrams,
+                        explorer: explorer_enabled,
+                        arbitrary,
+                        serde,
+                    });
+                }
+            }
+        }
+    }
+    accepted
+}
+
+/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+pub(super) fn emitted_capability_plan(
+    nodes: &[NodeParsePlan],
+    tokens: &[TokenParsePlan],
+    diagrams: bool,
+    explorer: bool,
+) -> Vec<FacadeCapability> {
+    let recipes = nodes
+        .iter()
+        .flat_map(|node| &node.configured_traits)
+        .chain(tokens.iter().flat_map(|token| &token.configured_traits));
+    capability_plan_from_recipes(recipes.copied(), diagrams, explorer)
+}
+
+/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+pub(super) fn authoritative_capability_plan(
+    lowered: &crate::materialization::LoweredGrammar,
+    diagrams: bool,
+    explorer: bool,
+) -> Vec<FacadeCapability> {
+    let source = lowered.source_modeled.source_model();
+    let recipes = source
+        .nodes
+        .iter()
+        .flat_map(|node| &node.configured_traits.effective)
+        .chain(
+            source
+                .token_definitions
+                .iter()
+                .flat_map(|definition| match &definition.kind {
+                    TokenDefinitionKind::Content(token) => {
+                        token.configured_traits.effective.as_slice()
+                    }
+                    TokenDefinitionKind::Fixed(_) | TokenDefinitionKind::LexicalBase(_) => &[],
+                }),
+        )
+        .map(|selection| selection.recipe);
+    capability_plan_from_recipes(recipes, diagrams, explorer)
+}
+
+/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+pub(super) fn capability_plan_from_recipes(
+    recipes: impl Iterator<Item = ConfiguredTraitRecipe>,
+    diagrams: bool,
+    explorer: bool,
+) -> Vec<FacadeCapability> {
+    let mut requested_arbitrary = false;
+    let mut requested_serde = false;
+    for recipe in recipes {
+        requested_arbitrary |= recipe == ConfiguredTraitRecipe::Arbitrary;
+        requested_serde |= matches!(
+            recipe,
+            ConfiguredTraitRecipe::Serialize | ConfiguredTraitRecipe::Deserialize
+        );
+    }
+    accepted_capabilities(requested_arbitrary, requested_serde, diagrams, explorer)
+}
