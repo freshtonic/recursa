@@ -6,7 +6,7 @@
 use super::*;
 
 /// Private loader protocol understood by generated roots and the facade.
-pub(super) const PRIVATE_PROTOCOL: u32 = 1;
+pub(super) const PRIVATE_PROTOCOL: u32 = 2;
 /// Stable emitter-format identity hashed into every generated family identity.
 pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v3";
 

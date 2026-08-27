@@ -1142,6 +1142,10 @@ pub(super) fn validate_explorer_collisions(
                 explorer_sample_function(application.parse_index).to_string(),
             )?;
         }
+        reserve(
+            node.module,
+            explorer_parse_function(application.parse_index).to_string(),
+        )?;
         if checked_root_nodes.insert(root.node)
             && authored_inherent_method(resolved, cfg, node.module, &node.ident, "explorer")
         {
@@ -1444,57 +1448,13 @@ pub(super) fn render_token_explorer(
     }
 }
 
-/// Builds explorer elements for body from frozen inputs without changing canonical generation order.
-pub(super) fn explorer_elements_for_body(body: &NodeBodyPlan) -> Vec<&ElementParsePlan> {
-    match body {
-        NodeBodyPlan::Struct { elements, .. } => elements.iter().collect(),
-        NodeBodyPlan::Enum { variants, .. } => variants
-            .iter()
-            .flat_map(|variant| variant.elements.iter())
-            .collect(),
-        NodeBodyPlan::Pratt(pratt) => pratt
-            .nud
-            .iter()
-            .flat_map(|branch| branch.variant.elements.iter())
-            .chain(pratt.led.iter().flat_map(|branch| {
-                std::iter::once(&branch.lhs).chain(branch.variant.elements.iter())
-            }))
-            .collect(),
-    }
-}
-
 /// Builds explorer impl generics from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_impl_generics(
-    plan: &EmissionPlan,
-    application: &NodeApplicationParsePlan,
+    _plan: &EmissionPlan,
+    _application: &NodeApplicationParsePlan,
 ) -> Generics {
     let mut generics = Generics::default();
     generics.params.push(syn::parse_quote!('__recursa_input));
-    let mut terminals = BTreeSet::new();
-    for element in explorer_elements_for_body(&application.body) {
-        let ElementParseKind::Semantic {
-            terminal,
-            explorer_terminal,
-            ..
-        } = &element.kind
-        else {
-            continue;
-        };
-        if matches!(
-            explorer_terminal,
-            ExplorerTerminalPlan::Node(candidate) if *candidate == application.application
-        ) {
-            continue;
-        }
-        let text = terminal.to_token_stream().to_string();
-        if terminals.insert(text) {
-            let facade = &plan.facade;
-            generics
-                .make_where_clause()
-                .predicates
-                .push(syn::parse_quote!(#terminal: #facade::__private::ExplorerNode));
-        }
-    }
     generics
 }
 
@@ -1586,12 +1546,7 @@ pub(super) fn render_node_application_explorer(
         .expect("typed explorer plan retains every materialized Node application");
     let explorer_generics = explorer_impl_generics(plan, application);
     let (impl_generics, _, where_clause) = explorer_generics.split_for_impl();
-    let mut entry_generics = explorer_generics.clone();
-    entry_generics
-        .make_where_clause()
-        .predicates
-        .push(syn::parse_quote!(#ty: #facade::Visit));
-    let (entry_impl_generics, _, entry_where_clause) = entry_generics.split_for_impl();
+    let (entry_impl_generics, _, entry_where_clause) = explorer_generics.split_for_impl();
 
     let (node_body, child_count_body, child_body) = match (&application.body, &explorer_node.body) {
         (NodeBodyPlan::Struct { elements, .. }, ExplorerNodeBodyPlan::Struct(explorer)) => {
@@ -1700,6 +1655,7 @@ pub(super) fn render_node_application_explorer(
     let entry = root.map(|root| {
         let grammar_schema = explorer_grammar_schema_static(node_index);
         let sample = explorer_sample_function(node_index);
+        let parse = explorer_parse_function(node_index);
         let explorer_lex = explorer_lex_function();
         let pretty = root.capabilities.pretty;
         let pretty_body = if pretty {
@@ -1709,7 +1665,10 @@ pub(super) fn render_node_application_explorer(
                 ))
             }
         } else {
-            quote!(None)
+            quote! {
+                let _ = (parsed, config);
+                None
+            }
         };
         let arbitrary = root.capabilities.arbitrary;
         let sample_function = arbitrary.then(|| {
@@ -1748,6 +1707,21 @@ pub(super) fn render_node_application_explorer(
             }
         };
         quote! {
+            fn #parse<'__recursa_input>(
+                source: &'__recursa_input str,
+            ) -> Result<
+                #facade::explorer::ExplorerDocument<'__recursa_input>,
+                #facade::explorer::ParseFailure<'__recursa_input>,
+            > {
+                let lexed = #module_anchor::lex(source);
+                let lexical_errors = lexed.errors().map(|error| error.span());
+                let mut input = lexed.input();
+                #facade::__private::explorer_parse_document::<#ty, _>(
+                    &mut input.inner,
+                    lexical_errors,
+                )
+            }
+
             #sample_function
 
             unsafe impl #entry_impl_generics #facade::__private::ExplorerRoot
@@ -1776,6 +1750,7 @@ pub(super) fn render_node_application_explorer(
                             #pretty,
                             arbitrary,
                             #module_anchor::#explorer_lex,
+                            #parse,
                             sample,
                         )
                     }
@@ -1806,6 +1781,7 @@ pub(super) fn render_node_application_explorer(
                     element: usize,
                     child: usize,
                 ) -> Option<#facade::__private::ExplorerNodeData<'document>> {
+                    let _ = (&cursor, child);
                     #child_body
                 }
             }
@@ -1828,6 +1804,11 @@ pub(super) fn explorer_schema_static(node_index: usize, variant: Option<usize>) 
 /// Builds explorer lex function from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_lex_function() -> Ident {
     format_ident!("__recursa_explorer_lex")
+}
+
+/// Returns the private parse callback name for one materialized root.
+pub(super) fn explorer_parse_function(node_index: usize) -> Ident {
+    format_ident!("__recursa_explorer_parse_{node_index}")
 }
 
 /// Builds explorer sample function from frozen inputs without changing canonical generation order.

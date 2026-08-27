@@ -68,7 +68,7 @@ pub enum Entry<'input> {
 
 #[derive(recursa::Node)]
 pub struct Label<'input> {
-    #[lex(pattern = r"[A-Za-z]+")]
+    #[lex(pattern = r"[A-Za-zé]+")]
     pub text: LabelText<'input>,
 }
 

@@ -54,9 +54,9 @@ pub mod __private {
         lex_record as explorer_lex_record, lex_result as explorer_lex_result,
         node as explorer_node, node_child as explorer_node_child,
         node_schema as explorer_node_schema, node_target as explorer_node_target,
-        pretty_output as explorer_pretty_output, sample_error as explorer_sample_error,
-        token_node as explorer_token_node, token_schema as explorer_token_schema,
-        variant_schema as explorer_variant_schema,
+        parse_document as explorer_parse_document, pretty_output as explorer_pretty_output,
+        sample_error as explorer_sample_error, token_node as explorer_token_node,
+        token_schema as explorer_token_schema, variant_schema as explorer_variant_schema,
     };
     pub use crate::grammar::{ExpectedAtomId, FollowSet, FollowSetError, GrammarInfo, TokenKind};
     pub use crate::input::{Input, LexResult, TokenRecord};
@@ -122,7 +122,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        1,
+        2,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -151,7 +151,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            1,
+            2,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

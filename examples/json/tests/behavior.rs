@@ -50,3 +50,18 @@ fn invalid_or_trailing_json_is_rejected() {
     assert!(matches!(parse("{"), Err(ParseFailure::Syntax(_))));
     assert!(parse("null true").is_err());
 }
+
+#[cfg(feature = "explorer")]
+#[test]
+fn recursive_json_parses_through_the_erased_explorer_adapter() {
+    let source = r#"{"answer":[true,null,{"nested":"value"}]}"#;
+    let document = grammar::Value::explorer()
+        .parse(source)
+        .expect("recursive JSON parses through the adapter");
+    assert_eq!(document.source(), Some(source));
+    assert_eq!(
+        document.root().span(),
+        Some(recursa::Span::new(0, source.len()).unwrap())
+    );
+    assert_eq!(document.root().active_variant().unwrap().name(), "Object");
+}

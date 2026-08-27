@@ -296,6 +296,7 @@ pub(super) enum ElementParseKind {
         /// Terminal application associated with this value.
         terminal_application: Option<MaterializedApplicationId>,
         /// Explorer terminal associated with this value.
+        #[cfg_attr(not(feature = "explorer"), allow(dead_code))]
         explorer_terminal: ExplorerTerminalPlan,
         /// Wrappers associated with this value.
         wrappers: Vec<FieldWrapper>,
@@ -1547,7 +1548,7 @@ pub(super) fn authored_projection_with(
                     | ResolvedGenericArgument::Unsupported(_) => None,
                 });
                 let argument = argument.ok_or_else(|| {
-                    format!("authored catalog type `{:?}` has no type argument", catalog)
+                    format!("authored catalog type `{catalog:?}` has no type argument")
                 })?;
                 let mut projected =
                     authored_projection_with(argument, resolved, bindings, active_aliases)?;

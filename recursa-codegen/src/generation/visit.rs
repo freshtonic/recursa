@@ -17,6 +17,10 @@ mod tests {
     fn root_visit_variants_are_encoded_away_from_reserved_and_nested_names() {
         test_support::root_visit_variants_are_encoded_away_from_reserved_and_nested_names();
     }
+    #[test]
+    fn recursive_concrete_visit_impls_do_not_publish_cyclic_child_bounds() {
+        test_support::recursive_concrete_visit_impls_do_not_publish_cyclic_child_bounds();
+    }
 }
 
 /// Builds is public from frozen inputs without changing canonical generation order.
@@ -280,7 +284,7 @@ pub(super) fn render_node_visit(
             Events = #module_anchor::__RecursaVisitEvents<#event_input>
         >)
     };
-    for field_type in semantic_field_types(facade, node) {
+    for field_type in visit_field_types(plan, node) {
         generics
             .make_where_clause()
             .predicates
@@ -348,7 +352,68 @@ pub(super) fn render_node_visit(
     }
 }
 
-/// Renders render visit children from frozen inputs without changing canonical generation order.
+/// Returns non-recursive semantic fields whose traversal contract needs an explicit bound.
+fn visit_field_types(plan: &EmissionPlan, node: &NodeParsePlan) -> Vec<Type> {
+    let mut fields = Vec::new();
+    for_each_element(&node.body, &mut |element| {
+        let ElementParseKind::Semantic {
+            terminal,
+            terminal_node,
+            wrappers,
+            ..
+        } = &element.kind
+        else {
+            return;
+        };
+        if is_recursive_terminal(node, terminal) {
+            return;
+        }
+        let cyclic = terminal_node
+            .is_some_and(|child| node_reaches(plan, child, node.node, &mut BTreeSet::new()));
+        if !cyclic {
+            fields.push(render_wrapped_type(&plan.facade, terminal, wrappers));
+        }
+    });
+    fields
+}
+
+/// Reports whether the authored Node dependency graph reaches `target` from `current`.
+fn node_reaches(
+    plan: &EmissionPlan,
+    current: NodeId,
+    target: NodeId,
+    visited: &mut BTreeSet<NodeId>,
+) -> bool {
+    if current == target {
+        return true;
+    }
+    if !visited.insert(current) {
+        return false;
+    }
+    let Some(body) = plan
+        .nodes
+        .iter()
+        .find(|node| node.node == current)
+        .map(|node| &node.body)
+    else {
+        return false;
+    };
+    let mut dependencies = Vec::new();
+    for_each_element(body, &mut |element| {
+        if let ElementParseKind::Semantic {
+            terminal_node: Some(node),
+            ..
+        } = &element.kind
+        {
+            dependencies.push(*node);
+        }
+    });
+    dependencies
+        .into_iter()
+        .any(|dependency| node_reaches(plan, dependency, target, visited))
+}
+
+/// Renders Visit calls for semantic children in authored source order.
 pub(super) fn render_visit_children(
     facade: &Ident,
     node: &NodeParsePlan,
