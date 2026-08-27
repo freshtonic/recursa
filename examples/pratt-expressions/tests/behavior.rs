@@ -71,3 +71,14 @@ fn precedence_and_associativity_are_visible_in_the_ast() {
     assert_eq!(integer(&three), "3");
     assert_eq!(integer(&four), "4");
 }
+
+#[cfg(feature = "explorer")]
+#[test]
+fn recursive_pratt_expression_parses_through_the_erased_explorer_adapter() {
+    let source = "1 + 2 * 3";
+    let document = grammar::Expr::explorer()
+        .parse(source)
+        .expect("recursive Pratt expression parses through the adapter");
+    assert_eq!(document.source(), Some(source));
+    assert_eq!(document.root().active_variant().unwrap().name(), "Add");
+}

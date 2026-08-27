@@ -1,13 +1,18 @@
 //! Grammar-erased, allocation-bounded explorer contracts.
 
+use crate::parsed::GeneratedParse;
 use crate::parsed::ViewCursor;
-use crate::{ElementRole, Parsed, PrettyConfig, SourceMap, Span};
+use crate::{ElementRole, Input, ParseErrorKind, Parsed, PrettyConfig, SourceMap, Span};
 use std::fmt;
+
+/// Erased source-borrowing parse callback generated for one root application.
+type ParseFn =
+    for<'input> fn(&'input str) -> Result<ExplorerDocument<'input>, ParseFailure<'input>>;
 
 /// Erased deterministic sample callback generated for one root application.
 type SampleFn = fn(&[u8]) -> Result<ExplorerDocument<'static>, SampleError>;
 
-/// Grammar-erased schema and optional sample entry point for one root family.
+/// Grammar-erased schema, source operations, and optional sampling for one root family.
 #[derive(Clone, Copy)]
 pub struct Adapter {
     /// Static schema from the same Generation as every callback.
@@ -16,6 +21,8 @@ pub struct Adapter {
     capabilities: Capabilities,
     /// Grammar-erased lexer callback borrowing its input.
     lex: for<'input> fn(&'input str) -> LexResult<'input>,
+    /// Grammar-erased strict parser callback borrowing its input.
+    parse: ParseFn,
     /// Optional static sample callback when `Arbitrary` is configured.
     sample: Option<SampleFn>,
 }
@@ -36,12 +43,130 @@ impl Adapter {
         (self.lex)(source)
     }
 
+    /// Parses a complete source into an explorer document with occurrence spans.
+    ///
+    /// Lexical errors, syntax errors, and trailing input return structured
+    /// diagnostics without a partial explorer document.
+    pub fn parse(self, source: &str) -> Result<ExplorerDocument<'_>, ParseFailure<'_>> {
+        (self.parse)(source)
+    }
+
     /// Produces a deterministic synthetic document from caller-supplied bytes.
     /// `None` means this root does not configure `Arbitrary`.
     pub fn sample(self, bytes: &[u8]) -> Option<Result<ExplorerDocument<'static>, SampleError>> {
         self.sample.map(|sample| sample(bytes))
     }
 }
+
+/// Stable classification of a failed explorer parse.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParseDiagnosticKind {
+    /// One source range was rejected by the generated lexer.
+    LexicalError,
+    /// A concrete token cannot begin any valid continuation.
+    UnexpectedToken,
+    /// Required syntax remains after the final token.
+    UnexpectedEof,
+    /// A Pratt extender is also admitted by the caller's FOLLOW set.
+    PrattAmbiguity,
+    /// A generated token record contains an invalid source range.
+    InvalidTokenSpan,
+    /// Parser input belongs to different grammar metadata.
+    GrammarMismatch,
+    /// A complete root was followed by additional input.
+    TrailingInput,
+}
+
+/// One structured lexical or syntax diagnostic from [`Adapter::parse`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseDiagnostic<'input> {
+    /// Stable failure classification.
+    kind: ParseDiagnosticKind,
+    /// Concrete or zero-width source location.
+    span: Span,
+    /// Exact rejected source text, empty at EOF or for an invalid generated span.
+    text: &'input str,
+    /// Grammar-local display name of the found token.
+    found: Option<&'static str>,
+    /// Grammar-local expected atoms in analysis order.
+    expected: Box<[&'static str]>,
+    /// Display explanation safe for an explorer consumer.
+    message: Box<str>,
+}
+
+impl<'input> ParseDiagnostic<'input> {
+    /// Returns the stable failure classification.
+    pub const fn kind(&self) -> ParseDiagnosticKind {
+        self.kind
+    }
+
+    /// Returns the concrete or zero-width source location.
+    pub const fn span(&self) -> Span {
+        self.span
+    }
+
+    /// Returns the exact rejected source text, or an empty string when no valid range exists.
+    pub const fn text(&self) -> &'input str {
+        self.text
+    }
+
+    /// Returns the grammar-local found token name, when one exists.
+    pub const fn found(&self) -> Option<&'static str> {
+        self.found
+    }
+
+    /// Iterates grammar-local expected atoms in deterministic analysis order.
+    pub fn expected(&self) -> impl ExactSizeIterator<Item = &'static str> + '_ {
+        self.expected.iter().copied()
+    }
+
+    /// Returns the display explanation for this diagnostic.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for ParseDiagnostic<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+/// Strict explorer parse failure retaining the borrowed source and diagnostics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseFailure<'input> {
+    /// Complete input shared by every diagnostic span.
+    source: &'input str,
+    /// Nonempty diagnostics in deterministic source order.
+    diagnostics: Box<[ParseDiagnostic<'input>]>,
+}
+
+impl<'input> ParseFailure<'input> {
+    /// Returns the complete source that failed to parse.
+    pub const fn source(&self) -> &'input str {
+        self.source
+    }
+
+    /// Returns the nonempty lexical or syntax diagnostics.
+    pub fn diagnostics(&self) -> &[ParseDiagnostic<'input>] {
+        &self.diagnostics
+    }
+}
+
+impl fmt::Display for ParseFailure<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.diagnostics.as_ref() {
+            [diagnostic] => diagnostic.fmt(formatter),
+            diagnostics => write!(
+                formatter,
+                "{} explorer parse diagnostics",
+                diagnostics.len()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ParseFailure<'_> {}
 
 /// Optional operations configured for an Explorer root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1119,6 +1244,84 @@ pub fn lex_result<'input>(
     }
 }
 
+/// Runs one generated root parser as a strict grammar-erased transaction.
+///
+/// Lexical errors take precedence and are all retained. A successful root
+/// parse must also consume every token before its typed value is erased.
+#[doc(hidden)]
+pub fn parse_document<'input, T, A>(
+    input: &mut Input<'input, A>,
+    lexical_errors: impl IntoIterator<Item = Span>,
+) -> Result<ExplorerDocument<'input>, ParseFailure<'input>>
+where
+    T: GeneratedParse<'input, A> + ExplorerRoot + 'input,
+{
+    let source = input.source();
+    let lexical_diagnostics = lexical_errors
+        .into_iter()
+        .map(|span| ParseDiagnostic {
+            kind: ParseDiagnosticKind::LexicalError,
+            span,
+            text: source.get(span.range()).unwrap_or(""),
+            found: None,
+            expected: Box::new([]),
+            message: "unrecognized input".into(),
+        })
+        .collect::<Vec<_>>();
+    if !lexical_diagnostics.is_empty() {
+        return Err(ParseFailure {
+            source,
+            diagnostics: lexical_diagnostics.into_boxed_slice(),
+        });
+    }
+
+    let parsed = crate::parsed::parse_spanned::<T, A>(input).map_err(|error| {
+        let span = error.span();
+        let kind = match error.kind() {
+            ParseErrorKind::UnexpectedToken => ParseDiagnosticKind::UnexpectedToken,
+            ParseErrorKind::UnexpectedEof => ParseDiagnosticKind::UnexpectedEof,
+            ParseErrorKind::PrattAmbiguity => ParseDiagnosticKind::PrattAmbiguity,
+            ParseErrorKind::LexicalError => ParseDiagnosticKind::LexicalError,
+            ParseErrorKind::InvalidTokenSpan => ParseDiagnosticKind::InvalidTokenSpan,
+            ParseErrorKind::GrammarMismatch => ParseDiagnosticKind::GrammarMismatch,
+        };
+        ParseFailure {
+            source,
+            diagnostics: vec![ParseDiagnostic {
+                kind,
+                span,
+                text: source.get(span.range()).unwrap_or(""),
+                found: error.found(),
+                expected: error.expected().collect(),
+                message: error.to_string().into(),
+            }]
+            .into_boxed_slice(),
+        }
+    })?;
+
+    if let Some(record) = input.peek(0) {
+        let found = input.grammar().kind_name(record.kind);
+        let message = found.map_or_else(
+            || "unexpected trailing input".to_owned(),
+            |name| format!("unexpected trailing {name}"),
+        );
+        return Err(ParseFailure {
+            source,
+            diagnostics: vec![ParseDiagnostic {
+                kind: ParseDiagnosticKind::TrailingInput,
+                span: record.span,
+                text: source.get(record.span.range()).unwrap_or(""),
+                found,
+                expected: vec!["end of input"].into_boxed_slice(),
+                message: message.into(),
+            }]
+            .into_boxed_slice(),
+        });
+    }
+
+    Ok(ExplorerDocument::from_parsed(parsed))
+}
+
 /// Constructs one generated grammar-erased root adapter.
 ///
 /// # Safety
@@ -1130,12 +1333,14 @@ pub const unsafe fn construct_adapter(
     pretty: bool,
     arbitrary: bool,
     lex: for<'input> fn(&'input str) -> LexResult<'input>,
+    parse: ParseFn,
     sample: Option<SampleFn>,
 ) -> Adapter {
     Adapter {
         schema,
         capabilities: Capabilities { pretty, arbitrary },
         lex,
+        parse,
         sample,
     }
 }
@@ -1319,8 +1524,22 @@ mod tests {
         fn lex(source: &str) -> LexResult<'_> {
             lex_result(source, [], [])
         }
+        fn parse(source: &str) -> Result<ExplorerDocument<'_>, ParseFailure<'_>> {
+            Err(ParseFailure {
+                source,
+                diagnostics: vec![ParseDiagnostic {
+                    kind: ParseDiagnosticKind::UnexpectedEof,
+                    span: Span::new(0, 0).unwrap(),
+                    text: "",
+                    found: None,
+                    expected: Box::new([]),
+                    message: "unexpected end of input".into(),
+                }]
+                .into_boxed_slice(),
+            })
+        }
 
-        let adapter = unsafe { construct_adapter(&GRAMMAR, false, false, lex, None) };
+        let adapter = unsafe { construct_adapter(&GRAMMAR, false, false, lex, parse, None) };
         assert!(!adapter.capabilities().arbitrary());
         assert!(adapter.sample(&[]).is_none());
     }

@@ -75,15 +75,14 @@ fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() 
             ("IsNull", 3),
         ],
     );
-    let parsed = parse("a + 2 * 3");
-    let parsed = recursa::explorer::ExplorerDocument::from_parsed(parsed);
+    let parsed = explorer.parse("a + 2 * 3").expect("Pratt expression parses");
     assert_eq!(parsed.root().active_variant().unwrap().name(), "Add");
     assert_eq!(parsed.root().elements().len(), 3);
     assert_eq!(
         parsed.root().elements().next().unwrap().children().len(),
         1,
     );
-    let grouped = recursa::explorer::ExplorerDocument::from_parsed(parse("BEGIN GROUP a END GROUP"));
+    let grouped = explorer.parse("BEGIN GROUP a END GROUP").expect("group parses");
     assert_eq!(grouped.root().active_variant().unwrap().name(), "MultiGroup");
     let grouped_child = grouped.root().elements().next().unwrap().children().next().unwrap();
     assert_eq!(grouped_child.active_variant().unwrap().name(), "Name");
@@ -92,6 +91,12 @@ fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() 
         .elements().next().unwrap()
         .children().next().unwrap();
     assert_eq!(grouped_token.token_text(), Some("a"));
+    let incomplete = explorer.parse("a +").err().expect("incomplete Pratt expression fails");
+    assert_eq!(incomplete.diagnostics().len(), 1);
+    assert_eq!(
+        incomplete.diagnostics()[0].kind(),
+        recursa::explorer::ParseDiagnosticKind::UnexpectedEof,
+    );
     assert!(explorer.schema().tokens().any(|token| {
         token.canonical_text() == Some("BEGIN")
             && token.highlight_class() == recursa::explorer::HighlightClass::Keyword

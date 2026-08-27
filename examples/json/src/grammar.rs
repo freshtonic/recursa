@@ -10,6 +10,8 @@
 
 recursa::grammar! {
     module = crate::grammar,
+    diagrams,
+    derives(Visit),
     keyword_matching = sensitive,
     max_lookahead = 1,
 }
@@ -32,6 +34,7 @@ recursa::tokens! {
 }
 
 #[derive(recursa::Node)]
+#[node(omit(Visit))]
 pub enum Value<'input> {
     Object(Object<'input>),
     Array(Array<'input>),
@@ -45,6 +48,7 @@ pub enum Value<'input> {
 }
 
 #[derive(recursa::Node)]
+#[node(omit(Visit))]
 pub enum Bool {
     #[tok(TRUE)]
     True,
@@ -53,6 +57,7 @@ pub enum Bool {
 }
 
 #[derive(recursa::Node)]
+#[node(omit(Visit))]
 #[tok(LBRACE, this, RBRACE)]
 pub struct Object<'input> {
     #[sep(COMMA)]
@@ -60,6 +65,7 @@ pub struct Object<'input> {
 }
 
 #[derive(recursa::Node)]
+#[node(omit(Visit))]
 pub struct Member<'input> {
     pub key: String<'input>,
     #[tok(COLON)]
@@ -67,6 +73,7 @@ pub struct Member<'input> {
 }
 
 #[derive(recursa::Node)]
+#[node(omit(Visit))]
 #[tok(LBRACKET, this, RBRACKET)]
 pub struct Array<'input> {
     #[sep(COMMA)]

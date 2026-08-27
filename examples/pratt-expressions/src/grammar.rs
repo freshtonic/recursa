@@ -11,6 +11,8 @@
 
 recursa::grammar! {
     module = crate::grammar,
+    diagrams,
+    derives(Visit),
     keyword_matching = sensitive,
     max_lookahead = 1,
 }

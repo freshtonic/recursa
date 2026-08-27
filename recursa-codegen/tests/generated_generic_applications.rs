@@ -83,11 +83,7 @@ fn explorer_adapters_are_generated_for_each_closed_generic_application() {
     let assertions = r#"
     let integer_adapter = grammar::Atom::<grammar::Integer<'static>>::explorer();
     assert_eq!(integer_adapter.schema().root().name(), "Atom");
-    let integer_lexed = grammar::lex("42");
-    let mut integer_input = integer_lexed.input();
-    let integer = grammar::Atom::<grammar::Integer<'_>>::parse_spanned(&mut integer_input)
-        .expect("integer application explorer parse");
-    let integer = recursa::explorer::ExplorerDocument::from_parsed(integer);
+    let integer = integer_adapter.parse("42").expect("integer application explorer parse");
     let integer_pretty = integer.pretty(&recursa::PrettyConfig::default()).unwrap();
     assert_eq!(integer_pretty.rendered, "42");
     assert_eq!(
@@ -97,11 +93,20 @@ fn explorer_adapters_are_generated_for_each_closed_generic_application() {
 
     let name_adapter = grammar::Atom::<grammar::Name<'static>>::explorer();
     assert_eq!(name_adapter.schema().root().name(), "Atom");
-    let name_lexed = grammar::lex("alpha");
-    let mut name_input = name_lexed.input();
-    let name = grammar::Atom::<grammar::Name<'_>>::parse_spanned(&mut name_input)
-        .expect("name application explorer parse");
-    let name = recursa::explorer::ExplorerDocument::from_parsed(name);
+    let recursa::explorer::ElementTarget::Node(integer_target) =
+        integer_adapter.schema().root().elements().next().unwrap().target().unwrap()
+    else {
+        panic!("generic Integer target is a Node")
+    };
+    let recursa::explorer::ElementTarget::Node(name_target) =
+        name_adapter.schema().root().elements().next().unwrap().target().unwrap()
+    else {
+        panic!("generic Name target is a Node")
+    };
+    let integer_target = integer_target.qualified_name();
+    let name_target = name_target.qualified_name();
+    assert_ne!(integer_target, name_target);
+    let name = name_adapter.parse("alpha").expect("name application explorer parse");
     assert_eq!(
         name.pretty(&recursa::PrettyConfig::default()).unwrap().rendered,
         "alpha",

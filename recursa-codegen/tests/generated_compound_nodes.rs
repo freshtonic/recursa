@@ -111,7 +111,7 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     configure_explorer(&package, true, true);
     let main = package.path().join("src/main.rs");
     let source = fs::read_to_string(&main).expect("read downstream consumer");
-    let assertions = r#"
+    let assertions = r##"
     let adapter = grammar::Record::explorer();
     let schema = adapter.schema();
     assert_eq!(schema.root().name(), "Record");
@@ -130,6 +130,69 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     assert_eq!(first.text(), "ReCoRd");
     assert_eq!(first.schema().canonical_text(), Some("RECORD"));
     assert_eq!(first.schema().highlight_class(), recursa::explorer::HighlightClass::Keyword);
+
+    let parsed_by_adapter = adapter.parse("ReCoRd:alpha 42")
+        .expect("valid source parses through the erased adapter");
+    assert_eq!(parsed_by_adapter.provenance(), recursa::explorer::Provenance::Parsed);
+    assert_eq!(parsed_by_adapter.source(), Some("ReCoRd:alpha 42"));
+    let recursa::explorer::OccurrenceSchema::Node(parsed_schema) =
+        parsed_by_adapter.root().schema()
+    else {
+        panic!("adapter root is a Node schema")
+    };
+    assert_eq!(parsed_schema.qualified_name(), schema.root().qualified_name());
+    assert_eq!(parsed_by_adapter.root().span(), Some(recursa::Span::new(0, 15).unwrap()));
+    assert_eq!(
+        parsed_by_adapter.pretty(&recursa::PrettyConfig::default()).unwrap().rendered,
+        "ReCoRd:alpha 42",
+    );
+
+    let lexical_failure = adapter.parse("record:alpha @ #").err().expect("lexical failure");
+    assert_eq!(lexical_failure.source(), "record:alpha @ #");
+    assert_eq!(lexical_failure.diagnostics().len(), 2);
+    assert!(lexical_failure.diagnostics().iter().all(|diagnostic| {
+        diagnostic.kind() == recursa::explorer::ParseDiagnosticKind::LexicalError
+    }));
+    assert_eq!(lexical_failure.diagnostics()[0].text(), "@");
+    assert_eq!(lexical_failure.diagnostics()[0].span(), recursa::Span::new(13, 14).unwrap());
+    assert_eq!(lexical_failure.diagnostics()[1].text(), "#");
+
+    let token_failure = adapter.parse("record:42").err().expect("token failure");
+    let [token_diagnostic] = token_failure.diagnostics() else {
+        panic!("one unexpected-token diagnostic")
+    };
+    assert_eq!(
+        token_diagnostic.kind(),
+        recursa::explorer::ParseDiagnosticKind::UnexpectedToken,
+    );
+    assert_eq!(token_diagnostic.text(), "42");
+    assert!(token_diagnostic.found().unwrap().contains("[0-9]+"));
+    assert!(token_diagnostic.expected().any(|expected| expected.contains("[A-Za-zé]+")));
+
+    let eof_failure = adapter.parse("record:").err().expect("EOF failure");
+    let [eof_diagnostic] = eof_failure.diagnostics() else {
+        panic!("one EOF diagnostic")
+    };
+    assert_eq!(eof_diagnostic.kind(), recursa::explorer::ParseDiagnosticKind::UnexpectedEof);
+    assert_eq!(eof_diagnostic.span(), recursa::Span::new(7, 7).unwrap());
+    assert_eq!(eof_diagnostic.text(), "");
+    assert_eq!(eof_diagnostic.found(), None);
+
+    let trailing_failure = adapter.parse("record:alpha 42 beta").err().expect("trailing input");
+    let [trailing_diagnostic] = trailing_failure.diagnostics() else {
+        panic!("one trailing-input diagnostic")
+    };
+    assert_eq!(trailing_diagnostic.kind(), recursa::explorer::ParseDiagnosticKind::TrailingInput);
+    assert_eq!(trailing_diagnostic.text(), "beta");
+    assert_eq!(trailing_diagnostic.expected().collect::<Vec<_>>(), ["end of input"]);
+
+    let unicode = adapter.parse("record:café 42").expect("Unicode content parses");
+    assert_eq!(unicode.source(), Some("record:café 42"));
+    assert_eq!(unicode.root().span(), Some(recursa::Span::new(0, 15).unwrap()));
+    let unicode_text = unicode.root().elements().nth(2).unwrap()
+        .children().next().unwrap().elements().next().unwrap()
+        .children().next().unwrap().token_text();
+    assert_eq!(unicode_text, Some("café"));
 
     let parsed = parse_spanned!(grammar::Record<'_>, "ReCoRd:alpha 42");
     let document = recursa::explorer::ExplorerDocument::from_parsed(parsed);
@@ -180,22 +243,18 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
         .map(|variant| (variant.name(), variant.elements().len()))
         .collect::<Vec<_>>();
     assert_eq!(variants, [("Record", 1), ("Pair", 1), ("Empty", 1)]);
-    let empty = recursa::explorer::ExplorerDocument::from_parsed(
-        parse_spanned!(grammar::Entry<'_>, "empty"),
-    );
+    let empty = entry_adapter.parse("empty").expect("enum root parses");
     assert_eq!(empty.root().active_variant().unwrap().name(), "Empty");
 
     let repeated_adapter = grammar::SomeCounts::explorer();
     let repeated_schema = repeated_adapter.schema().root().elements().nth(1).unwrap();
     assert_eq!(repeated_schema.cardinality(), recursa::explorer::Cardinality::OptionalOneOrMore);
-    let repeated = recursa::explorer::ExplorerDocument::from_parsed(
-        parse_spanned!(grammar::SomeCounts<'_>, "right 1:2"),
-    );
+    let repeated = repeated_adapter.parse("right 1:2").expect("repetition root parses");
     assert_eq!(repeated.root().elements().nth(1).unwrap().children().len(), 2);
 
-    let private = recursa::explorer::ExplorerDocument::from_parsed(
-        parse_spanned!(grammar::PrivateRoot<'_>, "left ~secret"),
-    );
+    let private = grammar::PrivateRoot::explorer()
+        .parse("left ~secret")
+        .expect("private nested node parses");
     let hidden = private.root().elements().nth(1).unwrap().children().next().unwrap();
     let recursa::explorer::OccurrenceSchema::Node(hidden_schema) = hidden.schema() else {
         panic!("hidden descendant is a Node")
@@ -215,7 +274,7 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
         sample_pretty,
         repeated_sample.pretty(&recursa::PrettyConfig::default()).unwrap(),
     );
-"#;
+"##;
     fs::write(
         main,
         source.replace(
@@ -598,7 +657,7 @@ fn private_protocol_mismatch_is_reported_once_at_the_grammar_root() {
         .expect("published generation");
     let root = generation.join("root.rs");
     let source = fs::read_to_string(&root).expect("read generated root");
-    fs::write(&root, source.replace("protocol_1", "protocol_999"))
+    fs::write(&root, source.replace("protocol_2", "protocol_999"))
         .expect("inject private protocol mismatch");
 
     let output = run_fixture(&package);
@@ -1043,20 +1102,26 @@ fn an_explorer_value_name_collision_is_a_deterministic_generation_error() {
 }
 
 #[test]
-fn an_authored_legacy_explorer_parse_name_is_legal() {
+fn an_authored_explorer_parse_callback_collision_is_diagnosed_before_emission() {
     let package = scaffold_fixture();
     configure_explorer(&package, true, true);
     let grammar = package.path().join("src/grammar.rs");
     let mut source = fs::read_to_string(&grammar).expect("read compound grammar");
     source.push_str("\nfn __recursa_explorer_parse_0() {}\n");
-    fs::write(&grammar, source).expect("insert the retired explorer parse name");
+    fs::write(&grammar, source).expect("insert explorer parse callback collision");
 
     let output = run_fixture(&package);
     assert!(
-        output.status.success(),
-        "retired explorer parse symbols are not reserved\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+        !output.status.success(),
+        "explorer parse callback collision must fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains(
+            "generated explorer item `__recursa_explorer_parse_0` collides with an authored value"
+        ),
+        "stderr:\n{stderr}",
     );
 }
 

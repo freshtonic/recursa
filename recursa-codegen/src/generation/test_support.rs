@@ -1102,6 +1102,39 @@ pub(super) fn recursive_concrete_pretty_impls_do_not_publish_cyclic_child_bounds
     }
 }
 
+pub(super) fn recursive_concrete_visit_impls_do_not_publish_cyclic_child_bounds() {
+    let package = tempfile::tempdir().expect("temporary recursive Visit fixture");
+    let source = include_str!("../../tests/fixtures/source-analysis/json/grammar.rs").replacen(
+        "recursa::grammar! {",
+        "recursa::grammar! {\n    derives(Visit),",
+        1,
+    );
+    fs::write(package.path().join("grammar.rs"), source).expect("write recursive Visit fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze recursive Visit fixture");
+    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join recursive Visit fixture");
+    let nodes = render(&plan)
+        .expect("render recursive Visit fixture")
+        .nodes
+        .into_iter()
+        .map(|(_, node)| node)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for cyclic_child in ["Value", "Object", "Member", "Array"] {
+        assert!(
+            !nodes.contains(&format!(
+                "crate :: grammar :: {cyclic_child} < 'input > : recursa :: Visit"
+            )),
+            "recursive child {cyclic_child} must not become a Visit where-bound",
+        );
+    }
+}
+
 pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
     let source = include_str!("../../tests/fixtures/generation/repetitions/src/grammar.rs.in")
         .replace("__RECURSA_SPANS_MODE__", "off");
