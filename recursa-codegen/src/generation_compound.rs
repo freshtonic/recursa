@@ -6974,7 +6974,10 @@ fn pretty_impl_parts(
     proc_macro2::TokenStream,
 ) {
     let mut generics = node.generics.clone();
-    for field_type in semantic_field_types(facade, node) {
+    for field_type in semantic_field_types(facade, node)
+        .into_iter()
+        .filter(|field_type| type_depends_on_node_type_parameters(field_type, node))
+    {
         generics
             .make_where_clause()
             .predicates
@@ -6991,7 +6994,10 @@ fn pretty_impl_parts(
             .filter_map(|element| attachment_pretty_terminal(node, &element))
             .collect(),
     };
-    for terminal in attachment_terminals {
+    for terminal in attachment_terminals
+        .into_iter()
+        .filter(|terminal| type_depends_on_node_type_parameters(terminal, node))
+    {
         generics
             .make_where_clause()
             .predicates
@@ -7003,6 +7009,42 @@ fn pretty_impl_parts(
         quote!(#type_generics),
         quote!(#where_clause),
     )
+}
+
+fn type_depends_on_node_type_parameters(ty: &Type, node: &NodeParsePlan) -> bool {
+    let candidates = node
+        .generics
+        .type_params()
+        .map(|parameter| parameter.ident.unraw().to_string())
+        .collect::<BTreeSet<_>>();
+    if candidates.is_empty() {
+        return false;
+    }
+
+    struct DependencyVisitor<'a> {
+        candidates: &'a BTreeSet<String>,
+        depends: bool,
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for DependencyVisitor<'_> {
+        fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+            if path.qself.is_none()
+                && path.path.segments.len() == 1
+                && let Some(segment) = path.path.segments.first()
+                && self.candidates.contains(&segment.ident.unraw().to_string())
+            {
+                self.depends = true;
+            }
+            visit::visit_type_path(self, path);
+        }
+    }
+
+    let mut visitor = DependencyVisitor {
+        candidates: &candidates,
+        depends: false,
+    };
+    visitor.visit_type(ty);
+    visitor.depends
 }
 
 fn attachment_pretty_terminal(node: &NodeParsePlan, element: &ElementParsePlan) -> Option<Type> {
@@ -11199,6 +11241,40 @@ struct B;
                 .expect_err("corrupt emitted Pretty plan must diverge")
                 .contains("Pretty plan family")
         );
+    }
+
+    #[test]
+    fn recursive_concrete_pretty_impls_do_not_publish_cyclic_child_bounds() {
+        let package = tempfile::tempdir().expect("temporary recursive Pretty fixture");
+        let source = include_str!("../tests/fixtures/m3/json/grammar.rs").replacen(
+            "recursa::grammar! {",
+            "recursa::grammar! {\n    derives(Pretty),",
+            1,
+        );
+        fs::write(package.path().join("grammar.rs"), source)
+            .expect("write recursive Pretty fixture");
+        let success = analyze_source_tree(
+            M3Input::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("analyze recursive Pretty fixture");
+        let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+            .expect("join recursive Pretty fixture");
+        let rendered = render(&plan).expect("render recursive Pretty fixture");
+        let nodes = rendered
+            .nodes
+            .iter()
+            .map(|(_, node)| node.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(nodes.contains("recursa :: Pretty for Value"));
+        for concrete in ["Value", "Object", "Member", "Array"] {
+            assert!(
+                !nodes.contains(&format!("recursa :: Pretty for {concrete} where")),
+                "concrete {concrete} Pretty impl must not carry child bounds",
+            );
+        }
     }
 
     #[test]
