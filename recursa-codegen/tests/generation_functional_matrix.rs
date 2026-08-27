@@ -12,6 +12,7 @@ struct Row<'a> {
 }
 
 #[test]
+#[ignore = "manual aggregate acceptance reruns the default functional evidence"]
 fn every_green_generation_evidence_command_executes_without_pending_rows() {
     let workspace = workspace_root();
     let document = fs::read_to_string(workspace.join("docs/acceptance/generation.md"))
@@ -22,7 +23,7 @@ fn every_green_generation_evidence_command_executes_without_pending_rows() {
     assert!(rows.values().all(|row| row.status == "Green"));
     assert_eq!(
         rows[AGGREGATE_GATE].evidence,
-        "`cargo test -p recursa-codegen --test generation_functional_matrix --locked`",
+        "`cargo test -p recursa-codegen --test generation_functional_matrix --locked every_green_generation_evidence_command_executes_without_pending_rows -- --ignored --exact`",
     );
 
     let shared_target = tempfile::tempdir().expect("temporary generation matrix target");
