@@ -15,6 +15,9 @@ recursa::tokens! {
         EXISTS => "EXISTS",
         HAS => "HAS",
         NULL => "NULL",
+        BEGIN => "BEGIN",
+        GROUP => "GROUP",
+        END => "END",
     }
     punctuation {
         PLUS => "+",
@@ -46,6 +49,7 @@ pub struct Name<'input> {
 pub enum Expr<'input> {
     Integer(Integer<'input>),
     Name(Name<'input>),
+    MultiGroup(#[tok(BEGIN, GROUP, this, END, GROUP)] Box<Self>),
     Paren(#[tok(GROUP_OPEN, this, GROUP_CLOSE)] Box<Self>),
 
     #[parse(prefix, bp = 35)]
