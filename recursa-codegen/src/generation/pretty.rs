@@ -27,233 +27,233 @@ mod tests {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen pretty emission plan data owned by the pretty boundary; declaration order remains deterministic.
+/// Complete optional rendering projection for tokens and nodes.
 pub(super) struct PrettyEmissionPlan {
-    /// Tokens associated with this value.
+    /// Optional token rendering behavior in semantic token order.
     pub(super) tokens: Vec<Option<PrettyTokenBehavior>>,
-    /// Nodes associated with this value.
+    /// Optional Node rendering behavior in parse-plan order.
     pub(super) nodes: Vec<Option<PrettyNodeBehavior>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen pretty token behavior data owned by the pretty boundary; declaration order remains deterministic.
+/// Source-text strategy for a Pretty-enabled token.
 pub(super) enum PrettyTokenBehavior {
-    /// The `MatchedOrStoredText` case of this pretty contract.
+    /// Uses matched source when present and the stored value otherwise.
     MatchedOrStoredText,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen pretty node behavior data owned by the pretty boundary; declaration order remains deterministic.
+/// Layout, element, and Pratt behavior shared by a node family.
 pub(super) struct PrettyNodeBehavior {
-    /// Node associated with this value.
+    /// Node declaration owning this rendering behavior.
     pub(super) node: NodeId,
-    /// Applications associated with this value.
+    /// Materialized applications sharing the behavior.
     pub(super) applications: Vec<MaterializedApplicationId>,
-    /// Pretty associated with this value.
+    /// Node-level grouping and break hints.
     pub(super) pretty: PrettyHints,
-    /// Variant pretty associated with this value.
+    /// Variant-local hints in source variant order.
     pub(super) variant_pretty: Vec<PrettyHints>,
-    /// Variant layouts associated with this value.
+    /// Linear or delimited layout for each variant shape.
     pub(super) variant_layouts: Vec<PrettySequenceLayout>,
-    /// Variants associated with this value.
+    /// Element rendering plans in variant and source-element order.
     pub(super) variants: Vec<Vec<PrettyElementBehavior>>,
-    /// Pratt associated with this value.
+    /// Pratt-specific grouping and parenthesization decisions.
     pub(super) pratt: Option<PrettyPrattBehavior>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen pretty pratt behavior data owned by the pretty boundary; declaration order remains deterministic.
+/// Grouping and variant-specific rendering rules for a Pratt node.
 pub(super) struct PrettyPrattBehavior {
-    /// Grouping associated with this value.
+    /// Authored delimiter behavior for explicit grouping variants.
     pub(super) grouping: Option<PrettyPrattGrouping>,
-    /// Variants associated with this value.
+    /// Parenthesization and operand plans in Pratt variant order.
     pub(super) variants: Vec<PrettyPrattVariantBehavior>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen pretty pratt grouping data owned by the pretty boundary; declaration order remains deterministic.
+/// Fixed syntax surrounding an explicit recursive grouping.
 pub(super) struct PrettyPrattGrouping {
-    /// Before associated with this value.
+    /// Fixed syntax rendered before the recursively grouped expression.
     pub(super) before: Vec<PrettyAttachedFixedBehavior>,
-    /// After associated with this value.
+    /// Fixed syntax rendered after the recursively grouped expression.
     pub(super) after: Vec<PrettyAttachedFixedBehavior>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen pretty pratt variant behavior data owned by the pretty boundary; declaration order remains deterministic.
+/// Parenthesization and operands for one Pratt variant.
 pub(super) struct PrettyPrattVariantBehavior {
-    /// Parenthesization associated with this value.
+    /// Entry/exit binding powers controlling inserted grouping.
     pub(super) parenthesization: PrettyPrattParenthesization,
-    /// Operands associated with this value.
+    /// Ordinary or recursive operand behavior in semantic-field order.
     pub(super) operands: Vec<PrettyPrattOperandBehavior>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen pretty pratt parenthesization data owned by the pretty boundary; declaration order remains deterministic.
+/// Binding-power interval governing inserted parentheses.
 pub(super) struct PrettyPrattParenthesization {
-    /// Entry lbp associated with this value.
+    /// Left binding power required to enter this variant, when led.
     pub(super) entry_lbp: Option<u16>,
-    /// Exit rbp associated with this value.
+    /// Right binding power exposed after rendering this variant.
     pub(super) exit_rbp: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen pretty pratt operand behavior data owned by the pretty boundary; declaration order remains deterministic.
+/// Rendering rule for an ordinary or recursively bound operand.
 pub(super) enum PrettyPrattOperandBehavior {
-    /// The `Ordinary` case of this pretty contract.
+    /// Renders through the field's normal Pretty implementation.
     Ordinary,
-    /// The `Recursive` case of this pretty contract.
+    /// Renders through the owning Pratt family's binding-power entry point.
     Recursive {
-        /// Owner associated with this value.
+        /// Pratt Node recursively targeted by the operand.
         owner: NodeId,
-        /// Applications associated with this value.
+        /// Concrete recursive applications accepted at this site.
         applications: Vec<MaterializedApplicationId>,
-        /// Minimum associated with this value.
+        /// Minimum binding power passed into recursive rendering.
         minimum: PrettyPrattMinimum,
-        /// Next associated with this value.
+        /// Binding-power context following the rendered operand.
         next: PrettyPrattNext,
     },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen pretty pratt minimum data owned by the pretty boundary; declaration order remains deterministic.
+/// Minimum binding power passed to recursive Pratt rendering.
 pub(super) enum PrettyPrattMinimum {
-    /// The `Zero` case of this pretty contract.
+    /// Allows every extender.
     Zero,
-    /// The `Inner` case of this pretty contract.
+    /// Reuses the enclosing variant's inner binding context.
     Inner,
-    /// The `Binding` case of this pretty contract.
+    /// Requires the stored concrete binding power.
     Binding(u16),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen pretty pratt next data owned by the pretty boundary; declaration order remains deterministic.
+/// Binding context exposed after rendering a Pratt operand.
 pub(super) enum PrettyPrattNext {
-    /// The `None` case of this pretty contract.
+    /// Exposes no following binding constraint.
     None,
-    /// The `Inner` case of this pretty contract.
+    /// Reuses the enclosing variant's inner binding context.
     Inner,
-    /// The `Binding` case of this pretty contract.
+    /// Exposes the stored concrete binding power.
     Binding(u16),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen pretty sequence layout data owned by the pretty boundary; declaration order remains deterministic.
+/// Grouping strategy for an emitted element sequence.
 pub(super) enum PrettySequenceLayout {
-    /// The `Linear` case of this pretty contract.
+    /// Emits elements in the current document group.
     Linear,
-    /// The `Delimited` case of this pretty contract.
+    /// Groups a delimiter-bounded sequence for coordinated breaks.
     Delimited,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen pretty element behavior data owned by the pretty boundary; declaration order remains deterministic.
+/// Rendering rule for fixed syntax or a semantic field.
 pub(super) enum PrettyElementBehavior {
-    /// The `Fixed` case of this pretty contract.
+    /// Emits canonical authored syntax with mechanical spacing.
     Fixed {
-        /// Spelling associated with this value.
+        /// Canonical fixed-token text emitted for synthetic syntax.
         spelling: String,
-        /// Spacing associated with this value.
+        /// Mechanical spacing class between adjacent fixed syntax.
         spacing: PrettySpacing,
-        /// Rendering associated with this value.
+        /// Placement relative to the surrounding sequence.
         rendering: PrettyFixedRendering,
-        /// Soft break before associated with this value.
+        /// Whether the layout may break immediately before the token.
         soft_break_before: bool,
-        /// Soft break after associated with this value.
+        /// Whether the layout may break immediately after the token.
         soft_break_after: bool,
     },
-    /// The `Semantic` case of this pretty contract.
+    /// Emits a stored value with container and provenance behavior.
     Semantic {
-        /// Repetition associated with this value.
+        /// Separator and line-breaking behavior for repeated values.
         repetition: Option<PrettyRepetitionBehavior>,
-        /// Attachment associated with this value.
+        /// Fixed syntax attached to the semantic value.
         attachment: Option<PrettyAttachmentBehavior>,
-        /// Provenance associated with this value.
+        /// Whether source mapping follows structured child provenance or an opaque span.
         provenance: PrettyProvenanceBehavior,
-        /// Pretty associated with this value.
+        /// Field-local grouping and break hints.
         pretty: PrettyHints,
-        /// Presence associated with this value.
+        /// Always, optional, or non-empty emission condition.
         presence: PrettyPresence,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen pretty repetition behavior data owned by the pretty boundary; declaration order remains deterministic.
+/// Separator and line-breaking rules for a repeated field.
 pub(super) struct PrettyRepetitionBehavior {
-    /// Separator associated with this value.
+    /// Canonical separator spelling, or `None` for adjacent items.
     pub(super) separator: Option<String>,
-    /// Trailing separator associated with this value.
+    /// Whether a separator follows the final item.
     pub(super) trailing_separator: bool,
-    /// Hard break associated with this value.
+    /// Whether every item boundary forces a line break.
     pub(super) hard_break: bool,
-    /// Leading separator associated with this value.
+    /// Whether separators render before rather than after subsequent items.
     pub(super) leading_separator: bool,
-    /// Space before separator associated with this value.
+    /// Whether non-leading separators require preceding whitespace.
     pub(super) space_before_separator: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen pretty presence data owned by the pretty boundary; declaration order remains deterministic.
+/// Condition under which a semantic field contributes output.
 pub(super) enum PrettyPresence {
-    /// The `Always` case of this pretty contract.
+    /// Field always contributes a document.
     Always,
-    /// The `Optional` case of this pretty contract.
+    /// Field contributes output only when present.
     Optional,
-    /// The `NonEmpty` case of this pretty contract.
+    /// Collection contributes output only when non-empty.
     NonEmpty,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen pretty provenance behavior data owned by the pretty boundary; declaration order remains deterministic.
+/// Source-map granularity for a semantic field.
 pub(super) enum PrettyProvenanceBehavior {
-    /// The `Structured` case of this pretty contract.
+    /// Preserves child-level source-map structure.
     Structured,
-    /// The `Opaque` case of this pretty contract.
+    /// Maps the field as one indivisible source span.
     Opaque,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen pretty attachment behavior data owned by the pretty boundary; declaration order remains deterministic.
+/// Layout and fixed syntax surrounding a semantic value.
 pub(super) struct PrettyAttachmentBehavior {
-    /// Layout associated with this value.
+    /// Sequence grouping shared by attached fixed syntax and its value.
     pub(super) layout: PrettySequenceLayout,
-    /// Before associated with this value.
+    /// Fixed syntax attached before the semantic value.
     pub(super) before: Vec<PrettyAttachedFixedBehavior>,
-    /// After associated with this value.
+    /// Fixed syntax attached after the semantic value.
     pub(super) after: Vec<PrettyAttachedFixedBehavior>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen pretty attached fixed behavior data owned by the pretty boundary; declaration order remains deterministic.
+/// Canonical spelling and spacing for one attached token.
 pub(super) struct PrettyAttachedFixedBehavior {
-    /// Spelling associated with this value.
+    /// Canonical fixed spelling emitted by the attachment.
     pub(super) spelling: String,
-    /// Spacing associated with this value.
+    /// Mechanical spacing class for neighboring syntax.
     pub(super) spacing: PrettySpacing,
-    /// Rendering associated with this value.
+    /// Placement and break behavior within the attachment.
     pub(super) rendering: PrettyFixedRendering,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen pretty fixed rendering data owned by the pretty boundary; declaration order remains deterministic.
+/// Mechanical placement class for fixed syntax.
 pub(super) enum PrettyFixedRendering {
-    /// The `TightSequence` case of this pretty contract.
+    /// Joins directly to neighboring tight syntax.
     TightSequence,
-    /// The `Before` case of this pretty contract.
+    /// Requires spacing before the token.
     Before,
-    /// The `After` case of this pretty contract.
+    /// Requires spacing after the token.
     After,
-    /// The `Around` case of this pretty contract.
+    /// Requires spacing on both sides.
     Around,
-    /// The `Opening` case of this pretty contract.
+    /// Opens a delimited group without trailing space.
     Opening,
-    /// The `Word` case of this pretty contract.
+    /// Behaves as word-like syntax for adjacency.
     Word,
-    /// The `Punctuation` case of this pretty contract.
+    /// Behaves as punctuation for adjacency.
     Punctuation,
 }
 
-/// Builds emitted pretty plan from frozen inputs without changing canonical generation order.
+/// Projects configured rendering behavior from the frozen parse and token plans.
 pub(super) fn emitted_pretty_plan(
     nodes: &[NodeParsePlan],
     tokens: &[TokenParsePlan],
@@ -279,7 +279,7 @@ pub(super) fn emitted_pretty_plan(
     }
 }
 
-/// Builds emitted pretty node behavior from frozen inputs without changing canonical generation order.
+/// Builds rendering behavior for one Node and all materialized applications.
 pub(super) fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBehavior {
     let variant_pretty = match &node.body {
         NodeBodyPlan::Struct { .. } => vec![PrettyHints::default()],
@@ -332,7 +332,7 @@ pub(super) fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBe
     }
 }
 
-/// Builds emitted pretty pratt behavior from frozen inputs without changing canonical generation order.
+/// Derives Pratt grouping, binding-power, and recursive-operand behavior.
 pub(super) fn emitted_pretty_pratt_behavior(
     node: &NodeParsePlan,
     pratt: &PrattParsePlan,
@@ -383,7 +383,7 @@ pub(super) fn emitted_pretty_pratt_behavior(
     }
 }
 
-/// Builds pretty pratt parenthesization from frozen inputs without changing canonical generation order.
+/// Converts a Pratt branch's entry and exit powers into a parenthesization contract.
 pub(super) fn pretty_pratt_parenthesization(
     position: PrattPosition,
 ) -> PrettyPrattParenthesization {
@@ -399,7 +399,7 @@ pub(super) fn pretty_pratt_parenthesization(
     }
 }
 
-/// Builds pretty recursive operand from frozen inputs without changing canonical generation order.
+/// Resolves a recursive Pratt operand and its binding-power context.
 pub(super) fn pretty_recursive_operand(
     owner: NodeId,
     applications: &[MaterializedApplicationId],
@@ -433,7 +433,7 @@ pub(super) fn pretty_recursive_operand(
     }
 }
 
-/// Builds apply pretty pratt fixed layout from frozen inputs without changing canonical generation order.
+/// Applies fixed-token spacing and break hints to a Pratt variant element.
 pub(super) fn apply_pretty_pratt_fixed_layout(
     position: PrattPosition,
     elements: &[ElementParsePlan],
@@ -470,7 +470,7 @@ pub(super) fn apply_pretty_pratt_fixed_layout(
     }
 }
 
-/// Builds pretty pratt grouping from frozen inputs without changing canonical generation order.
+/// Extracts the explicit grouping variant's before/after delimiter behavior.
 pub(super) fn pretty_pratt_grouping(
     owner: NodeId,
     declaration_variants: &[VariantParsePlan],
@@ -517,7 +517,7 @@ pub(super) fn pretty_pratt_grouping(
         })
 }
 
-/// Builds emitted pretty elements from frozen inputs without changing canonical generation order.
+/// Projects source-order parse elements into fixed and semantic rendering behavior.
 pub(super) fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBehavior> {
     elements
         .iter()
@@ -588,7 +588,7 @@ pub(super) fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<Pret
         .collect()
 }
 
-/// Builds pretty repetition behavior from frozen inputs without changing canonical generation order.
+/// Derives separator placement and break policy for one repetition.
 pub(super) fn pretty_repetition_behavior(
     repeated: bool,
     separator: Option<String>,
@@ -607,7 +607,7 @@ pub(super) fn pretty_repetition_behavior(
     })
 }
 
-/// Builds pretty fixed rendering from frozen inputs without changing canonical generation order.
+/// Selects fixed-token placement from its sequence position and local hints.
 pub(super) fn pretty_fixed_rendering(
     spelling: &str,
     spacing: PrettySpacing,
@@ -623,7 +623,7 @@ pub(super) fn pretty_fixed_rendering(
     }
 }
 
-/// Builds pretty sequence layout from frozen inputs without changing canonical generation order.
+/// Chooses linear or delimited grouping for one Node or variant shape.
 pub(super) fn pretty_sequence_layout(elements: &[PrettyElementBehavior]) -> PrettySequenceLayout {
     let delimited = elements.first().and_then(|first| {
         let PrettyElementBehavior::Fixed { spelling, .. } = first else {
@@ -642,7 +642,7 @@ pub(super) fn pretty_sequence_layout(elements: &[PrettyElementBehavior]) -> Pret
     }
 }
 
-/// Builds pretty attachment layout from frozen inputs without changing canonical generation order.
+/// Chooses grouping for fixed syntax attached around a semantic value.
 pub(super) fn pretty_attachment_layout(
     before: &[PrettyAttachedFixedBehavior],
     after: &[PrettyAttachedFixedBehavior],
@@ -658,7 +658,7 @@ pub(super) fn pretty_attachment_layout(
     }
 }
 
-/// Builds pretty presence from frozen inputs without changing canonical generation order.
+/// Maps a semantic container shape to its Pretty emission condition.
 pub(super) fn pretty_presence(wrappers: &[FieldWrapper]) -> PrettyPresence {
     if wrappers
         .iter()
@@ -675,7 +675,7 @@ pub(super) fn pretty_presence(wrappers: &[FieldWrapper]) -> PrettyPresence {
     }
 }
 
-/// Builds authoritative pretty plan from frozen inputs without changing canonical generation order.
+/// Reconstructs the Pretty plan from authored source for independent validation.
 pub(super) fn authoritative_pretty_plan(
     lowered: &crate::materialization::LoweredGrammar,
     resolved: &crate::resolution::ResolvedSourceGrammar,
@@ -735,7 +735,7 @@ pub(super) fn authoritative_pretty_plan(
     Ok(pretty_family_identity(&plan).map(|_| plan))
 }
 
-/// Builds authoritative pretty node behavior from frozen inputs without changing canonical generation order.
+/// Reconstructs one Node's rendering behavior without consulting emitted Pretty data.
 pub(super) fn authoritative_pretty_node_behavior(
     lowered: &crate::materialization::LoweredGrammar,
     resolved_node: &ResolvedNode,
@@ -802,7 +802,7 @@ pub(super) fn authoritative_pretty_node_behavior(
     })
 }
 
-/// Builds authoritative pretty pratt behavior from frozen inputs without changing canonical generation order.
+/// Reconstructs Pratt rendering semantics from authoritative source correlations.
 pub(super) fn authoritative_pretty_pratt_behavior(
     lowered: &crate::materialization::LoweredGrammar,
     resolved_node: &ResolvedNode,
@@ -863,7 +863,7 @@ pub(super) fn authoritative_pretty_pratt_behavior(
     })
 }
 
-/// Builds apply authoritative pretty pratt fixed layout from frozen inputs without changing canonical generation order.
+/// Applies authored fixed-token hints to an authoritative Pratt element plan.
 pub(super) fn apply_authoritative_pretty_pratt_fixed_layout(
     position: PrattPosition,
     elements: &[GrammarElement],
@@ -900,7 +900,7 @@ pub(super) fn apply_authoritative_pretty_pratt_fixed_layout(
     }
 }
 
-/// Builds authoritative pretty pratt grouping from frozen inputs without changing canonical generation order.
+/// Reconstructs explicit Pratt grouping delimiters from authored syntax.
 pub(super) fn authoritative_pretty_pratt_grouping(
     resolved_node: &ResolvedNode,
     source_variants: &[crate::source_model::SourcePrattVariant],
@@ -979,7 +979,7 @@ pub(super) fn authoritative_pretty_pratt_grouping(
     Ok(None)
 }
 
-/// Builds authoritative pretty elements from frozen inputs without changing canonical generation order.
+/// Reconstructs ordered element rendering behavior from authored Node shapes.
 pub(super) fn authoritative_pretty_elements(
     lowered: &crate::materialization::LoweredGrammar,
     resolved_node: &ResolvedNode,
@@ -1069,7 +1069,7 @@ pub(super) fn authoritative_pretty_elements(
         .collect()
 }
 
-/// Builds authoritative pretty separator from frozen inputs without changing canonical generation order.
+/// Resolves an authored repetition separator to its canonical spelling and spacing.
 pub(super) fn authoritative_pretty_separator(
     lowered: &crate::materialization::LoweredGrammar,
     separator: Option<&crate::source_model::Separator>,
@@ -1089,7 +1089,7 @@ pub(super) fn authoritative_pretty_separator(
     )))
 }
 
-/// Builds authoritative pretty attachment from frozen inputs without changing canonical generation order.
+/// Reconstructs fixed syntax attached around an authored semantic field.
 pub(super) fn authoritative_pretty_attachment(
     lowered: &crate::materialization::LoweredGrammar,
     attachment: &crate::source_model::FixedTokenAttachment,
@@ -1124,13 +1124,13 @@ pub(super) fn authoritative_pretty_attachment(
         after,
     })
 }
-/// Builds pretty family identity from frozen inputs without changing canonical generation order.
+/// Hashes the complete Pretty plan for cross-phase drift validation.
 pub(super) fn pretty_family_identity(plan: &PrettyEmissionPlan) -> Option<u64> {
     (plan.tokens.iter().any(Option::is_some) || plan.nodes.iter().any(Option::is_some))
         .then(|| plan_family_identity(plan))
 }
 
-/// Renders render pratt node pretty from frozen inputs without changing canonical generation order.
+/// Renders precedence-aware `Pretty` behavior for one Pratt Node.
 ///
 /// # Long-function contract
 ///
@@ -1328,7 +1328,7 @@ pub(super) fn render_pratt_node_pretty(
     }
 }
 
-/// Renders render pretty pratt minimum from frozen inputs without changing canonical generation order.
+/// Renders the minimum binding-power expression for a recursive operand.
 pub(super) fn render_pretty_pratt_minimum(minimum: PrettyPrattMinimum) -> proc_macro2::TokenStream {
     match minimum {
         PrettyPrattMinimum::Zero => quote!(0u16),
@@ -1337,7 +1337,7 @@ pub(super) fn render_pretty_pratt_minimum(minimum: PrettyPrattMinimum) -> proc_m
     }
 }
 
-/// Renders render pretty pratt next from frozen inputs without changing canonical generation order.
+/// Renders the following binding-power context for parenthesization.
 pub(super) fn render_pretty_pratt_next(next: PrettyPrattNext) -> proc_macro2::TokenStream {
     match next {
         PrettyPrattNext::None => quote!(None),
@@ -1346,7 +1346,7 @@ pub(super) fn render_pretty_pratt_next(next: PrettyPrattNext) -> proc_macro2::To
     }
 }
 
-/// Builds terminal path ident from frozen inputs without changing canonical generation order.
+/// Extracts the terminal Node identifier used in generated trait calls.
 pub(super) fn terminal_path_ident(terminal: &Type) -> Option<&Ident> {
     let Type::Path(path) = terminal else {
         return None;
@@ -1354,7 +1354,7 @@ pub(super) fn terminal_path_ident(terminal: &Type) -> Option<&Ident> {
     path.path.segments.last().map(|segment| &segment.ident)
 }
 
-/// Renders render node pretty from frozen inputs without changing canonical generation order.
+/// Renders structured Pretty and source-map behavior for a non-Pratt Node.
 ///
 /// # Long-function contract
 ///
@@ -1558,7 +1558,7 @@ pub(super) fn render_node_pretty(
     }
 }
 
-/// Renders render pretty semantic from frozen inputs without changing canonical generation order.
+/// Renders one semantic field with its presence, repetition, attachment, and provenance rules.
 pub(super) fn render_pretty_semantic(
     facade: &Ident,
     index: usize,
@@ -1597,7 +1597,7 @@ pub(super) fn render_pretty_semantic(
     }
 }
 
-/// Renders render pretty hints from frozen inputs without changing canonical generation order.
+/// Wraps a rendered fragment in the configured grouping and break hints.
 pub(super) fn render_pretty_hints(
     hints: &PrettyHints,
     body: proc_macro2::TokenStream,
@@ -1627,7 +1627,7 @@ pub(super) fn render_pretty_hints(
     quote!(#before #body #after)
 }
 
-/// Renders render pretty presence from frozen inputs without changing canonical generation order.
+/// Applies optional or non-empty guards around a semantic fragment.
 pub(super) fn render_pretty_presence(
     hints: &PrettyHints,
     presence: PrettyPresence,
@@ -1662,7 +1662,7 @@ pub(super) fn render_pretty_presence(
     unreachable!("frozen Pretty presence has no matching storage wrapper")
 }
 
-/// Builds pretty provenance child method from frozen inputs without changing canonical generation order.
+/// Selects structured-child or opaque-span source mapping for a semantic field.
 pub(super) fn pretty_provenance_child_method(provenance: PrettyProvenanceBehavior) -> Ident {
     match provenance {
         PrettyProvenanceBehavior::Structured => format_ident!("with_child"),
@@ -1670,7 +1670,7 @@ pub(super) fn pretty_provenance_child_method(provenance: PrettyProvenanceBehavio
     }
 }
 
-/// Renders render pretty fixed from frozen inputs without changing canonical generation order.
+/// Renders fixed syntax from matched source when available, otherwise canonically.
 pub(super) fn render_pretty_fixed(
     plan: &EmissionPlan,
     index: usize,
@@ -1680,7 +1680,7 @@ pub(super) fn render_pretty_fixed(
     render_pretty_fixed_with_method(plan, index, spelling, rendering)
 }
 
-/// Renders render pretty fixed with method from frozen inputs without changing canonical generation order.
+/// Applies the planned placement method to one fixed-token document.
 pub(super) fn render_pretty_fixed_with_method(
     plan: &EmissionPlan,
     index: usize,
@@ -1697,7 +1697,7 @@ pub(super) fn render_pretty_fixed_with_method(
     }
 }
 
-/// Renders render pretty synthetic fixed from frozen inputs without changing canonical generation order.
+/// Renders canonical fixed text for a synthetic document without source provenance.
 pub(super) fn render_pretty_synthetic_fixed(
     plan: &EmissionPlan,
     spelling: &str,
@@ -1708,7 +1708,7 @@ pub(super) fn render_pretty_synthetic_fixed(
     quote!(context.without_provenance(|context| context.#method(#fallback))?;)
 }
 
-/// Builds pretty fixed method from frozen inputs without changing canonical generation order.
+/// Selects the document-builder method for fixed-token placement.
 pub(super) fn pretty_fixed_method(rendering: PrettyFixedRendering) -> syn::Ident {
     match rendering {
         PrettyFixedRendering::TightSequence => format_ident!("tight_sequence_token"),
@@ -1721,12 +1721,12 @@ pub(super) fn pretty_fixed_method(rendering: PrettyFixedRendering) -> syn::Ident
     }
 }
 
-/// Builds pretty fixed fallback from frozen inputs without changing canonical generation order.
+/// Produces canonical fixed text when matched source text is unavailable.
 pub(super) fn pretty_fixed_fallback(_plan: &EmissionPlan, spelling: &str) -> String {
     spelling.to_owned()
 }
 
-/// Renders render pretty sequence from frozen inputs without changing canonical generation order.
+/// Renders an ordered element sequence under its linear or delimited layout.
 pub(super) fn render_pretty_sequence(
     layout: PrettySequenceLayout,
     rendered: &[proc_macro2::TokenStream],
@@ -1751,7 +1751,7 @@ pub(super) fn render_pretty_sequence(
     }
 }
 
-/// Renders render pretty attached fixed from frozen inputs without changing canonical generation order.
+/// Renders the fixed-token portion of an attachment in source order.
 pub(super) fn render_pretty_attached_fixed(
     index: usize,
     fixed: &PrettyAttachedFixedBehavior,
@@ -1766,7 +1766,7 @@ pub(super) fn render_pretty_attached_fixed(
     }
 }
 
-/// Renders render pretty attachment unit from frozen inputs without changing canonical generation order.
+/// Groups one semantic value with its attached fixed syntax.
 pub(super) fn render_pretty_attachment_unit(
     attachment: &PrettyAttachmentBehavior,
     provenance: PrettyProvenanceBehavior,
@@ -1815,7 +1815,7 @@ pub(super) fn render_pretty_attachment_unit(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Renders render pretty attached semantic from frozen inputs without changing canonical generation order.
+/// Renders an attached semantic value while retaining its source-map child.
 pub(super) fn render_pretty_attached_semantic(
     facade: &Ident,
     element_index: usize,
@@ -1908,7 +1908,7 @@ pub(super) fn render_pretty_attached_semantic(
     }
 }
 
-/// Builds delimiter close from frozen inputs without changing canonical generation order.
+/// Returns the closing delimiter paired with an opening fixed spelling.
 pub(super) fn delimiter_close(open: &str) -> Option<&'static str> {
     match open {
         "(" => Some(")"),

@@ -24,400 +24,400 @@ mod tests {
 }
 
 #[derive(Clone, Debug)]
-/// Frozen node parse plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Complete frozen contract for emitting one authored node parser.
 pub(super) struct NodeParsePlan {
-    /// Node associated with this value.
+    /// Stable node identity used to join semantic and generation plans.
     pub(super) node: NodeId,
-    /// Semantic key associated with this value.
+    /// Canonical schema key published for the node.
     pub(super) semantic_key: String,
-    /// Module associated with this value.
+    /// Module that owns the emitted parser implementation.
     pub(super) module: ModuleId,
-    /// Ident associated with this value.
+    /// Authored Rust identifier retained for emitted declarations.
     pub(super) ident: Ident,
-    /// Visibility associated with this value.
+    /// Visibility of the generated node declaration.
     pub(super) visibility: Visibility,
-    /// Publicly materialized associated with this value.
+    /// Whether loader compatibility requires a public materialization.
     pub(super) publicly_materialized: bool,
-    /// Loader anchor associated with this value.
+    /// Stable loader symbol used to discover this node.
     pub(super) loader_anchor: String,
-    /// Generics associated with this value.
+    /// Authored generic parameters preserved by parser emission.
     pub(super) generics: Generics,
-    /// Input lifetime associated with this value.
+    /// Lifetime used for source-borrowing fields in generated types.
     pub(super) input_lifetime: syn::Lifetime,
-    /// Body associated with this value.
+    /// Frozen structural or Pratt parsing strategy.
     pub(super) body: NodeBodyPlan,
-    /// Parse applications associated with this value.
+    /// Materialized applications emitted in canonical application order.
     pub(super) parse_applications: Vec<NodeApplicationParsePlan>,
-    /// Capture associated with this value.
+    /// Source-capture policy for the completed node.
     pub(super) capture: PlannedCapturePolicy,
-    /// Configured traits associated with this value.
+    /// Trait recipes attached to the generated node declaration.
     pub(super) configured_traits: Vec<ConfiguredTraitRecipe>,
-    /// Explorer visit configured associated with this value.
+    /// Whether Explorer visitation was explicitly configured for this node.
     pub(super) explorer_visit_configured: bool,
-    /// Pretty associated with this value.
+    /// Formatting hints shared with Pretty emission.
     pub(super) pretty: PrettyHints,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen node application parse plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Parser specialization for one materialized node application.
 pub(super) struct NodeApplicationParsePlan {
-    /// Application associated with this value.
+    /// Stable identity of the materialized application.
     pub(super) application: MaterializedApplicationId,
-    /// Node associated with this value.
+    /// Node family specialized by this application.
     pub(super) node: NodeId,
-    /// Parse index associated with this value.
+    /// Canonical parser index assigned during planning.
     pub(super) parse_index: usize,
-    /// Ty associated with this value.
+    /// Concrete generated result type.
     pub(super) ty: Type,
-    /// Static ty associated with this value.
+    /// Source-independent form used by static metadata.
     pub(super) static_ty: Type,
-    /// Body associated with this value.
+    /// Frozen parse body specialized for the application.
     pub(super) body: NodeBodyPlan,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen node body plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Frozen choice of structural, variant-dispatch, or Pratt parsing.
 pub(super) enum NodeBodyPlan {
-    /// The `Struct` case of this parsing contract.
+    /// Parses a single field sequence into a struct.
     Struct {
-        /// Style associated with this value.
+        /// Construction style for named, tuple, or unit fields.
         style: ResolvedFieldStyle,
-        /// Elements associated with this value.
+        /// Elements parsed in authored field order.
         elements: Vec<ElementParsePlan>,
     },
-    /// The `Enum` case of this parsing contract.
+    /// Selects and parses one enum variant.
     Enum {
-        /// Variants associated with this value.
+        /// Variant bodies in authored declaration order.
         variants: Vec<VariantParsePlan>,
-        /// Dispatch associated with this value.
+        /// Validated predictive selector for those variants.
         dispatch: PredictiveDispatchPlan,
     },
-    /// The `Pratt` case of this parsing contract.
+    /// Parses an expression family using frozen Pratt roles.
     Pratt(Box<PrattParsePlan>),
 }
 
 #[derive(Clone, Debug)]
-/// Frozen pratt parse plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Validated prefix/infix dispatch contract for a Pratt node.
 pub(super) struct PrattParsePlan {
-    /// Expected nud count associated with this value.
+    /// Frozen prefix-variant count checked before emission.
     pub(super) expected_nud_count: usize,
-    /// Expected led count associated with this value.
+    /// Frozen extender-variant count checked before emission.
     pub(super) expected_led_count: usize,
-    /// Nud associated with this value.
+    /// Prefix branches in authored variant order.
     pub(super) nud: Vec<PrattNudParsePlan>,
-    /// Led associated with this value.
+    /// Extender branches in authored variant order.
     pub(super) led: Vec<PrattLedParsePlan>,
-    /// Nud dispatch associated with this value.
+    /// Predictive selector for the initial expression branch.
     pub(super) nud_dispatch: PredictiveDispatchPlan,
-    /// Led dispatch associated with this value.
+    /// Optional selector for expression extenders.
     pub(super) led_dispatch: Option<PredictiveDispatchPlan>,
-    /// Nud failure associated with this value.
+    /// Expected evidence reported when no prefix branch matches.
     pub(super) nud_failure: PlannedFollow,
-    /// Nud selection follow associated with this value.
+    /// Tokens that may legally follow prefix selection.
     pub(super) nud_selection_follow: ExpectedSet,
-    /// Caller follow guard associated with this value.
+    /// Optional binding-position guards keyed by caller FOLLOW.
     pub(super) caller_follow_guard: Option<Vec<PrattGuardBranchPlan>>,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen pratt nud parse plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Prefix branch paired with its authored identity and binding position.
 pub(super) struct PrattNudParsePlan {
-    /// Source index associated with this value.
+    /// Authored variant index retained for diagnostics and identity.
     pub(super) source_index: usize,
-    /// Variant associated with this value.
+    /// Frozen prefix variant body.
     pub(super) variant: VariantParsePlan,
-    /// Position associated with this value.
+    /// Binding-power position assigned by semantic analysis.
     pub(super) position: PrattPosition,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen pratt led parse plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Extender branch paired with its left operand and binding position.
 pub(super) struct PrattLedParsePlan {
-    /// Source index associated with this value.
+    /// Authored variant index retained for diagnostics and identity.
     pub(super) source_index: usize,
-    /// Variant associated with this value.
+    /// Frozen extender variant body.
     pub(super) variant: VariantParsePlan,
-    /// Lhs associated with this value.
+    /// Element receiving the already-parsed left operand.
     pub(super) lhs: ElementParsePlan,
-    /// Position associated with this value.
+    /// Binding-power position assigned by semantic analysis.
     pub(super) position: PrattPosition,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen pratt guard branch plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Caller-FOLLOW guard for one Pratt binding position.
 pub(super) struct PrattGuardBranchPlan {
-    /// Position associated with this value.
+    /// Pratt position at which the guard applies.
     pub(super) position: PrattPosition,
-    /// Expected associated with this value.
+    /// Caller-FOLLOW set admitted at that position.
     pub(super) expected: ExpectedSet,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen variant parse plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Construction and element contract for one resolved enum variant.
 pub(super) struct VariantParsePlan {
-    /// Resolved variant associated with this value.
+    /// Stable resolved identity used across semantic products.
     pub(super) resolved_variant: ResolvedVariantId,
-    /// Ident associated with this value.
+    /// Rust identifier used for construction.
     pub(super) ident: Ident,
-    /// Style associated with this value.
+    /// Named, tuple, or unit construction style.
     pub(super) style: ResolvedFieldStyle,
-    /// Elements associated with this value.
+    /// Parse elements in authored field order.
     pub(super) elements: Vec<ElementParsePlan>,
-    /// Capture associated with this value.
+    /// Optional source-capture policy for the variant.
     pub(super) capture: Option<PlannedCapturePolicy>,
-    /// Pretty associated with this value.
+    /// Formatting hints retained for shared projections.
     pub(super) pretty: PrettyHints,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen predictive dispatch plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Predictive trie plus the semantic identity used to validate it.
 pub(super) struct PredictiveDispatchPlan {
-    /// Root associated with this value.
+    /// Root of the frozen predictive trie.
     pub(super) root: DispatchTrieNodePlan,
-    /// Frozen sequence count associated with this value.
+    /// Sequence count used to detect stale semantic products.
     pub(super) frozen_sequence_count: usize,
-    /// Frozen node count associated with this value.
+    /// Trie-node count used to detect incomplete reconstruction.
     pub(super) frozen_node_count: usize,
-    /// Frozen identity associated with this value.
+    /// Deterministic identity of the analyzed dispatch family.
     pub(super) frozen_identity: u64,
 }
 
 #[derive(Clone, Debug, Default)]
-/// Frozen dispatch trie node plan data owned by the parsing boundary; declaration order remains deterministic.
+/// One selectable state in the frozen predictive trie.
 pub(super) struct DispatchTrieNodePlan {
-    /// Target associated with this value.
+    /// Selection made when the consumed prefix ends here.
     pub(super) target: Option<DispatchTargetPlan>,
-    /// Edges associated with this value.
+    /// Outgoing positions in canonical predictive order.
     pub(super) edges: Vec<DispatchTrieEdgePlan>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen dispatch target plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Variant selection reached at a predictive trie state.
 pub(super) struct DispatchTargetPlan {
-    /// Variant associated with this value.
+    /// Zero-based branch selected by the trie.
     pub(super) variant: usize,
-    /// On caller follow associated with this value.
+    /// Whether selection depends on the caller-supplied FOLLOW set.
     pub(super) on_caller_follow: bool,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen dispatch trie edge plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Ordered transition from one predictive trie state to another.
 pub(super) struct DispatchTrieEdgePlan {
-    /// Position associated with this value.
+    /// Token/text condition labeling this trie edge.
     pub(super) position: DispatchPositionPlan,
-    /// Next associated with this value.
+    /// Trie state reached after the position matches.
     pub(super) next: DispatchTrieNodePlan,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen dispatch position plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Token expectation and spelling refinement labeling a dispatch edge.
 pub(super) struct DispatchPositionPlan {
-    /// Expected associated with this value.
+    /// Token-kind expectation tested at this position.
     pub(super) expected: ExpectedSet,
-    /// Text predicate associated with this value.
+    /// Optional spelling refinement for atom-like token kinds.
     pub(super) text_predicate: Option<PlannedTextPredicate>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen planned text predicate data owned by the parsing boundary; declaration order remains deterministic.
+/// Frozen spelling constraint refining a token-kind match.
 pub(super) enum PlannedTextPredicate {
-    /// The `Any` case of this parsing contract.
+    /// Accepts every spelling admitted by the token kind.
     Any,
-    /// The `Exact` case of this parsing contract.
+    /// Accepts exactly one spelling.
     Exact(String),
-    /// The `OneOf` case of this parsing contract.
+    /// Accepts one spelling from a canonical set.
     OneOf(Vec<String>),
-    /// The `NotIn` case of this parsing contract.
+    /// Accepts every spelling except those in the set.
     NotIn(Vec<String>),
 }
 
 #[derive(Clone, Debug)]
-/// Frozen element parse plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Schema provenance and parser recipe for one authored element.
 pub(super) struct ElementParsePlan {
-    /// Explorer source associated with this value.
+    /// Schema provenance exposed for Explorer occurrences.
     pub(super) explorer_source: ExplorerElementSource,
-    /// Metadata name associated with this value.
+    /// Stable element name used by generated metadata.
     pub(super) metadata_name: String,
-    /// Kind associated with this value.
+    /// Fixed or semantic parsing recipe.
     pub(super) kind: ElementParseKind,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen fixed attachment parse plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Fixed-token envelope around a semantic container.
 pub(super) struct FixedAttachmentParsePlan {
-    /// Before associated with this value.
+    /// Fixed tokens consumed before the semantic child.
     pub(super) before: Vec<AttachedFixedParsePlan>,
-    /// Semantic associated with this value.
+    /// Container operation that parses the semantic child.
     pub(super) semantic: Box<PlannedContainer>,
-    /// After associated with this value.
+    /// Fixed tokens consumed after the semantic child.
     pub(super) after: Vec<AttachedFixedParsePlan>,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen attached fixed parse plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Matching, capture, and formatting contract for an attached token.
 pub(super) struct AttachedFixedParsePlan {
-    /// Expected associated with this value.
+    /// Token expectation used for matching and diagnostics.
     pub(super) expected: ExpectedSet,
-    /// Capture associated with this value.
+    /// Source-capture policy for the fixed token.
     pub(super) capture: PlannedCapturePolicy,
-    /// Spelling associated with this value.
+    /// Canonical fixed spelling.
     pub(super) spelling: String,
-    /// Spacing associated with this value.
+    /// Pretty spacing adjacent to the spelling.
     pub(super) spacing: PrettySpacing,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen element parse kind data owned by the parsing boundary; declaration order remains deterministic.
+/// Parser recipe for a fixed token or semantic field.
 pub(super) enum ElementParseKind {
-    /// The `Fixed` case of this parsing contract.
+    /// Matches an authored fixed token and records its accessor.
     Fixed {
         #[cfg_attr(not(feature = "explorer"), allow(dead_code))]
-        /// Kind associated with this value.
+        /// Runtime token kind exposed to Explorer.
         kind: u16,
-        /// Expected associated with this value.
+        /// Expected set used for matching and failure evidence.
         expected: ExpectedSet,
-        /// Capture associated with this value.
+        /// Source-capture policy for the token.
         capture: PlannedCapturePolicy,
-        /// Spelling associated with this value.
+        /// Canonical authored spelling.
         spelling: String,
-        /// Spacing associated with this value.
+        /// Pretty spacing adjacent to the token.
         spacing: PrettySpacing,
-        /// Accessor associated with this value.
+        /// Generated accessor identifying this occurrence.
         accessor: Ident,
     },
-    /// The `Semantic` case of this parsing contract.
+    /// Parses an authored semantic field through its container policy.
     Semantic {
-        /// Field associated with this value.
+        /// Construction slot receiving the parsed value.
         field: FieldPlan,
-        /// Terminal associated with this value.
+        /// Authored terminal type before materialization.
         terminal: Box<Type>,
-        /// Terminal node associated with this value.
+        /// Resolved node family, when the terminal is generated.
         terminal_node: Option<NodeId>,
-        /// Terminal application associated with this value.
+        /// Materialized generated-node application, when available.
         terminal_application: Option<MaterializedApplicationId>,
-        /// Explorer terminal associated with this value.
+        /// Grammar-erased terminal projection for Explorer schema.
         #[cfg_attr(not(feature = "explorer"), allow(dead_code))]
         explorer_terminal: ExplorerTerminalPlan,
-        /// Wrappers associated with this value.
+        /// Authored type wrappers, outermost first.
         wrappers: Vec<FieldWrapper>,
-        /// Container associated with this value.
+        /// Optionality or repetition control-flow recipe.
         container: Box<PlannedContainer>,
-        /// Capture associated with this value.
+        /// Source-capture policy for the stored field value.
         capture: PlannedCapturePolicy,
-        /// Child capture associated with this value.
+        /// Source-capture policy applied to each parsed child.
         child_capture: PlannedCapturePolicy,
-        /// Pratt min bp associated with this value.
+        /// Minimum binding power when parsing a Pratt child.
         pratt_min_bp: Option<u8>,
-        /// Separator associated with this value.
+        /// Canonical repetition separator spelling, if any.
         separator: Option<String>,
-        /// Attachment associated with this value.
+        /// Fixed tokens attached around the semantic child.
         attachment: Option<Box<FixedAttachmentParsePlan>>,
-        /// Opaque provenance associated with this value.
+        /// Whether the terminal hides generated-node provenance.
         opaque_provenance: bool,
-        /// Repetition break associated with this value.
+        /// Pretty line-breaking policy for repeated children.
         repetition_break: PlannedRepetitionBreak,
-        /// Pretty associated with this value.
+        /// Formatting hints retained for the field.
         pretty: PrettyHints,
     },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen planned repetition break data owned by the parsing boundary; declaration order remains deterministic.
+/// Pretty break behavior retained for a repeated parse field.
 pub(super) enum PlannedRepetitionBreak {
-    /// The `Soft` case of this parsing contract.
+    /// Allows the formatter to choose a repetition break.
     Soft,
-    /// The `TopLevelStatement` case of this parsing contract.
+    /// Breaks between occurrences of one materialized statement type.
     TopLevelStatement(MaterializedApplicationId),
-    /// The `TopLevelStatementFamily` case of this parsing contract.
+    /// Breaks between occurrences from one statement node family.
     TopLevelStatementFamily(NodeId),
 }
 
 #[derive(Clone, Debug)]
-/// Frozen field plan data owned by the parsing boundary; declaration order remains deterministic.
+/// Construction position and optional named binding for a parsed field.
 pub(super) struct FieldPlan {
-    /// Ident associated with this value.
+    /// Named-field binding, absent for tuple and unit positions.
     pub(super) ident: Option<Ident>,
-    /// Index associated with this value.
+    /// Zero-based construction position in authored field order.
     pub(super) index: usize,
-    /// Accessor associated with this value.
+    /// Generated accessor when the field is addressable by name.
     pub(super) accessor: Option<Ident>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen field wrapper data owned by the parsing boundary; declaration order remains deterministic.
+/// Storage constructor applied around an authored terminal type.
 pub(super) enum FieldWrapper {
-    /// The `Boxed` case of this parsing contract.
+    /// Allocates the child behind `Box`.
     Boxed,
-    /// The `Optional` case of this parsing contract.
+    /// Stores absence or one child in `Option`.
     Optional,
-    /// The `ZeroOrMore` case of this parsing contract.
+    /// Collects any number of children.
     ZeroOrMore,
-    /// The `OneOrMore` case of this parsing contract.
+    /// Collects children while enforcing a non-empty result.
     OneOrMore,
 }
 
 #[derive(Clone, Debug)]
-/// Frozen planned container data owned by the parsing boundary; declaration order remains deterministic.
+/// Control-flow and failure contract for direct, optional, or repeated parsing.
 pub(super) enum PlannedContainer {
-    /// The `Direct` case of this parsing contract.
+    /// Requires exactly one child.
     Direct {
-        /// Child follow associated with this value.
+        /// FOLLOW context passed while parsing the child.
         child_follow: PlannedFollow,
-        /// Required failure associated with this value.
+        /// Failure evidence when the required child is absent.
         required_failure: PlannedFollow,
     },
-    /// The `Optional` case of this parsing contract.
+    /// Parses at most one child when its selector matches.
     Optional {
-        /// Selector associated with this value.
+        /// FIRST set that decides whether the child begins.
         selector: ExpectedSet,
-        /// Child follow associated with this value.
+        /// FOLLOW context passed while parsing the child.
         child_follow: PlannedFollow,
     },
-    /// The `Repeated` case of this parsing contract.
+    /// Parses a bounded or unbounded sequence with optional separators.
     Repeated {
-        /// Operation associated with this value.
+        /// Collection cardinality and construction operation.
         operation: ContainerOperation,
-        /// Element selector associated with this value.
+        /// FIRST set that begins another element.
         element_selector: ExpectedSet,
-        /// Separator selector associated with this value.
+        /// FIRST set for a configured separator.
         separator_selector: Option<ExpectedSet>,
-        /// Optional trailing associated with this value.
+        /// Whether a separator may terminate the sequence.
         optional_trailing: bool,
-        /// Stop associated with this value.
+        /// FOLLOW evidence that legally ends repetition.
         stop: PlannedFollow,
-        /// Child follow associated with this value.
+        /// FOLLOW context passed to each child parser.
         child_follow: PlannedFollow,
-        /// Minimum failure associated with this value.
+        /// Failure emitted when the minimum count is not met.
         minimum_failure: Option<Box<PlannedFollow>>,
-        /// Continuation failure associated with this value.
+        /// Failure when neither another element nor a legal stop matches.
         continuation_failure: Box<PlannedFollow>,
-        /// After separator failure associated with this value.
+        /// Failure when a separator is not followed by an element.
         after_separator_failure: Option<Box<PlannedFollow>>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen planned follow data owned by the parsing boundary; declaration order remains deterministic.
+/// Static and caller-dependent FOLLOW policy used by emitted parsers.
 pub(super) enum PlannedFollow {
-    /// The `Caller` case of this parsing contract.
+    /// Uses only the caller-supplied FOLLOW set.
     Caller,
-    /// The `Static` case of this parsing contract.
+    /// Uses a frozen FOLLOW set independent of the caller.
     Static(ExpectedSet),
-    /// The `StaticAndCaller` case of this parsing contract.
+    /// Unions a frozen FOLLOW set with the caller context.
     StaticAndCaller(ExpectedSet),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen expected set data owned by the parsing boundary; declaration order remains deterministic.
+/// Runtime-width token expectations with optional atom refinements.
 pub(super) struct ExpectedSet {
-    /// Words associated with this value.
+    /// Dense token-kind bitset in runtime word order.
     pub(super) words: Vec<u64>,
-    /// Atoms associated with this value.
+    /// Sorted, deduplicated atom indices refining the kind set.
     pub(super) atoms: Vec<u32>,
 }
 
 impl ExpectedSet {
-    /// Constructs the empty result.
+    /// Allocates an empty expectation with the runtime kind-set width.
     pub(super) fn empty(kind_count: usize) -> Self {
         Self {
             words: vec![0; kind_count.div_ceil(64)],
@@ -425,7 +425,7 @@ impl ExpectedSet {
         }
     }
 
-    /// Constructs the from kinds result.
+    /// Copies semantic token kinds into the runtime-width representation.
     pub(super) fn from_kinds(kinds: &KindSet, kind_count: usize) -> Self {
         let mut words = kinds.words().to_vec();
         words.resize(kind_count.div_ceil(64), 0);
@@ -435,7 +435,7 @@ impl ExpectedSet {
         }
     }
 
-    /// Constructs the from positions result.
+    /// Unions FIRST positions and records their sorted atom refinements.
     pub(super) fn from_positions(
         positions: &[FirstPosition],
         grammar: &crate::GrammarDescription,
@@ -462,7 +462,7 @@ impl ExpectedSet {
         Ok(value)
     }
 
-    /// Returns the union assign value.
+    /// Unions another expectation in place and restores atom uniqueness.
     pub(super) fn union_assign(&mut self, other: &Self) {
         for (left, right) in self.words.iter_mut().zip(&other.words) {
             *left |= *right;
@@ -478,7 +478,7 @@ impl ExpectedSet {
 }
 
 impl PrattParsePlan {
-    /// Returns the validate value.
+    /// Verifies bitset width, atom bounds, ordering, and uniqueness.
     pub(super) fn validate(&self) -> Result<(), String> {
         if self.nud.len() != self.expected_nud_count || self.nud.is_empty() {
             return Err("the frozen Pratt plan lacks its complete nud dispatch family".to_owned());
@@ -556,20 +556,20 @@ impl PrattParsePlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen planned capture policy data owned by the parsing boundary; declaration order remains deterministic.
+/// Source-capture policy after inheritance has been resolved or retained.
 pub(super) enum PlannedCapturePolicy {
-    /// The `Inherited` case of this parsing contract.
+    /// Defers capture choice to the caller context.
     Inherited,
-    /// The `Off` case of this parsing contract.
+    /// Records no source capture.
     Off,
-    /// The `Optional` case of this parsing contract.
+    /// Captures source when the runtime context enables it.
     Optional,
-    /// The `Mandatory` case of this parsing contract.
+    /// Requires source capture for the parsed value.
     Mandatory,
 }
 
 impl PlannedCapturePolicy {
-    /// Produces the deterministic name.
+    /// Returns the stable capture-policy spelling used in plan identities.
     pub(super) const fn canonical_name(self) -> &'static str {
         match self {
             Self::Inherited => "inherited",
@@ -579,7 +579,7 @@ impl PlannedCapturePolicy {
         }
     }
 
-    /// Returns the render value.
+    /// Emits the corresponding runtime capture-policy expression.
     pub(super) fn render(self, facade: &Ident) -> proc_macro2::TokenStream {
         match self {
             Self::Inherited => quote!(context.capture_policy()),
@@ -600,7 +600,7 @@ impl From<CaptureMode> for PlannedCapturePolicy {
     }
 }
 
-/// Builds planned dispatch position from frozen inputs without changing canonical generation order.
+/// Converts one analyzed FIRST position into a runtime dispatch condition.
 pub(super) fn planned_dispatch_position(
     position: &FirstPosition,
     grammar: &crate::GrammarDescription,
@@ -627,7 +627,7 @@ pub(super) fn planned_dispatch_position(
     })
 }
 
-/// Builds plan predictive dispatch node from frozen inputs without changing canonical generation order.
+/// Reconstructs a frozen predictive subtree while preserving edge order and identity.
 pub(super) fn plan_predictive_dispatch_node(
     frozen: &crate::DispatchTrieNode,
     variants: &[(crate::DeclId, usize)],
@@ -668,12 +668,12 @@ pub(super) fn plan_predictive_dispatch_node(
     Ok(DispatchTrieNodePlan { target, edges })
 }
 
-/// Builds predictive dispatch identity from frozen inputs without changing canonical generation order.
+/// Computes the deterministic identity used to validate a predictive trie.
 pub(super) fn predictive_dispatch_identity(root: &DispatchTrieNodePlan) -> u64 {
     stable_hash(format!("{root:?}").as_bytes())
 }
 
-/// Validates validate predictive dispatch from frozen inputs without changing canonical generation order.
+/// Rejects dispatch plans whose shape or identity differs from semantic analysis.
 pub(super) fn validate_predictive_dispatch(
     dispatch: &PredictiveDispatchPlan,
     variants: usize,
@@ -714,7 +714,7 @@ pub(super) fn validate_predictive_dispatch(
     Ok(count)
 }
 
-/// Builds plan node from frozen inputs without changing canonical generation order.
+/// Freezes all parse applications and body decisions for one resolved node.
 ///
 /// # Long-function contract
 ///
@@ -970,7 +970,7 @@ pub(super) fn plan_node(
     })
 }
 
-/// Builds structural body from frozen inputs without changing canonical generation order.
+/// Plans a struct or enum body from its resolved authored structure.
 ///
 /// # Long-function contract
 ///
@@ -1111,7 +1111,7 @@ pub(super) fn structural_body(
     Ok(body)
 }
 
-/// Builds empty declaration dispatch from frozen inputs without changing canonical generation order.
+/// Creates the canonical dispatch plan for an enum with no selectable variants.
 pub(super) fn empty_declaration_dispatch() -> PredictiveDispatchPlan {
     let root = DispatchTrieNodePlan::default();
     PredictiveDispatchPlan {
@@ -1122,7 +1122,7 @@ pub(super) fn empty_declaration_dispatch() -> PredictiveDispatchPlan {
     }
 }
 
-/// Builds declaration elements from frozen inputs without changing canonical generation order.
+/// Plans declaration elements in authored field order.
 ///
 /// # Long-function contract
 ///
@@ -1297,7 +1297,7 @@ pub(super) fn declaration_elements(
         .collect()
 }
 
-/// Builds declaration fixed attachment from frozen inputs without changing canonical generation order.
+/// Freezes fixed tokens attached before and after a semantic field.
 pub(super) fn declaration_fixed_attachment(
     attachment: &crate::source_model::FixedTokenAttachment,
     lowered: &crate::materialization::LoweredGrammar,
@@ -1335,7 +1335,7 @@ pub(super) fn declaration_fixed_attachment(
     })
 }
 
-/// Builds declaration explorer terminal from frozen inputs without changing canonical generation order.
+/// Projects a resolved terminal into grammar-erased Explorer metadata.
 pub(super) fn declaration_explorer_terminal(
     lowered: &crate::materialization::LoweredGrammar,
     node: NodeId,
@@ -1372,7 +1372,7 @@ pub(super) fn declaration_explorer_terminal(
         .ok_or_else(|| "an authored explorer field lacks a materialized terminal".to_owned())
 }
 
-/// Builds declaration container operation from frozen inputs without changing canonical generation order.
+/// Derives the runtime collection operation from authored wrappers.
 pub(super) fn declaration_container_operation(wrappers: &[FieldWrapper]) -> ContainerOperation {
     let repetition = wrappers
         .iter()
@@ -1399,7 +1399,7 @@ pub(super) fn declaration_container_operation(wrappers: &[FieldWrapper]) -> Cont
     }
 }
 
-/// Builds declaration container from frozen inputs without changing canonical generation order.
+/// Plans optional or repeated control flow and its failure evidence.
 pub(super) fn declaration_container(
     operation: ContainerOperation,
     has_separator: bool,
@@ -1432,26 +1432,26 @@ pub(super) fn declaration_container(
 }
 
 #[derive(Clone)]
-/// Frozen authored projection data owned by the parsing boundary; declaration order remains deterministic.
+/// Authored terminal type projected through its storage wrappers.
 pub(super) struct AuthoredProjection {
-    /// Terminal associated with this value.
+    /// Terminal type after applying resolved generic bindings.
     pub(super) terminal: Type,
-    /// Terminal node associated with this value.
+    /// Generated node family referenced by the terminal, when any.
     pub(super) terminal_node: Option<NodeId>,
-    /// Wrappers associated with this value.
+    /// Authored storage wrappers, outermost first.
     pub(super) wrappers: Vec<FieldWrapper>,
 }
 
 #[derive(Clone, Default)]
-/// Frozen authored bindings data owned by the parsing boundary; declaration order remains deterministic.
+/// Generic substitutions available while projecting authored types.
 pub(super) struct AuthoredBindings {
-    /// Types associated with this value.
+    /// Type arguments keyed by their resolved parameter identities.
     pub(super) types: BTreeMap<GenericParameterId, ResolvedType>,
-    /// Lifetimes associated with this value.
+    /// Lifetime arguments keyed by authored parameter names.
     pub(super) lifetimes: BTreeMap<String, syn::Lifetime>,
 }
 
-/// Builds authored type depends on node generics from frozen inputs without changing canonical generation order.
+/// Reports whether a type references generics owned by the enclosing node.
 pub(super) fn authored_type_depends_on_node_generics(
     ty: &ResolvedType,
     node: &ResolvedNode,
@@ -1493,7 +1493,7 @@ pub(super) fn authored_type_depends_on_node_generics(
     }
 }
 
-/// Builds authored projection from frozen inputs without changing canonical generation order.
+/// Resolves an authored terminal and wrappers under the available bindings.
 pub(super) fn authored_projection(
     ty: &ResolvedType,
     resolved: &ResolvedSourceGrammar,
@@ -1506,7 +1506,7 @@ pub(super) fn authored_projection(
     )
 }
 
-/// Builds authored projection with from frozen inputs without changing canonical generation order.
+/// Resolves an authored projection after extending the current bindings.
 ///
 /// # Long-function contract
 ///
@@ -1679,7 +1679,7 @@ pub(super) fn authored_projection_with(
     }
 }
 
-/// Builds authored open type from frozen inputs without changing canonical generation order.
+/// Renders a resolved type while leaving node-owned parameters open.
 pub(super) fn authored_open_type(
     ty: &ResolvedType,
     resolved: &ResolvedSourceGrammar,
@@ -1695,7 +1695,7 @@ pub(super) fn authored_open_type(
     ))
 }
 
-/// Builds authored node type from frozen inputs without changing canonical generation order.
+/// Renders the generated node type under the supplied application bindings.
 pub(super) fn authored_node_type(
     node_id: NodeId,
     use_site: crate::resolution::SemanticUseId,
@@ -1755,7 +1755,7 @@ pub(super) fn authored_node_type(
     Ok(Type::Path(syn::TypePath { qself: None, path }))
 }
 
-/// Builds for each element from frozen inputs without changing canonical generation order.
+/// Visits declaration elements in authored order with their construction indices.
 pub(super) fn for_each_element(body: &NodeBodyPlan, visit: &mut impl FnMut(&ElementParsePlan)) {
     match body {
         NodeBodyPlan::Struct { elements, .. } => elements.iter().for_each(visit),
@@ -1775,7 +1775,7 @@ pub(super) fn for_each_element(body: &NodeBodyPlan, visit: &mut impl FnMut(&Elem
     }
 }
 
-/// Builds disambiguate fixed accessors from frozen inputs without changing canonical generation order.
+/// Assigns collision-free accessors to repeated fixed-token spellings.
 pub(super) fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<(), String> {
     let mut counts = BTreeMap::<String, usize>::new();
     for_each_element(body, &mut |element| {
@@ -1863,7 +1863,7 @@ pub(super) fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<()
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Builds plan pratt node from frozen inputs without changing canonical generation order.
+/// Freezes Pratt prefix/extender roles, dispatch, guards, and failure evidence.
 ///
 /// # Long-function contract
 ///
@@ -2149,7 +2149,7 @@ pub(super) fn plan_pratt_node(
     })
 }
 
-/// Builds plan joined dispatch from frozen inputs without changing canonical generation order.
+/// Reconstructs and validates a dispatch plan shared by the supplied variants.
 pub(super) fn plan_joined_dispatch(
     dispatch: &crate::DispatchPlan,
     variants: &[(crate::DeclId, usize)],
@@ -2177,7 +2177,7 @@ pub(super) fn plan_joined_dispatch(
     })
 }
 
-/// Validates validate pratt position from frozen inputs without changing canonical generation order.
+/// Checks that a frozen Pratt prefix position is valid for its role.
 pub(super) fn validate_pratt_position(
     position: Option<PrattPosition>,
     variant: &MaterializedPrattNud,
@@ -2193,7 +2193,7 @@ pub(super) fn validate_pratt_position(
     }
 }
 
-/// Validates validate pratt led position from frozen inputs without changing canonical generation order.
+/// Checks that an extender position and left-operand slot agree.
 pub(super) fn validate_pratt_led_position(
     position: Option<PrattPosition>,
     variant: &MaterializedPrattLed,
@@ -2209,7 +2209,7 @@ pub(super) fn validate_pratt_led_position(
     }
 }
 
-/// Builds plan pratt lhs from frozen inputs without changing canonical generation order.
+/// Plans the distinguished left-operand element of a Pratt extender.
 pub(super) fn plan_pratt_lhs(
     node: &ResolvedNode,
     resolved_variant: &crate::resolution::ResolvedNodeVariant,
@@ -2276,7 +2276,7 @@ pub(super) fn plan_pratt_lhs(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Builds plan elements from frozen inputs without changing canonical generation order.
+/// Freezes element parsing recipes in authored field order.
 ///
 /// # Long-function contract
 ///
@@ -2540,7 +2540,7 @@ pub(super) fn plan_elements(
         .collect()
 }
 
-/// Builds parse site targets from frozen inputs without changing canonical generation order.
+/// Resolves the generated node and application targeted by a parse site.
 pub(super) fn parse_site_targets(
     grammar: &crate::GrammarDescription,
     site: SiteId,
@@ -2559,7 +2559,7 @@ pub(super) fn parse_site_targets(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Builds plan fixed attachment from frozen inputs without changing canonical generation order.
+/// Plans fixed tokens attached around a semantic container.
 pub(super) fn plan_fixed_attachment(
     field: &crate::resolution::ResolvedNodeField,
     attachment: &MaterializedFixedAttachment,
@@ -2643,7 +2643,7 @@ pub(super) fn plan_fixed_attachment(
     })
 }
 
-/// Builds planned pratt extenders from frozen inputs without changing canonical generation order.
+/// Collects materialized Pratt extenders admitted for an application.
 pub(super) fn planned_pratt_extenders(
     decisions: &crate::DecisionProducts,
     owner: crate::TypeId,
@@ -2670,7 +2670,7 @@ pub(super) fn planned_pratt_extenders(
     ExpectedSet::from_positions(&first, grammar, kind_count)
 }
 
-/// Builds terminal node capture from frozen inputs without changing canonical generation order.
+/// Derives child capture policy from the resolved terminal node.
 pub(super) fn terminal_node_capture(
     ty: &ClosedType,
     lowered: &crate::materialization::LoweredGrammar,
@@ -2695,7 +2695,7 @@ pub(super) fn terminal_node_capture(
 }
 
 #[cfg(feature = "diagrams")]
-/// Builds diagram terminal name from frozen inputs without changing canonical generation order.
+/// Chooses the stable terminal label used by diagram metadata.
 pub(super) fn diagram_terminal_name(
     ty: &ClosedType,
     lowered: &crate::materialization::LoweredGrammar,
@@ -2722,7 +2722,7 @@ pub(super) fn diagram_terminal_name(
 }
 
 #[cfg(feature = "diagrams")]
-/// Builds diagram separator spelling from frozen inputs without changing canonical generation order.
+/// Resolves a repetition separator to its canonical fixed spelling.
 pub(super) fn diagram_separator_spelling(
     separator: Option<&crate::source_model::Separator>,
     lowered: &crate::materialization::LoweredGrammar,
@@ -2745,7 +2745,7 @@ pub(super) fn diagram_separator_spelling(
     Ok(Some(fixed.spelling.clone()))
 }
 
-/// Builds fixed element name from frozen inputs without changing canonical generation order.
+/// Derives the stable metadata name for a fixed element occurrence.
 pub(super) fn fixed_element_name(
     node: &ResolvedNode,
     token_use: &crate::source_model::TokenUse,
@@ -2765,7 +2765,7 @@ pub(super) fn fixed_element_name(
         })
 }
 
-/// Builds fixed element field from frozen inputs without changing canonical generation order.
+/// Determines the construction slot occupied by a fixed element.
 pub(super) fn fixed_element_field<'node>(
     node: &'node ResolvedNode,
     token_use: &crate::source_model::TokenUse,
@@ -2778,7 +2778,7 @@ pub(super) fn fixed_element_field<'node>(
     })
 }
 
-/// Builds field wrappers from frozen inputs without changing canonical generation order.
+/// Converts authored type constructors into parser storage wrappers.
 pub(super) fn field_wrappers(ty: &ClosedType) -> Result<Vec<FieldWrapper>, String> {
     fn walk(ty: &ClosedType, output: &mut Vec<FieldWrapper>) {
         match ty {
@@ -2806,7 +2806,7 @@ pub(super) fn field_wrappers(ty: &ClosedType) -> Result<Vec<FieldWrapper>, Strin
     Ok(wrappers)
 }
 
-/// Builds explorer terminal from frozen inputs without changing canonical generation order.
+/// Projects a resolved terminal into Explorer's grammar-erased schema.
 pub(super) fn explorer_terminal(ty: &ClosedType) -> Result<ExplorerTerminalPlan, String> {
     match ty {
         ClosedType::Node(node) => Ok(ExplorerTerminalPlan::Node(node.application)),
@@ -2818,7 +2818,7 @@ pub(super) fn explorer_terminal(ty: &ClosedType) -> Result<ExplorerTerminalPlan,
     }
 }
 
-/// Validates validate container wrappers from frozen inputs without changing canonical generation order.
+/// Rejects wrapper combinations unsupported by parser container semantics.
 pub(super) fn validate_container_wrappers(
     operation: ContainerOperation,
     wrappers: &[FieldWrapper],
@@ -2856,7 +2856,7 @@ pub(super) fn validate_container_wrappers(
     }
 }
 
-/// Builds planned container from frozen inputs without changing canonical generation order.
+/// Freezes container control flow, selectors, FOLLOW sets, and failures.
 pub(super) fn planned_container(
     machine: &crate::ContainerMachine,
     decisions: &crate::DecisionProducts,
@@ -2945,7 +2945,7 @@ pub(super) fn planned_container(
     })
 }
 
-/// Builds planned failure edge from frozen inputs without changing canonical generation order.
+/// Converts analyzed failure evidence into its emitted FOLLOW representation.
 pub(super) fn planned_failure_edge(
     decisions: &crate::DecisionProducts,
     site: SiteId,
@@ -2966,7 +2966,7 @@ pub(super) fn planned_failure_edge(
     planned_expected_recipe(edge.expected(), grammar, kind_count)
 }
 
-/// Builds planned expected recipe from frozen inputs without changing canonical generation order.
+/// Converts an expected-set recipe to the runtime-width representation.
 pub(super) fn planned_expected_recipe(
     expected: &ExpectedRecipe,
     grammar: &crate::GrammarDescription,
@@ -2988,7 +2988,7 @@ pub(super) fn planned_expected_recipe(
     }
 }
 
-/// Builds terminal type from frozen inputs without changing canonical generation order.
+/// Resolves the concrete terminal type for one materialized parse site.
 pub(super) fn terminal_type(
     closed: &ClosedType,
     lowered: &crate::materialization::LoweredGrammar,
@@ -3030,7 +3030,7 @@ pub(super) fn terminal_type(
     }
 }
 
-/// Builds closed terminal application from frozen inputs without changing canonical generation order.
+/// Finds the fully bound generated application for a terminal, when one exists.
 pub(super) fn closed_terminal_application(
     closed: &ClosedType,
 ) -> Option<MaterializedApplicationId> {
@@ -3044,7 +3044,7 @@ pub(super) fn closed_terminal_application(
     }
 }
 
-/// Builds materialized application type from frozen inputs without changing canonical generation order.
+/// Renders the concrete Rust type of a materialized node application.
 pub(super) fn materialized_application_type(
     application: &MaterializedNodeApplication,
     lifetimes: &[syn::Lifetime],
@@ -3112,7 +3112,7 @@ pub(super) fn materialized_application_type(
     Ok(Type::Path(syn::TypePath { qself: None, path }))
 }
 
-/// Builds closed type from frozen inputs without changing canonical generation order.
+/// Renders a resolved type after requiring every generic to be bound.
 pub(super) fn closed_type(
     closed: &ClosedType,
     lowered: &crate::materialization::LoweredGrammar,
@@ -3142,7 +3142,7 @@ pub(super) fn closed_type(
     })
 }
 
-/// Builds planned follow from frozen inputs without changing canonical generation order.
+/// Converts a frozen FOLLOW recipe into its emitted representation.
 pub(super) fn planned_follow(
     recipe: &FollowRecipe,
     grammar: &crate::GrammarDescription,
@@ -3159,7 +3159,7 @@ pub(super) fn planned_follow(
     })
 }
 
-/// Builds follow with static from frozen inputs without changing canonical generation order.
+/// Unions a static expected set into an existing FOLLOW policy.
 pub(super) fn follow_with_static(
     follow: &PlannedFollow,
     additional: &ExpectedSet,
@@ -3179,7 +3179,7 @@ pub(super) fn follow_with_static(
     }
 }
 
-/// Renders render node parse body from frozen inputs without changing canonical generation order.
+/// Emits the parser body selected by the frozen node plan.
 pub(super) fn render_node_parse_body(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -3206,7 +3206,7 @@ pub(super) fn render_node_parse_body(
     }
 }
 
-/// Renders render predictive dispatch from frozen inputs without changing canonical generation order.
+/// Emits trie traversal and variant selection for predictive dispatch.
 ///
 /// # Long-function contract
 ///
@@ -3315,7 +3315,7 @@ pub(super) fn render_predictive_dispatch(
     }
 }
 
-/// Renders render dispatch position match from frozen inputs without changing canonical generation order.
+/// Emits the token-kind and optional spelling test for one trie edge.
 pub(super) fn render_dispatch_position_match(
     plan: &EmissionPlan,
     expected: &Ident,
@@ -3356,7 +3356,7 @@ pub(super) fn render_dispatch_position_match(
     }
 }
 
-/// Renders render predictive selection from frozen inputs without changing canonical generation order.
+/// Emits construction of the branch selected by predictive dispatch.
 pub(super) fn render_predictive_selection(
     plan: &EmissionPlan,
     node_index: usize,
@@ -3416,7 +3416,7 @@ pub(super) fn render_predictive_selection(
     })
 }
 
-/// Renders render pratt parse from frozen inputs without changing canonical generation order.
+/// Emits the prefix parse and binding-power extender loop for a Pratt node.
 ///
 /// # Long-function contract
 ///
@@ -3572,7 +3572,7 @@ pub(super) fn render_pratt_parse(
     }
 }
 
-/// Builds pratt led lbp from frozen inputs without changing canonical generation order.
+/// Returns the left binding power encoded by an extender position.
 pub(super) fn pratt_led_lbp(position: PrattPosition) -> u8 {
     match position {
         PrattPosition::Infix { lbp, .. } => lbp,
@@ -3583,7 +3583,7 @@ pub(super) fn pratt_led_lbp(position: PrattPosition) -> u8 {
     }
 }
 
-/// Renders render pratt led parse from frozen inputs without changing canonical generation order.
+/// Emits one Pratt extender branch around the existing left operand.
 ///
 /// # Long-function contract
 ///
@@ -3694,7 +3694,7 @@ pub(super) fn render_pratt_led_parse(
     }
 }
 
-/// Renders render sequence parse from frozen inputs without changing canonical generation order.
+/// Emits ordered parsing and construction of a structural sequence.
 pub(super) fn render_sequence_parse(
     plan: &EmissionPlan,
     node_index: usize,
@@ -3787,7 +3787,7 @@ pub(super) fn render_sequence_parse(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Renders render semantic parse from frozen inputs without changing canonical generation order.
+/// Emits parsing, capture, and storage for one semantic field.
 ///
 /// # Long-function contract
 ///
@@ -3967,7 +3967,7 @@ pub(super) fn render_semantic_parse(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Renders render attachment child from frozen inputs without changing canonical generation order.
+/// Emits a semantic child surrounded by its required fixed attachments.
 ///
 /// # Long-function contract
 ///
@@ -4096,7 +4096,7 @@ pub(super) fn render_attachment_child(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Renders render repeated parse from frozen inputs without changing canonical generation order.
+/// Emits the repetition loop, separator handling, and minimum-count failures.
 ///
 /// # Long-function contract
 ///
@@ -4319,7 +4319,7 @@ pub(super) fn render_repeated_parse(
     }
 }
 
-/// Renders render follow value from frozen inputs without changing canonical generation order.
+/// Emits the runtime FOLLOW value represented by a frozen policy.
 pub(super) fn render_follow_value(
     plan: &EmissionPlan,
     name: &Ident,
@@ -4354,7 +4354,7 @@ pub(super) fn render_follow_value(
     }
 }
 
-/// Renders render construction from frozen inputs without changing canonical generation order.
+/// Emits named, tuple, or unit construction for parsed field values.
 pub(super) fn render_construction(
     variant: Option<&Ident>,
     style: ResolvedFieldStyle,
@@ -4382,7 +4382,7 @@ pub(super) fn render_construction(
     }
 }
 
-/// Renders render wrapped value from frozen inputs without changing canonical generation order.
+/// Applies authored storage wrappers to a parsed value expression.
 pub(super) fn render_wrapped_value(
     value: proc_macro2::TokenStream,
     wrappers: &[FieldWrapper],
@@ -4399,7 +4399,7 @@ pub(super) fn render_wrapped_value(
         })
 }
 
-/// Renders render absent value from frozen inputs without changing canonical generation order.
+/// Emits the empty value required by optional and repeated wrappers.
 pub(super) fn render_absent_value(wrappers: &[FieldWrapper]) -> proc_macro2::TokenStream {
     let optional = wrappers
         .iter()
@@ -4417,7 +4417,7 @@ pub(super) fn render_absent_value(wrappers: &[FieldWrapper]) -> proc_macro2::Tok
         })
 }
 
-/// Renders render wrapped type from frozen inputs without changing canonical generation order.
+/// Applies authored storage wrappers to a terminal type.
 pub(super) fn render_wrapped_type(
     facade: &Ident,
     terminal: &Type,
@@ -4434,7 +4434,7 @@ pub(super) fn render_wrapped_type(
         })
 }
 
-/// Renders render terminal reference from frozen inputs without changing canonical generation order.
+/// Emits a reference to a terminal value through its wrapper shape.
 pub(super) fn render_terminal_reference(
     value: proc_macro2::TokenStream,
     wrappers: &[FieldWrapper],
@@ -4458,7 +4458,7 @@ pub(super) fn render_terminal_reference(
         })
 }
 
-/// Renders render optional view reference from frozen inputs without changing canonical generation order.
+/// Emits an optional borrowed view through wrappers that may be absent.
 pub(super) fn render_optional_view_reference(
     value: proc_macro2::TokenStream,
     wrappers: &[FieldWrapper],
@@ -4492,7 +4492,7 @@ pub(super) fn render_optional_view_reference(
     reference
 }
 
-/// Builds field access from frozen inputs without changing canonical generation order.
+/// Emits field access for a named or positional construction slot.
 pub(super) fn field_access(
     base: proc_macro2::TokenStream,
     ident: Option<&Ident>,
@@ -4507,7 +4507,7 @@ pub(super) fn field_access(
     )
 }
 
-/// Builds field binding pattern from frozen inputs without changing canonical generation order.
+/// Emits the binding pattern for a named or positional field.
 pub(super) fn field_binding_pattern(
     node: &Ident,
     variant: &Ident,
@@ -4529,7 +4529,7 @@ pub(super) fn field_binding_pattern(
     }
 }
 
-/// Builds variant pattern from frozen inputs without changing canonical generation order.
+/// Emits the destructuring pattern for one enum variant.
 pub(super) fn variant_pattern(
     node: &Ident,
     variant: &Ident,
@@ -4542,7 +4542,7 @@ pub(super) fn variant_pattern(
     }
 }
 
-/// Renders render expected static from frozen inputs without changing canonical generation order.
+/// Emits a stable static expected set in runtime representation.
 pub(super) fn render_expected_static(
     name: &Ident,
     expected: &ExpectedSet,
@@ -4564,7 +4564,7 @@ pub(super) fn render_expected_static(
     }
 }
 
-/// Builds metadata static from frozen inputs without changing canonical generation order.
+/// Derives the collision-free identifier for generated metadata storage.
 pub(super) fn metadata_static(node: usize, variant: Option<usize>) -> Ident {
     variant.map_or_else(
         || format_ident!("__RECURSA_ELEMENTS_{node}"),
@@ -4572,11 +4572,11 @@ pub(super) fn metadata_static(node: usize, variant: Option<usize>) -> Ident {
     )
 }
 
-/// Builds expected static from frozen inputs without changing canonical generation order.
+/// Derives the collision-free identifier for a generated expected set.
 pub(super) fn expected_static(node: usize, element: usize, role: &str) -> Ident {
     format_ident!("__RECURSA_{}_{}_{}", role.to_uppercase(), node, element)
 }
-/// Renders render node parse application from frozen inputs without changing canonical generation order.
+/// Emits the parser entry point for one materialized node application.
 pub(super) fn render_node_parse_application(
     plan: &EmissionPlan,
     node: &NodeParsePlan,

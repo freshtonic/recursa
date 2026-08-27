@@ -11,39 +11,39 @@ use crate::{DeclId, KindId, KindSet, LocationId, ProofId, SiteId, TextPredicateI
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Whether a semantic finding blocks the analyzed grammar.
 pub enum Severity {
-    /// The `Error` case of this diagnostic contract.
+    /// Generation cannot continue for the affected grammar.
     Error,
-    /// The `Warning` case of this diagnostic contract.
+    /// Generation may continue, but authored intent is ambiguous or fragile.
     Warning,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Stable semantic-analysis diagnostic family.
 pub enum DiagnosticCode {
-    /// The `InvalidGrammar` case of this diagnostic contract.
+    /// Grammar structure violates an authored-language invariant.
     InvalidGrammar,
-    /// The `InvalidReference` case of this diagnostic contract.
+    /// An authored reference cannot be resolved consistently.
     InvalidReference,
-    /// The `LeftRecursion` case of this diagnostic contract.
+    /// A non-Pratt parse path recurses before consuming input.
     LeftRecursion,
-    /// The `EnumFirstOverlap` case of this diagnostic contract.
+    /// Enum alternatives have overlapping FIRST evidence.
     EnumFirstOverlap,
-    /// The `StaticUseSiteOverlap` case of this diagnostic contract.
+    /// A static use site cannot choose between alternatives.
     StaticUseSiteOverlap,
-    /// The `PrattAtomOverlap` case of this diagnostic contract.
+    /// Pratt prefix alternatives overlap.
     PrattAtomOverlap,
-    /// The `PrattLedOverlap` case of this diagnostic contract.
+    /// Pratt extender alternatives overlap.
     PrattLedOverlap,
-    /// The `NullableFollowOverlap` case of this diagnostic contract.
+    /// A nullable choice overlaps its FOLLOW context.
     NullableFollowOverlap,
-    /// The `PrattFollowOverlap` case of this diagnostic contract.
+    /// Pratt continuation overlaps the caller FOLLOW context.
     PrattFollowOverlap,
-    /// The `InternalAnalysisInvariant` case of this diagnostic contract.
+    /// Frozen analysis products contradict an internal invariant.
     InternalAnalysisInvariant,
 }
 
 impl DiagnosticCode {
-    /// Returns the as str value.
+    /// Returns the stable machine-readable diagnostic code.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::InvalidGrammar => "RCA0001",
@@ -63,14 +63,14 @@ impl DiagnosticCode {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Semantic diagnostic message optionally attached to a normalized location identity.
 pub struct DiagnosticLabel {
-    /// Location associated with this value.
+    /// Normalized grammar location when semantic analysis can identify one.
     pub location: Option<LocationId>,
-    /// Message associated with this value.
+    /// Human-readable evidence attached to the location.
     pub message: String,
 }
 
 impl DiagnosticLabel {
-    /// Constructs the located result.
+    /// Creates evidence tied to an authored source range.
     pub fn located(location: LocationId, message: impl Into<String>) -> Self {
         Self {
             location: Some(location),
@@ -78,7 +78,7 @@ impl DiagnosticLabel {
         }
     }
 
-    /// Constructs the unlocated result.
+    /// Creates global evidence when no authored range is available.
     pub fn unlocated(message: impl Into<String>) -> Self {
         Self {
             location: None,
@@ -90,82 +90,82 @@ impl DiagnosticLabel {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Corrective action for a non-conflict semantic diagnostic.
 pub enum Remedy {
-    /// The `CorrectGrammar` case of this diagnostic contract.
+    /// Directs the author to repair invalid grammar structure.
     CorrectGrammar,
-    /// The `CorrectReference` case of this diagnostic contract.
+    /// Directs the author to repair a missing or incompatible reference.
     CorrectReference,
-    /// The `BreakLeftRecursion` case of this diagnostic contract.
+    /// Directs the author to ensure input is consumed before recursion.
     BreakLeftRecursion {
         /// Types in the detected recursive cycle, in canonical traversal order.
         cycle: Vec<TypeId>,
     },
-    /// The `ReportInternalFailure` case of this diagnostic contract.
+    /// Identifies an internal invariant failure for bug reporting.
     ReportInternalFailure,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Corrective action for an ambiguity or FOLLOW conflict.
 pub enum ConflictRemedy {
-    /// The `DisambiguateAlternatives` case of this diagnostic contract.
+    /// Requests distinct prefixes for the named alternatives.
     DisambiguateAlternatives {
-        /// Left associated with this value.
+        /// First alternative declaration requiring disambiguation.
         left: DeclId,
-        /// Right associated with this value.
+        /// Conflicting alternative declaration requiring disambiguation.
         right: DeclId,
     },
-    /// The `RaiseMaxLookahead` case of this diagnostic contract.
+    /// Suggests a larger lookahead bound when it can distinguish the alternatives.
     RaiseMaxLookahead {
-        /// Configured associated with this value.
+        /// Grammar's current maximum lookahead depth.
         configured: usize,
-        /// Sufficient associated with this value.
+        /// Smallest proven depth that separates the alternatives.
         sufficient: usize,
     },
-    /// The `RestructureSharedPrefix` case of this diagnostic contract.
+    /// Requests factoring or restructuring of a shared prefix.
     RestructureSharedPrefix {
-        /// Left associated with this value.
+        /// First declaration sharing the prefix.
         left: DeclId,
-        /// Right associated with this value.
+        /// Second declaration sharing the prefix.
         right: DeclId,
     },
-    /// The `MakeSiteRequired` case of this diagnostic contract.
+    /// Requests removing nullability at the affected use site.
     MakeSiteRequired {
-        /// Site associated with this value.
+        /// Nullable use site whose following syntax must be separated.
         site: SiteId,
     },
-    /// The `DisambiguatePrattVariants` case of this diagnostic contract.
+    /// Requests distinct prefixes for the named Pratt variants.
     DisambiguatePrattVariants {
-        /// Pratt associated with this value.
+        /// Pratt Node owning the conflicting variants.
         pratt: TypeId,
-        /// Left associated with this value.
+        /// First conflicting Pratt declaration.
         left: DeclId,
-        /// Right associated with this value.
+        /// Second conflicting Pratt declaration.
         right: DeclId,
     },
-    /// The `RestructurePrattSharedPrefix` case of this diagnostic contract.
+    /// Requests restructuring a shared Pratt prefix.
     RestructurePrattSharedPrefix {
-        /// Pratt associated with this value.
+        /// Pratt Node owning the shared prefix.
         pratt: TypeId,
-        /// Left associated with this value.
+        /// First Pratt declaration sharing the prefix.
         left: DeclId,
-        /// Right associated with this value.
+        /// Second Pratt declaration sharing the prefix.
         right: DeclId,
     },
-    /// The `ReviewNullableFollow` case of this diagnostic contract.
+    /// Requests separating a nullable branch from its FOLLOW context.
     ReviewNullableFollow {
-        /// Site associated with this value.
+        /// Nullable use site overlapping caller FOLLOW.
         site: SiteId,
     },
-    /// The `ReviewPrattFollow` case of this diagnostic contract.
+    /// Requests separating Pratt continuation from caller FOLLOW.
     ReviewPrattFollow {
-        /// Site associated with this value.
+        /// Pratt use site whose active extenders overlap caller FOLLOW.
         site: SiteId,
-        /// Min bp associated with this value.
+        /// Minimum binding power currently admitted at the use site.
         min_bp: u8,
     },
 }
 
 impl ConflictRemedy {
-    /// Produces the deterministic text.
+    /// Renders stable, user-facing remedy text.
     pub(crate) fn canonical_text(&self) -> String {
         match self {
             Self::DisambiguateAlternatives { .. } => {
@@ -202,49 +202,49 @@ impl ConflictRemedy {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Pair of proof-arena witnesses demonstrating one overlapping token kind.
 pub struct ConflictWitness {
-    /// Kind associated with this value.
+    /// Concrete token kind present in both symbolic sets.
     pub kind: KindId,
-    /// Left associated with this value.
+    /// Proof reaching the kind from the first alternative.
     pub left: ProofId,
-    /// Right associated with this value.
+    /// Proof reaching the kind from the conflicting alternative.
     pub right: ProofId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Complete symbolic overlap and one reproducible proof witness.
 pub struct ConflictEvidence {
-    /// Overlap associated with this value.
+    /// Complete intersection of the conflicting kind sets.
     pub overlap: KindSet,
-    /// Witness associated with this value.
+    /// Reproducible proofs for one representative overlapping kind.
     pub witness: ConflictWitness,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// One token and text-predicate position in a shared-prefix witness.
 pub struct LookaheadWitnessPosition {
-    /// Kind associated with this value.
+    /// Token kind consumed at this witness position.
     pub kind: KindId,
-    /// Left text predicate associated with this value.
+    /// Exact-text constraint from the first alternative, when present.
     pub left_text_predicate: Option<TextPredicateId>,
-    /// Right text predicate associated with this value.
+    /// Exact-text constraint from the second alternative, when present.
     pub right_text_predicate: Option<TextPredicateId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Finite or pumped evidence that configured lookahead cannot separate alternatives.
 pub struct SharedPrefixEvidence {
-    /// Configured depth associated with this value.
+    /// Maximum lookahead depth used by the conflicting analysis.
     pub configured_depth: usize,
-    /// Sufficient depth associated with this value.
+    /// Smallest separating depth, or `None` when pumping proves no finite separation.
     pub sufficient_depth: Option<usize>,
-    /// Witness associated with this value.
+    /// Shared token/text prefix in consumption order.
     pub witness: Vec<LookaheadWitnessPosition>,
-    /// End of alternative associated with this value.
+    /// Whether one alternative ends while the shared prefix is still active.
     pub end_of_alternative: bool,
 }
 
 impl Remedy {
-    /// Produces the deterministic text.
+    /// Renders stable diagnostic text from structured evidence and remedies.
     pub(crate) const fn canonical_text(&self) -> &'static str {
         match self {
             Self::CorrectGrammar => "correct the normalized grammar before semantic analysis",
@@ -262,28 +262,28 @@ impl Remedy {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Typed semantic-analysis finding before source correlation and stable rendering.
 pub struct Diagnostic {
-    /// Code associated with this value.
+    /// Stable semantic diagnostic family.
     pub code: DiagnosticCode,
-    /// Severity associated with this value.
+    /// Whether the finding blocks a valid analyzed grammar.
     pub severity: Severity,
-    /// Message associated with this value.
+    /// Source-independent summary of the semantic failure.
     pub message: String,
-    /// Primary associated with this value.
+    /// Principal normalized location and explanatory label.
     pub primary: DiagnosticLabel,
-    /// Secondary associated with this value.
+    /// Corroborating locations in deterministic evidence order.
     pub secondary: Vec<DiagnosticLabel>,
-    /// Remedy associated with this value.
+    /// Corrective action for a non-conflict finding.
     pub remedy: Option<Remedy>,
-    /// Conflict associated with this value.
+    /// Symbolic kind overlap and proof witness, when applicable.
     pub conflict: Option<ConflictEvidence>,
-    /// Lookahead associated with this value.
+    /// Shared-prefix evidence for bounded-lookahead findings.
     pub lookahead: Option<SharedPrefixEvidence>,
-    /// Conflict remedy associated with this value.
+    /// Corrective action retaining conflict identities and site facts.
     pub conflict_remedy: Option<ConflictRemedy>,
 }
 
 impl Diagnostic {
-    /// Constructs the invalid grammar result.
+    /// Creates a fatal diagnostic for invalid authored grammar structure.
     pub(crate) fn invalid_grammar(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
@@ -299,7 +299,7 @@ impl Diagnostic {
         }
     }
 
-    /// Constructs the invalid reference result.
+    /// Creates a fatal diagnostic for an unresolved authored reference.
     pub(crate) fn invalid_reference(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
@@ -315,7 +315,7 @@ impl Diagnostic {
         }
     }
 
-    /// Constructs the internal analysis invariant result.
+    /// Creates a fatal diagnostic for contradictory analysis products.
     pub(crate) fn internal_analysis_invariant(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
@@ -331,7 +331,7 @@ impl Diagnostic {
         }
     }
 
-    /// Constructs the left recursion result.
+    /// Creates a fatal diagnostic with the witnessed left-recursive cycle.
     pub(crate) fn left_recursion(
         message: impl Into<String>,
         cycle: Vec<TypeId>,
@@ -354,7 +354,7 @@ impl Diagnostic {
         }
     }
 
-    /// Constructs the conflict result.
+    /// Creates a fatal ambiguity diagnostic from competing alternatives.
     pub(crate) fn conflict(
         code: DiagnosticCode,
         message: impl Into<String>,
@@ -366,7 +366,7 @@ impl Diagnostic {
         Self::shared_prefix_conflict(code, message, primary, secondary, Some(evidence), remedy)
     }
 
-    /// Constructs the shared prefix conflict result.
+    /// Creates a fatal ambiguity diagnostic with shared-prefix evidence.
     pub(crate) fn shared_prefix_conflict(
         code: DiagnosticCode,
         message: impl Into<String>,
@@ -388,7 +388,7 @@ impl Diagnostic {
         }
     }
 
-    /// Constructs the conflict warning result.
+    /// Creates a non-fatal ambiguity warning from competing alternatives.
     pub(crate) fn conflict_warning(
         code: DiagnosticCode,
         message: impl Into<String>,

@@ -24,11 +24,11 @@ mod tests {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen extension emission plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Explorer schema plus extension artifacts prepared for publication.
 pub(super) struct ExtensionEmissionPlan {
-    /// Artifacts associated with this value.
+    /// Extension artifacts emitted alongside the Explorer plan.
     pub(super) artifacts: Vec<ExtensionArtifactPlan>,
-    /// Explorer associated with this value.
+    /// Frozen grammar-erased schema and callback plan.
     pub(super) explorer: ExplorerPlan,
 }
 
@@ -47,253 +47,253 @@ impl std::ops::DerefMut for ExtensionEmissionPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen extension artifact plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Named generated artifact owned by the extension publication stage.
 pub(super) struct ExtensionArtifactPlan {
-    /// Logical name associated with this value.
+    /// Generation-relative artifact identity.
     pub(super) logical_name: String,
-    /// Content associated with this value.
+    /// Rendered artifact body retained for publication.
     pub(super) content: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen explorer plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Complete grammar-erased schema and callback projection.
 pub(super) struct ExplorerPlan {
-    /// Grammar associated with this value.
+    /// Grammar-level Explorer display metadata.
     pub(super) grammar: ExplorerGrammarPlan,
-    /// Roots associated with this value.
+    /// Source-visible root applications eligible for adapters.
     pub(super) roots: Vec<ExplorerRootPlan>,
-    /// Nodes associated with this value.
+    /// Occurrence schemas in materialized application order.
     pub(super) nodes: Vec<ExplorerNodePlan>,
-    /// Tokens associated with this value.
+    /// Token schemas in grammar-local kind order.
     pub(super) tokens: Vec<ExplorerTokenPlan>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen explorer grammar plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Grammar-level identity exposed by an Explorer adapter.
 pub(super) struct ExplorerGrammarPlan {
-    /// Name associated with this value.
+    /// Grammar display name exposed through the adapter schema.
     pub(super) name: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen explorer root plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Adapter-eligible root application and its optional capabilities.
 pub(super) struct ExplorerRootPlan {
-    /// Node associated with this value.
+    /// Root Node declaration identity.
     pub(super) node: NodeId,
-    /// Application associated with this value.
+    /// Materialized root application selected for callbacks.
     pub(super) application: MaterializedApplicationId,
-    /// Capabilities associated with this value.
+    /// Optional operations valid for this root application.
     pub(super) capabilities: ExplorerCapabilityPlan,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen explorer capability plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Operations generated for one concrete root application.
 pub(super) struct ExplorerCapabilityPlan {
-    /// Pretty associated with this value.
+    /// Whether the root can render structured Pretty output.
     pub(super) pretty: bool,
-    /// Arbitrary associated with this value.
+    /// Whether the root can generate deterministic samples.
     pub(super) arbitrary: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen explorer token plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Grammar-erased identity, classification, and display metadata for a token.
 pub(super) struct ExplorerTokenPlan {
-    /// Kind index associated with this value.
+    /// Grammar-local numeric kind used only to align static metadata.
     pub(super) kind_index: u16,
-    /// Semantic associated with this value.
+    /// Content-token identity, or `None` for fixed syntax.
     pub(super) semantic: Option<ContentTokenId>,
-    /// Name associated with this value.
+    /// Grammar-local token display name.
     pub(super) name: String,
-    /// Qualified name associated with this value.
+    /// Collision-free schema identity within the selected grammar.
     pub(super) qualified_name: String,
-    /// Kind name associated with this value.
+    /// Generated typed kind-variant name.
     pub(super) kind_name: String,
-    /// Kind associated with this value.
+    /// Fixed or semantic content-token classification.
     pub(super) kind: ExplorerTokenKindPlan,
-    /// Canonical text associated with this value.
+    /// Stable fixed spelling, absent for content tokens.
     pub(super) canonical_text: Option<String>,
-    /// Highlight associated with this value.
+    /// Consumer-facing syntax highlight category.
     pub(super) highlight: ExplorerHighlightClassPlan,
-    /// Display associated with this value.
+    /// Deterministic label used in dynamic schema views.
     pub(super) display: ExplorerDisplayPlan,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(not(feature = "explorer"), allow(dead_code))]
-/// Frozen explorer token kind plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Distinguishes fixed syntax from value-carrying tokens.
 pub(super) enum ExplorerTokenKindPlan {
-    /// The `Fixed` case of this explorer contract.
+    /// Token has a canonical authored spelling.
     Fixed,
-    /// The `Content` case of this explorer contract.
+    /// Token stores or matches source text dynamically.
     Content,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(not(feature = "explorer"), allow(dead_code))]
-/// Frozen explorer highlight class plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Consumer-facing syntax category for token highlighting.
 pub(super) enum ExplorerHighlightClassPlan {
-    /// The `Keyword` case of this explorer contract.
+    /// Word-like fixed syntax.
     Keyword,
-    /// The `Punctuation` case of this explorer contract.
+    /// Non-word fixed syntax.
     Punctuation,
-    /// The `Content` case of this explorer contract.
+    /// Value-carrying token content.
     Content,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen explorer node plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Grammar-erased schema for one materialized node application.
 pub(super) struct ExplorerNodePlan {
-    /// Node associated with this value.
+    /// Source Node declaration represented by this occurrence schema.
     pub(super) node: NodeId,
-    /// Application associated with this value.
+    /// Concrete materialized type application.
     pub(super) application: MaterializedApplicationId,
-    /// Name associated with this value.
+    /// Unqualified Node display name.
     pub(super) name: String,
-    /// Qualified name associated with this value.
+    /// Grammar-unique Node schema identity.
     pub(super) qualified_name: String,
-    /// Display associated with this value.
+    /// Human-readable type spelling for Explorer consumers.
     pub(super) display: ExplorerDisplayPlan,
-    /// Body associated with this value.
+    /// Struct, enum, or Pratt occurrence shape.
     pub(super) body: ExplorerNodeBodyPlan,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen explorer node body plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Occurrence shapes available for a node application.
 pub(super) enum ExplorerNodeBodyPlan {
-    /// The `Struct` case of this explorer contract.
+    /// Single structural shape.
     Struct(ExplorerVariantPlan),
-    /// The `Enum` case of this explorer contract.
+    /// One of the authored enum variants.
     Enum(Vec<ExplorerVariantPlan>),
-    /// The `Pratt` case of this explorer contract.
+    /// One of the analyzed Pratt variant roles.
     Pratt(Vec<ExplorerVariantPlan>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen explorer variant plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Named occurrence shape and its source-ordered elements.
 pub(super) struct ExplorerVariantPlan {
-    /// Variant associated with this value.
+    /// Resolved variant identity, absent for a struct body.
     pub(super) variant: Option<ResolvedVariantId>,
-    /// Name associated with this value.
+    /// Variant display name, absent for a struct body.
     pub(super) name: Option<String>,
-    /// Qualified name associated with this value.
+    /// Grammar-unique variant schema identity.
     pub(super) qualified_name: Option<String>,
-    /// Elements associated with this value.
+    /// Source-order grammar elements in this active shape.
     pub(super) elements: Vec<ExplorerElementPlan>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen explorer element plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Schema and runtime provenance for one grammar element.
 pub(super) struct ExplorerElementPlan {
-    /// Source associated with this value.
+    /// Parse-plan origin of the grammar element.
     pub(super) source: ExplorerElementSource,
-    /// Name associated with this value.
+    /// Stable source-facing element label.
     pub(super) name: String,
-    /// Role associated with this value.
+    /// Fixed-token, semantic-field, or Pratt-left-hand role.
     pub(super) role: ExplorerElementRolePlan,
-    /// Cardinality associated with this value.
+    /// Occurrence cardinality after supported-container lowering.
     pub(super) cardinality: ExplorerCardinalityPlan,
-    /// Token classification associated with this value.
+    /// Fixed/content-token classification when the element consumes a token.
     pub(super) token_classification: Option<ExplorerTokenClassificationPlan>,
-    /// Target associated with this value.
+    /// Child Node or content-token schema target, when semantic.
     pub(super) target: Option<ExplorerElementTargetPlan>,
-    /// Token kind associated with this value.
+    /// Grammar-local kind used by fixed syntax.
     pub(super) token_kind: Option<u16>,
-    /// Attachment semantic child associated with this value.
+    /// Semantic attachment child whose occurrence owns the token.
     pub(super) attachment_semantic_child: Option<usize>,
-    /// Display associated with this value.
+    /// Consumer-facing element spelling.
     pub(super) display: ExplorerDisplayPlan,
-    /// Occurrence associated with this value.
+    /// Provenance recipe for locating runtime child occurrences.
     pub(super) occurrence: ExplorerOccurrencePlan,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen explorer element target plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Grammar-erased schema reached by a semantic element.
 pub(super) enum ExplorerElementTargetPlan {
-    /// The `Node` case of this explorer contract.
+    /// References a materialized generated-node application.
     Node(MaterializedApplicationId),
-    /// The `ContentToken` case of this explorer contract.
+    /// References an authored content-token declaration.
     ContentToken(ContentTokenId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// Frozen explorer element source data owned by the explorer boundary; declaration order remains deterministic.
+/// Parse-plan identity from which an Explorer element originates.
 pub(super) enum ExplorerElementSource {
-    /// The `Fixed` case of this explorer contract.
+    /// Originates from an authored fixed-token use.
     Fixed(TokenUseId),
-    /// The `Semantic` case of this explorer contract.
+    /// Originates from an ordinary semantic field.
     Semantic(ResolvedFieldId),
-    /// The `PrattLhs` case of this explorer contract.
+    /// Originates from a Pratt extender's left operand.
     PrattLhs(ResolvedFieldId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen explorer element role plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Consumer-visible role of an element in its occurrence shape.
 pub(super) enum ExplorerElementRolePlan {
-    /// The `FixedToken` case of this explorer contract.
+    /// Element represents fixed syntax.
     FixedToken,
-    /// The `SemanticField` case of this explorer contract.
+    /// Element represents a stored semantic field.
     SemanticField,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen explorer cardinality plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Supported occurrence count after container lowering.
 pub(super) enum ExplorerCardinalityPlan {
-    /// The `One` case of this explorer contract.
+    /// Exactly one occurrence.
     One,
-    /// The `Optional` case of this explorer contract.
+    /// Zero or one occurrence.
     Optional,
-    /// The `ZeroOrMore` case of this explorer contract.
+    /// Any number of occurrences.
     ZeroOrMore,
-    /// The `OneOrMore` case of this explorer contract.
+    /// At least one occurrence.
     OneOrMore,
-    /// The `OptionalOneOrMore` case of this explorer contract.
+    /// Optional collection whose present value is non-empty.
     OptionalOneOrMore,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen explorer token classification plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Token storage class attached to an element schema.
 pub(super) enum ExplorerTokenClassificationPlan {
-    /// The `Fixed` case of this explorer contract.
+    /// Element consumes canonical fixed syntax.
     Fixed,
-    /// The `Content` case of this explorer contract.
+    /// Element consumes a value-carrying token.
     Content,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(not(feature = "explorer"), allow(dead_code))]
-/// Frozen explorer display plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Rule for deriving text shown for a schema or occurrence.
 pub(super) enum ExplorerDisplayPlan {
-    /// The `None` case of this explorer contract.
+    /// No display text is available.
     None,
-    /// The `Fixed` case of this explorer contract.
+    /// Always displays the stored canonical text.
     Fixed(String),
-    /// The `MatchedOrStored` case of this explorer contract.
+    /// Displays source text when matched and stored text otherwise.
     MatchedOrStored,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen explorer occurrence plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Runtime recipe for projecting an element occurrence.
 pub(super) enum ExplorerOccurrencePlan {
-    /// The `Leaf` case of this explorer contract.
+    /// Occurrence has no traversable semantic children.
     Leaf,
-    /// The `Children` case of this explorer contract.
+    /// Traverses a wrapped node or content-token value.
     Children {
-        /// Wrappers associated with this value.
+        /// Supported container layers surrounding the terminal application.
         wrappers: Vec<FieldWrapper>,
-        /// Terminal associated with this value.
+        /// Node or content-token reached after removing wrappers.
         terminal: ExplorerTerminalPlan,
     },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Frozen explorer terminal plan data owned by the explorer boundary; declaration order remains deterministic.
+/// Traversable terminal reached after storage wrappers are removed.
 pub(super) enum ExplorerTerminalPlan {
-    /// The `Node` case of this explorer contract.
+    /// Terminal is a materialized generated-node application.
     Node(MaterializedApplicationId),
-    /// The `Content` case of this explorer contract.
+    /// Terminal is an authored content token.
     Content(ContentTokenId),
 }
-/// Builds emitted explorer plan from frozen inputs without changing canonical generation order.
+/// Projects the frozen emission plan into runtime Explorer schemas and eligible roots.
 #[cfg(feature = "explorer")]
 pub(super) fn emitted_explorer_plan(
     nodes: &[NodeParsePlan],
@@ -345,7 +345,7 @@ pub(super) fn emitted_explorer_plan(
 }
 
 #[cfg(feature = "explorer")]
-/// Builds authoritative explorer plan from frozen inputs without changing canonical generation order.
+/// Reconstructs Explorer semantics directly from lowered authored source for validation.
 pub(super) fn authoritative_explorer_plan(
     lowered: &crate::materialization::LoweredGrammar,
 ) -> Result<Option<ExplorerPlan>, String> {
@@ -405,7 +405,7 @@ pub(super) fn authoritative_explorer_plan(
 }
 
 #[cfg(feature = "explorer")]
-/// Builds explorer token plans from frozen inputs without changing canonical generation order.
+/// Joins token metadata and kind tables into schema entries in kind order.
 pub(super) fn explorer_token_plans(
     lowered: &crate::materialization::LoweredGrammar,
     kind_variants: &[Ident],
@@ -473,7 +473,7 @@ pub(super) fn explorer_token_plans(
         .collect()
 }
 
-/// Builds explorer kind index from frozen inputs without changing canonical generation order.
+/// Resolves a planned token variant to its grammar-local kind index.
 pub(super) fn explorer_kind_index(
     lowered: &crate::materialization::LoweredGrammar,
     definition: TokenDefinitionId,
@@ -491,13 +491,13 @@ pub(super) fn explorer_kind_index(
 }
 
 #[cfg(feature = "explorer")]
-/// Builds explorer emitted application is eligible from frozen inputs without changing canonical generation order.
+/// Reports whether a materialized emitted application may expose a root adapter.
 pub(super) fn explorer_emitted_application_is_eligible(node: &NodeParsePlan) -> bool {
     node.publicly_materialized && node.explorer_visit_configured
 }
 
 #[cfg(feature = "explorer")]
-/// Builds explorer source application is eligible from frozen inputs without changing canonical generation order.
+/// Applies the same root-eligibility rules to authoritative source applications.
 pub(super) fn explorer_source_application_is_eligible(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     node: &ResolvedNode,
@@ -518,7 +518,7 @@ pub(super) fn explorer_source_application_is_eligible(
 }
 
 #[cfg(feature = "explorer")]
-/// Builds emitted explorer node from frozen inputs without changing canonical generation order.
+/// Projects one materialized parse plan into an occurrence schema.
 pub(super) fn emitted_explorer_node(
     node: &NodeParsePlan,
     application: &NodeApplicationParsePlan,
@@ -575,7 +575,7 @@ pub(super) fn emitted_explorer_node(
 }
 
 #[cfg(feature = "explorer")]
-/// Builds emitted explorer variant from frozen inputs without changing canonical generation order.
+/// Projects one emitted Node shape into source-order Explorer elements.
 pub(super) fn emitted_explorer_variant<'a>(
     variant: Option<ResolvedVariantId>,
     name: Option<String>,
@@ -594,7 +594,7 @@ pub(super) fn emitted_explorer_variant<'a>(
 }
 
 #[cfg(feature = "explorer")]
-/// Builds emitted explorer element from frozen inputs without changing canonical generation order.
+/// Joins one parse element with its schema target and provenance recipe.
 pub(super) fn emitted_explorer_element(element: &ElementParsePlan) -> ExplorerElementPlan {
     match &element.kind {
         ElementParseKind::Fixed { kind, spelling, .. } => ExplorerElementPlan {
@@ -642,7 +642,7 @@ pub(super) fn emitted_explorer_element(element: &ElementParsePlan) -> ExplorerEl
     }
 }
 
-/// Builds authoritative explorer node from frozen inputs without changing canonical generation order.
+/// Reconstructs one occurrence schema from lowered source and semantic correlations.
 ///
 /// # Long-function contract
 ///
@@ -777,7 +777,7 @@ pub(super) fn authoritative_explorer_node(
     })
 }
 
-/// Builds authoritative explorer variant from frozen inputs without changing canonical generation order.
+/// Reconstructs one authoritative Node shape and its ordered elements.
 pub(super) fn authoritative_explorer_variant(
     lowered: &crate::materialization::LoweredGrammar,
     node: &ResolvedNode,
@@ -797,7 +797,7 @@ pub(super) fn authoritative_explorer_variant(
     })
 }
 
-/// Builds authoritative explorer element from frozen inputs without changing canonical generation order.
+/// Reconstructs one element contract without consulting emitted Explorer data.
 pub(super) fn authoritative_explorer_element(
     lowered: &crate::materialization::LoweredGrammar,
     node: &ResolvedNode,
@@ -899,7 +899,7 @@ pub(super) fn authoritative_explorer_element(
     }
 }
 
-/// Builds explorer cardinality plan from frozen inputs without changing canonical generation order.
+/// Maps a supported container shape to its dynamic occurrence cardinality.
 pub(super) fn explorer_cardinality_plan(wrappers: &[FieldWrapper]) -> ExplorerCardinalityPlan {
     let optional = wrappers
         .iter()
@@ -923,7 +923,7 @@ pub(super) fn explorer_cardinality_plan(wrappers: &[FieldWrapper]) -> ExplorerCa
     }
 }
 
-/// Builds planned kind variants from frozen inputs without changing canonical generation order.
+/// Derives typed kind-variant names aligned with token metadata.
 pub(super) fn planned_kind_variants(
     lowered: &crate::materialization::LoweredGrammar,
 ) -> Result<Vec<Ident>, String> {
@@ -968,7 +968,7 @@ pub(super) fn planned_kind_variants(
     Ok(variants)
 }
 
-/// Validates validate view collisions from frozen inputs without changing canonical generation order.
+/// Rejects authored members that collide with generated Node-view names.
 pub(super) fn validate_view_collisions(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     cfg: &CargoCfgSnapshot,
@@ -1034,7 +1034,7 @@ pub(super) fn validate_view_collisions(
     Ok(())
 }
 
-/// Validates validate explorer collisions from frozen inputs without changing canonical generation order.
+/// Rejects authored inherent items that would collide with generated `explorer` entry points.
 ///
 /// # Long-function contract
 ///
@@ -1162,7 +1162,7 @@ pub(super) fn validate_explorer_collisions(
     Ok(())
 }
 
-/// Builds explorer application parse plan from frozen inputs without changing canonical generation order.
+/// Resolves an Explorer application identity to its Node and parse plan.
 pub(super) fn explorer_application_parse_plan(
     nodes: &[NodeParsePlan],
     application: MaterializedApplicationId,
@@ -1178,7 +1178,7 @@ pub(super) fn explorer_application_parse_plan(
         .expect("typed explorer plan retains its materialized application")
 }
 
-/// Builds value item ident from frozen inputs without changing canonical generation order.
+/// Returns the identifier declared by a value-namespace source item.
 pub(super) fn value_item_ident(item: &syn::Item) -> Option<String> {
     let ident = match item {
         syn::Item::Const(item) => &item.ident,
@@ -1190,7 +1190,7 @@ pub(super) fn value_item_ident(item: &syn::Item) -> Option<String> {
     Some(ident.unraw().to_string())
 }
 
-/// Builds authored inherent method from frozen inputs without changing canonical generation order.
+/// Extracts the name and location of an authored inherent method.
 pub(super) fn authored_inherent_method(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     cfg: &CargoCfgSnapshot,
@@ -1213,7 +1213,7 @@ pub(super) fn authored_inherent_method(
     })
 }
 
-/// Builds authored item has inherent method from frozen inputs without changing canonical generation order.
+/// Recursively checks an authored item for a colliding inherent method.
 pub(super) fn authored_item_has_inherent_method(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     cfg: &CargoCfgSnapshot,
@@ -1265,7 +1265,7 @@ pub(super) fn authored_item_has_inherent_method(
     }
 }
 
-/// Builds inherent self targets node from frozen inputs without changing canonical generation order.
+/// Reports whether an inherent `impl` self type resolves to the target Node.
 pub(super) fn inherent_self_targets_node(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     impl_module: ModuleId,
@@ -1343,7 +1343,7 @@ pub(super) fn inherent_self_targets_node(
     resolved_path == target.key.segments
 }
 
-/// Builds item ident from frozen inputs without changing canonical generation order.
+/// Returns the declared identifier of a source item when it occupies a named namespace.
 pub(super) fn item_ident(item: &syn::Item) -> Option<String> {
     let ident = match item {
         syn::Item::Enum(item) => &item.ident,
@@ -1359,7 +1359,7 @@ pub(super) fn item_ident(item: &syn::Item) -> Option<String> {
     Some(ident.unraw().to_string())
 }
 
-/// Renders render explorer lex from frozen inputs without changing canonical generation order.
+/// Renders the grammar-erased lexer callback and exact token/error projections.
 pub(super) fn render_explorer_lex(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let explorer_lex = explorer_lex_function();
@@ -1398,7 +1398,7 @@ pub(super) fn render_explorer_lex(plan: &EmissionPlan) -> proc_macro2::TokenStre
     }
 }
 
-/// Renders render token explorer from frozen inputs without changing canonical generation order.
+/// Renders dynamic occurrence support for one generated content-token type.
 pub(super) fn render_token_explorer(
     plan: &EmissionPlan,
     token: &TokenParsePlan,
@@ -1452,7 +1452,7 @@ pub(super) fn render_token_explorer(
     }
 }
 
-/// Builds explorer impl generics from frozen inputs without changing canonical generation order.
+/// Prepares Explorer implementation generics without introducing recursive solver bounds.
 pub(super) fn explorer_impl_generics(
     _plan: &EmissionPlan,
     application: &NodeApplicationParsePlan,
@@ -1481,7 +1481,7 @@ impl<'ast> syn::visit::Visit<'ast> for InputLifetimeUse {
     }
 }
 
-/// Builds explorer variant pattern and bindings from frozen inputs without changing canonical generation order.
+/// Binds semantic fields needed to enumerate one runtime variant's occurrences.
 pub(super) fn explorer_variant_pattern_and_bindings(
     node_ident: &Ident,
     variant: &VariantParsePlan,
@@ -1526,7 +1526,7 @@ pub(super) fn explorer_variant_pattern_and_bindings(
     (pattern, bindings)
 }
 
-/// Renders render node explorer from frozen inputs without changing canonical generation order.
+/// Renders occurrence access and eligible root adapters for one Node.
 pub(super) fn render_node_explorer(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -1541,7 +1541,7 @@ pub(super) fn render_node_explorer(
     quote!(#(#applications)*)
 }
 
-/// Renders render node application explorer from frozen inputs without changing canonical generation order.
+/// Renders one materialized application's schema, parse, Pretty, and sample callbacks.
 ///
 /// # Long-function contract
 ///
@@ -1815,7 +1815,7 @@ pub(super) fn render_node_application_explorer(
     }
 }
 
-/// Builds explorer schema static from frozen inputs without changing canonical generation order.
+/// Names the static schema emitted for one Node application and optional variant.
 pub(super) fn explorer_schema_static(node_index: usize, variant: Option<usize>) -> Ident {
     match variant {
         Some(variant) => {
@@ -1825,7 +1825,7 @@ pub(super) fn explorer_schema_static(node_index: usize, variant: Option<usize>) 
     }
 }
 
-/// Builds explorer lex function from frozen inputs without changing canonical generation order.
+/// Names the single grammar-erased lexer callback.
 pub(super) fn explorer_lex_function() -> Ident {
     format_ident!("__recursa_explorer_lex")
 }
@@ -1835,32 +1835,32 @@ pub(super) fn explorer_parse_function(node_index: usize) -> Ident {
     format_ident!("__recursa_explorer_parse_{node_index}")
 }
 
-/// Builds explorer sample function from frozen inputs without changing canonical generation order.
+/// Names a root application's deterministic sample callback.
 pub(super) fn explorer_sample_function(node_index: usize) -> Ident {
     format_ident!("__recursa_explorer_sample_{node_index}")
 }
 
-/// Builds explorer token schema static from frozen inputs without changing canonical generation order.
+/// Names the static schema for one token kind.
 pub(super) fn explorer_token_schema_static(kind_index: u16) -> Ident {
     format_ident!("__RECURSA_EXPLORER_TOKEN_SCHEMA_{kind_index}")
 }
 
-/// Builds explorer grammar schema static from frozen inputs without changing canonical generation order.
+/// Names the aggregate static grammar schema for a root application.
 pub(super) fn explorer_grammar_schema_static(node_index: usize) -> Ident {
     format_ident!("__RECURSA_EXPLORER_GRAMMAR_SCHEMA_{node_index}")
 }
 
-/// Builds explorer node schemas static from frozen inputs without changing canonical generation order.
+/// Names the ordered static Node-schema table.
 pub(super) fn explorer_node_schemas_static() -> Ident {
     format_ident!("__RECURSA_EXPLORER_NODE_SCHEMAS")
 }
 
-/// Builds explorer token schemas static from frozen inputs without changing canonical generation order.
+/// Names the ordered static token-schema table.
 pub(super) fn explorer_token_schemas_static() -> Ident {
     format_ident!("__RECURSA_EXPLORER_TOKEN_SCHEMAS")
 }
 
-/// Renders render explorer token schemas from frozen inputs without changing canonical generation order.
+/// Renders token descriptors in grammar-local kind order.
 pub(super) fn render_explorer_token_schemas(
     plan: &EmissionPlan,
     explorer: &ExplorerPlan,
@@ -1900,7 +1900,7 @@ pub(super) fn render_explorer_token_schemas(
     quote!(#(#definitions)*)
 }
 
-/// Renders render explorer static schema from frozen inputs without changing canonical generation order.
+/// Renders the complete static grammar schema shared by adapter callbacks.
 pub(super) fn render_explorer_static_schema(
     plan: &EmissionPlan,
     explorer: &ExplorerPlan,
@@ -1963,7 +1963,7 @@ pub(super) fn render_explorer_static_schema(
     }
 }
 
-/// Builds explorer application schema static from frozen inputs without changing canonical generation order.
+/// Resolves the static schema name for a materialized Node application.
 pub(super) fn explorer_application_schema_static(
     plan: &EmissionPlan,
     application: MaterializedApplicationId,
@@ -1974,7 +1974,7 @@ pub(super) fn explorer_application_schema_static(
     explorer_schema_static(parse_index, None)
 }
 
-/// Builds explorer content token schema static from frozen inputs without changing canonical generation order.
+/// Resolves the static schema name for a semantic content token.
 pub(super) fn explorer_content_token_schema_static(
     explorer: &ExplorerPlan,
     token: ContentTokenId,
@@ -1988,7 +1988,7 @@ pub(super) fn explorer_content_token_schema_static(
     explorer_token_schema_static(kind_index)
 }
 
-/// Builds explorer element schema static from frozen inputs without changing canonical generation order.
+/// Names one element descriptor by Node, variant, and source-order index.
 pub(super) fn explorer_element_schema_static(
     node_index: usize,
     variant: Option<usize>,
@@ -2002,7 +2002,7 @@ pub(super) fn explorer_element_schema_static(
     }
 }
 
-/// Renders render explorer schema entries from frozen inputs without changing canonical generation order.
+/// Renders element descriptors and their optional semantic targets.
 pub(super) fn render_explorer_schema_entries(
     plan: &EmissionPlan,
     node_index: usize,
@@ -2076,7 +2076,7 @@ pub(super) fn render_explorer_schema_entries(
     quote!(#(#definitions)*)
 }
 
-/// Renders render explorer schema from frozen inputs without changing canonical generation order.
+/// Renders one Node application's struct, enum, or Pratt schema topology.
 pub(super) fn render_explorer_schema(
     plan: &EmissionPlan,
     node: &ExplorerNodePlan,
@@ -2152,7 +2152,7 @@ pub(super) fn render_explorer_schema(
     }
 }
 
-/// Renders render explorer child count from frozen inputs without changing canonical generation order.
+/// Renders occurrence child counts for each source-order element.
 pub(super) fn render_explorer_child_count(
     element: &ExplorerElementPlan,
     field_value: Option<proc_macro2::TokenStream>,
@@ -2187,7 +2187,7 @@ pub(super) fn render_explorer_child_count(
     }
 }
 
-/// Renders render explorer child from frozen inputs without changing canonical generation order.
+/// Renders indexed child lookup while preserving parsed provenance.
 pub(super) fn render_explorer_child(
     facade: &Ident,
     element_index: usize,
@@ -2257,7 +2257,7 @@ pub(super) fn render_explorer_child(
     }
 }
 
-/// Renders render explorer variant child count from frozen inputs without changing canonical generation order.
+/// Renders child-count dispatch for one active variant shape.
 pub(super) fn render_explorer_variant_child_count(
     explorer: &ExplorerVariantPlan,
     parse_elements: &[ElementParsePlan],
@@ -2278,7 +2278,7 @@ pub(super) fn render_explorer_variant_child_count(
     quote!(match element { #(#arms)* _ => 0 })
 }
 
-/// Renders render explorer variant child from frozen inputs without changing canonical generation order.
+/// Renders child-occurrence lookup for one active variant shape.
 pub(super) fn render_explorer_variant_child(
     facade: &Ident,
     explorer: &ExplorerVariantPlan,

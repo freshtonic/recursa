@@ -12,99 +12,99 @@ use super::*;
 /// structure and correlations to already-frozen semantic decisions; validation must succeed
 /// before rendering, debug staging, or publication begins.
 pub(super) struct EmissionPlan {
-    /// Identity associated with this value.
+    /// Generation identity over canonical lowered content and emitter protocol.
     pub(super) identity: String,
-    /// Facade associated with this value.
+    /// Authored facade mapping used by all generated Rust paths.
     pub(super) facade: Ident,
-    /// Module anchor associated with this value.
+    /// Selected-root module path anchoring generated loaders and exports.
     pub(super) module_anchor: syn::Path,
-    /// Grammar name associated with this value.
+    /// Display name retained from the grammar configuration.
     pub(super) grammar_name: String,
-    /// Text equivalence associated with this value.
+    /// Grammar-wide fixed-token comparison policy.
     pub(super) text_equivalence: TextEquivalence,
-    /// Pretty max width associated with this value.
+    /// Default maximum rendered width for generated `Pretty` implementations.
     pub(super) pretty_max_width: usize,
-    /// Pretty indent associated with this value.
+    /// Default indentation width for generated `Pretty` implementations.
     pub(super) pretty_indent: usize,
-    /// Kind count associated with this value.
+    /// Total grammar-local token-kind cardinality, including lexical error.
     pub(super) kind_count: usize,
-    /// Lexical error kind associated with this value.
+    /// Private numeric kind reserved for rejected lexer ranges.
     pub(super) lexical_error_kind: u16,
-    /// Kind variants associated with this value.
+    /// Generated typed kind variants in numeric kind order.
     pub(super) kind_variants: Vec<Ident>,
-    /// Kind static texts associated with this value.
+    /// Canonical fixed spellings positionally aligned with kind variants.
     pub(super) kind_static_texts: Vec<Option<String>>,
-    /// Kind names associated with this value.
+    /// Diagnostic display names positionally aligned with kind variants.
     pub(super) kind_names: Vec<String>,
-    /// Atom names associated with this value.
+    /// Expected-atom descriptions in semantic analysis order.
     pub(super) atom_names: Vec<String>,
-    /// Nodes associated with this value.
+    /// Frozen Node parse plans in canonical materialization order.
     pub(super) nodes: Vec<NodeParsePlan>,
-    /// Tokens associated with this value.
+    /// Frozen content-token plans in semantic token order.
     pub(super) tokens: Vec<TokenParsePlan>,
-    /// Token bindings associated with this value.
+    /// Source-visible generated token bindings and their visibility.
     pub(super) token_bindings: Vec<TokenBindingPlan>,
-    /// Lexical rules associated with this value.
+    /// Backend-independent lexer rules in precedence order.
     pub(super) lexical_rules: Vec<LexRulePlan>,
-    /// Word classifiers associated with this value.
+    /// Keyword-carrier reclassification plans in declaration order.
     pub(super) word_classifiers: Vec<WordClassifierPlan>,
-    /// Word candidate kinds associated with this value.
+    /// Kind set eligible for word-shaped fixed-token classification.
     pub(super) word_candidate_kinds: Vec<u16>,
-    /// Post lex associated with this value.
+    /// Optional authored post-lex hook retained as opaque Rust.
     pub(super) post_lex: Option<syn::Path>,
-    /// Root configured traits associated with this value.
+    /// Grammar-default configured-trait recipes for generated token types.
     pub(super) root_configured_traits: Vec<ConfiguredTraitRecipe>,
-    /// Private abi associated with this value.
+    /// Release and protocol handshake embedded into structural loaders.
     pub(super) private_abi: PrivateAbiPlan,
-    /// Capabilities associated with this value.
+    /// Accepted facade capability combinations for this Generation.
     pub(super) capabilities: Vec<FacadeCapability>,
-    /// Pretty associated with this value.
+    /// Frozen grammar-structured rendering plan.
     pub(super) pretty: PrettyEmissionPlan,
     #[cfg(feature = "diagrams")]
-    /// Diagrams associated with this value.
+    /// Optional semantic railroad topology when diagram generation is enabled.
     pub(super) diagrams: Option<DiagramPlan>,
-    /// Explorer associated with this value.
+    /// Optional grammar-erased schema and callback plan.
     pub(super) explorer: Option<ExtensionEmissionPlan>,
-    /// Instrumentation associated with this value.
+    /// Validation counters proving frozen dispatch consumption.
     pub(super) instrumentation: EmissionInstrumentation,
-    /// Plan families associated with this value.
+    /// Independent identities used to detect capability-plan drift.
     pub(super) plan_families: EmissionPlanFamilies,
 }
 
 #[derive(Clone, Debug)]
 /// Frozen identities for capability-owned subplans independently checked before rendering.
 pub(super) struct EmissionPlanFamilies {
-    /// Configured traits associated with this value.
+    /// Identity reconstructed from authored configured-trait selections.
     pub(super) configured_traits: u64,
-    /// Private abi associated with this value.
+    /// Authoritative matching-version loader handshake.
     pub(super) private_abi: u64,
-    /// Capabilities associated with this value.
+    /// Authoritative facade capability combinations.
     pub(super) capabilities: u64,
-    /// Pretty associated with this value.
+    /// Authoritative Pretty family identity.
     pub(super) pretty: Option<u64>,
-    /// Parse associated with this value.
+    /// Authoritative parse-plan identity.
     pub(super) parse: u64,
-    /// Diagrams associated with this value.
+    /// Authoritative diagram family identity when enabled.
     pub(super) diagrams: Option<u64>,
-    /// Explorer associated with this value.
+    /// Authoritative Explorer family identity when enabled.
     pub(super) explorer: Option<u64>,
 }
 
 #[derive(Clone, Default)]
 /// Counters proving plan construction consumed the complete frozen semantic decision product.
 pub(super) struct EmissionInstrumentation {
-    /// Frozen dispatch nodes consumed associated with this value.
+    /// Number of Node dispatch tries joined into the frozen plan.
     pub(super) frozen_dispatch_nodes_consumed: usize,
 }
 
 #[derive(Default)]
 /// Counters proving rendering consumed exactly the plan structure validated earlier.
 pub(super) struct RenderInstrumentation {
-    /// Frozen dispatch nodes rendered associated with this value.
+    /// Number of frozen Node dispatch tries consumed during rendering.
     pub(super) frozen_dispatch_nodes_rendered: usize,
 }
 
-/// Builds publicly reachable from frozen inputs without changing canonical generation order.
+/// Reports whether every module segment and the declaration itself are public.
 pub(super) fn publicly_reachable(
     tree: &crate::discovery::DiscoveredModuleTree,
     module: ModuleId,
@@ -129,7 +129,7 @@ pub(super) fn publicly_reachable(
 }
 
 impl EmissionPlan {
-    /// Constructs the join result.
+    /// Joins frozen semantic products into a validated emission plan.
     ///
     /// # Long-function contract
     ///
@@ -728,7 +728,7 @@ impl EmissionPlan {
         Ok(plan)
     }
 
-    /// Returns the validate value.
+    /// Validates cross-capability identities before any rendering begins.
     ///
     /// # Long-function contract
     ///
@@ -890,7 +890,7 @@ impl EmissionPlan {
         Ok(())
     }
 
-    /// Returns the validate plan families value.
+    /// Ensures every capability plan belongs to the same frozen grammar family.
     fn validate_plan_families(&self) -> Result<(), String> {
         if self.plan_families.configured_traits
             != configured_trait_plan_identity(&self.nodes, &self.tokens)

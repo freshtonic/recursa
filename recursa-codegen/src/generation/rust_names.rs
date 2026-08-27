@@ -22,7 +22,7 @@ mod tests {
     focused_case!(fixed_accessor_names_remain_valid_for_numeric_spellings);
 }
 
-/// Builds generic arguments from frozen inputs without changing canonical generation order.
+/// Projects declared generic parameters into application arguments in declaration order.
 pub(super) fn generic_arguments(generics: &Generics) -> Vec<proc_macro2::TokenStream> {
     generics
         .params
@@ -44,14 +44,14 @@ pub(super) fn generic_arguments(generics: &Generics) -> Vec<proc_macro2::TokenSt
         .collect()
 }
 
-/// Builds emitted ident from frozen inputs without changing canonical generation order.
+/// Parses a generated Rust identifier, falling back to raw-identifier syntax for keywords.
 pub(super) fn emitted_ident(name: &str) -> Result<Ident, String> {
     syn::parse_str::<Ident>(name)
         .or_else(|_| syn::parse_str::<Ident>(&format!("r#{name}")))
         .map_err(|error| format!("cannot emit Rust identifier `{name}`: {error}"))
 }
 
-/// Builds emitted crate path from frozen inputs without changing canonical generation order.
+/// Constructs a `crate`-relative path from resolved module segments.
 pub(super) fn emitted_crate_path(segments: &[String]) -> Result<syn::Path, String> {
     let mut path: syn::Path = syn::parse_quote!(crate);
     for segment in segments {
@@ -61,7 +61,7 @@ pub(super) fn emitted_crate_path(segments: &[String]) -> Result<syn::Path, Strin
     Ok(path)
 }
 
-/// Builds sibling ident from frozen inputs without changing canonical generation order.
+/// Appends a generator-owned suffix to an authored identifier without retaining raw syntax.
 pub(super) fn sibling_ident(ident: &Ident, suffix: &str) -> Ident {
     Ident::new(
         &format!("{}{suffix}", ident.unraw()),
@@ -69,7 +69,7 @@ pub(super) fn sibling_ident(ident: &Ident, suffix: &str) -> Ident {
     )
 }
 
-/// Builds snake case from frozen inputs without changing canonical generation order.
+/// Converts a semantic name to the stable snake-case spelling used by generated methods.
 pub(super) fn snake_case(value: &str) -> String {
     if value
         .chars()
@@ -117,7 +117,7 @@ pub(super) fn snake_case(value: &str) -> String {
     }
 }
 
-/// Builds source line column from frozen inputs without changing canonical generation order.
+/// Converts a validated UTF-8 byte offset to one-based source line and column coordinates.
 pub(super) fn source_line_column(source: &str, byte_offset: u32) -> Result<(usize, usize), String> {
     let prefix = source
         .get(..byte_offset as usize)
@@ -132,7 +132,7 @@ pub(super) fn source_line_column(source: &str, byte_offset: u32) -> Result<(usiz
     Ok((line, column))
 }
 
-/// Builds normalized source identity from frozen inputs without changing canonical generation order.
+/// Normalizes a relative source path to slash-separated UTF-8 identity text.
 pub(super) fn normalized_source_identity(path: &Path) -> Result<String, String> {
     let mut segments = Vec::new();
     for component in path.components() {
@@ -154,7 +154,7 @@ pub(super) fn normalized_source_identity(path: &Path) -> Result<String, String> 
     Ok(segments.join("/"))
 }
 
-/// Builds declaration loader anchor from frozen inputs without changing canonical generation order.
+/// Hashes a declaration's source location and name into its structural-loader anchor.
 pub(super) fn declaration_loader_anchor(
     file: &str,
     line: usize,
@@ -165,7 +165,7 @@ pub(super) fn declaration_loader_anchor(
     format!("{:016x}", loader_anchor_hash(input.as_bytes()))
 }
 
-/// Builds loader anchor hash from frozen inputs without changing canonical generation order.
+/// Applies the loader-anchor hash algorithm fixed by the private generation protocol.
 pub(super) fn loader_anchor_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in bytes {
@@ -175,7 +175,7 @@ pub(super) fn loader_anchor_hash(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Builds stable hash from frozen inputs without changing canonical generation order.
+/// Applies the stable identity hash used for canonical generation-plan content.
 pub(super) fn stable_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf_29ce_4842_2325_u64;
     for byte in bytes {

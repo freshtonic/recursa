@@ -22,13 +22,13 @@ pub(super) struct PrivateAbiPlan {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// One facade capability combination accepted by generated structural loaders.
 pub(super) struct FacadeCapability {
-    /// Diagrams associated with this value.
+    /// Whether the facade provides the diagram loader capability.
     pub(super) diagrams: bool,
-    /// Explorer associated with this value.
+    /// Whether the facade provides Explorer runtime contracts.
     pub(super) explorer: bool,
-    /// Arbitrary associated with this value.
+    /// Whether the facade provides generated `Arbitrary` support.
     pub(super) arbitrary: bool,
-    /// Serde associated with this value.
+    /// Whether the facade provides generated Serde support.
     pub(super) serde: bool,
 }
 /// Hashes the parse plans in their canonical Debug field and source order.
@@ -107,7 +107,7 @@ pub(super) fn authoritative_configured_trait_identity(
     stable_hash(canonical.as_bytes())
 }
 
-/// Builds configured trait plan identity from frozen inputs without changing canonical generation order.
+/// Hashes configured-trait recipes in canonical Node-then-token order.
 pub(super) fn configured_trait_plan_identity(
     nodes: &[NodeParsePlan],
     tokens: &[TokenParsePlan],
@@ -130,7 +130,7 @@ pub(super) fn configured_trait_plan_identity(
     stable_hash(canonical.as_bytes())
 }
 
-/// Builds accepted capabilities from frozen inputs without changing canonical generation order.
+/// Enumerates facade capability combinations that satisfy requested generated behavior.
 pub(super) fn accepted_capabilities(
     requested_arbitrary: bool,
     requested_serde: bool,
@@ -158,7 +158,7 @@ pub(super) fn accepted_capabilities(
     accepted
 }
 
-/// Builds emitted capability plan from frozen inputs without changing canonical generation order.
+/// Derives accepted facade handshakes from the frozen emitted trait recipes.
 pub(super) fn emitted_capability_plan(
     nodes: &[NodeParsePlan],
     tokens: &[TokenParsePlan],
@@ -172,7 +172,7 @@ pub(super) fn emitted_capability_plan(
     capability_plan_from_recipes(recipes.copied(), diagrams, explorer)
 }
 
-/// Builds authoritative capability plan from frozen inputs without changing canonical generation order.
+/// Reconstructs accepted facade handshakes directly from authored configured traits.
 pub(super) fn authoritative_capability_plan(
     lowered: &crate::materialization::LoweredGrammar,
     diagrams: bool,
@@ -198,7 +198,7 @@ pub(super) fn authoritative_capability_plan(
     capability_plan_from_recipes(recipes, diagrams, explorer)
 }
 
-/// Builds capability plan from recipes from frozen inputs without changing canonical generation order.
+/// Reduces configured-trait recipes to required optional facade capabilities.
 pub(super) fn capability_plan_from_recipes(
     recipes: impl Iterator<Item = ConfiguredTraitRecipe>,
     diagrams: bool,

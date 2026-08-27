@@ -38,13 +38,13 @@ pub(super) fn publish(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Observable checkpoints used to verify rollback at each publication barrier.
 pub(super) enum PublicationCheckpoint {
-    /// The `BeforeStaging` case of this publication contract.
+    /// Fails before any candidate output is staged.
     BeforeStaging,
-    /// The `DuringStaging` case of this publication contract.
+    /// Fails while writing the isolated candidate directory.
     DuringStaging,
-    /// The `BeforeSelection` case of this publication contract.
+    /// Fails after staging but before the candidate becomes selectable.
     BeforeSelection,
-    /// The `DuringSelection` case of this publication contract.
+    /// Fails while atomically selecting the staged candidate.
     DuringSelection,
 }
 
@@ -182,7 +182,7 @@ pub(super) fn invalidate_selection(out_dir: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-/// Builds selected generation from frozen inputs without changing canonical generation order.
+/// Reads the identity recorded by the atomic selector, if a complete Generation is selected.
 pub(super) fn selected_generation(out_dir: &Path) -> Option<String> {
     let selector = fs::read_to_string(out_dir.join(SELECTED_GENERATION)).ok()?;
     selector
@@ -192,7 +192,7 @@ pub(super) fn selected_generation(out_dir: &Path) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Builds staging nonce from frozen inputs without changing canonical generation order.
+/// Returns a process-local staging suffix derived from the current system-clock instant.
 pub(super) fn staging_nonce() -> Result<u128, String> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
