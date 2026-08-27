@@ -2,10 +2,31 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-
-use tempfile::TempDir;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 const FIXTURE: &str = "tests/fixtures/generation/compound-nodes";
+
+/// Exclusive access to the stable downstream fixture workspace.
+static FIXTURE_WORKSPACE: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// Monotonic input used to force the fixture build script to rerun per scenario.
+static FIXTURE_SCENARIO: AtomicU64 = AtomicU64::new(0);
+
+/// A reset fixture workspace that retains Cargo's compiled dependency cache.
+struct Fixture {
+    /// Stable package directory under the workspace target directory.
+    path: PathBuf,
+    /// Guard preventing concurrent scenarios from changing the shared package.
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl Fixture {
+    /// Returns the stable fixture package directory.
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
 
 #[test]
 fn fixture_locks_use_the_workspace_registry_resolution_and_cover_capabilities() {
@@ -69,6 +90,16 @@ fn a_downstream_crate_parses_authored_compound_nodes_and_views() {
         String::from_utf8(output.stdout).unwrap().trim(),
         "compound-nodes-ok"
     );
+}
+
+#[test]
+fn fixture_scenarios_reuse_one_workspace_sequentially() {
+    let first = scaffold_fixture();
+    let first_path = first.path().to_owned();
+    drop(first);
+
+    let second = scaffold_fixture();
+    assert_eq!(first_path, second.path());
 }
 
 #[test]
@@ -602,6 +633,7 @@ fn an_unused_generator_diagram_capability_does_not_change_core_identity() {
         String::from_utf8_lossy(&output.stderr)
     );
     let core_identity = only_generation_identity(&core);
+    drop(core);
 
     let capable = scaffold_fixture();
     let manifest = capable.path().join("Cargo.toml");
@@ -1189,18 +1221,32 @@ fn source_edits_select_a_fresh_generation_in_the_same_build_directory() {
     );
 }
 
-fn scaffold_fixture() -> TempDir {
-    let package = tempfile::tempdir().expect("temporary compound grammar package");
+fn scaffold_fixture() -> Fixture {
+    let guard = FIXTURE_WORKSPACE
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace = manifest_dir
         .parent()
         .expect("recursa-codegen belongs to the workspace root");
     let fixture = manifest_dir.join(FIXTURE);
+    let package_path = workspace.join("target/generated-fixtures/compound-nodes/package");
+    fs::create_dir_all(&package_path).expect("create stable compound fixture package");
+    clear_generated_state(&package_path.join("target"));
 
     for relative in ["build.rs", "src/lib.rs", "src/grammar.rs", "src/main.rs"] {
-        copy(&fixture, package.path(), relative);
+        copy(&fixture, &package_path, relative);
     }
-    copy_as(&fixture, package.path(), "Cargo.core.lock", "Cargo.lock");
+    copy_as(&fixture, &package_path, "Cargo.core.lock", "Cargo.lock");
+
+    let build_script = package_path.join("build.rs");
+    let mut source = fs::read_to_string(&build_script).expect("read copied fixture build script");
+    source.push_str(&format!(
+        "\n// fixture scenario {}\n",
+        FIXTURE_SCENARIO.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(build_script, source).expect("stamp fixture build script scenario");
 
     let manifest = fs::read_to_string(fixture.join("Cargo.toml.in"))
         .expect("read compound grammar fixture manifest")
@@ -1209,9 +1255,42 @@ fn scaffold_fixture() -> TempDir {
             "{{RECURSA_CODEGEN}}",
             &toml_path(&workspace.join("recursa-codegen")),
         );
-    fs::write(package.path().join("Cargo.toml"), manifest)
+    fs::write(package_path.join("Cargo.toml"), manifest)
         .expect("write compound grammar fixture manifest");
-    package
+    Fixture {
+        path: package_path,
+        _guard: guard,
+    }
+}
+
+/// Removes scenario-owned generated output while retaining compiled dependencies.
+fn clear_generated_state(target: &Path) {
+    let docs = target.join("doc");
+    if docs.exists() {
+        fs::remove_dir_all(docs).expect("remove previous fixture rustdoc");
+    }
+    remove_generation_directories(target);
+}
+
+/// Recursively removes published Generation directories from a shared Cargo target.
+fn remove_generation_directories(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path
+            .file_name()
+            .is_some_and(|name| name == "recursa-generations")
+        {
+            fs::remove_dir_all(path).expect("remove previous fixture Generations");
+        } else {
+            remove_generation_directories(&path);
+        }
+    }
 }
 
 fn copy(fixture: &Path, package: &Path, relative: &str) {
@@ -1228,7 +1307,7 @@ fn toml_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
 }
 
-fn run_fixture(package: &TempDir) -> Output {
+fn run_fixture(package: &Fixture) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     Command::new(cargo)
         .arg("run")
@@ -1244,7 +1323,7 @@ fn run_fixture(package: &TempDir) -> Output {
         .expect("run compound grammar fixture")
 }
 
-fn run_fixture_unlocked(package: &TempDir) -> Output {
+fn run_fixture_unlocked(package: &Fixture) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     Command::new(cargo)
         .arg("run")
@@ -1259,7 +1338,7 @@ fn run_fixture_unlocked(package: &TempDir) -> Output {
         .expect("run compound grammar fixture with a mutated manifest")
 }
 
-fn run_fixture_doc(package: &TempDir, private_items: bool) -> Output {
+fn run_fixture_doc(package: &Fixture, private_items: bool) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
     command
@@ -1282,7 +1361,7 @@ fn run_fixture_doc(package: &TempDir, private_items: bool) -> Output {
         .expect("render compound grammar fixture documentation")
 }
 
-fn configure_diagrams(package: &TempDir, generator: bool, facade: bool) {
+fn configure_diagrams(package: &Fixture, generator: bool, facade: bool) {
     let grammar = package.path().join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read fixture grammar");
     fs::write(
@@ -1317,7 +1396,7 @@ fn configure_diagrams(package: &TempDir, generator: bool, facade: bool) {
     fs::write(manifest, source).expect("configure diagram capabilities");
 }
 
-fn configure_explorer(package: &TempDir, generator: bool, facade: bool) {
+fn configure_explorer(package: &Fixture, generator: bool, facade: bool) {
     let manifest = package.path().join("Cargo.toml");
     let mut source = fs::read_to_string(&manifest).expect("read fixture manifest");
     if facade {
@@ -1335,7 +1414,7 @@ fn configure_explorer(package: &TempDir, generator: bool, facade: bool) {
     fs::write(manifest, source).expect("configure explorer capabilities");
 }
 
-fn rendered_rustdoc(package: &TempDir) -> Vec<(PathBuf, String)> {
+fn rendered_rustdoc(package: &Fixture) -> Vec<(PathBuf, String)> {
     let mut rendered = Vec::new();
     collect_rendered_rustdoc(&target_dir(package).join("doc"), &mut rendered);
     rendered
@@ -1390,7 +1469,7 @@ fn rendered_diagram<'document>(document: &'document str, label: &str) -> &'docum
     &document[svg_start..svg_end]
 }
 
-fn target_dir(package: &TempDir) -> PathBuf {
+fn target_dir(package: &Fixture) -> PathBuf {
     package.path().join("target")
 }
 
@@ -1423,7 +1502,7 @@ fn generation_directories(root: &Path) -> BTreeSet<PathBuf> {
     found
 }
 
-fn only_generation_identity(package: &TempDir) -> std::ffi::OsString {
+fn only_generation_identity(package: &Fixture) -> std::ffi::OsString {
     let generations = generation_directories(&target_dir(package));
     assert_eq!(generations.len(), 1, "generations={generations:?}");
     generations
