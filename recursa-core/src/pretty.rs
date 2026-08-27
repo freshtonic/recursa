@@ -868,6 +868,13 @@ impl PrettyContext {
         self.with_provenance(provenance, render)
     }
 
+    /// Runs rendering at a source-ordered child whose concrete closed shape was
+    /// opaque at the generic declaration boundary.
+    #[doc(hidden)]
+    pub fn with_opaque_child<R>(&mut self, index: usize, render: impl FnOnce(&mut Self) -> R) -> R {
+        self.with_child(index, render)
+    }
+
     /// Runs structured rendering without assuming a source occurrence shape.
     #[doc(hidden)]
     pub fn without_provenance<R>(&mut self, render: impl FnOnce(&mut Self) -> R) -> R {
