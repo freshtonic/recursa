@@ -1,10 +1,25 @@
 [package]
 name = "recursa-codegen"
 version = "0.1.0"
+description = "Build-time grammar analysis and code generation for Recursa"
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/recursa-codegen"
+readme = "README.md"
+keywords = ["parser", "parser-generator", "grammar", "code-generation"]
+categories = ["parsing", "development-tools::build-utils"]
+include = [
+    "src/**",
+    "!src/semantic_projection_tests.rs",
+    "!src/source_analysis_contract_tests.rs",
+    "!src/source_analysis_tests.rs",
+    "README.md",
+    "LICENSE",
+]
 
 [features]
 default = []

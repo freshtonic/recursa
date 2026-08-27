@@ -1,14 +1,23 @@
 [package]
 name = "recursa-example-pratt-expressions"
 version = "0.0.0"
+description = "Compiled Pratt-expression grammar example for Recursa"
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://github.com/freshtonic/recursa/tree/main/examples/pratt-expressions"
+readme = "README.md"
+keywords = ["parser", "pratt", "grammar", "example"]
+categories = ["parsing"]
+include = ["build.rs", "src/**", "README.md", "LICENSE"]
 publish = false
 build = "build.rs"
 
 [dependencies]
-recursa = { path = "../../recursa" }
+recursa = { version = "=0.1.0", path = "../../recursa" }
 
 [build-dependencies]
-recursa-codegen = { path = "../../recursa-codegen" }
+recursa-codegen = { version = "=0.1.0", path = "../../recursa-codegen" }

@@ -12,7 +12,9 @@ members = [
 ]
 
 [workspace.package]
+authors = ["James Sadler"]
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/freshtonic/recursa"
+homepage = "https://github.com/freshtonic/recursa"

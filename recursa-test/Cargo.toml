@@ -1,9 +1,18 @@
 [package]
 name = "recursa-test"
 version = "0.1.0"
+description = "Reserved package for future Recursa testing support"
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://github.com/freshtonic/recursa/tree/main/recursa-test"
+readme = "README.md"
+keywords = ["parser", "testing", "grammar"]
+categories = ["development-tools::testing"]
+include = ["src/**", "README.md", "LICENSE"]
+publish = false
 
 [dependencies]
