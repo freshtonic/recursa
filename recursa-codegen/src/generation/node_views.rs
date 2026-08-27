@@ -5,7 +5,7 @@
 
 use super::*;
 
-/// Validates validate accessor names from frozen inputs without changing canonical generation order.
+/// Rejects semantic and fixed-span accessor names that collide within one Node shape.
 pub(super) fn validate_accessor_names(
     node: &ResolvedNode,
     body: &NodeBodyPlan,
@@ -59,7 +59,7 @@ pub(super) fn validate_accessor_names(
     Ok(())
 }
 
-/// Renders render metadata from frozen inputs without changing canonical generation order.
+/// Renders source-order element metadata for every active shape of a Node.
 pub(super) fn render_metadata(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -108,7 +108,7 @@ pub(super) fn render_metadata(
     }
 }
 
-/// Renders render metadata entry from frozen inputs without changing canonical generation order.
+/// Renders one element's stable name and fixed-token or semantic-field role.
 pub(super) fn render_metadata_entry(
     facade: &Ident,
     element: &ElementParsePlan,
@@ -121,7 +121,7 @@ pub(super) fn render_metadata_entry(
     quote!(#facade::__private::element_metadata(Some(#name), #role))
 }
 
-/// Renders render span elements from frozen inputs without changing canonical generation order.
+/// Selects the provenance-element slice for the Node's active struct or enum shape.
 pub(super) fn render_span_elements(
     node: &NodeParsePlan,
     node_index: usize,
@@ -161,7 +161,7 @@ pub(super) fn render_span_elements(
     }
 }
 
-/// Renders render accessors from frozen inputs without changing canonical generation order.
+/// Renders visibility-matched occurrence-view accessors for one Node.
 pub(super) fn render_accessors(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -233,7 +233,7 @@ pub(super) fn render_accessors(
     }
 }
 
-/// Renders render accessor from frozen inputs without changing canonical generation order.
+/// Renders semantic-value and fixed-token span accessors for one planned element.
 ///
 /// # Long-function contract
 ///
@@ -390,7 +390,7 @@ pub(super) fn render_accessor(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Renders render repeated accessor from frozen inputs without changing canonical generation order.
+/// Renders a repeated semantic accessor while preserving container and occurrence order.
 ///
 /// # Long-function contract
 ///
@@ -505,7 +505,7 @@ pub(super) fn render_repeated_accessor(
     }
 }
 
-/// Builds fixed accessor ident from frozen inputs without changing canonical generation order.
+/// Derives a valid generated span-accessor identifier from an element metadata name.
 pub(super) fn fixed_accessor_ident(metadata_name: &str) -> Result<Ident, String> {
     let direct = format!("{metadata_name}_span");
     emitted_ident(&direct).or_else(|_| emitted_ident(&format!("element_{direct}")))

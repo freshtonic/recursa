@@ -38,11 +38,11 @@ pub(super) enum DiagramNode {
 }
 
 #[derive(Clone, Debug)]
-/// Frozen diagram plan data owned by the diagrams boundary; declaration order remains deterministic.
+/// Grammar-wide diagram projection in canonical node order.
 pub(super) struct DiagramPlan {
-    /// Grammar name associated with this value.
+    /// Display name labeling the aggregate grammar diagram.
     pub(super) grammar_name: String,
-    /// Nodes associated with this value.
+    /// Node productions in canonical parse-plan order.
     pub(super) nodes: Vec<NodeDiagramPlan>,
     /// Typed content-token diagrams in canonical token order.
     pub(super) tokens: Vec<TokenDiagramPlan>,
@@ -51,13 +51,13 @@ pub(super) struct DiagramPlan {
 }
 
 #[derive(Clone, Debug)]
-/// Frozen node diagram plan data owned by the diagrams boundary; declaration order remains deterministic.
+/// Diagram identity and railroad body for one node.
 pub(super) struct NodeDiagramPlan {
-    /// Semantic key associated with this value.
+    /// Stable Node identity used to correlate documentation artifacts.
     pub(super) semantic_key: String,
-    /// Ident associated with this value.
+    /// Generated Rust identifier labeling the production.
     pub(super) ident: String,
-    /// Public path associated with this value.
+    /// Rustdoc-relative link target when the Node is publicly reachable.
     pub(super) public_path: Option<String>,
     /// Semantic production derived from the frozen node application plans.
     pub(super) production: DiagramNode,

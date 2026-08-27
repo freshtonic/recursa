@@ -6,86 +6,86 @@
 use super::*;
 
 #[derive(Clone)]
-/// Frozen token parse plan data owned by the lexing boundary; declaration order remains deterministic.
+/// Runtime token type, capture, and classifier contract.
 pub(super) struct TokenParsePlan {
-    /// Semantic associated with this value.
+    /// Semantic content-token identity represented by the generated type.
     pub(super) semantic: ContentTokenId,
-    /// Ident associated with this value.
+    /// Generated Rust identifier visible at the binding site.
     pub(super) ident: Ident,
-    /// Kind associated with this value.
+    /// Grammar-local numeric kind emitted for lexical matches.
     pub(super) kind: u16,
-    /// Kind variant associated with this value.
+    /// Typed token-kind variant naming the numeric kind.
     pub(super) kind_variant: Ident,
-    /// Accepted kind variants associated with this value.
+    /// Reclaimable fixed kinds accepted as this content token.
     pub(super) accepted_kind_variants: Vec<Ident>,
-    /// Expected associated with this value.
+    /// Diagnostic atom describing this token at parse failures.
     pub(super) expected: ExpectedSet,
-    /// Capture associated with this value.
+    /// Whether values retain exact matched source text.
     pub(super) capture: PlannedCapturePolicy,
-    /// Arbitrary spelling associated with this value.
+    /// Deterministic synthesized spelling used by generated `Arbitrary`.
     pub(super) arbitrary_spelling: String,
-    /// Configured traits associated with this value.
+    /// Effective generator-owned trait recipes for the token type.
     pub(super) configured_traits: Vec<ConfiguredTraitRecipe>,
 }
 
 #[derive(Clone)]
-/// Frozen token binding plan data owned by the lexing boundary; declaration order remains deterministic.
+/// Generated binding and identity for one authored token declaration.
 pub(super) struct TokenBindingPlan {
-    /// Module associated with this value.
+    /// Source module receiving the generated binding.
     pub(super) module: ModuleId,
-    /// Semantic key associated with this value.
+    /// Stable source identity used to correlate the binding.
     pub(super) semantic_key: String,
-    /// Ident associated with this value.
+    /// Rust identifier emitted into the source module.
     pub(super) ident: Ident,
-    /// Visibility associated with this value.
+    /// Authored visibility preserved by the generated binding.
     pub(super) visibility: Visibility,
-    /// Publicly materialized associated with this value.
+    /// Whether the binding and every containing module are publicly reachable.
     pub(super) publicly_materialized: bool,
-    /// Token associated with this value.
+    /// Index of the semantic content-token plan this binding exposes.
     pub(super) token: usize,
 }
 #[derive(Clone)]
-/// Frozen lex rule plan data owned by the lexing boundary; declaration order remains deterministic.
+/// Ordered runtime matching rule for one token pattern.
 pub(super) struct LexRulePlan {
-    /// Pattern associated with this value.
+    /// Backend-independent lexical pattern.
     pub(super) pattern: String,
-    /// Kind associated with this value.
+    /// Numeric token kind produced by a successful match.
     pub(super) kind: u16,
-    /// Skip associated with this value.
+    /// Whether matching text is consumed without a token record.
     pub(super) skip: bool,
-    /// Callback associated with this value.
+    /// Optional authored lexer callback retained as opaque Rust.
     pub(super) callback: Option<syn::Path>,
-    /// Fixed associated with this value.
+    /// Whether this rule recognizes exact fixed syntax.
     pub(super) fixed: bool,
-    /// Priority associated with this value.
+    /// Stable declaration-derived tie-break priority.
     pub(super) priority: u32,
 }
 
 #[derive(Clone)]
-/// Frozen keyword classifier plan data owned by the lexing boundary; declaration order remains deterministic.
+/// Exact keyword spelling mapped to its runtime kind.
 pub(super) struct KeywordClassifierPlan {
-    /// Canonical spelling associated with this value.
+    /// Normalized word-shaped fixed spelling used for classification.
     pub(super) canonical_spelling: String,
-    /// Kind associated with this value.
+    /// Fixed-token kind assigned after carrier recognition.
     pub(super) kind: u16,
-    /// Carriers associated with this value.
+    /// Content-token kinds proven able to carry this word.
     pub(super) carriers: Vec<u16>,
-    /// Ascii insensitive associated with this value.
+    /// Whether classification uses ASCII-case-insensitive equivalence.
     pub(super) ascii_insensitive: bool,
 }
 
 #[derive(Clone)]
-/// Frozen word classifier plan data owned by the lexing boundary; declaration order remains deterministic.
+/// Word-like token kinds and their keyword refinement policy.
 pub(super) struct WordClassifierPlan {
-    /// Canonical spelling associated with this value.
+    /// Normalized fixed spelling tested by the generated classifier.
     pub(super) canonical_spelling: String,
-    /// Kind associated with this value.
+    /// Fixed-token kind substituted on an equivalent match.
     pub(super) kind: u16,
-    /// Ascii insensitive associated with this value.
+    /// Whether the classifier folds ASCII case before comparison.
     pub(super) ascii_insensitive: bool,
 }
 
-/// Builds fixed lexical pattern from frozen inputs without changing canonical generation order.
+/// Escapes one fixed spelling into an anchored lexer pattern.
 pub(super) fn fixed_lexical_pattern(spelling: &str, equivalence: TextEquivalence) -> String {
     let word_shaped = is_word_shaped(spelling);
     if equivalence != TextEquivalence::AsciiInsensitive || !word_shaped {
@@ -107,7 +107,7 @@ pub(super) fn fixed_lexical_pattern(spelling: &str, equivalence: TextEquivalence
         .collect()
 }
 
-/// Builds is word shaped from frozen inputs without changing canonical generation order.
+/// Reports whether a fixed spelling has the grammar's Unicode identifier shape.
 pub(super) fn is_word_shaped(spelling: &str) -> bool {
     let mut characters = spelling.chars();
     characters.next().is_some_and(|first| {
@@ -116,7 +116,7 @@ pub(super) fn is_word_shaped(spelling: &str) -> bool {
     })
 }
 
-/// Builds fixed pretty spelling from frozen inputs without changing canonical generation order.
+/// Selects the canonical spelling emitted for synthesized fixed syntax.
 pub(super) fn fixed_pretty_spelling(spelling: &str, equivalence: TextEquivalence) -> String {
     if equivalence == TextEquivalence::AsciiInsensitive && is_word_shaped(spelling) {
         spelling.to_ascii_uppercase()
@@ -125,7 +125,7 @@ pub(super) fn fixed_pretty_spelling(spelling: &str, equivalence: TextEquivalence
     }
 }
 
-/// Builds lexical pattern witness from frozen inputs without changing canonical generation order.
+/// Produces a deterministic witness proving a lexical pattern can match.
 pub(super) fn lexical_pattern_witness(pattern: &str) -> Result<String, String> {
     use regex_syntax::hir::{Class, Hir, HirKind};
 
@@ -171,7 +171,7 @@ pub(super) fn lexical_pattern_witness(pattern: &str) -> Result<String, String> {
     }
     Ok(witness)
 }
-/// Renders render token from frozen inputs without changing canonical generation order.
+/// Renders the grammar-local lexer, typed records, and validated editing surface.
 ///
 /// # Long-function contract
 ///
@@ -499,7 +499,7 @@ pub(super) fn render_token(
         #explorer_impl
     }
 }
-/// Renders render token binding from frozen inputs without changing canonical generation order.
+/// Renders one source-visible content-token type binding with authored visibility.
 pub(super) fn render_token_binding(
     plan: &EmissionPlan,
     binding: &TokenBindingPlan,

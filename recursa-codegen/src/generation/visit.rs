@@ -23,12 +23,12 @@ mod tests {
     }
 }
 
-/// Builds is public from frozen inputs without changing canonical generation order.
+/// Reports whether authored visibility exposes an item outside its module.
 pub(super) fn is_public(visibility: &Visibility) -> bool {
     matches!(visibility, Visibility::Public(_))
 }
 
-/// Builds typed visit node variant from frozen inputs without changing canonical generation order.
+/// Returns the event variant for a publicly materialized lifetime-only Node application.
 pub(super) fn typed_visit_node_variant(plan: &EmissionPlan, node: &NodeParsePlan) -> Option<Ident> {
     (node.publicly_materialized
         && node
@@ -39,7 +39,7 @@ pub(super) fn typed_visit_node_variant(plan: &EmissionPlan, node: &NodeParsePlan
     .then(|| visit_variant_ident(plan, &node.semantic_key))
 }
 
-/// Builds typed visit token binding from frozen inputs without changing canonical generation order.
+/// Finds the public generated binding for a content-token identity.
 pub(super) fn typed_visit_token_binding(
     plan: &EmissionPlan,
     token: usize,
@@ -49,7 +49,7 @@ pub(super) fn typed_visit_token_binding(
         .find(|binding| binding.token == token && binding.publicly_materialized)
 }
 
-/// Builds visit variant ident from frozen inputs without changing canonical generation order.
+/// Derives a collision-resistant event identifier from a Node's semantic key.
 pub(super) fn visit_variant_ident(plan: &EmissionPlan, semantic_key: &str) -> Ident {
     let anchor = plan
         .module_anchor
@@ -62,7 +62,7 @@ pub(super) fn visit_variant_ident(plan: &EmissionPlan, semantic_key: &str) -> Id
     format_ident!("{}", visit_variant_name(&anchor, semantic_key))
 }
 
-/// Builds visit variant name from frozen inputs without changing canonical generation order.
+/// Encodes a semantic key relative to the selected-root anchor for event dispatch.
 pub(super) fn visit_variant_name(anchor: &str, semantic_key: &str) -> String {
     let segments = semantic_key.split("::").collect::<Vec<_>>();
     let anchor_index = segments
@@ -77,7 +77,7 @@ pub(super) fn visit_variant_name(anchor: &str, semantic_key: &str) -> String {
     visit_nested_variant(&relative)
 }
 
-/// Builds visit nested variant from frozen inputs without changing canonical generation order.
+/// Length-prefixes nested path segments so distinct semantic paths cannot collide.
 pub(super) fn visit_nested_variant(relative: &str) -> String {
     let suffix = relative
         .split("::")
@@ -87,7 +87,7 @@ pub(super) fn visit_nested_variant(relative: &str) -> String {
     format!("__RecursaTarget_{suffix}")
 }
 
-/// Renders render visit events from frozen inputs without changing canonical generation order.
+/// Renders the closed immutable and mutable visit-event families for public grammar types.
 ///
 /// # Long-function contract
 ///
@@ -254,7 +254,7 @@ pub(super) fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStre
     quote!(#visit_event #visit_mut_event)
 }
 
-/// Renders render node visit from frozen inputs without changing canonical generation order.
+/// Renders one Node's configured immutable or mutable traversal implementation.
 pub(super) fn render_node_visit(
     plan: &EmissionPlan,
     node: &NodeParsePlan,

@@ -15,7 +15,7 @@ mod tests {
     }
 }
 
-/// Renders render node configured traits from frozen inputs without changing canonical generation order.
+/// Renders the configured-trait implementations selected for one Node.
 pub(super) fn render_node_configured_traits(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -68,7 +68,7 @@ pub(super) fn render_node_configured_traits(
     quote!(#(#implementations)*)
 }
 
-/// Builds trait impl parts from frozen inputs without changing canonical generation order.
+/// Splits a Node's generics and augments its where-clause for one generated trait.
 pub(super) fn trait_impl_parts(
     facade: &Ident,
     node: &NodeParsePlan,
@@ -93,7 +93,7 @@ pub(super) fn trait_impl_parts(
     )
 }
 
-/// Builds pretty impl parts from frozen inputs without changing canonical generation order.
+/// Prepares `Pretty` implementation generics without imposing recursive self bounds.
 pub(super) fn pretty_impl_parts(
     facade: &Ident,
     node: &NodeParsePlan,
@@ -140,7 +140,7 @@ pub(super) fn pretty_impl_parts(
     )
 }
 
-/// Builds type depends on node type parameters from frozen inputs without changing canonical generation order.
+/// Reports whether a semantic type references any generic type parameter owned by the Node.
 pub(super) fn type_depends_on_node_type_parameters(ty: &Type, node: &NodeParsePlan) -> bool {
     let candidates = node
         .generics
@@ -180,7 +180,7 @@ pub(super) fn type_depends_on_node_type_parameters(ty: &Type, node: &NodeParsePl
     visitor.depends
 }
 
-/// Builds attachment pretty terminal from frozen inputs without changing canonical generation order.
+/// Resolves an attachment terminal to the fixed spelling emitted by `Pretty`.
 pub(super) fn attachment_pretty_terminal(
     node: &NodeParsePlan,
     element: &ElementParsePlan,
@@ -196,7 +196,7 @@ pub(super) fn attachment_pretty_terminal(
     }
 }
 
-/// Renders render node standard trait from frozen inputs without changing canonical generation order.
+/// Renders one catalogued standard-trait implementation over semantic fields only.
 pub(super) fn render_node_standard_trait(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -278,7 +278,7 @@ pub(super) fn render_node_standard_trait(
     }
 }
 
-/// Builds semantic fields from frozen inputs without changing canonical generation order.
+/// Iterates semantic fields in source order, excluding fixed-token elements.
 pub(super) fn semantic_fields(elements: &[ElementParsePlan]) -> Vec<&FieldPlan> {
     elements
         .iter()
@@ -289,7 +289,7 @@ pub(super) fn semantic_fields(elements: &[ElementParsePlan]) -> Vec<&FieldPlan> 
         .collect()
 }
 
-/// Builds trait variants from frozen inputs without changing canonical generation order.
+/// Returns the struct or enum variant shapes participating in structural trait behavior.
 pub(super) fn trait_variants(body: &NodeBodyPlan) -> Vec<VariantParsePlan> {
     match body {
         NodeBodyPlan::Enum { variants, .. } => variants.clone(),
@@ -311,7 +311,7 @@ pub(super) fn trait_variants(body: &NodeBodyPlan) -> Vec<VariantParsePlan> {
     }
 }
 
-/// Renders render debug body from frozen inputs without changing canonical generation order.
+/// Renders `Debug` output that mirrors the authored semantic Node shape.
 pub(super) fn render_debug_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
     let node_name = node.ident.unraw().to_string();
     match &node.body {
@@ -371,7 +371,7 @@ pub(super) fn render_debug_body(node: &NodeParsePlan) -> proc_macro2::TokenStrea
     }
 }
 
-/// Builds variant bound pattern from frozen inputs without changing canonical generation order.
+/// Builds a variant pattern binding only semantic values required by a trait body.
 pub(super) fn variant_bound_pattern(
     node: &Ident,
     variant: &VariantParsePlan,
@@ -408,7 +408,7 @@ pub(super) fn variant_bound_pattern(
     (pattern, bindings)
 }
 
-/// Renders render clone body from frozen inputs without changing canonical generation order.
+/// Renders structural cloning of semantic fields while reconstructing fixed syntax implicitly.
 pub(super) fn render_clone_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
     match &node.body {
         NodeBodyPlan::Struct { style, elements } => {
@@ -456,7 +456,7 @@ pub(super) fn render_clone_body(node: &NodeParsePlan) -> proc_macro2::TokenStrea
     }
 }
 
-/// Renders render partial eq body from frozen inputs without changing canonical generation order.
+/// Renders semantic-field equality for each matching Node shape.
 pub(super) fn render_partial_eq_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
     match &node.body {
         NodeBodyPlan::Struct { elements, .. } => {
@@ -484,7 +484,7 @@ pub(super) fn render_partial_eq_body(node: &NodeParsePlan) -> proc_macro2::Token
     }
 }
 
-/// Renders render order body from frozen inputs without changing canonical generation order.
+/// Renders deterministic lexicographic comparison across variants and semantic fields.
 pub(super) fn render_order_body(node: &NodeParsePlan, partial: bool) -> proc_macro2::TokenStream {
     let compare_fields = |left: Vec<proc_macro2::TokenStream>,
                           right: Vec<proc_macro2::TokenStream>| {
@@ -567,7 +567,7 @@ pub(super) fn render_order_body(node: &NodeParsePlan, partial: bool) -> proc_mac
     }
 }
 
-/// Renders render hash body from frozen inputs without changing canonical generation order.
+/// Renders variant-discriminant and semantic-field hashing for the authored Node shape.
 pub(super) fn render_hash_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
     match &node.body {
         NodeBodyPlan::Struct { elements, .. } => {
@@ -591,7 +591,7 @@ pub(super) fn render_hash_body(node: &NodeParsePlan) -> proc_macro2::TokenStream
     }
 }
 
-/// Renders render node arbitrary from frozen inputs without changing canonical generation order.
+/// Renders bounded arbitrary construction for the Node's semantic shape.
 pub(super) fn render_node_arbitrary(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -670,7 +670,7 @@ pub(super) fn render_node_arbitrary(
     }
 }
 
-/// Renders render node serde from frozen inputs without changing canonical generation order.
+/// Renders configured serialization or deserialization through the authored semantic shape.
 ///
 /// # Long-function contract
 ///
@@ -839,7 +839,7 @@ pub(super) fn render_node_serde(
     }
 }
 
-/// Builds add serde bounds from frozen inputs without changing canonical generation order.
+/// Adds only the generic bounds required by the selected Serde direction.
 pub(super) fn add_serde_bounds(
     facade: &Ident,
     node: &NodeParsePlan,
@@ -857,7 +857,7 @@ pub(super) fn add_serde_bounds(
     }
 }
 
-/// Builds serde generic dependencies from frozen inputs without changing canonical generation order.
+/// Collects generic type parameters reached by serializable semantic fields.
 pub(super) fn serde_generic_dependencies(node: &NodeParsePlan) -> Vec<Type> {
     let candidates = node
         .generics
@@ -908,7 +908,7 @@ pub(super) fn serde_generic_dependencies(node: &NodeParsePlan) -> Vec<Type> {
         .collect()
 }
 
-/// Builds semantic field types from frozen inputs without changing canonical generation order.
+/// Iterates the semantic field types that contribute generated-trait bounds.
 pub(super) fn semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<Type> {
     let elements = match &node.body {
         NodeBodyPlan::Struct { elements, .. } => elements.clone(),
@@ -931,7 +931,7 @@ pub(super) fn semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<
         .collect()
 }
 
-/// Builds is recursive terminal from frozen inputs without changing canonical generation order.
+/// Reports whether a terminal application recursively targets the Node being implemented.
 pub(super) fn is_recursive_terminal(node: &NodeParsePlan, terminal: &Type) -> bool {
     let Type::Path(terminal) = terminal else {
         return false;

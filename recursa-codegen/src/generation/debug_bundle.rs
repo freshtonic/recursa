@@ -34,30 +34,30 @@ pub(super) const DEBUG_BUNDLE_FORMAT: &str = "recursa-generated-code-debug-v1";
 const DEBUG_BUNDLE_OWNERSHIP_MARKER: &str = ".recursa-debug-bundle";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Frozen debug logical file data owned by the debug bundle boundary; declaration order remains deterministic.
+/// One logical debug artifact and its deterministic contents.
 pub(super) struct DebugLogicalFile {
-    /// Str associated with this value.
+    /// Logical artifact role written into the bundle index.
     role: &'static str,
-    /// Logical name associated with this value.
+    /// Generation-relative filename shown to maintainers.
     logical_name: String,
-    /// Private name associated with this value.
+    /// Collision-free filename used inside the debug bundle directory.
     private_name: String,
-    /// Contents associated with this value.
+    /// Formatted, validated Rust or metadata bytes represented as text.
     contents: String,
 }
 
-/// Frozen staged debug bundle data owned by the debug bundle boundary; declaration order remains deterministic.
+/// Isolated candidate bundle awaiting atomic publication.
 pub(super) struct StagedDebugBundle {
-    /// Staging associated with this value.
+    /// Unpublished directory removed on drop unless commit succeeds.
     pub(super) staging: Option<PathBuf>,
-    /// Published associated with this value.
+    /// Final opt-in debug destination.
     pub(super) published: PathBuf,
-    /// Replacement associated with this value.
+    /// Previous complete bundle temporarily retained for rollback.
     pub(super) replacement: Option<PathBuf>,
 }
 
 impl StagedDebugBundle {
-    /// Returns the commit value.
+    /// Publishes the staged bundle through the supplied atomic writer.
     pub(super) fn commit(mut self) -> Result<(), String> {
         let Some(staging) = self.staging.as_ref() else {
             return Ok(());
@@ -99,7 +99,7 @@ impl Drop for StagedDebugBundle {
     }
 }
 
-/// Builds publish generation and debug from frozen inputs without changing canonical generation order.
+/// Publishes authoritative output before committing its optional non-authoritative debug bundle.
 pub(super) fn publish_generation_and_debug(
     out_dir: &Path,
     identity: &str,
@@ -118,7 +118,7 @@ pub(super) fn publish_generation_and_debug(
     Ok(())
 }
 
-/// Builds stage debug bundle from frozen inputs without changing canonical generation order.
+/// Materializes a complete debug bundle under a private staging directory.
 pub(super) fn stage_debug_bundle(
     directory: &Path,
     plan: &EmissionPlan,
@@ -179,7 +179,7 @@ pub(super) fn stage_debug_bundle(
     })
 }
 
-/// Builds ensure owned debug bundle from frozen inputs without changing canonical generation order.
+/// Verifies that an existing destination is a Recursa-owned plain directory.
 pub(super) fn ensure_owned_debug_bundle(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("cannot inspect the existing debug bundle: {error}"))?;
@@ -201,7 +201,7 @@ pub(super) fn ensure_owned_debug_bundle(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Builds ensure plain directory from frozen inputs without changing canonical generation order.
+/// Creates or validates a non-symlink directory used by debug publication.
 pub(super) fn ensure_plain_directory(path: &Path, role: &str) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -223,7 +223,7 @@ pub(super) fn ensure_plain_directory(path: &Path, role: &str) -> Result<(), Stri
     }
 }
 
-/// Builds remove debug staging from frozen inputs without changing canonical generation order.
+/// Removes a staging entry without following a symbolic link.
 pub(super) fn remove_debug_staging(staging: &Path) -> std::io::Result<()> {
     match fs::symlink_metadata(staging) {
         Ok(metadata) if metadata.file_type().is_symlink() => fs::remove_file(staging),
@@ -234,7 +234,7 @@ pub(super) fn remove_debug_staging(staging: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Builds write debug file from frozen inputs without changing canonical generation order.
+/// Creates one new debug file and synchronizes its contents before publication.
 pub(super) fn write_debug_file(path: &Path, contents: &[u8]) -> Result<(), String> {
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -246,7 +246,7 @@ pub(super) fn write_debug_file(path: &Path, contents: &[u8]) -> Result<(), Strin
         .map_err(|error| format!("cannot write debug bundle file: {error}"))
 }
 
-/// Renders render debug logical files from frozen inputs without changing canonical generation order.
+/// Collects root, Node, selector, and capability views into deterministic debug-file order.
 pub(super) fn render_debug_logical_files(
     plan: &EmissionPlan,
     rendered: &RenderedGeneration,
@@ -279,7 +279,7 @@ pub(super) fn render_debug_logical_files(
     Ok(files)
 }
 
-/// Renders render debug capability fragments from frozen inputs without changing canonical generation order.
+/// Renders enabled capability fragments solely for maintainer inspection.
 ///
 /// # Long-function contract
 ///
@@ -415,7 +415,7 @@ pub(super) fn render_debug_capability_fragments(
     Ok(fragments)
 }
 
-/// Renders render facade capability fragment from frozen inputs without changing canonical generation order.
+/// Renders the facade handshake arm for one accepted capability combination.
 pub(super) fn render_facade_capability_fragment(
     plan: &EmissionPlan,
     capability: FacadeCapability,
@@ -443,7 +443,7 @@ pub(super) fn render_facade_capability_fragment(
     }
 }
 
-/// Builds format debug rust from frozen inputs without changing canonical generation order.
+/// Parses and pretty-prints one logical Rust artifact for the debug bundle.
 pub(super) fn format_debug_rust(role: &str, source: &str) -> Result<String, String> {
     let syntax = syn::parse_file(source)
         .map_err(|error| format!("the logical generated {role} is invalid Rust: {error}"))?;
@@ -453,7 +453,7 @@ pub(super) fn format_debug_rust(role: &str, source: &str) -> Result<String, Stri
     Ok(formatted)
 }
 
-/// Renders render debug index from frozen inputs without changing canonical generation order.
+/// Serializes the bundle format, Generation identity, and logical-to-private filename map.
 pub(super) fn render_debug_index(identity: &str, files: &[DebugLogicalFile]) -> String {
     let mut index = format!("{DEBUG_BUNDLE_FORMAT}\ngeneration\t{identity}\n");
     for file in files {

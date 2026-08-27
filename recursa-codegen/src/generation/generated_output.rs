@@ -10,13 +10,13 @@ use super::*;
 /// The root and Node files have already parsed as Rust, anchors align with Node order, and the
 /// selector names only this generation identity. This value contains no partially rendered state.
 pub(super) struct RenderedGeneration {
-    /// Root associated with this value.
+    /// Validated structural root source shared by every Node loader.
     pub(super) root: String,
-    /// Nodes associated with this value.
+    /// Validated Node filenames and sources in parse-plan order.
     pub(super) nodes: Vec<(String, String)>,
-    /// Node anchors associated with this value.
+    /// Loader anchors positionally aligned with [`Self::nodes`].
     pub(super) node_anchors: Vec<String>,
-    /// Selector associated with this value.
+    /// Validated loader source that selects this Generation identity.
     pub(super) selector: String,
 }
 
@@ -58,7 +58,7 @@ pub(super) fn render(plan: &EmissionPlan) -> Result<RenderedGeneration, String> 
         selector,
     })
 }
-/// Renders render root from frozen inputs without changing canonical generation order.
+/// Renders the structural root, preserving protocol sections and exports in their planned order.
 ///
 /// # Long-function contract
 ///
@@ -894,7 +894,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         }
     }
 }
-/// Renders render node from frozen inputs without changing canonical generation order.
+/// Renders one Node file from its frozen parse, capability, and loader plans.
 ///
 /// # Long-function contract
 ///
