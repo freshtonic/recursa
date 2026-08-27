@@ -177,6 +177,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "recursa-example-json"
+version = "0.0.0"
+dependencies = [
+ "recursa",
+ "recursa-codegen",
+]
+
+[[package]]
+name = "recursa-example-pratt-expressions"
+version = "0.0.0"
+dependencies = [
+ "recursa",
+ "recursa-codegen",
+]
+
+[[package]]
 name = "recursa-explorer"
 version = "0.1.0"
 

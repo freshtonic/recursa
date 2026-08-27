@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
+    "examples/json",
+    "examples/pratt-expressions",
     "recursa",
     "recursa-core",
     "recursa-codegen",
