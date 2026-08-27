@@ -19,3 +19,4 @@ publish = false
 
 [dev-dependencies]
 syn = { version = "2", features = ["full", "parsing"] }
+tempfile = "3"
