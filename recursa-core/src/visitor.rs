@@ -15,8 +15,10 @@ pub enum VisitBreak<E> {
 
 /// Read-only structural traversal implemented by generated AST types.
 pub trait Visit: Sized {
+    /// Grammar-local event family covering every reachable Node type.
     type Events: VisitEventFamily;
 
+    /// Traverses this value using generated source-order child dispatch.
     fn visit<V>(&self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
     where
         V: TotalVisitor<Self::Events>;
@@ -27,8 +29,10 @@ pub trait Visit: Sized {
 /// Generated implementations operate only on detached semantic values. A
 /// [`crate::Parsed`] wrapper deliberately does not implement this trait.
 pub trait VisitMut: Sized {
+    /// Mutable grammar-local event family covering reachable Node types.
     type EventsMut: VisitEventFamilyMut;
 
+    /// Mutably traverses this detached semantic value in source order.
     fn visit_mut<V>(&mut self, visitor: &mut V) -> ControlFlow<VisitBreak<V::Error>>
     where
         V: TotalVisitorMut<Self::EventsMut>;
@@ -36,12 +40,15 @@ pub trait VisitMut: Sized {
 
 /// Type-specific read-only visitor hooks.
 pub trait Visitor<N: ?Sized> {
+    /// Caller-defined error returned through [`VisitBreak::Error`].
     type Error;
 
+    /// Runs before generated traversal visits `node` children.
     fn enter(&mut self, _node: &N) -> ControlFlow<VisitBreak<Self::Error>> {
         ControlFlow::Continue(())
     }
 
+    /// Runs after generated traversal visits `node` children.
     fn exit(&mut self, _node: &N) -> ControlFlow<VisitBreak<Self::Error>> {
         ControlFlow::Continue(())
     }
@@ -49,12 +56,15 @@ pub trait Visitor<N: ?Sized> {
 
 /// Type-specific mutable visitor hooks.
 pub trait VisitorMut<N: ?Sized> {
+    /// Caller-defined error returned through [`VisitBreak::Error`].
     type Error;
 
+    /// Runs before generated mutable traversal visits `node` children.
     fn enter_mut(&mut self, _node: &mut N) -> ControlFlow<VisitBreak<Self::Error>> {
         ControlFlow::Continue(())
     }
 
+    /// Runs after generated mutable traversal visits `node` children.
     fn exit_mut(&mut self, _node: &mut N) -> ControlFlow<VisitBreak<Self::Error>> {
         ControlFlow::Continue(())
     }
@@ -63,6 +73,7 @@ pub trait VisitorMut<N: ?Sized> {
 /// Grammar-local family of lifetime-preserving read-only traversal events.
 #[doc(hidden)]
 pub trait VisitEventFamily {
+    /// Read-only event borrowing one Node for the duration of a callback.
     type Event<'visit>
     where
         Self: 'visit;
@@ -71,6 +82,7 @@ pub trait VisitEventFamily {
 /// Grammar-local family of lifetime-preserving mutable traversal events.
 #[doc(hidden)]
 pub trait VisitEventFamilyMut {
+    /// Mutable event borrowing one Node for the duration of a callback.
     type EventMut<'visit>
     where
         Self: 'visit;
@@ -78,8 +90,10 @@ pub trait VisitEventFamilyMut {
 
 /// Universal read-only visitor dispatch used by generated walks.
 pub trait TotalVisitor<F: VisitEventFamily> {
+    /// Error shared by every type-specific visitor implementation.
     type Error;
 
+    /// Dispatches the enter hook for one grammar-local event.
     fn total_enter<'visit>(
         &mut self,
         event: F::Event<'visit>,
@@ -87,6 +101,7 @@ pub trait TotalVisitor<F: VisitEventFamily> {
     where
         F: 'visit;
 
+    /// Dispatches the exit hook for one grammar-local event.
     fn total_exit<'visit>(
         &mut self,
         event: F::Event<'visit>,
@@ -97,8 +112,10 @@ pub trait TotalVisitor<F: VisitEventFamily> {
 
 /// Universal mutable visitor dispatch used by generated walks.
 pub trait TotalVisitorMut<F: VisitEventFamilyMut> {
+    /// Error shared by every mutable type-specific visitor implementation.
     type Error;
 
+    /// Dispatches the mutable enter hook for one grammar-local event.
     fn total_enter_mut<'visit>(
         &mut self,
         event: F::EventMut<'visit>,
@@ -106,6 +123,7 @@ pub trait TotalVisitorMut<F: VisitEventFamilyMut> {
     where
         F: 'visit;
 
+    /// Dispatches the mutable exit hook for one grammar-local event.
     fn total_exit_mut<'visit>(
         &mut self,
         event: F::EventMut<'visit>,

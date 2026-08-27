@@ -11,6 +11,7 @@ use syn::parse::Parse as _;
 use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Type, parse_macro_input};
 
+/// Matching-version protocol expected by generated root and Node loaders.
 const PRIVATE_PROTOCOL: u32 = 1;
 
 /// Marks a source declaration as a grammar Node and loads its generated body.
@@ -146,18 +147,26 @@ pub fn grammar(_input: TokenStream) -> TokenStream {
     .into()
 }
 
+/// Files selected for the active successful Generation.
 struct SelectedOutput {
+    /// Directory containing the immutable Generation payload.
     directory: PathBuf,
+    /// Loader anchors mapped to declaration-local generated source files.
     loader_files: Option<BTreeMap<String, String>>,
 }
 
+/// Availability of selected generated source at a Node derive site.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LoaderStatus {
+    /// Both the root output and requested Node body are readable.
     Ready,
+    /// No valid selected Generation root could be loaded.
     RootUnavailable,
+    /// The Generation exists but has no readable body for this Node anchor.
     NodeUnavailable,
 }
 
+/// Loads and caches the selected Generation for this compiler output directory.
 fn selected_output() -> Option<Arc<SelectedOutput>> {
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR")?);
     static SELECTED: OnceLock<Mutex<BTreeMap<PathBuf, Option<Arc<SelectedOutput>>>>> =
@@ -172,6 +181,7 @@ fn selected_output() -> Option<Arc<SelectedOutput>> {
     loaded
 }
 
+/// Validates the selector and loads its immutable root and Node loader map.
 fn load_selected_output(out_dir: &Path) -> Option<SelectedOutput> {
     let selector = fs::read_to_string(out_dir.join("recursa-selected.rs")).ok()?;
     let identity = selector
@@ -200,6 +210,7 @@ fn load_selected_output(out_dir: &Path) -> Option<SelectedOutput> {
     })
 }
 
+/// Reports whether a generated Node body is available for one loader anchor.
 fn selected_node(anchor: &str) -> LoaderStatus {
     let Some(selected) = selected_output() else {
         return LoaderStatus::RootUnavailable;
@@ -216,12 +227,14 @@ fn selected_node(anchor: &str) -> LoaderStatus {
     LoaderStatus::Ready
 }
 
+/// Checks the closed, path-safe syntax of a Generation directory identity.
 fn valid_generation_identity(identity: &str) -> bool {
     identity
         .strip_prefix("g_")
         .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
+/// Checks the closed, path-safe syntax of a declaration-local Node filename.
 fn valid_node_file(name: &str) -> bool {
     name.strip_prefix("node-").is_some_and(|suffix| {
         suffix.strip_suffix(".rs").is_some_and(|index| {
@@ -236,13 +249,19 @@ pub fn tokens(_input: TokenStream) -> TokenStream {
     TokenStream::new()
 }
 
+/// Parsed configuration shared by the total visitor derives.
 struct TotalVisitorInput {
+    /// Concrete Node types whose generated event variants are dispatched.
     dispatch: Vec<Type>,
+    /// Error type shared by all visitor implementations.
     error: Type,
+    /// Path through which generated code reaches the Recursa facade.
     facade: syn::Path,
+    /// Optional explicit generated visit-event enum path.
     event: Option<syn::Path>,
 }
 
+/// Reads and validates one total visitor derive attribute.
 fn total_visitor_input(input: &DeriveInput, attribute: &str) -> syn::Result<TotalVisitorInput> {
     let mut dispatch = None;
     let mut error = None;
@@ -296,6 +315,7 @@ fn total_visitor_input(input: &DeriveInput, attribute: &str) -> syn::Result<Tota
     })
 }
 
+/// Resolves the facade path used by emitted visitor implementations.
 fn mapped_facade_path() -> syn::Path {
     match proc_macro_crate::crate_name("recursa") {
         Ok(proc_macro_crate::FoundCrate::Itself) => syn::parse_quote!(crate),
@@ -306,6 +326,10 @@ fn mapped_facade_path() -> syn::Path {
     }
 }
 
+/// Derives immutable total-visitor dispatch across a generated grammar family.
+///
+/// The input must provide `dispatch` and `error` entries in
+/// `#[total_visitor(...)]`; `facade` and `event` may override generated paths.
 #[proc_macro_derive(TotalVisitor, attributes(total_visitor))]
 pub fn total_visitor(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -314,6 +338,11 @@ pub fn total_visitor(input: TokenStream) -> TokenStream {
         .into()
 }
 
+/// Derives mutable total-visitor dispatch across a generated grammar family.
+///
+/// The input must provide `dispatch` and `error` entries in
+/// `#[total_visitor_mut(...)]`; `facade` and `event` may override generated
+/// paths.
 #[proc_macro_derive(TotalVisitorMut, attributes(total_visitor_mut))]
 pub fn total_visitor_mut(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -322,10 +351,16 @@ pub fn total_visitor_mut(input: TokenStream) -> TokenStream {
         .into()
 }
 
+/// Renders either immutable or mutable total-visitor dispatch.
+///
+/// Both forms are produced here so lifetime substitution, event naming, and
+/// dispatch bounds cannot drift between the two generated protocols.
 fn render_total_visitor(
     input: &DeriveInput,
     mutable: bool,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    // Resolve the event-family paths before changing generics: authored type
+    // lifetimes and the generated visit lifetime have different ownership.
     let attribute = if mutable {
         "total_visitor_mut"
     } else {
@@ -366,6 +401,8 @@ fn render_total_visitor(
         },
         proc_macro2::Span::call_site(),
     );
+    // Add the source lifetime and one Visitor bound per dispatched Node while
+    // preserving the user's type generics on the implementation target.
     let mut implementation_generics = input.generics.clone();
     implementation_generics
         .params
@@ -388,6 +425,8 @@ fn render_total_visitor(
     }
     let (impl_generics, _, where_clause) = implementation_generics.split_for_impl();
     let (_, type_generics, _) = input.generics.split_for_impl();
+    // Render the mutable and immutable callback sets from the same validated
+    // dispatch list, keeping enter and exit behavior structurally symmetric.
     if mutable {
         let enter = dispatch
             .iter()
@@ -497,6 +536,7 @@ fn render_total_visitor(
     }
 }
 
+/// Derives the generated event enum path from the first dispatched Node type.
 fn total_visitor_event_path(dispatch: &[Type], mutable: bool) -> syn::Result<syn::Path> {
     let first = dispatch.first().ok_or_else(|| {
         syn::Error::new(proc_macro2::Span::call_site(), "dispatch cannot be empty")
@@ -520,7 +560,9 @@ fn total_visitor_event_path(dispatch: &[Type], mutable: bool) -> syn::Result<syn
     Ok(event)
 }
 
+/// Rebinds every lifetime in a dispatch type to the generated input lifetime.
 fn visitor_dispatch_type(ty: &Type, lifetime: syn::Lifetime) -> Type {
+    /// Syntax visitor that replaces lifetimes without changing type structure.
     struct ReplaceLifetime(syn::Lifetime);
     impl syn::visit_mut::VisitMut for ReplaceLifetime {
         fn visit_lifetime_mut(&mut self, target: &mut syn::Lifetime) {
@@ -532,6 +574,7 @@ fn visitor_dispatch_type(ty: &Type, lifetime: syn::Lifetime) -> Type {
     ty
 }
 
+/// Encodes a grammar-relative Node path as its collision-free event variant.
 fn visitor_variant(ty: &Type, event: &syn::Path) -> syn::Result<syn::Ident> {
     let Type::Path(ty) = ty else {
         unreachable!("dispatch types were validated as paths")
@@ -566,6 +609,7 @@ fn visitor_variant(ty: &Type, event: &syn::Path) -> syn::Result<syn::Ident> {
     ))
 }
 
+/// Computes the deterministic hash used for declaration loader anchors.
 fn stable_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in bytes {
@@ -575,6 +619,7 @@ fn stable_hash(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// Normalizes a source path into the platform-independent loader identity.
 fn normalized_source_identity(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {

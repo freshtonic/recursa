@@ -6,7 +6,9 @@ use std::marker::PhantomData;
 use crate::{FollowSet, GrammarInfo, HasSpan, Input, ParseError, Span, TokenRecord};
 
 #[doc(hidden)]
+/// Seal implemented only by generated grammar-local input types.
 pub mod parse_seal {
+    /// Prevents external implementations of the safe [`super::Parse`] facade.
     pub trait Sealed<I: ?Sized> {}
 }
 
@@ -15,8 +17,10 @@ pub mod parse_seal {
 /// `I` is a generated grammar-local input type. Recursive parsing and FOLLOW
 /// transport are deliberately absent from this public contract.
 pub trait Parse<I: ?Sized>: parse_seal::Sealed<I> {
+    /// Parsed wrapper or value returned by the generated root entry point.
     type Output;
 
+    /// Parses one root from grammar-bound input transactionally.
     fn parse(input: &mut I) -> Result<Self::Output, ParseError>;
 }
 
@@ -25,7 +29,9 @@ pub trait Parse<I: ?Sized>: parse_seal::Sealed<I> {
 /// Mutating access is deliberately unavailable: consume the wrapper with
 /// [`Parsed::into_ast`] before changing the semantic value.
 pub struct Parsed<'input, T> {
+    /// Authored semantic value.
     ast: T,
+    /// Parsed, uncaptured, or synthetic occurrence provenance.
     origin: Origin<'input>,
 }
 
@@ -92,22 +98,34 @@ impl<T: serde::Serialize> serde::Serialize for Parsed<'_, T> {
     }
 }
 
+/// Provenance state retained alongside one semantic root.
 enum Origin<'input> {
+    /// Programmatically constructed without source.
     Synthetic,
+    /// Parsed successfully while capture was disabled.
     Uncaptured,
+    /// Parsed with source-borrowing occurrence provenance.
     Captured {
+        /// Complete source used by occurrence spans.
         source: &'input str,
+        /// Root of the immutable occurrence sidecar.
         provenance: Box<Provenance>,
     },
 }
 
+/// Owned occurrence provenance for one parsed root.
 struct Provenance {
+    /// Root occurrence whose descendants follow generated child ordinals.
     root: OccurrenceNode,
 }
 
+/// One private occurrence-sidecar node.
 struct OccurrenceNode {
+    /// Captured extent when requested or required.
     span: Option<Span>,
+    /// Semantic and fixed-element children in generated ordinal order.
     children: Box<[OccurrenceNode]>,
+    /// Fixed separators retained independently from semantic children.
     repetition_separators: Box<[RepetitionSeparatorNode]>,
 }
 
@@ -115,6 +133,7 @@ struct OccurrenceNode {
 /// semantic child sequence. Keeping the two shapes distinct prevents runtime
 /// separator count from changing generated child ordinals.
 struct RepetitionSeparatorNode {
+    /// Exact matched separator range.
     span: Span,
 }
 
@@ -130,7 +149,9 @@ pub enum ElementRole {
 /// Static metadata shared by every occurrence of one generated element.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ElementMetadata {
+    /// Authored field name or generated fixed-token name.
     pub(crate) name: Option<&'static str>,
+    /// Whether the element contributes semantic data.
     pub(crate) role: ElementRole,
 }
 
@@ -149,8 +170,11 @@ impl ElementMetadata {
 /// One source-ordered element occurrence of a concrete Node view.
 #[derive(Clone, Copy)]
 pub struct ElementView<'view> {
+    /// Static descriptor shared by all occurrences.
     metadata: &'static ElementMetadata,
+    /// Cursor locating this occurrence in parsed provenance.
     cursor: ViewCursor<'view>,
+    /// Source-order ordinal in the active Node shape.
     index: usize,
 }
 
@@ -186,22 +210,31 @@ impl HasSpan for ElementView<'_> {
 
 /// Exact-size iterator over the active source-ordered elements of a Node view.
 pub struct Elements<'view> {
+    /// Active shape's static element descriptors.
     metadata: &'static [ElementMetadata],
+    /// Parent occurrence cursor.
     cursor: ViewCursor<'view>,
+    /// Next source-order element ordinal.
     index: usize,
 }
 
 /// A semantic repetition paired with its aggregate occurrence provenance.
 pub struct Repeated<'view, T: Node, U> {
+    /// Authored semantic sequence.
     values: &'view [U],
+    /// Aggregate repetition occurrence cursor.
     cursor: ViewCursor<'view>,
+    /// Projection from stored field value to semantic Node.
     project: fn(&U) -> &T,
+    /// Child ordinal locating a semantic value inside fixed attachments.
     attached_semantic_child: Option<usize>,
+    /// Binds the projected Node lifetime without storing a reference.
     marker: PhantomData<&'view T>,
 }
 
 impl<'view, T: Node, U> Repeated<'view, T, U> {
     #[doc(hidden)]
+    /// Constructs a repetition view for directly stored Node values.
     pub fn new(values: &'view [U], cursor: ViewCursor<'view>, project: fn(&U) -> &T) -> Self {
         Self {
             values,
@@ -213,6 +246,7 @@ impl<'view, T: Node, U> Repeated<'view, T, U> {
     }
 
     #[doc(hidden)]
+    /// Constructs a repetition view whose values have fixed attachments.
     pub fn new_attached(
         values: &'view [U],
         cursor: ViewCursor<'view>,
@@ -228,14 +262,17 @@ impl<'view, T: Node, U> Repeated<'view, T, U> {
         }
     }
 
+    /// Returns the number of semantic occurrences.
     pub const fn len(&self) -> usize {
         self.values.len()
     }
 
+    /// Reports whether this repetition has no semantic occurrences.
     pub const fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 
+    /// Returns one concrete child view by repetition ordinal.
     pub fn get(&self, index: usize) -> Option<T::View<'view>>
     where
         T: 'view,
@@ -249,6 +286,7 @@ impl<'view, T: Node, U> Repeated<'view, T, U> {
         })
     }
 
+    /// Iterates concrete child views in semantic order.
     pub fn iter(&self) -> RepeatedIter<'view, T, U>
     where
         T: 'view,
@@ -274,11 +312,17 @@ impl<T: Node, U> HasSpan for Repeated<'_, T, U> {
 
 /// Exact-size iterator over the child views of one repetition occurrence.
 pub struct RepeatedIter<'view, T: Node, U> {
+    /// Stored field values not yet projected.
     values: std::slice::Iter<'view, U>,
+    /// Aggregate repetition cursor.
     cursor: ViewCursor<'view>,
+    /// Projection from stored field value to semantic Node.
     project: fn(&U) -> &T,
+    /// Child ordinal locating a semantic value inside fixed attachments.
     attached_semantic_child: Option<usize>,
+    /// Next repetition ordinal.
     index: usize,
+    /// Binds the projected Node lifetime without storing a reference.
     marker: PhantomData<&'view T>,
 }
 
@@ -305,6 +349,7 @@ impl<T: Node, U> ExactSizeIterator for RepeatedIter<'_, T, U> {}
 impl<T: Node, U> std::iter::FusedIterator for RepeatedIter<'_, T, U> {}
 
 impl<'view> Elements<'view> {
+    /// Constructs the empty iterator used by default Node views.
     fn empty() -> Self {
         Self {
             metadata: &[],
@@ -358,12 +403,14 @@ impl ExactSizeIterator for Elements<'_> {}
 impl std::iter::FusedIterator for Elements<'_> {}
 
 impl OccurrenceNode {
+    /// Reports whether this node or any private descendant retained provenance.
     fn is_captured(&self) -> bool {
         self.span.is_some()
             || self.children.iter().any(Self::is_captured)
             || !self.repetition_separators.is_empty()
     }
 
+    /// Reports whether public source access is justified by a captured span.
     fn has_public_capture(&self) -> bool {
         self.span.is_some() || self.children.iter().any(Self::has_public_capture)
     }
@@ -410,6 +457,7 @@ impl<T: Node> Parsed<'_, T> {
 
 #[cfg(feature = "explorer")]
 impl<T> Parsed<'_, T> {
+    /// Exposes the typed root and occurrence cursor to the erased Explorer ABI.
     pub(crate) fn explorer_parts(&self) -> (&T, ViewCursor<'_>) {
         let cursor = match &self.origin {
             Origin::Synthetic | Origin::Uncaptured => ViewCursor::absent(),
@@ -421,6 +469,7 @@ impl<T> Parsed<'_, T> {
         (&self.ast, cursor)
     }
 
+    /// Reports whether this document was constructed without parsed source.
     pub(crate) fn explorer_is_synthetic(&self) -> bool {
         matches!(self.origin, Origin::Synthetic)
     }
@@ -428,6 +477,7 @@ impl<T> Parsed<'_, T> {
 
 /// Common protocol implemented by generated concrete Node occurrence views.
 pub trait NodeView: HasSpan {
+    /// Authored semantic Node type referenced by this occurrence.
     type Value: ?Sized;
 
     /// The semantic value at this occurrence.
@@ -439,7 +489,9 @@ pub trait NodeView: HasSpan {
     }
 }
 
+/// Private seal implemented through the generated Node view factory.
 mod node_seal {
+    /// Prevents grammar authors from implementing [`super::Node`] manually.
     pub trait Sealed {}
 }
 
@@ -448,11 +500,13 @@ mod node_seal {
 /// Implementations are supplied by matching Recursa generated code through
 /// the doc-hidden ABI; grammar authors do not implement this trait directly.
 pub trait Node: node_seal::Sealed {
+    /// Concrete occurrence-view type borrowing the semantic value and sidecar.
     type View<'view>: NodeView<Value = Self>
     where
         Self: 'view;
 
     #[doc(hidden)]
+    /// Constructs a concrete occurrence view from matching generated provenance.
     fn __view<'view>(&'view self, cursor: ViewCursor<'view>) -> Self::View<'view>;
 }
 
@@ -472,10 +526,12 @@ impl<T: NodeViewFactory> Node for T {
 /// Matching-version factory implemented only by generated Node bodies.
 #[doc(hidden)]
 pub trait NodeViewFactory: Sized {
+    /// Generated concrete occurrence-view type.
     type View<'view>: NodeView<Value = Self>
     where
         Self: 'view;
 
+    /// Constructs the view for one matching occurrence cursor.
     fn view<'view>(&'view self, cursor: ViewCursor<'view>) -> Self::View<'view>;
 }
 
@@ -483,11 +539,14 @@ pub trait NodeViewFactory: Sized {
 #[doc(hidden)]
 #[derive(Clone, Copy)]
 pub struct ViewCursor<'view> {
+    /// Matching sidecar occurrence, absent for synthetic or uncaptured values.
     occurrence: Option<&'view OccurrenceNode>,
+    /// Complete parsed source used by occurrence spans.
     source: Option<&'view str>,
 }
 
 impl<'view> ViewCursor<'view> {
+    /// Constructs a cursor with no source provenance.
     fn absent() -> Self {
         Self {
             occurrence: None,
@@ -516,6 +575,7 @@ impl<'view> ViewCursor<'view> {
         self.source?.get(span.range())
     }
 
+    /// Materializes the subset of provenance consumed by Pretty rendering.
     pub(crate) fn pretty_provenance(self) -> Option<crate::pretty::PrettyProvenance> {
         let occurrence = self.occurrence?;
         let text = occurrence
@@ -572,11 +632,17 @@ impl<'view> ViewCursor<'view> {
 /// Borrowed matched text or owned synthesized text for generated token types.
 #[doc(hidden)]
 #[derive(Clone)]
-pub struct ContentText<'input>(ContentTextStorage<'input>);
+pub struct ContentText<'input>(
+    /// Borrowed match or owned synthesized token text.
+    ContentTextStorage<'input>,
+);
 
+/// Borrowed-or-owned storage behind a generated content token.
 #[derive(Clone)]
 enum ContentTextStorage<'input> {
+    /// Exact text borrowed zero-copy from matched input.
     Matched(&'input str),
+    /// Text owned by a synthesized token value.
     Owned(Box<str>),
 }
 
@@ -586,12 +652,14 @@ impl<'input> ContentText<'input> {
         Self(ContentTextStorage::Owned(text))
     }
 
+    /// Borrows matched text only when `span` is a valid UTF-8 source range.
     fn matched(source: &'input str, span: Span) -> Option<Self> {
         source
             .get(span.range())
             .map(|text| Self(ContentTextStorage::Matched(text)))
     }
 
+    /// Borrows the token text independently of its storage mode.
     pub fn as_str(&self) -> &str {
         match &self.0 {
             ContentTextStorage::Matched(text) => text,
@@ -654,18 +722,25 @@ impl<'de, 'input> serde::Deserialize<'de> for ContentText<'input> {
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CapturePolicy {
+    /// Never retain occurrence provenance.
     Off,
+    /// Retain provenance only for explicit span-capturing entry points.
     Optional,
+    /// Always retain provenance because generated behavior requires it.
     Mandatory,
 }
 
+/// Capture mode selected by the public root entry point.
 #[derive(Clone, Copy)]
 enum CaptureRequest {
+    /// Use only captures required by the grammar plan.
     Default,
+    /// Request optional captures for public occurrence views.
     Spanned,
 }
 
 impl CapturePolicy {
+    /// Resolves grammar policy and caller request to an effective capture flag.
     fn captures(self, request: CaptureRequest) -> bool {
         match (self, request) {
             (Self::Off, _) => false,
@@ -678,6 +753,7 @@ impl CapturePolicy {
 /// Opaque move-owned occurrence produced alongside a recursive value.
 #[doc(hidden)]
 pub struct Occurrence {
+    /// Retained sidecar node, absent when this subtree captured nothing.
     node: Option<OccurrenceNode>,
 }
 
@@ -700,17 +776,21 @@ impl Occurrence {
 /// ordinals or any public Node view.
 #[doc(hidden)]
 pub struct RepetitionSeparatorOccurrence {
+    /// Separator-specific sidecar that cannot become a semantic child.
     node: RepetitionSeparatorNode,
 }
 
 /// Lazy ordinal accumulator for runtime-sized child occurrence sequences.
 #[doc(hidden)]
 pub struct Occurrences {
+    /// Uncaptured leading ordinals deferred until a later capture requires them.
     leading_absent: usize,
+    /// Materialized occurrence ordinals beginning at the first capture.
     retained: Vec<Occurrence>,
 }
 
 impl Occurrences {
+    /// Creates an empty lazy occurrence accumulator.
     pub const fn new() -> Self {
         Self {
             leading_absent: 0,
@@ -718,6 +798,7 @@ impl Occurrences {
         }
     }
 
+    /// Appends one ordinal while delaying leading absent allocation.
     pub fn push(&mut self, occurrence: Occurrence) {
         if occurrence.is_captured() {
             if self.retained.is_empty() {
@@ -751,7 +832,9 @@ impl IntoIterator for Occurrences {
 /// Move-owned semantic value and occurrence produced by recursive generated parsing.
 #[doc(hidden)]
 pub struct ParsedNode<T> {
+    /// Recursively constructed semantic value.
     value: T,
+    /// Opaque occurrence sidecar for parent assembly.
     occurrence: Occurrence,
 }
 
@@ -770,9 +853,11 @@ impl<T> ParsedNode<T> {
     }
 }
 
+/// Stateless builder that validates and compacts occurrence provenance.
 struct ProvenanceCollector;
 
 impl ProvenanceCollector {
+    /// Finishes provenance for a non-repetition grammar occurrence.
     fn finish(
         &self,
         source: &str,
@@ -784,6 +869,7 @@ impl ProvenanceCollector {
         self.finish_repeated(source, policy, request, span, children, std::iter::empty())
     }
 
+    /// Finishes provenance while retaining separators outside child ordinals.
     fn finish_repeated(
         &self,
         source: &str,
@@ -850,14 +936,20 @@ impl ProvenanceCollector {
 /// remain within the matching-version ABI.
 #[doc(hidden)]
 pub struct ParseContext<'context, 'input, A> {
+    /// Grammar-bound cursor and caller construction state.
     input: &'context mut Input<'input, A>,
+    /// Caller FOLLOW composed for this recursive site.
     follow: &'context FollowSet,
+    /// Grammar-selected capture policy.
     policy: CapturePolicy,
+    /// Root-call capture request.
     request: CaptureRequest,
+    /// Builder for validated compact sidecars.
     provenance: ProvenanceCollector,
 }
 
 impl<'context, 'input, A> ParseContext<'context, 'input, A> {
+    /// Binds one recursive parse invocation to input, FOLLOW, and capture state.
     fn new(
         input: &'context mut Input<'input, A>,
         follow: &'context FollowSet,
@@ -873,30 +965,37 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         }
     }
 
+    /// Returns the complete parse source.
     pub fn source(&self) -> &'input str {
         self.input.source()
     }
 
+    /// Returns matching static grammar metadata.
     pub fn grammar(&self) -> &'static GrammarInfo {
         self.input.grammar()
     }
 
+    /// Returns mutable caller construction state.
     pub fn builder(&mut self) -> &mut A {
         self.input.builder()
     }
 
+    /// Returns one token record at lookahead distance without consuming it.
     pub fn peek(&self, distance: usize) -> Option<TokenRecord> {
         self.input.peek(distance)
     }
 
+    /// Consumes and returns the next token record.
     pub fn advance(&mut self) -> Option<TokenRecord> {
         self.input.advance()
     }
 
+    /// Returns the current absolute token cursor.
     pub fn cursor(&self) -> usize {
         self.input.cursor()
     }
 
+    /// Returns the source extent consumed since a saved token cursor.
     pub fn consumed_span_from(&self, start: usize) -> Option<Span> {
         let end = self.input.cursor();
         let first = self.input.record(start)?;
@@ -904,18 +1003,22 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         Span::new(first.span.start() as usize, last.span.end() as usize).ok()
     }
 
+    /// Returns the caller FOLLOW set for this recursive parse site.
     pub fn follow(&self) -> &FollowSet {
         self.follow
     }
 
+    /// Returns the grammar-selected provenance capture policy.
     pub const fn capture_policy(&self) -> CapturePolicy {
         self.policy
     }
 
+    /// Constructs an unexpected-input diagnostic at the current cursor.
     pub fn unexpected(&self, expected: &FollowSet) -> ParseError {
         ParseError::unexpected(self.input, expected)
     }
 
+    /// Constructs an unexpected-input diagnostic at lookahead distance.
     pub fn unexpected_at(&self, distance: usize, expected: &FollowSet) -> ParseError {
         ParseError::unexpected_at(self.input, expected, distance)
     }
@@ -925,11 +1028,13 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         ParseError::pratt_ambiguity(self.input, expected)
     }
 
+    /// Reports whether the next token belongs to `expected`.
     pub fn next_is(&self, expected: &FollowSet) -> bool {
         self.peek(0)
             .is_some_and(|record| expected.contains(record.kind))
     }
 
+    /// Reports whether no token remains.
     pub fn is_eof(&self) -> bool {
         self.peek(0).is_none()
     }
@@ -981,12 +1086,14 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
         })
     }
 
+    /// Converts a matched record into borrowed content-token text.
     pub fn matched_text(&self, record: TokenRecord) -> Result<ContentText<'input>, ParseError> {
         ContentText::matched(self.input.source(), record.span).ok_or_else(|| {
             ParseError::invalid_token_span(self.input, record.span, Some(record.kind))
         })
     }
 
+    /// Completes a leaf Node with its semantic value and captured span.
     pub fn finish<T>(&self, value: T, span: Span) -> Result<ParsedNode<T>, ParseError> {
         let occurrence = self
             .provenance
@@ -1124,12 +1231,16 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
 /// Matching-version recursive parsing protocol implemented by generated code.
 #[doc(hidden)]
 pub trait GeneratedParse<'input, A = ()>: Node + Sized {
+    /// Grammar-fixed provenance capture policy for this Node.
     const CAPTURE_POLICY: CapturePolicy;
 
+    /// Returns the exact grammar metadata that must own parser input.
     fn grammar() -> &'static GrammarInfo;
 
+    /// Returns the caller FOLLOW used by this Node as a root.
     fn root_follow() -> &'static FollowSet;
 
+    /// Runs the generated recursive parser under a matching context.
     fn parse(context: &mut ParseContext<'_, 'input, A>) -> Result<ParsedNode<Self>, ParseError>;
 }
 
@@ -1153,6 +1264,7 @@ where
     parse_with_request::<T, A>(input, CaptureRequest::Spanned)
 }
 
+/// Runs a root parser transactionally under one capture request.
 fn parse_with_request<'input, T, A>(
     input: &mut Input<'input, A>,
     request: CaptureRequest,
