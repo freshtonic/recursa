@@ -17,6 +17,10 @@ mod tests {
     fn explorer_rendering_consumes_its_frozen_schema_plan() {
         test_support::explorer_rendering_consumes_its_frozen_schema_plan();
     }
+    #[test]
+    fn explorer_output_omits_only_redundant_lifetimes() {
+        test_support::explorer_output_omits_only_redundant_lifetimes();
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1451,11 +1455,30 @@ pub(super) fn render_token_explorer(
 /// Builds explorer impl generics from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_impl_generics(
     _plan: &EmissionPlan,
-    _application: &NodeApplicationParsePlan,
+    application: &NodeApplicationParsePlan,
 ) -> Generics {
     let mut generics = Generics::default();
-    generics.params.push(syn::parse_quote!('__recursa_input));
+    let mut input_lifetime = InputLifetimeUse::default();
+    syn::visit::Visit::visit_type(&mut input_lifetime, &application.ty);
+    if input_lifetime.found {
+        generics.params.push(syn::parse_quote!('__recursa_input));
+    }
     generics
+}
+
+/// Records whether a materialized application type refers to the generated input lifetime.
+#[derive(Default)]
+struct InputLifetimeUse {
+    /// Whether `__recursa_input` occurs in the visited type.
+    found: bool,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for InputLifetimeUse {
+    fn visit_lifetime(&mut self, lifetime: &'ast syn::Lifetime) {
+        if lifetime.ident == "__recursa_input" {
+            self.found = true;
+        }
+    }
 }
 
 /// Builds explorer variant pattern and bindings from frozen inputs without changing canonical generation order.
@@ -1930,10 +1953,10 @@ pub(super) fn render_explorer_static_schema(
         #tokens
         #(#nodes)*
         pub(crate) static #node_schemas_static:
-            [&'static #facade::__private::ExplorerNodeSchemaData; #node_schema_count] =
+            [&#facade::__private::ExplorerNodeSchemaData; #node_schema_count] =
             [#(#all_nodes),*];
         pub(crate) static #token_schemas_static:
-            [&'static #facade::__private::ExplorerTokenSchemaData; #token_schema_count] =
+            [&#facade::__private::ExplorerTokenSchemaData; #token_schema_count] =
             [#(#all_tokens),*];
         #(#grammars)*
     }

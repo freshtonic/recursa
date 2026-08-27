@@ -1763,8 +1763,7 @@ struct Root<'input> {
     #[test]
     fn lowering_failure_has_a_structured_diagnostic_and_no_aggregate() {
         let duplicate_config = format!(
-            "{}\nrecursa::grammar! {{ module = crate, keyword_matching = sensitive, max_lookahead = 1 }}",
-            VALID_SOURCE,
+            "{VALID_SOURCE}\nrecursa::grammar! {{ module = crate, keyword_matching = sensitive, max_lookahead = 1 }}",
         );
         let report = analyze_single_file(SingleFileInput {
             manifest_relative_path: Path::new("src/duplicate.rs"),
