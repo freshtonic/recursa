@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 default = []
 arbitrary = ["dep:arbitrary"]
+explorer = []
 serde = ["dep:serde"]
 
 [dependencies]

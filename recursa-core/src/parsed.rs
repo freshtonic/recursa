@@ -408,6 +408,20 @@ impl<T: Node> Parsed<'_, T> {
     }
 }
 
+#[cfg(feature = "explorer")]
+impl<T> Parsed<'_, T> {
+    pub(crate) fn explorer_parts(&self) -> (&T, ViewCursor<'_>) {
+        let cursor = match &self.origin {
+            Origin::Synthetic | Origin::Uncaptured => ViewCursor::absent(),
+            Origin::Captured { source, provenance } => ViewCursor {
+                occurrence: Some(&provenance.root),
+                source: Some(*source),
+            },
+        };
+        (&self.ast, cursor)
+    }
+}
+
 /// Common protocol implemented by generated concrete Node occurrence views.
 pub trait NodeView: HasSpan {
     type Value: ?Sized;

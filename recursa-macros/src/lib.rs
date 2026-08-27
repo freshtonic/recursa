@@ -109,9 +109,37 @@ pub fn grammar(_input: TokenStream) -> TokenStream {
             }
         }
     };
+    let explorer_gate = if cfg!(feature = "explorer") {
+        quote! {
+            macro_rules! __recursa_if_explorer {
+                ($($tokens:tt)*) => { $($tokens)* };
+            }
+        }
+    } else {
+        quote! {
+            macro_rules! __recursa_if_explorer {
+                ($($tokens:tt)*) => {};
+            }
+        }
+    };
+    let explorer_sample = if cfg!(feature = "explorer") && cfg!(feature = "arbitrary") {
+        quote! {
+            macro_rules! __recursa_explorer_sample {
+                ($sample:path) => { (true, Some($sample)) };
+            }
+        }
+    } else {
+        quote! {
+            macro_rules! __recursa_explorer_sample {
+                ($sample:path) => { (false, None) };
+            }
+        }
+    };
     quote! {
         #arbitrary_gate
         #serde_gate
+        #explorer_gate
+        #explorer_sample
         include!(concat!(env!("OUT_DIR"), "/recursa-selected.rs"));
         __recursa_root_handshake!(#release, #protocol, #capabilities);
     }

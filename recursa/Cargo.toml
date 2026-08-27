@@ -10,7 +10,7 @@ repository.workspace = true
 default = []
 arbitrary = ["recursa-core/arbitrary", "recursa-macros/arbitrary"]
 diagrams = ["recursa-macros/diagrams"]
-explorer = ["recursa-macros/explorer"]
+explorer = ["recursa-core/explorer", "recursa-macros/explorer"]
 serde = ["recursa-core/serde", "recursa-macros/serde"]
 
 [dependencies]

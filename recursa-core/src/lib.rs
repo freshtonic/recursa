@@ -1,5 +1,7 @@
 //! Grammar-erased runtime support for Recursa-generated parsers.
 
+#[cfg(feature = "explorer")]
+pub mod explorer;
 mod grammar;
 mod input;
 mod lex;
@@ -31,6 +33,15 @@ pub use visitor::{
 /// Recursa runtime.
 #[doc(hidden)]
 pub mod __private {
+    #[cfg(feature = "explorer")]
+    pub use crate::explorer::{
+        ElementSchemaData as ExplorerElementSchemaData, ExplorerNode, ExplorerRoot,
+        NodeData as ExplorerNodeData, SchemaData as ExplorerSchemaData,
+        construct_adapter as explorer_adapter, document as explorer_document,
+        element as explorer_element, element_schema as explorer_element_schema,
+        lex_record as explorer_lex_record, lex_result as explorer_lex_result,
+        node as explorer_node, schema as explorer_schema,
+    };
     pub use crate::grammar::{ExpectedAtomId, FollowSet, FollowSetError, GrammarInfo, TokenKind};
     pub use crate::input::{Input, LexResult, TokenRecord};
     pub use crate::lex::{LexAction, LexBumpError, LexContext, LexRule, lex};
