@@ -84,7 +84,7 @@ fn generation_matrix_distinguishes_executable_green_evidence_from_pending_depend
     );
     assert_eq!(
         rows["M4-FULL-FUNCTIONAL-MATRIX"].evidence,
-        "`cargo test -p recursa-codegen --test generation_functional_matrix --locked`",
+        "`cargo test -p recursa-codegen --test generation_functional_matrix --locked every_green_generation_evidence_command_executes_without_pending_rows -- --ignored --exact`",
     );
 }
 

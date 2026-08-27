@@ -16,3 +16,8 @@ This repository uses a single-context layout. See `docs/agents/domain.md`.
 
 Authored library APIs, private implementation items, and documentation-hidden protocol items are
 covered by the canonical documentation gate. See `docs/agents/documentation.md`.
+
+### Test execution policy
+
+Default local and CI suites exclude benchmarks, timing assertions, and aggregate evidence reruns.
+See `docs/agents/testing.md`.
