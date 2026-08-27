@@ -420,6 +420,10 @@ impl<T> Parsed<'_, T> {
         };
         (&self.ast, cursor)
     }
+
+    pub(crate) fn explorer_is_synthetic(&self) -> bool {
+        matches!(self.origin, Origin::Synthetic)
+    }
 }
 
 /// Common protocol implemented by generated concrete Node occurrence views.
