@@ -1,4 +1,4 @@
-//! M3 source fixture for context-sensitive keyword reclamation.
+//! Source-analysis fixture for context-sensitive keyword reclamation.
 //!
 //! Rust 2024 source derived from `recursa-spike` revision
 //! `b410d2f123cd7510a8a40e9e5b971936a2fd8463`, specifically

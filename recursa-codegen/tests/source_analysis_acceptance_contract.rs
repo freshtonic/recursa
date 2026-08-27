@@ -45,21 +45,21 @@ const KNOWN_EVIDENCE: [&str; 22] = [
     "cargo test -p recursa-codegen resolution::tests::resolves_anchored_local_paths_self_and_the_closed_catalog --locked",
     "cargo test -p recursa-codegen resolution::tests::synthesizes_module_local_content_token_bindings_with_one_semantic_identity --locked",
     "cargo test -p recursa-codegen source_model::tests::lowers_positional_tokens_and_presence_nodes_in_source_order --locked",
-    "cargo test -p recursa-codegen materialization::tests::arithmetic_generic_application_reaches_a_successful_m2_analysis --locked",
+    "cargo test -p recursa-codegen materialization::tests::arithmetic_generic_application_reaches_successful_semantic_analysis --locked",
     "cargo test -p recursa-codegen lexical::tests::contextual_keyword_projection_is_stable_under_source_permutations --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::diagnostic_phases_collect_independent_failures_and_suppress_downstream_phases --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::generation_failure_renders_once_and_retains_invalidation_inputs --locked",
-    "cargo test -p recursa-codegen m3_contract_tests::every_registered_code_has_real_producer_evidence --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::successful_analysis_warnings_cross_the_cargo_output_boundary_once --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::malformed_full_pipeline_inputs_return_diagnostics_without_panicking --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::canonical_projection_matches_toy --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::canonical_projection_matches_arith --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::canonical_projection_matches_json --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::canonical_projection_matches_sql --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::canonical_projection_matches_optq --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::canonical_projection_matches_cskw --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::projection_candidate_command_never_updates_reviewed_expectations --locked",
-    "cargo test -p recursa-codegen m3_pipeline::tests::m3_stays_private_and_m4_owns_the_generation_publication_surface --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::diagnostic_phases_collect_independent_failures_and_suppress_downstream_phases --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::generation_failure_renders_once_and_retains_invalidation_inputs --locked",
+    "cargo test -p recursa-codegen source_analysis_contract_tests::every_registered_code_has_real_producer_evidence --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::successful_analysis_warnings_cross_the_cargo_output_boundary_once --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::malformed_full_pipeline_inputs_return_diagnostics_without_panicking --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_toy --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_arith --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_json --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_sql --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_optq --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::canonical_projection_matches_cskw --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::projection_candidate_command_never_updates_reviewed_expectations --locked",
+    "cargo test -p recursa-codegen source_analysis_tests::tests::source_analysis_stays_private_and_generation_owns_the_publication_surface --locked",
     "cargo test --workspace --all-targets --locked",
 ];
 
@@ -71,10 +71,10 @@ fn repository_root() -> PathBuf {
 }
 
 #[test]
-fn six_m3_fixture_sources_are_parseable_rust_2024_inputs_with_pinned_provenance() {
+fn six_source_analysis_fixture_sources_are_parseable_rust_2024_inputs_with_pinned_provenance() {
     for (name, module) in FIXTURES {
         let path = repository_root()
-            .join("recursa-codegen/tests/fixtures/m3")
+            .join("recursa-codegen/tests/fixtures/source-analysis")
             .join(name)
             .join("grammar.rs");
         let source = fs::read_to_string(&path)
@@ -95,8 +95,8 @@ fn six_m3_fixture_sources_are_parseable_rust_2024_inputs_with_pinned_provenance(
 }
 
 #[test]
-fn m3_acceptance_matrix_is_complete_green_and_uses_known_evidence() {
-    let path = repository_root().join("docs/acceptance/m3.md");
+fn source_analysis_acceptance_matrix_is_complete_green_and_uses_known_evidence() {
+    let path = repository_root().join("docs/acceptance/source-analysis.md");
     let document = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let rows = matrix_rows(&document);
@@ -158,14 +158,14 @@ fn m3_acceptance_matrix_is_complete_green_and_uses_known_evidence() {
 
 #[test]
 fn projection_candidate_command_is_immutable_and_never_auto_accepts() {
-    let path = repository_root().join("docs/acceptance/m3.md");
+    let path = repository_root().join("docs/acceptance/source-analysis.md");
     let document = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
 
     assert!(document.contains(
-        "cargo test -p recursa-codegen --lib m3_projection_tests::write_m3_projection_candidates --locked -- --ignored --exact --nocapture"
+        "cargo test -p recursa-codegen --lib semantic_projection_tests::write_semantic_projection_candidates --locked -- --ignored --exact --nocapture"
     ));
-    assert!(document.contains("target/m3-projection-candidates"));
+    assert!(document.contains("target/semantic-projection-candidates"));
     assert!(document.contains("stages all six"));
     assert!(document.contains("publishes none"));
     assert!(document.contains("prints the complete candidate directory"));

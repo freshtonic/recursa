@@ -5,7 +5,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const FIXTURE: &str = "tests/fixtures/m4/compound-nodes";
+const FIXTURE: &str = "tests/fixtures/generation/compound-nodes";
 
 #[test]
 fn a_downstream_crate_parses_authored_compound_nodes_and_views() {

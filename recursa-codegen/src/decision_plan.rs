@@ -1,7 +1,7 @@
-//! Frozen, source-independent parse decisions owned by M2.
+//! Frozen, source-independent parse decisions owned by semantic analysis.
 //!
-//! These products deliberately retain semantic IDs. M3 joins them to source
-//! identities; M4 renders them without recomputing FIRST, FOLLOW, container,
+//! These products deliberately retain semantic IDs. source analysis joins them to source
+//! identities; generation renders them without recomputing FIRST, FOLLOW, container,
 //! Pratt, or failure behavior.
 
 use std::cmp::Ordering;
@@ -71,7 +71,7 @@ impl DispatchTrieEdge {
     }
 }
 
-/// A frozen dispatch-trie node produced by M2.
+/// A frozen dispatch-trie node produced by semantic analysis.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DispatchTrieNode {
     terminal: Option<DispatchTerminal>,

@@ -1,6 +1,6 @@
 #![allow(
     dead_code,
-    reason = "the private M3 analysis seam is consumed by the M4 generation pipeline"
+    reason = "the private source-analysis seam is consumed by the generation pipeline"
 )]
 
 use std::path::Path;
@@ -32,14 +32,14 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
-pub(crate) struct M3Input<'input> {
+pub(crate) struct SourceAnalysisInput<'input> {
     manifest_dir: &'input Path,
     selected_root: &'input Path,
     edition: RustEdition,
     cfg: CargoCfgSnapshot,
 }
 
-impl<'input> M3Input<'input> {
+impl<'input> SourceAnalysisInput<'input> {
     pub(crate) fn rust_2024(manifest_dir: &'input Path, selected_root: &'input str) -> Self {
         Self {
             manifest_dir,
@@ -81,15 +81,15 @@ pub(crate) struct AnalyzedGrammar {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct M3Success {
+pub(crate) struct SourceAnalysisSuccess {
     pub(crate) analyzed: AnalyzedGrammar,
     pub(crate) build_report: BuildReport,
 }
 
 pub(crate) fn analyze_source_tree(
-    input: M3Input<'_>,
+    input: SourceAnalysisInput<'_>,
     cargo: &mut impl CargoOutput,
-) -> Result<M3Success, GenerateError> {
+) -> Result<SourceAnalysisSuccess, GenerateError> {
     let mut collector = DiagnosticCollector::default();
     let discovery = discover_module_tree(DiscoveryInput {
         manifest_dir: input.manifest_dir,
@@ -189,7 +189,7 @@ pub(crate) fn analyze_source_tree(
     let Some(output) = analysis.output.as_ref() else {
         return Err(collector.internal_failure(
             DiagnosticStage::Analysis,
-            "M2 produced neither errors nor semantic analysis output",
+            "semantic analysis produced neither errors nor semantic analysis output",
             input.selected_root,
             cargo,
         ));
@@ -207,7 +207,7 @@ pub(crate) fn analyze_source_tree(
     }
     let build_report = collector.finish();
     emit_warnings(&build_report, cargo);
-    Ok(M3Success {
+    Ok(SourceAnalysisSuccess {
         analyzed: AnalyzedGrammar { lowered, analysis },
         build_report,
     })
@@ -951,7 +951,7 @@ fn adapt_analysis(
         Err(invariant) => {
             return internal_diagnostic(
                 DiagnosticStage::Analysis,
-                &format!("M2 supplied an invalid source location: {invariant:?}"),
+                &format!("semantic analysis supplied an invalid source location: {invariant:?}"),
                 selected_root,
             );
         }
@@ -990,7 +990,9 @@ fn adapt_analysis(
         Err(invariant) => {
             return internal_diagnostic(
                 DiagnosticStage::Analysis,
-                &format!("M2 supplied an invalid related source location: {invariant:?}"),
+                &format!(
+                    "semantic analysis supplied an invalid related source location: {invariant:?}"
+                ),
                 selected_root,
             );
         }
@@ -1128,7 +1130,7 @@ fn analysis_evidence(
         });
     if diagnostic.code == crate::DiagnosticCode::InternalAnalysisInvariant {
         DiagnosticEvidence::InternalInvariant {
-            producer: "M2 decision publication".to_owned(),
+            producer: "semantic analysis decision publication".to_owned(),
             detail: diagnostic.message.clone(),
         }
     } else {

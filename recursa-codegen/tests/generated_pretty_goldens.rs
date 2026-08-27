@@ -176,7 +176,7 @@ fn scaffold(golden: &Golden) -> TempDir {
         .expect("codegen belongs to the workspace");
     let source = fs::read_to_string(
         manifest_dir
-            .join("tests/fixtures/m3")
+            .join("tests/fixtures/source-analysis")
             .join(golden.fixture)
             .join("grammar.rs"),
     )

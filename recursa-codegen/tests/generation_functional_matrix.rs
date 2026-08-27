@@ -12,20 +12,20 @@ struct Row<'a> {
 }
 
 #[test]
-fn every_green_m4_evidence_command_executes_without_pending_rows() {
+fn every_green_generation_evidence_command_executes_without_pending_rows() {
     let workspace = workspace_root();
-    let document = fs::read_to_string(workspace.join("docs/acceptance/m4.md"))
-        .expect("read M4 acceptance contract");
+    let document = fs::read_to_string(workspace.join("docs/acceptance/generation.md"))
+        .expect("read generation acceptance contract");
     let rows = matrix_rows(&document);
 
     assert_eq!(rows.len(), 16);
     assert!(rows.values().all(|row| row.status == "Green"));
     assert_eq!(
         rows[AGGREGATE_GATE].evidence,
-        "`cargo test -p recursa-codegen --test m4_functional_matrix --locked`",
+        "`cargo test -p recursa-codegen --test generation_functional_matrix --locked`",
     );
 
-    let shared_target = tempfile::tempdir().expect("temporary M4 matrix target");
+    let shared_target = tempfile::tempdir().expect("temporary generation matrix target");
     let mut covered_rows = BTreeSet::new();
     let mut executed_commands = BTreeSet::new();
     for (id, row) in &rows {
@@ -87,7 +87,7 @@ fn matrix_rows(document: &str) -> BTreeMap<&str, Row<'_>> {
             .split('|')
             .map(str::trim)
             .collect::<Vec<_>>();
-        assert_eq!(columns.len(), 5, "malformed M4 matrix row: {line}");
+        assert_eq!(columns.len(), 5, "malformed generation matrix row: {line}");
         assert!(
             rows.insert(
                 columns[0],

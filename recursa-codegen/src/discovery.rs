@@ -1,6 +1,6 @@
 #![allow(
     dead_code,
-    reason = "private M3 discovery seam is consumed by later lowering and generation tickets"
+    reason = "private source analysis discovery seam is consumed by later lowering and generation tickets"
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -810,7 +810,7 @@ mod tests {
 
     use super::{DiscoveryDiagnosticKind, DiscoveryInput, ModuleSourceKind, discover_module_tree};
     use crate::lowering::RustEdition;
-    use crate::m3::{M3Input, analyze_source_tree};
+    use crate::source_analysis::{SourceAnalysisInput, analyze_source_tree};
     use crate::source_syntax::CargoCfgSnapshot;
 
     fn write(package: &Path, relative: &str, source: &str) {
@@ -832,10 +832,15 @@ mod tests {
         })
     }
 
-    fn assert_m3_codes(manifest_dir: &Path, root: &Path, cfg: CargoCfgSnapshot, expected: &[&str]) {
+    fn assert_source_analysis_codes(
+        manifest_dir: &Path,
+        root: &Path,
+        cfg: CargoCfgSnapshot,
+        expected: &[&str],
+    ) {
         let mut cargo = Vec::new();
         let error = analyze_source_tree(
-            M3Input::new(manifest_dir, root, RustEdition::Rust2024, cfg),
+            SourceAnalysisInput::new(manifest_dir, root, RustEdition::Rust2024, cfg),
             &mut cargo,
         )
         .expect_err("fixture must fail before generation");
@@ -854,7 +859,7 @@ mod tests {
         let package = TempDir::new().unwrap();
         write(package.path(), "not-a-directory", "");
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &package.path().join("not-a-directory"),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -866,7 +871,7 @@ mod tests {
     fn rca1002_rejects_an_absolute_selected_root() {
         let package = TempDir::new().unwrap();
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             &package.path().join("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -878,7 +883,7 @@ mod tests {
     fn rca1003_rejects_a_selected_root_that_escapes_the_package() {
         let package = TempDir::new().unwrap();
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("../outside.rs"),
             CargoCfgSnapshot::default(),
@@ -896,7 +901,7 @@ mod tests {
         fs::create_dir_all(package.path().join("grammar")).unwrap();
         symlink("../real/root.rs", package.path().join("grammar/root.rs")).unwrap();
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -908,7 +913,7 @@ mod tests {
     fn rca1005_reports_a_missing_selected_root() {
         let package = TempDir::new().unwrap();
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -921,7 +926,7 @@ mod tests {
         let package = TempDir::new().unwrap();
         fs::create_dir_all(package.path().join("grammar/root.rs")).unwrap();
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -934,7 +939,7 @@ mod tests {
         let package = TempDir::new().unwrap();
         write(package.path(), "grammar/root.rs", "mod missing;");
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -949,7 +954,7 @@ mod tests {
         write(package.path(), "grammar/ambiguous.rs", "");
         write(package.path(), "grammar/ambiguous/mod.rs", "");
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -962,7 +967,7 @@ mod tests {
         let package = TempDir::new().unwrap();
         write(package.path(), "grammar/root.rs", "#[path] mod child;");
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -979,7 +984,7 @@ mod tests {
             "#[path = \"one.rs\"] #[path = \"two.rs\"] mod child;",
         );
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -1001,7 +1006,7 @@ mod tests {
             "#[path = \"root.rs\"] mod back_to_root;",
         );
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -1018,7 +1023,7 @@ mod tests {
             "#[cfg(custom_build_cfg)] mod child;",
         );
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -1031,7 +1036,7 @@ mod tests {
         let package = TempDir::new().unwrap();
         write(package.path(), "grammar/root.rs", "#[cfg(test)] mod child;");
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -1044,7 +1049,7 @@ mod tests {
         let package = TempDir::new().unwrap();
         write(package.path(), "grammar/root.rs", "#[cfg()] mod child;");
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),
@@ -1057,7 +1062,7 @@ mod tests {
         let package = TempDir::new().unwrap();
         write(package.path(), "grammar/root.rs", "struct Broken {");
 
-        assert_m3_codes(
+        assert_source_analysis_codes(
             package.path(),
             Path::new("grammar/root.rs"),
             CargoCfgSnapshot::default(),

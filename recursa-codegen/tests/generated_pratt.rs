@@ -5,7 +5,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const FIXTURE: &str = "tests/fixtures/m4/pratt";
+const FIXTURE: &str = "tests/fixtures/generation/pratt";
 
 #[test]
 fn a_downstream_arithmetic_grammar_parses_the_frozen_pratt_plan() {

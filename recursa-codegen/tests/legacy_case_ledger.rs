@@ -78,7 +78,7 @@ fn frozen_inventory_and_ledger_have_exactly_the_same_167_identities() {
 #[test]
 fn every_successor_reference_is_an_executable_test_or_a_named_typed_gate() {
     let ledger_source = read_acceptance("legacy-case-ledger.tsv");
-    let matrix_source = read_acceptance("m4.md");
+    let matrix_source = read_acceptance("generation.md");
     let ledger = parse_ledger(&ledger_source);
     let gates = parse_gates(&matrix_source);
     let workspace = workspace_root();
@@ -97,7 +97,9 @@ fn every_successor_reference_is_an_executable_test_or_a_named_typed_gate() {
                     .unwrap_or_else(|| panic!("invalid test evidence for {legacy_id}"));
                 assert!(!relative.is_empty() && !function.is_empty());
                 let path = workspace.join(relative);
-                if relative.starts_with("recursa-codegen/tests/fixtures/m4/legacy-grammars/") {
+                if relative
+                    .starts_with("recursa-codegen/tests/fixtures/generation/legacy-grammars/")
+                {
                     fixture_test_rows += 1;
                 } else {
                     direct_test_rows += 1;
@@ -161,7 +163,7 @@ fn every_successor_reference_is_an_executable_test_or_a_named_typed_gate() {
 
 #[test]
 fn acceptance_sources_pin_the_frozen_spike_revision() {
-    let matrix = read_acceptance("m4.md");
+    let matrix = read_acceptance("generation.md");
     assert!(matrix.contains(FROZEN_REVISION));
     assert!(matrix.contains("legacy-identities.tsv"));
     assert!(matrix.contains("legacy-case-ledger.tsv"));
@@ -229,7 +231,7 @@ fn parse_gates(source: &str) -> BTreeMap<&str, Gate<'_>> {
             .split('|')
             .map(str::trim)
             .collect::<Vec<_>>();
-        assert_eq!(columns.len(), 5, "malformed M4 matrix row: {line}");
+        assert_eq!(columns.len(), 5, "malformed generation matrix row: {line}");
         let previous = gates.insert(
             columns[0],
             Gate {

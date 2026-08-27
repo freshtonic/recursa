@@ -1,6 +1,6 @@
 #![allow(
     dead_code,
-    reason = "private M3 lexical-planning seam is consumed by later pipeline tickets"
+    reason = "private source analysis lexical-planning seam is consumed by later pipeline tickets"
 )]
 
 use crate::{KindId, KindSet, TextEquivalence};
@@ -2246,7 +2246,10 @@ struct Root {
         assert_eq!(report.diagnostics.len(), 1);
         let diagnostic = &report.diagnostics[0];
         assert_eq!(diagnostic.code, super::LexicalDiagnosticCode::Rca3005);
-        assert_eq!(crate::m3::lexical_code(diagnostic.code), "RCA3005");
+        assert_eq!(
+            crate::source_analysis::lexical_code(diagnostic.code),
+            "RCA3005"
+        );
         assert_eq!(diagnostic.sites.len(), 2);
         assert!(matches!(
             &diagnostic.evidence,
@@ -2646,7 +2649,10 @@ struct Root;
         assert_eq!(report.diagnostics.len(), 1);
         let diagnostic = &report.diagnostics[0];
         assert_eq!(diagnostic.code, super::LexicalDiagnosticCode::Rca3004);
-        assert_eq!(crate::m3::lexical_code(diagnostic.code), "RCA3004");
+        assert_eq!(
+            crate::source_analysis::lexical_code(diagnostic.code),
+            "RCA3004"
+        );
         assert_eq!(diagnostic.sites.len(), 2);
         assert_ne!(diagnostic.sites[0].module, diagnostic.sites[1].module);
         assert!(
@@ -2894,7 +2900,7 @@ struct Root {
             report
                 .diagnostics
                 .iter()
-                .map(|diagnostic| crate::m3::lexical_code(diagnostic.code))
+                .map(|diagnostic| crate::source_analysis::lexical_code(diagnostic.code))
                 .collect::<Vec<_>>(),
             ["RCA3004", "RCA3005", "RCA3006"],
         );
@@ -3010,7 +3016,10 @@ struct Root {
         assert_eq!(report.diagnostics.len(), 1);
         let diagnostic = &report.diagnostics[0];
         assert_eq!(diagnostic.code, super::LexicalDiagnosticCode::Rca3006);
-        assert_eq!(crate::m3::lexical_code(diagnostic.code), "RCA3006");
+        assert_eq!(
+            crate::source_analysis::lexical_code(diagnostic.code),
+            "RCA3006"
+        );
         let super::LexicalDiagnosticEvidence::PriorityTie { contenders, .. } = &diagnostic.evidence
         else {
             panic!("expected a typed priority tie")
@@ -3458,7 +3467,7 @@ struct Root;
             super::LexicalDiagnosticCode::Rca3001
         );
         assert_eq!(
-            crate::m3::lexical_code(report.diagnostics[0].code),
+            crate::source_analysis::lexical_code(report.diagnostics[0].code),
             "RCA3001"
         );
         assert!(matches!(
@@ -3494,7 +3503,10 @@ struct Root;
         assert_eq!(report.diagnostics.len(), 1);
         let diagnostic = &report.diagnostics[0];
         assert_eq!(diagnostic.code, super::LexicalDiagnosticCode::Rca3002);
-        assert_eq!(crate::m3::lexical_code(diagnostic.code), "RCA3002");
+        assert_eq!(
+            crate::source_analysis::lexical_code(diagnostic.code),
+            "RCA3002"
+        );
         assert!(matches!(
             diagnostic.evidence,
             super::LexicalDiagnosticEvidence::FixedTokenClassificationMismatch {
@@ -3573,7 +3585,10 @@ struct Root {
         assert_eq!(report.diagnostics.len(), 1);
         let diagnostic = &report.diagnostics[0];
         assert_eq!(diagnostic.code, super::LexicalDiagnosticCode::Rca3003);
-        assert_eq!(crate::m3::lexical_code(diagnostic.code), "RCA3003");
+        assert_eq!(
+            crate::source_analysis::lexical_code(diagnostic.code),
+            "RCA3003"
+        );
         assert_eq!(diagnostic.sites.len(), 3);
         assert!(matches!(
             &diagnostic.evidence,

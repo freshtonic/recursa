@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const FIXTURE: &str = "tests/fixtures/m4/predictive";
+const FIXTURE: &str = "tests/fixtures/generation/predictive";
 
 #[test]
 fn frozen_first_k_and_follow_plans_drive_generated_predictive_parsers() {
@@ -76,7 +76,7 @@ fn scaffold_fixture() -> TempDir {
     for relative in ["build.rs", "src/lib.rs", "src/grammar.rs", "src/main.rs"] {
         copy(&fixture, package.path(), relative);
     }
-    let lock = fs::read_to_string(manifest_dir.join("tests/fixtures/m4/lexing/Cargo.lock"))
+    let lock = fs::read_to_string(manifest_dir.join("tests/fixtures/generation/lexing/Cargo.lock"))
         .expect("read shared generated-fixture lockfile")
         .replace("recursa-generated-lexing", "recursa-generated-predictive");
     fs::write(package.path().join("Cargo.lock"), lock).expect("write predictive fixture lockfile");
