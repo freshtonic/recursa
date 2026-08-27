@@ -10,7 +10,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 /// Largest accepted JSON request body, preventing loopback memory exhaustion.
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 /// CSP for the dependency-free same-origin asset and protocol surface.
-const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /// Binds the listener before opening the system browser and serves until shutdown.
 pub(super) fn run(adapter: Adapter) -> Result<(), RunError> {
@@ -286,6 +286,11 @@ fn respond_bytes(
             CONTENT_SECURITY_POLICY,
         ))
         .with_header(http_header("X-Content-Type-Options", "nosniff"))
+        .with_header(http_header("Referrer-Policy", "no-referrer"))
+        .with_header(http_header(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=()",
+        ))
         .with_header(http_header("Cache-Control", "no-store"));
     if let Some(allow) = allow {
         response.add_header(http_header("Allow", allow));
@@ -432,17 +437,36 @@ mod tests {
             "{index}"
         );
         assert!(index.contains("X-Content-Type-Options: nosniff"), "{index}");
+        assert!(index.contains("form-action 'none'"), "{index}");
+        assert!(index.contains("Referrer-Policy: no-referrer"), "{index}");
         assert!(
-            index.contains("The local Explorer server is ready"),
+            index.contains("Permissions-Policy: camera=(), microphone=(), geolocation=()"),
             "{index}"
         );
+        assert!(index.contains("aria-label=\"Explorer AST\""), "{index}");
+        assert!(index.contains("type=\"module\""), "{index}");
 
-        let script = request(&authority, "GET", "/app.js", None, None);
-        assert!(script.starts_with("HTTP/1.1 200"), "{script}");
-        assert!(
-            script.contains("Content-Type: text/javascript; charset=utf-8"),
-            "{script}"
-        );
+        for (path, marker) in [
+            ("/app.js", "AbortController"),
+            ("/api.js", "credentials: \"same-origin\""),
+            ("/offsets.js", "TextEncoder"),
+            ("/model.js", "occurrenceEntries"),
+            ("/tree.js", "role = \"treeitem\""),
+            ("/views.js", "textContent"),
+        ] {
+            let script = request(&authority, "GET", path, None, None);
+            assert!(script.starts_with("HTTP/1.1 200"), "{path}: {script}");
+            assert!(
+                script.contains("Content-Type: text/javascript; charset=utf-8"),
+                "{path}: {script}"
+            );
+            assert!(script.contains(marker), "{path}: {script}");
+            assert!(!script.contains("innerHTML"), "{path}: {script}");
+        }
+
+        let styles = request(&authority, "GET", "/style.css", None, None);
+        assert!(styles.starts_with("HTTP/1.1 200"), "{styles}");
+        assert!(styles.contains("prefers-reduced-motion"), "{styles}");
 
         let missing = request(&authority, "GET", "/../Cargo.toml", None, None);
         assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");

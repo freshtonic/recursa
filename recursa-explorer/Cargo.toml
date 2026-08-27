@@ -1,19 +1,18 @@
 [package]
 name = "recursa-explorer"
 version = "0.1.0"
-description = "Local loopback launcher for inspecting Recursa grammars"
+description = "Bundled local browser UI for inspecting Recursa grammars"
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://github.com/freshtonic/recursa/tree/main/recursa-explorer"
+documentation = "https://docs.rs/recursa-explorer"
 readme = "README.md"
-keywords = ["parser", "ast", "explorer"]
+keywords = ["parser", "ast", "grammar", "visualization"]
 categories = ["development-tools"]
 include = ["src/**", "assets/**", "README.md", "LICENSE"]
-publish = false
 
 [dependencies]
 recursa = { version = "=0.1.0", path = "../recursa", features = ["explorer"] }
