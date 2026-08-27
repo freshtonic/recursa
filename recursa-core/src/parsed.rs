@@ -500,7 +500,11 @@ impl<'view> ViewCursor<'view> {
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        Some(crate::pretty::PrettyProvenance::new(text, children))
+        Some(crate::pretty::PrettyProvenance::new(
+            text,
+            occurrence.span,
+            children,
+        ))
     }
 
     /// Binds this occurrence cursor to generated static element metadata.

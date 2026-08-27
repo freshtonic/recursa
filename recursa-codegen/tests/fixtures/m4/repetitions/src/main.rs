@@ -235,6 +235,8 @@ fn assert_capture_configuration(mode: CaptureMode) {
     let attachment = parse_spanned!(grammar::AttachmentPretty<'_>, ". <:boxed alpha.?> .");
     let boxed = if mode == CaptureMode::Off { "BOXED" } else { "boxed" };
     assert_eq!(attachment.render(), format!(".\n<:{boxed} alpha.?>\n."));
+    let attachment_around = parse_spanned!(grammar::AttachmentAround, ". @ .");
+    assert_eq!(attachment_around.render(), ". @ .");
     assert_eq!(
         grammar::HintAttachedOptional {
             before: grammar::Marker,
@@ -266,8 +268,18 @@ fn assert_capture_configuration(mode: CaptureMode) {
     let many_keyword = if mode == CaptureMode::Off { "MANY" } else { "many" };
     assert_eq!(
         attached_many.render(),
-        format!(".\n<:{many_keyword} alpha.?><:{many_keyword} beta.?>\n.")
+        format!(".\n<:{many_keyword} alpha.?>\n<:{many_keyword} beta.?>\n.")
     );
+    let (mapped_attached_many, attached_many_map) = attached_many.render_mapped();
+    assert_eq!(mapped_attached_many, attached_many.render());
+    if !matches!(mode, CaptureMode::Off) {
+        assert!(
+            attached_many_map
+                .entries()
+                .iter()
+                .any(|entry| !entry.source().is_synthetic())
+        );
+    }
     assert_eq!(
         grammar::AttachedMaybeMany {
             before: grammar::Marker,
@@ -284,7 +296,34 @@ fn assert_capture_configuration(mode: CaptureMode) {
     let maybe_keyword = if mode == CaptureMode::Off { "MAYBE" } else { "maybe" };
     assert_eq!(
         attached_maybe_many.render(),
-        format!(".\n<:{maybe_keyword} alpha.?><:{maybe_keyword} beta.?>\n.")
+        format!(".\n<:{maybe_keyword} alpha.?>\n<:{maybe_keyword} beta.?>\n.")
+    );
+
+    let attached_leading = parse_spanned!(
+        grammar::AttachedLeadingPretty<'_>,
+        "marks [alpha],[beta]"
+    );
+    assert_eq!(attached_leading.render(), format!("{marks}[alpha], [beta],"));
+    assert_eq!(
+        attached_leading.render_with(recursa::PrettyConfig::new(12, 2)),
+        format!("{marks}[\n  alpha\n]\n, [\n  beta\n],")
+    );
+
+    let attached_trailing = parse_spanned!(
+        grammar::AttachedTrailingPretty<'_>,
+        "marks [alpha],[beta],"
+    );
+    assert_eq!(attached_trailing.render(), format!("{marks}[alpha], [beta]"));
+    assert_eq!(
+        attached_trailing.render_with(recursa::PrettyConfig::new(12, 2)),
+        format!("{marks}[\n  alpha\n],\n[\n  beta\n]")
+    );
+
+    let attached_program = parse_spanned!(grammar::AttachedProgram, "[off];[on]");
+    let (off, on) = ("OFF", "on");
+    assert_eq!(
+        attached_program.render(),
+        format!("[\n  {off}\n];\n[\n  {on}\n]")
     );
 
     let node_group = parse_spanned!(grammar::NodeGroupPretty<'_>, "nodehint alpha beta");

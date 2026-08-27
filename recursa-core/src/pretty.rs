@@ -1,18 +1,25 @@
 //! Facade-owned structured rendering contracts.
 
 use std::fmt;
+use std::ops::Range;
 
+use crate::Span;
 use crate::parsed::ViewCursor;
 
 #[derive(Clone)]
 pub(crate) struct PrettyProvenance {
     text: Option<String>,
+    span: Option<Span>,
     children: Box<[PrettyProvenance]>,
 }
 
 impl PrettyProvenance {
-    pub(crate) fn new(text: Option<String>, children: Box<[Self]>) -> Self {
-        Self { text, children }
+    pub(crate) fn new(text: Option<String>, span: Option<Span>, children: Box<[Self]>) -> Self {
+        Self {
+            text,
+            span,
+            children,
+        }
     }
 }
 
@@ -43,9 +50,49 @@ impl Default for PrettyConfig {
     }
 }
 
+/// One rendered token's byte range and its originating input span.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceMapEntry {
+    output: Range<usize>,
+    source: Span,
+}
+
+impl SourceMapEntry {
+    pub fn output(&self) -> Range<usize> {
+        self.output.clone()
+    }
+
+    pub const fn source(&self) -> Span {
+        self.source
+    }
+}
+
+/// Token-granular provenance for one Pretty rendering.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SourceMap {
+    entries: Box<[SourceMapEntry]>,
+}
+
+impl SourceMap {
+    pub fn entries(&self) -> &[SourceMapEntry] {
+        &self.entries
+    }
+
+    /// Returns the source span for the rendered token containing `offset`.
+    pub fn source_at(&self, offset: usize) -> Option<Span> {
+        self.entries
+            .iter()
+            .find(|entry| entry.output.contains(&offset))
+            .map(SourceMapEntry::source)
+    }
+}
+
 #[derive(Clone, Debug)]
 enum PrettyEvent {
-    Text(String),
+    Text {
+        text: String,
+        source: Span,
+    },
     SoftBreak(String),
     RepetitionBreak {
         separator: Option<String>,
@@ -77,14 +124,26 @@ impl PrettySink {
     }
 
     fn finish(self) -> String {
+        self.finish_mapped().0
+    }
+
+    fn finish_mapped(self) -> (String, SourceMap) {
         let mut output = String::new();
+        let mut source_map = Vec::new();
         let mut column = 0_usize;
         let mut indent = 0_usize;
         let mut groups = Vec::<GroupMode>::new();
         for (index, event) in self.events.iter().enumerate() {
             match event {
-                PrettyEvent::Text(text) => {
+                PrettyEvent::Text { text, source } => {
+                    let start = output.len();
                     output.push_str(text);
+                    if !text.is_empty() {
+                        source_map.push(SourceMapEntry {
+                            output: start..output.len(),
+                            source: *source,
+                        });
+                    }
                     column = column_after(column, text);
                 }
                 PrettyEvent::SoftBreak(flat) => {
@@ -133,12 +192,22 @@ impl PrettySink {
                         };
                     if broken {
                         if !leading && let Some(separator) = separator {
+                            let start = output.len();
                             output.push_str(separator);
+                            source_map.push(SourceMapEntry {
+                                output: start..output.len(),
+                                source: Span::SYNTHETIC,
+                            });
                             column = column_after(column, separator);
                         }
                         newline(&mut output, &mut column, indent, self.config.indent);
                         if *leading && let Some(separator) = separator {
+                            let start = output.len();
                             output.push_str(separator);
+                            source_map.push(SourceMapEntry {
+                                output: start..output.len(),
+                                source: Span::SYNTHETIC,
+                            });
                             output.push(' ');
                             column = column_after(column, separator).saturating_add(1);
                         }
@@ -148,7 +217,12 @@ impl PrettySink {
                             column = column.saturating_add(1);
                         }
                         if let Some(separator) = separator {
+                            let start = output.len();
                             output.push_str(separator);
+                            source_map.push(SourceMapEntry {
+                                output: start..output.len(),
+                                source: Span::SYNTHETIC,
+                            });
                             column = column_after(column, separator);
                         }
                         output.push(' ');
@@ -169,7 +243,12 @@ impl PrettySink {
                 PrettyEvent::Dedent => indent = indent.saturating_sub(1),
             }
         }
-        output
+        (
+            output,
+            SourceMap {
+                entries: source_map.into_boxed_slice(),
+            },
+        )
     }
 }
 
@@ -192,7 +271,7 @@ fn flat_width(events: &[PrettyEvent], start: usize) -> Option<usize> {
     let mut width = 0_usize;
     for event in &events[start..] {
         match event {
-            PrettyEvent::Text(text) | PrettyEvent::SoftBreak(text) => {
+            PrettyEvent::Text { text, .. } | PrettyEvent::SoftBreak(text) => {
                 if text.contains('\n') {
                     return None;
                 }
@@ -228,7 +307,9 @@ fn flat_width_to_next_break(events: &[PrettyEvent], start: usize) -> usize {
     let mut width = 0_usize;
     for event in &events[start..] {
         match event {
-            PrettyEvent::Text(text) => width = width.saturating_add(text.chars().count()),
+            PrettyEvent::Text { text, .. } => {
+                width = width.saturating_add(text.chars().count());
+            }
             PrettyEvent::SoftBreak(_) | PrettyEvent::RepetitionBreak { .. } if depth == 0 => break,
             PrettyEvent::SoftBreak(text) => {
                 width = width.saturating_add(text.chars().count());
@@ -351,7 +432,7 @@ impl PrettyContext {
 
     /// Emits a token without adding stylistic whitespace.
     pub fn tight_token(&mut self, text: &str) -> fmt::Result {
-        self.sink.events.push(PrettyEvent::Text(text.to_owned()));
+        self.push_text(text, self.active_source_span());
         self.needs_separator = !text.is_empty();
         self.separator_supplied = false;
         self.previous_auto_punctuation = false;
@@ -372,13 +453,27 @@ impl PrettyContext {
                 .events
                 .push(PrettyEvent::SoftBreak(" ".to_owned()));
         }
-        self.sink.events.push(PrettyEvent::Text(text.to_owned()));
+        self.push_text(text, self.active_source_span());
         self.needs_separator = !text.is_empty();
         self.separator_supplied = false;
         self.previous_auto_punctuation = !text.is_empty();
         self.requested_space_after = false;
         self.has_emitted_token |= !text.is_empty();
         Ok(())
+    }
+
+    fn active_source_span(&self) -> Span {
+        self.provenance
+            .as_ref()
+            .and_then(|provenance| provenance.span)
+            .unwrap_or(Span::SYNTHETIC)
+    }
+
+    fn push_text(&mut self, text: &str, source: Span) {
+        self.sink.events.push(PrettyEvent::Text {
+            text: text.to_owned(),
+            source,
+        });
     }
 
     /// Emits an opening delimiter tightly and suppresses spacing after it.
@@ -659,10 +754,20 @@ impl PrettyContext {
         &mut self,
         values: impl ExactSizeIterator<Item = &'a T>,
     ) -> fmt::Result {
+        self.render_repeated_by(values, |context, value| value.pretty(context))
+    }
+
+    /// Renders a repetition whose individual values have grammar-attached syntax.
+    #[doc(hidden)]
+    pub fn render_repeated_by<'a, T: 'a>(
+        &mut self,
+        values: impl ExactSizeIterator<Item = &'a T>,
+        mut render: impl FnMut(&mut Self, &'a T) -> fmt::Result,
+    ) -> fmt::Result {
         let layout = self.repetition.take();
         let length = values.len();
         for (index, value) in values.enumerate() {
-            self.with_child(index, |context| value.pretty(context))?;
+            self.with_child(index, |context| render(context, value))?;
             if let Some(layout) = &layout
                 && (index + 1 < length || layout.trailing)
             {
@@ -675,7 +780,8 @@ impl PrettyContext {
                     });
                     self.separator_supplied = true;
                 } else if let Some(separator) = &layout.separator {
-                    self.tight_token(separator)?;
+                    let separator = separator.clone();
+                    self.without_provenance(|context| context.tight_token(&separator))?;
                 }
             }
         }
@@ -734,6 +840,10 @@ impl PrettyContext {
     pub fn finish(self) -> String {
         self.sink.finish()
     }
+
+    pub fn finish_mapped(self) -> (String, SourceMap) {
+        self.sink.finish_mapped()
+    }
 }
 
 /// Structured rendering shared by semantic ASTs, parsed roots, and views.
@@ -752,6 +862,22 @@ pub trait Pretty {
         self.pretty(&mut context)
             .expect("rendering into a structured sink cannot fail");
         context.finish()
+    }
+
+    /// Renders with default layout and returns token-level source provenance.
+    fn render_mapped(&self) -> (String, SourceMap) {
+        let mut context = PrettyContext::new();
+        self.pretty(&mut context)
+            .expect("rendering into a structured sink cannot fail");
+        context.finish_mapped()
+    }
+
+    /// Renders with caller layout and returns token-level source provenance.
+    fn render_mapped_with(&self, config: PrettyConfig) -> (String, SourceMap) {
+        let mut context = PrettyContext::with_config(config);
+        self.pretty(&mut context)
+            .expect("rendering into a structured sink cannot fail");
+        context.finish_mapped()
     }
 }
 
@@ -786,6 +912,27 @@ impl<T: Pretty> Pretty for crate::Vec1<T> {
 mod tests {
     use super::{Pretty, PrettyConfig, PrettyContext};
     use std::fmt;
+
+    #[test]
+    fn source_free_tokens_are_mapped_as_synthetic() {
+        struct Synthetic;
+
+        impl Pretty for Synthetic {
+            fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+                context.token("alpha")
+            }
+        }
+
+        let (rendered, source_map) = Synthetic.render_mapped();
+        assert_eq!(rendered, "alpha");
+        let [entry] = source_map.entries() else {
+            panic!("one token produces one mapping")
+        };
+        assert_eq!(entry.output(), 0..5);
+        assert!(entry.source().is_synthetic());
+        assert_eq!(source_map.source_at(2), Some(crate::Span::SYNTHETIC));
+        assert_eq!(source_map.source_at(5), None);
+    }
 
     struct Delimited;
 
