@@ -108,16 +108,7 @@ fn unrequested_diagram_capability_is_rejected_exactly_once() {
 #[test]
 fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples() {
     let package = scaffold_fixture();
-    let manifest = package.path().join("Cargo.toml");
-    let source = fs::read_to_string(&manifest).expect("read fixture manifest");
-    fs::write(
-        &manifest,
-        source.replace(
-            "features = [\"arbitrary\", \"serde\"]",
-            "features = [\"arbitrary\", \"serde\", \"explorer\"]",
-        ),
-    )
-    .expect("enable explorer facade payload");
+    configure_explorer(&package, true, true);
     let main = package.path().join("src/main.rs");
     let source = fs::read_to_string(&main).expect("read downstream consumer");
     let assertions = r#"
@@ -257,16 +248,7 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
 #[test]
 fn explorer_capability_requires_a_source_visible_visit_root() {
     let package = scaffold_fixture();
-    let manifest = package.path().join("Cargo.toml");
-    let source = fs::read_to_string(&manifest).expect("read fixture manifest");
-    fs::write(
-        &manifest,
-        source.replace(
-            "features = [\"arbitrary\", \"serde\"]",
-            "features = [\"arbitrary\", \"serde\", \"explorer\"]",
-        ),
-    )
-    .expect("enable explorer facade feature");
+    configure_explorer(&package, true, true);
     let grammar = package.path().join("src/grammar.rs");
     fs::write(
         &grammar,
@@ -320,6 +302,24 @@ fn main() {
         stderr.contains("could not find `explorer` in `recursa`")
             || stderr.contains("could not find `explorer`"),
         "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn explorer_names_are_unreserved_when_the_generator_capability_is_off() {
+    let package = scaffold_fixture();
+    let grammar = package.path().join("src/grammar.rs");
+    let mut source = fs::read_to_string(&grammar).expect("read compound grammar");
+    source.push_str(
+        "\nstatic __RECURSA_EXPLORER_SCHEMA_0: () = ();\nimpl<'input> Record<'input> { pub fn explorer() {} }\n",
+    );
+    fs::write(grammar, source).expect("insert names reserved only by explorer generation");
+
+    let output = run_fixture(&package);
+    assert!(
+        output.status.success(),
+        "feature-off explorer names must remain authored:\n{}",
+        String::from_utf8_lossy(&output.stderr),
     );
 }
 
@@ -761,6 +761,107 @@ fn main() {
 }
 
 #[test]
+fn explorer_root_eligibility_keeps_source_owned_visit_after_local_omit() {
+    let package = scaffold_fixture();
+    configure_explorer(&package, true, true);
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::grammar,
+    derives(Visit),
+}
+
+recursa::tokens! { keywords { ONLY => "only" } }
+
+#[derive(recursa::Node)]
+#[node(omit(Visit))]
+#[tok(ONLY)]
+pub struct Only;
+
+impl recursa::Visit for Only {
+    type Events = __RecursaVisitEvents<'static>;
+
+    fn visit<V>(
+        &self,
+        visitor: &mut V,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<V::Error>>
+    where
+        V: recursa::TotalVisitor<Self::Events>,
+    {
+        match visitor.total_enter(__RecursaVisitEvent::__RecursaTarget_4_Only(self)) {
+            std::ops::ControlFlow::Continue(())
+            | std::ops::ControlFlow::Break(recursa::VisitBreak::SkipChildren) => {}
+            other => return other,
+        }
+        visitor.total_exit(__RecursaVisitEvent::__RecursaTarget_4_Only(self))
+    }
+}
+"#,
+    )
+    .expect("write source-owned Visit explorer grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa_generated_compound_nodes::grammar;
+
+fn main() {
+    let adapter = grammar::Only::explorer();
+    assert_eq!(adapter.schema().name(), "Only");
+}
+"#,
+    )
+    .expect("use source-owned Visit explorer root");
+
+    let output = run_fixture_unlocked(&package);
+    assert!(
+        output.status.success(),
+        "source-owned Visit must retain explorer eligibility:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn omitted_visit_without_a_source_impl_is_an_ordinary_rust_trait_error() {
+    let package = scaffold_fixture();
+    configure_explorer(&package, true, true);
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::grammar,
+    derives(Visit),
+}
+
+recursa::tokens! { keywords { ONLY => "only" } }
+
+#[derive(recursa::Node)]
+#[node(omit(Visit))]
+#[tok(ONLY)]
+pub struct Only;
+"#,
+    )
+    .expect("write missing source-owned Visit grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa_generated_compound_nodes::grammar;
+
+fn main() {
+    let _ = grammar::Only::explorer();
+}
+"#,
+    )
+    .expect("request explorer root without its source-owned Visit impl");
+
+    let output = run_fixture_unlocked(&package);
+    assert!(!output.status.success(), "missing source Visit must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("RCA9005"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("Visit")
+            && (stderr.contains("trait bound") || stderr.contains("unsatisfied")),
+        "stderr:\n{stderr}",
+    );
+}
+
+#[test]
 fn parsed_values_and_views_exclude_owned_or_mutable_semantic_traits() {
     let package = scaffold_fixture();
     let main = package.path().join("src/main.rs");
@@ -859,6 +960,7 @@ fn a_generated_token_binding_collision_is_a_deterministic_generation_error() {
 #[test]
 fn an_explorer_value_name_collision_is_a_deterministic_generation_error() {
     let package = scaffold_fixture();
+    configure_explorer(&package, true, true);
     let grammar = package.path().join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read compound grammar");
     fs::write(
@@ -885,6 +987,7 @@ fn an_explorer_value_name_collision_is_a_deterministic_generation_error() {
 #[test]
 fn an_authored_explorer_entry_method_collision_is_diagnosed_before_emission() {
     let package = scaffold_fixture();
+    configure_explorer(&package, true, true);
     let grammar = package.path().join("src/grammar.rs");
     let mut source = fs::read_to_string(&grammar).expect("read compound grammar");
     source.push_str("\nimpl<'input> Record<'input> { pub fn explorer() {} }\n");
@@ -906,6 +1009,7 @@ fn an_authored_explorer_entry_method_collision_is_diagnosed_before_emission() {
 #[test]
 fn an_imported_value_binding_collision_is_diagnosed_before_emission() {
     let package = scaffold_fixture();
+    configure_explorer(&package, true, true);
     let grammar = package.path().join("src/grammar.rs");
     let mut source = fs::read_to_string(&grammar).expect("read compound grammar");
     source.push_str(
@@ -919,6 +1023,7 @@ fn an_imported_value_binding_collision_is_diagnosed_before_emission() {
 #[test]
 fn a_unit_constructor_collision_is_diagnosed_before_emission() {
     let package = scaffold_fixture();
+    configure_explorer(&package, true, true);
     let grammar = package.path().join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read compound grammar");
     fs::write(
@@ -936,6 +1041,7 @@ fn a_unit_constructor_collision_is_diagnosed_before_emission() {
 #[test]
 fn an_explorer_method_in_a_descendant_impl_is_diagnosed_before_emission() {
     let package = scaffold_fixture();
+    configure_explorer(&package, true, true);
     let grammar = package.path().join("src/grammar.rs");
     let source = fs::read_to_string(&grammar).expect("read compound grammar");
     let source = source.replace(
@@ -1121,6 +1227,24 @@ fn configure_diagrams(package: &TempDir, generator: bool, facade: bool) {
         );
     }
     fs::write(manifest, source).expect("configure diagram capabilities");
+}
+
+fn configure_explorer(package: &TempDir, generator: bool, facade: bool) {
+    let manifest = package.path().join("Cargo.toml");
+    let mut source = fs::read_to_string(&manifest).expect("read fixture manifest");
+    if facade {
+        source = source.replace(
+            "features = [\"arbitrary\", \"serde\"]",
+            "features = [\"arbitrary\", \"serde\", \"explorer\"]",
+        );
+    }
+    if generator {
+        source = source.replace(
+            "recursa-codegen = { path = \"",
+            "recursa-codegen = { features = [\"explorer\"], path = \"",
+        );
+    }
+    fs::write(manifest, source).expect("configure explorer capabilities");
 }
 
 fn rendered_rustdoc(package: &TempDir) -> Vec<(PathBuf, String)> {

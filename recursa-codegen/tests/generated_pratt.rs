@@ -36,10 +36,15 @@ fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() 
     let source = fs::read_to_string(&manifest).expect("read Pratt manifest");
     fs::write(
         &manifest,
-        source.replace(
-            "features = [\"arbitrary\", \"serde\"]",
-            "features = [\"arbitrary\", \"serde\", \"explorer\"]",
-        ),
+        source
+            .replace(
+                "features = [\"arbitrary\", \"serde\"]",
+                "features = [\"arbitrary\", \"serde\", \"explorer\"]",
+            )
+            .replace(
+                "recursa-codegen = { path = \"",
+                "recursa-codegen = { features = [\"explorer\"], path = \"",
+            ),
     )
     .expect("enable Pratt explorer facade payload");
     let main = package.path().join("src/main.rs");

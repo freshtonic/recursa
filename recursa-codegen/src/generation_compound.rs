@@ -492,6 +492,7 @@ struct NodeParsePlan {
     parse_applications: Vec<NodeApplicationParsePlan>,
     capture: PlannedCapturePolicy,
     configured_traits: Vec<ConfiguredTraitRecipe>,
+    explorer_visit_configured: bool,
     pretty: PrettyHints,
 }
 
@@ -1228,6 +1229,16 @@ impl EmissionPlan {
                 .iter()
                 .map(|selection| selection.recipe)
                 .collect();
+            let explorer_visit_configured = source_node
+                .configured_traits
+                .effective
+                .iter()
+                .any(|selection| selection.recipe == ConfiguredTraitRecipe::Visit)
+                || source_node
+                    .configured_traits
+                    .omissions
+                    .iter()
+                    .any(|omission| omission.recipe == ConfiguredTraitRecipe::Visit);
             let authored_lifetimes = node
                 .generics
                 .lifetimes()
@@ -1271,6 +1282,7 @@ impl EmissionPlan {
             planned.body = structural_body(node, source_node, lowered, kind_count)?;
             planned.parse_applications.append(&mut application_plans);
             planned.configured_traits = configured_traits;
+            planned.explorer_visit_configured = explorer_visit_configured;
             nodes.push(planned);
         }
         let mut next_parse_index = 0;
@@ -1430,22 +1442,28 @@ impl EmissionPlan {
         #[cfg(not(feature = "diagrams"))]
         let frozen_diagrams = None;
         let private_abi = emitted_private_abi_plan();
+        #[cfg(feature = "explorer")]
         let explorer =
             emitted_explorer_plan(&nodes, &tokens).map(|explorer| ExtensionEmissionPlan {
                 artifacts: Vec::new(),
                 explorer,
             });
+        #[cfg(not(feature = "explorer"))]
+        let explorer: Option<ExtensionEmissionPlan> = None;
         if explorer.is_some() {
             validate_explorer_collisions(resolved, cfg, &nodes, &tokens)?;
         }
         let pretty = emitted_pretty_plan(&nodes, &tokens);
         let capabilities =
             emitted_capability_plan(&nodes, &tokens, diagram_enabled, explorer.is_some());
+        #[cfg(feature = "explorer")]
         let authoritative_explorer =
             authoritative_explorer_plan(lowered)?.map(|explorer| ExtensionEmissionPlan {
                 artifacts: Vec::new(),
                 explorer,
             });
+        #[cfg(not(feature = "explorer"))]
+        let authoritative_explorer: Option<ExtensionEmissionPlan> = None;
         let plan_families = EmissionPlanFamilies {
             configured_traits: authoritative_configured_trait_identity(lowered, resolved),
             private_abi: plan_family_identity(&authoritative_private_abi_plan()),
@@ -3328,10 +3346,7 @@ fn authoritative_explorer_plan(
 }
 
 fn explorer_emitted_application_is_eligible(node: &NodeParsePlan) -> bool {
-    node.publicly_materialized
-        && node
-            .configured_traits
-            .contains(&ConfiguredTraitRecipe::Visit)
+    node.publicly_materialized && node.explorer_visit_configured
 }
 
 fn explorer_source_application_is_eligible(
@@ -3341,11 +3356,16 @@ fn explorer_source_application_is_eligible(
     configured: &crate::source_model::Node,
 ) -> bool {
     publicly_reachable(&resolved.tree, node.module, &node.visibility)
-        && configured
+        && (configured
             .configured_traits
             .effective
             .iter()
             .any(|selection| selection.recipe == ConfiguredTraitRecipe::Visit)
+            || configured
+                .configured_traits
+                .omissions
+                .iter()
+                .any(|omission| omission.recipe == ConfiguredTraitRecipe::Visit))
 }
 
 fn emitted_explorer_node(
@@ -4457,6 +4477,7 @@ fn plan_node(
         parse_applications: Vec::new(),
         capture: inherited_capture.into(),
         configured_traits: Vec::new(),
+        explorer_visit_configured: false,
         pretty: application.pretty.clone(),
     })
 }
@@ -8583,6 +8604,12 @@ fn render_node_application_explorer(
     let node_display = render_explorer_display(&explorer_node.display);
     let explorer_generics = explorer_impl_generics(plan, application);
     let (impl_generics, _, where_clause) = explorer_generics.split_for_impl();
+    let mut entry_generics = explorer_generics.clone();
+    entry_generics
+        .make_where_clause()
+        .predicates
+        .push(syn::parse_quote!(#ty: #facade::Visit));
+    let (entry_impl_generics, _, entry_where_clause) = entry_generics.split_for_impl();
 
     let body = match (&application.body, &explorer_node.body) {
         (NodeBodyPlan::Struct { elements, .. }, ExplorerNodeBodyPlan::Struct(explorer)) => {
@@ -8786,7 +8813,7 @@ fn render_node_application_explorer(
 
                 #sample_function
 
-                impl #impl_generics #ty #where_clause {
+                impl #entry_impl_generics #ty #entry_where_clause {
                     /// Returns this source-visible Node family's opaque explorer adapter.
                     pub fn explorer() -> #facade::explorer::Adapter {
                         #arbitrary_binding
@@ -13387,46 +13414,50 @@ struct B;
             assert_eq!(plan.plan_families.diagrams, None);
         }
 
-        let (package, mut explorer) = joined_pratt_fixture();
-        explorer
-            .explorer
-            .as_mut()
-            .expect("Visit fixture has an explorer plan")
-            .roots
-            .first_mut()
-            .expect("Visit fixture has an explorer root")
-            .capabilities
-            .pretty ^= true;
-        assert_plan_family_is_unselectable(package.path(), &explorer, "explorer");
+        #[cfg(feature = "explorer")]
+        {
+            let (package, mut explorer) = joined_pratt_fixture();
+            explorer
+                .explorer
+                .as_mut()
+                .expect("Visit fixture has an explorer plan")
+                .roots
+                .first_mut()
+                .expect("Visit fixture has an explorer root")
+                .capabilities
+                .pretty ^= true;
+            assert_plan_family_is_unselectable(package.path(), &explorer, "explorer");
 
-        let (package, mut explorer_artifact) = joined_pratt_fixture();
-        explorer_artifact
-            .explorer
-            .as_mut()
-            .expect("Visit fixture has an extension emission plan")
-            .artifacts
-            .push(ExtensionArtifactPlan {
-                logical_name: "grammar-index".to_owned(),
-                content: "corrupt explorer artifact".to_owned(),
+            let (package, mut explorer_artifact) = joined_pratt_fixture();
+            explorer_artifact
+                .explorer
+                .as_mut()
+                .expect("Visit fixture has an extension emission plan")
+                .artifacts
+                .push(ExtensionArtifactPlan {
+                    logical_name: "grammar-index".to_owned(),
+                    content: "corrupt explorer artifact".to_owned(),
+                });
+            assert_plan_family_is_unselectable(package.path(), &explorer_artifact, "explorer");
+
+            let (package, mut explorer_schema) = joined_pratt_fixture();
+            explorer_schema
+                .explorer
+                .as_mut()
+                .expect("Visit fixture has an explorer plan")
+                .nodes
+                .first_mut()
+                .expect("Visit fixture has an explorer Node schema")
+                .body = ExplorerNodeBodyPlan::Struct(ExplorerVariantPlan {
+                variant: None,
+                name: None,
+                elements: Vec::new(),
             });
-        assert_plan_family_is_unselectable(package.path(), &explorer_artifact, "explorer");
-
-        let (package, mut explorer_schema) = joined_pratt_fixture();
-        explorer_schema
-            .explorer
-            .as_mut()
-            .expect("Visit fixture has an explorer plan")
-            .nodes
-            .first_mut()
-            .expect("Visit fixture has an explorer Node schema")
-            .body = ExplorerNodeBodyPlan::Struct(ExplorerVariantPlan {
-            variant: None,
-            name: None,
-            elements: Vec::new(),
-        });
-        assert_plan_family_is_unselectable(package.path(), &explorer_schema, "explorer");
+            assert_plan_family_is_unselectable(package.path(), &explorer_schema, "explorer");
+        }
     }
 
+    #[cfg(feature = "explorer")]
     #[test]
     fn explorer_rendering_consumes_its_frozen_schema_plan() {
         let (_, mut plan) = joined_pratt_fixture();
