@@ -37,7 +37,7 @@ use crate::{
     TypeDescription, TypeId, TypeShape,
 };
 
-/// Computes the materialization id.
+/// Defines a dense materialization identity with checked allocation and indexing.
 macro_rules! materialization_id {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -58,96 +58,96 @@ macro_rules! materialization_id {
 materialization_id!(MaterializedApplicationId);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The materialization report representation used by source analysis.
+/// Outcome of expanding every reachable closed grammar application.
 pub(crate) struct MaterializationReport {
-    /// The lexical diagnostics.
+    /// Independent lexical-policy failures retained alongside materialization failures.
     pub(crate) lexical_diagnostics: Vec<LexicalDiagnostic>,
-    /// The diagnostics.
+    /// Application, generic-argument, and container-shape failures in stable order.
     pub(crate) diagnostics: Vec<MaterializationDiagnostic>,
-    /// The lowered.
+    /// Complete lowered grammar, withheld when either diagnostic collection blocks it.
     pub(crate) lowered: Option<LoweredGrammar>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The lowered grammar representation used by source analysis.
+/// Closed grammar aggregate consumed by semantic analysis and generation.
 pub(crate) struct LoweredGrammar {
-    /// The source modeled.
+    /// Resolved authored structure from which applications were expanded.
     pub(crate) source_modeled: SourceModeledGrammar,
-    /// The lexical plan.
+    /// Validated token kinds, matchers, and parser-target admissions.
     pub(crate) lexical_plan: LexicalPlan,
-    /// The applications.
+    /// Reachable Node applications in deterministic identity order.
     pub(crate) applications: Vec<MaterializedNodeApplication>,
-    /// The grammar.
+    /// Source-independent normalized grammar for the closed applications.
     pub(crate) grammar: GrammarDescription,
-    /// The lowering map.
+    /// Correlations from resolved source identities to normalized identities.
     pub(crate) lowering_map: LoweringMap,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The lowering map representation used by source analysis.
+/// Explicit correlations created while closing and normalizing grammar applications.
 pub(crate) struct LoweringMap {
-    /// The sources.
+    /// Physical source identities correlated with normalized location sources.
     pub(crate) sources: Vec<SourceCorrelation>,
-    /// The token definitions.
+    /// Source token definitions correlated with normalized token kinds.
     pub(crate) token_definitions: Vec<TokenDefinitionKindCorrelation>,
-    /// The content targets.
+    /// Content-token targets correlated with normalized grammar types.
     pub(crate) content_targets: Vec<ContentTargetTypeCorrelation>,
-    /// The applications.
+    /// Materialized Node applications correlated with normalized grammar types.
     pub(crate) applications: Vec<ApplicationTypeCorrelation>,
-    /// The variants.
+    /// Authored variants correlated with normalized alternatives.
     pub(crate) variants: Vec<VariantAlternativeCorrelation>,
-    /// The fields.
+    /// Authored fields correlated with parse sites or implicit Pratt operands.
     pub(crate) fields: Vec<MaterializedFieldCorrelation>,
-    /// The attachments.
+    /// Repetition attachment units correlated with their normalized sites.
     pub(crate) attachments: Vec<AttachmentUnitCorrelation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The content target type correlation representation used by source analysis.
+/// Carries the content target type correlation while expanding resolved grammar type applications.
 pub(crate) struct ContentTargetTypeCorrelation {
-    /// The semantic.
+    /// Supplies the semantic needed to materialize a concrete grammar application.
     pub(crate) semantic: ContentTokenId,
-    /// The lowered.
+    /// Supplies the lowered needed to materialize a concrete grammar application.
     pub(crate) lowered: TypeId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The source correlation representation used by source analysis.
+/// Carries the source correlation while expanding resolved grammar type applications.
 pub(crate) struct SourceCorrelation {
-    /// The resolved.
+    /// Supplies the resolved needed to materialize a concrete grammar application.
     pub(crate) resolved: SourceId,
-    /// The lowered.
+    /// Supplies the lowered needed to materialize a concrete grammar application.
     pub(crate) lowered: SourceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The application type correlation representation used by source analysis.
+/// Carries the application type correlation while expanding resolved grammar type applications.
 pub(crate) struct ApplicationTypeCorrelation {
-    /// The application.
+    /// Supplies the application needed to materialize a concrete grammar application.
     pub(crate) application: MaterializedApplicationId,
-    /// The node.
+    /// Supplies the node needed to materialize a concrete grammar application.
     pub(crate) node: NodeId,
-    /// The lowered.
+    /// Supplies the lowered needed to materialize a concrete grammar application.
     pub(crate) lowered: TypeId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The materialized field correlation representation used by source analysis.
+/// Carries the materialized field correlation while expanding resolved grammar type applications.
 pub(crate) struct MaterializedFieldCorrelation {
-    /// The application.
+    /// Supplies the application needed to materialize a concrete grammar application.
     pub(crate) application: MaterializedApplicationId,
-    /// The field.
+    /// Supplies the field needed to materialize a concrete grammar application.
     pub(crate) field: ResolvedFieldId,
-    /// The lowered.
+    /// Supplies the lowered needed to materialize a concrete grammar application.
     pub(crate) lowered: MaterializedFieldLowering,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible materialized field lowering cases used by source analysis.
+/// Classifies the materialized field lowering alternatives supported during materialization.
 pub(crate) enum MaterializedFieldLowering {
-    /// The parse site case.
+    /// Correlates an ordinary semantic field with its normalized parse site.
     ParseSite(SiteId),
-    /// The pratt lhs case.
+    /// Selects the pratt lhs materialization alternative.
     PrattLhs {
         #[doc = "Normalized Pratt type that owns the implicit left-hand side."]
         owner: TypeId,
@@ -157,65 +157,65 @@ pub(crate) enum MaterializedFieldLowering {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The attachment unit correlation representation used by source analysis.
+/// Carries the attachment unit correlation while expanding resolved grammar type applications.
 pub(crate) struct AttachmentUnitCorrelation {
-    /// The application.
+    /// Supplies the application needed to materialize a concrete grammar application.
     pub(crate) application: MaterializedApplicationId,
-    /// The field.
+    /// Supplies the field needed to materialize a concrete grammar application.
     pub(crate) field: ResolvedFieldId,
-    /// The outer.
+    /// Supplies the outer needed to materialize a concrete grammar application.
     pub(crate) outer: SiteId,
-    /// The unit.
+    /// Supplies the unit needed to materialize a concrete grammar application.
     pub(crate) unit: TypeId,
-    /// The sites.
+    /// Supplies the sites needed to materialize a concrete grammar application.
     pub(crate) sites: Vec<SiteId>,
-    /// The semantic index.
+    /// Supplies the semantic index needed to materialize a concrete grammar application.
     pub(crate) semantic_index: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The variant alternative correlation representation used by source analysis.
+/// Carries the variant alternative correlation while expanding resolved grammar type applications.
 pub(crate) struct VariantAlternativeCorrelation {
-    /// The application.
+    /// Supplies the application needed to materialize a concrete grammar application.
     pub(crate) application: MaterializedApplicationId,
-    /// The variant.
+    /// Supplies the variant needed to materialize a concrete grammar application.
     pub(crate) variant: ResolvedVariantId,
-    /// The lowered.
+    /// Supplies the lowered needed to materialize a concrete grammar application.
     pub(crate) lowered: DeclId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The materialized node application representation used by source analysis.
+/// Carries the materialized node application while expanding resolved grammar type applications.
 pub(crate) struct MaterializedNodeApplication {
-    /// The id.
+    /// Supplies the id needed to materialize a concrete grammar application.
     pub(crate) id: MaterializedApplicationId,
-    /// The node.
+    /// Supplies the node needed to materialize a concrete grammar application.
     pub(crate) node: NodeId,
-    /// The display name.
+    /// Supplies the display name needed to materialize a concrete grammar application.
     pub(crate) display_name: String,
-    /// The type arguments.
+    /// Supplies the type arguments needed to materialize a concrete grammar application.
     pub(crate) type_arguments: Vec<ClosedType>,
-    /// The pretty.
+    /// Supplies the pretty needed to materialize a concrete grammar application.
     pub(crate) pretty: crate::source_model::PrettyHints,
-    /// The body.
+    /// Supplies the body needed to materialize a concrete grammar application.
     pub(crate) body: MaterializedNodeBody,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible materialized node body cases used by source analysis.
+/// Classifies the materialized node body alternatives supported during materialization.
 pub(crate) enum MaterializedNodeBody {
-    /// The struct case.
+    /// Selects the struct materialization alternative.
     Struct(Vec<MaterializedElement>),
-    /// The presence case.
+    /// Selects the presence materialization alternative.
     Presence(Vec<MaterializedElement>),
-    /// The enum case.
+    /// Selects the enum materialization alternative.
     Enum(Vec<MaterializedVariant>),
-    /// The pratt case.
+    /// Selects the pratt materialization alternative.
     Pratt(Vec<MaterializedPrattVariant>),
 }
 
 impl MaterializedNodeBody {
-    /// Computes the parsed elements.
+    /// Derives the parsed elements while materializing grammar applications and container shapes.
     fn parsed_elements(&self) -> impl Iterator<Item = &MaterializedElement> {
         let mut elements = Vec::new();
         match self {
@@ -234,7 +234,7 @@ impl MaterializedNodeBody {
         elements.into_iter()
     }
 
-    /// Computes the fields.
+    /// Derives the fields while materializing grammar applications and container shapes.
     fn fields(&self) -> impl Iterator<Item = MaterializedFieldView<'_>> {
         let mut fields = Vec::new();
         match self {
@@ -270,29 +270,29 @@ impl MaterializedNodeBody {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The materialized variant representation used by source analysis.
+/// Carries the materialized variant while expanding resolved grammar type applications.
 pub(crate) struct MaterializedVariant {
-    /// The resolved variant.
+    /// Supplies the resolved variant needed to materialize a concrete grammar application.
     pub(crate) resolved_variant: ResolvedVariantId,
-    /// The name.
+    /// Supplies the name needed to materialize a concrete grammar application.
     pub(crate) name: String,
-    /// The pretty.
+    /// Supplies the pretty needed to materialize a concrete grammar application.
     pub(crate) pretty: crate::source_model::PrettyHints,
-    /// The elements.
+    /// Supplies the elements needed to materialize a concrete grammar application.
     pub(crate) elements: Vec<MaterializedElement>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible materialized pratt variant cases used by source analysis.
+/// Classifies the materialized pratt variant alternatives supported during materialization.
 pub(crate) enum MaterializedPrattVariant {
-    /// The nud case.
+    /// Selects the nud materialization alternative.
     Nud(MaterializedPrattNud),
-    /// The led case.
+    /// Selects the led materialization alternative.
     Led(MaterializedPrattLed),
 }
 
 impl MaterializedPrattVariant {
-    /// Computes the common.
+    /// Borrows the declaration metadata shared by all Pratt variant roles.
     fn common(&self) -> &MaterializedPrattCommon {
         match self {
             Self::Nud(variant) => &variant.common,
@@ -300,7 +300,7 @@ impl MaterializedPrattVariant {
         }
     }
 
-    /// Computes the parsed elements.
+    /// Derives the parsed elements while materializing grammar applications and container shapes.
     fn parsed_elements(&self) -> std::slice::Iter<'_, MaterializedElement> {
         match self {
             Self::Nud(variant) => variant.body.iter(),
@@ -310,33 +310,33 @@ impl MaterializedPrattVariant {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The materialized pratt common representation used by source analysis.
+/// Carries the materialized pratt common while expanding resolved grammar type applications.
 pub(crate) struct MaterializedPrattCommon {
-    /// The resolved variant.
+    /// Supplies the resolved variant needed to materialize a concrete grammar application.
     pub(crate) resolved_variant: ResolvedVariantId,
-    /// The name.
+    /// Supplies the name needed to materialize a concrete grammar application.
     pub(crate) name: String,
-    /// The pretty.
+    /// Supplies the pretty needed to materialize a concrete grammar application.
     pub(crate) pretty: crate::source_model::PrettyHints,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The materialized pratt nud representation used by source analysis.
+/// Carries the materialized pratt nud while expanding resolved grammar type applications.
 pub(crate) struct MaterializedPrattNud {
-    /// The common.
+    /// Declaration metadata shared by all Pratt null-denotation roles.
     pub(crate) common: MaterializedPrattCommon,
-    /// The position.
+    /// Supplies the position needed to materialize a concrete grammar application.
     pub(crate) position: MaterializedPrattNudPosition,
-    /// The body.
+    /// Supplies the body needed to materialize a concrete grammar application.
     pub(crate) body: Vec<MaterializedElement>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible materialized pratt nud position cases used by source analysis.
+/// Classifies the materialized pratt nud position alternatives supported during materialization.
 pub(crate) enum MaterializedPrattNudPosition {
-    /// The atom case.
+    /// Selects the atom materialization alternative.
     Atom,
-    /// The prefix case.
+    /// Selects the prefix materialization alternative.
     Prefix {
         #[doc = "Right binding power of the recursive prefix operand."]
         bp: u8,
@@ -344,29 +344,29 @@ pub(crate) enum MaterializedPrattNudPosition {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The materialized pratt led representation used by source analysis.
+/// Carries the materialized pratt led while expanding resolved grammar type applications.
 pub(crate) struct MaterializedPrattLed {
-    /// The common.
+    /// Declaration metadata shared by all Pratt left-denotation roles.
     pub(crate) common: MaterializedPrattCommon,
-    /// The position.
+    /// Supplies the position needed to materialize a concrete grammar application.
     pub(crate) position: MaterializedPrattLedPosition,
-    /// The lhs.
+    /// Supplies the lhs needed to materialize a concrete grammar application.
     pub(crate) lhs: MaterializedPrattLhs,
-    /// The tail.
+    /// Supplies the tail needed to materialize a concrete grammar application.
     pub(crate) tail: Vec<MaterializedElement>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible materialized pratt led position cases used by source analysis.
+/// Classifies the materialized pratt led position alternatives supported during materialization.
 pub(crate) enum MaterializedPrattLedPosition {
-    /// The infix case.
+    /// Selects the infix materialization alternative.
     Infix {
         #[doc = "Left binding power required to select the infix operator."]
         lbp: u8,
         #[doc = "Right binding power used for the infix operand."]
         rbp: u8,
     },
-    /// The postfix case.
+    /// Selects the postfix materialization alternative.
     Postfix {
         #[doc = "Left binding power required to select the postfix operator."]
         bp: u8,
@@ -374,80 +374,80 @@ pub(crate) enum MaterializedPrattLedPosition {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The materialized pratt lhs representation used by source analysis.
+/// Carries the materialized pratt lhs while expanding resolved grammar type applications.
 pub(crate) struct MaterializedPrattLhs {
-    /// The field.
+    /// Supplies the field needed to materialize a concrete grammar application.
     pub(crate) field: ResolvedFieldId,
-    /// The owner.
+    /// Supplies the owner needed to materialize a concrete grammar application.
     pub(crate) owner: MaterializedNodeUse,
-    /// The trace.
+    /// Supplies the trace needed to materialize a concrete grammar application.
     pub(crate) trace: MaterializationTrace,
-    /// The pretty.
+    /// Supplies the pretty needed to materialize a concrete grammar application.
     pub(crate) pretty: crate::source_model::PrettyHints,
-    /// The attachment before.
+    /// Supplies the attachment before needed to materialize a concrete grammar application.
     pub(crate) attachment_before: usize,
-    /// The attachment after.
+    /// Supplies the attachment after needed to materialize a concrete grammar application.
     pub(crate) attachment_after: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible materialized element cases used by source analysis.
+/// Classifies the materialized element alternatives supported during materialization.
 pub(crate) enum MaterializedElement {
-    /// The fixed token case.
+    /// Selects the fixed token materialization alternative.
     FixedToken {
-        /// The token use.
+        /// Supplies the token use needed to materialize a concrete grammar application.
         token_use: TokenUseId,
     },
-    /// The semantic field case.
+    /// Selects the semantic field materialization alternative.
     SemanticField {
-        /// The field.
+        /// Supplies the field needed to materialize a concrete grammar application.
         field: ResolvedFieldId,
-        /// The ty.
+        /// Supplies the ty needed to materialize a concrete grammar application.
         ty: ClosedType,
-        /// The trace.
+        /// Supplies the trace needed to materialize a concrete grammar application.
         trace: MaterializationTrace,
-        /// The attachment.
+        /// Supplies the attachment needed to materialize a concrete grammar application.
         attachment: Option<MaterializedFixedAttachment>,
-        /// The separator.
+        /// Supplies the separator needed to materialize a concrete grammar application.
         separator: Option<Separator>,
-        /// The pretty.
+        /// Supplies the pretty needed to materialize a concrete grammar application.
         pretty: crate::source_model::PrettyHints,
-        /// The attachment before.
+        /// Supplies the attachment before needed to materialize a concrete grammar application.
         attachment_before: usize,
-        /// The attachment after.
+        /// Supplies the attachment after needed to materialize a concrete grammar application.
         attachment_after: usize,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The materialized fixed attachment representation used by source analysis.
+/// Carries the materialized fixed attachment while expanding resolved grammar type applications.
 pub(crate) struct MaterializedFixedAttachment {
-    /// The before.
+    /// Supplies the before needed to materialize a concrete grammar application.
     pub(crate) before: Vec<TokenUseId>,
-    /// The after.
+    /// Supplies the after needed to materialize a concrete grammar application.
     pub(crate) after: Vec<TokenUseId>,
 }
 
 #[derive(Clone, Copy, Debug)]
-/// The possible materialized field view cases used by source analysis.
+/// Classifies the materialized field view alternatives supported during materialization.
 pub(crate) enum MaterializedFieldView<'a> {
-    /// The parsed case.
+    /// Selects the parsed materialization alternative.
     Parsed {
-        /// The field.
+        /// Supplies the field needed to materialize a concrete grammar application.
         field: ResolvedFieldId,
-        /// The ty.
+        /// Supplies the ty needed to materialize a concrete grammar application.
         ty: &'a ClosedType,
-        /// The trace.
+        /// Supplies the trace needed to materialize a concrete grammar application.
         trace: &'a MaterializationTrace,
-        /// The separator.
+        /// Supplies the separator needed to materialize a concrete grammar application.
         separator: Option<&'a Separator>,
     },
-    /// The pratt lhs case.
+    /// Selects the pratt lhs materialization alternative.
     PrattLhs(&'a MaterializedPrattLhs),
 }
 
 impl<'a> MaterializedFieldView<'a> {
-    /// Computes the parsed.
+    /// Derives the parsed while materializing grammar applications and container shapes.
     fn parsed(element: &'a MaterializedElement) -> Option<Self> {
         match element {
             MaterializedElement::SemanticField {
@@ -468,12 +468,12 @@ impl<'a> MaterializedFieldView<'a> {
 }
 
 impl MaterializedNodeApplication {
-    /// Computes the fields.
+    /// Derives the fields while materializing grammar applications and container shapes.
     pub(crate) fn fields(&self) -> impl Iterator<Item = MaterializedFieldView<'_>> {
         self.body.fields()
     }
 
-    /// Computes the parsed fields.
+    /// Derives the parsed fields while materializing grammar applications and container shapes.
     pub(crate) fn parsed_fields(&self) -> impl Iterator<Item = &MaterializedElement> {
         self.body
             .parsed_elements()
@@ -482,153 +482,153 @@ impl MaterializedNodeApplication {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible closed type cases used by source analysis.
+/// Classifies the closed type alternatives supported during materialization.
 pub(crate) enum ClosedType {
-    /// The node case.
+    /// Selects the node materialization alternative.
     Node(MaterializedNodeUse),
-    /// The content token case.
+    /// Selects the content token materialization alternative.
     ContentToken(ContentTokenId),
-    /// The boxed case.
+    /// Selects the boxed materialization alternative.
     Boxed(Box<Self>),
-    /// The optional case.
+    /// Selects the optional materialization alternative.
     Optional(Box<Self>),
-    /// The zero or more case.
+    /// Selects the zero or more materialization alternative.
     ZeroOrMore(Box<Self>),
-    /// The one or more case.
+    /// Selects the one or more materialization alternative.
     OneOrMore(Box<Self>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The materialized node use representation used by source analysis.
+/// Carries the materialized node use while expanding resolved grammar type applications.
 pub(crate) struct MaterializedNodeUse {
-    /// The application.
+    /// Supplies the application needed to materialize a concrete grammar application.
     pub(crate) application: MaterializedApplicationId,
-    /// The lifetimes.
+    /// Supplies the lifetimes needed to materialize a concrete grammar application.
     pub(crate) lifetimes: Vec<syn::Lifetime>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The materialization trace representation used by source analysis.
+/// Carries the materialization trace while expanding resolved grammar type applications.
 pub(crate) struct MaterializationTrace {
-    /// The steps.
+    /// Supplies the steps needed to materialize a concrete grammar application.
     pub(crate) steps: Vec<MaterializationTraceStep>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible materialization trace step cases used by source analysis.
+/// Classifies the materialization trace step alternatives supported during materialization.
 pub(crate) enum MaterializationTraceStep {
-    /// The use case.
+    /// Selects the use materialization alternative.
     Use(SemanticUseId),
-    /// The resolution case.
+    /// Selects the resolution materialization alternative.
     Resolution(ResolutionTraceId),
-    /// The alias case.
+    /// Selects the alias materialization alternative.
     Alias(TypeAliasId),
-    /// The parameter case.
+    /// Selects the parameter materialization alternative.
     Parameter(GenericParameterId),
-    /// The self application case.
+    /// Selects the self application materialization alternative.
     SelfApplication(MaterializedApplicationId),
-    /// The catalog case.
+    /// Selects the catalog materialization alternative.
     Catalog(CatalogType),
-    /// The application case.
+    /// Selects the application materialization alternative.
     Application(MaterializedApplicationId),
-    /// The content token case.
+    /// Selects the content token materialization alternative.
     ContentToken(ContentTokenId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible materialization diagnostic kind cases used by source analysis.
+/// Classifies the materialization diagnostic kind alternatives supported during materialization.
 pub(crate) enum MaterializationDiagnosticKind {
-    /// The open application case.
+    /// Selects the open application materialization alternative.
     OpenApplication,
-    /// The const generic case.
+    /// Selects the const generic materialization alternative.
     ConstGeneric,
-    /// The unsupported type case.
+    /// Selects the unsupported type materialization alternative.
     UnsupportedType,
-    /// The invalid arguments case.
+    /// Selects the invalid arguments materialization alternative.
     InvalidArguments,
-    /// The invalid container case.
+    /// Selects the invalid container materialization alternative.
     InvalidContainer,
-    /// The invalid pratt shape case.
+    /// Selects the invalid pratt shape materialization alternative.
     InvalidPrattShape,
-    /// The inapplicable pretty hint case.
+    /// Selects the inapplicable pretty hint materialization alternative.
     InapplicablePrettyHint,
-    /// The unsafe pretty boundary case.
+    /// Selects the unsafe pretty boundary materialization alternative.
     UnsafePrettyBoundary,
-    /// The alias cycle case.
+    /// Selects the alias cycle materialization alternative.
     AliasCycle,
-    /// The non regular recursion case.
+    /// Selects the non regular recursion materialization alternative.
     NonRegularRecursion,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The materialization diagnostic representation used by source analysis.
+/// Carries the materialization diagnostic while expanding resolved grammar type applications.
 pub(crate) struct MaterializationDiagnostic {
-    /// The kind.
+    /// Supplies the kind needed to materialize a concrete grammar application.
     pub(crate) kind: MaterializationDiagnosticKind,
-    /// The module.
+    /// Supplies the module needed to materialize a concrete grammar application.
     pub(crate) module: Option<crate::lowering::ModuleId>,
-    /// The logical module.
+    /// Supplies the logical module needed to materialize a concrete grammar application.
     pub(crate) logical_module: Option<Vec<String>>,
-    /// The path.
+    /// Supplies the path needed to materialize a concrete grammar application.
     pub(crate) path: PathBuf,
-    /// The range.
+    /// Supplies the range needed to materialize a concrete grammar application.
     pub(crate) range: Option<Range<u32>>,
-    /// The message.
+    /// Supplies the message needed to materialize a concrete grammar application.
     pub(crate) message: String,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The application key representation used by source analysis.
+/// Carries the application key while expanding resolved grammar type applications.
 struct ApplicationKey {
-    /// The node.
+    /// Supplies the node needed to materialize a concrete grammar application.
     node: NodeId,
-    /// The arguments.
+    /// Supplies the arguments needed to materialize a concrete grammar application.
     arguments: Vec<Vec<TypeIdentityAtom>>,
 }
 
 #[derive(Clone)]
-/// The attachment unit projection representation used by source analysis.
+/// Carries the attachment unit projection while expanding resolved grammar type applications.
 struct AttachmentUnitProjection {
-    /// The id.
+    /// Supplies the id needed to materialize a concrete grammar application.
     id: TypeId,
-    /// The application.
+    /// Supplies the application needed to materialize a concrete grammar application.
     application: MaterializedApplicationId,
-    /// The field.
+    /// Supplies the field needed to materialize a concrete grammar application.
     field: ResolvedFieldId,
-    /// The ty.
+    /// Supplies the ty needed to materialize a concrete grammar application.
     ty: ClosedType,
-    /// The attachment.
+    /// Supplies the attachment needed to materialize a concrete grammar application.
     attachment: MaterializedFixedAttachment,
-    /// The recursive min bp.
+    /// Supplies the recursive min bp needed to materialize a concrete grammar application.
     recursive_min_bp: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible type identity atom cases used by source analysis.
+/// Classifies the type identity atom alternatives supported during materialization.
 enum TypeIdentityAtom {
-    /// The node case.
+    /// Selects the node materialization alternative.
     Node(MaterializedApplicationId),
-    /// The content token case.
+    /// Selects the content token materialization alternative.
     ContentToken(ContentTokenId),
-    /// The boxed case.
+    /// Selects the boxed materialization alternative.
     Boxed,
-    /// The optional case.
+    /// Selects the optional materialization alternative.
     Optional,
-    /// The zero or more case.
+    /// Selects the zero or more materialization alternative.
     ZeroOrMore,
-    /// The one or more case.
+    /// Selects the one or more materialization alternative.
     OneOrMore,
 }
 
 impl ClosedType {
-    /// Computes the identity.
+    /// Derives the identity while materializing grammar applications and container shapes.
     fn identity(&self) -> Vec<TypeIdentityAtom> {
         let mut identity = Vec::new();
         self.extend_identity(&mut identity);
         identity
     }
 
-    /// Computes the extend identity.
+    /// Derives the extend identity while materializing grammar applications and container shapes.
     fn extend_identity(&self, identity: &mut Vec<TypeIdentityAtom>) {
         match self {
             Self::Node(node) => identity.push(TypeIdentityAtom::Node(node.application)),
@@ -654,62 +654,62 @@ impl ClosedType {
 }
 
 #[derive(Clone)]
-/// The evaluated type representation used by source analysis.
+/// Carries the evaluated type while expanding resolved grammar type applications.
 struct EvaluatedType {
-    /// The closed.
+    /// Supplies the closed needed to materialize a concrete grammar application.
     closed: ClosedType,
-    /// The trace.
+    /// Supplies the trace needed to materialize a concrete grammar application.
     trace: Vec<MaterializationTraceStep>,
 }
 
 #[derive(Clone, Default)]
-/// The evaluation environment representation used by source analysis.
+/// Carries the evaluation environment while expanding resolved grammar type applications.
 struct EvaluationEnvironment {
-    /// The types.
+    /// Supplies the types needed to materialize a concrete grammar application.
     types: BTreeMap<GenericParameterId, EvaluatedType>,
-    /// The lifetimes.
+    /// Supplies the lifetimes needed to materialize a concrete grammar application.
     lifetimes: BTreeMap<String, syn::Lifetime>,
 }
 
-/// The materializer representation used by source analysis.
+/// Carries the materializer while expanding resolved grammar type applications.
 struct Materializer {
-    /// The source modeled.
+    /// Supplies the source modeled needed to materialize a concrete grammar application.
     source_modeled: SourceModeledGrammar,
-    /// The lexical plan.
+    /// Supplies the lexical plan needed to materialize a concrete grammar application.
     lexical_plan: Option<LexicalPlan>,
-    /// The application by key.
+    /// Supplies the application by key needed to materialize a concrete grammar application.
     application_by_key: BTreeMap<ApplicationKey, MaterializedApplicationId>,
-    /// The applications.
+    /// Supplies the applications needed to materialize a concrete grammar application.
     applications: Vec<MaterializedNodeApplication>,
-    /// The diagnostics.
+    /// Supplies the diagnostics needed to materialize a concrete grammar application.
     diagnostics: Vec<MaterializationDiagnostic>,
-    /// The active aliases.
+    /// Supplies the active aliases needed to materialize a concrete grammar application.
     active_aliases: Vec<TypeAliasId>,
-    /// The active applications.
+    /// Supplies the active applications needed to materialize a concrete grammar application.
     active_applications: Vec<ApplicationKey>,
 }
 
 #[derive(Clone, Debug, Default)]
-/// The pretty boundary summary representation used by source analysis.
+/// Carries the pretty boundary summary while expanding resolved grammar type applications.
 struct PrettyBoundarySummary {
-    /// The first.
+    /// Supplies the first needed to materialize a concrete grammar application.
     first: Vec<MaterializedPrettyBoundary>,
-    /// The last.
+    /// Supplies the last needed to materialize a concrete grammar application.
     last: Vec<MaterializedPrettyBoundary>,
-    /// The nullable.
+    /// Supplies the nullable needed to materialize a concrete grammar application.
     nullable: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible pretty boundary site cases used by source analysis.
+/// Classifies the pretty boundary site alternatives supported during materialization.
 enum PrettyBoundarySite {
-    /// The fixed case.
+    /// Selects the fixed materialization alternative.
     Fixed(TokenUseId),
-    /// The field case.
+    /// Selects the field materialization alternative.
     Field(ResolvedFieldId),
 }
 
-/// Computes the materialize.
+/// Derives the materialize while materializing grammar applications and container shapes.
 pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> MaterializationReport {
     let lexical = plan_lexical(&source_modeled);
     let materializer = Materializer {
@@ -725,24 +725,24 @@ pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> Materializati
 }
 
 impl Materializer {
-    /// Computes the lexical plan.
+    /// Derives the lexical plan while materializing grammar applications and container shapes.
     fn lexical_plan(&self) -> &LexicalPlan {
         self.lexical_plan
             .as_ref()
             .expect("semantic analysis projection runs only after successful lexical planning")
     }
 
-    /// Computes the resolved.
+    /// Derives the resolved while materializing grammar applications and container shapes.
     fn resolved(&self) -> &ResolvedSourceGrammar {
         self.source_modeled.resolved()
     }
 
-    /// Computes the source model.
+    /// Derives the source model while materializing grammar applications and container shapes.
     fn source_model(&self) -> &SourceModel {
         self.source_modeled.source_model()
     }
 
-    /// Computes the kind for definition.
+    /// Derives the kind for definition while materializing grammar applications and container shapes.
     fn kind_for_definition(&self, definition: crate::lowering::TokenDefinitionId) -> crate::KindId {
         self.lexical_plan()
             .lowering_map
@@ -754,7 +754,7 @@ impl Materializer {
             .expect("every source token definition has a lexical KindId correlation")
     }
 
-    /// Computes the run.
+    /// Expands seed Nodes transitively and publishes only a complete materialization plan.
     fn run(mut self, lexical_diagnostics: Vec<LexicalDiagnostic>) -> MaterializationReport {
         let seeds = self
             .resolved()
@@ -859,7 +859,7 @@ impl Materializer {
         }
     }
 
-    /// Computes the body pretty lexing violation.
+    /// Derives the body pretty lexing violation while materializing grammar applications and container shapes.
     fn body_pretty_lexing_violation(
         &self,
         body: &MaterializedNodeBody,
@@ -884,7 +884,7 @@ impl Materializer {
         }
     }
 
-    /// Computes the sequence pretty lexing violation.
+    /// Derives the sequence pretty lexing violation while materializing grammar applications and container shapes.
     fn sequence_pretty_lexing_violation(
         &self,
         elements: &[MaterializedElement],
@@ -907,7 +907,7 @@ impl Materializer {
         None
     }
 
-    /// Computes the element pretty boundary site.
+    /// Derives the element pretty boundary site while materializing grammar applications and container shapes.
     fn element_pretty_boundary_site(element: &MaterializedElement) -> PrettyBoundarySite {
         match element {
             MaterializedElement::FixedToken { token_use } => PrettyBoundarySite::Fixed(*token_use),
@@ -915,7 +915,7 @@ impl Materializer {
         }
     }
 
-    /// Computes the attachment changes pretty lexing.
+    /// Derives the attachment changes pretty lexing while materializing grammar applications and container shapes.
     fn attachment_changes_pretty_lexing(&self, element: &MaterializedElement) -> bool {
         let MaterializedElement::SemanticField {
             ty,
@@ -952,7 +952,7 @@ impl Materializer {
         false
     }
 
-    /// Computes the pretty boundary pairs change lexing.
+    /// Derives the pretty boundary pairs change lexing while materializing grammar applications and container shapes.
     fn pretty_boundary_pairs_change_lexing(
         &self,
         left: &[MaterializedPrettyBoundary],
@@ -971,7 +971,7 @@ impl Materializer {
         })
     }
 
-    /// Computes the element pretty boundaries.
+    /// Derives the element pretty boundaries while materializing grammar applications and container shapes.
     fn element_pretty_boundaries(
         &self,
         element: &MaterializedElement,
@@ -996,7 +996,7 @@ impl Materializer {
         }
     }
 
-    /// Computes the fixed pretty boundaries.
+    /// Derives the fixed pretty boundaries while materializing grammar applications and container shapes.
     fn fixed_pretty_boundaries(&self, token_use: TokenUseId) -> PrettyBoundarySummary {
         let definition = self.source_model().token_uses[token_use.index()].definition;
         let boundary = MaterializedPrettyBoundary::Fixed(definition);
@@ -1007,7 +1007,7 @@ impl Materializer {
         }
     }
 
-    /// Computes the closed pretty boundaries.
+    /// Derives the closed pretty boundaries while materializing grammar applications and container shapes.
     fn closed_pretty_boundaries(
         &self,
         ty: &ClosedType,
@@ -1059,7 +1059,7 @@ impl Materializer {
         }
     }
 
-    /// Computes the body pretty boundaries.
+    /// Derives the body pretty boundaries while materializing grammar applications and container shapes.
     fn body_pretty_boundaries(
         &self,
         body: &MaterializedNodeBody,
@@ -1087,7 +1087,7 @@ impl Materializer {
         }
     }
 
-    /// Computes the elements pretty boundaries.
+    /// Derives the elements pretty boundaries while materializing grammar applications and container shapes.
     fn elements_pretty_boundaries(
         &self,
         elements: &[MaterializedElement],
@@ -1118,7 +1118,7 @@ impl Materializer {
         }
     }
 
-    /// Computes the alternative pretty boundaries.
+    /// Derives the alternative pretty boundaries while materializing grammar applications and container shapes.
     fn alternative_pretty_boundaries(
         &self,
         summaries: impl Iterator<Item = PrettyBoundarySummary>,
@@ -1132,7 +1132,7 @@ impl Materializer {
         combined
     }
 
-    /// Ensures application.
+    /// Interns one closed Node application before recursively materializing its body.
     fn ensure_application(
         &mut self,
         node_id: NodeId,
@@ -1299,7 +1299,7 @@ impl Materializer {
         Some(id)
     }
 
-    /// Computes the materialize pratt variant.
+    /// Derives the materialize pratt variant while materializing grammar applications and container shapes.
     fn materialize_pratt_variant(
         &mut self,
         variant: SourcePrattVariant,
@@ -1414,7 +1414,7 @@ impl Materializer {
         false
     }
 
-    /// Computes the resolved variant site.
+    /// Derives the resolved variant site while materializing grammar applications and container shapes.
     fn resolved_variant_site(&self, variant: ResolvedVariantId) -> (SourceId, Range<u32>) {
         self.resolved()
             .nodes
@@ -1429,7 +1429,7 @@ impl Materializer {
             .expect("source Pratt variant has a resolved identity")
     }
 
-    /// Takes pratt lhs.
+    /// Removes and validates the single implicit left operand from a Pratt led body.
     fn take_pratt_lhs(
         &mut self,
         variant: ResolvedVariantId,
@@ -1548,7 +1548,7 @@ impl Materializer {
         })
     }
 
-    /// Computes the materialize elements.
+    /// Derives the materialize elements while materializing grammar applications and container shapes.
     fn materialize_elements(
         &mut self,
         elements: &[GrammarElement],
@@ -1667,7 +1667,7 @@ impl Materializer {
         materialized
     }
 
-    /// Computes the resolved field.
+    /// Derives the resolved field while materializing grammar applications and container shapes.
     fn resolved_field(&self, id: ResolvedFieldId) -> &crate::resolution::ResolvedNodeField {
         self.resolved()
             .nodes
@@ -1677,7 +1677,7 @@ impl Materializer {
             .expect("source-model field identity belongs to resolved grammar")
     }
 
-    /// Evaluates type.
+    /// Closes a resolved semantic type under the current generic substitution.
     fn evaluate_type(
         &mut self,
         ty: &ResolvedType,
@@ -1822,7 +1822,7 @@ impl Materializer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Computes the bind node arguments.
+    /// Derives the bind node arguments while materializing grammar applications and container shapes.
     fn bind_node_arguments(
         &mut self,
         node: NodeId,
@@ -1894,7 +1894,7 @@ impl Materializer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Evaluates alias.
+    /// Expands a type alias while detecting recursion and unsupported open arguments.
     fn evaluate_alias(
         &mut self,
         alias: TypeAliasId,
@@ -2053,7 +2053,7 @@ impl Materializer {
         })
     }
 
-    /// Projects normalized grammar.
+    /// Builds normalized types, sites, declarations, and correlations from closed applications.
     fn project_normalized_grammar(&self) -> (GrammarDescription, LoweringMap) {
         // Allocate all dense identities first, then populate shapes and correlations without order-dependent backpatching.
         let mut grammar = GrammarDescription::new(
@@ -2434,7 +2434,7 @@ impl Materializer {
         )
     }
 
-    /// Computes the attachment unit projections.
+    /// Derives the attachment unit projections while materializing grammar applications and container shapes.
     fn attachment_unit_projections(
         &self,
         terminal_type_count: usize,
@@ -2502,7 +2502,7 @@ impl Materializer {
         units
     }
 
-    /// Projects attachment unit.
+    /// Correlates one repeated attachment unit with its normalized semantic sites.
     fn project_attachment_unit(
         &self,
         grammar: &mut GrammarDescription,
@@ -2569,7 +2569,7 @@ impl Materializer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Projects elements.
+    /// Lowers materialized elements to normalized parse sites in source order.
     fn project_elements(
         &self,
         grammar: &mut GrammarDescription,
@@ -2656,7 +2656,7 @@ impl Materializer {
             .collect()
     }
 
-    /// Computes the display application.
+    /// Derives the display application while materializing grammar applications and container shapes.
     fn display_application(&self, node: &ResolvedNode, arguments: &[EvaluatedType]) -> String {
         let name = node.key.segments.join("::");
         if arguments.is_empty() {
@@ -2672,7 +2672,7 @@ impl Materializer {
         )
     }
 
-    /// Computes the display type.
+    /// Derives the display type while materializing grammar applications and container shapes.
     fn display_type(&self, ty: &ClosedType) -> String {
         match ty {
             ClosedType::Node(node) => self.applications[node.application.index()]
@@ -2688,7 +2688,7 @@ impl Materializer {
         }
     }
 
-    /// Records node diagnostic.
+    /// Attaches a materialization diagnostic to an authored Node declaration.
     fn push_node_diagnostic(
         &mut self,
         node: &ResolvedNode,
@@ -2704,7 +2704,7 @@ impl Materializer {
         );
     }
 
-    /// Records invalid arguments.
+    /// Diagnoses semantic type arguments that violate the target's accepted shape.
     fn push_invalid_arguments(&mut self, ty: &ResolvedType, name: &str) {
         self.push_diagnostic(
             ty.source,
@@ -2714,7 +2714,7 @@ impl Materializer {
         );
     }
 
-    /// Records diagnostic.
+    /// Adds a diagnostic at the active application and authored source range.
     fn push_diagnostic(
         &mut self,
         source: crate::SourceId,
@@ -2729,7 +2729,7 @@ impl Materializer {
         self.push_diagnostic_in_module(module, source, range, kind, message);
     }
 
-    /// Records diagnostic in module.
+    /// Adds a diagnostic with both physical and logical module provenance.
     fn push_diagnostic_in_module(
         &mut self,
         module: Option<crate::lowering::ModuleId>,
@@ -2753,7 +2753,7 @@ impl Materializer {
     }
 }
 
-/// Wraps catalog.
+/// Applies a supported container constructor around a closed semantic type.
 fn wrap_catalog(
     catalog: CatalogType,
     mut prefix: Vec<MaterializationTraceStep>,
@@ -2782,15 +2782,15 @@ fn wrap_catalog(
 }
 
 #[derive(Clone, Copy)]
-/// The possible terminal cases used by source analysis.
+/// Classifies the terminal alternatives supported during materialization.
 enum Terminal {
-    /// The node case.
+    /// Selects the node materialization alternative.
     Node(MaterializedApplicationId),
-    /// The content token case.
+    /// Selects the content token materialization alternative.
     ContentToken(ContentTokenId),
 }
 
-/// Computes the exact pratt self operand.
+/// Derives the exact pratt self operand while materializing grammar applications and container shapes.
 fn exact_pratt_self_operand(
     element: &MaterializedElement,
     current_application: &MaterializedNodeUse,
@@ -2807,7 +2807,7 @@ fn exact_pratt_self_operand(
     exact_pratt_self_parts(ty, trace, separator.as_ref(), current_application)
 }
 
-/// Computes the exact pratt self parts.
+/// Derives the exact pratt self parts while materializing grammar applications and container shapes.
 fn exact_pratt_self_parts(
     ty: &ClosedType,
     trace: &MaterializationTrace,
@@ -2829,7 +2829,7 @@ fn exact_pratt_self_parts(
             ))
 }
 
-/// Whether the value is recursive pratt operand.
+/// Reports whether this value is recursive pratt operand.
 fn is_recursive_pratt_operand(ty: &ClosedType, owner: MaterializedApplicationId) -> bool {
     match ty {
         ClosedType::Node(node) => node.application == owner,
@@ -2841,7 +2841,7 @@ fn is_recursive_pratt_operand(ty: &ClosedType, owner: MaterializedApplicationId)
     }
 }
 
-/// Computes the attachment terminal.
+/// Derives the attachment terminal while materializing grammar applications and container shapes.
 fn attachment_terminal(ty: &ClosedType) -> &ClosedType {
     match ty {
         ClosedType::Boxed(inner)
@@ -2852,7 +2852,7 @@ fn attachment_terminal(ty: &ClosedType) -> &ClosedType {
     }
 }
 
-/// Computes the terminal and container.
+/// Derives the terminal and container while materializing grammar applications and container shapes.
 fn terminal_and_container(
     ty: &ClosedType,
     separator: Option<RepeatSeparator>,

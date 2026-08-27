@@ -24,22 +24,22 @@ use syn::{Attribute, Expr, Item, Lit, LitInt, Meta, Path, Token};
 use crate::TextEquivalence;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-/// The cargo cfg snapshot representation used by source analysis.
+/// Canonical active Cargo configuration used to filter authored syntax.
 pub(crate) struct CargoCfgSnapshot {
-    /// The flags.
+    /// Enabled single-name predicates such as target-family flags.
     flags: BTreeSet<String>,
-    /// The values.
+    /// Enabled values grouped by Cargo configuration key.
     values: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl CargoCfgSnapshot {
-    /// Computes the with flag.
+    /// Adds an enabled flag to a snapshot under construction.
     pub(crate) fn with_flag(mut self, name: impl Into<String>) -> Self {
         self.flags.insert(name.into());
         self
     }
 
-    /// Computes the with value.
+    /// Adds one enabled value under its Cargo configuration key.
     pub(crate) fn with_value(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.values
             .entry(name.into())
@@ -48,7 +48,7 @@ impl CargoCfgSnapshot {
         self
     }
 
-    /// Computes the from cargo environment.
+    /// Captures Cargo's active `cfg` flags and values for source-tree filtering.
     pub(crate) fn from_cargo_environment<I, K, V>(variables: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -94,7 +94,7 @@ impl CargoCfgSnapshot {
         facts
     }
 
-    /// Computes the flag.
+    /// Evaluates a flag while rejecting invocation-only configuration names.
     fn flag(&self, name: &str) -> Result<bool, CfgLookupFailure> {
         if invocation_only_cfg(name) {
             return Err(CfgLookupFailure::InvocationOnly);
@@ -108,7 +108,7 @@ impl CargoCfgSnapshot {
         }
     }
 
-    /// Computes the value.
+    /// Evaluates a key-value predicate with Cargo's empty-value exceptions.
     fn value(&self, name: &str, value: &str) -> Result<bool, CfgLookupFailure> {
         if invocation_only_cfg(name) {
             return Err(CfgLookupFailure::InvocationOnly);
@@ -123,17 +123,17 @@ impl CargoCfgSnapshot {
     }
 }
 
-/// Computes the invocation only cfg.
+/// Reports configuration names whose truth is owned by this macro invocation.
 fn invocation_only_cfg(name: &str) -> bool {
     matches!(name, "test" | "doc" | "doctest")
 }
 
-/// Computes the empty value cfg.
+/// Reports Cargo keys for which an empty value is still an observed value.
 fn empty_value_cfg(name: &str) -> bool {
     matches!(name, "target_abi" | "target_env")
 }
 
-/// Computes the compiler owned cfg.
+/// Reports configuration names defined by rustc rather than build-script features.
 fn compiler_owned_cfg(name: &str) -> bool {
     matches!(
         name,
@@ -166,36 +166,36 @@ fn compiler_owned_cfg(name: &str) -> bool {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The grammar config syntax representation used by source analysis.
+/// Parsed root `grammar!` configuration before path and capability resolution.
 pub(crate) struct GrammarConfigSyntax {
-    /// The module.
+    /// Selected-root logical module anchor.
     pub(crate) module: Path,
-    /// The facade.
+    /// Crate identifier used for Recursa semantic paths and generated protocol calls.
     pub(crate) facade: syn::Ident,
-    /// The facade explicit.
+    /// Whether the author explicitly supplied the facade mapping.
     pub(crate) facade_explicit: bool,
-    /// The text equivalence.
+    /// Grammar-wide keyword matching relation.
     pub(crate) text_equivalence: TextEquivalence,
-    /// The invalid keyword matching.
+    /// Unsupported authored keyword policy retained for a structured diagnostic.
     pub(crate) invalid_keyword_matching: Option<InvalidKeywordMatchingSyntax>,
-    /// The max lookahead.
+    /// Maximum predictive dispatch depth selected by the grammar.
     pub(crate) max_lookahead: usize,
-    /// The spans.
+    /// Default occurrence-span capture policy.
     pub(crate) spans: CaptureMode,
-    /// The derives.
+    /// Grammar-wide configured-trait selections in authored order.
     pub(crate) derives: Vec<Path>,
-    /// The diagrams.
+    /// Whether generation should publish railroad diagrams.
     pub(crate) diagrams: bool,
-    /// The pretty.
+    /// Grammar-wide Pretty layout defaults.
     pub(crate) pretty: PrettyDefaults,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The pretty defaults representation used by source analysis.
+/// Validated grammar-wide defaults for generated Pretty implementations.
 pub(crate) struct PrettyDefaults {
-    /// The max width.
+    /// Preferred maximum rendered line width.
     pub(crate) max_width: usize,
-    /// The indent.
+    /// Spaces added for each indentation level.
     pub(crate) indent: usize,
 }
 
@@ -242,18 +242,18 @@ impl Parse for PrettyDefaults {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible capture mode cases used by source analysis.
+/// Classifies the capture mode syntax forms accepted before semantic resolution.
 pub(crate) enum CaptureMode {
-    /// The off case.
+    /// Identifies the off authored syntax form.
     Off,
-    /// The optional case.
+    /// Identifies the optional authored syntax form.
     Optional,
-    /// The mandatory case.
+    /// Identifies the mandatory authored syntax form.
     Mandatory,
 }
 
 impl CaptureMode {
-    /// Parses parse.
+    /// Parses the closed `off`, `optional`, and `mandatory` span-capture vocabulary.
     pub(crate) fn parse(value: syn::Ident) -> syn::Result<Self> {
         if value == "off" {
             Ok(Self::Off)
@@ -270,7 +270,7 @@ impl CaptureMode {
     }
 }
 
-/// Computes the capture override.
+/// Derives the capture override from parsed Rust syntax without resolving semantic targets.
 pub(crate) fn capture_override(metas: &[Meta]) -> syn::Result<Option<CaptureMode>> {
     let mut capture = None;
     for meta in metas.iter().filter(|meta| meta.path().is_ident("spanned")) {
@@ -385,11 +385,11 @@ mod capture_tests {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The invalid keyword matching syntax representation used by source analysis.
+/// Carries the invalid keyword matching syntax parsed from authored Rust syntax before semantic resolution.
 pub(crate) struct InvalidKeywordMatchingSyntax {
-    /// The authored.
+    /// Supplies the authored consumed by later discovery and resolution phases.
     pub(crate) authored: String,
-    /// The range.
+    /// Supplies the range consumed by later discovery and resolution phases.
     pub(crate) range: std::ops::Range<u32>,
 }
 
@@ -482,7 +482,7 @@ impl Parse for GrammarConfigSyntax {
     }
 }
 
-/// Rejects duplicate.
+/// Rejects a repeated configuration key at the second authored span.
 fn reject_duplicate<T>(value: &Option<T>, span: Span, name: &str) -> syn::Result<()> {
     if value.is_some() {
         Err(syn::Error::new(span, format!("duplicate {name} setting")))
@@ -492,35 +492,35 @@ fn reject_duplicate<T>(value: &Option<T>, span: Span, name: &str) -> syn::Result
 }
 
 #[derive(Clone, Debug)]
-/// The configured attributes representation used by source analysis.
+/// Carries the configured attributes parsed from authored Rust syntax before semantic resolution.
 pub(crate) struct ConfiguredAttributes {
-    /// The metas.
+    /// Supplies the metas consumed by later discovery and resolution phases.
     pub(crate) metas: Vec<Meta>,
 }
 
 #[derive(Clone, Debug)]
-/// The configuration error representation used by source analysis.
+/// Carries the configuration error parsed from authored Rust syntax before semantic resolution.
 pub(crate) struct ConfigurationError {
-    /// The kind.
+    /// Supplies the kind consumed by later discovery and resolution phases.
     pub(crate) kind: ConfigurationErrorKind,
-    /// The range.
+    /// Supplies the range consumed by later discovery and resolution phases.
     pub(crate) range: Range<u32>,
-    /// The message.
+    /// Supplies the message consumed by later discovery and resolution phases.
     pub(crate) message: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible configuration error kind cases used by source analysis.
+/// Classifies the configuration error kind syntax forms accepted before semantic resolution.
 pub(crate) enum ConfigurationErrorKind {
-    /// The unknown case.
+    /// Identifies the unknown authored syntax form.
     Unknown,
-    /// The invocation only case.
+    /// Identifies the invocation only authored syntax form.
     InvocationOnly,
-    /// The malformed case.
+    /// Identifies the malformed authored syntax form.
     Malformed,
 }
 
-/// Configures attributes.
+/// Applies active `cfg` and `cfg_attr` expressions without expanding unrelated attributes.
 pub(crate) fn configure_attributes(
     attributes: &[Attribute],
     cfg: &CargoCfgSnapshot,
@@ -536,7 +536,7 @@ pub(crate) fn configure_attributes(
     Ok(Some(ConfiguredAttributes { metas }))
 }
 
-/// Computes the configured attribute metas.
+/// Derives the configured attribute metas from parsed Rust syntax without resolving semantic targets.
 pub(crate) fn configured_attribute_metas(
     attributes: &[Attribute],
     cfg: &CargoCfgSnapshot,
@@ -545,7 +545,7 @@ pub(crate) fn configured_attribute_metas(
         .map(|configured| configured.map(|configured| configured.metas))
 }
 
-/// Computes the item attributes.
+/// Derives the item attributes from parsed Rust syntax without resolving semantic targets.
 pub(crate) fn item_attributes(item: &Item) -> &[Attribute] {
     match item {
         Item::Const(item) => &item.attrs,
@@ -568,7 +568,7 @@ pub(crate) fn item_attributes(item: &Item) -> &[Attribute] {
     }
 }
 
-/// Computes the path text.
+/// Derives the path text from parsed Rust syntax without resolving semantic targets.
 pub(crate) fn path_text(path: &Path) -> String {
     path.segments
         .iter()
@@ -577,7 +577,7 @@ pub(crate) fn path_text(path: &Path) -> String {
         .join("::")
 }
 
-/// Applies meta.
+/// Evaluates one configuration meta item and emits any enabled nested attributes.
 fn apply_meta(
     meta: &Meta,
     cfg: &CargoCfgSnapshot,
@@ -621,7 +621,7 @@ fn apply_meta(
     Ok(())
 }
 
-/// Computes the configuration error.
+/// Derives the configuration error from parsed Rust syntax without resolving semantic targets.
 fn configuration_error(span: Span, message: impl Into<String>) -> ConfigurationError {
     ConfigurationError {
         kind: ConfigurationErrorKind::Malformed,
@@ -630,7 +630,7 @@ fn configuration_error(span: Span, message: impl Into<String>) -> ConfigurationE
     }
 }
 
-/// Evaluates cfg.
+/// Evaluates the supported Cargo configuration predicate vocabulary.
 fn evaluate_cfg(meta: &Meta, snapshot: &CargoCfgSnapshot) -> Result<bool, ConfigurationError> {
     let name = meta
         .path()
@@ -684,15 +684,15 @@ fn evaluate_cfg(meta: &Meta, snapshot: &CargoCfgSnapshot) -> Result<bool, Config
 }
 
 #[derive(Clone, Copy, Debug)]
-/// The possible cfg lookup failure cases used by source analysis.
+/// Classifies the cfg lookup failure syntax forms accepted before semantic resolution.
 enum CfgLookupFailure {
-    /// The unknown case.
+    /// Identifies the unknown authored syntax form.
     Unknown,
-    /// The invocation only case.
+    /// Identifies the invocation only authored syntax form.
     InvocationOnly,
 }
 
-/// Computes the cfg lookup error.
+/// Derives the cfg lookup error from parsed Rust syntax without resolving semantic targets.
 fn cfg_lookup_error(failure: CfgLookupFailure, span: Span, name: &str) -> ConfigurationError {
     match failure {
         CfgLookupFailure::Unknown => ConfigurationError {
@@ -708,7 +708,7 @@ fn cfg_lookup_error(failure: CfgLookupFailure, span: Span, name: &str) -> Config
     }
 }
 
-/// Computes the span range.
+/// Derives the span range from parsed Rust syntax without resolving semantic targets.
 pub(crate) fn span_range(span: Span) -> Range<u32> {
     let range = span.byte_range();
     range.start.try_into().unwrap_or(u32::MAX)..range.end.try_into().unwrap_or(u32::MAX)

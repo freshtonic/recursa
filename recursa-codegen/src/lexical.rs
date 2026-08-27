@@ -23,41 +23,41 @@ use crate::source_model::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The lexical plan report representation used by source analysis.
+/// Reports either a validated lexical plan or the diagnostics that prevented one.
 pub(crate) struct LexicalPlanReport {
-    /// The diagnostics.
+    /// Diagnostics accumulated in deterministic source order.
     pub(crate) diagnostics: Vec<LexicalDiagnostic>,
-    /// The plan.
+    /// Complete plan, present only when no blocking diagnostic was emitted.
     pub(crate) plan: Option<LexicalPlan>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The lexical plan representation used by source analysis.
+/// Backend-independent description of every token recognized by the grammar.
 pub(crate) struct LexicalPlan {
-    /// The text equivalence.
+    /// Equivalence policy applied to fixed spellings and keyword carriers.
     pub(crate) text_equivalence: TextEquivalence,
-    /// The selection order.
+    /// Tie-breaking contract that generated lexers must implement.
     pub(crate) selection_order: LexicalSelectionOrder,
-    /// The token kinds.
+    /// Stable kind table indexed by [`KindId`].
     pub(crate) token_kinds: Vec<TokenKindPlan>,
-    /// The content bases.
+    /// Merged content-token definitions that produce the planned kinds.
     pub(crate) content_bases: Vec<ContentBasePlan>,
-    /// The keywords.
+    /// Fixed keywords and the carrier relationships proved for them.
     pub(crate) keywords: Vec<KeywordPlan>,
-    /// The parser targets.
+    /// Parser-facing content-token targets and the kinds each accepts.
     pub(crate) parser_targets: Vec<ParserTargetPlan>,
-    /// The rules.
+    /// Token-emitting matcher rules.
     pub(crate) rules: Vec<LexicalRule>,
-    /// The non token rules.
+    /// Non-emitting matcher rules such as trivia.
     pub(crate) non_token_rules: Vec<NonTokenLexicalRule>,
-    /// The lowering map.
+    /// Correlation from source definitions to their assigned kind.
     pub(crate) lowering_map: LexicalLoweringMap,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible lexical selection order cases used by source analysis.
+/// Defines the precedence contract shared by validation and generated lexers.
 pub(crate) enum LexicalSelectionOrder {
-    /// The longest prefix then fixed then authored pattern priority case.
+    /// Prefer length, then fixed rules, then authored pattern priority.
     LongestPrefixThenFixedThenAuthoredPatternPriority,
 }
 
@@ -206,7 +206,7 @@ impl LexicalPlan {
     }
 }
 
-/// Computes the lexical priority projection key.
+/// Projects rule priority into the ordering used by canonical output.
 const fn lexical_priority_projection_key(priority: LexicalPriority) -> (u8, Option<u32>) {
     match priority {
         LexicalPriority::Fixed => (0, None),
@@ -214,7 +214,7 @@ const fn lexical_priority_projection_key(priority: LexicalPriority) -> (u8, Opti
     }
 }
 
-/// Computes the kind label.
+/// Renders an identity-bearing, stable label for a token kind.
 pub(crate) fn kind_label(identity: &TokenKindIdentity) -> String {
     match identity {
         TokenKindIdentity::Fixed(spelling) => format!("fixed:{spelling}"),
@@ -232,146 +232,146 @@ pub(crate) fn kind_label(identity: &TokenKindIdentity) -> String {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The token kind plan representation used by source analysis.
+/// Associates one dense kind ID with its grammar-derived identity.
 pub(crate) struct TokenKindPlan {
-    /// The id.
+    /// Dense index used by parser and lexer tables.
     pub(crate) id: KindId,
-    /// The identity.
+    /// Meaning that remains stable across source-order permutations.
     pub(crate) identity: TokenKindIdentity,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible token kind identity cases used by source analysis.
+/// Identifies a kind by the lexical definition that produces it.
 pub(crate) enum TokenKindIdentity {
-    /// The fixed case.
+    /// A fixed spelling.
     Fixed(String),
-    /// The content base case.
+    /// A merged content-token matcher.
     ContentBase(ContentBaseIdentity),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The content base identity representation used by source analysis.
+/// Identity-bearing matcher metadata shared by equivalent content definitions.
 pub(crate) struct ContentBaseIdentity {
-    /// The pattern.
+    /// Preserves the authored matcher pattern for validation and generation.
     pub(crate) pattern: String,
-    /// The callback.
+    /// Opaque callback invoked for a match, if authored.
     pub(crate) callback: Option<syn::Path>,
-    /// The priority.
+    /// Controls deterministic selection among competing lexical matchers.
     pub(crate) priority: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The content base plan representation used by source analysis.
+/// Merged content-token definition published to lexer generation.
 pub(crate) struct ContentBasePlan {
-    /// The kind.
+    /// Identifies the token kind produced by this lexical rule.
     pub(crate) kind: KindId,
-    /// The target names.
+    /// Lists parser targets that admit this token classification.
     pub(crate) target_names: Vec<String>,
-    /// The pattern.
+    /// Preserves the authored matcher pattern for validation and generation.
     pub(crate) pattern: String,
-    /// The callback.
+    /// Opaque callback invoked for a match, if authored.
     pub(crate) callback: Option<syn::Path>,
-    /// The authored priority.
+    /// Preserves an explicitly authored pattern priority, when present.
     pub(crate) authored_priority: Option<u32>,
 }
 
-/// The content base group representation used by source analysis.
+/// Equivalent authored definitions merged under one content identity.
 struct ContentBaseGroup<'source> {
-    /// The identity.
+    /// Shared identity established from normalized definition metadata.
     identity: ContentBaseIdentity,
-    /// The definitions.
+    /// Non-empty set of source definitions represented by the group.
     definitions: NonEmpty<&'source crate::source_model::TokenDefinition>,
 }
 
-/// The pattern contender representation used by source analysis.
+/// Normalized matcher participating in overlap and priority analysis.
 struct PatternContender {
-    /// The pattern.
+    /// Preserves the authored matcher pattern for validation and generation.
     pattern: String,
-    /// The target names.
+    /// Lists parser targets that admit this token classification.
     target_names: Vec<String>,
-    /// The authored priority.
+    /// Preserves an explicitly authored pattern priority, when present.
     authored_priority: Option<u32>,
-    /// The priority authorable.
+    /// Whether authors may resolve an overlap by assigning a priority.
     priority_authorable: bool,
-    /// The outcome.
+    /// Observable effect when this matcher wins.
     outcome: LexicalPatternOutcome,
-    /// The sites.
+    /// Retains source sites in deterministic diagnostic order.
     sites: Vec<SourceSite>,
 }
 
-/// The non token rule group representation used by source analysis.
+/// Equivalent non-emitting lexer records merged for planning.
 struct NonTokenRuleGroup {
-    /// The pattern.
+    /// Preserves the authored matcher pattern for validation and generation.
     pattern: String,
-    /// The outcome.
+    /// Effect shared by all records in the group.
     outcome: crate::source_model::NonTokenLexerOutcome,
-    /// The sites.
+    /// Retains source sites in deterministic diagnostic order.
     sites: NonEmpty<SourceSite>,
 }
 
-/// The retained fixed matcher representation used by source analysis.
+/// Fixed matcher that remains standalone after carrier analysis.
 struct RetainedFixedMatcher {
-    /// The spelling.
+    /// Canonical authored spelling.
     spelling: String,
-    /// The ascii insensitive.
+    /// Whether ASCII case variants are equivalent matches.
     ascii_insensitive: bool,
 }
 
-/// The fixed matcher representation used by source analysis.
+/// Normalized fixed spelling considered during carrier proof.
 struct FixedMatcher {
-    /// The spelling.
+    /// Canonical authored spelling.
     spelling: String,
-    /// The word shaped.
+    /// Whether the spelling consists solely of word characters.
     word_shaped: bool,
-    /// The ascii insensitive.
+    /// Whether ASCII case variants are equivalent matches.
     ascii_insensitive: bool,
 }
 
-/// The symbolic carrier proof representation used by source analysis.
+/// Proof that one or more content kinds recognize a fixed keyword spelling.
 struct SymbolicCarrierProof {
-    /// The carrier.
+    /// Canonical carrier used for the keyword classification.
     carrier: ContentBaseIdentity,
-    /// The additional carriers.
+    /// Other content identities that recognize the same spelling at equal precedence.
     additional_carriers: Vec<ContentBaseIdentity>,
 }
 
 impl SymbolicCarrierProof {
-    /// Computes the identities.
+    /// Iterates over the canonical carrier followed by any additional carriers.
     fn identities(&self) -> impl Iterator<Item = &ContentBaseIdentity> {
         std::iter::once(&self.carrier).chain(&self.additional_carriers)
     }
 }
 
-/// The carrier proof cache representation used by source analysis.
+/// Memoizes keyword-carrier proofs by normalized fixed spelling.
 struct CarrierProofCache {
-    /// The proofs.
+    /// Successful and failed proofs already evaluated.
     proofs: BTreeMap<String, Option<SymbolicCarrierProof>>,
-    /// The matcher constructions.
+    /// Number of combined matchers constructed, exposed to invariant tests.
     matcher_constructions: usize,
-    /// The proof evaluations.
+    /// Number of uncached spellings evaluated, exposed to invariant tests.
     proof_evaluations: usize,
 }
 
-/// The possible carrier candidate cases used by source analysis.
+/// Records how a pattern that accepts a keyword affects token emission.
 enum CarrierCandidate {
-    /// The emitting case.
+    /// Produces a content kind.
     Emitting {
-        /// The group.
+        /// Index of the corresponding content-base group.
         group: usize,
-        /// The opaque.
+        /// Whether an opaque callback prevents a complete symbolic proof.
         opaque: bool,
-        /// The priority.
+        /// Controls deterministic selection among competing lexical matchers.
         priority: u32,
     },
-    /// The non emitting case.
+    /// Consumes input without producing a token.
     NonEmitting {
-        /// The priority.
+        /// Controls deterministic selection among competing lexical matchers.
         priority: u32,
     },
 }
 
 impl CarrierCandidate {
-    /// Computes the priority.
+    /// Returns the candidate's normalized precedence.
     const fn priority(&self) -> u32 {
         match self {
             Self::Emitting { priority, .. } | Self::NonEmitting { priority } => *priority,
@@ -379,18 +379,18 @@ impl CarrierCandidate {
     }
 }
 
-/// The carrier prover representation used by source analysis.
+/// Combined DFA and metadata used to prove keyword-carrier relationships.
 struct CarrierProver {
-    /// The dfa.
+    /// DFA whose pattern IDs correspond to `candidates`, or `None` when compilation failed.
     dfa: Option<dense::DFA<Vec<u32>>>,
-    /// The candidates.
+    /// Candidate metadata in the DFA's pattern order.
     candidates: Vec<CarrierCandidate>,
-    /// The matcher constructions.
+    /// Number of DFA constructions represented by this prover.
     matcher_constructions: usize,
 }
 
 impl ContentBaseGroup<'_> {
-    /// Computes the sites.
+    /// Collects every definition site represented by this group.
     fn sites(&self) -> Vec<SourceSite> {
         self.definitions
             .iter()
@@ -398,7 +398,7 @@ impl ContentBaseGroup<'_> {
             .collect()
     }
 
-    /// Computes the priority authorable.
+    /// Reports whether every grouped definition can author a matcher priority.
     fn priority_authorable(&self) -> bool {
         self.definitions
             .iter()
@@ -407,49 +407,49 @@ impl ContentBaseGroup<'_> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The keyword plan representation used by source analysis.
+/// Carries the keyword plan used to plan deterministic token recognition.
 pub(crate) struct KeywordPlan {
-    /// The canonical spelling.
+    /// Supplies the canonical spelling used to validate or execute the lexical plan.
     pub(crate) canonical_spelling: String,
-    /// The kind.
+    /// Identifies the token kind produced by this lexical rule.
     pub(crate) kind: KindId,
-    /// The recognition.
+    /// Supplies the recognition used to validate or execute the lexical plan.
     pub(crate) recognition: KeywordRecognition,
-    /// The definition sites.
+    /// Supplies the definition sites used to validate or execute the lexical plan.
     pub(crate) definition_sites: Vec<SourceSite>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible keyword recognition cases used by source analysis.
+/// Classifies the keyword recognition alternatives recognized by lexical planning.
 pub(crate) enum KeywordRecognition {
-    /// The standalone case.
+    /// Selects the standalone lexical alternative.
     Standalone,
-    /// The combined carriers case.
+    /// Selects the combined carriers lexical alternative.
     CombinedCarriers {
-        /// The carrier.
+        /// Supplies the carrier used to validate or execute the lexical plan.
         carrier: KindId,
-        /// The additional carriers.
+        /// Supplies the additional carriers used to validate or execute the lexical plan.
         additional_carriers: Vec<KindId>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The parser target plan representation used by source analysis.
+/// Carries the parser target plan used to plan deterministic token recognition.
 pub(crate) struct ParserTargetPlan {
-    /// The definition.
+    /// Supplies the definition used to validate or execute the lexical plan.
     pub(crate) definition: crate::lowering::TokenDefinitionId,
-    /// The semantic.
+    /// Supplies the semantic used to validate or execute the lexical plan.
     pub(crate) semantic: crate::resolution::ContentTokenId,
-    /// The name.
+    /// Supplies the name used to validate or execute the lexical plan.
     pub(crate) name: String,
-    /// The base kind.
+    /// Supplies the base kind used to validate or execute the lexical plan.
     pub(crate) base_kind: KindId,
-    /// The admitted kinds.
+    /// Supplies the admitted kinds used to validate or execute the lexical plan.
     pub(crate) admitted_kinds: KindSet,
 }
 
 impl ParserTargetPlan {
-    /// Computes the accepted kinds.
+    /// Derives the accepted kinds under the grammar keyword and lexical-selection policies.
     pub(crate) fn accepted_kinds(&self) -> KindSet {
         let mut accepted = self.admitted_kinds.clone();
         accepted
@@ -460,63 +460,63 @@ impl ParserTargetPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The lexical rule representation used by source analysis.
+/// Carries the lexical rule used to plan deterministic token recognition.
 pub(crate) struct LexicalRule {
-    /// The matcher.
+    /// Supplies the matcher used to validate or execute the lexical plan.
     pub(crate) matcher: LexicalMatcher,
-    /// The kind.
+    /// Identifies the token kind produced by this lexical rule.
     pub(crate) kind: KindId,
-    /// The role.
+    /// Supplies the role used to validate or execute the lexical plan.
     pub(crate) role: LexicalRuleRole,
-    /// The priority.
+    /// Controls deterministic selection among competing lexical matchers.
     pub(crate) priority: LexicalPriority,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The non token lexical rule representation used by source analysis.
+/// Carries the non token lexical rule used to plan deterministic token recognition.
 pub(crate) struct NonTokenLexicalRule {
-    /// The matcher.
+    /// Supplies the matcher used to validate or execute the lexical plan.
     pub(crate) matcher: LexicalMatcher,
-    /// The outcome.
+    /// Supplies the outcome used to validate or execute the lexical plan.
     pub(crate) outcome: NonTokenLexicalOutcome,
-    /// The sites.
+    /// Retains source sites in deterministic diagnostic order.
     pub(crate) sites: NonEmpty<SourceSite>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible non token lexical outcome cases used by source analysis.
+/// Classifies the non token lexical outcome alternatives recognized by lexical planning.
 pub(crate) enum NonTokenLexicalOutcome {
-    /// The non emitting case.
+    /// Selects the non emitting lexical alternative.
     NonEmitting,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The lexical lowering map representation used by source analysis.
+/// Carries the lexical lowering map used to plan deterministic token recognition.
 pub(crate) struct LexicalLoweringMap {
-    /// The token definitions.
+    /// Supplies the token definitions used to validate or execute the lexical plan.
     pub(crate) token_definitions: Vec<TokenDefinitionKindCorrelation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The token definition kind correlation representation used by source analysis.
+/// Carries the token definition kind correlation used to plan deterministic token recognition.
 pub(crate) struct TokenDefinitionKindCorrelation {
-    /// The source.
+    /// Supplies the source used to validate or execute the lexical plan.
     pub(crate) source: crate::lowering::TokenDefinitionId,
-    /// The lowered.
+    /// Supplies the lowered used to validate or execute the lexical plan.
     pub(crate) lowered: KindId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The non empty representation used by source analysis.
+/// Carries the non empty used to plan deterministic token recognition.
 pub(crate) struct NonEmpty<T>(Vec<T>);
 
 impl<T> NonEmpty<T> {
-    /// Creates a value with the supplied analysis inputs.
+    /// Starts a non-empty collection with its mandatory first value.
     fn new(first: T) -> Self {
         Self(vec![first])
     }
 
-    /// Computes the from vec.
+    /// Rejects an empty vector and preserves every value otherwise.
     fn from_vec(values: Vec<T>) -> Option<Self> {
         if values.is_empty() {
             None
@@ -525,42 +525,42 @@ impl<T> NonEmpty<T> {
         }
     }
 
-    /// Records push.
+    /// Appends one value while preserving the non-empty invariant.
     fn push(&mut self, value: T) {
         self.0.push(value);
     }
 
-    /// Computes the iter.
+    /// Iterates over values in insertion order.
     fn iter(&self) -> impl Iterator<Item = &T> {
         self.0.iter()
     }
 
-    /// Returns the slice.
+    /// Borrows all values without exposing mutable access to the backing vector.
     fn as_slice(&self) -> &[T] {
         &self.0
     }
 
-    /// Sorts by.
+    /// Reorders values with the supplied deterministic comparator.
     fn sort_by(&mut self, compare: impl FnMut(&T, &T) -> std::cmp::Ordering) {
         self.0.sort_by(compare);
     }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible lexical matcher cases used by source analysis.
+/// Classifies the lexical matcher alternatives recognized by lexical planning.
 pub(crate) enum LexicalMatcher {
-    /// The fixed case.
+    /// Selects the fixed lexical alternative.
     Fixed(String),
-    /// The regex case.
+    /// Selects the regex lexical alternative.
     Regex(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible lexical priority cases used by source analysis.
+/// Classifies the lexical priority alternatives recognized by lexical planning.
 pub(crate) enum LexicalPriority {
-    /// The fixed case.
+    /// Selects the fixed lexical alternative.
     Fixed,
-    /// The pattern case.
+    /// Selects the pattern lexical alternative.
     Pattern {
         #[doc = "Optional priority explicitly supplied by the grammar author."]
         authored: Option<u32>,
@@ -568,48 +568,48 @@ pub(crate) enum LexicalPriority {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible lexical rule role cases used by source analysis.
+/// Classifies the lexical rule role alternatives recognized by lexical planning.
 pub(crate) enum LexicalRuleRole {
-    /// The standalone keyword case.
+    /// Selects the standalone keyword lexical alternative.
     StandaloneKeyword,
-    /// The standalone fixed case.
+    /// Selects the standalone fixed lexical alternative.
     StandaloneFixed,
-    /// The content pattern case.
+    /// Selects the content pattern lexical alternative.
     ContentPattern,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The lexical diagnostic representation used by source analysis.
+/// Carries the lexical diagnostic used to plan deterministic token recognition.
 pub(crate) struct LexicalDiagnostic {
-    /// The code.
+    /// Supplies the code used to validate or execute the lexical plan.
     pub(crate) code: LexicalDiagnosticCode,
-    /// The sites.
+    /// Retains source sites in deterministic diagnostic order.
     pub(crate) sites: Vec<SourceSite>,
-    /// The evidence.
+    /// Supplies the evidence used to validate or execute the lexical plan.
     pub(crate) evidence: LexicalDiagnosticEvidence,
-    /// The remedies.
+    /// Supplies the remedies used to validate or execute the lexical plan.
     pub(crate) remedies: Vec<LexicalRemedy>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible lexical diagnostic code cases used by source analysis.
+/// Classifies the lexical diagnostic code alternatives recognized by lexical planning.
 pub(crate) enum LexicalDiagnosticCode {
-    /// The rca3001 case.
+    /// Selects the rca3001 lexical alternative.
     Rca3001,
-    /// The rca3002 case.
+    /// Selects the rca3002 lexical alternative.
     Rca3002,
-    /// The rca3003 case.
+    /// Selects the rca3003 lexical alternative.
     Rca3003,
-    /// The rca3004 case.
+    /// Selects the rca3004 lexical alternative.
     Rca3004,
-    /// The rca3005 case.
+    /// Selects the rca3005 lexical alternative.
     Rca3005,
-    /// The rca3006 case.
+    /// Selects the rca3006 lexical alternative.
     Rca3006,
 }
 
 impl LexicalDiagnosticCode {
-    /// The all constant used by source analysis.
+    /// Complete diagnostic-code catalog in stable numeric order.
     pub(crate) const ALL: [Self; 6] = [
         Self::Rca3001,
         Self::Rca3002,
@@ -619,7 +619,7 @@ impl LexicalDiagnosticCode {
         Self::Rca3006,
     ];
 
-    /// Returns the str.
+    /// Returns the stable diagnostic code used in rendered source-analysis output.
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Rca3001 => "RCA3001",
@@ -631,7 +631,7 @@ impl LexicalDiagnosticCode {
         }
     }
 
-    /// Computes the spec.
+    /// Returns the registry entry defining this code's condition, evidence, and remedy.
     pub(crate) const fn spec(self) -> LexicalDiagnosticSpec {
         match self {
             Self::Rca3001 => LexicalDiagnosticSpec {
@@ -675,217 +675,217 @@ impl LexicalDiagnosticCode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The lexical diagnostic spec representation used by source analysis.
+/// Carries the lexical diagnostic spec used to plan deterministic token recognition.
 pub(crate) struct LexicalDiagnosticSpec {
-    /// The code.
+    /// Supplies the code used to validate or execute the lexical plan.
     pub(crate) code: LexicalDiagnosticCode,
-    /// The condition.
+    /// Supplies the condition used to validate or execute the lexical plan.
     pub(crate) condition: LexicalDiagnosticCondition,
-    /// The evidence.
+    /// Supplies the evidence used to validate or execute the lexical plan.
     pub(crate) evidence: LexicalEvidenceKind,
-    /// The remedy.
+    /// Supplies the remedy used to validate or execute the lexical plan.
     pub(crate) remedy: LexicalRemedyKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible lexical diagnostic condition cases used by source analysis.
+/// Classifies the lexical diagnostic condition alternatives recognized by lexical planning.
 pub(crate) enum LexicalDiagnosticCondition {
-    /// The invalid keyword matching policy case.
+    /// Selects the invalid keyword matching policy lexical alternative.
     InvalidKeywordMatchingPolicy,
-    /// The fixed token classification mismatch case.
+    /// Selects the fixed token classification mismatch lexical alternative.
     FixedTokenClassificationMismatch,
-    /// The conflicting token definition case.
+    /// Selects the conflicting token definition lexical alternative.
     ConflictingTokenDefinition,
-    /// The unsupported lexical pattern case.
+    /// Selects the unsupported lexical pattern lexical alternative.
     UnsupportedLexicalPattern,
-    /// The unresolved lexical overlap case.
+    /// Selects the unresolved lexical overlap lexical alternative.
     UnresolvedLexicalOverlap,
-    /// The tied lexical priority case.
+    /// Selects the tied lexical priority lexical alternative.
     TiedLexicalPriority,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible lexical evidence kind cases used by source analysis.
+/// Classifies the lexical evidence kind alternatives recognized by lexical planning.
 pub(crate) enum LexicalEvidenceKind {
-    /// The keyword matching policy case.
+    /// Selects the keyword matching policy lexical alternative.
     KeywordMatchingPolicy,
-    /// The fixed token classification case.
+    /// Selects the fixed token classification lexical alternative.
     FixedTokenClassification,
-    /// The conflicting definition metadata case.
+    /// Selects the conflicting definition metadata lexical alternative.
     ConflictingDefinitionMetadata,
-    /// The invalid pattern case.
+    /// Selects the invalid pattern lexical alternative.
     InvalidPattern,
-    /// The pattern overlap case.
+    /// Selects the pattern overlap lexical alternative.
     PatternOverlap,
-    /// The priority tie case.
+    /// Selects the priority tie lexical alternative.
     PriorityTie,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible lexical remedy kind cases used by source analysis.
+/// Classifies the lexical remedy kind alternatives recognized by lexical planning.
 pub(crate) enum LexicalRemedyKind {
-    /// The choose supported keyword matching policy case.
+    /// Selects the choose supported keyword matching policy lexical alternative.
     ChooseSupportedKeywordMatchingPolicy,
-    /// The use mechanical fixed token class case.
+    /// Selects the use mechanical fixed token class lexical alternative.
     UseMechanicalFixedTokenClass,
-    /// The make definition metadata equivalent case.
+    /// Selects the make definition metadata equivalent lexical alternative.
     MakeDefinitionMetadataEquivalent,
-    /// The use supported non empty pattern case.
+    /// Selects the use supported non empty pattern lexical alternative.
     UseSupportedNonEmptyPattern,
-    /// The add priority or separate patterns case.
+    /// Selects the add priority or separate patterns lexical alternative.
     AddPriorityOrSeparatePatterns,
-    /// The assign distinct priority case.
+    /// Selects the assign distinct priority lexical alternative.
     AssignDistinctPriority,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible fixed token class cases used by source analysis.
+/// Classifies the fixed token class alternatives recognized by lexical planning.
 pub(crate) enum FixedTokenClass {
-    /// The keyword case.
+    /// Selects the keyword lexical alternative.
     Keyword,
-    /// The punctuation case.
+    /// Selects the punctuation lexical alternative.
     Punctuation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible lexical diagnostic evidence cases used by source analysis.
+/// Classifies the lexical diagnostic evidence alternatives recognized by lexical planning.
 pub(crate) enum LexicalDiagnosticEvidence {
-    /// The invalid keyword matching policy case.
+    /// Selects the invalid keyword matching policy lexical alternative.
     InvalidKeywordMatchingPolicy {
-        /// The authored.
+        /// Supplies the authored used to validate or execute the lexical plan.
         authored: String,
     },
-    /// The fixed token classification mismatch case.
+    /// Selects the fixed token classification mismatch lexical alternative.
     FixedTokenClassificationMismatch {
-        /// The spelling.
+        /// Supplies the spelling used to validate or execute the lexical plan.
         spelling: String,
-        /// The authored.
+        /// Supplies the authored used to validate or execute the lexical plan.
         authored: FixedTokenClass,
-        /// The mechanical.
+        /// Supplies the mechanical used to validate or execute the lexical plan.
         mechanical: FixedTokenClass,
     },
-    /// The conflicting token definition case.
+    /// Selects the conflicting token definition lexical alternative.
     ConflictingTokenDefinition {
-        /// The identity.
+        /// Supplies the identity used to validate or execute the lexical plan.
         identity: String,
-        /// The normalized metadata.
+        /// Supplies the normalized metadata used to validate or execute the lexical plan.
         normalized_metadata: Vec<LexicalDefinitionMetadata>,
     },
-    /// The invalid pattern case.
+    /// Selects the invalid pattern lexical alternative.
     InvalidPattern {
-        /// The pattern.
+        /// Preserves the authored matcher pattern for validation and generation.
         pattern: String,
-        /// The reason.
+        /// Supplies the reason used to validate or execute the lexical plan.
         reason: UnsupportedPatternReason,
     },
-    /// The pattern overlap case.
+    /// Selects the pattern overlap lexical alternative.
     PatternOverlap {
-        /// The contenders.
+        /// Supplies the contenders used to validate or execute the lexical plan.
         contenders: Vec<LexicalPatternEvidence>,
-        /// The witness.
+        /// Supplies the witness used to validate or execute the lexical plan.
         witness: String,
     },
-    /// The priority tie case.
+    /// Selects the priority tie lexical alternative.
     PriorityTie {
-        /// The contenders.
+        /// Supplies the contenders used to validate or execute the lexical plan.
         contenders: Vec<LexicalPatternEvidence>,
-        /// The priority.
+        /// Controls deterministic selection among competing lexical matchers.
         priority: u32,
-        /// The witness.
+        /// Supplies the witness used to validate or execute the lexical plan.
         witness: String,
     },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible unsupported pattern reason cases used by source analysis.
+/// Classifies the unsupported pattern reason alternatives recognized by lexical planning.
 pub(crate) enum UnsupportedPatternReason {
-    /// The invalid or unsupported syntax case.
+    /// Selects the invalid or unsupported syntax lexical alternative.
     InvalidOrUnsupportedSyntax,
-    /// The word boundary case.
+    /// Selects the word boundary lexical alternative.
     WordBoundary,
-    /// The anchor case.
+    /// Selects the anchor lexical alternative.
     Anchor,
-    /// The empty match case.
+    /// Selects the empty match lexical alternative.
     EmptyMatch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible lexical definition metadata cases used by source analysis.
+/// Classifies the lexical definition metadata alternatives recognized by lexical planning.
 pub(crate) enum LexicalDefinitionMetadata {
-    /// The fixed case.
+    /// Selects the fixed lexical alternative.
     Fixed {
-        /// The class.
+        /// Supplies the class used to validate or execute the lexical plan.
         class: FixedTokenClass,
-        /// The canonical spelling.
+        /// Supplies the canonical spelling used to validate or execute the lexical plan.
         canonical_spelling: String,
     },
-    /// The content case.
+    /// Selects the content lexical alternative.
     Content {
-        /// The pattern.
+        /// Preserves the authored matcher pattern for validation and generation.
         pattern: String,
-        /// The callback.
+        /// Supplies the callback used to validate or execute the lexical plan.
         callback: Option<syn::Path>,
-        /// The authored priority.
+        /// Preserves an explicitly authored pattern priority, when present.
         authored_priority: Option<u32>,
-        /// The admitted fixed tokens.
+        /// Supplies the admitted fixed tokens used to validate or execute the lexical plan.
         admitted_fixed_tokens: Vec<String>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The lexical pattern evidence representation used by source analysis.
+/// Carries the lexical pattern evidence used to plan deterministic token recognition.
 pub(crate) struct LexicalPatternEvidence {
-    /// The pattern.
+    /// Preserves the authored matcher pattern for validation and generation.
     pub(crate) pattern: String,
-    /// The target names.
+    /// Lists parser targets that admit this token classification.
     pub(crate) target_names: Vec<String>,
-    /// The authored priority.
+    /// Preserves an explicitly authored pattern priority, when present.
     pub(crate) authored_priority: Option<u32>,
-    /// The outcome.
+    /// Supplies the outcome used to validate or execute the lexical plan.
     pub(crate) outcome: LexicalPatternOutcome,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible lexical pattern outcome cases used by source analysis.
+/// Classifies the lexical pattern outcome alternatives recognized by lexical planning.
 pub(crate) enum LexicalPatternOutcome {
-    /// The emits token kind case.
+    /// Selects the emits token kind lexical alternative.
     EmitsTokenKind,
-    /// The non emitting case.
+    /// Selects the non emitting lexical alternative.
     NonEmitting,
-    /// The opaque callback case.
+    /// Selects the opaque callback lexical alternative.
     OpaqueCallback,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible lexical remedy cases used by source analysis.
+/// Classifies the lexical remedy alternatives recognized by lexical planning.
 pub(crate) enum LexicalRemedy {
-    /// The choose supported keyword matching policy case.
+    /// Selects the choose supported keyword matching policy lexical alternative.
     ChooseSupportedKeywordMatchingPolicy,
-    /// The use mechanical fixed token class case.
+    /// Selects the use mechanical fixed token class lexical alternative.
     UseMechanicalFixedTokenClass {
-        /// The class.
+        /// Supplies the class used to validate or execute the lexical plan.
         class: FixedTokenClass,
     },
-    /// The make definition metadata equivalent case.
+    /// Selects the make definition metadata equivalent lexical alternative.
     MakeDefinitionMetadataEquivalent {
-        /// The identity.
+        /// Supplies the identity used to validate or execute the lexical plan.
         identity: String,
     },
-    /// The use supported non empty pattern case.
+    /// Selects the use supported non empty pattern lexical alternative.
     UseSupportedNonEmptyPattern,
-    /// The assign distinct priority case.
+    /// Selects the assign distinct priority lexical alternative.
     AssignDistinctPriority {
-        /// The contenders.
+        /// Supplies the contenders used to validate or execute the lexical plan.
         contenders: Vec<LexicalPatternEvidence>,
     },
-    /// The make patterns disjoint case.
+    /// Selects the make patterns disjoint lexical alternative.
     MakePatternsDisjoint {
-        /// The contenders.
+        /// Supplies the contenders used to validate or execute the lexical plan.
         contenders: Vec<LexicalPatternEvidence>,
     },
 }
 
-/// Computes the non token rule groups.
+/// Derives the non token rule groups under the grammar keyword and lexical-selection policies.
 fn non_token_rule_groups(source: &SourceModeledGrammar) -> Vec<NonTokenRuleGroup> {
     let mut groups = Vec::<NonTokenRuleGroup>::new();
     for record in &source.source_model().lexer_records {
@@ -914,7 +914,7 @@ fn non_token_rule_groups(source: &SourceModeledGrammar) -> Vec<NonTokenRuleGroup
     groups
 }
 
-/// Computes the non token source outcome key.
+/// Derives the non token source outcome key under the grammar keyword and lexical-selection policies.
 const fn non_token_source_outcome_key(outcome: crate::source_model::NonTokenLexerOutcome) -> u8 {
     match outcome {
         crate::source_model::NonTokenLexerOutcome::NonEmitting => 0,
@@ -932,7 +932,7 @@ const fn plan_non_token_outcome(
     }
 }
 
-/// Computes the fixed matchers.
+/// Derives the fixed matchers under the grammar keyword and lexical-selection policies.
 fn fixed_matchers(model: &SourceModel, text_equivalence: TextEquivalence) -> Vec<FixedMatcher> {
     let mut fixed = BTreeMap::<String, (bool, bool)>::new();
     for definition in &model.token_definitions {
@@ -959,7 +959,7 @@ fn fixed_matchers(model: &SourceModel, text_equivalence: TextEquivalence) -> Vec
 }
 
 impl CarrierProofCache {
-    /// Creates a value with the supplied analysis inputs.
+    /// Indexes carrier proofs under the grammar's text-equivalence policy.
     fn new(
         text_equivalence: TextEquivalence,
         content_groups: &[ContentBaseGroup<'_>],
@@ -1005,13 +1005,13 @@ impl CarrierProofCache {
         }
     }
 
-    /// Computes the proof.
+    /// Derives the proof under the grammar keyword and lexical-selection policies.
     fn proof(&self, spelling: &str) -> Option<&SymbolicCarrierProof> {
         self.proofs.get(spelling).and_then(Option::as_ref)
     }
 }
 
-/// Computes the retained fixed matchers.
+/// Derives the retained fixed matchers under the grammar keyword and lexical-selection policies.
 fn retained_fixed_matchers(
     fixed_matchers: &[FixedMatcher],
     carrier_proofs: &CarrierProofCache,
@@ -1329,7 +1329,7 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
     }
 }
 
-/// Computes the fixed classification diagnostics.
+/// Derives the fixed classification diagnostics under the grammar keyword and lexical-selection policies.
 fn fixed_classification_diagnostics(source: &SourceModeledGrammar) -> Vec<LexicalDiagnostic> {
     source
         .source_model()
@@ -1369,7 +1369,7 @@ fn fixed_classification_diagnostics(source: &SourceModeledGrammar) -> Vec<Lexica
         .collect()
 }
 
-/// Computes the authored fixed class.
+/// Derives the authored fixed class under the grammar keyword and lexical-selection policies.
 const fn authored_fixed_class(class: AuthoredFixedTokenClass) -> FixedTokenClass {
     match class {
         AuthoredFixedTokenClass::Keyword => FixedTokenClass::Keyword,
@@ -1377,7 +1377,7 @@ const fn authored_fixed_class(class: AuthoredFixedTokenClass) -> FixedTokenClass
     }
 }
 
-/// Computes the definition conflict diagnostics.
+/// Derives the definition conflict diagnostics under the grammar keyword and lexical-selection policies.
 fn definition_conflict_diagnostics(
     source: &SourceModeledGrammar,
     text_equivalence: TextEquivalence,
@@ -1466,7 +1466,7 @@ fn definition_conflict_diagnostics(
         .collect()
 }
 
-/// Computes the definition metadata key.
+/// Derives the definition metadata key under the grammar keyword and lexical-selection policies.
 fn definition_metadata_key(metadata: &LexicalDefinitionMetadata) -> String {
     match metadata {
         LexicalDefinitionMetadata::Fixed {
@@ -1487,7 +1487,7 @@ fn definition_metadata_key(metadata: &LexicalDefinitionMetadata) -> String {
     }
 }
 
-/// Computes the content base identity.
+/// Derives the content base identity under the grammar keyword and lexical-selection policies.
 fn content_base_identity(
     content: &crate::source_model::ContentTokenDefinition,
 ) -> ContentBaseIdentity {
@@ -1498,7 +1498,7 @@ fn content_base_identity(
     }
 }
 
-/// Computes the content base groups.
+/// Derives the content base groups under the grammar keyword and lexical-selection policies.
 fn content_base_groups(source: &SourceModel) -> Vec<ContentBaseGroup<'_>> {
     let mut grouped = Vec::<ContentBaseGroup<'_>>::new();
     for definition in &source.token_definitions {
@@ -1541,7 +1541,7 @@ fn content_base_groups(source: &SourceModel) -> Vec<ContentBaseGroup<'_>> {
     grouped
 }
 
-/// Computes the content base identity for definition.
+/// Derives the content base identity for definition under the grammar keyword and lexical-selection policies.
 fn content_base_identity_for_definition(
     definition: &crate::source_model::TokenDefinition,
 ) -> Option<ContentBaseIdentity> {
@@ -1556,7 +1556,7 @@ fn content_base_identity_for_definition(
     }
 }
 
-/// Computes the token kind by identity.
+/// Derives the token kind by identity under the grammar keyword and lexical-selection policies.
 fn token_kind_by_identity(kinds: &[TokenKindPlan], identity: &TokenKindIdentity) -> KindId {
     kinds
         .iter()
@@ -1564,7 +1564,7 @@ fn token_kind_by_identity(kinds: &[TokenKindPlan], identity: &TokenKindIdentity)
         .expect("every token-kind identity receives one kind")
 }
 
-/// Computes the content base kind.
+/// Derives the content base kind under the grammar keyword and lexical-selection policies.
 fn content_base_kind(
     kinds: &[(ContentBaseIdentity, KindId)],
     identity: &ContentBaseIdentity,
@@ -1575,7 +1575,7 @@ fn content_base_kind(
         .expect("every content base receives one token kind")
 }
 
-/// Computes the lexical diagnostics.
+/// Derives the lexical diagnostics under the grammar keyword and lexical-selection policies.
 fn lexical_diagnostics(
     source: &SourceModeledGrammar,
     content_groups: &[ContentBaseGroup<'_>],
@@ -1731,7 +1731,7 @@ fn validate_pattern(pattern: &str) -> Result<(), UnsupportedPatternReason> {
     Ok(())
 }
 
-/// Computes the pattern evidence.
+/// Derives the pattern evidence under the grammar keyword and lexical-selection policies.
 fn pattern_evidence(contender: &PatternContender) -> LexicalPatternEvidence {
     LexicalPatternEvidence {
         pattern: contender.pattern.clone(),
@@ -1741,7 +1741,7 @@ fn pattern_evidence(contender: &PatternContender) -> LexicalPatternEvidence {
     }
 }
 
-/// Computes the accepts empty.
+/// Derives the accepts empty under the grammar keyword and lexical-selection policies.
 fn accepts_empty<A: regex_automata::dfa::Automaton>(dfa: &A) -> bool {
     let input = Input::new(b"").anchored(Anchored::Yes);
     let Ok(state) = dfa.start_state_forward(&input) else {
@@ -1750,7 +1750,7 @@ fn accepts_empty<A: regex_automata::dfa::Automaton>(dfa: &A) -> bool {
     dfa.is_match_state(dfa.next_eoi_state(state))
 }
 
-/// Computes the pattern ambiguities.
+/// Derives the pattern ambiguities under the grammar keyword and lexical-selection policies.
 fn pattern_ambiguities(
     contenders: &[PatternContender],
     retained_fixed_matchers: &[RetainedFixedMatcher],
@@ -1829,13 +1829,13 @@ fn pattern_ambiguities(
     ambiguities.into_iter().collect()
 }
 
-/// Computes the sorted sites.
+/// Derives the sorted sites under the grammar keyword and lexical-selection policies.
 fn sorted_sites(source: &SourceModeledGrammar, mut sites: Vec<SourceSite>) -> Vec<SourceSite> {
     sites.sort_by_key(|site| source_site_key(source, site));
     sites
 }
 
-/// Computes the diagnostic key.
+/// Derives the diagnostic key under the grammar keyword and lexical-selection policies.
 fn diagnostic_key(
     source: &SourceModeledGrammar,
     diagnostic: &LexicalDiagnostic,
@@ -1846,7 +1846,7 @@ fn diagnostic_key(
     (source_site_key(source, site), diagnostic.code)
 }
 
-/// Computes the source site key.
+/// Derives the source site key under the grammar keyword and lexical-selection policies.
 fn source_site_key(
     source: &SourceModeledGrammar,
     site: &SourceSite,
@@ -1864,7 +1864,7 @@ fn canonical_fixed_spelling(spelling: &str, equivalence: TextEquivalence) -> Str
 }
 
 impl CarrierProver {
-    /// Creates a value with the supplied analysis inputs.
+    /// Prepares reusable matcher state for proving keyword-carrier relationships.
     fn new(
         content_groups: &[ContentBaseGroup<'_>],
         non_token_records: &[crate::source_model::NonTokenLexerRecord],
@@ -1906,7 +1906,7 @@ impl CarrierProver {
         }
     }
 
-    /// Computes the prove.
+    /// Returns matching candidate indexes when the combined DFA accepts the spelling.
     fn prove(&self, text_equivalence: TextEquivalence, spelling: &str) -> Option<Vec<usize>> {
         let dfa = self.dfa.as_ref()?;
         let input = Input::new(b"").anchored(Anchored::Yes);
@@ -1972,7 +1972,7 @@ impl CarrierProver {
     }
 }
 
-/// Whether the value is word shaped.
+/// Reports whether this value is word shaped.
 fn is_word_shaped(spelling: &str) -> bool {
     let mut characters = spelling.chars();
     let Some(first) = characters.next() else {

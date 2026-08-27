@@ -29,7 +29,7 @@ use crate::{
     SiteId, SourceId, TextEquivalence, TypeDescription, TypeId, TypeShape, analyze,
 };
 
-/// Computes the source id.
+/// Defines a dense source-model identity with checked allocation and indexing.
 macro_rules! source_id {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -57,64 +57,64 @@ source_id!(SourceDeclarationId);
 source_id!(SourceLocationId);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible rust edition cases used by source analysis.
+/// Rust syntax edition accepted by the source-analysis parser.
 pub(crate) enum RustEdition {
-    /// The rust2024 case.
+    /// Parses authored source using Rust 2024 syntax rules.
     Rust2024,
 }
 
 #[derive(Clone, Copy, Debug)]
-/// The single file input representation used by source analysis.
+/// Reproducible inputs for analyzing one standalone grammar source file.
 pub(crate) struct SingleFileInput<'source> {
-    /// The manifest relative path.
+    /// Stable manifest-relative path used in diagnostics and invalidation.
     pub(crate) manifest_relative_path: &'source Path,
-    /// The source.
+    /// Complete authored Rust source to parse and analyze.
     pub(crate) source: &'source str,
-    /// The edition.
+    /// Rust syntax edition under which the source is parsed.
     pub(crate) edition: RustEdition,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible diagnostic stage cases used by source analysis.
+/// Source-analysis phase that owns a diagnostic.
 pub(crate) enum DiagnosticStage {
-    /// The discovery case.
+    /// Selects the discovery lowering alternative.
     Discovery,
-    /// The syntax case.
+    /// Selects the syntax lowering alternative.
     Syntax,
-    /// The lowering case.
+    /// Selects the lowering lowering alternative.
     Lowering,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source diagnostic representation used by source analysis.
+/// Located source-analysis failure produced before semantic diagnostics are available.
 pub(crate) struct SourceDiagnostic {
-    /// The stage.
+    /// Phase that detected the failure.
     pub(crate) stage: DiagnosticStage,
-    /// The path.
+    /// Preserves the authored path used by build invalidation or diagnostics.
     pub(crate) path: PathBuf,
-    /// The range.
+    /// Optional byte range within the source path.
     pub(crate) range: Option<Range<u32>>,
-    /// The message.
+    /// Human-readable explanation of the violated source contract.
     pub(crate) message: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The single file analysis report representation used by source analysis.
+/// Combined source and semantic outcome for one standalone grammar file.
 pub(crate) struct SingleFileAnalysisReport {
-    /// The diagnostics.
+    /// Discovery, syntax, and lowering failures in deterministic order.
     pub(crate) diagnostics: Vec<SourceDiagnostic>,
-    /// The semantic diagnostics.
+    /// Source-independent diagnostics produced after successful lowering.
     pub(crate) semantic_diagnostics: Vec<Diagnostic>,
-    /// The analyzed.
+    /// Complete analyzed grammar, withheld after any blocking failure.
     pub(crate) analyzed: Option<AnalyzedGrammar>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The analyzed grammar representation used by source analysis.
+/// Successfully lowered grammar paired with its source-independent semantic facts.
 pub(crate) struct AnalyzedGrammar {
-    /// The lowered.
+    /// Identifies the normalized entity correlated with authored source.
     pub(crate) lowered: SingleFileLoweredGrammar,
-    /// The analysis.
+    /// Semantic facts and diagnostics computed over the normalized grammar.
     pub(crate) analysis: AnalysisReport,
 }
 
@@ -182,37 +182,37 @@ impl AnalyzedGrammar {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The single file lowered grammar representation used by source analysis.
+/// Complete normalized result of lowering one standalone grammar file.
 pub(crate) struct SingleFileLoweredGrammar {
-    /// The build inputs.
+    /// Reproducible filesystem, configuration, and environment inputs.
     pub(crate) build_inputs: BuildInputs,
-    /// The grammar.
+    /// Source-independent normalized grammar consumed by semantic analysis.
     pub(crate) grammar: GrammarDescription,
-    /// The source model.
+    /// Authored declarations and locations correlated with the normalized grammar.
     pub(crate) source_model: SourceModel,
-    /// The lowering map.
+    /// Validated bidirectional correlations between source and normalized identities.
     pub(crate) lowering_map: LoweringMap,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The discovery inputs representation used by source analysis.
+/// Filesystem and Cargo facts that make source discovery reproducible.
 pub(crate) struct DiscoveryInputs {
-    /// The selected root.
+    /// Grammar source file selected by the build script.
     pub(crate) selected_root: PathBuf,
-    /// The source files.
+    /// Active source files traversed in canonical path order.
     pub(crate) source_files: Vec<PathBuf>,
-    /// The edition.
+    /// Rust syntax edition used for every selected source file.
     pub(crate) edition: RustEdition,
-    /// The watched module candidates.
+    /// Existing and missing module paths that must invalidate the build.
     pub(crate) watched_module_candidates: Vec<PathBuf>,
-    /// The cfg snapshot.
+    /// Canonical active Cargo configuration supplied to source filtering.
     pub(crate) cfg_snapshot: Vec<String>,
-    /// The environment dependencies.
+    /// Environment keys whose values can alter discovery or lowering.
     pub(crate) environment_dependencies: Vec<String>,
 }
 
 impl DiscoveryInputs {
-    /// Computes the watched paths.
+    /// Derives the watched paths while lowering resolved source declarations.
     pub(crate) fn watched_paths(&self) -> Vec<PathBuf> {
         let mut paths = self
             .source_files
@@ -228,41 +228,41 @@ impl DiscoveryInputs {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The build inputs representation used by source analysis.
+/// Carries the build inputs while translating authored declarations into normalized grammar.
 pub(crate) struct BuildInputs {
-    /// The discovery.
+    /// Supplies the discovery needed to preserve authored meaning during lowering.
     pub(crate) discovery: DiscoveryInputs,
-    /// The module anchor.
+    /// Supplies the module anchor needed to preserve authored meaning during lowering.
     pub(crate) module_anchor: SelectedRootAnchor,
-    /// The facade.
+    /// Supplies the facade needed to preserve authored meaning during lowering.
     pub(crate) facade: FacadeMapping,
-    /// The text equivalence.
+    /// Supplies the text equivalence needed to preserve authored meaning during lowering.
     pub(crate) text_equivalence: TextEquivalence,
-    /// The max lookahead.
+    /// Supplies the max lookahead needed to preserve authored meaning during lowering.
     pub(crate) max_lookahead: usize,
-    /// The spans.
+    /// Supplies the spans needed to preserve authored meaning during lowering.
     pub(crate) spans: CaptureMode,
-    /// The diagrams.
+    /// Supplies the diagrams needed to preserve authored meaning during lowering.
     pub(crate) diagrams: bool,
-    /// The pretty.
+    /// Supplies the pretty needed to preserve authored meaning during lowering.
     pub(crate) pretty: PrettyDefaults,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The selected root anchor representation used by source analysis.
+/// Carries the selected root anchor while translating authored declarations into normalized grammar.
 pub(crate) struct SelectedRootAnchor {
-    /// The segments.
+    /// Supplies the segments needed to preserve authored meaning during lowering.
     pub(crate) segments: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The facade mapping representation used by source analysis.
+/// Carries the facade mapping while translating authored declarations into normalized grammar.
 pub(crate) struct FacadeMapping {
-    /// The ident.
+    /// Preserves the authored identifier used when creating normalized names.
     pub(crate) ident: String,
 }
 
-/// Computes the safe manifest relative path.
+/// Derives the safe manifest relative path while lowering resolved source declarations.
 fn safe_manifest_relative_path(path: &Path) -> bool {
     let mut depth = 0_usize;
     for component in path.components() {
@@ -277,286 +277,286 @@ fn safe_manifest_relative_path(path: &Path) -> bool {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source model representation used by source analysis.
+/// Carries the source model while translating authored declarations into normalized grammar.
 pub(crate) struct SourceModel {
-    /// The files.
+    /// Supplies the files needed to preserve authored meaning during lowering.
     pub(crate) files: Vec<SourceFile>,
-    /// The modules.
+    /// Supplies the modules needed to preserve authored meaning during lowering.
     pub(crate) modules: Vec<SourceModule>,
-    /// The grammar.
+    /// Supplies the grammar needed to preserve authored meaning during lowering.
     pub(crate) grammar: SourceGrammarConfig,
-    /// The nodes.
+    /// Supplies the nodes needed to preserve authored meaning during lowering.
     pub(crate) nodes: Vec<SourceNode>,
-    /// The variants.
+    /// Supplies the variants needed to preserve authored meaning during lowering.
     pub(crate) variants: Vec<SourceVariant>,
-    /// The elements.
+    /// Supplies the elements needed to preserve authored meaning during lowering.
     pub(crate) elements: Vec<SourceElement>,
-    /// The token definitions.
+    /// Supplies the token definitions needed to preserve authored meaning during lowering.
     pub(crate) token_definitions: Vec<SourceTokenDefinition>,
-    /// The token uses.
+    /// Supplies the token uses needed to preserve authored meaning during lowering.
     pub(crate) token_uses: Vec<SourceTokenUse>,
-    /// The declarations.
+    /// Supplies the declarations needed to preserve authored meaning during lowering.
     pub(crate) declarations: Vec<SourceDeclaration>,
-    /// The locations.
+    /// Supplies the locations needed to preserve authored meaning during lowering.
     pub(crate) locations: Vec<SourceLocation>,
 }
 
 impl SourceModel {
-    /// Computes the location.
+    /// Derives the location while lowering resolved source declarations.
     pub(crate) fn location(&self, id: SourceLocationId) -> &SourceLocation {
         &self.locations[id.index()]
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source file representation used by source analysis.
+/// Carries the source file while translating authored declarations into normalized grammar.
 pub(crate) struct SourceFile {
-    /// The id.
+    /// Supplies the id needed to preserve authored meaning during lowering.
     pub(crate) id: SourceId,
-    /// The path.
+    /// Preserves the authored path used by build invalidation or diagnostics.
     pub(crate) path: PathBuf,
-    /// The text.
+    /// Supplies the text needed to preserve authored meaning during lowering.
     pub(crate) text: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source module representation used by source analysis.
+/// Carries the source module while translating authored declarations into normalized grammar.
 pub(crate) struct SourceModule {
-    /// The id.
+    /// Supplies the id needed to preserve authored meaning during lowering.
     pub(crate) id: ModuleId,
-    /// The file.
+    /// Supplies the file needed to preserve authored meaning during lowering.
     pub(crate) file: SourceId,
-    /// The path.
+    /// Preserves the authored path used by build invalidation or diagnostics.
     pub(crate) path: SynPath,
-    /// The location.
+    /// Locates the authored syntax represented by the lowered value.
     pub(crate) location: SourceLocationId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source grammar config representation used by source analysis.
+/// Carries the source grammar config while translating authored declarations into normalized grammar.
 pub(crate) struct SourceGrammarConfig {
-    /// The module.
+    /// Identifies the logical module that owns the lowered declaration.
     pub(crate) module: ModuleId,
-    /// The text equivalence.
+    /// Supplies the text equivalence needed to preserve authored meaning during lowering.
     pub(crate) text_equivalence: TextEquivalence,
-    /// The max lookahead.
+    /// Supplies the max lookahead needed to preserve authored meaning during lowering.
     pub(crate) max_lookahead: usize,
-    /// The location.
+    /// Locates the authored syntax represented by the lowered value.
     pub(crate) location: SourceLocationId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source node representation used by source analysis.
+/// Carries the source node while translating authored declarations into normalized grammar.
 pub(crate) struct SourceNode {
-    /// The id.
+    /// Supplies the id needed to preserve authored meaning during lowering.
     pub(crate) id: NodeId,
-    /// The module.
+    /// Identifies the logical module that owns the lowered declaration.
     pub(crate) module: ModuleId,
-    /// The declaration.
+    /// Supplies the declaration needed to preserve authored meaning during lowering.
     pub(crate) declaration: SourceDeclarationId,
-    /// The ident.
+    /// Preserves the authored identifier used when creating normalized names.
     pub(crate) ident: syn::Ident,
-    /// The generics.
+    /// Supplies the generics needed to preserve authored meaning during lowering.
     pub(crate) generics: syn::Generics,
-    /// The visibility.
+    /// Supplies the visibility needed to preserve authored meaning during lowering.
     pub(crate) visibility: syn::Visibility,
-    /// The location.
+    /// Locates the authored syntax represented by the lowered value.
     pub(crate) location: SourceLocationId,
-    /// The elements.
+    /// Supplies the elements needed to preserve authored meaning during lowering.
     pub(crate) elements: Vec<ElementId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source variant representation used by source analysis.
+/// Carries the source variant while translating authored declarations into normalized grammar.
 pub(crate) struct SourceVariant {
-    /// The id.
+    /// Supplies the id needed to preserve authored meaning during lowering.
     pub(crate) id: VariantId,
-    /// The node.
+    /// Supplies the node needed to preserve authored meaning during lowering.
     pub(crate) node: NodeId,
-    /// The declaration.
+    /// Supplies the declaration needed to preserve authored meaning during lowering.
     pub(crate) declaration: SourceDeclarationId,
-    /// The ident.
+    /// Preserves the authored identifier used when creating normalized names.
     pub(crate) ident: syn::Ident,
-    /// The location.
+    /// Locates the authored syntax represented by the lowered value.
     pub(crate) location: SourceLocationId,
-    /// The elements.
+    /// Supplies the elements needed to preserve authored meaning during lowering.
     pub(crate) elements: Vec<ElementId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source element representation used by source analysis.
+/// Carries the source element while translating authored declarations into normalized grammar.
 pub(crate) struct SourceElement {
-    /// The id.
+    /// Supplies the id needed to preserve authored meaning during lowering.
     pub(crate) id: ElementId,
-    /// The node.
+    /// Supplies the node needed to preserve authored meaning during lowering.
     pub(crate) node: NodeId,
-    /// The variant.
+    /// Supplies the variant needed to preserve authored meaning during lowering.
     pub(crate) variant: Option<VariantId>,
-    /// The declaration.
+    /// Supplies the declaration needed to preserve authored meaning during lowering.
     pub(crate) declaration: SourceDeclarationId,
-    /// The ident.
+    /// Preserves the authored identifier used when creating normalized names.
     pub(crate) ident: Option<syn::Ident>,
-    /// The visibility.
+    /// Supplies the visibility needed to preserve authored meaning during lowering.
     pub(crate) visibility: syn::Visibility,
-    /// The ty.
+    /// Supplies the ty needed to preserve authored meaning during lowering.
     pub(crate) ty: Type,
-    /// The token use.
+    /// Supplies the token use needed to preserve authored meaning during lowering.
     pub(crate) token_use: TokenUseId,
-    /// The location.
+    /// Locates the authored syntax represented by the lowered value.
     pub(crate) location: SourceLocationId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source token definition representation used by source analysis.
+/// Carries the source token definition while translating authored declarations into normalized grammar.
 pub(crate) struct SourceTokenDefinition {
-    /// The id.
+    /// Supplies the id needed to preserve authored meaning during lowering.
     pub(crate) id: TokenDefinitionId,
-    /// The module.
+    /// Identifies the logical module that owns the lowered declaration.
     pub(crate) module: ModuleId,
-    /// The declaration.
+    /// Supplies the declaration needed to preserve authored meaning during lowering.
     pub(crate) declaration: SourceDeclarationId,
-    /// The ident.
+    /// Preserves the authored identifier used when creating normalized names.
     pub(crate) ident: syn::Ident,
-    /// The pattern.
+    /// Supplies the pattern needed to preserve authored meaning during lowering.
     pub(crate) pattern: LitStr,
-    /// The location.
+    /// Locates the authored syntax represented by the lowered value.
     pub(crate) location: SourceLocationId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source token use representation used by source analysis.
+/// Carries the source token use while translating authored declarations into normalized grammar.
 pub(crate) struct SourceTokenUse {
-    /// The id.
+    /// Supplies the id needed to preserve authored meaning during lowering.
     pub(crate) id: TokenUseId,
-    /// The definition.
+    /// Supplies the definition needed to preserve authored meaning during lowering.
     pub(crate) definition: TokenDefinitionId,
-    /// The element.
+    /// Supplies the element needed to preserve authored meaning during lowering.
     pub(crate) element: ElementId,
-    /// The location.
+    /// Locates the authored syntax represented by the lowered value.
     pub(crate) location: SourceLocationId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source declaration representation used by source analysis.
+/// Carries the source declaration while translating authored declarations into normalized grammar.
 pub(crate) struct SourceDeclaration {
-    /// The id.
+    /// Supplies the id needed to preserve authored meaning during lowering.
     pub(crate) id: SourceDeclarationId,
-    /// The location.
+    /// Locates the authored syntax represented by the lowered value.
     pub(crate) location: SourceLocationId,
-    /// The kind.
+    /// Supplies the kind needed to preserve authored meaning during lowering.
     pub(crate) kind: SourceDeclarationKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible source declaration kind cases used by source analysis.
+/// Classifies the source declaration kind alternatives handled by lowering.
 pub(crate) enum SourceDeclarationKind {
-    /// The node case.
+    /// Selects the node lowering alternative.
     Node(NodeId),
-    /// The element case.
+    /// Selects the element lowering alternative.
     Element(ElementId),
-    /// The token case.
+    /// Selects the token lowering alternative.
     Token(TokenDefinitionId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source location representation used by source analysis.
+/// Carries the source location while translating authored declarations into normalized grammar.
 pub(crate) struct SourceLocation {
-    /// The id.
+    /// Supplies the id needed to preserve authored meaning during lowering.
     pub(crate) id: SourceLocationId,
-    /// The source.
+    /// Identifies the source-model entity correlated with normalized output.
     pub(crate) source: SourceId,
-    /// The range.
+    /// Supplies the range needed to preserve authored meaning during lowering.
     pub(crate) range: Range<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The lowering map representation used by source analysis.
+/// Carries the lowering map while translating authored declarations into normalized grammar.
 pub(crate) struct LoweringMap {
-    /// The source files.
+    /// Supplies the source files needed to preserve authored meaning during lowering.
     pub(crate) source_files: Vec<SourceFileCorrelation>,
-    /// The nodes.
+    /// Supplies the nodes needed to preserve authored meaning during lowering.
     pub(crate) nodes: Vec<NodeTypeCorrelation>,
-    /// The elements.
+    /// Supplies the elements needed to preserve authored meaning during lowering.
     pub(crate) elements: Vec<ElementSiteCorrelation>,
-    /// The token definitions.
+    /// Supplies the token definitions needed to preserve authored meaning during lowering.
     pub(crate) token_definitions: Vec<TokenDefinitionCorrelation>,
-    /// The token uses.
+    /// Supplies the token uses needed to preserve authored meaning during lowering.
     pub(crate) token_uses: Vec<TokenUseSiteCorrelation>,
-    /// The declarations.
+    /// Supplies the declarations needed to preserve authored meaning during lowering.
     pub(crate) declarations: Vec<DeclarationCorrelation>,
-    /// The locations.
+    /// Supplies the locations needed to preserve authored meaning during lowering.
     pub(crate) locations: Vec<LocationCorrelation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The source file correlation representation used by source analysis.
+/// Carries the source file correlation while translating authored declarations into normalized grammar.
 pub(crate) struct SourceFileCorrelation {
-    /// The source.
+    /// Identifies the source-model entity correlated with normalized output.
     pub(crate) source: SourceId,
-    /// The lowered.
+    /// Identifies the normalized entity correlated with authored source.
     pub(crate) lowered: SourceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The node type correlation representation used by source analysis.
+/// Carries the node type correlation while translating authored declarations into normalized grammar.
 pub(crate) struct NodeTypeCorrelation {
-    /// The source.
+    /// Identifies the source-model entity correlated with normalized output.
     pub(crate) source: NodeId,
-    /// The lowered.
+    /// Identifies the normalized entity correlated with authored source.
     pub(crate) lowered: TypeId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The element site correlation representation used by source analysis.
+/// Carries the element site correlation while translating authored declarations into normalized grammar.
 pub(crate) struct ElementSiteCorrelation {
-    /// The source.
+    /// Identifies the source-model entity correlated with normalized output.
     pub(crate) source: ElementId,
-    /// The lowered.
+    /// Identifies the normalized entity correlated with authored source.
     pub(crate) lowered: SiteId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The token definition correlation representation used by source analysis.
+/// Carries the token definition correlation while translating authored declarations into normalized grammar.
 pub(crate) struct TokenDefinitionCorrelation {
-    /// The source.
+    /// Identifies the source-model entity correlated with normalized output.
     pub(crate) source: TokenDefinitionId,
-    /// The kind.
+    /// Supplies the kind needed to preserve authored meaning during lowering.
     pub(crate) kind: KindId,
-    /// The atom.
+    /// Supplies the atom needed to preserve authored meaning during lowering.
     pub(crate) atom: AtomId,
-    /// The ty.
+    /// Supplies the ty needed to preserve authored meaning during lowering.
     pub(crate) ty: TypeId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The token use site correlation representation used by source analysis.
+/// Carries the token use site correlation while translating authored declarations into normalized grammar.
 pub(crate) struct TokenUseSiteCorrelation {
-    /// The source.
+    /// Identifies the source-model entity correlated with normalized output.
     pub(crate) source: TokenUseId,
-    /// The lowered.
+    /// Identifies the normalized entity correlated with authored source.
     pub(crate) lowered: SiteId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The declaration correlation representation used by source analysis.
+/// Carries the declaration correlation while translating authored declarations into normalized grammar.
 pub(crate) struct DeclarationCorrelation {
-    /// The source.
+    /// Identifies the source-model entity correlated with normalized output.
     pub(crate) source: SourceDeclarationId,
-    /// The lowered.
+    /// Identifies the normalized entity correlated with authored source.
     pub(crate) lowered: DeclId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The location correlation representation used by source analysis.
+/// Carries the location correlation while translating authored declarations into normalized grammar.
 pub(crate) struct LocationCorrelation {
-    /// The source.
+    /// Identifies the source-model entity correlated with normalized output.
     pub(crate) source: SourceLocationId,
-    /// The lowered.
+    /// Identifies the normalized entity correlated with authored source.
     pub(crate) lowered: LocationId,
 }
 
 impl LoweringMap {
-    /// Validates validate.
+    /// Verifies that every source-to-normalized correlation is total and bijective.
     pub(crate) fn validate(
         &self,
         source: &SourceModel,
@@ -977,7 +977,7 @@ impl LoweringMap {
     }
 }
 
-/// Computes the lowered declaration.
+/// Derives the lowered declaration while lowering resolved source declarations.
 fn lowered_declaration(
     lowering_map: &LoweringMap,
     source: SourceDeclarationId,
@@ -990,7 +990,7 @@ fn lowered_declaration(
         .ok_or_else(|| "source declaration has no semantic analysis origin".to_owned())
 }
 
-/// Validates total.
+/// Verifies that a correlation covers every source and normalized identity exactly once.
 fn validate_total<T>(
     name: &str,
     expected: usize,
@@ -1007,7 +1007,7 @@ fn validate_total<T>(
     Ok(())
 }
 
-/// Validates targets.
+/// Rejects missing, duplicate, or out-of-range correlation targets.
 fn validate_targets(
     name: &str,
     upper_bound: usize,
@@ -1020,7 +1020,7 @@ fn validate_targets(
     Ok(())
 }
 
-/// Validates unique targets.
+/// Rejects normalized targets claimed by more than one source identity.
 fn validate_unique_targets(
     name: &str,
     upper_bound: usize,
@@ -1035,7 +1035,7 @@ fn validate_unique_targets(
     Ok(seen)
 }
 
-/// Computes the analyze single file.
+/// Derives the analyze single file while lowering resolved source declarations.
 pub(crate) fn analyze_single_file(input: SingleFileInput<'_>) -> SingleFileAnalysisReport {
     let lowering = lower_single_file(input);
     if !lowering.diagnostics.is_empty() {
@@ -1064,15 +1064,15 @@ pub(crate) fn analyze_single_file(input: SingleFileInput<'_>) -> SingleFileAnaly
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The lowering report representation used by source analysis.
+/// Carries the lowering report while translating authored declarations into normalized grammar.
 pub(crate) struct LoweringReport {
-    /// The diagnostics.
+    /// Supplies the diagnostics needed to preserve authored meaning during lowering.
     pub(crate) diagnostics: Vec<SourceDiagnostic>,
-    /// The lowered.
+    /// Identifies the normalized entity correlated with authored source.
     pub(crate) lowered: Option<SingleFileLoweredGrammar>,
 }
 
-/// Lowers single file.
+/// Runs syntax lowering and semantic analysis for one standalone grammar file.
 pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
     // Resolve source meaning before projection, then validate the normalized grammar and all retained correlations.
     let syntax = match syn::parse_file(input.source) {
@@ -1359,7 +1359,7 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
     }
 }
 
-/// Lowers semantics.
+/// Converts the source model into normalized declarations, types, sites, and correlations.
 fn lower_semantics(
     source: &SourceModel,
     config: &GrammarConfigSyntax,
@@ -1487,13 +1487,13 @@ fn lower_semantics(
     (grammar, map)
 }
 
-/// Computes the source lowered location.
+/// Derives the source lowered location while lowering resolved source declarations.
 fn source_lowered_location(source: &SourceModel, id: SourceLocationId) -> Location {
     let location = source.location(id);
     Location::new(location.source, location.range.clone())
 }
 
-/// Computes the failure.
+/// Packages one blocking lowering diagnostic without publishing a partial grammar.
 fn failure(
     path: &Path,
     stage: DiagnosticStage,
@@ -1511,7 +1511,7 @@ fn failure(
     }
 }
 
-/// Records source location.
+/// Interns an authored span and returns its grammar-local source-location identity.
 fn push_source_location(
     locations: &mut Vec<SourceLocation>,
     source: SourceId,
@@ -1526,14 +1526,14 @@ fn push_source_location(
     id
 }
 
-/// Computes the span range.
+/// Derives the span range while lowering resolved source declarations.
 fn span_range(span: Span) -> Range<u32> {
     let range = span.byte_range();
     range.start.try_into().expect("source offset overflow")
         ..range.end.try_into().expect("source offset overflow")
 }
 
-/// Computes the path is.
+/// Derives the path is while lowering resolved source declarations.
 fn path_is(path: &SynPath, expected: &[&str]) -> bool {
     path.segments.len() == expected.len()
         && path
@@ -1543,7 +1543,7 @@ fn path_is(path: &SynPath, expected: &[&str]) -> bool {
             .all(|(segment, expected)| segment.ident == *expected)
 }
 
-/// Whether the value has node derive.
+/// Reports whether an authored derive list delegates Node behavior to Recursa.
 fn has_node_derive(attributes: &[Attribute]) -> bool {
     attributes
         .iter()
@@ -1558,7 +1558,7 @@ fn has_node_derive(attributes: &[Attribute]) -> bool {
         })
 }
 
-/// Parses lex.
+/// Parses the required pattern from one `#[lex(...)]` attribute.
 fn parse_lex(attribute: &Attribute) -> syn::Result<LitStr> {
     let mut pattern = None;
     attribute.parse_nested_meta(|meta| {
@@ -1575,7 +1575,7 @@ fn parse_lex(attribute: &Attribute) -> syn::Result<LitStr> {
     pattern.ok_or_else(|| syn::Error::new(attribute.span(), "#[lex] requires pattern = r\"...\""))
 }
 
-/// Computes the token type ident.
+/// Derives the token type ident while lowering resolved source declarations.
 fn token_type_ident(ty: &Type) -> Result<syn::Ident, String> {
     let Type::Path(path) = ty else {
         return Err(

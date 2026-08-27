@@ -63,7 +63,7 @@ impl<'input> SourceAnalysisInput<'input> {
         }
     }
 
-    /// Creates a value with the supplied analysis inputs.
+    /// Binds one source-analysis run to its selected root, build inputs, and facade mapping.
     pub(crate) fn new(
         manifest_dir: &'input Path,
         selected_root: &'input Path,
@@ -248,7 +248,7 @@ pub(crate) fn analyze_source_tree(
 #[derive(Default)]
 /// Stage-aware accumulator enforcing earliest-failure diagnostic policy.
 struct DiagnosticCollector {
-    /// The diagnostics.
+    /// Accepted diagnostics in canonical stage and source order.
     diagnostics: Vec<RecursaDiagnostic>,
 }
 
@@ -320,7 +320,7 @@ fn internal_code(stage: DiagnosticStage) -> &'static str {
     clippy::manual_ok_err,
     reason = "this is the explicit last-resort global fallback after selected-root validation fails"
 )]
-/// Computes the internal diagnostic.
+/// Converts an internal pipeline invariant into a located, actionable RCA diagnostic.
 fn internal_diagnostic(
     stage: DiagnosticStage,
     detail: &str,
@@ -343,7 +343,7 @@ fn internal_diagnostic(
     )
 }
 
-/// Computes the internal generate error.
+/// Wraps one internal invariant diagnostic in the generation failure boundary.
 pub(crate) fn internal_generate_error(
     stage: DiagnosticStage,
     detail: &str,
@@ -356,7 +356,7 @@ pub(crate) fn internal_generate_error(
     )]))
 }
 
-/// Computes the checked location.
+/// Validates a producer-supplied source location or returns an internal diagnostic.
 pub(crate) fn checked_location(
     stage: DiagnosticStage,
     path: &Path,
@@ -372,7 +372,7 @@ pub(crate) fn checked_location(
     })
 }
 
-/// Emits invalidation.
+/// Emits Cargo invalidation directives from reproducible discovery inputs.
 fn emit_invalidation(inputs: &DiscoveryInputs, cargo: &mut impl CargoOutput) {
     for path in inputs.watched_paths() {
         cargo.emit(format!("cargo::rerun-if-changed={}", path.display()));
@@ -385,7 +385,7 @@ fn emit_invalidation(inputs: &DiscoveryInputs, cargo: &mut impl CargoOutput) {
     }
 }
 
-/// Emits warnings.
+/// Publishes non-blocking diagnostics through Cargo without multiline output.
 pub(crate) fn emit_warnings(report: &BuildReport, cargo: &mut impl CargoOutput) {
     for warning in report.warnings() {
         let location = cargo_one_line(&warning.primary().location().map_or_else(
@@ -407,7 +407,7 @@ pub(crate) fn emit_warnings(report: &BuildReport, cargo: &mut impl CargoOutput) 
     }
 }
 
-/// Computes the cargo one line.
+/// Escapes control characters so one Cargo warning occupies exactly one output line.
 fn cargo_one_line(value: &str) -> String {
     value
         .chars()
@@ -418,7 +418,7 @@ fn cargo_one_line(value: &str) -> String {
         .collect()
 }
 
-/// Constructs diagnostic.
+/// Constructs a validated diagnostic from structured evidence and remedy data.
 fn make_diagnostic(
     code: &'static str,
     summary: &str,
@@ -448,7 +448,7 @@ fn make_diagnostic(
     diagnostic
 }
 
-/// Adapts discovery.
+/// Converts discovery failures into stable RCA diagnostics.
 fn adapt_discovery(
     diagnostic: &DiscoveryDiagnostic,
     inputs: &DiscoveryInputs,
@@ -500,7 +500,7 @@ fn adapt_discovery(
     )
 }
 
-/// Adapts resolution.
+/// Converts resolution failures into stable RCA diagnostics.
 fn adapt_resolution(
     diagnostic: &ResolutionDiagnostic,
     inputs: &DiscoveryInputs,
@@ -541,15 +541,15 @@ fn adapt_resolution(
 }
 
 #[derive(Clone, Copy, Default)]
-/// The logical diagnostic origin representation used by source analysis.
+/// Optional logical-module provenance used to order and label adapted diagnostics.
 struct LogicalDiagnosticOrigin<'a> {
-    /// The module.
+    /// Logical module identity when the producer resolved one.
     module: Option<crate::lowering::ModuleId>,
-    /// The path.
+    /// Canonical logical path when an identity is unavailable.
     path: Option<&'a [String]>,
 }
 
-/// Computes the located diagnostic.
+/// Builds a diagnostic after validating its primary and related source locations.
 fn located_diagnostic(
     code: &'static str,
     summary: &str,
@@ -598,7 +598,7 @@ fn located_diagnostic(
     )
 }
 
-/// Computes the source path order.
+/// Ranks a source path by discovery order, with unknown paths sorted last.
 fn source_path_order(
     inputs: &DiscoveryInputs,
     path: &Path,
@@ -612,7 +612,7 @@ fn source_path_order(
     Some(((source << 32) | start, path.display().to_string()))
 }
 
-/// Adapts source model.
+/// Converts source-model failures into stable RCA diagnostics.
 fn adapt_source_model(
     diagnostic: &SourceModelDiagnostic,
     selected_root: &Path,
@@ -652,7 +652,7 @@ fn adapt_source_model(
     adapted
 }
 
-/// Computes the source model code.
+/// Maps a source-model failure class to its stable RCA catalog code.
 pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'static str {
     match kind {
         SourceModelDiagnosticKind::InvalidConfiguration => "RCA3101",
@@ -678,7 +678,7 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
     }
 }
 
-/// Adapts lexical.
+/// Converts lexical-policy failures into stable RCA diagnostics.
 fn adapt_lexical(diagnostic: &LexicalDiagnostic, selected_root: &Path) -> RecursaDiagnostic {
     let code = lexical_code(diagnostic.code);
     let summary = lexical_summary(diagnostic.code);
@@ -722,12 +722,12 @@ fn adapt_lexical(diagnostic: &LexicalDiagnostic, selected_root: &Path) -> Recurs
     adapted
 }
 
-/// Computes the lexical code.
+/// Exposes the stable RCA code assigned by lexical planning.
 pub(crate) const fn lexical_code(code: LexicalDiagnosticCode) -> &'static str {
     code.as_str()
 }
 
-/// Computes the lexical summary.
+/// Returns the canonical human-readable summary for a lexical RCA code.
 const fn lexical_summary(code: LexicalDiagnosticCode) -> &'static str {
     match code {
         LexicalDiagnosticCode::Rca3001 => "unsupported keyword matching policy",
@@ -739,7 +739,7 @@ const fn lexical_summary(code: LexicalDiagnosticCode) -> &'static str {
     }
 }
 
-/// Computes the lexical evidence.
+/// Adapts structured lexical evidence into the public diagnostic schema.
 fn lexical_evidence(evidence: &LexicalDiagnosticEvidence) -> DiagnosticEvidence {
     let (condition, facts, witness) = match evidence {
         LexicalDiagnosticEvidence::InvalidKeywordMatchingPolicy { authored } => (
@@ -815,7 +815,7 @@ fn lexical_evidence(evidence: &LexicalDiagnosticEvidence) -> DiagnosticEvidence 
     }
 }
 
-/// Computes the pattern facts.
+/// Flattens competing-pattern evidence into canonically named diagnostic facts.
 fn pattern_facts(contenders: &[LexicalPatternEvidence]) -> Vec<DiagnosticFact> {
     contenders
         .iter()
@@ -835,7 +835,7 @@ fn pattern_facts(contenders: &[LexicalPatternEvidence]) -> Vec<DiagnosticFact> {
         .collect()
 }
 
-/// Renders lexical metadata.
+/// Renders matcher metadata for deterministic diagnostic evidence.
 fn render_lexical_metadata(metadata: &LexicalDefinitionMetadata) -> String {
     match metadata {
         LexicalDefinitionMetadata::Fixed {
@@ -857,7 +857,7 @@ fn render_lexical_metadata(metadata: &LexicalDefinitionMetadata) -> String {
     }
 }
 
-/// Adapts lexical remedy.
+/// Converts a lexical corrective action into the diagnostic remedy schema.
 fn adapt_lexical_remedy(remedy: &LexicalRemedy) -> DiagnosticRemedy {
     match remedy {
         LexicalRemedy::ChooseSupportedKeywordMatchingPolicy => {
@@ -879,7 +879,7 @@ fn adapt_lexical_remedy(remedy: &LexicalRemedy) -> DiagnosticRemedy {
     }
 }
 
-/// Computes the fact.
+/// Constructs one named diagnostic fact for canonical rendering.
 fn fact(name: impl Into<String>, value: impl Into<String>) -> DiagnosticFact {
     DiagnosticFact {
         name: name.into(),
@@ -887,7 +887,7 @@ fn fact(name: impl Into<String>, value: impl Into<String>) -> DiagnosticFact {
     }
 }
 
-/// Computes the fixed class.
+/// Names a mechanical fixed-token class for diagnostic evidence.
 const fn fixed_class(class: FixedTokenClass) -> &'static str {
     match class {
         FixedTokenClass::Keyword => "keyword",
@@ -895,7 +895,7 @@ const fn fixed_class(class: FixedTokenClass) -> &'static str {
     }
 }
 
-/// Computes the site diagnostic.
+/// Builds a diagnostic whose primary location is the first canonical source site.
 fn site_diagnostic(
     code: &'static str,
     summary: &str,
@@ -939,7 +939,7 @@ fn site_diagnostic(
     make_diagnostic(code, summary, location, evidence, remedy, order)
 }
 
-/// Adapts materialization.
+/// Converts materialization failures into stable RCA diagnostics.
 fn adapt_materialization(
     diagnostic: &MaterializationDiagnostic,
     selected_root: &Path,
@@ -992,7 +992,7 @@ fn adapt_materialization(
     )
 }
 
-/// Computes the materialization code.
+/// Maps a materialization failure class to its stable RCA catalog code.
 pub(crate) const fn materialization_code(kind: MaterializationDiagnosticKind) -> &'static str {
     match kind {
         MaterializationDiagnosticKind::OpenApplication => "RCA3202",
@@ -1008,7 +1008,7 @@ pub(crate) const fn materialization_code(kind: MaterializationDiagnosticKind) ->
     }
 }
 
-/// Adapts analysis.
+/// Converts semantic-analysis failures into stable RCA diagnostics.
 fn adapt_analysis(
     diagnostic: &crate::Diagnostic,
     report: &AnalysisReport,
@@ -1082,13 +1082,13 @@ fn adapt_analysis(
     adapted
 }
 
-/// Computes the diagnostic site name.
+/// Resolves a parse site's declaration name for conflict evidence.
 fn diagnostic_site_name(site: crate::SiteId, grammar: &crate::GrammarDescription) -> String {
     let site = &grammar.sites[site.index()];
     grammar.declarations[site.declaration.index()].name.clone()
 }
 
-/// Adapts conflict remedy.
+/// Converts a semantic conflict action into the diagnostic remedy schema.
 pub(crate) fn adapt_conflict_remedy(
     remedy: &ConflictRemedy,
     grammar: &crate::GrammarDescription,
@@ -1146,7 +1146,7 @@ pub(crate) fn adapt_conflict_remedy(
     }
 }
 
-/// Computes the analysis evidence.
+/// Adapts semantic conflict witnesses and provenance into diagnostic evidence.
 fn analysis_evidence(
     diagnostic: &crate::Diagnostic,
     lowered: &LoweredGrammar,
@@ -1217,7 +1217,7 @@ fn analysis_evidence(
     }
 }
 
-/// Adapts analysis label.
+/// Converts a normalized semantic label to an authored source location.
 fn adapt_analysis_label(
     label: &crate::DiagnosticLabel,
     report: &AnalysisReport,

@@ -37,39 +37,39 @@ use crate::source_syntax::{
 };
 
 #[derive(Clone, Debug)]
-/// The source model input representation used by source analysis.
+/// Inputs required to turn a resolved source grammar into an authored-source model.
 pub(crate) struct SourceModelInput<'cfg> {
-    /// The resolved.
+    /// Resolved declarations, references, and module structure to model.
     pub(crate) resolved: ResolvedSourceGrammar,
-    /// The cfg.
+    /// Active Cargo configuration used when interpreting feature-gated attributes.
     pub(crate) cfg: &'cfg CargoCfgSnapshot,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source model report representation used by source analysis.
+/// Outcome of source-model construction, including every independently detected failure.
 pub(crate) struct SourceModelReport {
-    /// The diagnostics.
+    /// Deterministically ordered problems found while modeling authored structure.
     pub(crate) diagnostics: Vec<SourceModelDiagnostic>,
-    /// The source modeled.
+    /// Complete model, withheld when any blocking diagnostic was produced.
     pub(crate) source_modeled: Option<SourceModeledGrammar>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source modeled grammar representation used by source analysis.
+/// Keeps a resolved grammar and its authored-source model under one ownership boundary.
 pub(crate) struct SourceModeledGrammar {
-    /// The resolved.
+    /// Typed resolution facts from which the source model was built.
     resolved: ResolvedSourceGrammar,
-    /// The source model.
+    /// Authored structure and locations retained for lowering and generation.
     source_model: SourceModel,
 }
 
 impl SourceModeledGrammar {
-    /// Computes the resolved.
+    /// Borrows the typed resolution facts paired with this source model.
     pub(crate) const fn resolved(&self) -> &ResolvedSourceGrammar {
         &self.resolved
     }
 
-    /// Computes the source model.
+    /// Borrows the authored structure paired with the resolved grammar.
     pub(crate) const fn source_model(&self) -> &SourceModel {
         &self.source_model
     }
@@ -79,12 +79,12 @@ impl SourceModeledGrammar {
         &mut self.source_model
     }
 
-    /// Computes the source order key.
+    /// Derives the source order key from the retained source model and its correlations.
     pub(crate) fn source_order_key(&self, site: &SourceSite) -> SourceOrderKey {
         canonical_source_order_key(site)
     }
 
-    /// Computes the grammar configuration site.
+    /// Derives the grammar configuration site from the retained source model and its correlations.
     pub(crate) fn grammar_configuration_site(&self, range: Range<u32>) -> SourceSite {
         let root = self
             .resolved
@@ -104,70 +104,70 @@ impl SourceModeledGrammar {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source model representation used by source analysis.
+/// Grammar-relevant authored structure retained for lowering, diagnostics, and generation.
 pub(crate) struct SourceModel {
-    /// The grammar trait defaults.
+    /// Grammar-wide configured traits applied before Node-local overrides.
     pub(crate) grammar_trait_defaults: Vec<ConfiguredTraitSelection>,
-    /// The nodes.
+    /// Node declarations in canonical authored-source order.
     pub(crate) nodes: Vec<Node>,
-    /// The token definitions.
+    /// Unified lexical and fixed-token declarations in stable definition order.
     pub(crate) token_definitions: Vec<TokenDefinition>,
-    /// The lexer records.
+    /// Non-token lexer rules retained for generated recognition behavior.
     pub(crate) lexer_records: Vec<NonTokenLexerRecord>,
-    /// The token uses.
+    /// Located references to token definitions from grammar positions.
     pub(crate) token_uses: Vec<TokenUse>,
-    /// The post lex.
+    /// Optional opaque post-lex hook path preserved for generation.
     pub(crate) post_lex: Option<syn::Path>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The non token lexer record representation used by source analysis.
+/// Carries the non token lexer record retained from authored source structure.
 pub(crate) struct NonTokenLexerRecord {
-    /// The pattern.
+    /// Preserves the authored lexical pattern for validation and generation.
     pub(crate) pattern: String,
-    /// The outcome.
+    /// Supplies the outcome used to correlate authored source with normalized grammar.
     pub(crate) outcome: NonTokenLexerOutcome,
-    /// The site.
+    /// Locates the authored construct represented by this source-model value.
     pub(crate) site: SourceSite,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible non token lexer outcome cases used by source analysis.
+/// Classifies the non token lexer outcome forms retained in the source model.
 pub(crate) enum NonTokenLexerOutcome {
-    /// The non emitting case.
+    /// Identifies the non emitting authored-source form.
     NonEmitting,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The node representation used by source analysis.
+/// Carries the node retained from authored source structure.
 pub(crate) struct Node {
-    /// The resolved node.
+    /// Supplies the resolved node used to correlate authored source with normalized grammar.
     pub(crate) resolved_node: NodeId,
-    /// The name.
+    /// Preserves the authored name used by generated bindings and diagnostics.
     pub(crate) name: String,
-    /// The body.
+    /// Supplies the body used to correlate authored source with normalized grammar.
     pub(crate) body: NodeBody,
-    /// The configured traits.
+    /// Supplies the configured traits used to correlate authored source with normalized grammar.
     pub(crate) configured_traits: ConfiguredTraitPlan,
-    /// The pretty.
+    /// Preserves Pretty configuration after source-level validation.
     pub(crate) pretty: PrettyHints,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible node body cases used by source analysis.
+/// Classifies the node body forms retained in the source model.
 pub(crate) enum NodeBody {
-    /// The struct case.
+    /// Identifies the struct authored-source form.
     Struct(Vec<GrammarElement>),
-    /// The presence case.
+    /// Identifies the presence authored-source form.
     Presence(Vec<GrammarElement>),
-    /// The enum case.
+    /// Identifies the enum authored-source form.
     Enum(Vec<Variant>),
-    /// The pratt case.
+    /// Identifies the pratt authored-source form.
     Pratt(Vec<SourcePrattVariant>),
 }
 
 impl Node {
-    /// Computes the shape.
+    /// Derives the shape from the retained source model and its correlations.
     pub(crate) const fn shape(&self) -> NodeShape {
         match self.body {
             NodeBody::Struct(_) => NodeShape::Struct,
@@ -177,7 +177,7 @@ impl Node {
         }
     }
 
-    /// Computes the elements.
+    /// Derives the elements from the retained source model and its correlations.
     pub(crate) fn elements(&self) -> &[GrammarElement] {
         match &self.body {
             NodeBody::Struct(elements) | NodeBody::Presence(elements) => elements,
@@ -185,7 +185,7 @@ impl Node {
         }
     }
 
-    /// Computes the variants.
+    /// Derives the variants from the retained source model and its correlations.
     pub(crate) fn variants(&self) -> &[Variant] {
         match &self.body {
             NodeBody::Enum(variants) => variants,
@@ -193,7 +193,7 @@ impl Node {
         }
     }
 
-    /// Computes the pratt variants.
+    /// Derives the pratt variants from the retained source model and its correlations.
     pub(crate) fn pratt_variants(&self) -> &[SourcePrattVariant] {
         match &self.body {
             NodeBody::Pratt(variants) => variants,
@@ -203,104 +203,104 @@ impl Node {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The variant representation used by source analysis.
+/// Carries the variant retained from authored source structure.
 pub(crate) struct Variant {
-    /// The resolved variant.
+    /// Supplies the resolved variant used to correlate authored source with normalized grammar.
     pub(crate) resolved_variant: ResolvedVariantId,
-    /// The name.
+    /// Preserves the authored name used by generated bindings and diagnostics.
     pub(crate) name: String,
-    /// The elements.
+    /// Supplies the elements used to correlate authored source with normalized grammar.
     pub(crate) elements: Vec<GrammarElement>,
-    /// The site.
+    /// Locates the authored construct represented by this source-model value.
     pub(crate) site: SourceSite,
-    /// The pretty.
+    /// Preserves Pretty configuration after source-level validation.
     pub(crate) pretty: PrettyHints,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-/// The pretty hints representation used by source analysis.
+/// Carries the pretty hints retained from authored source structure.
 pub(crate) struct PrettyHints {
-    /// The group.
+    /// Supplies the group used to correlate authored source with normalized grammar.
     pub(crate) group: Option<PrettyGroup>,
-    /// The indent.
+    /// Supplies the indent used to correlate authored source with normalized grammar.
     pub(crate) indent: bool,
-    /// The break before.
+    /// Supplies the break before used to correlate authored source with normalized grammar.
     pub(crate) break_before: Option<PrettyBreak>,
-    /// The break after.
+    /// Supplies the break after used to correlate authored source with normalized grammar.
     pub(crate) break_after: Option<PrettyBreak>,
-    /// The separator.
+    /// Supplies the separator used to correlate authored source with normalized grammar.
     pub(crate) separator: Option<PrettySeparatorPosition>,
-    /// The trailing separator.
+    /// Supplies the trailing separator used to correlate authored source with normalized grammar.
     pub(crate) trailing_separator: Option<PrettyTrailingSeparator>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible pretty group cases used by source analysis.
+/// Classifies the pretty group forms retained in the source model.
 pub(crate) enum PrettyGroup {
-    /// The consistent case.
+    /// Identifies the consistent authored-source form.
     Consistent,
-    /// The inconsistent case.
+    /// Identifies the inconsistent authored-source form.
     Inconsistent,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible pretty break cases used by source analysis.
+/// Classifies the pretty break forms retained in the source model.
 pub(crate) enum PrettyBreak {
-    /// The soft case.
+    /// Identifies the soft authored-source form.
     Soft,
-    /// The hard case.
+    /// Identifies the hard authored-source form.
     Hard,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible pretty separator position cases used by source analysis.
+/// Classifies the pretty separator position forms retained in the source model.
 pub(crate) enum PrettySeparatorPosition {
-    /// The leading case.
+    /// Identifies the leading authored-source form.
     Leading,
-    /// The trailing case.
+    /// Identifies the trailing authored-source form.
     Trailing,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible pretty trailing separator cases used by source analysis.
+/// Classifies the pretty trailing separator forms retained in the source model.
 pub(crate) enum PrettyTrailingSeparator {
-    /// The always case.
+    /// Identifies the always authored-source form.
     Always,
-    /// The never case.
+    /// Identifies the never authored-source form.
     Never,
 }
 
 impl PrettyHints {
-    /// Whether the value is empty.
+    /// Reports whether the configured-trait selection contains no additions or omissions.
     fn is_empty(&self) -> bool {
         self == &Self::default()
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source pratt variant representation used by source analysis.
+/// Carries the source pratt variant retained from authored source structure.
 pub(crate) struct SourcePrattVariant {
-    /// The common.
+    /// Declaration metadata shared by all authored Pratt variant roles.
     pub(crate) common: Variant,
-    /// The position.
+    /// Supplies the position used to correlate authored source with normalized grammar.
     pub(crate) position: SourcePrattPosition,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible source pratt position cases used by source analysis.
+/// Classifies the source pratt position forms retained in the source model.
 pub(crate) enum SourcePrattPosition {
-    /// The atom case.
+    /// Identifies the atom authored-source form.
     Atom,
-    /// The prefix case.
+    /// Identifies the prefix authored-source form.
     Prefix {
         #[doc = "Authored right binding power of the prefix operand."]
         bp: u8,
     },
-    /// The infix case.
+    /// Identifies the infix authored-source form.
     Infix {
         #[doc = "Authored left binding power of the infix operator."]
         lbp: u8,
         #[doc = "Authored right binding power of the infix operand."]
         rbp: u8,
     },
-    /// The postfix case.
+    /// Identifies the postfix authored-source form.
     Postfix {
         #[doc = "Authored left binding power of the postfix operator."]
         bp: u8,
@@ -308,160 +308,160 @@ pub(crate) enum SourcePrattPosition {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-/// The configured trait plan representation used by source analysis.
+/// Carries the configured trait plan retained from authored source structure.
 pub(crate) struct ConfiguredTraitPlan {
-    /// The effective.
+    /// Supplies the effective used to correlate authored source with normalized grammar.
     pub(crate) effective: Vec<ConfiguredTraitSelection>,
-    /// The additions.
+    /// Supplies the additions used to correlate authored source with normalized grammar.
     pub(crate) additions: Vec<ConfiguredTraitSelection>,
-    /// The omissions.
+    /// Supplies the omissions used to correlate authored source with normalized grammar.
     pub(crate) omissions: Vec<ConfiguredTraitOmission>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The configured trait selection representation used by source analysis.
+/// Carries the configured trait selection retained from authored source structure.
 pub(crate) struct ConfiguredTraitSelection {
-    /// The recipe.
+    /// Supplies the recipe used to correlate authored source with normalized grammar.
     pub(crate) recipe: ConfiguredTraitRecipe,
-    /// The ownership.
+    /// Supplies the ownership used to correlate authored source with normalized grammar.
     pub(crate) ownership: ConfiguredTraitOwnership,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The configured trait omission representation used by source analysis.
+/// Carries the configured trait omission retained from authored source structure.
 pub(crate) struct ConfiguredTraitOmission {
-    /// The recipe.
+    /// Supplies the recipe used to correlate authored source with normalized grammar.
     pub(crate) recipe: ConfiguredTraitRecipe,
-    /// The ownership.
+    /// Supplies the ownership used to correlate authored source with normalized grammar.
     pub(crate) ownership: ConfiguredTraitOwnership,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible configured trait recipe cases used by source analysis.
+/// Classifies the configured trait recipe forms retained in the source model.
 pub(crate) enum ConfiguredTraitRecipe {
-    /// The debug case.
+    /// Identifies the debug authored-source form.
     Debug,
-    /// The clone case.
+    /// Identifies the clone authored-source form.
     Clone,
-    /// The copy case.
+    /// Identifies the copy authored-source form.
     Copy,
-    /// The partial eq case.
+    /// Identifies the partial eq authored-source form.
     PartialEq,
-    /// The eq case.
+    /// Identifies the eq authored-source form.
     Eq,
-    /// The partial ord case.
+    /// Identifies the partial ord authored-source form.
     PartialOrd,
-    /// The ord case.
+    /// Identifies the ord authored-source form.
     Ord,
-    /// The hash case.
+    /// Identifies the hash authored-source form.
     Hash,
-    /// The pretty case.
+    /// Identifies the pretty authored-source form.
     Pretty,
-    /// The visit case.
+    /// Identifies the visit authored-source form.
     Visit,
-    /// The visit mut case.
+    /// Identifies the visit mut authored-source form.
     VisitMut,
-    /// The arbitrary case.
+    /// Identifies the arbitrary authored-source form.
     Arbitrary,
-    /// The serialize case.
+    /// Identifies the serialize authored-source form.
     Serialize,
-    /// The deserialize case.
+    /// Identifies the deserialize authored-source form.
     Deserialize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible configured trait ownership cases used by source analysis.
+/// Classifies the configured trait ownership forms retained in the source model.
 pub(crate) enum ConfiguredTraitOwnership {
-    /// The grammar default case.
+    /// Identifies the grammar default authored-source form.
     GrammarDefault,
-    /// The local addition case.
+    /// Identifies the local addition authored-source form.
     LocalAddition,
-    /// The local omission case.
+    /// Identifies the local omission authored-source form.
     LocalOmission,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible node shape cases used by source analysis.
+/// Classifies the node shape forms retained in the source model.
 pub(crate) enum NodeShape {
-    /// The struct case.
+    /// Identifies the struct authored-source form.
     Struct,
-    /// The enum case.
+    /// Identifies the enum authored-source form.
     Enum,
-    /// The pratt case.
+    /// Identifies the pratt authored-source form.
     Pratt,
-    /// The presence case.
+    /// Identifies the presence authored-source form.
     Presence,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible grammar element cases used by source analysis.
+/// Classifies the grammar element forms retained in the source model.
 pub(crate) enum GrammarElement {
-    /// The fixed token case.
+    /// Identifies the fixed token authored-source form.
     FixedToken {
-        /// The id.
+        /// Carries the grammar-local identity used by source-model tables.
         id: GrammarElementId,
-        /// The token use.
+        /// Supplies the token use used to correlate authored source with normalized grammar.
         token_use: TokenUseId,
-        /// The site.
+        /// Locates the authored construct represented by this source-model value.
         site: SourceSite,
     },
-    /// The semantic field case.
+    /// Identifies the semantic field authored-source form.
     SemanticField {
-        /// The id.
+        /// Carries the grammar-local identity used by source-model tables.
         id: GrammarElementId,
-        /// The resolved field.
+        /// Supplies the resolved field used to correlate authored source with normalized grammar.
         resolved_field: ResolvedFieldId,
-        /// The name.
+        /// Preserves the authored name used by generated bindings and diagnostics.
         name: Option<String>,
-        /// The attachment.
+        /// Supplies the attachment used to correlate authored source with normalized grammar.
         attachment: Option<FixedTokenAttachment>,
-        /// The separator.
+        /// Supplies the separator used to correlate authored source with normalized grammar.
         separator: Option<Separator>,
-        /// The pretty.
+        /// Preserves Pretty configuration after source-level validation.
         pretty: PrettyHints,
-        /// The attachment before.
+        /// Supplies the attachment before used to correlate authored source with normalized grammar.
         attachment_before: usize,
-        /// The attachment after.
+        /// Supplies the attachment after used to correlate authored source with normalized grammar.
         attachment_after: usize,
-        /// The site.
+        /// Locates the authored construct represented by this source-model value.
         site: SourceSite,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The fixed token attachment representation used by source analysis.
+/// Carries the fixed token attachment retained from authored source structure.
 pub(crate) struct FixedTokenAttachment {
-    /// The before.
+    /// Supplies the before used to correlate authored source with normalized grammar.
     pub(crate) before: Vec<AttachedFixedToken>,
-    /// The after.
+    /// Supplies the after used to correlate authored source with normalized grammar.
     pub(crate) after: Vec<AttachedFixedToken>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The attached fixed token representation used by source analysis.
+/// Carries the attached fixed token retained from authored source structure.
 pub(crate) struct AttachedFixedToken {
-    /// The token use.
+    /// Supplies the token use used to correlate authored source with normalized grammar.
     pub(crate) token_use: TokenUseId,
-    /// The site.
+    /// Locates the authored construct represented by this source-model value.
     pub(crate) site: SourceSite,
 }
 
 impl GrammarElement {
-    /// Computes the id.
+    /// Derives the id from the retained source model and its correlations.
     pub(crate) const fn id(&self) -> GrammarElementId {
         match self {
             Self::FixedToken { id, .. } | Self::SemanticField { id, .. } => *id,
         }
     }
 
-    /// Sets id.
+    /// Assigns the grammar-local element identity after source-order normalization.
     fn set_id(&mut self, value: GrammarElementId) {
         match self {
             Self::FixedToken { id, .. } | Self::SemanticField { id, .. } => *id = value,
         }
     }
 
-    /// Computes the kind.
+    /// Derives the kind from the retained source model and its correlations.
     pub(crate) const fn kind(&self) -> GrammarElementKind {
         match self {
             Self::FixedToken { .. } => GrammarElementKind::FixedToken,
@@ -469,7 +469,7 @@ impl GrammarElement {
         }
     }
 
-    /// Computes the separator.
+    /// Derives the separator from the retained source model and its correlations.
     pub(crate) fn separator(&self) -> Option<&Separator> {
         match self {
             Self::SemanticField { separator, .. } => separator.as_ref(),
@@ -477,7 +477,7 @@ impl GrammarElement {
         }
     }
 
-    /// Computes the attachment.
+    /// Derives the attachment from the retained source model and its correlations.
     pub(crate) fn attachment(&self) -> Option<&FixedTokenAttachment> {
         match self {
             Self::SemanticField { attachment, .. } => attachment.as_ref(),
@@ -487,205 +487,205 @@ impl GrammarElement {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The separator representation used by source analysis.
+/// Carries the separator retained from authored source structure.
 pub(crate) struct Separator {
-    /// The token use.
+    /// Supplies the token use used to correlate authored source with normalized grammar.
     pub(crate) token_use: TokenUseId,
-    /// The declared repetition.
+    /// Supplies the declared repetition used to correlate authored source with normalized grammar.
     pub(crate) declared_repetition: Option<DeclaredRepetition>,
-    /// The optional trailing.
+    /// Supplies the optional trailing used to correlate authored source with normalized grammar.
     pub(crate) optional_trailing: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible declared repetition cases used by source analysis.
+/// Classifies the declared repetition forms retained in the source model.
 pub(crate) enum DeclaredRepetition {
-    /// The zero or more case.
+    /// Identifies the zero or more authored-source form.
     ZeroOrMore,
-    /// The one or more case.
+    /// Identifies the one or more authored-source form.
     OneOrMore,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible grammar element kind cases used by source analysis.
+/// Classifies the grammar element kind forms retained in the source model.
 pub(crate) enum GrammarElementKind {
-    /// The fixed token case.
+    /// Identifies the fixed token authored-source form.
     FixedToken,
-    /// The semantic field case.
+    /// Identifies the semantic field authored-source form.
     SemanticField,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The token definition representation used by source analysis.
+/// Carries the token definition retained from authored source structure.
 pub(crate) struct TokenDefinition {
-    /// The id.
+    /// Carries the grammar-local identity used by source-model tables.
     pub(crate) id: TokenDefinitionId,
-    /// The name.
+    /// Preserves the authored name used by generated bindings and diagnostics.
     pub(crate) name: String,
-    /// The kind.
+    /// Classifies the source-model value without consulting normalized grammar.
     pub(crate) kind: TokenDefinitionKind,
-    /// The definition sites.
+    /// Supplies the definition sites used to correlate authored source with normalized grammar.
     pub(crate) definition_sites: Vec<SourceSite>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible token definition kind cases used by source analysis.
+/// Classifies the token definition kind forms retained in the source model.
 pub(crate) enum TokenDefinitionKind {
-    /// The fixed case.
+    /// Identifies the fixed authored-source form.
     Fixed(FixedTokenDefinition),
-    /// The content case.
+    /// Identifies the content authored-source form.
     Content(ContentTokenDefinition),
-    /// The lexical base case.
+    /// Identifies the lexical base authored-source form.
     LexicalBase(LexicalBaseTokenDefinition),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The fixed token definition representation used by source analysis.
+/// Carries the fixed token definition retained from authored source structure.
 pub(crate) struct FixedTokenDefinition {
-    /// The spelling.
+    /// Supplies the spelling used to correlate authored source with normalized grammar.
     pub(crate) spelling: String,
-    /// The authored classifications.
+    /// Supplies the authored classifications used to correlate authored source with normalized grammar.
     pub(crate) authored_classifications: Vec<AuthoredFixedClassification>,
-    /// The pretty spacing.
+    /// Supplies the pretty spacing used to correlate authored source with normalized grammar.
     pub(crate) pretty_spacing: PrettySpacing,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-/// The possible pretty spacing cases used by source analysis.
+/// Classifies the pretty spacing forms retained in the source model.
 pub(crate) enum PrettySpacing {
     #[default]
-    /// The auto case.
+    /// Identifies the auto authored-source form.
     Auto,
-    /// The tight case.
+    /// Identifies the tight authored-source form.
     Tight,
-    /// The before case.
+    /// Identifies the before authored-source form.
     Before,
-    /// The after case.
+    /// Identifies the after authored-source form.
     After,
-    /// The around case.
+    /// Identifies the around authored-source form.
     Around,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible authored fixed token class cases used by source analysis.
+/// Classifies the authored fixed token class forms retained in the source model.
 pub(crate) enum AuthoredFixedTokenClass {
-    /// The keyword case.
+    /// Identifies the keyword authored-source form.
     Keyword,
-    /// The punctuation case.
+    /// Identifies the punctuation authored-source form.
     Punctuation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The authored fixed classification representation used by source analysis.
+/// Carries the authored fixed classification retained from authored source structure.
 pub(crate) struct AuthoredFixedClassification {
-    /// The class.
+    /// Supplies the class used to correlate authored source with normalized grammar.
     pub(crate) class: AuthoredFixedTokenClass,
-    /// The site.
+    /// Locates the authored construct represented by this source-model value.
     pub(crate) site: SourceSite,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The content token definition representation used by source analysis.
+/// Carries the content token definition retained from authored source structure.
 pub(crate) struct ContentTokenDefinition {
-    /// The semantic.
+    /// Supplies the semantic used to correlate authored source with normalized grammar.
     pub(crate) semantic: ContentTokenId,
-    /// The pattern.
+    /// Preserves the authored lexical pattern for validation and generation.
     pub(crate) pattern: String,
-    /// The authored diagram label, when it differs from the regex fallback.
+    /// Supplies the authored diagram label, when it differs from the regex fallback used to correlate authored source with normalized grammar.
     pub(crate) diagram_label: Option<String>,
-    /// The callback.
+    /// Preserves the opaque authored callback path for generation.
     pub(crate) callback: Option<syn::Path>,
-    /// The priority.
+    /// Preserves authored lexical priority for deterministic matcher ordering.
     pub(crate) priority: Option<u32>,
-    /// The admission set.
+    /// Supplies the admission set used to correlate authored source with normalized grammar.
     pub(crate) admission_set: Vec<TokenDefinitionId>,
-    /// The authored admissions.
+    /// Supplies the authored admissions used to correlate authored source with normalized grammar.
     pub(crate) authored_admissions: Vec<AuthoredAdmissions>,
-    /// The text.
+    /// Supplies the text used to correlate authored source with normalized grammar.
     pub(crate) text: ContentTextStorage,
-    /// The configured traits.
+    /// Supplies the configured traits used to correlate authored source with normalized grammar.
     pub(crate) configured_traits: ConfiguredTraitPlan,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The lexical base token definition representation used by source analysis.
+/// Carries the lexical base token definition retained from authored source structure.
 pub(crate) struct LexicalBaseTokenDefinition {
-    /// The pattern.
+    /// Preserves the authored lexical pattern for validation and generation.
     pub(crate) pattern: String,
-    /// The callback.
+    /// Preserves the opaque authored callback path for generation.
     pub(crate) callback: Option<syn::Path>,
-    /// The priority.
+    /// Preserves authored lexical priority for deterministic matcher ordering.
     pub(crate) priority: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The authored admissions representation used by source analysis.
+/// Carries the authored admissions retained from authored source structure.
 pub(crate) struct AuthoredAdmissions {
-    /// The site.
+    /// Locates the authored construct represented by this source-model value.
     pub(crate) site: SourceSite,
-    /// The definitions.
+    /// Supplies the definitions used to correlate authored source with normalized grammar.
     pub(crate) definitions: Vec<TokenDefinitionId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible content text storage cases used by source analysis.
+/// Classifies the content text storage forms retained in the source model.
 pub(crate) enum ContentTextStorage {
-    /// The borrowed or owned matched text case.
+    /// Identifies the borrowed or owned matched text authored-source form.
     BorrowedOrOwnedMatchedText,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The token use representation used by source analysis.
+/// Carries the token use retained from authored source structure.
 pub(crate) struct TokenUse {
-    /// The id.
+    /// Carries the grammar-local identity used by source-model tables.
     pub(crate) id: TokenUseId,
-    /// The definition.
+    /// Supplies the definition used to correlate authored source with normalized grammar.
     pub(crate) definition: TokenDefinitionId,
-    /// The role.
+    /// Supplies the role used to correlate authored source with normalized grammar.
     pub(crate) role: TokenUseRole,
-    /// The site.
+    /// Locates the authored construct represented by this source-model value.
     pub(crate) site: SourceSite,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible token use role cases used by source analysis.
+/// Classifies the token use role forms retained in the source model.
 pub(crate) enum TokenUseRole {
-    /// The fixed element case.
+    /// Identifies the fixed element authored-source form.
     FixedElement,
-    /// The separator case.
+    /// Identifies the separator authored-source form.
     Separator,
-    /// The content admission case.
+    /// Identifies the content admission authored-source form.
     ContentAdmission,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source site representation used by source analysis.
+/// Carries the source site retained from authored source structure.
 pub(crate) struct SourceSite {
-    /// The module.
+    /// Identifies the logical module that owns this source-model value.
     pub(crate) module: ModuleId,
-    /// The logical module.
+    /// Supplies the logical module used to correlate authored source with normalized grammar.
     pub(crate) logical_module: Vec<String>,
-    /// The source.
+    /// Identifies the authored source file containing this value.
     pub(crate) source: crate::SourceId,
-    /// The path.
+    /// Supplies the path used to correlate authored source with normalized grammar.
     pub(crate) path: PathBuf,
-    /// The range.
+    /// Supplies the range used to correlate authored source with normalized grammar.
     pub(crate) range: Range<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The source order key representation used by source analysis.
+/// Carries the source order key retained from authored source structure.
 pub(crate) struct SourceOrderKey {
-    /// The module.
+    /// Identifies the logical module that owns this source-model value.
     module: usize,
-    /// The start.
+    /// Supplies the start used to correlate authored source with normalized grammar.
     start: u32,
-    /// The end.
+    /// Supplies the end used to correlate authored source with normalized grammar.
     end: u32,
 }
 
 impl SourceOrderKey {
-    /// The last constant used by source analysis.
+    /// Sentinel returned when no authored token attachment exists after an element.
     pub(crate) const LAST: Self = Self {
         module: usize::MAX,
         start: u32::MAX,
@@ -694,71 +694,71 @@ impl SourceOrderKey {
 }
 
 #[derive(Clone, Copy)]
-/// The source origin representation used by source analysis.
+/// Carries the source origin retained from authored source structure.
 struct SourceOrigin {
-    /// The module.
+    /// Identifies the logical module that owns this source-model value.
     module: ModuleId,
-    /// The source.
+    /// Identifies the authored source file containing this value.
     source: crate::SourceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible source model diagnostic kind cases used by source analysis.
+/// Classifies the source model diagnostic kind forms retained in the source model.
 pub(crate) enum SourceModelDiagnosticKind {
-    /// The invalid configuration case.
+    /// Identifies the invalid configuration authored-source form.
     InvalidConfiguration,
-    /// The invalid pretty hint case.
+    /// Identifies the invalid pretty hint authored-source form.
     InvalidPrettyHint,
-    /// The inapplicable pretty hint case.
+    /// Identifies the inapplicable pretty hint authored-source form.
     InapplicablePrettyHint,
-    /// The unsafe pretty hint case.
+    /// Identifies the unsafe pretty hint authored-source form.
     UnsafePrettyHint,
-    /// The multiple token sequences case.
+    /// Identifies the multiple token sequences authored-source form.
     MultipleTokenSequences,
-    /// The empty token sequence case.
+    /// Identifies the empty token sequence authored-source form.
     EmptyTokenSequence,
-    /// The multiple this anchors case.
+    /// Identifies the multiple this anchors authored-source form.
     MultipleThisAnchors,
-    /// The empty this anchor case.
+    /// Identifies the empty this anchor authored-source form.
     EmptyThisAnchor,
-    /// The unresolved fixed token case.
+    /// Identifies the unresolved fixed token authored-source form.
     UnresolvedFixedToken,
-    /// The unsupported configured trait case.
+    /// Identifies the unsupported configured trait authored-source form.
     UnsupportedConfiguredTrait,
-    /// The invalid trait delta case.
+    /// Identifies the invalid trait delta authored-source form.
     InvalidTraitDelta,
-    /// The conflicting trait delta case.
+    /// Identifies the conflicting trait delta authored-source form.
     ConflictingTraitDelta,
-    /// The invalid content token case.
+    /// Identifies the invalid content token authored-source form.
     InvalidContentToken,
-    /// The content display override case.
+    /// Identifies the content display override authored-source form.
     ContentDisplayOverride,
-    /// The invalid separator case.
+    /// Identifies the invalid separator authored-source form.
     InvalidSeparator,
-    /// The unsupported fixed syntax case.
+    /// Identifies the unsupported fixed syntax authored-source form.
     UnsupportedFixedSyntax,
-    /// The invalid token placement case.
+    /// Identifies the invalid token placement authored-source form.
     InvalidTokenPlacement,
-    /// The invalid pratt token placement case.
+    /// Identifies the invalid pratt token placement authored-source form.
     InvalidPrattTokenPlacement,
-    /// The configured ordinary derive conflict case.
+    /// Identifies the configured ordinary derive conflict authored-source form.
     ConfiguredOrdinaryDeriveConflict,
-    /// The multiple post lex hooks case.
+    /// Identifies the multiple post lex hooks authored-source form.
     MultiplePostLexHooks,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The source model diagnostic representation used by source analysis.
+/// Carries the source model diagnostic retained from authored source structure.
 pub(crate) struct SourceModelDiagnostic {
-    /// The kind.
+    /// Classifies the source-model value without consulting normalized grammar.
     pub(crate) kind: SourceModelDiagnosticKind,
-    /// The sites.
+    /// Supplies the sites used to correlate authored source with normalized grammar.
     pub(crate) sites: Vec<SourceSite>,
-    /// The message.
+    /// Supplies the message used to correlate authored source with normalized grammar.
     pub(crate) message: String,
 }
 
-/// Lowers source model.
+/// Builds the source model from resolved declarations without publishing partial state.
 pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelReport {
     let semantic_facts = SemanticFacts::from_resolved(&input.resolved);
     let mut diagnostics = Vec::new();
@@ -788,88 +788,88 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
     builder.finish()
 }
 
-/// The source model builder representation used by source analysis.
+/// Carries the source model builder retained from authored source structure.
 struct SourceModelBuilder<'cfg> {
-    /// The resolved.
+    /// Supplies the resolved used to correlate authored source with normalized grammar.
     resolved: ResolvedSourceGrammar,
-    /// The cfg.
+    /// Supplies the cfg used to correlate authored source with normalized grammar.
     cfg: &'cfg CargoCfgSnapshot,
-    /// The semantic facts.
+    /// Supplies the semantic facts used to correlate authored source with normalized grammar.
     semantic_facts: SemanticFacts,
-    /// The trait planner.
+    /// Supplies the trait planner used to correlate authored source with normalized grammar.
     trait_planner: TraitPlanner,
-    /// The nodes.
+    /// Supplies the nodes used to correlate authored source with normalized grammar.
     nodes: Vec<Node>,
-    /// The tokens.
+    /// Supplies the tokens used to correlate authored source with normalized grammar.
     tokens: TokenCatalog,
-    /// The diagnostics.
+    /// Supplies the diagnostics used to correlate authored source with normalized grammar.
     diagnostics: Vec<SourceModelDiagnostic>,
 }
 
 #[derive(Clone, Copy)]
-/// The possible token attachment cases used by source analysis.
+/// Classifies the token attachment forms retained in the source model.
 enum TokenAttachment {
-    /// The struct body case.
+    /// Identifies the struct body authored-source form.
     StructBody,
-    /// The field case.
+    /// Identifies the field authored-source form.
     Field,
-    /// The variant case.
+    /// Identifies the variant authored-source form.
     Variant,
-    /// The pratt variant case.
+    /// Identifies the pratt variant authored-source form.
     PrattVariant {
-        /// The position.
+        /// Supplies the position used to correlate authored source with normalized grammar.
         position: SourcePrattPosition,
-        /// The second field attachment.
+        /// Supplies the second field attachment used to correlate authored source with normalized grammar.
         second_field_attachment: Option<usize>,
     },
 }
 
 #[derive(Default)]
-/// The lowered fields representation used by source analysis.
+/// Carries the lowered fields retained from authored source structure.
 struct LoweredFields {
-    /// The elements.
+    /// Supplies the elements used to correlate authored source with normalized grammar.
     elements: Vec<GrammarElement>,
-    /// The attachment starts.
+    /// Supplies the attachment starts used to correlate authored source with normalized grammar.
     attachment_starts: Vec<usize>,
 }
 
 #[derive(Clone)]
-/// The possible pretty boundary kind cases used by source analysis.
+/// Classifies the pretty boundary kind forms retained in the source model.
 enum PrettyBoundaryKind {
-    /// The fixed case.
+    /// Identifies the fixed authored-source form.
     Fixed(TokenDefinitionId),
-    /// The dynamic case.
+    /// Identifies the dynamic authored-source form.
     Dynamic(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible materialized pretty boundary cases used by source analysis.
+/// Classifies the materialized pretty boundary forms retained in the source model.
 pub(crate) enum MaterializedPrettyBoundary {
-    /// The fixed case.
+    /// Identifies the fixed authored-source form.
     Fixed(TokenDefinitionId),
-    /// The regex case.
+    /// Identifies the regex authored-source form.
     Regex(String),
 }
 
 #[derive(Clone)]
-/// The pretty boundary representation used by source analysis.
+/// Carries the pretty boundary retained from authored source structure.
 struct PrettyBoundary {
-    /// The kind.
+    /// Classifies the source-model value without consulting normalized grammar.
     kind: PrettyBoundaryKind,
-    /// The site.
+    /// Locates the authored construct represented by this source-model value.
     site: SourceSite,
 }
 
 #[derive(Clone, Copy)]
-/// The possible pretty boundary side cases used by source analysis.
+/// Classifies the pretty boundary side forms retained in the source model.
 enum PrettyBoundarySide {
-    /// The first case.
+    /// Identifies the first authored-source form.
     First,
-    /// The last case.
+    /// Identifies the last authored-source form.
     Last,
 }
 
-/// Whether the value is word shaped.
+/// Reports whether a fixed-token spelling follows Unicode identifier shape.
 fn is_word_shaped(spelling: &str) -> bool {
     spelling
         .chars()
@@ -878,7 +878,7 @@ fn is_word_shaped(spelling: &str) -> bool {
         && spelling.chars().all(unicode_ident::is_xid_continue)
 }
 
-/// Computes the fixed lexical pattern.
+/// Derives the fixed lexical pattern from the retained source model and its correlations.
 fn fixed_lexical_pattern(spelling: &str, equivalence: crate::TextEquivalence) -> String {
     if equivalence != crate::TextEquivalence::AsciiInsensitive || !is_word_shaped(spelling) {
         return regex_syntax::escape(spelling);
@@ -899,7 +899,7 @@ fn fixed_lexical_pattern(spelling: &str, equivalence: crate::TextEquivalence) ->
         .collect()
 }
 
-/// Computes the fixed pretty pattern.
+/// Derives the fixed pretty pattern from the retained source model and its correlations.
 fn fixed_pretty_pattern(
     fixed: &FixedTokenDefinition,
     equivalence: crate::TextEquivalence,
@@ -907,7 +907,7 @@ fn fixed_pretty_pattern(
     fixed_lexical_pattern(&fixed.spelling, equivalence)
 }
 
-/// Computes the dfa accepts state.
+/// Derives the dfa accepts state from the retained source model and its correlations.
 fn dfa_accepts_state(
     dfa: &dense::DFA<Vec<u32>>,
     state: regex_automata::util::primitives::StateID,
@@ -915,7 +915,7 @@ fn dfa_accepts_state(
     dfa.is_match_state(dfa.next_eoi_state(state))
 }
 
-/// Computes the patterns cross into pattern.
+/// Derives the patterns cross into pattern from the retained source model and its correlations.
 fn patterns_cross_into_pattern(left: &str, right: &str, lexical_pattern: &str) -> bool {
     let (Ok(left_dfa), Ok(right_dfa), Ok(lexical_dfa)) = (
         dense::DFA::new(left),
@@ -1003,7 +1003,7 @@ fn patterns_cross_into_pattern(left: &str, right: &str, lexical_pattern: &str) -
     false
 }
 
-/// Computes the pattern then fixed intersects pattern.
+/// Derives the pattern then fixed intersects pattern from the retained source model and its correlations.
 fn pattern_then_fixed_intersects_pattern(
     pattern: &str,
     fixed: &str,
@@ -1012,7 +1012,7 @@ fn pattern_then_fixed_intersects_pattern(
     patterns_cross_into_pattern(pattern, &regex_syntax::escape(fixed), lexical_pattern)
 }
 
-/// Computes the fixed then pattern intersects pattern.
+/// Derives the fixed then pattern intersects pattern from the retained source model and its correlations.
 fn fixed_then_pattern_intersects_pattern(
     fixed: &str,
     pattern: &str,
@@ -1021,7 +1021,7 @@ fn fixed_then_pattern_intersects_pattern(
     patterns_cross_into_pattern(&regex_syntax::escape(fixed), pattern, lexical_pattern)
 }
 
-/// Computes the source trivia supports.
+/// Derives the source trivia supports from the retained source model and its correlations.
 fn source_trivia_supports(source: &SourceModel, required: char) -> bool {
     source.lexer_records.iter().any(|record| {
         regex_syntax::Parser::new()
@@ -1030,14 +1030,14 @@ fn source_trivia_supports(source: &SourceModel, required: char) -> bool {
     })
 }
 
-/// Computes the source trivia supports breaks.
+/// Derives the source trivia supports breaks from the retained source model and its correlations.
 fn source_trivia_supports_breaks(source: &SourceModel) -> bool {
     [' ', '\n']
         .into_iter()
         .all(|required| source_trivia_supports(source, required))
 }
 
-/// Computes the materialized pretty boundary changes lexing.
+/// Derives the materialized pretty boundary changes lexing from the retained source model and its correlations.
 pub(crate) fn materialized_pretty_boundary_changes_lexing(
     source: &SourceModel,
     equivalence: crate::TextEquivalence,
@@ -1127,7 +1127,7 @@ pub(crate) fn materialized_pretty_boundary_changes_lexing(
     })
 }
 
-/// Computes the hir matches single char.
+/// Derives the hir matches single char from the retained source model and its correlations.
 fn hir_matches_single_char(hir: &regex_syntax::hir::Hir, required: char) -> (bool, bool) {
     use regex_syntax::hir::{Class, HirKind};
 
@@ -1189,7 +1189,7 @@ fn hir_matches_single_char(hir: &regex_syntax::hir::Hir, required: char) -> (boo
     }
 }
 
-/// Parses pretty hints.
+/// Parses and validates the supported Pretty hint vocabulary.
 fn parse_pretty_hints(metas: &[Meta]) -> Result<PrettyHints, String> {
     // Parse all Pretty options before validation so duplicate, unknown, and interacting settings share one diagnostic boundary.
     let named_pretty = metas
@@ -1317,13 +1317,13 @@ fn parse_pretty_hints(metas: &[Meta]) -> Result<PrettyHints, String> {
 }
 
 impl LoweredFields {
-    /// Records attachment.
+    /// Appends one token attachment and remembers its boundary in the element sequence.
     fn push_attachment(&mut self, elements: Vec<GrammarElement>) {
         self.attachment_starts.push(self.elements.len());
         self.elements.extend(elements);
     }
 
-    /// Computes the second attachment start.
+    /// Derives the second attachment start from the retained source model and its correlations.
     fn second_attachment_start(&self) -> Option<usize> {
         self.attachment_starts.get(1).copied()
     }
@@ -1335,7 +1335,7 @@ impl LoweredFields {
 }
 
 impl SourceModelBuilder<'_> {
-    /// Validates pretty spacing.
+    /// Diagnoses spacing hints that conflict with fixed-token lexical boundaries.
     fn validate_pretty_spacing(&mut self) {
         let mut diagnostics = Vec::new();
         for node in &self.nodes {
@@ -1428,7 +1428,7 @@ impl SourceModelBuilder<'_> {
         self.diagnostics.extend(diagnostics);
     }
 
-    /// Computes the report disabled pretty hints.
+    /// Derives the report disabled pretty hints from the retained source model and its correlations.
     fn report_disabled_pretty_hints(
         &self,
         node: &Node,
@@ -1480,7 +1480,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Validates pretty scope.
+    /// Validates Pretty hints against the semantic fields visible in one scope.
     fn validate_pretty_scope(
         &self,
         pretty: &PrettyHints,
@@ -1551,7 +1551,7 @@ impl SourceModelBuilder<'_> {
         self.validate_pretty_scope_facts(pretty, has_soft_opportunity, scope, diagnostics);
     }
 
-    /// Computes the pretty scope has soft opportunity.
+    /// Derives the pretty scope has soft opportunity from the retained source model and its correlations.
     fn pretty_scope_has_soft_opportunity(
         &self,
         elements: &[GrammarElement],
@@ -1606,7 +1606,7 @@ impl SourceModelBuilder<'_> {
         })
     }
 
-    /// Computes the pretty type has soft opportunity.
+    /// Derives the pretty type has soft opportunity from the retained source model and its correlations.
     fn pretty_type_has_soft_opportunity(
         &self,
         ty: &ResolvedType,
@@ -1671,7 +1671,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Whether the value is pretty pratt grouping.
+    /// Reports whether this Pretty scope controls Pratt grouping syntax.
     fn is_pretty_pratt_grouping(&self, node: NodeId, variant: &Variant) -> bool {
         if let [
             GrammarElement::SemanticField {
@@ -1697,7 +1697,7 @@ impl SourceModelBuilder<'_> {
         self.is_direct_recursive_operand(&self.resolved_field(*resolved_field).ty, node)
     }
 
-    /// Whether the value is direct recursive operand.
+    /// Reports whether this field directly carries the owning Pratt type.
     fn is_direct_recursive_operand(&self, ty: &ResolvedType, node: NodeId) -> bool {
         match &ty.kind {
             ResolvedTypeKind::Semantic {
@@ -1876,7 +1876,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Computes the pretty attachment has soft opportunity.
+    /// Derives the pretty attachment has soft opportunity from the retained source model and its correlations.
     fn pretty_attachment_has_soft_opportunity(
         &self,
         field: ResolvedFieldId,
@@ -1970,14 +1970,14 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Computes the pretty trivia supports breaks.
+    /// Derives the pretty trivia supports breaks from the retained source model and its correlations.
     fn pretty_trivia_supports_breaks(&self) -> bool {
         [' ', '\n']
             .into_iter()
             .all(|required| self.pretty_trivia_supports(required))
     }
 
-    /// Computes the pretty trivia supports.
+    /// Derives the pretty trivia supports from the retained source model and its correlations.
     fn pretty_trivia_supports(&self, required: char) -> bool {
         self.tokens.lexer_records.iter().any(|record| {
             regex_syntax::Parser::new()
@@ -1986,7 +1986,7 @@ impl SourceModelBuilder<'_> {
         })
     }
 
-    /// Computes the field has repetition.
+    /// Derives the field has repetition from the retained source model and its correlations.
     fn field_has_repetition(&self, field: ResolvedFieldId) -> Option<bool> {
         fn repeated(builder: &SourceModelBuilder<'_>, ty: &ResolvedType) -> Option<bool> {
             match &ty.kind {
@@ -2022,7 +2022,7 @@ impl SourceModelBuilder<'_> {
         repeated(self, &self.resolved_field(field).ty)
     }
 
-    /// Computes the pretty lexical patterns.
+    /// Derives the pretty lexical patterns from the retained source model and its correlations.
     fn pretty_lexical_patterns(&self) -> Vec<String> {
         let equivalence = self.resolved.configuration.syntax.text_equivalence;
         self.tokens
@@ -2044,7 +2044,7 @@ impl SourceModelBuilder<'_> {
             .collect()
     }
 
-    /// Validates pretty boundary.
+    /// Diagnoses a Pretty boundary that would change token recognition.
     fn validate_pretty_boundary(
         &self,
         left: &PrettyBoundary,
@@ -2244,7 +2244,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Computes the fixed definition by id.
+    /// Derives the fixed definition by id from the retained source model and its correlations.
     fn fixed_definition_by_id(&self, id: TokenDefinitionId) -> &FixedTokenDefinition {
         let TokenDefinitionKind::Fixed(fixed) = &self.tokens.definitions[id.index()].kind else {
             unreachable!("fixed boundary points to fixed syntax")
@@ -2252,12 +2252,12 @@ impl SourceModelBuilder<'_> {
         fixed
     }
 
-    /// Computes the fixed definition for use.
+    /// Derives the fixed definition for use from the retained source model and its correlations.
     fn fixed_definition_for_use(&self, id: TokenUseId) -> &FixedTokenDefinition {
         self.fixed_definition_by_id(self.tokens.uses[id.index()].definition)
     }
 
-    /// Computes the pretty boundary emits soft break.
+    /// Derives the pretty boundary emits soft break from the retained source model and its correlations.
     fn pretty_boundary_emits_soft_break(
         &self,
         left: &PrettyBoundary,
@@ -2313,7 +2313,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Computes the pretty boundary spacing.
+    /// Derives the pretty boundary spacing from the retained source model and its correlations.
     fn pretty_boundary_spacing(&self, boundary: &PrettyBoundary) -> Option<PrettySpacing> {
         match boundary.kind {
             PrettyBoundaryKind::Fixed(id) => Some(self.fixed_definition_by_id(id).pretty_spacing),
@@ -2321,7 +2321,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Computes the pretty boundary forces tight after.
+    /// Derives the pretty boundary forces tight after from the retained source model and its correlations.
     fn pretty_boundary_forces_tight_after(&self, boundary: &PrettyBoundary) -> bool {
         matches!(
             self.pretty_boundary_spacing(boundary),
@@ -2329,7 +2329,7 @@ impl SourceModelBuilder<'_> {
         )
     }
 
-    /// Computes the pretty boundary forces tight before.
+    /// Derives the pretty boundary forces tight before from the retained source model and its correlations.
     fn pretty_boundary_forces_tight_before(&self, boundary: &PrettyBoundary) -> bool {
         matches!(
             self.pretty_boundary_spacing(boundary),
@@ -2337,7 +2337,7 @@ impl SourceModelBuilder<'_> {
         )
     }
 
-    /// Computes the pretty element boundaries.
+    /// Derives the pretty element boundaries from the retained source model and its correlations.
     fn pretty_element_boundaries(
         &self,
         element: &GrammarElement,
@@ -2380,7 +2380,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Computes the pretty type boundaries.
+    /// Derives the pretty type boundaries from the retained source model and its correlations.
     fn pretty_type_boundaries(
         &self,
         ty: &ResolvedType,
@@ -2449,7 +2449,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Computes the pretty node boundaries.
+    /// Derives the pretty node boundaries from the retained source model and its correlations.
     fn pretty_node_boundaries(
         &self,
         node: NodeId,
@@ -2497,7 +2497,7 @@ impl SourceModelBuilder<'_> {
         boundaries
     }
 
-    /// Computes the pretty fixed element.
+    /// Derives the pretty fixed element from the retained source model and its correlations.
     fn pretty_fixed_element<'model, 'element>(
         &'model self,
         element: &'element GrammarElement,
@@ -2541,7 +2541,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Finishes finish.
+    /// Publishes the source model only when all authored-source diagnostics are non-blocking.
     fn finish(mut self) -> SourceModelReport {
         normalize_source_order(&mut self.nodes, &mut self.tokens);
         let source_modeled = self.diagnostics.is_empty().then(|| SourceModeledGrammar {
@@ -2613,7 +2613,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Lowers nodes.
+    /// Lowers resolved Nodes in authored order while accumulating independent diagnostics.
     fn lower_nodes(&mut self) {
         // Allocate Node identities before lowering bodies so recursive references resolve without source-order dependence.
         for node in self.resolved.nodes.clone() {
@@ -2809,7 +2809,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Lowers fields.
+    /// Converts resolved fields and positional tokens into source-model elements.
     fn lower_fields(&mut self, origin: SourceOrigin, fields: &[ResolvedFieldId]) -> LoweredFields {
         let mut body = LoweredFields::default();
         for field in fields {
@@ -2891,7 +2891,7 @@ impl SourceModelBuilder<'_> {
         body
     }
 
-    /// Computes the resolved field.
+    /// Derives the resolved field from the retained source model and its correlations.
     fn resolved_field(&self, id: ResolvedFieldId) -> &ResolvedNodeField {
         self.resolved
             .nodes
@@ -2901,7 +2901,7 @@ impl SourceModelBuilder<'_> {
             .expect("resolved Node body owns every field identity")
     }
 
-    /// Lowers pretty hints.
+    /// Resolves inherited and local Pretty configuration for one Node.
     fn lower_pretty_hints(
         &mut self,
         origin: SourceOrigin,
@@ -2921,20 +2921,20 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Computes the site.
+    /// Derives the site from the retained source model and its correlations.
     fn site(&self, origin: SourceOrigin, range: Range<u32>) -> SourceSite {
         source_site(&self.resolved, origin, range)
     }
 }
 
-/// The semantic facts representation used by source analysis.
+/// Carries the semantic facts retained from authored source structure.
 struct SemanticFacts {
-    /// The content token names.
+    /// Supplies the content token names used to correlate authored source with normalized grammar.
     content_token_names: BTreeMap<ContentTokenId, String>,
 }
 
 impl SemanticFacts {
-    /// Computes the from resolved.
+    /// Indexes semantic token names from the resolved source grammar.
     fn from_resolved(resolved: &ResolvedSourceGrammar) -> Self {
         let content_token_names = resolved
             .content_tokens
@@ -2946,7 +2946,7 @@ impl SemanticFacts {
         }
     }
 
-    /// Computes the target for field.
+    /// Derives the target for field from the retained source model and its correlations.
     fn target_for_field(field: &ResolvedNodeField) -> Option<SemanticTarget> {
         let ResolvedTypeKind::Semantic { target, .. } = field.ty.kind else {
             return None;
@@ -2954,7 +2954,7 @@ impl SemanticFacts {
         Some(target)
     }
 
-    /// Computes the content token.
+    /// Derives the content token from the retained source model and its correlations.
     fn content_token(&self, field: &ResolvedNodeField) -> Option<(ContentTokenId, String)> {
         let SemanticTarget::ContentToken(token) = Self::target_for_field(field)? else {
             return None;
@@ -2962,7 +2962,7 @@ impl SemanticFacts {
         Some((token, self.content_token_names.get(&token)?.clone()))
     }
 
-    /// Computes the declared repetition.
+    /// Derives the declared repetition from the retained source model and its correlations.
     fn declared_repetition(&self, field: &ResolvedNodeField) -> Option<DeclaredRepetition> {
         match Self::target_for_field(field)? {
             SemanticTarget::Catalog(CatalogType::Vec) => Some(DeclaredRepetition::ZeroOrMore),
@@ -2977,42 +2977,42 @@ impl SemanticFacts {
 }
 
 #[derive(Default)]
-/// The token catalog representation used by source analysis.
+/// Carries the token catalog retained from authored source structure.
 struct TokenCatalog {
-    /// The definitions.
+    /// Supplies the definitions used to correlate authored source with normalized grammar.
     definitions: Vec<TokenDefinition>,
-    /// The fixed by name.
+    /// Supplies the fixed by name used to correlate authored source with normalized grammar.
     fixed_by_name: BTreeMap<String, TokenDefinitionId>,
-    /// The content by name.
+    /// Supplies the content by name used to correlate authored source with normalized grammar.
     content_by_name: BTreeMap<String, Vec<TokenDefinitionId>>,
-    /// The central content.
+    /// Supplies the central content used to correlate authored source with normalized grammar.
     central_content: Vec<CentralContentDefinition>,
-    /// The lexer records.
+    /// Supplies the lexer records used to correlate authored source with normalized grammar.
     lexer_records: Vec<NonTokenLexerRecord>,
-    /// The uses.
+    /// Supplies the uses used to correlate authored source with normalized grammar.
     uses: Vec<TokenUse>,
-    /// The post lex.
+    /// Supplies the post lex used to correlate authored source with normalized grammar.
     post_lex: Option<syn::Path>,
-    /// The post lex sites.
+    /// Supplies the post lex sites used to correlate authored source with normalized grammar.
     post_lex_sites: Vec<SourceSite>,
 }
 
-/// The central content definition representation used by source analysis.
+/// Carries the central content definition retained from authored source structure.
 struct CentralContentDefinition {
-    /// The semantic.
+    /// Supplies the semantic used to correlate authored source with normalized grammar.
     semantic: Option<ContentTokenId>,
-    /// The name.
+    /// Preserves the authored name used by generated bindings and diagnostics.
     name: String,
-    /// The pattern.
+    /// Preserves the authored lexical pattern for validation and generation.
     pattern: String,
-    /// The callback.
+    /// Preserves the opaque authored callback path for generation.
     callback: Option<syn::Path>,
-    /// The site.
+    /// Locates the authored construct represented by this source-model value.
     site: SourceSite,
 }
 
 impl TokenCatalog {
-    /// Collects fixed definitions.
+    /// Collects fixed-token definitions before recording their grammar positions.
     fn collect_fixed_definitions(
         &mut self,
         resolved: &ResolvedSourceGrammar,
@@ -3106,7 +3106,7 @@ impl TokenCatalog {
         }
     }
 
-    /// Collects central definitions.
+    /// Collects grammar-level content-token definitions before Node lowering.
     fn collect_central_definitions(
         &mut self,
         resolved: &ResolvedSourceGrammar,
@@ -3157,7 +3157,7 @@ impl TokenCatalog {
             );
     }
 
-    /// Defines fixed.
+    /// Interns a fixed-token definition or diagnoses incompatible duplicate spellings.
     fn define_fixed(
         &mut self,
         resolved: &ResolvedSourceGrammar,
@@ -3204,12 +3204,12 @@ impl TokenCatalog {
         });
     }
 
-    /// Computes the fixed definition.
+    /// Derives the fixed definition from the retained source model and its correlations.
     fn fixed_definition(&self, name: &str) -> Option<TokenDefinitionId> {
         self.fixed_by_name.get(name).copied()
     }
 
-    /// Computes the record use.
+    /// Derives the record use from the retained source model and its correlations.
     fn record_use(
         &mut self,
         definition: TokenDefinitionId,
@@ -3226,7 +3226,7 @@ impl TokenCatalog {
         id
     }
 
-    /// Computes the fixed element.
+    /// Derives the fixed element from the retained source model and its correlations.
     fn fixed_element(
         &mut self,
         resolved: &ResolvedSourceGrammar,
@@ -3267,14 +3267,14 @@ impl TokenCatalog {
     }
 }
 
-/// The trait planner representation used by source analysis.
+/// Carries the trait planner retained from authored source structure.
 struct TraitPlanner {
-    /// The grammar defaults.
+    /// Supplies the grammar defaults used to correlate authored source with normalized grammar.
     grammar_defaults: Vec<ConfiguredTraitSelection>,
 }
 
 impl TraitPlanner {
-    /// Computes the from grammar.
+    /// Resolves grammar-wide configured-trait defaults and diagnoses unsupported selections.
     fn from_grammar(
         resolved: &ResolvedSourceGrammar,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
@@ -3316,7 +3316,7 @@ impl TraitPlanner {
         Self { grammar_defaults }
     }
 
-    /// Computes the node plan.
+    /// Derives the node plan from the retained source model and its correlations.
     fn node_plan(
         &self,
         resolved: &ResolvedSourceGrammar,
@@ -3433,7 +3433,7 @@ impl TraitPlanner {
         }
     }
 
-    /// Computes the grammar default plan.
+    /// Derives the grammar default plan from the retained source model and its correlations.
     fn grammar_default_plan(&self) -> ConfiguredTraitPlan {
         ConfiguredTraitPlan {
             effective: self.grammar_defaults.clone(),
@@ -3442,7 +3442,7 @@ impl TraitPlanner {
         }
     }
 
-    /// Normalizes paths.
+    /// Canonicalizes opaque authored paths relative to the configured facade.
     fn normalize_paths(
         &self,
         resolved: &ResolvedSourceGrammar,
@@ -3518,12 +3518,12 @@ impl TraitPlanner {
     }
 }
 
-/// The separator planner representation used by source analysis.
+/// Carries the separator planner retained from authored source structure.
 struct SeparatorPlanner;
 
 impl SeparatorPlanner {
     #[allow(clippy::too_many_arguments)]
-    /// Lowers lower.
+    /// Resolves and records the separator attached to one repeated semantic field.
     fn lower(
         resolved: &ResolvedSourceGrammar,
         semantic_facts: &SemanticFacts,
@@ -3600,11 +3600,11 @@ impl SeparatorPlanner {
     }
 }
 
-/// The positional token planner representation used by source analysis.
+/// Carries the positional token planner retained from authored source structure.
 struct PositionalTokenPlanner;
 
 impl PositionalTokenPlanner {
-    /// Lowers lower.
+    /// Inserts positional fixed tokens around semantic fields according to authored attributes.
     fn lower(
         resolved: &ResolvedSourceGrammar,
         tokens: &mut TokenCatalog,
@@ -3761,7 +3761,7 @@ impl PositionalTokenPlanner {
         Self::place_anchorless(fixed, body, attachment)
     }
 
-    /// Computes the place anchorless.
+    /// Derives the place anchorless from the retained source model and its correlations.
     fn place_anchorless(
         mut fixed: Vec<GrammarElement>,
         mut body: Vec<GrammarElement>,
@@ -3796,7 +3796,7 @@ impl PositionalTokenPlanner {
         }
     }
 
-    /// Rejects legacy syntax.
+    /// Diagnoses superseded token attributes instead of silently changing their meaning.
     fn reject_legacy_syntax(
         resolved: &ResolvedSourceGrammar,
         origin: SourceOrigin,
@@ -3822,7 +3822,7 @@ impl PositionalTokenPlanner {
 }
 
 impl SourcePrattPosition {
-    /// Computes the from attributes.
+    /// Resolves a Pratt variant's role and binding powers from its attributes.
     fn from_attributes(
         resolved: &ResolvedSourceGrammar,
         origin: SourceOrigin,
@@ -3871,7 +3871,7 @@ impl SourcePrattPosition {
     }
 }
 
-/// Rejects pratt marker.
+/// Diagnoses Pratt-only attributes used outside a Pratt variant.
 fn reject_pratt_marker(
     resolved: &ResolvedSourceGrammar,
     origin: SourceOrigin,
@@ -3934,7 +3934,7 @@ fn reject_pratt_roles_off_pratt(
     }
 }
 
-/// Whether the value is pratt role meta.
+/// Reports whether an attribute names a prefix, infix, or postfix Pratt role.
 fn is_pratt_role_meta(meta: &Meta) -> bool {
     let Meta::List(list) = meta else {
         return false;
@@ -3966,7 +3966,7 @@ fn reject_misplaced_content_declarations(
     }
 }
 
-/// Computes the source site.
+/// Derives the source site from the retained source model and its correlations.
 fn source_site(
     resolved: &ResolvedSourceGrammar,
     origin: SourceOrigin,
@@ -3993,7 +3993,7 @@ fn canonical_source_order_key(site: &SourceSite) -> SourceOrderKey {
 }
 
 impl TokenCatalog {
-    /// Defines lexical base.
+    /// Records a non-token lexer rule for later lexical planning.
     fn define_lexical_base(&mut self, definition: CentralContentDefinition) {
         if let Some(existing) = self.definitions.iter_mut().find(|existing| {
             existing.name == definition.name
@@ -4022,7 +4022,7 @@ impl TokenCatalog {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Lowers content definition.
+    /// Converts one authored content-token definition into catalog state.
     fn lower_content_definition(
         &mut self,
         resolved: &ResolvedSourceGrammar,
@@ -4153,7 +4153,7 @@ impl TokenCatalog {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Defines content.
+    /// Interns a content-token definition and all of its authored admissions.
     fn define_content(
         &mut self,
         semantic: ContentTokenId,
@@ -4219,45 +4219,45 @@ impl TokenCatalog {
     }
 }
 
-/// The central tokens syntax representation used by source analysis.
+/// Carries the central tokens syntax retained from authored source structure.
 struct CentralTokensSyntax {
-    /// The fixed.
+    /// Supplies the fixed used to correlate authored source with normalized grammar.
     fixed: Vec<CentralFixedSyntax>,
-    /// The content.
+    /// Supplies the content used to correlate authored source with normalized grammar.
     content: Vec<CentralContentSyntax>,
-    /// The non token lexer records.
+    /// Supplies the non token lexer records used to correlate authored source with normalized grammar.
     non_token_lexer_records: Vec<CentralNonTokenLexerRecordSyntax>,
-    /// The post lex.
+    /// Supplies the post lex used to correlate authored source with normalized grammar.
     post_lex: Vec<syn::Path>,
 }
 
-/// The central non token lexer record syntax representation used by source analysis.
+/// Carries the central non token lexer record syntax retained from authored source structure.
 struct CentralNonTokenLexerRecordSyntax {
-    /// The pattern.
+    /// Preserves the authored lexical pattern for validation and generation.
     pattern: LitStr,
-    /// The outcome.
+    /// Supplies the outcome used to correlate authored source with normalized grammar.
     outcome: NonTokenLexerOutcome,
 }
 
-/// The central fixed syntax representation used by source analysis.
+/// Carries the central fixed syntax retained from authored source structure.
 struct CentralFixedSyntax {
-    /// The name.
+    /// Preserves the authored name used by generated bindings and diagnostics.
     name: syn::Ident,
-    /// The spelling.
+    /// Supplies the spelling used to correlate authored source with normalized grammar.
     spelling: LitStr,
-    /// The authored class.
+    /// Supplies the authored class used to correlate authored source with normalized grammar.
     authored_class: AuthoredFixedTokenClass,
-    /// The pretty spacing.
+    /// Supplies the pretty spacing used to correlate authored source with normalized grammar.
     pretty_spacing: PrettySpacing,
 }
 
-/// The central content syntax representation used by source analysis.
+/// Carries the central content syntax retained from authored source structure.
 struct CentralContentSyntax {
-    /// The name.
+    /// Preserves the authored name used by generated bindings and diagnostics.
     name: syn::Ident,
-    /// The pattern.
+    /// Preserves the authored lexical pattern for validation and generation.
     pattern: LitStr,
-    /// The callback.
+    /// Preserves the opaque authored callback path for generation.
     callback: Option<syn::Path>,
 }
 
@@ -4408,7 +4408,7 @@ fn parse_fixed_pretty_spacing(
     Ok(spacing)
 }
 
-/// Computes the skip central entry tail.
+/// Derives the skip central entry tail from the retained source model and its correlations.
 fn skip_central_entry_tail(input: ParseStream<'_>) -> syn::Result<()> {
     while !input.is_empty() && !input.peek(Token![,]) {
         input.parse::<proc_macro2::TokenTree>()?;
@@ -4420,31 +4420,31 @@ fn skip_central_entry_tail(input: ParseStream<'_>) -> syn::Result<()> {
 }
 
 #[derive(Clone)]
-/// The token sequence representation used by source analysis.
+/// Carries the token sequence retained from authored source structure.
 struct TokenSequence(Vec<TokenSequenceEntry>);
 
 #[derive(Clone)]
-/// The possible token sequence entry cases used by source analysis.
+/// Classifies the token sequence entry forms retained in the source model.
 enum TokenSequenceEntry {
-    /// The definition case.
+    /// Identifies the definition authored-source form.
     Definition(LitStr),
-    /// The reference case.
+    /// Identifies the reference authored-source form.
     Reference(syn::Ident),
-    /// The this case.
+    /// Identifies the this authored-source form.
     This(Span),
 }
 
-/// The possible fixed token syntax cases used by source analysis.
+/// Classifies the fixed token syntax forms retained in the source model.
 enum FixedTokenSyntax {
-    /// The definition case.
+    /// Identifies the definition authored-source form.
     Definition(LitStr),
-    /// The reference case.
+    /// Identifies the reference authored-source form.
     Reference(syn::Ident),
 }
 
-/// The pratt syntax representation used by source analysis.
+/// Carries the pratt syntax retained from authored source structure.
 struct PrattSyntax {
-    /// The position.
+    /// Supplies the position used to correlate authored source with normalized grammar.
     position: SourcePrattPosition,
 }
 
@@ -4515,11 +4515,11 @@ impl Parse for PrattSyntax {
     }
 }
 
-/// The separator syntax representation used by source analysis.
+/// Carries the separator syntax retained from authored source structure.
 struct SeparatorSyntax {
-    /// The token.
+    /// Supplies the token used to correlate authored source with normalized grammar.
     token: FixedTokenSyntax,
-    /// The optional trailing.
+    /// Supplies the optional trailing used to correlate authored source with normalized grammar.
     optional_trailing: bool,
 }
 
@@ -4553,19 +4553,19 @@ impl Parse for SeparatorSyntax {
     }
 }
 
-/// The lex syntax representation used by source analysis.
+/// Carries the lex syntax retained from authored source structure.
 struct LexSyntax {
-    /// The pattern.
+    /// Preserves the authored lexical pattern for validation and generation.
     pattern: LitStr,
-    /// The human-readable content-token label used by diagrams.
+    /// Human-readable content-token label preserved for generated diagrams.
     diagram: Option<LitStr>,
-    /// The callback.
+    /// Preserves the opaque authored callback path for generation.
     callback: Option<syn::Path>,
-    /// The priority.
+    /// Preserves authored lexical priority for deterministic matcher ordering.
     priority: Option<u32>,
-    /// The admissions.
+    /// Supplies the admissions used to correlate authored source with normalized grammar.
     admissions: Vec<syn::Ident>,
-    /// The display.
+    /// Supplies the display used to correlate authored source with normalized grammar.
     display: Option<LitStr>,
 }
 
@@ -4635,11 +4635,11 @@ impl Parse for LexSyntax {
     }
 }
 
-/// The node trait delta syntax representation used by source analysis.
+/// Carries the node trait delta syntax retained from authored source structure.
 struct NodeTraitDeltaSyntax {
-    /// The additions.
+    /// Supplies the additions used to correlate authored source with normalized grammar.
     additions: Vec<syn::Path>,
-    /// The omissions.
+    /// Supplies the omissions used to correlate authored source with normalized grammar.
     omissions: Vec<syn::Path>,
 }
 
@@ -4702,7 +4702,7 @@ impl Parse for TokenSequence {
     }
 }
 
-/// Computes the configured trait recipe.
+/// Derives the configured trait recipe from the retained source model and its correlations.
 pub(crate) fn configured_trait_recipe(
     path: &syn::Path,
     facade: &str,
@@ -4744,7 +4744,7 @@ pub(crate) fn configured_trait_recipe(
     }
 }
 
-/// Normalizes source order.
+/// Reassigns element identities after sorting Nodes and token uses by authored location.
 fn normalize_source_order(nodes: &mut [Node], tokens: &mut TokenCatalog) {
     tokens
         .lexer_records
@@ -4828,7 +4828,7 @@ fn normalize_source_order(nodes: &mut [Node], tokens: &mut TokenCatalog) {
     }
 }
 
-/// Computes the reassign element ids.
+/// Derives the reassign element ids from the retained source model and its correlations.
 fn reassign_element_ids(mut elements: Vec<GrammarElement>) -> Vec<GrammarElement> {
     for (index, element) in elements.iter_mut().enumerate() {
         element.set_id(GrammarElementId::next(index));
@@ -4836,7 +4836,7 @@ fn reassign_element_ids(mut elements: Vec<GrammarElement>) -> Vec<GrammarElement
     elements
 }
 
-/// Computes the assign ordered elements.
+/// Derives the assign ordered elements from the retained source model and its correlations.
 fn assign_ordered_elements(
     elements: &mut [GrammarElement],
     next_element: &mut usize,

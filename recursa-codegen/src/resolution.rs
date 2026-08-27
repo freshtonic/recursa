@@ -34,7 +34,7 @@ use crate::source_syntax::{
     span_range,
 };
 
-/// Computes the resolution id.
+/// Derives the resolution id while resolving typed grammar-semantic references.
 macro_rules! resolution_id {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -64,114 +64,114 @@ resolution_id!(ResolvedFieldId);
 resolution_id!(ResolvedVariantId);
 
 #[derive(Clone, Debug)]
-/// The resolution input representation used by source analysis.
+/// Carries the resolution input through grammar-semantic name resolution.
 pub(crate) struct ResolutionInput<'cfg> {
-    /// The discovery inputs.
+    /// Supplies the discovery inputs needed either to resolve the reference or diagnose its failure.
     pub(crate) discovery_inputs: DiscoveryInputs,
-    /// The tree.
+    /// Supplies the tree needed either to resolve the reference or diagnose its failure.
     pub(crate) tree: DiscoveredModuleTree,
-    /// The cfg.
+    /// Supplies the cfg needed either to resolve the reference or diagnose its failure.
     pub(crate) cfg: &'cfg CargoCfgSnapshot,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolution report representation used by source analysis.
+/// Carries the resolution report through grammar-semantic name resolution.
 pub(crate) struct ResolutionReport {
-    /// The discovery inputs.
+    /// Supplies the discovery inputs needed either to resolve the reference or diagnose its failure.
     pub(crate) discovery_inputs: DiscoveryInputs,
-    /// The build inputs.
+    /// Supplies the build inputs needed either to resolve the reference or diagnose its failure.
     pub(crate) build_inputs: Option<BuildInputs>,
-    /// The diagnostics.
+    /// Supplies the diagnostics needed either to resolve the reference or diagnose its failure.
     pub(crate) diagnostics: Vec<ResolutionDiagnostic>,
-    /// The resolved.
+    /// Supplies the resolved needed either to resolve the reference or diagnose its failure.
     pub(crate) resolved: Option<ResolvedSourceGrammar>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolved source grammar representation used by source analysis.
+/// Carries the resolved source grammar through grammar-semantic name resolution.
 pub(crate) struct ResolvedSourceGrammar {
-    /// The build inputs.
+    /// Supplies the build inputs needed either to resolve the reference or diagnose its failure.
     pub(crate) build_inputs: BuildInputs,
-    /// The configuration.
+    /// Supplies the configuration needed either to resolve the reference or diagnose its failure.
     pub(crate) configuration: SelectedGrammarConfiguration,
-    /// The tree.
+    /// Supplies the tree needed either to resolve the reference or diagnose its failure.
     pub(crate) tree: DiscoveredModuleTree,
-    /// The nodes.
+    /// Supplies the nodes needed either to resolve the reference or diagnose its failure.
     pub(crate) nodes: Vec<ResolvedNode>,
-    /// The type aliases.
+    /// Supplies the type aliases needed either to resolve the reference or diagnose its failure.
     pub(crate) type_aliases: Vec<ResolvedTypeAlias>,
-    /// The generic parameters.
+    /// Records the generic parameters visible while resolving this declaration.
     pub(crate) generic_parameters: Vec<ResolvedGenericParameter>,
-    /// The content tokens.
+    /// Supplies the content tokens needed either to resolve the reference or diagnose its failure.
     pub(crate) content_tokens: Vec<ResolvedContentToken>,
-    /// The token bindings.
+    /// Supplies the token bindings needed either to resolve the reference or diagnose its failure.
     pub(crate) token_bindings: Vec<TokenTypeBinding>,
-    /// The imports.
+    /// Supplies the imports needed either to resolve the reference or diagnose its failure.
     pub(crate) imports: Vec<ResolvedImport>,
-    /// The uses.
+    /// Supplies the uses needed either to resolve the reference or diagnose its failure.
     pub(crate) uses: Vec<SemanticUse>,
-    /// The resolutions.
+    /// Supplies the resolutions needed either to resolve the reference or diagnose its failure.
     pub(crate) resolutions: Vec<SemanticResolution>,
-    /// The traces.
+    /// Supplies the traces needed either to resolve the reference or diagnose its failure.
     pub(crate) traces: Vec<ResolutionTrace>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The selected grammar configuration representation used by source analysis.
+/// Carries the selected grammar configuration through grammar-semantic name resolution.
 pub(crate) struct SelectedGrammarConfiguration {
-    /// The syntax.
+    /// Supplies the syntax needed either to resolve the reference or diagnose its failure.
     pub(crate) syntax: GrammarConfigSyntax,
-    /// The source.
+    /// Identifies the authored source file used for resolution diagnostics.
     pub(crate) source: SourceId,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Range<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The node key representation used by source analysis.
+/// Carries the node key through grammar-semantic name resolution.
 pub(crate) struct NodeKey {
-    /// The segments.
+    /// Supplies the segments needed either to resolve the reference or diagnose its failure.
     pub(crate) segments: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolved node representation used by source analysis.
+/// Carries the resolved node through grammar-semantic name resolution.
 pub(crate) struct ResolvedNode {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     pub(crate) id: NodeId,
-    /// The module.
+    /// Identifies the logical module in which resolution occurs.
     pub(crate) module: ModuleId,
-    /// The source.
+    /// Identifies the authored source file used for resolution diagnostics.
     pub(crate) source: SourceId,
-    /// The ident.
+    /// Preserves the authored identifier before terminal resolution.
     pub(crate) ident: String,
-    /// The visibility.
+    /// Preserves authored visibility for accessibility checks.
     pub(crate) visibility: Visibility,
-    /// The key.
+    /// Supplies the key needed either to resolve the reference or diagnose its failure.
     pub(crate) key: NodeKey,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Range<u32>,
-    /// The generics.
+    /// Supplies the generics needed either to resolve the reference or diagnose its failure.
     pub(crate) generics: syn::Generics,
-    /// The metas.
+    /// Preserves parsed attributes for source-model construction.
     pub(crate) metas: Vec<Meta>,
-    /// The capture.
+    /// Preserves configured span-capture behavior across resolution.
     pub(crate) capture: Option<CaptureMode>,
-    /// The body.
+    /// Supplies the body needed either to resolve the reference or diagnose its failure.
     pub(crate) body: ResolvedNodeBody,
-    /// The fields.
+    /// Supplies the fields needed either to resolve the reference or diagnose its failure.
     pub(crate) fields: Vec<ResolvedNodeField>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible resolved node body cases used by source analysis.
+/// Classifies the resolved node body alternatives handled by semantic resolution.
 pub(crate) enum ResolvedNodeBody {
-    /// The struct case.
+    /// Identifies the struct resolution alternative.
     Struct {
         #[doc = "Authored field style retained for the resolved struct body."]
         style: ResolvedFieldStyle,
     },
-    /// The enum case.
+    /// Identifies the enum resolution alternative.
     Enum {
         #[doc = "Resolved variants in authored declaration order."]
         variants: Vec<ResolvedNodeVariant>,
@@ -179,680 +179,680 @@ pub(crate) enum ResolvedNodeBody {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible resolved field style cases used by source analysis.
+/// Classifies the resolved field style alternatives handled by semantic resolution.
 pub(crate) enum ResolvedFieldStyle {
-    /// The named case.
+    /// Identifies the named resolution alternative.
     Named,
-    /// The unnamed case.
+    /// Identifies the unnamed resolution alternative.
     Unnamed,
-    /// The unit case.
+    /// Identifies the unit resolution alternative.
     Unit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolved node variant representation used by source analysis.
+/// Carries the resolved node variant through grammar-semantic name resolution.
 pub(crate) struct ResolvedNodeVariant {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     pub(crate) id: ResolvedVariantId,
-    /// The ident.
+    /// Preserves the authored identifier before terminal resolution.
     pub(crate) ident: String,
-    /// The style.
+    /// Supplies the style needed either to resolve the reference or diagnose its failure.
     pub(crate) style: ResolvedFieldStyle,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Range<u32>,
-    /// The metas.
+    /// Preserves parsed attributes for source-model construction.
     pub(crate) metas: Vec<Meta>,
-    /// The capture.
+    /// Preserves configured span-capture behavior across resolution.
     pub(crate) capture: Option<CaptureMode>,
-    /// The fields.
+    /// Supplies the fields needed either to resolve the reference or diagnose its failure.
     pub(crate) fields: Vec<ResolvedFieldId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolved node field representation used by source analysis.
+/// Carries the resolved node field through grammar-semantic name resolution.
 pub(crate) struct ResolvedNodeField {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     pub(crate) id: ResolvedFieldId,
-    /// The syntax.
+    /// Supplies the syntax needed either to resolve the reference or diagnose its failure.
     pub(crate) syntax: Field,
-    /// The metas.
+    /// Preserves parsed attributes for source-model construction.
     pub(crate) metas: Vec<Meta>,
-    /// The capture.
+    /// Preserves configured span-capture behavior across resolution.
     pub(crate) capture: Option<CaptureMode>,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Range<u32>,
-    /// The ty.
+    /// Supplies the ty needed either to resolve the reference or diagnose its failure.
     pub(crate) ty: ResolvedType,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolved type representation used by source analysis.
+/// Carries the resolved type through grammar-semantic name resolution.
 pub(crate) struct ResolvedType {
-    /// The syntax.
+    /// Supplies the syntax needed either to resolve the reference or diagnose its failure.
     pub(crate) syntax: Type,
-    /// The source.
+    /// Identifies the authored source file used for resolution diagnostics.
     pub(crate) source: SourceId,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Range<u32>,
-    /// The kind.
+    /// Supplies the kind needed either to resolve the reference or diagnose its failure.
     pub(crate) kind: ResolvedTypeKind,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible resolved type kind cases used by source analysis.
+/// Classifies the resolved type kind alternatives handled by semantic resolution.
 pub(crate) enum ResolvedTypeKind {
-    /// The semantic case.
+    /// Identifies the semantic resolution alternative.
     Semantic {
-        /// The use site.
+        /// Supplies the use site needed either to resolve the reference or diagnose its failure.
         use_site: SemanticUseId,
-        /// The target.
+        /// Supplies the target needed either to resolve the reference or diagnose its failure.
         target: SemanticTarget,
-        /// The trace.
+        /// Supplies the trace needed either to resolve the reference or diagnose its failure.
         trace: ResolutionTraceId,
-        /// The arguments.
+        /// Supplies the arguments needed either to resolve the reference or diagnose its failure.
         arguments: Vec<ResolvedGenericArgument>,
     },
-    /// The group case.
+    /// Identifies the group resolution alternative.
     Group(Box<ResolvedType>),
-    /// The parenthesized case.
+    /// Identifies the parenthesized resolution alternative.
     Parenthesized(Box<ResolvedType>),
-    /// The reference case.
+    /// Identifies the reference resolution alternative.
     Reference(Box<ResolvedType>),
-    /// The tuple case.
+    /// Identifies the tuple resolution alternative.
     Tuple(Vec<ResolvedType>),
-    /// The unsupported case.
+    /// Identifies the unsupported resolution alternative.
     Unsupported,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The possible resolved generic argument cases used by source analysis.
+/// Classifies the resolved generic argument alternatives handled by semantic resolution.
 pub(crate) enum ResolvedGenericArgument {
-    /// The lifetime case.
+    /// Identifies the lifetime resolution alternative.
     Lifetime(syn::Lifetime),
-    /// The type case.
+    /// Identifies the type resolution alternative.
     Type(ResolvedType),
-    /// The unsupported case.
+    /// Identifies the unsupported resolution alternative.
     Unsupported(GenericArgument),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolved generic parameter representation used by source analysis.
+/// Carries the resolved generic parameter through grammar-semantic name resolution.
 pub(crate) struct ResolvedGenericParameter {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     pub(crate) id: GenericParameterId,
-    /// The owner.
+    /// Supplies the owner needed either to resolve the reference or diagnose its failure.
     pub(crate) owner: SemanticOwner,
-    /// The ident.
+    /// Preserves the authored identifier before terminal resolution.
     pub(crate) ident: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible semantic owner cases used by source analysis.
+/// Classifies the semantic owner alternatives handled by semantic resolution.
 pub(crate) enum SemanticOwner {
-    /// The node case.
+    /// Identifies the node resolution alternative.
     Node(NodeId),
-    /// The type alias case.
+    /// Identifies the type alias resolution alternative.
     TypeAlias(TypeAliasId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolved type alias representation used by source analysis.
+/// Carries the resolved type alias through grammar-semantic name resolution.
 pub(crate) struct ResolvedTypeAlias {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     pub(crate) id: TypeAliasId,
-    /// The module.
+    /// Identifies the logical module in which resolution occurs.
     pub(crate) module: ModuleId,
-    /// The source.
+    /// Identifies the authored source file used for resolution diagnostics.
     pub(crate) source: SourceId,
-    /// The ident.
+    /// Preserves the authored identifier before terminal resolution.
     pub(crate) ident: String,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Range<u32>,
-    /// The generics.
+    /// Supplies the generics needed either to resolve the reference or diagnose its failure.
     pub(crate) generics: syn::Generics,
-    /// The ty.
+    /// Supplies the ty needed either to resolve the reference or diagnose its failure.
     pub(crate) ty: Type,
-    /// The target.
+    /// Supplies the target needed either to resolve the reference or diagnose its failure.
     pub(crate) target: Option<ResolvedType>,
-    /// The defaults.
+    /// Supplies the defaults needed either to resolve the reference or diagnose its failure.
     pub(crate) defaults: Vec<ResolvedAliasDefault>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolved alias default representation used by source analysis.
+/// Carries the resolved alias default through grammar-semantic name resolution.
 pub(crate) struct ResolvedAliasDefault {
-    /// The parameter.
+    /// Supplies the parameter needed either to resolve the reference or diagnose its failure.
     pub(crate) parameter: GenericParameterId,
-    /// The ty.
+    /// Supplies the ty needed either to resolve the reference or diagnose its failure.
     pub(crate) ty: ResolvedType,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolved content token representation used by source analysis.
+/// Carries the resolved content token through grammar-semantic name resolution.
 pub(crate) struct ResolvedContentToken {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     pub(crate) id: ContentTokenId,
-    /// The ident.
+    /// Preserves the authored identifier before terminal resolution.
     pub(crate) ident: String,
-    /// The sites.
+    /// Supplies the sites needed either to resolve the reference or diagnose its failure.
     pub(crate) sites: Vec<ContentTokenSite>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The content token site representation used by source analysis.
+/// Carries the content token site through grammar-semantic name resolution.
 pub(crate) struct ContentTokenSite {
-    /// The module.
+    /// Identifies the logical module in which resolution occurs.
     pub(crate) module: ModuleId,
-    /// The source.
+    /// Identifies the authored source file used for resolution diagnostics.
     pub(crate) source: SourceId,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Range<u32>,
-    /// The visibility.
+    /// Preserves authored visibility for accessibility checks.
     pub(crate) visibility: Visibility,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The token type binding representation used by source analysis.
+/// Carries the token type binding through grammar-semantic name resolution.
 pub(crate) struct TokenTypeBinding {
-    /// The module.
+    /// Identifies the logical module in which resolution occurs.
     pub(crate) module: ModuleId,
-    /// The source.
+    /// Identifies the authored source file used for resolution diagnostics.
     pub(crate) source: SourceId,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Range<u32>,
-    /// The ident.
+    /// Preserves the authored identifier before terminal resolution.
     pub(crate) ident: String,
-    /// The target.
+    /// Supplies the target needed either to resolve the reference or diagnose its failure.
     pub(crate) target: ContentTokenId,
-    /// The visibility.
+    /// Preserves authored visibility for accessibility checks.
     pub(crate) visibility: Visibility,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolved import representation used by source analysis.
+/// Carries the resolved import through grammar-semantic name resolution.
 pub(crate) struct ResolvedImport {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     pub(crate) id: ImportId,
-    /// The module.
+    /// Identifies the logical module in which resolution occurs.
     pub(crate) module: ModuleId,
-    /// The source.
+    /// Identifies the authored source file used for resolution diagnostics.
     pub(crate) source: SourceId,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Range<u32>,
-    /// The authored.
+    /// Supplies the authored needed either to resolve the reference or diagnose its failure.
     pub(crate) authored: String,
-    /// The local name.
+    /// Supplies the local name needed either to resolve the reference or diagnose its failure.
     pub(crate) local_name: Option<String>,
-    /// The glob.
+    /// Supplies the glob needed either to resolve the reference or diagnose its failure.
     pub(crate) glob: bool,
-    /// The target.
+    /// Supplies the target needed either to resolve the reference or diagnose its failure.
     pub(crate) target: Option<ImportTarget>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible import target cases used by source analysis.
+/// Classifies the import target alternatives handled by semantic resolution.
 pub(crate) enum ImportTarget {
-    /// The module case.
+    /// Identifies the module resolution alternative.
     Module(ModuleId),
-    /// The node case.
+    /// Identifies the node resolution alternative.
     Node(NodeId),
-    /// The type alias case.
+    /// Identifies the type alias resolution alternative.
     TypeAlias(TypeAliasId),
-    /// The content token case.
+    /// Identifies the content token resolution alternative.
     ContentToken(ContentTokenId),
-    /// The catalog case.
+    /// Identifies the catalog resolution alternative.
     Catalog(CatalogType),
-    /// The unsupported case.
+    /// Identifies the unsupported resolution alternative.
     Unsupported,
-    /// The external case.
+    /// Identifies the external resolution alternative.
     External,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The semantic use representation used by source analysis.
+/// Carries the semantic use through grammar-semantic name resolution.
 pub(crate) struct SemanticUse {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     pub(crate) id: SemanticUseId,
-    /// The module.
+    /// Identifies the logical module in which resolution occurs.
     pub(crate) module: ModuleId,
-    /// The owner.
+    /// Supplies the owner needed either to resolve the reference or diagnose its failure.
     pub(crate) owner: SemanticOwner,
-    /// The source.
+    /// Identifies the authored source file used for resolution diagnostics.
     pub(crate) source: SourceId,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Range<u32>,
-    /// The authored.
+    /// Supplies the authored needed either to resolve the reference or diagnose its failure.
     pub(crate) authored: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The semantic resolution representation used by source analysis.
+/// Carries the semantic resolution through grammar-semantic name resolution.
 pub(crate) struct SemanticResolution {
-    /// The use site.
+    /// Supplies the use site needed either to resolve the reference or diagnose its failure.
     pub(crate) use_site: SemanticUseId,
-    /// The authored.
+    /// Supplies the authored needed either to resolve the reference or diagnose its failure.
     pub(crate) authored: String,
-    /// The target.
+    /// Supplies the target needed either to resolve the reference or diagnose its failure.
     pub(crate) target: SemanticTarget,
-    /// The trace.
+    /// Supplies the trace needed either to resolve the reference or diagnose its failure.
     pub(crate) trace: ResolutionTraceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible semantic target cases used by source analysis.
+/// Classifies the semantic target alternatives handled by semantic resolution.
 pub(crate) enum SemanticTarget {
-    /// The node case.
+    /// Identifies the node resolution alternative.
     Node(NodeId),
-    /// The type alias case.
+    /// Identifies the type alias resolution alternative.
     TypeAlias(TypeAliasId),
-    /// The generic parameter case.
+    /// Identifies the generic parameter resolution alternative.
     GenericParameter(GenericParameterId),
-    /// The content token case.
+    /// Identifies the content token resolution alternative.
     ContentToken(ContentTokenId),
-    /// The catalog case.
+    /// Identifies the catalog resolution alternative.
     Catalog(CatalogType),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible catalog type cases used by source analysis.
+/// Classifies the catalog type alternatives handled by semantic resolution.
 pub(crate) enum CatalogType {
-    /// The option case.
+    /// Identifies the option resolution alternative.
     Option,
-    /// The box case.
+    /// Identifies the box resolution alternative.
     Box,
-    /// The vec case.
+    /// Identifies the vec resolution alternative.
     Vec,
-    /// The vec1 case.
+    /// Identifies the vec1 resolution alternative.
     Vec1,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolution trace representation used by source analysis.
+/// Carries the resolution trace through grammar-semantic name resolution.
 pub(crate) struct ResolutionTrace {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     pub(crate) id: ResolutionTraceId,
-    /// The steps.
+    /// Records the canonical binding steps that form the resolution trace.
     pub(crate) steps: Vec<ResolutionTraceStep>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible resolution trace step cases used by source analysis.
+/// Classifies the resolution trace step alternatives handled by semantic resolution.
 pub(crate) enum ResolutionTraceStep {
-    /// The start case.
+    /// Identifies the start resolution alternative.
     Start(ModuleId),
-    /// The containing node case.
+    /// Identifies the containing node resolution alternative.
     ContainingNode(NodeId),
-    /// The current module case.
+    /// Identifies the current module resolution alternative.
     CurrentModule(ModuleId),
-    /// The parent module case.
+    /// Identifies the parent module resolution alternative.
     ParentModule(ModuleId),
-    /// The anchor case.
+    /// Identifies the anchor resolution alternative.
     Anchor(ModuleId),
-    /// The module case.
+    /// Identifies the module resolution alternative.
     Module(ModuleId),
-    /// The import case.
+    /// Identifies the import resolution alternative.
     Import(ImportId),
-    /// The declaration case.
+    /// Identifies the declaration resolution alternative.
     Declaration(NodeId),
-    /// The type alias case.
+    /// Identifies the type alias resolution alternative.
     TypeAlias(TypeAliasId),
-    /// The token binding case.
+    /// Identifies the token binding resolution alternative.
     TokenBinding(ContentTokenId),
-    /// The generic parameter case.
+    /// Identifies the generic parameter resolution alternative.
     GenericParameter(GenericParameterId),
-    /// The prelude case.
+    /// Identifies the prelude resolution alternative.
     Prelude(CatalogType),
-    /// The catalog case.
+    /// Identifies the catalog resolution alternative.
     Catalog(CatalogType),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible resolution diagnostic kind cases used by source analysis.
+/// Classifies the resolution diagnostic kind alternatives handled by semantic resolution.
 pub(crate) enum ResolutionDiagnosticKind {
-    /// The missing grammar config case.
+    /// Identifies the missing grammar config resolution alternative.
     MissingGrammarConfig,
-    /// The multiple grammar configs case.
+    /// Identifies the multiple grammar configs resolution alternative.
     MultipleGrammarConfigs,
-    /// The invalid grammar config case.
+    /// Identifies the invalid grammar config resolution alternative.
     InvalidGrammarConfig,
-    /// The invalid configuration case.
+    /// Identifies the invalid configuration resolution alternative.
     InvalidConfiguration,
-    /// The duplicate declaration case.
+    /// Identifies the duplicate declaration resolution alternative.
     DuplicateDeclaration,
-    /// The duplicate explicit import case.
+    /// Identifies the duplicate explicit import resolution alternative.
     DuplicateExplicitImport,
-    /// The import collision case.
+    /// Identifies the import collision resolution alternative.
     ImportCollision,
-    /// The ambiguous import case.
+    /// Identifies the ambiguous import resolution alternative.
     AmbiguousImport,
-    /// The inaccessible reexport case.
+    /// Identifies the inaccessible reexport resolution alternative.
     InaccessibleReexport,
-    /// The token binding collision case.
+    /// Identifies the token binding collision resolution alternative.
     TokenBindingCollision,
-    /// The inaccessible token binding case.
+    /// Identifies the inaccessible token binding resolution alternative.
     InaccessibleTokenBinding,
-    /// The invalid visibility case.
+    /// Identifies the invalid visibility resolution alternative.
     InvalidVisibility,
-    /// The unsupported declaration case.
+    /// Identifies the unsupported declaration resolution alternative.
     UnsupportedDeclaration,
-    /// The unresolved case.
+    /// Identifies the unresolved resolution alternative.
     Unresolved,
-    /// The inaccessible case.
+    /// Identifies the inaccessible resolution alternative.
     Inaccessible,
-    /// The above anchor case.
+    /// Identifies the above anchor resolution alternative.
     AboveAnchor,
-    /// The outside anchor case.
+    /// Identifies the outside anchor resolution alternative.
     OutsideAnchor,
-    /// The external path case.
+    /// Identifies the external path resolution alternative.
     ExternalPath,
-    /// The leading external path case.
+    /// Identifies the leading external path resolution alternative.
     LeadingExternalPath,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The resolution diagnostic representation used by source analysis.
+/// Carries the resolution diagnostic through grammar-semantic name resolution.
 pub(crate) struct ResolutionDiagnostic {
-    /// The kind.
+    /// Supplies the kind needed either to resolve the reference or diagnose its failure.
     pub(crate) kind: ResolutionDiagnosticKind,
-    /// The module.
+    /// Identifies the logical module in which resolution occurs.
     pub(crate) module: Option<ModuleId>,
-    /// The logical module.
+    /// Names the logical module used in deterministic diagnostics.
     pub(crate) logical_module: Option<Vec<String>>,
-    /// The path.
+    /// Preserves the authored path whose terminal target is resolved.
     pub(crate) path: PathBuf,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Option<Range<u32>>,
-    /// The message.
+    /// Supplies the message needed either to resolve the reference or diagnose its failure.
     pub(crate) message: String,
 }
 
 #[derive(Clone, Debug)]
-/// The binding representation used by source analysis.
+/// Carries the binding through grammar-semantic name resolution.
 struct Binding {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     id: BindingId,
-    /// The module.
+    /// Identifies the logical module in which resolution occurs.
     module: ModuleId,
-    /// The name.
+    /// Supplies the name needed either to resolve the reference or diagnose its failure.
     name: String,
-    /// The kind.
+    /// Supplies the kind needed either to resolve the reference or diagnose its failure.
     kind: BindingKind,
-    /// The visibility.
+    /// Preserves authored visibility for accessibility checks.
     visibility: Visibility,
-    /// The source.
+    /// Identifies the authored source file used for resolution diagnostics.
     source: SourceId,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     range: Range<u32>,
-    /// The origin.
+    /// Supplies the origin needed either to resolve the reference or diagnose its failure.
     origin: BindingOrigin,
-    /// The import chain.
+    /// Supplies the import chain needed either to resolve the reference or diagnose its failure.
     import_chain: Vec<ImportId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The possible binding kind cases used by source analysis.
+/// Classifies the binding kind alternatives handled by semantic resolution.
 enum BindingKind {
-    /// The module case.
+    /// Identifies the module resolution alternative.
     Module(ModuleId),
-    /// The node case.
+    /// Identifies the node resolution alternative.
     Node(NodeId),
-    /// The type alias case.
+    /// Identifies the type alias resolution alternative.
     TypeAlias(TypeAliasId),
-    /// The content token case.
+    /// Identifies the content token resolution alternative.
     ContentToken(ContentTokenId),
-    /// The catalog case.
+    /// Identifies the catalog resolution alternative.
     Catalog(CatalogType),
-    /// The unsupported case.
+    /// Identifies the unsupported resolution alternative.
     Unsupported(OpaqueTargetId),
-    /// The external case.
+    /// Identifies the external resolution alternative.
     External(OpaqueTargetId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible binding origin cases used by source analysis.
+/// Classifies the binding origin alternatives handled by semantic resolution.
 enum BindingOrigin {
-    /// The declaration case.
+    /// Identifies the declaration resolution alternative.
     Declaration,
-    /// The explicit import case.
+    /// Identifies the explicit import resolution alternative.
     ExplicitImport,
-    /// The glob import case.
+    /// Identifies the glob import resolution alternative.
     GlobImport,
-    /// The content token case.
+    /// Identifies the content token resolution alternative.
     ContentToken,
 }
 
 #[derive(Clone, Debug)]
-/// The import directive representation used by source analysis.
+/// Carries the import directive through grammar-semantic name resolution.
 struct ImportDirective {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     id: ImportId,
-    /// The module.
+    /// Identifies the logical module in which resolution occurs.
     module: ModuleId,
-    /// The source.
+    /// Identifies the authored source file used for resolution diagnostics.
     source: SourceId,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     range: Range<u32>,
-    /// The visibility.
+    /// Preserves authored visibility for accessibility checks.
     visibility: Visibility,
-    /// The names.
+    /// Supplies the names needed either to resolve the reference or diagnose its failure.
     names: Vec<String>,
-    /// The local name.
+    /// Supplies the local name needed either to resolve the reference or diagnose its failure.
     local_name: Option<String>,
-    /// The glob.
+    /// Supplies the glob needed either to resolve the reference or diagnose its failure.
     glob: bool,
-    /// The leading colon.
+    /// Supplies the leading colon needed either to resolve the reference or diagnose its failure.
     leading_colon: bool,
 }
 
-/// The import resolution representation used by source analysis.
+/// Carries the import resolution through grammar-semantic name resolution.
 struct ImportResolution {
-    /// The kind.
+    /// Supplies the kind needed either to resolve the reference or diagnose its failure.
     kind: BindingKind,
-    /// The import chain.
+    /// Supplies the import chain needed either to resolve the reference or diagnose its failure.
     import_chain: Vec<ImportId>,
-    /// The visibility scope.
+    /// Supplies the visibility scope needed either to resolve the reference or diagnose its failure.
     visibility_scope: ModuleId,
-    /// The publicly exportable.
+    /// Supplies the publicly exportable needed either to resolve the reference or diagnose its failure.
     publicly_exportable: bool,
 }
 
-/// The selected path start representation used by source analysis.
+/// Carries the selected path start through grammar-semantic name resolution.
 struct SelectedPathStart {
-    /// The module.
+    /// Identifies the logical module in which resolution occurs.
     module: ModuleId,
-    /// The consumed.
+    /// Supplies the consumed needed either to resolve the reference or diagnose its failure.
     consumed: usize,
-    /// The explicit local.
+    /// Supplies the explicit local needed either to resolve the reference or diagnose its failure.
     explicit_local: bool,
-    /// The steps.
+    /// Records the canonical binding steps that form the resolution trace.
     steps: Vec<ResolutionTraceStep>,
 }
 
 #[derive(Clone, Copy)]
-/// The possible binding walk step cases used by source analysis.
+/// Classifies the binding walk step alternatives handled by semantic resolution.
 enum BindingWalkStep {
-    /// The import case.
+    /// Identifies the import resolution alternative.
     Import(ImportId),
-    /// The module case.
+    /// Identifies the module resolution alternative.
     Module(ModuleId),
 }
 
-/// The binding walk representation used by source analysis.
+/// Carries the binding walk through grammar-semantic name resolution.
 struct BindingWalk<'resolver> {
-    /// The terminal.
+    /// Supplies the terminal needed either to resolve the reference or diagnose its failure.
     terminal: &'resolver Binding,
-    /// The steps.
+    /// Records the canonical binding steps that form the resolution trace.
     steps: Vec<BindingWalkStep>,
 }
 
-/// The possible binding walk error cases used by source analysis.
+/// Classifies the binding walk error alternatives handled by semantic resolution.
 enum BindingWalkError<'resolver> {
-    /// The diagnostic case.
+    /// Identifies the diagnostic resolution alternative.
     Diagnostic(ResolutionDiagnosticKind, String),
-    /// The inaccessible case.
+    /// Identifies the inaccessible resolution alternative.
     Inaccessible(&'resolver Binding),
-    /// The non module case.
+    /// Identifies the non module resolution alternative.
     NonModule(&'resolver Binding),
-    /// The missing child case.
+    /// Identifies the missing child resolution alternative.
     MissingChild {
-        /// The module.
+        /// Identifies the logical module in which resolution occurs.
         module: &'resolver Binding,
-        /// The name.
+        /// Supplies the name needed either to resolve the reference or diagnose its failure.
         name: String,
     },
 }
 
-/// The flattened use representation used by source analysis.
+/// Carries the flattened use through grammar-semantic name resolution.
 struct FlattenedUse {
-    /// The names.
+    /// Supplies the names needed either to resolve the reference or diagnose its failure.
     names: Vec<String>,
-    /// The local name.
+    /// Supplies the local name needed either to resolve the reference or diagnose its failure.
     local_name: Option<String>,
-    /// The glob.
+    /// Supplies the glob needed either to resolve the reference or diagnose its failure.
     glob: bool,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     range: Range<u32>,
 }
 
 #[derive(Clone, Debug)]
-/// The pending content token site representation used by source analysis.
+/// Carries the pending content token site through grammar-semantic name resolution.
 struct PendingContentTokenSite {
-    /// The module.
+    /// Identifies the logical module in which resolution occurs.
     module: ModuleId,
-    /// The source.
+    /// Identifies the authored source file used for resolution diagnostics.
     source: SourceId,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     range: Range<u32>,
-    /// The ident.
+    /// Preserves the authored identifier before terminal resolution.
     ident: String,
-    /// The visibility.
+    /// Preserves authored visibility for accessibility checks.
     visibility: Visibility,
 }
 
-/// The configured node field representation used by source analysis.
+/// Carries the configured node field through grammar-semantic name resolution.
 struct ConfiguredNodeField {
-    /// The field.
+    /// Supplies the field needed either to resolve the reference or diagnose its failure.
     field: Field,
-    /// The metas.
+    /// Preserves parsed attributes for source-model construction.
     metas: Vec<Meta>,
-    /// The capture.
+    /// Preserves configured span-capture behavior across resolution.
     capture: Option<CaptureMode>,
 }
 
-/// The configured node variant representation used by source analysis.
+/// Carries the configured node variant through grammar-semantic name resolution.
 struct ConfiguredNodeVariant {
-    /// The ident.
+    /// Preserves the authored identifier before terminal resolution.
     ident: String,
-    /// The style.
+    /// Supplies the style needed either to resolve the reference or diagnose its failure.
     style: ResolvedFieldStyle,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     range: Range<u32>,
-    /// The metas.
+    /// Preserves parsed attributes for source-model construction.
     metas: Vec<Meta>,
-    /// The capture.
+    /// Preserves configured span-capture behavior across resolution.
     capture: Option<CaptureMode>,
-    /// The fields.
+    /// Supplies the fields needed either to resolve the reference or diagnose its failure.
     fields: Vec<ConfiguredNodeField>,
 }
 
-/// The possible configured node body cases used by source analysis.
+/// Classifies the configured node body alternatives handled by semantic resolution.
 enum ConfiguredNodeBody {
-    /// The struct case.
+    /// Identifies the struct resolution alternative.
     Struct {
-        /// The style.
+        /// Supplies the style needed either to resolve the reference or diagnose its failure.
         style: ResolvedFieldStyle,
-        /// The fields.
+        /// Supplies the fields needed either to resolve the reference or diagnose its failure.
         fields: Vec<ConfiguredNodeField>,
     },
-    /// The enum case.
+    /// Identifies the enum resolution alternative.
     Enum {
-        /// The variants.
+        /// Supplies the variants needed either to resolve the reference or diagnose its failure.
         variants: Vec<ConfiguredNodeVariant>,
     },
 }
 
 #[derive(Clone, Debug)]
-/// The pending node representation used by source analysis.
+/// Carries the pending node through grammar-semantic name resolution.
 struct PendingNode {
-    /// The resolved.
+    /// Supplies the resolved needed either to resolve the reference or diagnose its failure.
     resolved: ResolvedNode,
-    /// The generic parameters.
+    /// Records the generic parameters visible while resolving this declaration.
     generic_parameters: BTreeMap<String, GenericParameterId>,
-    /// The fields.
+    /// Supplies the fields needed either to resolve the reference or diagnose its failure.
     fields: Vec<PendingNodeField>,
 }
 
 #[derive(Clone, Debug)]
-/// The pending node field representation used by source analysis.
+/// Carries the pending node field through grammar-semantic name resolution.
 struct PendingNodeField {
-    /// The id.
+    /// Carries the grammar-local identity used by resolution tables.
     id: ResolvedFieldId,
-    /// The syntax.
+    /// Supplies the syntax needed either to resolve the reference or diagnose its failure.
     syntax: Field,
-    /// The metas.
+    /// Preserves parsed attributes for source-model construction.
     metas: Vec<Meta>,
-    /// The capture.
+    /// Preserves configured span-capture behavior across resolution.
     capture: Option<CaptureMode>,
-    /// The range.
+    /// Locates the authored syntax used for resolution diagnostics.
     range: Range<u32>,
 }
 
 #[derive(Clone, Debug)]
-/// The pending type alias representation used by source analysis.
+/// Carries the pending type alias through grammar-semantic name resolution.
 struct PendingTypeAlias {
-    /// The resolved.
+    /// Supplies the resolved needed either to resolve the reference or diagnose its failure.
     resolved: ResolvedTypeAlias,
-    /// The generic parameters.
+    /// Records the generic parameters visible while resolving this declaration.
     generic_parameters: BTreeMap<String, GenericParameterId>,
 }
 
-/// The resolver representation used by source analysis.
+/// Carries the resolver through grammar-semantic name resolution.
 struct Resolver<'cfg> {
-    /// The cfg.
+    /// Supplies the cfg needed either to resolve the reference or diagnose its failure.
     cfg: &'cfg CargoCfgSnapshot,
-    /// The build inputs.
+    /// Supplies the build inputs needed either to resolve the reference or diagnose its failure.
     build_inputs: BuildInputs,
-    /// The configuration.
+    /// Supplies the configuration needed either to resolve the reference or diagnose its failure.
     configuration: SelectedGrammarConfiguration,
-    /// The tree.
+    /// Supplies the tree needed either to resolve the reference or diagnose its failure.
     tree: DiscoveredModuleTree,
-    /// The items.
+    /// Supplies the items needed either to resolve the reference or diagnose its failure.
     items: BTreeMap<ModuleId, Vec<Item>>,
-    /// The bindings.
+    /// Supplies the bindings needed either to resolve the reference or diagnose its failure.
     bindings: Vec<Binding>,
-    /// The binding by name.
+    /// Supplies the binding by name needed either to resolve the reference or diagnose its failure.
     binding_by_name: BTreeMap<(ModuleId, String), BindingId>,
-    /// The glob candidates.
+    /// Supplies the glob candidates needed either to resolve the reference or diagnose its failure.
     glob_candidates: BTreeMap<(ModuleId, String), Vec<Binding>>,
-    /// The import directives.
+    /// Supplies the import directives needed either to resolve the reference or diagnose its failure.
     import_directives: Vec<ImportDirective>,
-    /// The resolved imports.
+    /// Supplies the resolved imports needed either to resolve the reference or diagnose its failure.
     resolved_imports: Vec<ResolvedImport>,
-    /// The content tokens.
+    /// Supplies the content tokens needed either to resolve the reference or diagnose its failure.
     content_tokens: Vec<ResolvedContentToken>,
-    /// The token bindings.
+    /// Supplies the token bindings needed either to resolve the reference or diagnose its failure.
     token_bindings: Vec<TokenTypeBinding>,
-    /// The pending content tokens.
+    /// Supplies the pending content tokens needed either to resolve the reference or diagnose its failure.
     pending_content_tokens: Vec<PendingContentTokenSite>,
-    /// The next opaque target.
+    /// Supplies the next opaque target needed either to resolve the reference or diagnose its failure.
     next_opaque_target: usize,
-    /// The next resolved field.
+    /// Supplies the next resolved field needed either to resolve the reference or diagnose its failure.
     next_resolved_field: usize,
-    /// The next resolved variant.
+    /// Supplies the next resolved variant needed either to resolve the reference or diagnose its failure.
     next_resolved_variant: usize,
-    /// The nodes.
+    /// Supplies the nodes needed either to resolve the reference or diagnose its failure.
     nodes: Vec<PendingNode>,
-    /// The type aliases.
+    /// Supplies the type aliases needed either to resolve the reference or diagnose its failure.
     type_aliases: Vec<PendingTypeAlias>,
-    /// The generic parameters.
+    /// Records the generic parameters visible while resolving this declaration.
     generic_parameters: Vec<ResolvedGenericParameter>,
-    /// The uses.
+    /// Supplies the uses needed either to resolve the reference or diagnose its failure.
     uses: Vec<SemanticUse>,
-    /// The resolutions.
+    /// Supplies the resolutions needed either to resolve the reference or diagnose its failure.
     resolutions: Vec<SemanticResolution>,
-    /// The traces.
+    /// Supplies the traces needed either to resolve the reference or diagnose its failure.
     traces: Vec<ResolutionTrace>,
-    /// The diagnostics.
+    /// Supplies the diagnostics needed either to resolve the reference or diagnose its failure.
     diagnostics: Vec<ResolutionDiagnostic>,
 }
 
@@ -919,7 +919,7 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
 }
 
 impl Resolver<'_> {
-    /// Finishes finish.
+    /// Publishes a resolved grammar only when no blocking resolution diagnostics remain.
     fn finish(self) -> ResolutionReport {
         let resolved = self.diagnostics.is_empty().then(|| ResolvedSourceGrammar {
             build_inputs: self.build_inputs.clone(),
@@ -1218,7 +1218,7 @@ impl Resolver<'_> {
             .collect()
     }
 
-    /// Records binding.
+    /// Inserts one type-namespace binding or diagnoses a duplicate declaration.
     fn insert_binding(&mut self, binding: Binding) {
         let key = (binding.module, binding.name.clone());
         if self.binding_by_name.contains_key(&key) {
@@ -1360,7 +1360,7 @@ impl Resolver<'_> {
         }
     }
 
-    /// Computes the visibility is broader.
+    /// Derives the visibility is broader while resolving typed grammar-semantic references.
     fn visibility_is_broader(
         &self,
         module: ModuleId,
@@ -1580,7 +1580,7 @@ impl Resolver<'_> {
         true
     }
 
-    /// Computes the import visibility exceeds target.
+    /// Derives the import visibility exceeds target while resolving typed grammar-semantic references.
     fn import_visibility_exceeds_target(
         &self,
         directive: &ImportDirective,
@@ -1632,7 +1632,7 @@ impl Resolver<'_> {
         progress
     }
 
-    /// Computes the glob candidate visible.
+    /// Derives the glob candidate visible while resolving typed grammar-semantic references.
     fn glob_candidate_visible(
         &self,
         directive: &ImportDirective,
@@ -1703,7 +1703,7 @@ impl Resolver<'_> {
         progress
     }
 
-    /// Records import collision.
+    /// Classifies and records a collision with an existing imported binding.
     fn push_import_collision(
         &mut self,
         directive: &ImportDirective,
@@ -1726,7 +1726,7 @@ impl Resolver<'_> {
         );
     }
 
-    /// Computes the revalidate explicit imports.
+    /// Derives the revalidate explicit imports while resolving typed grammar-semantic references.
     fn revalidate_explicit_imports(&mut self) {
         let directives = self
             .import_directives
@@ -1919,7 +1919,7 @@ impl Resolver<'_> {
         )
     }
 
-    /// Computes the selected path start.
+    /// Derives the selected path start while resolving typed grammar-semantic references.
     fn selected_path_start(
         &self,
         use_module: ModuleId,
@@ -2117,7 +2117,7 @@ impl Resolver<'_> {
         Ok(candidates.first())
     }
 
-    /// Computes the module binding candidates.
+    /// Derives the module binding candidates while resolving typed grammar-semantic references.
     fn module_binding_candidates(&self, module: ModuleId) -> Vec<Binding> {
         let mut candidates = self
             .bindings
@@ -2140,7 +2140,7 @@ impl Resolver<'_> {
         candidates
     }
 
-    /// Records glob candidate.
+    /// Merges one glob-import candidate while retaining the broadest visibility path.
     fn insert_glob_candidate(&mut self, binding: Binding) -> bool {
         if self.lookup_direct(binding.module, &binding.name).is_some() {
             return false;
@@ -2574,7 +2574,7 @@ impl Resolver<'_> {
         }
     }
 
-    /// Computes the generic parameter.
+    /// Derives the generic parameter while resolving typed grammar-semantic references.
     fn generic_parameter(&self, owner: SemanticOwner, name: &str) -> Option<GenericParameterId> {
         match owner {
             SemanticOwner::Node(node) => self.nodes[node.index()]
@@ -2588,18 +2588,18 @@ impl Resolver<'_> {
         }
     }
 
-    /// Computes the binding visible.
+    /// Derives the binding visible while resolving typed grammar-semantic references.
     fn binding_visible(&self, binding: &Binding, use_module: ModuleId) -> bool {
         self.visibility_scope(binding)
             .is_some_and(|scope| self.is_descendant(use_module, scope))
     }
 
-    /// Computes the visibility scope.
+    /// Derives the visibility scope while resolving typed grammar-semantic references.
     fn visibility_scope(&self, binding: &Binding) -> Option<ModuleId> {
         self.declared_visibility_scope(binding.module, &binding.visibility)
     }
 
-    /// Computes the declared visibility scope.
+    /// Derives the declared visibility scope while resolving typed grammar-semantic references.
     fn declared_visibility_scope(
         &self,
         declaring_module: ModuleId,
@@ -2657,7 +2657,7 @@ impl Resolver<'_> {
         }
     }
 
-    /// Computes the module visibility scope.
+    /// Derives the module visibility scope while resolving typed grammar-semantic references.
     fn module_visibility_scope(&self, module: ModuleId) -> ModuleId {
         if module == self.root_module() {
             return module;
@@ -2669,7 +2669,7 @@ impl Resolver<'_> {
             .unwrap_or(module)
     }
 
-    /// Computes the module publicly exportable.
+    /// Derives the module publicly exportable while resolving typed grammar-semantic references.
     fn module_publicly_exportable(&self, module: ModuleId) -> bool {
         self.bindings.iter().any(|binding| {
             binding.kind == BindingKind::Module(module)
@@ -2677,7 +2677,7 @@ impl Resolver<'_> {
         })
     }
 
-    /// Computes the root module.
+    /// Derives the root module while resolving typed grammar-semantic references.
     fn root_module(&self) -> ModuleId {
         self.tree
             .inclusions
@@ -2687,12 +2687,12 @@ impl Resolver<'_> {
             .id
     }
 
-    /// Computes the module.
+    /// Looks up a module inclusion by its traversal-assigned identity.
     fn module(&self, id: ModuleId) -> &ModuleInclusion {
         &self.tree.inclusions[id.index()]
     }
 
-    /// Computes the module by logical path.
+    /// Derives the module by logical path while resolving typed grammar-semantic references.
     fn module_by_logical_path(&self, path: &[String]) -> Option<ModuleId> {
         self.tree
             .inclusions
@@ -2701,7 +2701,7 @@ impl Resolver<'_> {
             .map(|module| module.id)
     }
 
-    /// Whether the value is descendant.
+    /// Reports whether a logical module is nested within the proposed ancestor.
     fn is_descendant(&self, mut module: ModuleId, ancestor: ModuleId) -> bool {
         loop {
             if module == ancestor {
@@ -2714,7 +2714,7 @@ impl Resolver<'_> {
         }
     }
 
-    /// Records site diagnostic.
+    /// Adds a resolution diagnostic with its logical-module and source provenance.
     fn push_site_diagnostic(
         &mut self,
         kind: ResolutionDiagnosticKind,
@@ -2871,7 +2871,7 @@ fn find_grammar_config(
     )
 }
 
-/// Computes the selected anchor.
+/// Derives the selected anchor while resolving typed grammar-semantic references.
 fn selected_anchor(path: &Path) -> Option<SelectedRootAnchor> {
     if path.leading_colon.is_some()
         || path.segments.first()?.ident != "crate"
@@ -2892,7 +2892,7 @@ fn selected_anchor(path: &Path) -> Option<SelectedRootAnchor> {
     })
 }
 
-/// Computes the item declaration.
+/// Derives the item declaration while resolving typed grammar-semantic references.
 fn item_declaration(item: &Item) -> Option<(syn::Ident, Visibility, syn::Generics, bool)> {
     match item {
         Item::Struct(item) => Some((
@@ -2935,7 +2935,7 @@ fn item_declaration(item: &Item) -> Option<(syn::Ident, Visibility, syn::Generic
     }
 }
 
-/// Computes the configured node body.
+/// Derives the configured node body while resolving typed grammar-semantic references.
 fn configured_node_body(
     item: &Item,
     cfg: &CargoCfgSnapshot,
@@ -3060,7 +3060,7 @@ fn configured_node_body(
     }
 }
 
-/// Computes the resolved field style.
+/// Derives the resolved field style while resolving typed grammar-semantic references.
 fn resolved_field_style(fields: &syn::Fields) -> ResolvedFieldStyle {
     match fields {
         syn::Fields::Named(_) => ResolvedFieldStyle::Named,
@@ -3069,7 +3069,7 @@ fn resolved_field_style(fields: &syn::Fields) -> ResolvedFieldStyle {
     }
 }
 
-/// Computes the pending content token site.
+/// Derives the pending content token site while resolving typed grammar-semantic references.
 fn pending_content_token_site(
     configured: &PendingNodeField,
 ) -> Option<(String, Visibility, Range<u32>)> {
@@ -3164,7 +3164,7 @@ fn flatten_use_tree(tree: &UseTree, prefix: &mut Vec<String>, output: &mut Vec<F
     }
 }
 
-/// Computes the import target.
+/// Derives the import target while resolving typed grammar-semantic references.
 fn import_target(kind: BindingKind) -> ImportTarget {
     match kind {
         BindingKind::Module(module) => ImportTarget::Module(module),
@@ -3177,7 +3177,7 @@ fn import_target(kind: BindingKind) -> ImportTarget {
     }
 }
 
-/// Computes the import error must be diagnosed.
+/// Derives the import error must be diagnosed while resolving typed grammar-semantic references.
 fn import_error_must_be_diagnosed(error: Option<&(ResolutionDiagnosticKind, String)>) -> bool {
     error.is_some_and(|(kind, _)| {
         matches!(
@@ -3191,7 +3191,7 @@ fn import_error_must_be_diagnosed(error: Option<&(ResolutionDiagnosticKind, Stri
     })
 }
 
-/// Computes the inaccessible binding kind.
+/// Derives the inaccessible binding kind while resolving typed grammar-semantic references.
 fn inaccessible_binding_kind(binding: &Binding) -> ResolutionDiagnosticKind {
     if binding.origin == BindingOrigin::ContentToken {
         ResolutionDiagnosticKind::InaccessibleTokenBinding
@@ -3200,7 +3200,7 @@ fn inaccessible_binding_kind(binding: &Binding) -> ResolutionDiagnosticKind {
     }
 }
 
-/// Computes the import binding walk error.
+/// Derives the import binding walk error while resolving typed grammar-semantic references.
 fn import_binding_walk_error(
     error: BindingWalkError<'_>,
     names: &[String],
@@ -3222,7 +3222,7 @@ fn import_binding_walk_error(
     }
 }
 
-/// Computes the semantic binding walk error.
+/// Derives the semantic binding walk error while resolving typed grammar-semantic references.
 fn semantic_binding_walk_error(error: BindingWalkError<'_>) -> (ResolutionDiagnosticKind, String) {
     match error {
         BindingWalkError::Diagnostic(kind, message) => (kind, message),
@@ -3244,7 +3244,7 @@ fn semantic_binding_walk_error(error: BindingWalkError<'_>) -> (ResolutionDiagno
     }
 }
 
-/// Computes the import text.
+/// Derives the import text while resolving typed grammar-semantic references.
 fn import_text(directive: &ImportDirective) -> String {
     let mut authored = directive.names.join("::");
     if directive.leading_colon {
@@ -3259,7 +3259,7 @@ fn import_text(directive: &ImportDirective) -> String {
     authored
 }
 
-/// Whether the value has node derive.
+/// Reports whether an authored derive list delegates Node behavior to Recursa.
 fn has_node_derive(metas: &[Meta], facade: &str) -> bool {
     metas
         .iter()
@@ -3281,7 +3281,7 @@ fn has_node_derive(metas: &[Meta], facade: &str) -> bool {
         })
 }
 
-/// Computes the catalog path.
+/// Derives the catalog path while resolving typed grammar-semantic references.
 fn catalog_path(names: &[String], facade: &str) -> Option<CatalogType> {
     match names {
         [name] if name == "Option" => Some(CatalogType::Option),
