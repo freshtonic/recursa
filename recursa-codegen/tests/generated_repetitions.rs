@@ -36,23 +36,50 @@ fn diagrams_keep_fixed_attachments_inside_optional_and_repeated_containers() {
             .unwrap_or_else(|| panic!("missing diagram page {page}"))
     };
     let optional = production("grammar/struct.AttachedOptional.html");
+    let optional_diagram = diagram_svg(optional);
     assert!(
-        optional.contains("Option&lt;\"(\" grammar::Item \")\"&gt;"),
+        optional_diagram.contains("class=\"optional\"")
+            && contains_text_sequence(optional_diagram, &["(", "grammar::Item", ")"]),
         "the fixed unit must remain inside Option:\n{optional}",
     );
     let repeated = production("grammar/struct.AttachedMany.html");
+    let repeated_diagram = diagram_svg(repeated);
     assert!(
-        repeated.contains("Vec&lt;\"[\" grammar::Item \"]\"&gt;"),
+        repeated_diagram.contains("class=\"repeat\"")
+            && contains_text_sequence(repeated_diagram, &["[", "grammar::Item", "]"]),
         "the fixed unit must remain inside Vec:\n{repeated}",
     );
     let nonempty = production("grammar/struct.AttachedNonEmpty.html");
+    let nonempty_diagram = diagram_svg(nonempty);
     assert!(
-        nonempty.contains("Option&lt;Vec1&lt;\"{\" grammar::Item \"}\"&gt;&gt;"),
+        nonempty_diagram.contains("class=\"optional\"")
+            && nonempty_diagram.contains("class=\"repeat\"")
+            && contains_text_sequence(nonempty_diagram, &["{", "grammar::Item", "}"]),
         "the fixed unit must remain inside Option<Vec1>:\n{nonempty}",
     );
     for source in [optional, repeated, nonempty] {
         assert!(!source.contains("__recursa_attachment"));
     }
+}
+
+fn diagram_svg(document: &str) -> &str {
+    let start = document.find("<svg ").expect("diagram SVG start");
+    let end = document[start..]
+        .find("</svg>")
+        .map(|offset| start + offset + "</svg>".len())
+        .expect("diagram SVG end");
+    &document[start..end]
+}
+
+fn contains_text_sequence(svg: &str, expected: &[&str]) -> bool {
+    let document = roxmltree::Document::parse(svg).expect("diagram is valid XML");
+    let text = document
+        .descendants()
+        .filter(|node| node.has_tag_name("text"))
+        .filter_map(|node| node.text())
+        .collect::<Vec<_>>();
+    text.windows(expected.len())
+        .any(|window| window == expected)
 }
 
 #[derive(Clone, Copy)]
@@ -92,7 +119,7 @@ fn scaffold_fixture(mode: CaptureMode) -> TempDir {
     let fixture = manifest_dir.join(FIXTURE);
 
     copy(&fixture, package.path(), "build.rs");
-    copy(&fixture, package.path(), "Cargo.lock");
+    copy_as(&fixture, package.path(), "Cargo.core.lock", "Cargo.lock");
     copy(&fixture, package.path(), "src/lib.rs");
     copy(&fixture, package.path(), "src/main.rs");
 
@@ -120,6 +147,12 @@ fn copy(fixture: &Path, package: &Path, relative: &str) {
     fs::copy(fixture.join(relative), destination).expect("copy generated grammar fixture file");
 }
 
+fn copy_as(fixture: &Path, package: &Path, source: &str, destination: &str) {
+    let destination = package.join(destination);
+    fs::create_dir_all(destination.parent().unwrap()).expect("create fixture directory");
+    fs::copy(fixture.join(source), destination).expect("copy generated grammar fixture file");
+}
+
 fn toml_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
 }
@@ -136,6 +169,7 @@ fn run_fixture(package: &TempDir, mode: CaptureMode) -> Output {
         .env_remove("RECURSA_GENERATION")
         .env_remove("RECURSA_DEBUG_DIR")
         .env("RECURSA_CAPTURE_MODE", mode.name())
+        .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", package.path().join("target"));
     command.output().expect("run generated grammar fixture")
 }
@@ -164,6 +198,12 @@ fn configure_diagrams(package: &TempDir) {
             "recursa-codegen = { features = [\"diagrams\"], path = \"",
         );
     fs::write(manifest, source).expect("enable repetition diagram capabilities");
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    fs::copy(
+        manifest_dir.join(FIXTURE).join("Cargo.lock"),
+        package.path().join("Cargo.lock"),
+    )
+    .expect("select diagrams-capable fixture lock");
 }
 
 fn run_fixture_doc(package: &TempDir) -> Output {
@@ -177,6 +217,7 @@ fn run_fixture_doc(package: &TempDir) -> Output {
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
         .env_remove("RECURSA_DEBUG_DIR")
+        .env("CARGO_TERM_COLOR", "never")
         .env("RUSTDOCFLAGS", "-D rustdoc::broken_intra_doc_links")
         .env("CARGO_TARGET_DIR", package.path().join("target"))
         .output()
