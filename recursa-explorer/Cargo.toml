@@ -1,9 +1,18 @@
 [package]
 name = "recursa-explorer"
 version = "0.1.0"
+description = "Reserved package for the future local Recursa Explorer application"
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://github.com/freshtonic/recursa/tree/main/recursa-explorer"
+readme = "README.md"
+keywords = ["parser", "ast", "explorer"]
+categories = ["development-tools"]
+include = ["src/**", "README.md", "LICENSE"]
+publish = false
 
 [dependencies]

@@ -1,10 +1,18 @@
 [package]
 name = "recursa-core"
 version = "0.1.0"
+description = "Runtime support for Recursa-generated parsers"
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/recursa-core"
+readme = "README.md"
+keywords = ["parser", "parser-generator", "ast", "grammar"]
+categories = ["parsing"]
+include = ["src/**", "README.md", "LICENSE"]
 
 [features]
 default = []

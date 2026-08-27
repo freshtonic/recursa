@@ -1,10 +1,18 @@
 [package]
 name = "recursa-macros"
 version = "0.1.0"
+description = "Structural proc-macro loaders for Recursa-generated parsers"
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/recursa-macros"
+readme = "README.md"
+keywords = ["parser", "parser-generator", "procedural-macro", "grammar"]
+categories = ["parsing", "development-tools::procedural-macro-helpers"]
+include = ["src/**", "README.md", "LICENSE"]
 
 [features]
 default = []
