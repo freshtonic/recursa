@@ -2759,12 +2759,12 @@ fn find_grammar_config(
             let Item::Macro(item) = item else { continue };
             if item.mac.path.leading_colon.is_some()
                 || item.mac.path.segments.len() != 2
-                || !item
+                || item
                     .mac
                     .path
                     .segments
                     .last()
-                    .is_some_and(|segment| segment.ident == "grammar")
+                    .is_none_or(|segment| segment.ident != "grammar")
             {
                 continue;
             }

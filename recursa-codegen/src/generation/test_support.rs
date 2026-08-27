@@ -779,6 +779,51 @@ pub(super) fn explorer_rendering_consumes_its_frozen_schema_plan() {
             "rendered explorer content must consume frozen decision {frozen}"
         );
     }
+
+    let schema_source = render_explorer_static_schema(
+        &plan,
+        plan.explorer
+            .as_ref()
+            .expect("Visit fixture has an explorer plan"),
+    )
+    .to_string();
+    assert!(
+        !schema_source.contains("'static"),
+        "static schema aggregate references must use their inferred static lifetime"
+    );
+}
+
+#[cfg(feature = "explorer")]
+pub(super) fn explorer_output_omits_only_redundant_lifetimes() {
+    let (_, plan) = joined_pratt_fixture();
+    let explorer = plan
+        .explorer
+        .as_ref()
+        .expect("Visit fixture has an explorer plan");
+    let application_id = explorer
+        .roots
+        .first()
+        .expect("Visit fixture has an explorer root")
+        .application;
+    let (node, application) = explorer_application_parse_plan(&plan.nodes, application_id);
+
+    let mut lifetime_free = application.clone();
+    lifetime_free.ty = syn::parse_quote!(LifetimeFree);
+    let lifetime_free_source =
+        render_node_application_explorer(&plan, explorer, node, &lifetime_free).to_string();
+    assert!(
+        !lifetime_free_source.contains("impl < '__recursa_input >"),
+        "lifetime-free adapters must not emit an unconstrained input lifetime"
+    );
+
+    let mut borrowed = application.clone();
+    borrowed.ty = syn::parse_quote!(Borrowed<'__recursa_input>);
+    let borrowed_source =
+        render_node_application_explorer(&plan, explorer, node, &borrowed).to_string();
+    assert!(
+        borrowed_source.contains("impl < '__recursa_input >"),
+        "borrowed adapters must retain the input lifetime used by their application type"
+    );
 }
 
 pub(super) fn authored_pretty_authority_rejects_emitted_declaration_corruption() {
