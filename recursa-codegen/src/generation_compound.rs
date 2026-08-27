@@ -46,6 +46,7 @@ const EMITTER_IDENTITY: &str = "recursa-m4-compound-v3";
 const SELECTED_GENERATION: &str = "recursa-selected.rs";
 const DEBUG_DIRECTORY_ENVIRONMENT: &str = "RECURSA_DEBUG_DIR";
 const DEBUG_BUNDLE_FORMAT: &str = "recursa-generated-code-debug-v1";
+const DEBUG_BUNDLE_OWNERSHIP_MARKER: &str = ".recursa-debug-bundle";
 
 /// One complete published logical output.
 pub struct Generation {
@@ -6897,6 +6898,7 @@ struct DebugLogicalFile {
 struct StagedDebugBundle {
     staging: Option<PathBuf>,
     published: PathBuf,
+    replacement: Option<PathBuf>,
 }
 
 impl StagedDebugBundle {
@@ -6904,14 +6906,31 @@ impl StagedDebugBundle {
         let Some(staging) = self.staging.as_ref() else {
             return Ok(());
         };
+        if let Some(replacement) = &self.replacement {
+            fs::rename(&self.published, replacement).map_err(|error| {
+                format!("cannot stage replacement of the previous debug bundle: {error}")
+            })?;
+        }
         match fs::rename(staging, &self.published) {
             Ok(()) => {
                 self.staging = None;
+                if let Some(replacement) = self.replacement.take() {
+                    let _ = remove_debug_staging(&replacement);
+                }
                 Ok(())
             }
-            Err(error) => Err(format!(
-                "cannot atomically publish the generated-code debug bundle: {error}"
-            )),
+            Err(error) => {
+                let detail =
+                    format!("cannot atomically publish the generated-code debug bundle: {error}");
+                if let Some(replacement) = self.replacement.take()
+                    && let Err(rollback) = fs::rename(&replacement, &self.published)
+                {
+                    return Err(format!(
+                        "{detail}; cannot restore the previous complete debug bundle: {rollback}"
+                    ));
+                }
+                Err(detail)
+            }
         }
     }
 }
@@ -6959,14 +6978,11 @@ fn stage_debug_bundle(
     let files = render_debug_logical_files(plan, rendered)?;
     let index = render_debug_index(&plan.identity, &files);
     let published = bundles.join(&plan.identity);
-    if published.try_exists().map_err(|error| {
+    let replacing = published.try_exists().map_err(|error| {
         format!("cannot inspect the generated-code debug bundle destination: {error}")
-    })? {
-        verify_existing_debug_bundle(&published, &index, &files)?;
-        return Ok(StagedDebugBundle {
-            staging: None,
-            published,
-        });
+    })?;
+    if replacing {
+        ensure_owned_debug_bundle(&published)?;
     }
 
     let nonce = staging_nonce()?;
@@ -6978,6 +6994,10 @@ fn stage_debug_bundle(
     fs::create_dir(&staging)
         .map_err(|error| format!("cannot create debug bundle staging directory: {error}"))?;
     let result = (|| {
+        write_debug_file(
+            &staging.join(DEBUG_BUNDLE_OWNERSHIP_MARKER),
+            DEBUG_BUNDLE_FORMAT.as_bytes(),
+        )?;
         write_debug_file(&staging.join("index"), index.as_bytes())?;
         for file in &files {
             write_debug_file(&staging.join(&file.private_name), file.contents.as_bytes())?;
@@ -6991,7 +7011,35 @@ fn stage_debug_bundle(
     Ok(StagedDebugBundle {
         staging: Some(staging),
         published,
+        replacement: replacing.then(|| {
+            bundles.join(format!(
+                ".replaced-{}-{nonce}-{}",
+                std::process::id(),
+                plan.identity
+            ))
+        }),
     })
+}
+
+fn ensure_owned_debug_bundle(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect the existing debug bundle: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("the existing debug bundle is not a plain directory".to_owned());
+    }
+    let marker =
+        fs::symlink_metadata(path.join(DEBUG_BUNDLE_OWNERSHIP_MARKER)).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                "the debug bundle destination collides with a directory not owned by Recursa"
+                    .to_owned()
+            } else {
+                format!("cannot inspect debug bundle ownership metadata: {error}")
+            }
+        })?;
+    if marker.file_type().is_symlink() || !marker.is_file() {
+        return Err("the debug bundle ownership marker is not a plain file".to_owned());
+    }
+    Ok(())
 }
 
 fn ensure_plain_directory(path: &Path, role: &str) -> Result<(), String> {
@@ -7211,54 +7259,6 @@ fn render_debug_index(identity: &str, files: &[DebugLogicalFile]) -> String {
         index.push('\n');
     }
     index
-}
-
-fn verify_existing_debug_bundle(
-    published: &Path,
-    index: &str,
-    files: &[DebugLogicalFile],
-) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(published)
-        .map_err(|error| format!("cannot inspect the existing debug bundle: {error}"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err("the existing debug bundle is not a plain directory".to_owned());
-    }
-    let mut expected = BTreeMap::from([("index".to_owned(), index.as_bytes())]);
-    for file in files {
-        expected.insert(file.private_name.clone(), file.contents.as_bytes());
-    }
-    let mut actual = fs::read_dir(published)
-        .map_err(|error| format!("cannot read the existing debug bundle: {error}"))?
-        .map(|entry| {
-            let entry = entry.map_err(|error| {
-                format!("cannot inspect an existing debug bundle entry: {error}")
-            })?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| "an existing debug bundle filename is not UTF-8".to_owned())?;
-            Ok((name, entry.path()))
-        })
-        .collect::<Result<BTreeMap<_, _>, String>>()?;
-    if actual.len() != expected.len() {
-        return Err("an existing generated-code debug bundle is incomplete or modified".to_owned());
-    }
-    for (name, expected_contents) in expected {
-        let path = actual
-            .remove(&name)
-            .ok_or_else(|| "an existing generated-code debug bundle is incomplete".to_owned())?;
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("cannot inspect existing debug bundle file: {error}"))?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err("an existing debug bundle entry is not a plain file".to_owned());
-        }
-        let contents = fs::read(path)
-            .map_err(|error| format!("cannot read existing debug bundle file: {error}"))?;
-        if contents != expected_contents {
-            return Err("an existing generated-code debug bundle is modified".to_owned());
-        }
-    }
-    Ok(())
 }
 
 #[cfg(feature = "diagrams")]
@@ -13814,10 +13814,45 @@ mod tests {
             );
         }
 
+        fs::write(published.join("root.rs"), "human notes, not Rust").unwrap();
+        fs::write(published.join("index"), "human index edit").unwrap();
+        fs::write(
+            published.join("extra-notes.txt"),
+            "keep out of generated view",
+        )
+        .unwrap();
         let repeated = stage_debug_bundle(destination.path(), &plan, &rendered).unwrap();
-        assert!(repeated.staging.is_none());
+        assert!(repeated.staging.is_some());
+        assert!(repeated.replacement.is_some());
         repeated.commit().unwrap();
         assert_eq!(fs::read_to_string(published.join("index")).unwrap(), index);
+        assert!(!published.join("extra-notes.txt").exists());
+        assert_eq!(plan.identity, identity);
+        let regenerated_root = fs::read_to_string(published.join("root.rs")).unwrap();
+        syn::parse_file(&regenerated_root).expect("human edits are replaced, not loaded");
+    }
+
+    #[test]
+    fn arbitrary_identity_collision_is_preserved_and_rejected_without_replacement() {
+        let (_package, plan) = joined_pratt_fixture();
+        let rendered = render(&plan).unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let collision = destination
+            .path()
+            .join(format!(".{DEBUG_BUNDLE_FORMAT}"))
+            .join(&plan.identity);
+        fs::create_dir_all(&collision).unwrap();
+        fs::write(collision.join("caller-data"), "do not remove").unwrap();
+
+        let error = match stage_debug_bundle(destination.path(), &plan, &rendered) {
+            Ok(_) => panic!("an unowned identity collision must not be replaced"),
+            Err(error) => error,
+        };
+        assert!(error.contains("not owned by Recursa"), "{error}");
+        assert_eq!(
+            fs::read_to_string(collision.join("caller-data")).unwrap(),
+            "do not remove"
+        );
     }
 
     #[cfg(feature = "diagrams")]
