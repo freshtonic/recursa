@@ -43,6 +43,62 @@ fn a_generic_node_can_be_parsed_through_multiple_closed_applications() {
     assert_application_qualified_diagrams(&permuted);
 }
 
+#[test]
+fn explorer_adapters_are_generated_for_each_closed_generic_application() {
+    let package = scaffold_fixture();
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read generic explorer manifest");
+    fs::write(
+        &manifest,
+        source.replace(
+            "features = [\"serde\", \"diagrams\"]",
+            "features = [\"serde\", \"diagrams\", \"explorer\"]",
+        ),
+    )
+    .expect("enable explorer facade payload");
+
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read generic explorer grammar");
+    fs::write(
+        &grammar,
+        source.replace(
+            "#[derive(recursa::Node)]\npub struct Atom<T>",
+            "#[derive(recursa::Node)]\n#[node(derive(Visit))]\npub struct Atom<T>",
+        ),
+    )
+    .expect("configure Visit for the generic explorer root family");
+
+    let main = package.path().join("src/main.rs");
+    let source = fs::read_to_string(&main).expect("read generic explorer consumer");
+    let assertions = r#"
+    let integer_adapter = grammar::Atom::<grammar::Integer<'static>>::explorer();
+    let integer = integer_adapter.parse("42").expect("integer application explorer parse");
+    assert_eq!(integer.root().schema().name(), "Atom");
+    assert_eq!(integer.pretty().unwrap(), "42");
+    assert_eq!(
+        integer.pretty_source_map().unwrap().source_at(0),
+        Some(recursa::Span::new(0, 2).unwrap()),
+    );
+
+    let name_adapter = grammar::Atom::<grammar::Name<'static>>::explorer();
+    let name = name_adapter.parse("alpha").expect("name application explorer parse");
+    assert_eq!(name.root().schema().name(), "Atom");
+    assert_eq!(name.pretty().unwrap(), "alpha");
+    assert_eq!(name.root().elements().next().unwrap().children().len(), 1);
+"#;
+    fs::write(
+        &main,
+        source.replace(
+            "    println!(\"generic-applications-ok\");",
+            &format!("{assertions}\n    println!(\"generic-applications-ok\");"),
+        ),
+    )
+    .expect("add generic explorer assertions");
+
+    let output = run_fixture(&package);
+    assert_success(&output);
+}
+
 fn assert_application_qualified_diagrams(package: &TempDir) {
     let output = run_fixture_doc(package);
     assert_success(&output);
