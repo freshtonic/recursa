@@ -2,14 +2,23 @@
 
 #[cfg(feature = "explorer")]
 pub mod explorer;
+/// Static grammar metadata and recursive FOLLOW storage.
 mod grammar;
+/// Grammar-bound lexical output and parser cursor state.
 mod input;
+/// Generated lexer execution and callback protocol.
 mod lex;
+/// Span-bearing output traits and non-empty semantic sequences.
 mod output;
+/// Structured low-level parse failures.
 mod parse;
+/// Parsed provenance, occurrence views, and generated parsing protocol.
 mod parsed;
+/// Structured Pretty rendering and source maps.
 mod pretty;
+/// Checked source byte ranges.
 mod span;
+/// Grammar-independent AST traversal contracts.
 mod visitor;
 
 pub(crate) use grammar::{ExpectedAtomId, FollowSet, GrammarInfo, TokenKind};
@@ -93,6 +102,7 @@ pub mod __private {
     /// const arguments and assigns [`FACADE_COMPATIBILITY`] to that exact type.
     #[derive(Clone, Copy, Debug)]
     pub struct FacadeCompatibility<const RELEASE: u64, const PRIVATE_PROTOCOL: u32> {
+        /// Prevents external construction of compatibility witnesses.
         _private: (),
     }
 

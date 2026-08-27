@@ -4,7 +4,9 @@ use std::ops::Range;
 /// Checked byte offsets in source text.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Span {
+    /// Inclusive checked byte offset, or the synthetic sentinel.
     start: u32,
+    /// Exclusive checked byte offset, or the synthetic sentinel.
     end: u32,
 }
 
@@ -15,6 +17,7 @@ impl Span {
         end: u32::MAX,
     };
 
+    /// Creates a real half-open byte span after checking ordering and capacity.
     pub fn new(start: usize, end: usize) -> Result<Self, OffsetOverflow> {
         if start > end || end >= u32::MAX as usize {
             return Err(OffsetOverflow);
@@ -25,18 +28,22 @@ impl Span {
         })
     }
 
+    /// Returns the inclusive start byte offset.
     pub const fn start(self) -> u32 {
         self.start
     }
 
+    /// Returns the exclusive end byte offset.
     pub const fn end(self) -> u32 {
         self.end
     }
 
+    /// Converts the checked offsets to a standard half-open range.
     pub fn range(self) -> Range<usize> {
         self.start as usize..self.end as usize
     }
 
+    /// Reports whether this span belongs to a synthesized value without source.
     pub const fn is_synthetic(self) -> bool {
         self.start == u32::MAX && self.end == u32::MAX
     }

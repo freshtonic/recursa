@@ -7,14 +7,20 @@ use crate::Span;
 use crate::parsed::ViewCursor;
 
 #[derive(Clone)]
+/// Captured text and child structure available to one Pretty occurrence.
 pub(crate) struct PrettyProvenance {
+    /// Exact matched text for the active occurrence.
     text: Option<String>,
+    /// Matched source span for source-map output.
     span: Option<Span>,
+    /// Child provenance in generated element/occurrence order.
     children: Box<[PrettyProvenance]>,
+    /// Separator text and spans kept outside semantic child ordinals.
     repetition_separators: Box<[RepetitionSeparatorProvenance]>,
 }
 
 impl PrettyProvenance {
+    /// Constructs validated provenance copied from an immutable parsed sidecar.
     pub(crate) fn new(
         text: Option<String>,
         span: Option<Span>,
@@ -31,27 +37,35 @@ impl PrettyProvenance {
 }
 
 #[derive(Clone)]
+/// Exact parsed spelling and span of one repetition separator.
 pub(crate) struct RepetitionSeparatorProvenance {
+    /// Matched separator text.
     pub(crate) text: String,
+    /// Matched separator source range.
     pub(crate) span: Span,
 }
 
 /// Width and indentation used by the structured Pretty renderer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PrettyConfig {
+    /// Preferred maximum rendered line width.
     max_width: usize,
+    /// Spaces introduced by one indentation level.
     indent: usize,
 }
 
 impl PrettyConfig {
+    /// Creates caller-selected width and indentation settings.
     pub const fn new(max_width: usize, indent: usize) -> Self {
         Self { max_width, indent }
     }
 
+    /// Returns the preferred maximum rendered line width.
     pub const fn max_width(self) -> usize {
         self.max_width
     }
 
+    /// Returns the number of spaces per indentation level.
     pub const fn indent(self) -> usize {
         self.indent
     }
@@ -66,15 +80,19 @@ impl Default for PrettyConfig {
 /// One rendered token's byte range and its originating input span.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceMapEntry {
+    /// Half-open rendered byte range.
     output: Range<usize>,
+    /// Originating parsed source range.
     source: Span,
 }
 
 impl SourceMapEntry {
+    /// Returns the rendered byte range for this token mapping.
     pub fn output(&self) -> Range<usize> {
         self.output.clone()
     }
 
+    /// Returns the originating parsed source span.
     pub const fn source(&self) -> Span {
         self.source
     }
@@ -83,10 +101,12 @@ impl SourceMapEntry {
 /// Token-granular provenance for one Pretty rendering.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SourceMap {
+    /// Token mappings in rendered output order.
     entries: Box<[SourceMapEntry]>,
 }
 
 impl SourceMap {
+    /// Returns all token mappings in rendered output order.
     pub fn entries(&self) -> &[SourceMapEntry] {
         &self.entries
     }
@@ -100,41 +120,63 @@ impl SourceMap {
     }
 }
 
+/// Structured rendering instruction queued before layout is resolved.
 #[derive(Clone, Debug)]
 enum PrettyEvent {
+    /// Token text with its parsed or synthetic source location.
     Text {
+        /// Text to append exactly.
         text: String,
+        /// Originating span used for source mapping.
         source: Span,
     },
+    /// Whitespace rendered flat or as a newline according to group mode.
     SoftBreak(String),
+    /// Separator-aware break between repeated semantic values.
     RepetitionBreak {
+        /// Parsed or canonical separator spelling.
         separator: Option<MappedText>,
+        /// Whether a broken separator begins the next line.
         leading: bool,
+        /// Whether this boundary always breaks.
         hard: bool,
+        /// Whether flat layout inserts space before the separator.
         space_before_separator: bool,
     },
+    /// Unconditional newline.
     HardBreak,
+    /// Begin a group whose soft breaks are consistently flat or broken.
     BeginGroup,
+    /// Begin a group whose breaks are decided independently.
     BeginInconsistentGroup,
+    /// End the innermost group.
     EndGroup,
+    /// Increase indentation after subsequent line breaks.
     Indent,
+    /// Decrease indentation after subsequent line breaks.
     Dedent,
 }
 
 #[derive(Clone, Debug)]
+/// Rendered text paired with one source-map span.
 struct MappedText {
+    /// Text emitted into the output.
     text: String,
+    /// Source range correlated with the emitted text.
     source: Span,
 }
 
 /// Facade-owned structured document sink used by [`PrettyContext`].
 #[derive(Clone, Debug)]
 pub struct PrettySink {
+    /// Layout constraints fixed for this rendering.
     config: PrettyConfig,
+    /// Structured instructions awaiting layout resolution.
     events: Vec<PrettyEvent>,
 }
 
 impl PrettySink {
+    /// Creates an empty sink using caller-selected layout settings.
     pub fn new(config: PrettyConfig) -> Self {
         Self {
             config,
@@ -142,11 +184,16 @@ impl PrettySink {
         }
     }
 
+    /// Resolves events into rendered text without retaining its source map.
     fn finish(self) -> String {
         self.finish_mapped().0
     }
 
+    /// Resolves groups and breaks into text plus monotonic token mappings.
     fn finish_mapped(self) -> (String, SourceMap) {
+        // Scan the queued layout program once. Group decisions depend only on
+        // the remaining flat width, while indentation is updated by explicit
+        // balanced events emitted by generated Pretty implementations.
         let mut output = String::new();
         let mut source_map = Vec::new();
         let mut column = 0_usize;
@@ -273,6 +320,7 @@ impl PrettySink {
     }
 }
 
+/// Computes the display column after appending possibly multiline text.
 fn column_after(column: usize, text: &str) -> usize {
     text.rsplit_once('\n').map_or_else(
         || column.saturating_add(text.chars().count()),
@@ -280,6 +328,7 @@ fn column_after(column: usize, text: &str) -> usize {
     )
 }
 
+/// Emits one newline and the active indentation, updating the display column.
 fn newline(output: &mut String, column: &mut usize, indent: usize, width: usize) {
     output.push('\n');
     let spaces = indent.saturating_mul(width);
@@ -287,6 +336,7 @@ fn newline(output: &mut String, column: &mut usize, indent: usize, width: usize)
     *column = spaces;
 }
 
+/// Measures a consistent group's flat width, rejecting hard or embedded breaks.
 fn flat_width(events: &[PrettyEvent], start: usize) -> Option<usize> {
     let mut depth = 0_usize;
     let mut width = 0_usize;
@@ -321,12 +371,16 @@ fn flat_width(events: &[PrettyEvent], start: usize) -> Option<usize> {
     Some(width)
 }
 
+/// Layout behavior selected for the innermost active group.
 #[derive(Clone, Copy)]
 enum GroupMode {
+    /// Every soft break shares this precomputed broken decision.
     Consistent(bool),
+    /// Each soft break tests the next flat segment independently.
     Inconsistent,
 }
 
+/// Measures the flat segment up to the next peer-level break or group end.
 fn flat_width_to_next_break(events: &[PrettyEvent], start: usize) -> usize {
     let mut depth = 0_usize;
     let mut width = 0_usize;
@@ -364,38 +418,65 @@ fn flat_width_to_next_break(events: &[PrettyEvent], start: usize) -> usize {
 
 /// Rendering state shared by generated and source-owned [`Pretty`] impls.
 pub struct PrettyContext {
+    /// Structured output sink and layout configuration.
     sink: PrettySink,
+    /// Whether the previous semantic token normally requires separation.
     needs_separator: bool,
+    /// Whether an explicit break already supplies that separation.
     separator_supplied: bool,
+    /// Whether the previous token was automatic punctuation.
     previous_auto_punctuation: bool,
+    /// Whether generated policy requires spacing after the previous token.
     requested_space_after: bool,
+    /// Whether any nonempty token has been emitted.
     has_emitted_token: bool,
+    /// Parsed occurrence currently supplying matched text and spans.
     provenance: Option<PrettyProvenance>,
+    /// Whether the caller overrode grammar-default layout settings.
     caller_configured: bool,
+    /// Active generated repetition policy.
     repetition: Option<RepetitionLayout>,
+    /// Nested speculative layout state for optional/present grammar shapes.
     layout_checkpoints: Vec<PrettyLayoutCheckpoint>,
+    /// Number of generated explicit group boundaries currently open.
     explicit_group_depth: usize,
 }
 
 #[derive(Clone)]
+/// Restorable rendering state around one optional grammar layout.
 struct PrettyLayoutCheckpoint {
+    /// Whether the optional shape emitted any token.
     present: bool,
+    /// Event length to which an absent shape rolls back.
     event_len: usize,
+    /// Saved automatic separator state.
     needs_separator: bool,
+    /// Saved explicit separator state.
     separator_supplied: bool,
+    /// Saved automatic punctuation state.
     previous_auto_punctuation: bool,
+    /// Saved trailing-space request.
     requested_space_after: bool,
+    /// Saved nonempty-output state.
     has_emitted_token: bool,
+    /// Saved repetition policy.
     repetition: Option<RepetitionLayout>,
+    /// Saved explicit group nesting depth.
     explicit_group_depth: usize,
 }
 
 #[derive(Clone)]
+/// Generated separator and line-breaking policy for one repetition.
 struct RepetitionLayout {
+    /// Canonical separator spelling, if any.
     separator: Option<String>,
+    /// Whether the grammar permits/emits a trailing separator.
     trailing: bool,
+    /// Whether every item boundary must break.
     hard_break: bool,
+    /// Whether broken separators lead the following line.
     leading_separator: bool,
+    /// Whether flat layout inserts space before each separator.
     space_before_separator: bool,
 }
 
@@ -418,10 +499,12 @@ impl Default for PrettyContext {
 }
 
 impl PrettyContext {
+    /// Creates a rendering context that accepts grammar-default configuration.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Creates a rendering context whose caller settings override defaults.
     pub fn with_config(config: PrettyConfig) -> Self {
         Self {
             sink: PrettySink::new(config),
@@ -491,6 +574,7 @@ impl PrettyContext {
         Ok(())
     }
 
+    /// Returns the active parsed span or the source-free synthetic sentinel.
     fn active_source_span(&self) -> Span {
         self.provenance
             .as_ref()
@@ -498,6 +582,7 @@ impl PrettyContext {
             .unwrap_or(Span::SYNTHETIC)
     }
 
+    /// Queues exact token text with its source-map origin.
     fn push_text(&mut self, text: &str, source: Span) {
         self.sink.events.push(PrettyEvent::Text {
             text: text.to_owned(),
@@ -505,6 +590,7 @@ impl PrettyContext {
         });
     }
 
+    /// Emits mapped text tightly while updating automatic-spacing state.
     fn tight_mapped_token(&mut self, mapped: &MappedText) {
         self.push_text(&mapped.text, mapped.source);
         self.needs_separator = !mapped.text.is_empty();
@@ -674,29 +760,34 @@ impl PrettyContext {
     }
 
     #[doc(hidden)]
+    /// Begins a consistent group for generated multi-part layouts.
     pub fn begin_consistent_group(&mut self) {
         self.sink.events.push(PrettyEvent::BeginGroup);
         self.explicit_group_depth = self.explicit_group_depth.saturating_add(1);
     }
 
     #[doc(hidden)]
+    /// Begins an inconsistent group for independently breaking layouts.
     pub fn begin_inconsistent_group(&mut self) {
         self.sink.events.push(PrettyEvent::BeginInconsistentGroup);
         self.explicit_group_depth = self.explicit_group_depth.saturating_add(1);
     }
 
     #[doc(hidden)]
+    /// Ends the innermost explicit generated group.
     pub fn end_group(&mut self) {
         self.explicit_group_depth = self.explicit_group_depth.saturating_sub(1);
         self.sink.events.push(PrettyEvent::EndGroup);
     }
 
     #[doc(hidden)]
+    /// Begins one generated indentation scope.
     pub fn begin_indent(&mut self) {
         self.sink.events.push(PrettyEvent::Indent);
     }
 
     #[doc(hidden)]
+    /// Ends one generated indentation scope.
     pub fn end_indent(&mut self) {
         self.sink.events.push(PrettyEvent::Dedent);
     }
@@ -767,6 +858,7 @@ impl PrettyContext {
     }
 
     #[doc(hidden)]
+    /// Applies the complete generated separator and line-breaking policy.
     pub fn with_repetition_style<R>(
         &mut self,
         separator: Option<&str>,
@@ -788,6 +880,7 @@ impl PrettyContext {
         result
     }
 
+    /// Renders ordinary repeated values under the active repetition policy.
     fn render_repeated<'a, T: Pretty + 'a>(
         &mut self,
         values: impl ExactSizeIterator<Item = &'a T>,
@@ -827,6 +920,7 @@ impl PrettyContext {
         Ok(())
     }
 
+    /// Selects parsed separator text when available, otherwise canonical text.
     fn repetition_separator(&self, index: usize, layout: &RepetitionLayout) -> Option<MappedText> {
         let fallback = layout.separator.as_ref()?;
         Some(
@@ -890,6 +984,7 @@ impl PrettyContext {
             .map(str::to_owned)
     }
 
+    /// Temporarily replaces active provenance for one nested render operation.
     fn with_provenance<R>(
         &mut self,
         provenance: Option<PrettyProvenance>,
@@ -901,10 +996,12 @@ impl PrettyContext {
         result
     }
 
+    /// Consumes the context and resolves its structured events into text.
     pub fn finish(self) -> String {
         self.sink.finish()
     }
 
+    /// Consumes the context and returns rendered text plus token provenance.
     pub fn finish_mapped(self) -> (String, SourceMap) {
         self.sink.finish_mapped()
     }
@@ -912,8 +1009,10 @@ impl PrettyContext {
 
 /// Structured rendering shared by semantic ASTs, parsed roots, and views.
 pub trait Pretty {
+    /// Emits this value into a structured rendering context.
     fn pretty(&self, context: &mut PrettyContext) -> fmt::Result;
 
+    /// Renders with grammar-selected default layout.
     fn render(&self) -> String {
         let mut context = PrettyContext::new();
         self.pretty(&mut context)
@@ -921,6 +1020,7 @@ pub trait Pretty {
         context.finish()
     }
 
+    /// Renders with caller-selected width and indentation.
     fn render_with(&self, config: PrettyConfig) -> String {
         let mut context = PrettyContext::with_config(config);
         self.pretty(&mut context)

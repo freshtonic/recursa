@@ -4,22 +4,29 @@ use crate::parsed::ViewCursor;
 use crate::{ElementRole, Parsed, PrettyConfig, SourceMap, Span};
 use std::fmt;
 
+/// Erased deterministic sample callback generated for one root application.
 type SampleFn = fn(&[u8]) -> Result<ExplorerDocument<'static>, SampleError>;
 
 /// Grammar-erased schema and optional sample entry point for one root family.
 #[derive(Clone, Copy)]
 pub struct Adapter {
+    /// Static schema from the same Generation as every callback.
     schema: &'static GrammarSchemaData,
+    /// Feature-selected operations available for this root.
     capabilities: Capabilities,
+    /// Grammar-erased lexer callback borrowing its input.
     lex: for<'input> fn(&'input str) -> LexResult<'input>,
+    /// Optional static sample callback when `Arbitrary` is configured.
     sample: Option<SampleFn>,
 }
 
 impl Adapter {
+    /// Returns the static schema for this grammar-root application.
     pub const fn schema(self) -> GrammarSchema {
         GrammarSchema { data: self.schema }
     }
 
+    /// Returns the feature-selected operations supported by this adapter.
     pub const fn capabilities(self) -> Capabilities {
         self.capabilities
     }
@@ -36,28 +43,36 @@ impl Adapter {
     }
 }
 
+/// Optional operations configured for an Explorer root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Capabilities {
+    /// Whether the root can render structured Pretty output.
     pretty: bool,
+    /// Whether the root can generate deterministic samples.
     arbitrary: bool,
 }
 
 impl Capabilities {
+    /// Reports whether Pretty rendering is available.
     pub const fn pretty(self) -> bool {
         self.pretty
     }
 
+    /// Reports whether deterministic sample generation is available.
     pub const fn arbitrary(self) -> bool {
         self.arbitrary
     }
 }
 
+/// Failure produced while constructing a deterministic Explorer sample.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SampleError {
+    /// Generator- or trait-provided explanation safe for display.
     message: Box<str>,
 }
 
 impl SampleError {
+    /// Returns the display explanation for this sample failure.
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -74,21 +89,26 @@ impl std::error::Error for SampleError {}
 /// One grammar-erased lexical token record.
 #[derive(Clone, Copy)]
 pub struct Token<'input> {
+    /// Complete source from which exact matched text is borrowed.
     source: &'input str,
+    /// Static schema and checked matched span.
     data: LexRecordData,
 }
 
 impl<'input> Token<'input> {
+    /// Returns the static token descriptor for this record.
     pub const fn schema(self) -> TokenSchema {
         TokenSchema {
             data: self.data.schema,
         }
     }
 
+    /// Returns the exact matched source span.
     pub const fn span(self) -> Span {
         self.data.span
     }
 
+    /// Borrows the exact matched input text.
     pub fn text(self) -> &'input str {
         self.source
             .get(self.data.span.range())
@@ -96,17 +116,22 @@ impl<'input> Token<'input> {
     }
 }
 
+/// One rejected lexical source range.
 #[derive(Clone, Copy)]
 pub struct LexError<'input> {
+    /// Complete source from which rejected text is borrowed.
     source: &'input str,
+    /// Exact rejected UTF-8 byte range.
     span: Span,
 }
 
 impl<'input> LexError<'input> {
+    /// Returns the rejected source span.
     pub const fn span(self) -> Span {
         self.span
     }
 
+    /// Borrows the exact rejected source text.
     pub fn text(self) -> &'input str {
         self.source
             .get(self.span.range())
@@ -114,17 +139,23 @@ impl<'input> LexError<'input> {
     }
 }
 
+/// Grammar-erased lexical output for Explorer consumers.
 pub struct LexResult<'input> {
+    /// Complete source retained for token and error text.
     source: &'input str,
+    /// Successful records in source order.
     tokens: Box<[LexRecordData]>,
+    /// Rejected spans in source order.
     errors: Box<[Span]>,
 }
 
 impl<'input> LexResult<'input> {
+    /// Returns the complete input source.
     pub const fn source(&self) -> &'input str {
         self.source
     }
 
+    /// Iterates over successful lexical records in source order.
     pub fn tokens(&self) -> Tokens<'_, 'input> {
         Tokens {
             source: self.source,
@@ -132,6 +163,7 @@ impl<'input> LexResult<'input> {
         }
     }
 
+    /// Iterates over rejected source ranges in source order.
     pub fn errors(&self) -> LexErrors<'_, 'input> {
         LexErrors {
             source: self.source,
@@ -140,8 +172,11 @@ impl<'input> LexResult<'input> {
     }
 }
 
+/// Exact-size iterator over grammar-erased lexical tokens.
 pub struct Tokens<'records, 'input> {
+    /// Source shared by every yielded token.
     source: &'input str,
+    /// Records not yet yielded.
     remaining: &'records [LexRecordData],
 }
 
@@ -165,8 +200,11 @@ impl<'input> Iterator for Tokens<'_, 'input> {
 impl ExactSizeIterator for Tokens<'_, '_> {}
 impl std::iter::FusedIterator for Tokens<'_, '_> {}
 
+/// Exact-size iterator over lexical errors.
 pub struct LexErrors<'records, 'input> {
+    /// Source shared by every yielded error.
     source: &'input str,
+    /// Error spans not yet yielded.
     remaining: &'records [Span],
 }
 
@@ -190,16 +228,21 @@ impl<'input> Iterator for LexErrors<'_, 'input> {
 impl ExactSizeIterator for LexErrors<'_, '_> {}
 impl std::iter::FusedIterator for LexErrors<'_, '_> {}
 
+/// Origin of an Explorer document and its span availability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Provenance {
+    /// Produced by parsing borrowed source with occurrence spans.
     Parsed,
+    /// Constructed without source by a configured generator.
     Synthetic,
 }
 
 /// One owned Pretty result and its token-level source provenance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrettyOutput {
+    /// Fully rendered source text.
     pub rendered: String,
+    /// Token-level correlations from rendered ranges to parsed source.
     pub source_map: SourceMap,
 }
 
@@ -208,10 +251,12 @@ pub struct PrettyOutput {
 /// Construction performs one erased storage allocation. All occurrence
 /// handles and iterators are lazy and allocation-free.
 pub struct ExplorerDocument<'input> {
+    /// One allocation owning the typed parsed root behind an erased protocol.
     storage: Box<dyn ErasedDocument + 'input>,
 }
 
 impl<'input> ExplorerDocument<'input> {
+    /// Erases a complete parsed or synthetic root while retaining ownership.
     pub fn from_parsed<T>(parsed: Parsed<'input, T>) -> Self
     where
         T: ExplorerRoot + 'input,
@@ -221,14 +266,17 @@ impl<'input> ExplorerDocument<'input> {
         }
     }
 
+    /// Returns whether this document was parsed or synthesized.
     pub fn provenance(&self) -> Provenance {
         self.storage.provenance()
     }
 
+    /// Returns the complete borrowed source when this document was parsed.
     pub fn source(&self) -> Option<&str> {
         self.storage.source()
     }
 
+    /// Returns a lazy handle to the root occurrence.
     pub fn root(&self) -> Node<'_> {
         Node {
             data: self.storage.root(),
@@ -241,14 +289,21 @@ impl<'input> ExplorerDocument<'input> {
     }
 }
 
+/// Object-safe operations needed to inspect one owned typed document.
 trait ErasedDocument {
+    /// Reports whether the erased root was parsed or synthesized.
     fn provenance(&self) -> Provenance;
+    /// Returns parsed source when available.
     fn source(&self) -> Option<&str>;
+    /// Constructs a lazy erased root occurrence.
     fn root(&self) -> NodeData<'_>;
+    /// Renders Pretty output when the root configured that capability.
     fn pretty(&self, config: &PrettyConfig) -> Option<PrettyOutput>;
 }
 
+/// Typed backing allocation retained behind [`ExplorerDocument`].
 struct TypedDocument<'input, T> {
+    /// Complete parsed root and its occurrence provenance.
     parsed: Parsed<'input, T>,
 }
 
@@ -275,28 +330,34 @@ impl<T: ExplorerRoot> ErasedDocument for TypedDocument<'_, T> {
     }
 }
 
+/// Static schema for one generated grammar-root application.
 #[derive(Clone, Copy)]
 pub struct GrammarSchema {
+    /// Matching generated static descriptor.
     data: &'static GrammarSchemaData,
 }
 
 impl GrammarSchema {
+    /// Returns the configured grammar name.
     pub const fn name(self) -> &'static str {
         self.data.name
     }
 
+    /// Returns the schema of this adapter's root application.
     pub const fn root(self) -> NodeSchema {
         NodeSchema {
             data: self.data.root,
         }
     }
 
+    /// Iterates over every materialized Node schema deterministically.
     pub fn nodes(self) -> NodeSchemas {
         NodeSchemas {
             remaining: self.data.nodes,
         }
     }
 
+    /// Iterates over every content and fixed token descriptor.
     pub fn tokens(self) -> TokenSchemas {
         TokenSchemas {
             remaining: self.data.tokens,
@@ -304,26 +365,32 @@ impl GrammarSchema {
     }
 }
 
+/// Static descriptor for one materialized Node application.
 #[derive(Clone, Copy)]
 pub struct NodeSchema {
+    /// Matching generated static descriptor.
     data: &'static NodeSchemaData,
 }
 
 impl NodeSchema {
+    /// Returns the declaration's short Rust name.
     pub const fn name(self) -> &'static str {
         self.data.name
     }
 
+    /// Returns the grammar-qualified materialized application name.
     pub const fn qualified_name(self) -> &'static str {
         self.data.qualified_name
     }
 
+    /// Iterates the elements of a struct-shaped Node.
     pub fn elements(self) -> ElementSchemas {
         ElementSchemas {
             remaining: self.data.elements,
         }
     }
 
+    /// Iterates the variants of an enum-shaped Node.
     pub fn variants(self) -> VariantSchemas {
         VariantSchemas {
             remaining: self.data.variants,
@@ -331,20 +398,25 @@ impl NodeSchema {
     }
 }
 
+/// Static descriptor for one enum variant.
 #[derive(Clone, Copy)]
 pub struct VariantSchema {
+    /// Matching generated static descriptor.
     data: &'static VariantSchemaData,
 }
 
 impl VariantSchema {
+    /// Returns the authored variant name.
     pub const fn name(self) -> &'static str {
         self.data.name
     }
 
+    /// Returns the grammar-qualified variant name.
     pub const fn qualified_name(self) -> &'static str {
         self.data.qualified_name
     }
 
+    /// Iterates this variant's source-order grammar elements.
     pub fn elements(self) -> ElementSchemas {
         ElementSchemas {
             remaining: self.data.elements,
@@ -352,24 +424,30 @@ impl VariantSchema {
     }
 }
 
+/// Static descriptor for one source-order grammar element.
 #[derive(Clone, Copy)]
 pub struct ElementSchema {
+    /// Matching generated static descriptor.
     data: &'static ElementSchemaData,
 }
 
 impl ElementSchema {
+    /// Returns the authored field name or generated fixed-token label.
     pub const fn name(self) -> &'static str {
         self.data.name
     }
 
+    /// Returns whether this element is semantic or fixed syntax.
     pub const fn role(self) -> ElementRole {
         self.data.role
     }
 
+    /// Returns the semantic occurrence cardinality.
     pub const fn cardinality(self) -> Cardinality {
         self.data.cardinality
     }
 
+    /// Returns the semantic Node or content-token target, when present.
     pub const fn target(self) -> Option<ElementTarget> {
         match self.data.target {
             Some(ElementTargetData::Node(data)) => Some(ElementTarget::Node(NodeSchema { data })),
@@ -389,26 +467,34 @@ impl ElementSchema {
     }
 }
 
+/// Static semantic target of an Explorer element.
 #[derive(Clone, Copy)]
 pub enum ElementTarget {
+    /// A materialized grammar Node application.
     Node(NodeSchema),
+    /// A generated content-bearing token type.
     ContentToken(TokenSchema),
 }
 
+/// Static descriptor for one grammar-local token kind.
 #[derive(Clone, Copy)]
 pub struct TokenSchema {
+    /// Matching generated static descriptor.
     data: &'static TokenSchemaData,
 }
 
 impl TokenSchema {
+    /// Returns the short token descriptor name.
     pub const fn name(self) -> &'static str {
         self.data.name
     }
 
+    /// Returns the grammar-qualified token name.
     pub const fn qualified_name(self) -> &'static str {
         self.data.qualified_name
     }
 
+    /// Returns the grammar-local kind display name.
     pub const fn kind(self) -> &'static str {
         self.data.kind
     }
@@ -418,36 +504,53 @@ impl TokenSchema {
         self.data.canonical_text
     }
 
+    /// Returns the stable CSS-neutral highlighting category.
     pub const fn highlight_class(self) -> HighlightClass {
         self.data.highlight_class
     }
 }
 
+/// Presentation-neutral lexical highlighting category.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HighlightClass {
+    /// Word-shaped fixed syntax.
     Keyword,
+    /// Non-word fixed syntax.
     Punctuation,
+    /// Identifier-like content.
     Identifier,
+    /// Literal content such as strings or numbers.
     Literal,
+    /// Other content-bearing tokens.
     Content,
+    /// Ignored or non-semantic lexical trivia.
     Trivia,
 }
 
+/// Type-level semantic cardinality of one grammar element.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cardinality {
+    /// Exactly one occurrence.
     One,
+    /// Zero or one occurrence.
     Optional,
+    /// Zero or more occurrences.
     ZeroOrMore,
+    /// One or more occurrences.
     OneOrMore,
+    /// An optional non-empty sequence.
     OptionalOneOrMore,
 }
 
+/// Lazy grammar-erased handle to one Node or content-token occurrence.
 #[derive(Clone, Copy)]
 pub struct Node<'document> {
+    /// Erased value, schema, active shape, and occurrence cursor.
     data: NodeData<'document>,
 }
 
 impl<'document> Node<'document> {
+    /// Returns the static schema for this Node or content-token occurrence.
     pub const fn schema(self) -> OccurrenceSchema {
         match self.data.schema {
             SchemaData::Node(data) => OccurrenceSchema::Node(NodeSchema { data }),
@@ -455,6 +558,7 @@ impl<'document> Node<'document> {
         }
     }
 
+    /// Returns the selected enum variant, if this is an enum Node.
     pub const fn active_variant(self) -> Option<VariantSchema> {
         match self.data.active_variant {
             Some(data) => Some(VariantSchema { data }),
@@ -462,6 +566,7 @@ impl<'document> Node<'document> {
         }
     }
 
+    /// Returns this occurrence's parsed source span when available.
     pub fn span(self) -> Option<Span> {
         self.data.cursor.span()
     }
@@ -480,6 +585,7 @@ impl<'document> Node<'document> {
         }
     }
 
+    /// Iterates the active shape's elements in source order.
     pub fn elements(self) -> Elements<'document> {
         let schemas = match (self.data.schema, self.data.active_variant) {
             (SchemaData::Node(_), Some(variant)) => variant.elements,
@@ -494,19 +600,26 @@ impl<'document> Node<'document> {
     }
 }
 
+/// Lazy handle to one element occurrence within a Node shape.
 #[derive(Clone, Copy)]
 pub struct Element<'document> {
+    /// Parent Node occurrence owning this element.
     node: Node<'document>,
+    /// Static element descriptor from the active shape.
     schema: &'static ElementSchemaData,
+    /// Source-order element ordinal used by generated child access.
     index: usize,
+    /// Provenance cursor for this element occurrence.
     cursor: ViewCursor<'document>,
 }
 
 impl<'document> Element<'document> {
+    /// Returns this occurrence's static element descriptor.
     pub const fn schema(self) -> ElementSchema {
         ElementSchema { data: self.schema }
     }
 
+    /// Returns the combined span of this element occurrence when parsed.
     pub fn span(self) -> Option<Span> {
         self.cursor.span()
     }
@@ -521,6 +634,7 @@ impl<'document> Element<'document> {
             .or_else(|| self.schema.token.and_then(|token| token.canonical_text))
     }
 
+    /// Lazily iterates semantic child occurrences in repetition order.
     pub fn children(self) -> Children<'document> {
         Children {
             element: self,
@@ -537,13 +651,19 @@ impl<'document> Element<'document> {
 /// Typed static descriptor for a Node occurrence.
 #[derive(Clone, Copy)]
 pub enum OccurrenceSchema {
+    /// A materialized grammar Node application.
     Node(NodeSchema),
+    /// A generated content-bearing token type.
     ContentToken(TokenSchema),
 }
 
+/// Exact-size iterator over one active Node shape's elements.
 pub struct Elements<'document> {
+    /// Node occurrence whose generated body supplies children.
     node: Node<'document>,
+    /// Active shape's static element descriptors.
     schemas: &'static [ElementSchemaData],
+    /// Next source-order element ordinal.
     index: usize,
 }
 
@@ -571,9 +691,13 @@ impl<'document> Iterator for Elements<'document> {
 impl ExactSizeIterator for Elements<'_> {}
 impl std::iter::FusedIterator for Elements<'_> {}
 
+/// Exact-size iterator over one semantic element's child occurrences.
 pub struct Children<'document> {
+    /// Element occurrence whose generated body supplies children.
     element: Element<'document>,
+    /// Next repeated child ordinal.
     index: usize,
+    /// Total child occurrences fixed when the iterator is constructed.
     len: usize,
 }
 
@@ -603,9 +727,12 @@ impl<'document> Iterator for Children<'document> {
 impl ExactSizeIterator for Children<'_> {}
 impl std::iter::FusedIterator for Children<'_> {}
 
+/// Defines an exact-size iterator over generated static schema descriptors.
 macro_rules! static_iterator {
     ($name:ident, $data:ty, $item:ty, $map:expr) => {
+        #[doc = concat!("Iterator over generated `", stringify!($data), "` descriptors.")]
         pub struct $name {
+            /// Static descriptors not yet yielded.
             remaining: &'static [&'static $data],
         }
 
@@ -638,7 +765,9 @@ static_iterator!(TokenSchemas, TokenSchemaData, TokenSchema, |data| {
     TokenSchema { data }
 });
 
+/// Exact-size iterator over source-order element schemas.
 pub struct ElementSchemas {
+    /// Static descriptors not yet yielded.
     remaining: &'static [ElementSchemaData],
 }
 
@@ -660,74 +789,115 @@ impl ExactSizeIterator for ElementSchemas {}
 impl std::iter::FusedIterator for ElementSchemas {}
 
 #[doc(hidden)]
+/// Generated static schema backing one [`GrammarSchema`] handle.
 pub struct GrammarSchemaData {
+    /// Configured grammar name.
     name: &'static str,
+    /// Root materialized application.
     root: &'static NodeSchemaData,
+    /// Deterministically ordered Node applications.
     nodes: &'static [&'static NodeSchemaData],
+    /// Deterministically ordered token descriptors.
     tokens: &'static [&'static TokenSchemaData],
 }
 
 #[doc(hidden)]
+/// Generated static schema backing one [`NodeSchema`] handle.
 pub struct NodeSchemaData {
+    /// Short declaration name.
     name: &'static str,
+    /// Grammar-qualified materialized application name.
     qualified_name: &'static str,
+    /// Struct-shaped elements, empty for enum Nodes.
     elements: &'static [ElementSchemaData],
+    /// Enum variants, empty for struct Nodes.
     variants: &'static [&'static VariantSchemaData],
 }
 
 #[doc(hidden)]
+/// Generated static schema backing one [`VariantSchema`] handle.
 pub struct VariantSchemaData {
+    /// Authored variant name.
     name: &'static str,
+    /// Grammar-qualified variant name.
     qualified_name: &'static str,
+    /// Source-order elements for this variant.
     elements: &'static [ElementSchemaData],
 }
 
 #[doc(hidden)]
 #[derive(Clone, Copy)]
+/// Generated static schema backing one [`ElementSchema`] handle.
 pub struct ElementSchemaData {
+    /// Authored field name or generated fixed-token label.
     name: &'static str,
+    /// Semantic-field or fixed-token classification.
     role: ElementRole,
+    /// Type-level semantic cardinality.
     cardinality: Cardinality,
+    /// Semantic target, absent for fixed syntax.
     target: Option<ElementTargetData>,
+    /// Token descriptor for fixed syntax and content-token fields.
     token: Option<&'static TokenSchemaData>,
 }
 
 #[doc(hidden)]
 #[derive(Clone, Copy)]
+/// Generated representation of an element's semantic target.
 pub enum ElementTargetData {
+    /// Target is another materialized Node application.
     Node(&'static NodeSchemaData),
+    /// Target is a content-bearing token type.
     ContentToken(&'static TokenSchemaData),
 }
 
 #[doc(hidden)]
+/// Generated static schema backing one [`TokenSchema`] handle.
 pub struct TokenSchemaData {
+    /// Short token name.
     name: &'static str,
+    /// Grammar-qualified token name.
     qualified_name: &'static str,
+    /// Grammar-local token-kind display name.
     kind: &'static str,
+    /// Canonical fixed spelling, absent for content tokens.
     canonical_text: Option<&'static str>,
+    /// Presentation-neutral highlighting category.
     highlight_class: HighlightClass,
 }
 
 #[doc(hidden)]
 #[derive(Clone, Copy)]
+/// Generated erased lexical record validated against source.
 pub struct LexRecordData {
+    /// Static token descriptor for the matched kind.
     schema: &'static TokenSchemaData,
+    /// Exact matched source range.
     span: Span,
 }
 
 #[doc(hidden)]
 #[derive(Clone, Copy)]
+/// Generated erased Node occurrence returned through the lazy protocol.
 pub struct NodeData<'document> {
+    /// Semantic value implementing the matching generated child protocol.
     value: &'document dyn ExplorerNode,
+    /// Static Node or content-token schema.
     schema: SchemaData,
+    /// Selected enum variant for Node occurrences.
     active_variant: Option<&'static VariantSchemaData>,
+    /// Parsed-provenance cursor for this occurrence.
     cursor: ViewCursor<'document>,
+    /// Content-token storage used when no parsed span exists.
     stored_text: Option<&'document str>,
 }
 
+/// Internal discriminant between Node and content-token occurrence schemas.
 #[derive(Clone, Copy)]
 enum SchemaData {
+    /// Grammar Node schema.
     Node(&'static NodeSchemaData),
+    /// Content-bearing token schema.
     ContentToken(&'static TokenSchemaData),
 }
 
@@ -738,13 +908,16 @@ enum SchemaData {
 /// semantic references from the same Generation and active Node shape.
 #[doc(hidden)]
 pub unsafe trait ExplorerNode {
+    /// Returns this value's active schema, occurrence cursor, and erased value.
     fn __recursa_explorer_node<'document>(
         &'document self,
         cursor: ViewCursor<'document>,
     ) -> NodeData<'document>;
 
+    /// Returns the number of semantic children for one active element ordinal.
     fn __recursa_explorer_child_count(&self, element: usize) -> usize;
 
+    /// Returns one semantic child occurrence by element and repetition ordinal.
     fn __recursa_explorer_child<'document>(
         &'document self,
         cursor: ViewCursor<'document>,
@@ -759,8 +932,10 @@ pub unsafe trait ExplorerNode {
 /// The schema and operation must belong to the same Generation as the Node.
 #[doc(hidden)]
 pub unsafe trait ExplorerRoot: ExplorerNode + Sized {
+    /// Returns the static schema belonging to this root's Generation.
     fn __recursa_explorer_schema() -> &'static GrammarSchemaData;
 
+    /// Renders parsed or synthetic Pretty output when configured.
     fn __recursa_explorer_pretty(
         parsed: &Parsed<'_, Self>,
         config: &PrettyConfig,
@@ -768,6 +943,7 @@ pub unsafe trait ExplorerRoot: ExplorerNode + Sized {
 }
 
 #[doc(hidden)]
+/// Constructs generated static grammar schema under the matching protocol.
 pub const fn grammar_schema(
     name: &'static str,
     root: &'static NodeSchemaData,
@@ -783,6 +959,7 @@ pub const fn grammar_schema(
 }
 
 #[doc(hidden)]
+/// Constructs generated static Node schema under the matching protocol.
 pub const fn node_schema(
     name: &'static str,
     qualified_name: &'static str,
@@ -798,6 +975,7 @@ pub const fn node_schema(
 }
 
 #[doc(hidden)]
+/// Constructs generated static variant schema under the matching protocol.
 pub const fn variant_schema(
     name: &'static str,
     qualified_name: &'static str,
@@ -811,6 +989,7 @@ pub const fn variant_schema(
 }
 
 #[doc(hidden)]
+/// Constructs generated static element schema under the matching protocol.
 pub const fn element_schema(
     name: &'static str,
     role: ElementRole,
@@ -828,16 +1007,19 @@ pub const fn element_schema(
 }
 
 #[doc(hidden)]
+/// Wraps a Node schema as a generated element target.
 pub const fn node_target(schema: &'static NodeSchemaData) -> ElementTargetData {
     ElementTargetData::Node(schema)
 }
 
 #[doc(hidden)]
+/// Wraps a content-token schema as a generated element target.
 pub const fn content_token_target(schema: &'static TokenSchemaData) -> ElementTargetData {
     ElementTargetData::ContentToken(schema)
 }
 
 #[doc(hidden)]
+/// Constructs generated static token schema under the matching protocol.
 pub const fn token_schema(
     name: &'static str,
     qualified_name: &'static str,
@@ -855,6 +1037,7 @@ pub const fn token_schema(
 }
 
 #[doc(hidden)]
+/// Constructs a lazy grammar Node occurrence from matching generated parts.
 pub fn node<'document>(
     value: &'document dyn ExplorerNode,
     schema: &'static NodeSchemaData,
@@ -871,11 +1054,13 @@ pub fn node<'document>(
 }
 
 #[doc(hidden)]
+/// Preserves a child occurrence's inferred document lifetime across emission.
 pub fn node_child(data: NodeData<'_>) -> NodeData<'_> {
     data
 }
 
 #[doc(hidden)]
+/// Constructs a content-token leaf from matching generated parts.
 pub fn token_node<'document>(
     value: &'document dyn ExplorerNode,
     schema: &'static TokenSchemaData,
@@ -892,6 +1077,7 @@ pub fn token_node<'document>(
 }
 
 #[doc(hidden)]
+/// Converts the runtime Pretty tuple into Explorer-owned output.
 pub fn pretty_output((rendered, source_map): (String, SourceMap)) -> PrettyOutput {
     PrettyOutput {
         rendered,
@@ -900,6 +1086,7 @@ pub fn pretty_output((rendered, source_map): (String, SourceMap)) -> PrettyOutpu
 }
 
 #[doc(hidden)]
+/// Constructs an erased deterministic sample failure.
 pub fn sample_error(message: impl Into<Box<str>>) -> SampleError {
     SampleError {
         message: message.into(),
@@ -907,11 +1094,13 @@ pub fn sample_error(message: impl Into<Box<str>>) -> SampleError {
 }
 
 #[doc(hidden)]
+/// Constructs one generated erased lexical record.
 pub const fn lex_record(schema: &'static TokenSchemaData, span: Span) -> LexRecordData {
     LexRecordData { schema, span }
 }
 
 #[doc(hidden)]
+/// Collects generated lexical records and errors into Explorer output.
 pub fn lex_result<'input>(
     source: &'input str,
     tokens: impl IntoIterator<Item = LexRecordData>,
@@ -924,8 +1113,11 @@ pub fn lex_result<'input>(
     }
 }
 
+/// Constructs one generated grammar-erased root adapter.
+///
 /// # Safety
-/// The schema and sample function must belong to the same Generation.
+/// The schema, lexer, capability flags, and sample function must belong to the
+/// same Generation and materialized root application.
 #[doc(hidden)]
 pub const unsafe fn construct_adapter(
     schema: &'static GrammarSchemaData,

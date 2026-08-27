@@ -8,43 +8,58 @@ use crate::{LexResult, Span, TokenKind, TokenRecord};
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct LexRule {
+    /// Validated regular expression matched at the current source offset.
     pub pattern: &'static str,
+    /// Grammar-local kind emitted by the default action.
     pub kind: TokenKind,
+    /// Whether a callback-free match is ignored as trivia.
     pub skip: bool,
+    /// Optional generated typed callback shim.
     pub callback: Option<for<'source> fn(&mut LexContext<'source>) -> LexAction>,
+    /// Whether this rule originated from exact fixed syntax.
     pub fixed: bool,
+    /// Deterministic tie-break priority after match length and fixed status.
     pub priority: u32,
 }
 
 /// Backend-independent state exposed to one generated lexer-callback shim.
 #[doc(hidden)]
 pub struct LexContext<'source> {
+    /// Complete input source.
     source: &'source str,
+    /// Inclusive byte offset at which this rule matched.
     start: usize,
+    /// Mutable exclusive byte offset after callback extension.
     end: usize,
 }
 
 impl<'source> LexContext<'source> {
+    /// Returns the complete input source.
     pub fn source(&self) -> &'source str {
         self.source
     }
 
+    /// Returns the inclusive match start byte offset.
     pub const fn start(&self) -> usize {
         self.start
     }
 
+    /// Returns the current exclusive match end byte offset.
     pub const fn end(&self) -> usize {
         self.end
     }
 
+    /// Borrows the current complete match.
     pub fn slice(&self) -> &'source str {
         &self.source[self.start..self.end]
     }
 
+    /// Borrows source remaining after the current match.
     pub fn remainder(&self) -> &'source str {
         &self.source[self.end..]
     }
 
+    /// Extends the match by a UTF-8-boundary-aligned byte count.
     pub fn bump(&mut self, bytes: usize) -> Result<(), LexBumpError> {
         let Some(end) = self.end.checked_add(bytes) else {
             return Err(LexBumpError);
@@ -61,9 +76,13 @@ impl<'source> LexContext<'source> {
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LexAction {
+    /// Emit the rule's configured token kind.
     Emit,
+    /// Emit a different grammar-local token kind.
     EmitAs(TokenKind),
+    /// Consume the match without producing a record.
     Skip,
+    /// Emit the distinguished lexical-error kind.
     Error,
 }
 

@@ -11,9 +11,13 @@ pub struct ExpectedAtomId(pub u32);
 /// Static names and distinguished kinds for one generated grammar.
 #[derive(Debug, Eq, PartialEq)]
 pub struct GrammarInfo {
+    /// User-configured grammar name.
     pub(crate) name: &'static str,
+    /// Display name indexed by each grammar-local token kind.
     pub(crate) kind_names: &'static [&'static str],
+    /// Display name indexed by each symbolic expectation.
     pub(crate) atom_names: &'static [&'static str],
+    /// Token kind reserved for lexer failures.
     pub(crate) lexical_error_kind: TokenKind,
 }
 
@@ -23,10 +27,12 @@ impl GrammarInfo {
         self.name
     }
 
+    /// Resolves a grammar-local token kind to its diagnostic name.
     pub(crate) fn kind_name(&self, kind: TokenKind) -> Option<&'static str> {
         self.kind_names.get(usize::from(kind)).copied()
     }
 
+    /// Resolves a symbolic expectation to its diagnostic name.
     pub(crate) fn atom_name(&self, atom: ExpectedAtomId) -> Option<&'static str> {
         usize::try_from(atom.0)
             .ok()
@@ -38,12 +44,16 @@ impl GrammarInfo {
 /// Recursive FOLLOW state transported only by matching generated parsers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FollowSet {
+    /// Exact token-kind width used to validate compatible unions.
     pub(crate) kind_count: u32,
+    /// Dense bitset of accepted grammar-local token kinds.
     pub(crate) kinds: Cow<'static, [u64]>,
+    /// Sorted symbolic expectations used in diagnostics.
     pub(crate) expected: Cow<'static, [ExpectedAtomId]>,
 }
 
 impl FollowSet {
+    /// Constructs a validated borrowed FOLLOW constant emitted by codegen.
     pub(crate) const fn from_static(
         kind_count: u32,
         kinds: &'static [u64],
@@ -132,7 +142,13 @@ impl FollowSet {
 /// A runtime FOLLOW operation combined sets from different grammar widths.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FollowSetError {
-    WidthMismatch { left: u32, right: u32 },
+    /// The sets describe different grammar-local token-kind widths.
+    WidthMismatch {
+        /// Width of the left operand.
+        left: u32,
+        /// Width of the right operand.
+        right: u32,
+    },
 }
 
 impl fmt::Display for FollowSetError {
