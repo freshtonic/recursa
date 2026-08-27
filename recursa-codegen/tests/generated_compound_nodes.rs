@@ -205,6 +205,11 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
         2,
     );
 
+    let node_named_like_token = grammar::node_named_like_token::UsesNode::explorer();
+    let node_field = node_named_like_token.schema().elements().nth(1).unwrap();
+    assert_eq!(node_field.token_classification(), None);
+    assert!(node_named_like_token.parse("right left").is_ok());
+
     let private = grammar::PrivateRoot::explorer()
         .parse("left ~secret")
         .expect("private descendants are traversed behind opaque handles");
@@ -890,6 +895,67 @@ fn an_authored_explorer_entry_method_collision_is_diagnosed_before_emission() {
     assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
     assert!(
         stderr.contains("generated explorer entry method `Record::explorer` collides"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn an_imported_value_binding_collision_is_diagnosed_before_emission() {
+    let package = scaffold_fixture();
+    let grammar = package.path().join("src/grammar.rs");
+    let mut source = fs::read_to_string(&grammar).expect("read compound grammar");
+    source.push_str(
+        "\nmod explorer_import_collision { pub fn value() {} }\nuse explorer_import_collision::value as __RECURSA_EXPLORER_SCHEMA_0;\n",
+    );
+    fs::write(&grammar, source).expect("insert imported explorer value collision");
+
+    assert_explorer_collision(run_fixture(&package), "__RECURSA_EXPLORER_SCHEMA_0");
+}
+
+#[test]
+fn a_unit_constructor_collision_is_diagnosed_before_emission() {
+    let package = scaffold_fixture();
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read compound grammar");
+    fs::write(
+        &grammar,
+        source.replace(
+            "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+            "struct __RECURSA_EXPLORER_SCHEMA_0;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+        ),
+    )
+    .expect("insert unit-constructor explorer collision");
+
+    assert_explorer_collision(run_fixture(&package), "__RECURSA_EXPLORER_SCHEMA_0");
+}
+
+#[test]
+fn an_explorer_method_in_a_descendant_impl_is_diagnosed_before_emission() {
+    let package = scaffold_fixture();
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read compound grammar");
+    let source = source.replace(
+        "    pub struct Duplicate;\n}\n\npub mod public_right",
+        "    pub struct Duplicate;\n\n    impl<'input> super::Record<'input> { pub fn explorer() {} }\n}\n\npub mod public_right",
+    );
+    fs::write(&grammar, source).expect("insert descendant explorer method collision");
+
+    let output = run_fixture(&package);
+    assert!(!output.status.success(), "explorer collision must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("generated explorer entry method `Record::explorer` collides"),
+        "stderr:\n{stderr}"
+    );
+}
+
+fn assert_explorer_collision(output: Output, name: &str) {
+    assert!(!output.status.success(), "explorer collision must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains(&format!("generated explorer item `{name}` collides")),
         "stderr:\n{stderr}"
     );
 }
