@@ -1766,6 +1766,9 @@ pub(super) fn render_node_application_explorer(
 
             impl #entry_impl_generics #ty #entry_where_clause {
                 /// Returns this source-visible Node family's opaque explorer adapter.
+                ///
+                /// Explorer occurrence projection is independent of the optional `Visit`
+                /// traversal implementation.
                 pub fn explorer() -> #facade::explorer::Adapter {
                     #arbitrary_binding
                     unsafe {

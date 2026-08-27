@@ -418,26 +418,48 @@ fn diagrams_are_published_in_aggregate_and_declaration_local_rustdoc() {
         !aggregate.1.contains("struct.Hidden.html"),
         "the public aggregate must not link a private Node"
     );
+    let pair = rendered_diagram(&aggregate.1, "grammar::Pair");
+    assert!(pair.contains(">PAIR</text>"), "Pair diagram:\n{pair}");
     assert!(
-        aggregate
-            .1
-            .contains("Pair ::= \"PAIR\" grammar::Label Option&lt;grammar::Count&gt;"),
-        "tuple fields must use referenced frozen terminal names:\n{}",
-        aggregate.1,
+        pair.contains(">grammar::Label</text>"),
+        "Pair diagram:\n{pair}"
     );
     assert!(
-        aggregate.1.contains(
-            "ManyLabels ::= \"LEFT\" Vec&lt;grammar::Label&gt; separated by \":\" (optional trailing \":\")"
-        ),
-        "zero-or-more separator semantics must be rendered:\n{}",
-        aggregate.1,
+        pair.contains("<g class=\"optional\">") && pair.contains(">grammar::Count</text>"),
+        "tuple fields must use referenced frozen terminal names:\n{pair}",
+    );
+
+    let many_labels = rendered_diagram(&aggregate.1, "grammar::ManyLabels");
+    assert!(
+        many_labels.contains(">LEFT</text>"),
+        "ManyLabels diagram:\n{many_labels}"
     );
     assert!(
-        aggregate.1.contains(
-            "SomeCounts ::= \"RIGHT\" Option&lt;Vec1&lt;grammar::Count&gt;&gt; separated by \":\""
-        ),
-        "OptionalOneOrMore semantics must remain distinct:\n{}",
-        aggregate.1,
+        many_labels.contains(">0+</text>"),
+        "ManyLabels diagram:\n{many_labels}"
+    );
+    assert!(
+        many_labels.contains("<g class=\"repeat\">")
+            && many_labels.contains(">grammar::Label</text>")
+            && many_labels.matches(">:</text>").count() == 2,
+        "zero-or-more separator and optional-trailing semantics must be rendered:\n{many_labels}",
+    );
+
+    let some_counts = rendered_diagram(&aggregate.1, "grammar::SomeCounts");
+    assert!(
+        some_counts.contains(">RIGHT</text>"),
+        "SomeCounts diagram:\n{some_counts}"
+    );
+    assert!(
+        some_counts.contains(">optional 1+</text>"),
+        "SomeCounts diagram:\n{some_counts}"
+    );
+    assert!(
+        some_counts.contains("<g class=\"optional\">")
+            && some_counts.contains("<g class=\"repeat\">")
+            && some_counts.contains(">grammar::Count</text>")
+            && some_counts.contains(">:</text>"),
+        "OptionalOneOrMore semantics must remain distinct:\n{some_counts}",
     );
 
     let record = docs
@@ -937,7 +959,7 @@ impl Only { pub fn explorer() {} }
 }
 
 #[test]
-fn omitted_visit_without_a_source_impl_is_an_ordinary_rust_trait_error() {
+fn explorer_projection_does_not_require_an_authored_visit_impl() {
     let package = scaffold_fixture();
     configure_explorer(&package, true, true);
     fs::write(
@@ -961,20 +983,19 @@ pub struct Only;
         r#"use recursa_generated_compound_nodes::grammar;
 
 fn main() {
-    let _ = grammar::Only::explorer();
+    let adapter = grammar::Only::explorer();
+    assert_eq!(adapter.schema().root().name(), "Only");
+    assert!(adapter.parse("only").is_ok());
 }
 "#,
     )
-    .expect("request explorer root without its source-owned Visit impl");
+    .expect("use explorer root without its source-owned Visit impl");
 
     let output = run_fixture_unlocked(&package);
-    assert!(!output.status.success(), "missing source Visit must fail");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("RCA9005"), "stderr:\n{stderr}");
     assert!(
-        stderr.contains("Visit")
-            && (stderr.contains("trait bound") || stderr.contains("unsatisfied")),
-        "stderr:\n{stderr}",
+        output.status.success(),
+        "Explorer projection must be independent of Visit:\n{}",
+        String::from_utf8_lossy(&output.stderr),
     );
 }
 
@@ -1431,6 +1452,19 @@ fn collect_rendered_rustdoc(root: &Path, rendered: &mut Vec<(PathBuf, String)>) 
             rendered.push((path, source));
         }
     }
+}
+
+fn rendered_diagram<'document>(document: &'document str, label: &str) -> &'document str {
+    let title = format!(">{label} grammar diagram</title>");
+    let title_start = document.find(&title).expect("diagram title");
+    let svg_start = document[..title_start]
+        .rfind("<svg")
+        .expect("diagram SVG start");
+    let svg_end = document[title_start..]
+        .find("</svg>")
+        .map(|offset| title_start + offset + "</svg>".len())
+        .expect("diagram SVG end");
+    &document[svg_start..svg_end]
 }
 
 fn target_dir(package: &TempDir) -> PathBuf {
