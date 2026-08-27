@@ -197,16 +197,32 @@ The concrete, visibility-matched occurrence view generated for a Node, pairing a
 _Avoid_: AST wrapper, span block
 
 **Explorer adapter**:
-The optional grammar-erased capability for parsing or sampling one source-visible Node family and exposing its result for explorer consumers.
+The optional grammar-erased capability for strictly parsing, exploring, or sampling one source-visible Node family and exposing its result for explorer consumers.
 _Avoid_: Dynamic tree adapter, explorer UI
 
 **Explorer UI**:
-The interactive local application that consumes explorer adapters and explorer documents to inspect grammars, parsed trees, spans, diagnostics, samples, and rendered output.
+The interactive local application that consumes explorer adapters and exploration results to inspect grammars, parsed trees, spans, diagnostics, samples, and rendered output.
 _Avoid_: Explorer adapter, explorer backend
 
 **Explorer document**:
-A read-only explorer representation of one parsed or generated root and its occurrence provenance, bounded by the lifetime of the input from which it was produced.
-_Avoid_: Owned AST snapshot, parsed root
+A read-only explorer representation of one complete parsed or generated root and its occurrence provenance, bounded by the lifetime of the input from which it was produced.
+_Avoid_: Partial Explorer document, owned AST snapshot, parsed root
+
+**Exploration**:
+The mutually exclusive Explorer result of inspecting source: either a complete Explorer document or a recovery document produced after strict parsing fails.
+_Avoid_: Parse result, partial AST
+
+**Recovery document**:
+An owned, source-borrowing Explorer projection of recognized, missing, and skipped grammar structure that cannot contain or become an authored AST value.
+_Avoid_: Partial Explorer document, recovered AST
+
+**Recovery node**:
+A grammar-shaped node in a recovery document whose variant exists only after unique dispatch and whose parts may describe incomplete source.
+_Avoid_: Error Node, invalid AST node
+
+**Recovery part**:
+A source-ordered recognized element or separator, zero-width missing marker, or skipped source span owned by a recovery node.
+_Avoid_: Synthetic AST field, inserted token
 
 **Explorer node**:
 A grammar-erased read-only handle to one Node or content-token occurrence in an explorer document, without exposing its semantic Rust type or occurrence identity.
@@ -221,7 +237,7 @@ The feature-selected static names, roles, and token classifications that describ
 _Avoid_: Public registry, UI model
 
 **Explorer capability**:
-The generated root-level availability of a callable configured Pretty or Arbitrary operation through an explorer adapter.
+The explorer-adapter declaration that recovery or a configured Pretty or Arbitrary operation is available for one generated root.
 _Avoid_: Runtime trait reflection, feature flag
 
 **Railroad diagram**:
