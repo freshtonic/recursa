@@ -3,7 +3,7 @@
     reason = "private M3 materialization seam is consumed by final source lowering"
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -19,8 +19,9 @@ use crate::resolution::{
     ResolvedVariantId, SemanticOwner, SemanticTarget, SemanticUseId, TypeAliasId,
 };
 use crate::source_model::{
-    DeclaredRepetition, GrammarElement, NodeBody, Separator, SourceModel, SourceModeledGrammar,
-    SourcePrattPosition, SourcePrattVariant,
+    ConfiguredTraitRecipe, DeclaredRepetition, GrammarElement, MaterializedPrettyBoundary,
+    NodeBody, Separator, SourceModel, SourceModeledGrammar, SourcePrattPosition,
+    SourcePrattVariant, materialized_pretty_boundary_changes_lexing,
 };
 use crate::{
     AtomDescription, AtomExpression, ContainerShape, DeclId, Declaration, GrammarDescription,
@@ -469,6 +470,13 @@ struct Materializer {
     active_applications: Vec<ApplicationKey>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct PrettyBoundarySummary {
+    first: Vec<MaterializedPrettyBoundary>,
+    last: Vec<MaterializedPrettyBoundary>,
+    nullable: bool,
+}
+
 pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> MaterializationReport {
     let lexical = plan_lexical(&source_modeled);
     let materializer = Materializer {
@@ -525,6 +533,9 @@ impl Materializer {
         for node in seeds {
             self.ensure_application(node, Vec::new());
         }
+        if self.diagnostics.is_empty() && lexical_diagnostics.is_empty() {
+            self.validate_closed_pretty_boundaries();
+        }
         if !self.diagnostics.is_empty() {
             return MaterializationReport {
                 lexical_diagnostics,
@@ -553,6 +564,285 @@ impl Materializer {
                 lowering_map,
             }),
         }
+    }
+
+    fn validate_closed_pretty_boundaries(&mut self) {
+        let invalid = self
+            .applications
+            .iter()
+            .filter(|application| {
+                self.source_model()
+                    .nodes
+                    .iter()
+                    .find(|node| node.resolved_node == application.node)
+                    .is_some_and(|node| {
+                        node.configured_traits
+                            .effective
+                            .iter()
+                            .any(|selection| selection.recipe == ConfiguredTraitRecipe::Pretty)
+                    })
+            })
+            .filter(|application| self.body_changes_pretty_lexing(&application.body))
+            .map(|application| application.node)
+            .collect::<BTreeSet<_>>();
+        for node_id in invalid {
+            let node = self.resolved().nodes[node_id.index()].clone();
+            self.push_node_diagnostic(
+                &node,
+                MaterializationDiagnosticKind::InapplicablePrettyHint,
+                format!(
+                    "a closed Pretty boundary in Node `{}` would change tokenization",
+                    node.key.segments.join("::")
+                ),
+            );
+        }
+    }
+
+    fn body_changes_pretty_lexing(&self, body: &MaterializedNodeBody) -> bool {
+        match body {
+            MaterializedNodeBody::Struct(elements) | MaterializedNodeBody::Presence(elements) => {
+                self.sequence_changes_pretty_lexing(elements)
+            }
+            MaterializedNodeBody::Enum(variants) => variants
+                .iter()
+                .any(|variant| self.sequence_changes_pretty_lexing(&variant.elements)),
+            MaterializedNodeBody::Pratt(variants) => variants.iter().any(|variant| match variant {
+                MaterializedPrattVariant::Nud(nud) => {
+                    self.sequence_changes_pretty_lexing(&nud.body)
+                }
+                MaterializedPrattVariant::Led(led) => {
+                    self.sequence_changes_pretty_lexing(&led.tail)
+                }
+            }),
+        }
+    }
+
+    fn sequence_changes_pretty_lexing(&self, elements: &[MaterializedElement]) -> bool {
+        let mut trailing = Vec::new();
+        for element in elements {
+            if self.attachment_changes_pretty_lexing(element) {
+                return true;
+            }
+            let summary = self.element_pretty_boundaries(element, &mut BTreeSet::new());
+            if self.pretty_boundary_pairs_change_lexing(&trailing, &summary.first) {
+                return true;
+            }
+            if summary.nullable {
+                trailing.extend(summary.last);
+            } else {
+                trailing = summary.last;
+            }
+        }
+        false
+    }
+
+    fn attachment_changes_pretty_lexing(&self, element: &MaterializedElement) -> bool {
+        let MaterializedElement::SemanticField {
+            ty,
+            attachment: Some(attachment),
+            ..
+        } = element
+        else {
+            return false;
+        };
+        let mut summaries = attachment
+            .before
+            .iter()
+            .map(|token_use| self.fixed_pretty_boundaries(*token_use))
+            .collect::<Vec<_>>();
+        summaries
+            .push(self.closed_pretty_boundaries(attachment_terminal(ty), &mut BTreeSet::new()));
+        summaries.extend(
+            attachment
+                .after
+                .iter()
+                .map(|token_use| self.fixed_pretty_boundaries(*token_use)),
+        );
+        let mut trailing = Vec::new();
+        for summary in summaries {
+            if self.pretty_boundary_pairs_change_lexing(&trailing, &summary.first) {
+                return true;
+            }
+            if summary.nullable {
+                trailing.extend(summary.last);
+            } else {
+                trailing = summary.last;
+            }
+        }
+        false
+    }
+
+    fn pretty_boundary_pairs_change_lexing(
+        &self,
+        left: &[MaterializedPrettyBoundary],
+        right: &[MaterializedPrettyBoundary],
+    ) -> bool {
+        let equivalence = self.resolved().configuration.syntax.text_equivalence;
+        left.iter().any(|left| {
+            right.iter().any(|right| {
+                materialized_pretty_boundary_changes_lexing(
+                    self.source_model(),
+                    equivalence,
+                    left,
+                    right,
+                )
+            })
+        })
+    }
+
+    fn element_pretty_boundaries(
+        &self,
+        element: &MaterializedElement,
+        active: &mut BTreeSet<MaterializedApplicationId>,
+    ) -> PrettyBoundarySummary {
+        match element {
+            MaterializedElement::FixedToken { token_use } => {
+                self.fixed_pretty_boundaries(*token_use)
+            }
+            MaterializedElement::SemanticField { ty, attachment, .. } => {
+                let mut summary = self.closed_pretty_boundaries(ty, active);
+                if let Some(attachment) = attachment {
+                    if let Some(first) = attachment.before.first() {
+                        summary.first = self.fixed_pretty_boundaries(*first).first;
+                    }
+                    if let Some(last) = attachment.after.last() {
+                        summary.last = self.fixed_pretty_boundaries(*last).last;
+                    }
+                }
+                summary
+            }
+        }
+    }
+
+    fn fixed_pretty_boundaries(&self, token_use: TokenUseId) -> PrettyBoundarySummary {
+        let definition = self.source_model().token_uses[token_use.index()].definition;
+        let boundary = MaterializedPrettyBoundary::Fixed(definition);
+        PrettyBoundarySummary {
+            first: vec![boundary.clone()],
+            last: vec![boundary],
+            nullable: false,
+        }
+    }
+
+    fn closed_pretty_boundaries(
+        &self,
+        ty: &ClosedType,
+        active: &mut BTreeSet<MaterializedApplicationId>,
+    ) -> PrettyBoundarySummary {
+        match ty {
+            ClosedType::ContentToken(token) => {
+                let pattern = self
+                    .source_model()
+                    .token_definitions
+                    .iter()
+                    .find_map(|definition| match &definition.kind {
+                        crate::source_model::TokenDefinitionKind::Content(content)
+                            if content.semantic == *token =>
+                        {
+                            Some(content.pattern.clone())
+                        }
+                        crate::source_model::TokenDefinitionKind::Content(_)
+                        | crate::source_model::TokenDefinitionKind::Fixed(_)
+                        | crate::source_model::TokenDefinitionKind::LexicalBase(_) => None,
+                    })
+                    .expect("every closed content token has a source lexical pattern");
+                let boundary = MaterializedPrettyBoundary::Regex(pattern);
+                PrettyBoundarySummary {
+                    first: vec![boundary.clone()],
+                    last: vec![boundary],
+                    nullable: false,
+                }
+            }
+            ClosedType::Node(node) => {
+                if !active.insert(node.application) {
+                    return PrettyBoundarySummary::default();
+                }
+                let summary = self.body_pretty_boundaries(
+                    &self.applications[node.application.index()].body,
+                    active,
+                );
+                active.remove(&node.application);
+                summary
+            }
+            ClosedType::Boxed(inner) | ClosedType::OneOrMore(inner) => {
+                self.closed_pretty_boundaries(inner, active)
+            }
+            ClosedType::Optional(inner) | ClosedType::ZeroOrMore(inner) => {
+                let mut summary = self.closed_pretty_boundaries(inner, active);
+                summary.nullable = true;
+                summary
+            }
+        }
+    }
+
+    fn body_pretty_boundaries(
+        &self,
+        body: &MaterializedNodeBody,
+        active: &mut BTreeSet<MaterializedApplicationId>,
+    ) -> PrettyBoundarySummary {
+        match body {
+            MaterializedNodeBody::Struct(elements) | MaterializedNodeBody::Presence(elements) => {
+                self.elements_pretty_boundaries(elements, active)
+            }
+            MaterializedNodeBody::Enum(variants) => self.alternative_pretty_boundaries(
+                variants
+                    .iter()
+                    .map(|variant| self.elements_pretty_boundaries(&variant.elements, active)),
+            ),
+            MaterializedNodeBody::Pratt(variants) => {
+                self.alternative_pretty_boundaries(variants.iter().map(|variant| match variant {
+                    MaterializedPrattVariant::Nud(nud) => {
+                        self.elements_pretty_boundaries(&nud.body, active)
+                    }
+                    MaterializedPrattVariant::Led(led) => {
+                        self.elements_pretty_boundaries(&led.tail, active)
+                    }
+                }))
+            }
+        }
+    }
+
+    fn elements_pretty_boundaries(
+        &self,
+        elements: &[MaterializedElement],
+        active: &mut BTreeSet<MaterializedApplicationId>,
+    ) -> PrettyBoundarySummary {
+        let summaries = elements
+            .iter()
+            .map(|element| self.element_pretty_boundaries(element, active))
+            .collect::<Vec<_>>();
+        let mut first = Vec::new();
+        for summary in &summaries {
+            first.extend(summary.first.clone());
+            if !summary.nullable {
+                break;
+            }
+        }
+        let mut last = Vec::new();
+        for summary in summaries.iter().rev() {
+            last.extend(summary.last.clone());
+            if !summary.nullable {
+                break;
+            }
+        }
+        PrettyBoundarySummary {
+            first,
+            last,
+            nullable: summaries.iter().all(|summary| summary.nullable),
+        }
+    }
+
+    fn alternative_pretty_boundaries(
+        &self,
+        summaries: impl Iterator<Item = PrettyBoundarySummary>,
+    ) -> PrettyBoundarySummary {
+        let mut combined = PrettyBoundarySummary::default();
+        for summary in summaries {
+            combined.first.extend(summary.first);
+            combined.last.extend(summary.last);
+            combined.nullable |= summary.nullable;
+        }
+        combined
     }
 
     fn ensure_application(
@@ -2231,6 +2521,16 @@ fn is_recursive_pratt_operand(ty: &ClosedType, owner: MaterializedApplicationId)
     }
 }
 
+fn attachment_terminal(ty: &ClosedType) -> &ClosedType {
+    match ty {
+        ClosedType::Boxed(inner)
+        | ClosedType::Optional(inner)
+        | ClosedType::ZeroOrMore(inner)
+        | ClosedType::OneOrMore(inner) => attachment_terminal(inner),
+        ClosedType::Node(_) | ClosedType::ContentToken(_) => ty,
+    }
+}
+
 fn terminal_and_container(
     ty: &ClosedType,
     separator: Option<RepeatSeparator>,
@@ -2348,6 +2648,74 @@ mod tests {
             }),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn closed_generic_pretty_boundaries_recheck_concrete_lexical_languages() {
+        let unsafe_report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { LBRACE => "{" } }
+
+#[derive(recursa::Node)]
+struct Name<'input> {
+    #[lex(pattern = r"[A-Za-z]+")]
+    text: NameText<'input>,
+}
+
+#[derive(recursa::Node)]
+struct Merged<'input> {
+    #[lex(pattern = r"\{[A-Za-z]+")]
+    text: MergedText<'input>,
+}
+
+#[derive(recursa::Node)]
+struct Attached<T> {
+    #[tok(LBRACE, this)]
+    value: T,
+}
+
+#[derive(recursa::Node)]
+struct Root<'input> {
+    value: Attached<Name<'input>>,
+}
+"#,
+        ));
+        assert!(unsafe_report.lowered.is_none());
+        assert!(unsafe_report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == MaterializationDiagnosticKind::InapplicablePrettyHint
+                && diagnostic.message.contains("closed Pretty boundary")
+        }));
+
+        let safe_report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { LBRACE => "{" } }
+
+#[derive(recursa::Node)]
+struct Name<'input> {
+    #[lex(pattern = r"[A-Za-z]+")]
+    text: NameText<'input>,
+}
+
+#[derive(recursa::Node)]
+struct Attached<T> {
+    #[tok(LBRACE, this)]
+    value: T,
+}
+
+#[derive(recursa::Node)]
+struct Root<'input> {
+    value: Attached<Name<'input>>,
+}
+"#,
+        ));
+        assert!(
+            safe_report.diagnostics.is_empty(),
+            "{:?}",
+            safe_report.diagnostics
+        );
+        assert!(safe_report.lowered.is_some());
     }
 
     fn assert_code(
