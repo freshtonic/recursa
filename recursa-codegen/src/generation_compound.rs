@@ -315,7 +315,20 @@ enum PrettyFixedRendering {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ExplorerPlan {
-    roots: Vec<String>,
+    roots: Vec<ExplorerRootPlan>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ExplorerRootPlan {
+    node: NodeId,
+    application: MaterializedApplicationId,
+    capabilities: ExplorerCapabilityPlan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ExplorerCapabilityPlan {
+    pretty: bool,
+    arbitrary: bool,
 }
 
 #[cfg(feature = "diagrams")]
@@ -1287,6 +1300,9 @@ impl EmissionPlan {
         let frozen_diagrams = None;
         let private_abi = emitted_private_abi_plan();
         let explorer = emitted_explorer_plan(&nodes);
+        if explorer.is_some() {
+            validate_explorer_collisions(resolved, cfg, &nodes, &tokens)?;
+        }
         let pretty = emitted_pretty_plan(&nodes, &tokens);
         let capabilities =
             emitted_capability_plan(&nodes, &tokens, diagram_enabled, explorer.is_some());
@@ -3065,7 +3081,18 @@ fn emitted_explorer_plan(nodes: &[NodeParsePlan]) -> Option<ExplorerPlan> {
                     .iter()
                     .all(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
         })
-        .map(|node| node.semantic_key.clone())
+        .map(|node| ExplorerRootPlan {
+            node: node.source_node,
+            application: node.application,
+            capabilities: ExplorerCapabilityPlan {
+                pretty: node
+                    .configured_traits
+                    .contains(&ConfiguredTraitRecipe::Pretty),
+                arbitrary: node
+                    .configured_traits
+                    .contains(&ConfiguredTraitRecipe::Arbitrary),
+            },
+        })
         .collect::<Vec<_>>();
     (!roots.is_empty()).then_some(ExplorerPlan { roots })
 }
@@ -3075,30 +3102,49 @@ fn authoritative_explorer_plan(
 ) -> Option<ExplorerPlan> {
     let resolved = lowered.source_modeled.resolved();
     let source = lowered.source_modeled.source_model();
-    let roots = resolved
-        .nodes
-        .iter()
-        .filter(|node| {
-            publicly_reachable(&resolved.tree, node.module, &node.visibility)
-                && node
-                    .generics
-                    .params
-                    .iter()
-                    .all(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
-                && source
+    let roots =
+        resolved
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let configured = source
                     .nodes
                     .iter()
-                    .find(|source_node| source_node.resolved_node == node.id)
-                    .is_some_and(|source_node| {
-                        source_node
-                            .configured_traits
-                            .effective
-                            .iter()
-                            .any(|selection| selection.recipe == ConfiguredTraitRecipe::Visit)
+                    .find(|source_node| source_node.resolved_node == node.id)?;
+                (publicly_reachable(&resolved.tree, node.module, &node.visibility)
+                    && node
+                        .generics
+                        .params
+                        .iter()
+                        .all(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
+                    && configured
+                        .configured_traits
+                        .effective
+                        .iter()
+                        .any(|selection| selection.recipe == ConfiguredTraitRecipe::Visit))
+                .then_some((node, configured))
+            })
+            .flat_map(|(node, configured)| {
+                lowered
+                    .applications
+                    .iter()
+                    .filter(move |application| application.node == node.id)
+                    .map(move |application| ExplorerRootPlan {
+                        node: node.id,
+                        application: application.id,
+                        capabilities: ExplorerCapabilityPlan {
+                            pretty: configured
+                                .configured_traits
+                                .effective
+                                .iter()
+                                .any(|selection| selection.recipe == ConfiguredTraitRecipe::Pretty),
+                            arbitrary: configured.configured_traits.effective.iter().any(
+                                |selection| selection.recipe == ConfiguredTraitRecipe::Arbitrary,
+                            ),
+                        },
                     })
-        })
-        .map(|node| node.key.segments.join("::"))
-        .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
     (!roots.is_empty()).then_some(ExplorerPlan { roots })
 }
 
@@ -3209,6 +3255,182 @@ fn validate_view_collisions(
         );
     }
     Ok(())
+}
+
+fn validate_explorer_collisions(
+    resolved: &crate::resolution::ResolvedSourceGrammar,
+    cfg: &CargoCfgSnapshot,
+    nodes: &[NodeParsePlan],
+    tokens: &[TokenParsePlan],
+) -> Result<(), String> {
+    let mut occupied = BTreeSet::<(ModuleId, String)>::new();
+    for inclusion in &resolved.tree.inclusions {
+        for item in &inclusion.items {
+            if crate::source_syntax::configure_attributes(
+                crate::source_syntax::item_attributes(item),
+                cfg,
+            )
+            .ok()
+            .flatten()
+            .is_none()
+            {
+                continue;
+            }
+            if let Some(name) = value_item_ident(item) {
+                occupied.insert((inclusion.id, name));
+            }
+        }
+    }
+
+    let root_module = resolved
+        .tree
+        .inclusions
+        .iter()
+        .find(|inclusion| inclusion.parent.is_none())
+        .map(|inclusion| inclusion.id)
+        .ok_or_else(|| "the explorer plan lacks a selected root module".to_owned())?;
+    let mut reserve = |module: ModuleId, name: String| -> Result<(), String> {
+        if occupied.contains(&(module, name.clone())) {
+            return Err(format!(
+                "generated explorer item `{name}` collides with an authored value in its module"
+            ));
+        }
+        if !occupied.insert((module, name.clone())) {
+            return Err(format!(
+                "generated explorer item `{name}` collides with another generated explorer item"
+            ));
+        }
+        Ok(())
+    };
+
+    reserve(root_module, "__recursa_explorer_lex".to_owned())?;
+    for index in 0..tokens.len() {
+        reserve(
+            root_module,
+            format!("__RECURSA_EXPLORER_TOKEN_SCHEMA_{index}"),
+        )?;
+    }
+    for (node_index, node) in nodes.iter().enumerate() {
+        reserve(
+            node.module,
+            format!("__RECURSA_EXPLORER_SCHEMA_{node_index}"),
+        )?;
+        let variants = match &node.body {
+            NodeBodyPlan::Struct { elements, .. } => vec![(None, elements.len())],
+            NodeBodyPlan::Enum { variants, .. } => variants
+                .iter()
+                .enumerate()
+                .map(|(index, variant)| (Some(index), variant.elements.len()))
+                .collect(),
+            NodeBodyPlan::Pratt(pratt) => pratt
+                .nud
+                .iter()
+                .enumerate()
+                .map(|(index, branch)| (Some(index), branch.variant.elements.len()))
+                .chain(pratt.led.iter().enumerate().map(|(index, branch)| {
+                    (
+                        Some(pratt.nud.len() + index),
+                        branch.variant.elements.len() + 1,
+                    )
+                }))
+                .collect(),
+        };
+        for (variant, element_count) in variants {
+            if let Some(variant) = variant {
+                reserve(
+                    node.module,
+                    format!("__RECURSA_EXPLORER_SCHEMA_{node_index}_{variant}"),
+                )?;
+            }
+            for element in 0..element_count {
+                let name = variant.map_or_else(
+                    || format!("__RECURSA_EXPLORER_ELEMENT_SCHEMA_{node_index}_{element}"),
+                    |variant| {
+                        format!(
+                            "__RECURSA_EXPLORER_ELEMENT_SCHEMA_{node_index}_{variant}_{element}"
+                        )
+                    },
+                );
+                reserve(node.module, name)?;
+            }
+        }
+        if node.publicly_materialized
+            && node
+                .configured_traits
+                .contains(&ConfiguredTraitRecipe::Visit)
+            && node
+                .generics
+                .params
+                .iter()
+                .all(|parameter| matches!(parameter, GenericParam::Lifetime(_)))
+        {
+            reserve(
+                node.module,
+                format!("__recursa_explorer_parse_{node_index}"),
+            )?;
+            if node
+                .configured_traits
+                .contains(&ConfiguredTraitRecipe::Arbitrary)
+            {
+                reserve(
+                    node.module,
+                    format!("__recursa_explorer_sample_{node_index}"),
+                )?;
+            }
+            if authored_inherent_method(resolved, cfg, node.module, &node.ident, "explorer") {
+                return Err(format!(
+                    "generated explorer entry method `{}::explorer` collides with an authored inherent method",
+                    node.ident
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn value_item_ident(item: &syn::Item) -> Option<String> {
+    let ident = match item {
+        syn::Item::Const(item) => &item.ident,
+        syn::Item::Fn(item) => &item.sig.ident,
+        syn::Item::Static(item) => &item.ident,
+        _ => return None,
+    };
+    Some(ident.unraw().to_string())
+}
+
+fn authored_inherent_method(
+    resolved: &crate::resolution::ResolvedSourceGrammar,
+    cfg: &CargoCfgSnapshot,
+    module: ModuleId,
+    node: &Ident,
+    method: &str,
+) -> bool {
+    resolved
+        .tree
+        .inclusions
+        .iter()
+        .filter(|inclusion| inclusion.id == module)
+        .any(|inclusion| {
+            inclusion.items.iter().any(|item| {
+                let syn::Item::Impl(item) = item else {
+                    return false;
+                };
+                if crate::source_syntax::configure_attributes(&item.attrs, cfg)
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
+                    return false;
+                }
+                let Type::Path(self_ty) = item.self_ty.as_ref() else {
+                    return false;
+                };
+                self_ty.path.segments.last().is_some_and(|segment| segment.ident == *node)
+                && item.items.iter().any(|item| {
+                    matches!(item, syn::ImplItem::Fn(function) if function.sig.ident == method)
+                })
+            })
+        })
 }
 
 fn item_ident(item: &syn::Item) -> Option<String> {
@@ -7106,9 +7328,9 @@ fn render_token(
         quote! {
             __recursa_if_explorer! {
                 static #schema: #facade::__private::ExplorerSchemaData =
-                    #facade::__private::explorer_schema(#name, None, &[]);
+                    #facade::__private::explorer_schema(#name, None, &[], &[]);
 
-                impl<'input> #facade::__private::ExplorerNode for #ident<'input> {
+                unsafe impl<'input> #facade::__private::ExplorerNode for #ident<'input> {
                     fn __recursa_explorer_node(
                         &self,
                         cursor: #facade::__private::ViewCursor<'_>,
@@ -7672,12 +7894,12 @@ fn render_node_explorer(
         }
     };
 
-    let is_root = explorer_plan
+    let root = explorer_plan
         .roots
         .iter()
-        .any(|root| root == &node.semantic_key);
+        .find(|root| root.node == node.source_node && root.application == node.application);
     let entry =
-        is_root.then(|| {
+        root.map(|root| {
             let root_schema = explorer_schema_static(node_index, None);
             let parse = format_ident!("__recursa_explorer_parse_{node_index}");
             let sample = format_ident!("__recursa_explorer_sample_{node_index}");
@@ -7711,17 +7933,13 @@ fn render_node_explorer(
             } else {
                 quote!(#node_ident<#(#static_arguments),*>)
             };
-            let pretty = node
-                .configured_traits
-                .contains(&ConfiguredTraitRecipe::Pretty);
+            let pretty = root.capabilities.pretty;
             let pretty_parse = pretty.then(|| {
                 quote! {
                     document.__set_pretty(#facade::Pretty::render(&parsed));
                 }
             });
-            let arbitrary = node
-                .configured_traits
-                .contains(&ConfiguredTraitRecipe::Arbitrary);
+            let arbitrary = root.capabilities.arbitrary;
             let sample_function = arbitrary.then(|| {
             let pretty_sample = pretty.then(|| quote! {
                 document.__set_pretty(#facade::Pretty::render(&parsed));
@@ -7774,10 +7992,14 @@ fn render_node_explorer(
                     #facade::explorer::Document<'__recursa_input>,
                     #facade::explorer::Error,
                 > {
-                    let lexed = #module_anchor::lex(source);
-                    let mut input = lexed.input();
-                    let parsed = <#parse_type>::parse_spanned(&mut input)?;
-                    let mut document = #facade::__private::explorer_document(
+                let lexed = #module_anchor::lex(source);
+                let mut input = lexed.input();
+                let parsed = <#parse_type>::parse_spanned(&mut input)?;
+                #facade::__private::explorer_require_eof(
+                    &input.inner,
+                    &#module_anchor::__RECURSA_EMPTY_FOLLOW,
+                )?;
+                let mut document = #facade::__private::explorer_document(
                         &parsed,
                         parsed.source(),
                     );
@@ -7787,19 +8009,20 @@ fn render_node_explorer(
 
                 #sample_function
 
-                impl #impl_generics #facade::__private::ExplorerRoot
-                    for #node_ident #type_generics #where_clause
-                {
-                    fn __recursa_explorer_adapter() -> #facade::explorer::Adapter {
+                impl #impl_generics #node_ident #type_generics #where_clause {
+                    /// Returns this source-visible Node family's opaque explorer adapter.
+                    pub fn explorer() -> #facade::explorer::Adapter {
                         #arbitrary_binding
-                        #facade::__private::explorer_adapter(
-                            &#root_schema,
-                            #pretty,
-                            arbitrary,
-                            #module_anchor::__recursa_explorer_lex,
-                            #parse,
-                            sample,
-                        )
+                        unsafe {
+                            #facade::__private::explorer_adapter(
+                                &#root_schema,
+                                #pretty,
+                                arbitrary,
+                                #module_anchor::__recursa_explorer_lex,
+                                #parse,
+                                sample,
+                            )
+                        }
                     }
                 }
             }
@@ -7809,7 +8032,7 @@ fn render_node_explorer(
         __recursa_if_explorer! {
             #schema_definitions
 
-            impl #impl_generics #facade::__private::ExplorerNode
+            unsafe impl #impl_generics #facade::__private::ExplorerNode
                 for #node_ident #type_generics #where_clause
             {
                 fn __recursa_explorer_node(
@@ -9722,20 +9945,22 @@ fn explorer_element_schema_static(
 }
 
 fn explorer_cardinality(facade: &Ident, wrappers: &[FieldWrapper]) -> proc_macro2::TokenStream {
-    if wrappers
+    let optional = wrappers
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional));
+    let one_or_more = wrappers
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::OneOrMore));
+    if optional && one_or_more {
+        quote!(#facade::explorer::Cardinality::OptionalOneOrMore)
+    } else if wrappers
         .iter()
         .any(|wrapper| matches!(wrapper, FieldWrapper::ZeroOrMore))
     {
         quote!(#facade::explorer::Cardinality::ZeroOrMore)
-    } else if wrappers
-        .iter()
-        .any(|wrapper| matches!(wrapper, FieldWrapper::OneOrMore))
-    {
+    } else if one_or_more {
         quote!(#facade::explorer::Cardinality::OneOrMore)
-    } else if wrappers
-        .iter()
-        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional))
-    {
+    } else if optional {
         quote!(#facade::explorer::Cardinality::Optional)
     } else {
         quote!(#facade::explorer::Cardinality::One)
@@ -9820,6 +10045,7 @@ fn render_explorer_schema(
                         #node_name,
                         None,
                         &[#(#element_schemas),*],
+                        &[],
                     );
             }
         }
@@ -9844,12 +10070,22 @@ fn render_explorer_schema(
                             #node_name,
                             Some(#variant_name),
                             &[#(#element_schemas),*],
+                            &[],
                         );
                 }
             });
+            let variant_schemas = (0..variants.len()).map(|index| {
+                let schema = explorer_schema_static(node_index, Some(index));
+                quote!(&#schema)
+            });
             quote! {
                 static #base: #facade::__private::ExplorerSchemaData =
-                    #facade::__private::explorer_schema(#node_name, None, &[]);
+                    #facade::__private::explorer_schema(
+                        #node_name,
+                        None,
+                        &[],
+                        &[#(#variant_schemas),*],
+                    );
                 #(#definitions)*
             }
         }
@@ -9888,12 +10124,22 @@ fn render_explorer_schema(
                             #node_name,
                             Some(#variant_name),
                             &[#(#element_schemas),*],
+                            &[],
                         );
                 }
             });
+            let variant_schemas = (0..variants.len()).map(|index| {
+                let schema = explorer_schema_static(node_index, Some(index));
+                quote!(&#schema)
+            });
             quote! {
                 static #base: #facade::__private::ExplorerSchemaData =
-                    #facade::__private::explorer_schema(#node_name, None, &[]);
+                    #facade::__private::explorer_schema(
+                        #node_name,
+                        None,
+                        &[],
+                        &[#(#variant_schemas),*],
+                    );
                 #(#definitions)*
             }
         }
@@ -12416,9 +12662,13 @@ struct B;
         let (package, mut explorer) = joined_pratt_fixture();
         explorer
             .explorer
-            .get_or_insert_with(|| ExplorerPlan { roots: Vec::new() })
+            .as_mut()
+            .expect("Visit fixture has an explorer plan")
             .roots
-            .push("corrupt explorer plan".to_owned());
+            .first_mut()
+            .expect("Visit fixture has an explorer root")
+            .capabilities
+            .pretty ^= true;
         assert_plan_family_is_unselectable(package.path(), &explorer, "explorer");
     }
 

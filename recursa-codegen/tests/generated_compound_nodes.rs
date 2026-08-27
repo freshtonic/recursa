@@ -121,7 +121,7 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     let main = package.path().join("src/main.rs");
     let source = fs::read_to_string(&main).expect("read downstream consumer");
     let assertions = r#"
-    let adapter = recursa::explorer::adapter::<grammar::Record<'static>>();
+    let adapter = grammar::Record::explorer();
     assert_eq!(adapter.schema().name(), "Record");
     assert!(adapter.capabilities().pretty());
     assert!(adapter.capabilities().arbitrary());
@@ -158,6 +158,69 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     let absent_count = absent.root().elements().nth(3).unwrap();
     assert_eq!(absent_count.schema().name(), Some("count"));
     assert_eq!(absent_count.children().len(), 0);
+
+    let trailing = match adapter.parse("record:beta 7 empty") {
+        Ok(_) => panic!("explorer roots must consume the entire token stream"),
+        Err(error) => error,
+    };
+    let recursa::explorer::Error::Parse(trailing) = trailing else {
+        panic!("trailing input must be a structured parse failure")
+    };
+    assert_eq!(trailing.kind(), recursa::ParseErrorKind::UnexpectedToken);
+    assert_eq!(trailing.found(), Some("fixed:EMPTY"));
+
+    fn exact_fused<I: ExactSizeIterator + std::iter::FusedIterator>(_: &I) {}
+    exact_fused(&adapter.schema().elements());
+    exact_fused(&adapter.schema().variants());
+    exact_fused(&document.root().elements());
+    exact_fused(&lexical.tokens());
+    exact_fused(&lexical.errors());
+
+    let entry = grammar::Entry::explorer();
+    let variants = entry
+        .schema()
+        .variants()
+        .map(|variant| (variant.variant().unwrap(), variant.elements().len()))
+        .collect::<Vec<_>>();
+    assert_eq!(variants, [("Record", 1), ("Pair", 1), ("Empty", 1)]);
+    let empty = entry.parse("empty").unwrap();
+    assert_eq!(empty.root().schema().variant(), Some("Empty"));
+    assert_eq!(empty.root().elements().len(), 1);
+
+    let repeated = grammar::SomeCounts::explorer();
+    let repeated_schema = repeated.schema().elements().nth(1).unwrap();
+    assert_eq!(
+        repeated_schema.cardinality(),
+        recursa::explorer::Cardinality::OptionalOneOrMore,
+    );
+    let repeated_document = repeated.parse("right 1:2").unwrap();
+    assert_eq!(
+        repeated_document
+            .root()
+            .elements()
+            .nth(1)
+            .unwrap()
+            .children()
+            .len(),
+        2,
+    );
+
+    let private = grammar::PrivateRoot::explorer()
+        .parse("left ~secret")
+        .expect("private descendants are traversed behind opaque handles");
+    let hidden = private.root().elements().nth(1).unwrap().children().next().unwrap();
+    assert_eq!(hidden.schema().name(), "Hidden");
+    assert_eq!(
+        hidden.elements().next().unwrap().children().next().unwrap().display(),
+        Some("~secret"),
+    );
+
+    let left_duplicate = grammar::public_left::Duplicate::explorer();
+    let right_duplicate = grammar::public_right::Duplicate::explorer();
+    assert_eq!(left_duplicate.schema().name(), "Duplicate");
+    assert_eq!(right_duplicate.schema().name(), "Duplicate");
+    assert!(left_duplicate.parse("left").is_ok());
+    assert!(right_duplicate.parse("right").is_ok());
 
     let sample = adapter.sample(7).expect("deterministic synthetic sample");
     assert_eq!(sample.provenance(), recursa::explorer::Provenance::Synthetic);
@@ -232,7 +295,7 @@ fn explorer_public_api_and_generated_payload_are_absent_when_the_feature_is_off(
         r#"use recursa_generated_compound_nodes::grammar;
 
 fn main() {
-    let _ = recursa::explorer::adapter::<grammar::Record<'static>>();
+    let _: Option<recursa::explorer::Adapter> = None;
 }
 "#,
     )
@@ -782,6 +845,53 @@ fn a_generated_token_binding_collision_is_a_deterministic_generation_error() {
     .expect("insert a generated token-binding collision");
 
     assert_view_collision(run_fixture(&package), "RecordView");
+}
+
+#[test]
+fn an_explorer_value_name_collision_is_a_deterministic_generation_error() {
+    let package = scaffold_fixture();
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read compound grammar");
+    fs::write(
+        &grammar,
+        source.replace(
+            "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+            "static __RECURSA_EXPLORER_SCHEMA_0: () = ();\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+        ),
+    )
+    .expect("insert explorer static collision");
+
+    let output = run_fixture(&package);
+    assert!(!output.status.success(), "explorer collision must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains(
+            "generated explorer item `__RECURSA_EXPLORER_SCHEMA_0` collides with an authored value"
+        ),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn an_authored_explorer_entry_method_collision_is_diagnosed_before_emission() {
+    let package = scaffold_fixture();
+    let grammar = package.path().join("src/grammar.rs");
+    let mut source = fs::read_to_string(&grammar).expect("read compound grammar");
+    source.push_str("\nimpl<'input> Record<'input> { pub fn explorer() {} }\n");
+    fs::write(&grammar, source).expect("insert explorer method collision");
+
+    let output = run_fixture(&package);
+    assert!(
+        !output.status.success(),
+        "explorer method collision must fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("generated explorer entry method `Record::explorer` collides"),
+        "stderr:\n{stderr}"
+    );
 }
 
 #[test]

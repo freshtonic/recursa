@@ -95,6 +95,20 @@ pub mod public_right {
 #[tok(EMPTY)]
 pub struct Opaque;
 
+#[derive(recursa::Node)]
+#[tok(LEFT, this)]
+pub struct PrivateRoot<'input> {
+    child: private_nodes::Hidden<'input>,
+}
+
+mod private_nodes {
+    #[derive(recursa::Node)]
+    pub(super) struct Hidden<'input> {
+        #[lex(pattern = r"~[a-z]+")]
+        pub(super) text: PrivateText<'input>,
+    }
+}
+
 #[allow(non_camel_case_types)]
 #[derive(recursa::Node)]
 #[tok(PAIR)]
