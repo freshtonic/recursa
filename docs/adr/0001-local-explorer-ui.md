@@ -20,9 +20,10 @@ and supports normal shutdown. It exposes an intentionally private JSON
 protocol and offers no remote bind, permissive CORS, Node toolchain, WASM
 build, or plugin system.
 
-Strict parse failure returns structured diagnostics without a partial Explorer
-document. Partial-tree recovery remains a separate design problem so it cannot
-make an illegal authored AST state representable.
+Strict parsing returns either a complete Explorer document or structured
+diagnostics; it never returns a partial Explorer document. After that strict
+failure, the Explorer may separately project recovery structure as decided in
+[ADR 0002](0002-separate-explorer-recovery-projection.md).
 
 ## Consequences
 
