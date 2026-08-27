@@ -8,6 +8,53 @@ use tempfile::TempDir;
 const FIXTURE: &str = "tests/fixtures/generation/compound-nodes";
 
 #[test]
+fn fixture_locks_use_the_workspace_registry_resolution_and_cover_capabilities() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir
+        .parent()
+        .expect("recursa-codegen belongs to the workspace root");
+    let workspace_lock =
+        fs::read_to_string(workspace.join("Cargo.lock")).expect("read workspace dependency lock");
+    let workspace_packages = registry_package_records(&workspace_lock);
+    for (lock, capability_dependencies) in [
+        (
+            "Cargo.core.lock",
+            &["arbitrary", "serde", "serde_derive"][..],
+        ),
+        (
+            "Cargo.lock",
+            &[
+                "arbitrary",
+                "railroad",
+                "serde",
+                "serde_derive",
+                "unicode-width",
+            ][..],
+        ),
+    ] {
+        let fixture_lock = fs::read_to_string(manifest_dir.join(FIXTURE).join(lock))
+            .unwrap_or_else(|error| {
+                panic!("read compound fixture dependency lock {lock}: {error}")
+            });
+        let fixture_packages = registry_package_records(&fixture_lock);
+        for package in &fixture_packages {
+            assert!(
+                workspace_packages.contains(package),
+                "{lock} registry resolution {package:?} is not preloaded by the workspace lock",
+            );
+        }
+        for capability_dependency in capability_dependencies {
+            assert!(
+                fixture_packages
+                    .iter()
+                    .any(|(name, _, _)| name == capability_dependency),
+                "{lock} omits optional capability dependency {capability_dependency}",
+            );
+        }
+    }
+}
+
+#[test]
 fn a_downstream_crate_parses_authored_compound_nodes_and_views() {
     let package = scaffold_fixture();
     let output = run_fixture(&package);
@@ -1300,15 +1347,10 @@ fn scaffold_fixture() -> TempDir {
         .expect("recursa-codegen belongs to the workspace root");
     let fixture = manifest_dir.join(FIXTURE);
 
-    for relative in [
-        "build.rs",
-        "Cargo.lock",
-        "src/lib.rs",
-        "src/grammar.rs",
-        "src/main.rs",
-    ] {
+    for relative in ["build.rs", "src/lib.rs", "src/grammar.rs", "src/main.rs"] {
         copy(&fixture, package.path(), relative);
     }
+    copy_as(&fixture, package.path(), "Cargo.core.lock", "Cargo.lock");
 
     let manifest = fs::read_to_string(fixture.join("Cargo.toml.in"))
         .expect("read compound grammar fixture manifest")
@@ -1323,9 +1365,13 @@ fn scaffold_fixture() -> TempDir {
 }
 
 fn copy(fixture: &Path, package: &Path, relative: &str) {
-    let destination = package.join(relative);
+    copy_as(fixture, package, relative, relative);
+}
+
+fn copy_as(fixture: &Path, package: &Path, source: &str, destination: &str) {
+    let destination = package.join(destination);
     fs::create_dir_all(destination.parent().unwrap()).expect("create fixture directory");
-    fs::copy(fixture.join(relative), destination).expect("copy compound grammar fixture file");
+    fs::copy(fixture.join(source), destination).expect("copy compound grammar fixture file");
 }
 
 fn toml_path(path: &Path) -> String {
@@ -1408,6 +1454,12 @@ fn configure_diagrams(package: &TempDir, generator: bool, facade: bool) {
             "recursa-codegen = { path = \"",
             "recursa-codegen = { features = [\"diagrams\"], path = \"",
         );
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        fs::copy(
+            manifest_dir.join(FIXTURE).join("Cargo.lock"),
+            package.path().join("Cargo.lock"),
+        )
+        .expect("select diagrams-capable fixture lock");
     }
     fs::write(manifest, source).expect("configure diagram capabilities");
 }
@@ -1452,6 +1504,24 @@ fn collect_rendered_rustdoc(root: &Path, rendered: &mut Vec<(PathBuf, String)>) 
             rendered.push((path, source));
         }
     }
+}
+
+fn registry_package_records(lock: &str) -> BTreeSet<(String, String, String)> {
+    lock.split("[[package]]")
+        .filter(|package| package.contains("source = \"registry+"))
+        .map(|package| {
+            let value = |field: &str| {
+                package
+                    .lines()
+                    .find_map(|line| line.strip_prefix(field))
+                    .and_then(|value| value.strip_prefix('"'))
+                    .and_then(|value| value.strip_suffix('"'))
+                    .unwrap_or_else(|| panic!("registry package omits {field:?}:\n{package}"))
+                    .to_owned()
+            };
+            (value("name = "), value("version = "), value("checksum = "))
+        })
+        .collect()
 }
 
 fn rendered_diagram<'document>(document: &'document str, label: &str) -> &'document str {
