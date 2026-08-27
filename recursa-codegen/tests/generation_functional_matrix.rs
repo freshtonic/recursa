@@ -65,6 +65,7 @@ fn run_evidence(command: &str, workspace: &Path, target: &Path, gate: &str) {
         .args(words)
         .current_dir(workspace)
         .env("CARGO_TARGET_DIR", target)
+        .env("CARGO_TERM_COLOR", "never")
         .env_remove("RECURSA_GENERATION")
         .env_remove("RECURSA_DEBUG_DIR")
         .env("RUSTC_WRAPPER", "")

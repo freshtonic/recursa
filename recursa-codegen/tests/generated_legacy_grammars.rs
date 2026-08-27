@@ -65,6 +65,7 @@ fn run_fixture(package: &TempDir, selection: &[&str]) -> Output {
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
         .env_remove("RECURSA_DEBUG_DIR")
+        .env("CARGO_TERM_COLOR", "never")
         .env("RUSTC_WRAPPER", "")
         .env("RUSTC_WORKSPACE_WRAPPER", "")
         .env("CARGO_PROFILE_DEV_DEBUG", "0")

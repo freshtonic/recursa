@@ -334,6 +334,14 @@ fn configure_capabilities(package: &TempDir, diagrams: bool, explorer: bool) {
         );
         features.push("\"explorer\"");
     }
+    if diagrams {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        fs::copy(
+            manifest_dir.join(FIXTURE).join("Cargo.lock"),
+            package.path().join("Cargo.lock"),
+        )
+        .expect("select capability-complete fixture lock");
+    }
     fs::write(grammar, source).expect("configure capability matrix grammar");
     if features.is_empty() {
         return;
@@ -386,7 +394,7 @@ fn scaffold_fixture() -> TempDir {
     let fixture = manifest_dir.join(FIXTURE);
 
     copy(&fixture, package.path(), "build.rs");
-    copy(&fixture, package.path(), "Cargo.lock");
+    copy_as(&fixture, package.path(), "Cargo.core.lock", "Cargo.lock");
     copy(&fixture, package.path(), "src/lib.rs");
     copy(&fixture, package.path(), "src/grammar.rs");
     copy(&fixture, package.path(), "src/main.rs");
@@ -409,6 +417,12 @@ fn copy(fixture: &Path, package: &Path, relative: &str) {
     fs::copy(fixture.join(relative), destination).expect("copy generated grammar fixture file");
 }
 
+fn copy_as(fixture: &Path, package: &Path, source: &str, destination: &str) {
+    let destination = package.join(destination);
+    fs::create_dir_all(destination.parent().unwrap()).expect("create fixture directory");
+    fs::copy(fixture.join(source), destination).expect("copy generated grammar fixture file");
+}
+
 fn toml_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
 }
@@ -424,6 +438,7 @@ fn run_fixture(package: &TempDir) -> Output {
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
         .env_remove("RECURSA_DEBUG_DIR")
+        .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", target_dir(package));
     command.output().expect("run generated grammar fixture")
 }
@@ -439,6 +454,7 @@ fn run_fixture_with_debug(package: &TempDir, debug_directory: &Path) -> Output {
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
         .env("RECURSA_DEBUG_DIR", debug_directory)
+        .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", target_dir(package));
     command
         .output()

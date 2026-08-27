@@ -129,10 +129,9 @@ fn pratt_diagrams_render_frozen_roles_binding_powers_and_operands() {
             path.ends_with("grammar/enum.Expr.html") && source.contains("RECURSA_NODE_DIAGRAM")
         })
         .expect("Pratt expression documentation page");
+    let diagram = diagram_svg(&expression.1);
     assert!(
-        expression
-            .1
-            .contains("atom Paren(\"[\" grammar::Expr \"]\")"),
+        contains_text_sequence(diagram, &["atom Paren", "[", "grammar::Expr", "]"]),
         "attached grouping tokens must come from the frozen materialized body:\n{}",
         expression.1,
     );
@@ -141,26 +140,48 @@ fn pratt_diagrams_render_frozen_roles_binding_powers_and_operands() {
         "private attachment units must not surface in Pratt diagrams",
     );
     assert!(
-        expression
-            .1
-            .contains("prefix(bp=35) Neg(\"-\" grammar::Expr)"),
+        contains_text_sequence(diagram, &["prefix bp=35 Neg", "-", "grammar::Expr"]),
         "prefix role and binding power must be rendered:\n{}",
         expression.1,
     );
     assert!(
-        expression
-            .1
-            .contains("postfix(bp=40) Factorial(grammar::Expr \"!\")"),
+        contains_text_sequence(diagram, &["postfix bp=40 Factorial", "grammar::Expr", "!"],),
         "postfix lhs placement and binding power must be rendered:\n{}",
         expression.1,
     );
     assert!(
-        expression
-            .1
-            .contains("infix(lbp=30, rbp=30) Power(grammar::Expr \"^\" grammar::Expr)"),
+        contains_text_sequence(
+            diagram,
+            &[
+                "infix lbp=30 rbp=30 Power",
+                "grammar::Expr",
+                "^",
+                "grammar::Expr",
+            ],
+        ),
         "infix lhs, tail, and binding powers must be rendered:\n{}",
         expression.1,
     );
+}
+
+fn diagram_svg(document: &str) -> &str {
+    let start = document.find("<svg ").expect("diagram SVG start");
+    let end = document[start..]
+        .find("</svg>")
+        .map(|offset| start + offset + "</svg>".len())
+        .expect("diagram SVG end");
+    &document[start..end]
+}
+
+fn contains_text_sequence(svg: &str, expected: &[&str]) -> bool {
+    let document = roxmltree::Document::parse(svg).expect("diagram is valid XML");
+    let text = document
+        .descendants()
+        .filter(|node| node.has_tag_name("text"))
+        .filter_map(|node| node.text())
+        .collect::<Vec<_>>();
+    text.windows(expected.len())
+        .any(|window| window == expected)
 }
 
 fn scaffold_fixture() -> TempDir {
@@ -171,15 +192,10 @@ fn scaffold_fixture() -> TempDir {
         .expect("recursa-codegen belongs to the workspace root");
     let fixture = manifest_dir.join(FIXTURE);
 
-    for relative in [
-        "build.rs",
-        "Cargo.lock",
-        "src/lib.rs",
-        "src/grammar.rs",
-        "src/main.rs",
-    ] {
+    for relative in ["build.rs", "src/lib.rs", "src/grammar.rs", "src/main.rs"] {
         copy(&fixture, package.path(), relative);
     }
+    copy_as(&fixture, package.path(), "Cargo.core.lock", "Cargo.lock");
 
     let manifest = fs::read_to_string(fixture.join("Cargo.toml.in"))
         .expect("read Pratt grammar fixture manifest")
@@ -199,6 +215,12 @@ fn copy(fixture: &Path, package: &Path, relative: &str) {
     fs::copy(fixture.join(relative), destination).expect("copy Pratt grammar fixture file");
 }
 
+fn copy_as(fixture: &Path, package: &Path, source: &str, destination: &str) {
+    let destination = package.join(destination);
+    fs::create_dir_all(destination.parent().unwrap()).expect("create fixture directory");
+    fs::copy(fixture.join(source), destination).expect("copy Pratt grammar fixture file");
+}
+
 fn toml_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
 }
@@ -213,6 +235,7 @@ fn run_fixture(package: &TempDir) -> Output {
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
         .env_remove("RECURSA_DEBUG_DIR")
+        .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", target_dir(package))
         .output()
         .expect("run Pratt grammar fixture")
@@ -229,6 +252,7 @@ fn run_fixture_doc(package: &TempDir) -> Output {
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
         .env_remove("RECURSA_DEBUG_DIR")
+        .env("CARGO_TERM_COLOR", "never")
         .env("RUSTDOCFLAGS", "-D rustdoc::broken_intra_doc_links")
         .env("CARGO_TARGET_DIR", target_dir(package))
         .output()
@@ -259,6 +283,12 @@ fn configure_diagrams(package: &TempDir) {
             "recursa-codegen = { features = [\"diagrams\"], path = \"",
         );
     fs::write(manifest, source).expect("enable Pratt diagram capabilities");
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    fs::copy(
+        manifest_dir.join(FIXTURE).join("Cargo.lock"),
+        package.path().join("Cargo.lock"),
+    )
+    .expect("select diagrams-capable fixture lock");
 }
 
 fn rendered_rustdoc(package: &TempDir) -> Vec<(PathBuf, String)> {
