@@ -7201,12 +7201,33 @@ fn render_debug_capability_fragments(plan: &EmissionPlan) -> Result<Vec<(String,
             ));
         }
     }
+    #[cfg(feature = "explorer")]
     if let Some(explorer) = &plan.explorer {
-        for artifact in &explorer.artifacts {
+        fragments.push((
+            "explorer:static-schema".to_owned(),
+            render_explorer_static_schema(plan, explorer).to_string(),
+        ));
+        fragments.push((
+            "explorer:lexer".to_owned(),
+            render_explorer_lex(plan).to_string(),
+        ));
+        for token in &plan.tokens {
             fragments.push((
-                format!("explorer:{}", artifact.logical_name),
-                artifact.content.clone(),
+                format!("explorer:token:{}", token.kind_variant),
+                render_token_explorer(plan, token).to_string(),
             ));
+        }
+        for node in &plan.nodes {
+            for application in &node.parse_applications {
+                fragments.push((
+                    format!(
+                        "explorer:node:{}:application-{}",
+                        node.semantic_key,
+                        application.application.index()
+                    ),
+                    render_node_application_explorer(plan, explorer, node, application).to_string(),
+                ));
+            }
         }
     }
     Ok(fragments)
@@ -7457,42 +7478,7 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         .explorer
         .as_ref()
         .map(|explorer| render_explorer_static_schema(plan, explorer));
-    let explorer_lex = plan.explorer.as_ref().map(|_| {
-        let explorer_lex = explorer_lex_function();
-        let records = plan
-            .kind_variants
-            .iter()
-            .enumerate()
-            .map(|(index, variant)| {
-                let schema = explorer_token_schema_static(
-                    u16::try_from(index).expect("generated token kind fits explorer width"),
-                );
-                quote!(TokenKind::#variant => &#schema,)
-            });
-        quote! {
-            __recursa_if_explorer! {
-                fn #explorer_lex(
-                    source: &str,
-                ) -> #facade::explorer::LexResult<'_> {
-                    let lexed = lex(source);
-                    let tokens = lexed.tokens().map(|token| {
-                        let schema = match token.kind() {
-                            #(#records)*
-                            TokenKind::LexicalError => unreachable!(
-                                "lexical errors are not explorer token records"
-                            ),
-                        };
-                        #facade::__private::explorer_lex_record(
-                            schema,
-                            token.span(),
-                        )
-                    });
-                    let errors = lexed.errors().map(|error| error.span());
-                    #facade::__private::explorer_lex_result(source, tokens, errors)
-                }
-            }
-        }
-    });
+    let explorer_lex = plan.explorer.as_ref().map(|_| render_explorer_lex(plan));
     let loader_arms = plan.nodes.iter().enumerate().map(|(index, node)| {
         let ident = &node.ident;
         let anchor = syn::LitStr::new(&node.loader_anchor, proc_macro2::Span::call_site());
@@ -8182,6 +8168,44 @@ fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     }
 }
 
+fn render_explorer_lex(plan: &EmissionPlan) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let explorer_lex = explorer_lex_function();
+    let records = plan
+        .kind_variants
+        .iter()
+        .enumerate()
+        .map(|(index, variant)| {
+            let schema = explorer_token_schema_static(
+                u16::try_from(index).expect("generated token kind fits explorer width"),
+            );
+            quote!(TokenKind::#variant => &#schema,)
+        });
+    quote! {
+        __recursa_if_explorer! {
+            fn #explorer_lex(
+                source: &str,
+            ) -> #facade::explorer::LexResult<'_> {
+                let lexed = lex(source);
+                let tokens = lexed.tokens().map(|token| {
+                    let schema = match token.kind() {
+                        #(#records)*
+                        TokenKind::LexicalError => unreachable!(
+                            "lexical errors are not explorer token records"
+                        ),
+                    };
+                    #facade::__private::explorer_lex_record(
+                        schema,
+                        token.span(),
+                    )
+                });
+                let errors = lexed.errors().map(|error| error.span());
+                #facade::__private::explorer_lex_result(source, tokens, errors)
+            }
+        }
+    }
+}
+
 fn is_public(visibility: &Visibility) -> bool {
     matches!(visibility, Visibility::Public(_))
 }
@@ -8626,50 +8650,10 @@ fn render_token(
                 }
             }
         });
-    let explorer_impl = plan.explorer.as_ref().map(|explorer| {
-        let explorer = explorer
-            .tokens
-            .iter()
-            .find(|candidate| candidate.semantic == Some(token.semantic))
-            .expect("typed explorer plan retains every content token");
-        let schema = explorer_token_schema_static(explorer.kind_index);
-        match explorer.display {
-            ExplorerDisplayPlan::MatchedOrStored => {}
-            ExplorerDisplayPlan::None | ExplorerDisplayPlan::Fixed(_) => {
-                unreachable!("content-token explorer display is frozen as matched-or-stored")
-            }
-        }
-        quote! {
-            __recursa_if_explorer! {
-                unsafe impl<'input> #facade::__private::ExplorerNode for #ident<'input> {
-                    fn __recursa_explorer_node<'document>(
-                        &'document self,
-                        cursor: #facade::__private::ViewCursor<'document>,
-                    ) -> #facade::__private::ExplorerNodeData<'document> {
-                        #facade::__private::explorer_token_node(
-                            self,
-                            &super::#schema,
-                            cursor,
-                            self.text(),
-                        )
-                    }
-
-                    fn __recursa_explorer_child_count(&self, _element: usize) -> usize {
-                        0
-                    }
-
-                    fn __recursa_explorer_child<'document>(
-                        &'document self,
-                        _cursor: #facade::__private::ViewCursor<'document>,
-                        _element: usize,
-                        _child: usize,
-                    ) -> Option<#facade::__private::ExplorerNodeData<'document>> {
-                        None
-                    }
-                }
-            }
-        }
-    });
+    let explorer_impl = plan
+        .explorer
+        .as_ref()
+        .map(|_| render_token_explorer(plan, token));
     quote! {
         #[doc(hidden)]
         #standard_derive
@@ -8756,6 +8740,56 @@ fn render_token(
         #serialize_impl
         #deserialize_impl
         #explorer_impl
+    }
+}
+
+fn render_token_explorer(plan: &EmissionPlan, token: &TokenParsePlan) -> proc_macro2::TokenStream {
+    let Some(explorer_plan) = &plan.explorer else {
+        return quote!();
+    };
+    let facade = &plan.facade;
+    let ident = &token.ident;
+    let explorer = explorer_plan
+        .tokens
+        .iter()
+        .find(|candidate| candidate.semantic == Some(token.semantic))
+        .expect("typed explorer plan retains every content token");
+    let schema = explorer_token_schema_static(explorer.kind_index);
+    match explorer.display {
+        ExplorerDisplayPlan::MatchedOrStored => {}
+        ExplorerDisplayPlan::None | ExplorerDisplayPlan::Fixed(_) => {
+            unreachable!("content-token explorer display is frozen as matched-or-stored")
+        }
+    }
+    quote! {
+        __recursa_if_explorer! {
+            unsafe impl<'input> #facade::__private::ExplorerNode for #ident<'input> {
+                fn __recursa_explorer_node<'document>(
+                    &'document self,
+                    cursor: #facade::__private::ViewCursor<'document>,
+                ) -> #facade::__private::ExplorerNodeData<'document> {
+                    #facade::__private::explorer_token_node(
+                        self,
+                        &super::#schema,
+                        cursor,
+                        self.text(),
+                    )
+                }
+
+                fn __recursa_explorer_child_count(&self, _element: usize) -> usize {
+                    0
+                }
+
+                fn __recursa_explorer_child<'document>(
+                    &'document self,
+                    _cursor: #facade::__private::ViewCursor<'document>,
+                    _element: usize,
+                    _child: usize,
+                ) -> Option<#facade::__private::ExplorerNodeData<'document>> {
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -13855,9 +13889,9 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "diagrams")]
+    #[cfg(all(feature = "diagrams", feature = "explorer"))]
     #[test]
-    fn debug_bundle_includes_every_enabled_diagram_capability_body() {
+    fn debug_bundle_includes_every_enabled_diagram_and_explorer_capability_body() {
         let (_package, plan) = joined_pratt_diagram_fixture();
         let rendered = render(&plan).unwrap();
         let files = render_debug_logical_files(&plan, &rendered).unwrap();
@@ -13869,6 +13903,32 @@ mod tests {
                 "missing diagram body for {}\n{index}",
                 node.semantic_key
             );
+        }
+        assert!(index.contains("capability\texplorer:static-schema\t"));
+        assert!(index.contains("capability\texplorer:lexer\t"));
+        for token in &plan.tokens {
+            assert!(
+                index.contains(&format!(
+                    "capability\texplorer:token:{}\t",
+                    token.kind_variant
+                )),
+                "missing explorer token body for {}\n{index}",
+                token.kind_variant
+            );
+        }
+        for node in &plan.nodes {
+            for application in &node.parse_applications {
+                assert!(
+                    index.contains(&format!(
+                        "capability\texplorer:node:{}:application-{}\t",
+                        node.semantic_key,
+                        application.application.index()
+                    )),
+                    "missing explorer application body for {} application {}\n{index}",
+                    node.semantic_key,
+                    application.application.index()
+                );
+            }
         }
     }
 

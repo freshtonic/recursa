@@ -482,6 +482,7 @@ fn run(package: &TempDir) -> Output {
         .arg("--quiet")
         .current_dir(package.path())
         .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
         .env("RUSTC_WRAPPER", "")
         .env("RUSTC_WORKSPACE_WRAPPER", "")
         .env("CARGO_PROFILE_DEV_DEBUG", "0")
