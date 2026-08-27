@@ -1,25 +1,53 @@
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Normalized, source-independent grammar representation.
+//!
+//! Every table uses dense typed IDs, making invalid cross-table references
+//! detectable before semantic analysis. Source locations are retained only as
+//! diagnostic provenance; authoring syntax and module structure do not affect
+//! grammar meaning at this boundary.
+
 use std::ops::Range;
 
 use crate::{AtomId, DeclId, KindId, LocationId, SiteId, SourceId, TextPredicateId, TypeId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A complete normalized grammar ready for source-independent analysis.
+///
+/// Vectors are dense ID tables: an ID's numeric index selects the matching
+/// entry. Construct values through the `push_*` methods to preserve that
+/// invariant.
 pub struct GrammarDescription {
+    /// Human-readable grammar name used in diagnostics and projections.
     pub name: String,
+    /// Number of grammar-local token kinds representable by each [`KindSet`](crate::KindSet).
     pub kind_count: usize,
+    /// Maximum token prefix semantic analysis may retain for dispatch.
     pub max_lookahead: usize,
+    /// Grammar-wide equivalence relation for exact-text predicates.
     pub text_equivalence: TextEquivalence,
+    /// Number of source identities accepted by [`Location`] values.
     pub source_count: u32,
+    /// Root types whose FOLLOW set is seeded with end-of-input.
     pub entry_types: Vec<TypeId>,
+    /// Dense token-kind descriptions indexed by [`KindId`].
     pub kinds: Vec<KindDescription>,
+    /// Dense lexical atom expressions indexed by [`AtomId`].
     pub atoms: Vec<AtomDescription>,
+    /// Dense declaration metadata indexed by [`DeclId`].
     pub declarations: Vec<Declaration>,
+    /// Dense source locations indexed by [`LocationId`].
     pub locations: Vec<Location>,
+    /// Dense text refinements indexed by [`TextPredicateId`].
     pub text_predicates: Vec<TextPredicate>,
+    /// Dense parse sites indexed by [`SiteId`].
     pub sites: Vec<ParseSite>,
+    /// Dense grammar types indexed by [`TypeId`].
     pub types: Vec<TypeDescription>,
 }
 
 impl GrammarDescription {
+    /// Creates a value with the supplied analysis inputs.
     pub fn new(
         name: impl Into<String>,
         kind_count: usize,
@@ -43,10 +71,12 @@ impl GrammarDescription {
         }
     }
 
+    /// Returns the ID that the next pushed type will receive.
     pub fn next_type_id(&self) -> TypeId {
         TypeId::new(self.types.len().try_into().expect("type ID overflow"))
     }
 
+    /// Appends a location and returns its dense ID.
     pub fn push_location(&mut self, location: Location) -> LocationId {
         let id = LocationId::new(
             self.locations
@@ -58,6 +88,7 @@ impl GrammarDescription {
         id
     }
 
+    /// Appends a declaration and returns its dense ID.
     pub fn push_declaration(&mut self, declaration: Declaration) -> DeclId {
         let id = DeclId::new(
             self.declarations
@@ -69,18 +100,21 @@ impl GrammarDescription {
         id
     }
 
+    /// Appends a token kind and returns its dense ID.
     pub fn push_kind(&mut self, kind: KindDescription) -> KindId {
         let id = KindId::new(self.kinds.len().try_into().expect("kind ID overflow"));
         self.kinds.push(kind);
         id
     }
 
+    /// Appends an atom and returns its dense ID.
     pub fn push_atom(&mut self, atom: AtomDescription) -> AtomId {
         let id = AtomId::new(self.atoms.len().try_into().expect("atom ID overflow"));
         self.atoms.push(atom);
         id
     }
 
+    /// Appends a text predicate and returns its dense ID.
     pub fn push_text_predicate(&mut self, predicate: TextPredicate) -> TextPredicateId {
         let id = TextPredicateId::new(
             self.text_predicates
@@ -92,12 +126,14 @@ impl GrammarDescription {
         id
     }
 
+    /// Appends a parse site and returns its dense ID.
     pub fn push_site(&mut self, site: ParseSite) -> SiteId {
         let id = SiteId::new(self.sites.len().try_into().expect("site ID overflow"));
         self.sites.push(site);
         id
     }
 
+    /// Appends a grammar type and returns its dense ID.
     pub fn push_type(&mut self, description: TypeDescription) -> TypeId {
         let id = self.next_type_id();
         self.types.push(description);
@@ -106,24 +142,32 @@ impl GrammarDescription {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A byte range in one normalized source identity.
 pub struct Location {
+    /// Source containing the range.
     pub source: SourceId,
+    /// Half-open UTF-8 byte range within the source.
     pub range: Range<u32>,
 }
 
 impl Location {
+    /// Creates a value with the supplied analysis inputs.
     pub fn new(source: SourceId, range: Range<u32>) -> Self {
         Self { source, range }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Human-facing metadata shared by a normalized declaration.
 pub struct Declaration {
+    /// Stable name used in facts and diagnostics.
     pub name: String,
+    /// Authored location that introduced the declaration.
     pub location: LocationId,
 }
 
 impl Declaration {
+    /// Creates a value with the supplied analysis inputs.
     pub fn new(name: impl Into<String>, location: LocationId) -> Self {
         Self {
             name: name.into(),
@@ -133,12 +177,16 @@ impl Declaration {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A grammar-local token kind and its declaring source identity.
 pub struct KindDescription {
+    /// The name.
     pub name: String,
+    /// The declaration.
     pub declaration: DeclId,
 }
 
 impl KindDescription {
+    /// Creates a value with the supplied analysis inputs.
     pub fn new(name: impl Into<String>, declaration: DeclId) -> Self {
         Self {
             name: name.into(),
@@ -148,13 +196,18 @@ impl KindDescription {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A named lexical atom expression and its declaring source identity.
 pub struct AtomDescription {
+    /// The name.
     pub name: String,
+    /// The declaration.
     pub declaration: DeclId,
+    /// The expression.
     pub expression: AtomExpression,
 }
 
 impl AtomDescription {
+    /// Creates a value with the supplied analysis inputs.
     pub fn new(name: impl Into<String>, declaration: DeclId, expression: AtomExpression) -> Self {
         Self {
             name: name.into(),
@@ -165,14 +218,25 @@ impl AtomDescription {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The closed ways a lexical atom contributes token kinds.
 pub enum AtomExpression {
+    /// One concrete token kind.
     Kind(KindId),
+    /// Union of other atom expressions used as a grammar category.
     Category(Vec<AtomId>),
+    /// Union of other atom expressions used as a lexical class.
     Class(Vec<AtomId>),
-    Target { base: AtomId, admits: Vec<AtomId> },
+    /// A base atom extended with contextually admitted atoms.
+    Target {
+        #[doc = "Base atom whose recognized kind is retained."]
+        base: AtomId,
+        #[doc = "Contextual atoms admitted by the parser target."]
+        admits: Vec<AtomId>,
+    },
 }
 
 impl AtomExpression {
+    /// Computes the references.
     pub(crate) fn references(&self) -> Vec<AtomId> {
         match self {
             Self::Kind(_) => Vec::new(),
@@ -188,12 +252,16 @@ impl AtomExpression {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The grammar-wide comparison policy for exact token text.
 pub enum TextEquivalence {
+    /// Unicode scalar strings must match exactly.
     Sensitive,
+    /// ASCII letters compare case-insensitively; other scalars remain exact.
     AsciiInsensitive,
 }
 
 impl TextEquivalence {
+    /// Compares two spellings under this policy.
     pub fn equivalent(self, left: &str, right: &str) -> bool {
         match self {
             Self::Sensitive => left == right,
@@ -203,23 +271,35 @@ impl TextEquivalence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A text refinement applied after a token-kind match.
 pub enum TextPredicate {
+    /// Any text accepted by the token kind.
     Any,
+    /// Exactly one spelling under [`TextEquivalence`].
     Exact(String),
+    /// Any spelling from a finite admitted set.
     OneOf(Vec<String>),
+    /// Any spelling except members of a finite excluded set.
     NotIn(Vec<String>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One typed reference from an owning grammar type to a target type.
 pub struct ParseSite {
+    /// Type containing the reference.
     pub owner: TypeId,
+    /// Referenced grammar type.
     pub target: TypeId,
+    /// Source declaration responsible for the reference.
     pub declaration: DeclId,
+    /// Cardinality and boxing around the target.
     pub container: ContainerShape,
+    /// Minimum Pratt binding power required at this site.
     pub min_bp: u8,
 }
 
 impl ParseSite {
+    /// Creates a value with the supplied analysis inputs.
     pub fn new(
         owner: TypeId,
         target: TypeId,
@@ -235,6 +315,7 @@ impl ParseSite {
         }
     }
 
+    /// Sets the minimum Pratt binding power for this site.
     pub const fn with_min_bp(mut self, min_bp: u8) -> Self {
         self.min_bp = min_bp;
         self
@@ -242,18 +323,25 @@ impl ParseSite {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Semantic cardinality of a repeated parse site.
 pub enum RepetitionCardinality {
+    /// The zero or more case.
     ZeroOrMore,
+    /// The one or more case.
     OneOrMore,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Separator type and trailing-separator policy for a repetition.
 pub struct RepeatSeparator {
+    /// Grammar type parsed between repeated elements.
     pub type_id: TypeId,
+    /// Whether one final separator may appear after the last element.
     pub optional_trailing: bool,
 }
 
 impl RepeatSeparator {
+    /// Creates a separator policy.
     pub const fn new(type_id: TypeId, optional_trailing: bool) -> Self {
         Self {
             type_id,
@@ -263,26 +351,37 @@ impl RepeatSeparator {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Recursive supported-container shape surrounding a parse target.
 pub enum ContainerShape {
+    /// Exactly one unboxed target.
     Direct,
+    /// A storage-only `Box` layer that does not change cardinality.
     Boxed(Box<ContainerShape>),
+    /// Zero or one occurrence of the nested shape.
     Optional(Box<ContainerShape>),
+    /// A repeated nested shape with optional separator syntax.
     Repeat {
+        /// The element.
         element: Box<ContainerShape>,
+        /// The cardinality.
         cardinality: RepetitionCardinality,
+        /// The separator.
         separator: Option<RepeatSeparator>,
     },
 }
 
 impl ContainerShape {
+    /// Wraps `element` in a storage-only `Box` layer.
     pub fn boxed(element: Self) -> Self {
         Self::Boxed(Box::new(element))
     }
 
+    /// Wraps `element` in an optional layer.
     pub fn optional(element: Self) -> Self {
         Self::Optional(Box::new(element))
     }
 
+    /// Creates a zero-or-more repetition with an optional separator type.
     pub fn zero_or_more(element: Self, separator: Option<TypeId>) -> Self {
         Self::Repeat {
             element: Box::new(element),
@@ -291,6 +390,7 @@ impl ContainerShape {
         }
     }
 
+    /// Creates a one-or-more repetition with an optional separator type.
     pub fn one_or_more(element: Self, separator: Option<TypeId>) -> Self {
         Self::Repeat {
             element: Box::new(element),
@@ -299,6 +399,7 @@ impl ContainerShape {
         }
     }
 
+    /// Creates a repetition with its complete separator policy.
     pub fn repeated_with_separator(
         element: Self,
         cardinality: RepetitionCardinality,
@@ -311,6 +412,7 @@ impl ContainerShape {
         }
     }
 
+    /// Computes the semantics.
     pub(crate) fn semantics(&self) -> Option<ContainerSemantics> {
         let mut layers = Vec::new();
         self.collect_cardinality_layers(&mut layers);
@@ -355,6 +457,7 @@ impl ContainerShape {
         }
     }
 
+    /// Visits separators.
     pub(crate) fn visit_separators(&self, visit: &mut impl FnMut(TypeId)) {
         match self {
             Self::Direct => {}
@@ -370,6 +473,7 @@ impl ContainerShape {
         }
     }
 
+    /// Collects cardinality layers.
     fn collect_cardinality_layers(&self, layers: &mut Vec<CardinalityLayer>) {
         match self {
             Self::Direct => {}
@@ -414,15 +518,22 @@ impl std::fmt::Display for ContainerShape {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible container cardinality cases used by semantic analysis.
 pub(crate) enum ContainerCardinality {
+    /// The one case.
     One,
+    /// The optional case.
     Optional,
+    /// The zero or more case.
     ZeroOrMore,
+    /// The one or more case.
     OneOrMore,
+    /// The optional one or more case.
     OptionalOneOrMore,
 }
 
 impl ContainerCardinality {
+    /// Whether the value is repeated.
     pub(crate) const fn is_repeated(self) -> bool {
         matches!(
             self,
@@ -432,12 +543,16 @@ impl ContainerCardinality {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The container semantics representation used by semantic analysis.
 pub(crate) struct ContainerSemantics {
+    /// The cardinality.
     pub cardinality: ContainerCardinality,
+    /// The separator.
     pub separator: Option<RepeatSeparator>,
 }
 
 impl ContainerSemantics {
+    /// Computes the separator type.
     pub(crate) const fn separator_type(self) -> Option<TypeId> {
         match self.separator {
             Some(separator) => Some(separator.type_id),
@@ -447,22 +562,32 @@ impl ContainerSemantics {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible cardinality layer cases used by semantic analysis.
 enum CardinalityLayer {
+    /// The optional case.
     Optional,
+    /// The repeat case.
     Repeat {
+        /// The cardinality.
         cardinality: RepetitionCardinality,
+        /// The separator.
         separator: Option<RepeatSeparator>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A named normalized grammar type and its semantic shape.
 pub struct TypeDescription {
+    /// The name.
     pub name: String,
+    /// The declaration.
     pub declaration: DeclId,
+    /// The shape.
     pub shape: TypeShape,
 }
 
 impl TypeDescription {
+    /// Creates a value with the supplied analysis inputs.
     pub fn new(name: impl Into<String>, declaration: DeclId, shape: TypeShape) -> Self {
         Self {
             name: name.into(),
@@ -473,42 +598,77 @@ impl TypeDescription {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The closed semantic forms of normalized grammar types.
 pub enum TypeShape {
+    /// The token case.
     Token {
+        /// The atom.
         atom: AtomId,
+        /// The text predicate.
         text_predicate: Option<TextPredicateId>,
     },
+    /// The alias case.
     Alias {
+        /// The site.
         site: SiteId,
     },
+    /// The sequence case.
     Sequence {
+        /// The sites.
         sites: Vec<SiteId>,
     },
+    /// The enum case.
     Enum {
+        /// The alternatives.
         alternatives: Vec<Alternative>,
     },
+    /// The pratt case.
     Pratt {
+        /// The variants.
         variants: Vec<PrattVariant>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One enum alternative and its ordered parse sites.
 pub struct Alternative {
+    /// The declaration.
     pub declaration: DeclId,
+    /// The sites.
     pub sites: Vec<SiteId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One Pratt variant, role, binding power, and ordered parse sites.
 pub struct PrattVariant {
+    /// The declaration.
     pub declaration: DeclId,
+    /// The position.
     pub position: PrattPosition,
+    /// The sites.
     pub sites: Vec<SiteId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Structural role and binding powers of a Pratt variant.
 pub enum PrattPosition {
+    /// The atom case.
     Atom,
-    Prefix { bp: u8 },
-    Infix { lbp: u8, rbp: u8 },
-    Postfix { bp: u8 },
+    /// The prefix case.
+    Prefix {
+        #[doc = "Right binding power of the prefix operand."]
+        bp: u8,
+    },
+    /// The infix case.
+    Infix {
+        #[doc = "Left binding power required to select the operator."]
+        lbp: u8,
+        #[doc = "Right binding power used to parse the operand."]
+        rbp: u8,
+    },
+    /// The postfix case.
+    Postfix {
+        #[doc = "Left binding power required to select the operator."]
+        bp: u8,
+    },
 }

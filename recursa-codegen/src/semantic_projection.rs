@@ -2,6 +2,13 @@
     dead_code,
     reason = "private source analysis semantic projections are consumed by acceptance fixtures and generation"
 )]
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Stable, location-free projections of analyzed grammar meaning.
+//!
+//! Projections are review artifacts, not serialization or generated output.
+//! They omit source locations and incidental dense IDs while retaining the
+//! facts whose changes require semantic review.
 
 use std::fmt::Write as _;
 
@@ -15,7 +22,9 @@ use crate::source_analysis::AnalyzedGrammar;
 use crate::source_model::TokenDefinitionKind;
 use crate::{FirstPosition, GrammarDescription, KindSet, PrattPosition, SiteId, TypeShape};
 
+/// Renders semantic projection in canonical order.
 pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> String {
+    // Project only source-independent meaning and sort map-like facts so the artifact remains location and ID neutral.
     let lowered = &analyzed.lowered;
     let grammar = &lowered.grammar;
     let output = analyzed
@@ -273,6 +282,7 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
     rendered
 }
 
+/// Computes the projected field site.
 fn projected_field_site(
     lowered: &LoweredGrammar,
     _application: crate::materialization::MaterializedApplicationId,
@@ -285,6 +295,7 @@ fn projected_field_site(
     attachment.sites[attachment.semantic_index]
 }
 
+/// Renders container machine.
 fn render_container_machine(
     rendered: &mut String,
     machine: &crate::decision_plan::ContainerMachine,
@@ -321,6 +332,7 @@ fn render_container_machine(
     }
 }
 
+/// Renders failure edge.
 fn render_failure_edge(
     rendered: &mut String,
     edge: &crate::decision_plan::FailureEdge,
@@ -342,6 +354,7 @@ fn render_failure_edge(
     .expect("writing to a String cannot fail");
 }
 
+/// Computes the source field name.
 fn source_field_name(
     lowered: &LoweredGrammar,
     application_id: crate::materialization::MaterializedApplicationId,
@@ -403,6 +416,7 @@ fn source_field_name(
     }
 }
 
+/// Renders fixture projection in canonical order.
 pub(crate) fn canonical_fixture_projection(name: &str, analyzed: &AnalyzedGrammar) -> String {
     let mut rendered = format!(
         "provenance recursa-spike=b410d2f123cd7510a8a40e9e5b971936a2fd8463 source=src/grammars/{name}.rs description=src/descriptions/{name}.rs\ntransform fixed-wrappers=positional-or-presence sql=flat-ll2 pratt=typed-binding-powers repetitions=typed-cardinality\n",
@@ -411,6 +425,7 @@ pub(crate) fn canonical_fixture_projection(name: &str, analyzed: &AnalyzedGramma
     rendered
 }
 
+/// Renders shape.
 fn render_shape(owner: crate::TypeId, shape: &TypeShape, lowered: &LoweredGrammar) -> String {
     let grammar = &lowered.grammar;
     match shape {
@@ -478,6 +493,7 @@ fn render_shape(owner: crate::TypeId, shape: &TypeShape, lowered: &LoweredGramma
     )
 }
 
+/// Renders projected sites.
 fn render_projected_sites(site: SiteId, lowered: &LoweredGrammar) -> Vec<String> {
     direct_attachment_unit(site, lowered).map_or_else(
         || vec![render_site(site, lowered)],
@@ -490,6 +506,7 @@ fn render_projected_sites(site: SiteId, lowered: &LoweredGrammar) -> Vec<String>
     )
 }
 
+/// Renders site.
 fn render_site(site: SiteId, lowered: &LoweredGrammar) -> String {
     let grammar = &lowered.grammar;
     let site_id = site;
@@ -536,6 +553,7 @@ fn render_site(site: SiteId, lowered: &LoweredGrammar) -> String {
     )
 }
 
+/// Renders kinds.
 fn render_kinds(kinds: &KindSet, grammar: &GrammarDescription) -> String {
     let mut names = kinds
         .iter()
@@ -545,6 +563,7 @@ fn render_kinds(kinds: &KindSet, grammar: &GrammarDescription) -> String {
     names.join(",")
 }
 
+/// Renders follow facts.
 fn render_follow_facts(follow: &crate::FollowFacts, grammar: &GrammarDescription) -> String {
     let mut facts = follow
         .kinds()
@@ -558,6 +577,7 @@ fn render_follow_facts(follow: &crate::FollowFacts, grammar: &GrammarDescription
     facts.join(",")
 }
 
+/// Renders positions.
 fn render_positions(positions: &[FirstPosition], grammar: &GrammarDescription) -> String {
     positions
         .iter()
@@ -571,6 +591,7 @@ fn render_positions(positions: &[FirstPosition], grammar: &GrammarDescription) -
         .join("|")
 }
 
+/// Renders first sequences.
 fn render_first_sequences(
     sequences: &[crate::FirstSequence],
     grammar: &GrammarDescription,
@@ -596,6 +617,7 @@ fn render_first_sequences(
         .join(" | ")
 }
 
+/// Renders follow recipe.
 fn render_follow_recipe(recipe: &FollowRecipe, grammar: &GrammarDescription) -> String {
     match recipe {
         FollowRecipe::Caller => "caller".to_owned(),
@@ -608,6 +630,7 @@ fn render_follow_recipe(recipe: &FollowRecipe, grammar: &GrammarDescription) -> 
     }
 }
 
+/// Renders expected.
 fn render_expected(expected: &ExpectedRecipe, grammar: &GrammarDescription) -> String {
     match expected {
         ExpectedRecipe::Static(first) => format!("static[{}]", render_positions(first, grammar)),
@@ -632,10 +655,12 @@ fn render_expected(expected: &ExpectedRecipe, grammar: &GrammarDescription) -> S
     }
 }
 
+/// Computes the declaration name.
 fn declaration_name(id: crate::DeclId, grammar: &GrammarDescription) -> &str {
     &grammar.declarations[id.index()].name
 }
 
+/// Computes the attachment for unit.
 fn attachment_for_unit(
     unit: crate::TypeId,
     lowered: &LoweredGrammar,
@@ -647,6 +672,7 @@ fn attachment_for_unit(
         .find(|attachment| attachment.unit == unit)
 }
 
+/// Computes the attachment for outer.
 fn attachment_for_outer(
     outer: SiteId,
     lowered: &LoweredGrammar,
@@ -658,6 +684,7 @@ fn attachment_for_outer(
         .find(|attachment| attachment.outer == outer)
 }
 
+/// Computes the direct attachment unit.
 fn direct_attachment_unit(site: SiteId, lowered: &LoweredGrammar) -> Option<&[SiteId]> {
     let parsed = &lowered.grammar.sites[site.index()];
     if parsed
@@ -670,6 +697,7 @@ fn direct_attachment_unit(site: SiteId, lowered: &LoweredGrammar) -> Option<&[Si
     attachment_for_outer(site, lowered).map(|attachment| attachment.sites.as_slice())
 }
 
+/// Computes the attachment outer for inner.
 fn attachment_outer_for_inner(
     site: SiteId,
     lowered: &LoweredGrammar,
@@ -687,6 +715,7 @@ fn attachment_outer_for_inner(
         })
 }
 
+/// Computes the projected site name.
 fn projected_site_name(site: SiteId, lowered: &LoweredGrammar) -> String {
     let (authored, inner_offset) = attachment_outer_for_inner(site, lowered)
         .map_or((site, 0), |(attachment, index)| (attachment.outer, index));
@@ -727,6 +756,7 @@ fn projected_site_name(site: SiteId, lowered: &LoweredGrammar) -> String {
     semantic_site_name(site, grammar)
 }
 
+/// Computes the expanded site index.
 fn expanded_site_index(
     siblings: &[SiteId],
     target: SiteId,
@@ -742,6 +772,7 @@ fn expanded_site_index(
     None
 }
 
+/// Computes the projected owner name.
 fn projected_owner_name(owner: crate::TypeId, lowered: &LoweredGrammar) -> &str {
     let grammar = &lowered.grammar;
     let Some(attachment) = attachment_for_unit(owner, lowered) else {
@@ -750,6 +781,7 @@ fn projected_owner_name(owner: crate::TypeId, lowered: &LoweredGrammar) -> &str 
     &grammar.types[grammar.sites[attachment.outer.index()].owner.index()].name
 }
 
+/// Computes the semantic site name.
 fn semantic_site_name(site: SiteId, grammar: &GrammarDescription) -> String {
     for description in &grammar.types {
         match &description.shape {

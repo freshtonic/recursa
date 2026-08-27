@@ -5,23 +5,35 @@
 //! joins that analyzed output into a generation emission plan before atomically
 //! publishing one complete generated [`Generation`].
 
+/// Source-independent semantic fact computation and validation.
 mod analysis;
 mod build_diagnostic;
+/// Frozen parser decisions derived from semantic facts.
 mod decision_plan;
 mod diagnostic;
+/// Deterministic authored-module discovery and invalidation inputs.
 mod discovery;
 mod generation_compound;
 mod ids;
+/// Normalized, source-independent grammar representation.
 mod ir;
 mod kind_set;
+/// Grammar-wide lexical planning and carrier proofs.
 mod lexical;
+/// Correlation-preserving lowering into the normalized grammar.
 mod lowering;
+/// Closed generic application and container materialization.
 mod materialization;
 mod provenance;
+/// Anchored resolution of grammar-semantic references.
 mod resolution;
+/// Stable, location-free semantic review projections.
 mod semantic_projection;
+/// Source-analysis orchestration and diagnostic adaptation.
 mod source_analysis;
+/// Grammar-relevant authored structure and locations.
 mod source_model;
+/// Parsing of generator-owned source configuration syntax.
 mod source_syntax;
 
 #[cfg(test)]

@@ -1,8 +1,15 @@
 //! Frozen, source-independent parse decisions owned by semantic analysis.
 //!
-//! These products deliberately retain semantic IDs. source analysis joins them to source
+//! These products deliberately retain semantic IDs. Source analysis joins them to source
 //! identities; generation renders them without recomputing FIRST, FOLLOW, container,
 //! Pratt, or failure behavior.
+//!
+//! Validation here is the trust boundary between semantic analysis and
+//! generation. A plan is useful only while its dense IDs, dispatch tries,
+//! container machines, Pratt roles, and failure edges agree with the same
+//! normalized grammar snapshot.
+
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
 
 use std::cmp::Ordering;
 use std::fmt::Write as _;
@@ -15,23 +22,32 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The grammar construct controlled by a dispatch plan.
 pub enum DispatchKind {
+    /// Select one enum alternative.
     Enum,
+    /// Select a Pratt null denotation (atom or prefix).
     PrattNud,
+    /// Select a Pratt left denotation (infix or postfix).
     PrattLed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One bounded token prefix capable of selecting a dispatch branch.
 pub struct DispatchSequence {
+    /// The positions.
     positions: Vec<FirstPosition>,
+    /// The on caller follow.
     on_caller_follow: bool,
 }
 
 impl DispatchSequence {
+    /// Returns the ordered token positions in this prefix.
     pub fn positions(&self) -> &[FirstPosition] {
         &self.positions
     }
 
+    /// Returns whether exhaustion selects through the caller's FOLLOW set.
     pub const fn on_caller_follow(&self) -> bool {
         self.on_caller_follow
     }
@@ -40,15 +56,19 @@ impl DispatchSequence {
 /// One terminal choice in a frozen dispatch trie.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DispatchTerminal {
+    /// Declaration selected at this terminal.
     declaration: DeclId,
+    /// Whether this terminal represents caller-FOLLOW fallback.
     on_caller_follow: bool,
 }
 
 impl DispatchTerminal {
+    /// Returns the selected declaration.
     pub const fn declaration(self) -> DeclId {
         self.declaration
     }
 
+    /// Returns whether selection depends on caller FOLLOW.
     pub const fn on_caller_follow(self) -> bool {
         self.on_caller_follow
     }
@@ -57,15 +77,19 @@ impl DispatchTerminal {
 /// One already-discriminated edge in a frozen dispatch trie.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DispatchTrieEdge {
+    /// Token predicate labeling the edge.
     position: FirstPosition,
+    /// Trie node reached after matching the position.
     next: DispatchTrieNode,
 }
 
 impl DispatchTrieEdge {
+    /// Returns the token predicate labeling this edge.
     pub const fn position(&self) -> &FirstPosition {
         &self.position
     }
 
+    /// Returns the node reached after matching the edge.
     pub const fn next(&self) -> &DispatchTrieNode {
         &self.next
     }
@@ -74,32 +98,42 @@ impl DispatchTrieEdge {
 /// A frozen dispatch-trie node produced by semantic analysis.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DispatchTrieNode {
+    /// Optional decision when the consumed prefix ends here.
     terminal: Option<DispatchTerminal>,
+    /// Already-discriminated outgoing token predicates.
     edges: Vec<DispatchTrieEdge>,
 }
 
 impl DispatchTrieNode {
+    /// Returns the terminal decision at this prefix, when any.
     pub const fn terminal(&self) -> Option<DispatchTerminal> {
         self.terminal
     }
 
+    /// Returns the outgoing discriminated edges.
     pub fn edges(&self) -> &[DispatchTrieEdge] {
         &self.edges
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One declaration selectable by a frozen dispatch plan.
 pub struct DispatchBranch {
+    /// The declaration.
     declaration: DeclId,
+    /// The position.
     position: Option<PrattPosition>,
+    /// The sequences.
     sequences: Vec<DispatchSequence>,
 }
 
 impl DispatchBranch {
+    /// Returns the declaration.
     pub const fn declaration(&self) -> DeclId {
         self.declaration
     }
 
+    /// Returns the bounded prefixes that select this branch.
     pub fn sequences(&self) -> &[DispatchSequence] {
         &self.sequences
     }
@@ -111,40 +145,54 @@ impl DispatchBranch {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Complete source-independent branch selection for one enum or Pratt role.
 pub struct DispatchPlan {
+    /// The owner.
     owner: TypeId,
+    /// The kind.
     kind: DispatchKind,
+    /// The branches.
     branches: Vec<DispatchBranch>,
+    /// The required lookahead.
     required_lookahead: usize,
+    /// The on caller follow.
     on_caller_follow: Option<DeclId>,
+    /// The trie.
     trie: DispatchTrieNode,
 }
 
 impl DispatchPlan {
+    /// Returns the owner.
     pub const fn owner(&self) -> TypeId {
         self.owner
     }
 
+    /// Returns the kind.
     pub const fn kind(&self) -> DispatchKind {
         self.kind
     }
 
+    /// Returns the selectable branches in declaration order.
     pub fn branches(&self) -> &[DispatchBranch] {
         &self.branches
     }
 
+    /// Returns the required lookahead.
     pub const fn required_lookahead(&self) -> usize {
         self.required_lookahead
     }
 
+    /// Returns the on caller follow.
     pub const fn on_caller_follow(&self) -> Option<DeclId> {
         self.on_caller_follow
     }
 
+    /// Returns the trie.
     pub const fn trie(&self) -> &DispatchTrieNode {
         &self.trie
     }
 
+    /// Renders facts in canonical order.
     pub fn canonical_facts(&self, grammar: &GrammarDescription) -> String {
         let mut output = format!(
             "dispatch {} {} depth={} caller-fallback={}",
@@ -180,13 +228,24 @@ impl DispatchPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// How a parse site obtains the token kinds that may follow it.
 pub enum FollowRecipe {
+    /// Use only the owning parser's dynamic caller FOLLOW.
     Caller,
-    Static { first: Vec<FirstPosition> },
-    StaticAndCaller { first: Vec<FirstPosition> },
+    /// Use only a statically known FIRST suffix.
+    Static {
+        #[doc = "Static FIRST positions that terminate the owning sequence."]
+        first: Vec<FirstPosition>,
+    },
+    /// Use a static FIRST suffix plus caller FOLLOW when that suffix is nullable.
+    StaticAndCaller {
+        #[doc = "Static FIRST positions checked before caller FOLLOW."]
+        first: Vec<FirstPosition>,
+    },
 }
 
 impl FollowRecipe {
+    /// Computes the static first.
     pub fn static_first(&self) -> &[FirstPosition] {
         match self {
             Self::Caller => &[],
@@ -194,44 +253,63 @@ impl FollowRecipe {
         }
     }
 
+    /// Returns the uses caller.
     pub const fn uses_caller(&self) -> bool {
         matches!(self, Self::Caller | Self::StaticAndCaller { .. })
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Cardinality operation implemented by a container state machine.
 pub enum ContainerOperation {
+    /// The direct case.
     Direct,
+    /// The optional case.
     Optional,
+    /// The zero or more case.
     ZeroOrMore,
+    /// The one or more case.
     OneOrMore,
+    /// The optional one or more case.
     OptionalOneOrMore,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Frozen repetition/optional parsing behavior for one parse site.
 pub struct ContainerMachine {
+    /// The site.
     site: SiteId,
+    /// The operation.
     operation: ContainerOperation,
+    /// The separator.
     separator: Option<RepeatSeparator>,
+    /// The element first.
     element_first: Vec<FirstPosition>,
+    /// The separator first.
     separator_first: Vec<FirstPosition>,
+    /// The stop.
     stop: FollowRecipe,
+    /// The transitions.
     transitions: Vec<ContainerTransition>,
 }
 
 impl ContainerMachine {
+    /// Returns the site.
     pub const fn site(&self) -> SiteId {
         self.site
     }
 
+    /// Returns the operation.
     pub const fn operation(&self) -> ContainerOperation {
         self.operation
     }
 
+    /// Returns the separator.
     pub const fn separator(&self) -> Option<RepeatSeparator> {
         self.separator
     }
 
+    /// Returns the optional trailing.
     pub const fn optional_trailing(&self) -> bool {
         match self.separator {
             Some(separator) => separator.optional_trailing,
@@ -239,136 +317,196 @@ impl ContainerMachine {
         }
     }
 
+    /// Computes the element first.
     pub fn element_first(&self) -> &[FirstPosition] {
         &self.element_first
     }
 
+    /// Computes the separator first.
     pub fn separator_first(&self) -> &[FirstPosition] {
         &self.separator_first
     }
 
+    /// Returns the stop.
     pub const fn stop(&self) -> &FollowRecipe {
         &self.stop
     }
 
+    /// Computes the transitions.
     pub fn transitions(&self) -> &[ContainerTransition] {
         &self.transitions
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Runtime state of a frozen container machine.
 pub enum ContainerState {
+    /// The start case.
     Start,
+    /// The after element case.
     AfterElement,
+    /// The after separator case.
     AfterSeparator,
+    /// The done case.
     Done,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Parser action performed by a container transition.
 pub enum ContainerAction {
+    /// The parse element case.
     ParseElement,
+    /// The parse separator case.
     ParseSeparator,
+    /// The stop case.
     Stop,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One guarded state transition in a frozen container machine.
 pub struct ContainerTransition {
+    /// The from.
     from: ContainerState,
+    /// The to.
     to: ContainerState,
+    /// The action.
     action: ContainerAction,
+    /// The selector.
     selector: ExpectedRecipe,
 }
 
 impl ContainerTransition {
+    /// Returns the from.
     pub const fn from(&self) -> ContainerState {
         self.from
     }
 
+    /// Returns the to.
     pub const fn to(&self) -> ContainerState {
         self.to
     }
 
+    /// Returns the action.
     pub const fn action(&self) -> ContainerAction {
         self.action
     }
 
+    /// Returns the selector.
     pub const fn selector(&self) -> &ExpectedRecipe {
         &self.selector
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Semantic reason a parser path can fail and require an expectation.
 pub enum FailureEdgeKind {
+    /// The required site case.
     RequiredSite,
+    /// The enum dispatch case.
     EnumDispatch,
+    /// The pratt nud dispatch case.
     PrattNudDispatch,
+    /// The pratt led dispatch case.
     PrattLedDispatch,
+    /// The pratt caller follow guard case.
     PrattCallerFollowGuard,
+    /// The container minimum case.
     ContainerMinimum,
+    /// The container continuation case.
     ContainerContinuation,
+    /// The container after separator case.
     ContainerAfterSeparator,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Recipe for computing the token expectation at a failure edge.
 pub enum ExpectedRecipe {
+    /// The static case.
     Static(Vec<FirstPosition>),
+    /// The follow case.
     Follow(FollowRecipe),
+    /// The continue or stop case.
     ContinueOrStop {
+        /// The continuation.
         continuation: Vec<FirstPosition>,
+        /// The stop.
         stop: FollowRecipe,
     },
+    /// The pratt extenders at or above min bp case.
     PrattExtendersAtOrAboveMinBp {
+        /// The branches.
         branches: Vec<DispatchBranch>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One source-independent parse failure and its expected-token recipe.
 pub struct FailureEdge {
+    /// The owner.
     owner: TypeId,
+    /// The site.
     site: Option<SiteId>,
+    /// The kind.
     kind: FailureEdgeKind,
+    /// The expected.
     expected: ExpectedRecipe,
 }
 
 impl FailureEdge {
+    /// Returns the owner.
     pub const fn owner(&self) -> TypeId {
         self.owner
     }
 
+    /// Returns the site.
     pub const fn site(&self) -> Option<SiteId> {
         self.site
     }
 
+    /// Returns the kind.
     pub const fn kind(&self) -> FailureEdgeKind {
         self.kind
     }
 
+    /// Returns the expected.
     pub const fn expected(&self) -> &ExpectedRecipe {
         &self.expected
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Validated executable decisions derived from one normalized grammar.
+///
+/// Generation consumes these tables as authority and must not recompute
+/// dispatch, caller FOLLOW, container, Pratt, or failure behavior.
 pub struct DecisionProducts {
+    /// The dispatches.
     dispatches: Vec<DispatchPlan>,
+    /// The follow recipes by site.
     follow_recipes_by_site: Vec<FollowRecipe>,
+    /// The container machines.
     container_machines: Vec<ContainerMachine>,
+    /// The failure edges.
     failure_edges: Vec<FailureEdge>,
 }
 
 impl DecisionProducts {
+    /// Returns enum and Pratt dispatch plans.
     pub fn dispatches(&self) -> &[DispatchPlan] {
         &self.dispatches
     }
 
+    /// Returns one FOLLOW recipe per dense parse-site ID.
     pub fn follow_recipes_by_site(&self) -> &[FollowRecipe] {
         &self.follow_recipes_by_site
     }
 
+    /// Returns frozen machines for optional and repeated sites.
     pub fn container_machines(&self) -> &[ContainerMachine] {
         &self.container_machines
     }
 
+    /// Returns all parser failure edges and expectation recipes.
     pub fn failure_edges(&self) -> &[FailureEdge] {
         &self.failure_edges
     }
@@ -378,6 +516,7 @@ impl DecisionProducts {
         self.follow_recipes_by_site.push(FollowRecipe::Caller);
     }
 
+    /// Renders facts in canonical order.
     pub fn canonical_facts(&self, grammar: &GrammarDescription) -> String {
         let mut output = String::new();
         for dispatch in &self.dispatches {
@@ -398,11 +537,13 @@ impl DecisionProducts {
         output
     }
 
+    /// Validates every decision against the grammar and computed FIRST facts.
     pub(crate) fn validate(
         &self,
         grammar: &GrammarDescription,
         semantic: &[FirstFacts],
     ) -> Result<(), DecisionInvariant> {
+        // Validate every cross-table identity before generation can trust this frozen product as executable authority.
         if self.follow_recipes_by_site.len() != grammar.sites.len()
             || self.container_machines.len() != grammar.sites.len()
         {
@@ -557,19 +698,33 @@ impl DecisionProducts {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible decision invariant cases used by semantic analysis.
 pub(crate) enum DecisionInvariant {
+    /// The missing site product case.
     MissingSiteProduct,
+    /// The missing dispatch case.
     MissingDispatch,
+    /// The overlapping dispatch case.
     OverlappingDispatch,
+    /// The empty expected recipe case.
     EmptyExpectedRecipe,
+    /// The missing pratt led guard case.
     MissingPrattLedGuard,
+    /// The duplicate site product case.
     DuplicateSiteProduct,
+    /// The duplicate site use case.
     DuplicateSiteUse,
+    /// The multiple caller fallbacks case.
     MultipleCallerFallbacks,
+    /// The duplicate failure edge case.
     DuplicateFailureEdge,
+    /// The follow recipe mismatch case.
     FollowRecipeMismatch,
+    /// The dispatch product mismatch case.
     DispatchProductMismatch,
+    /// The container product mismatch case.
     ContainerProductMismatch,
+    /// The failure product mismatch case.
     FailureProductMismatch,
 }
 
@@ -579,10 +734,12 @@ impl std::fmt::Display for DecisionInvariant {
     }
 }
 
+/// Plans decisions.
 pub(crate) fn plan_decisions(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
 ) -> DecisionProducts {
+    // Build dispatch, container, Pratt, and failure products from the same semantic snapshot to prevent phase drift.
     let mut follow_recipes_by_site = vec![FollowRecipe::Caller; grammar.sites.len()];
     let mut dispatches = Vec::new();
     for (index, description) in grammar.types.iter().enumerate() {
@@ -720,6 +877,7 @@ pub(crate) fn plan_decisions(
     }
 }
 
+/// Computes the container transitions.
 fn container_transitions(
     operation: ContainerOperation,
     element_first: &[FirstPosition],
@@ -779,6 +937,7 @@ fn container_transitions(
     transitions
 }
 
+/// Plans follow for sites.
 fn plan_follow_for_sites(
     sites: &[SiteId],
     grammar: &GrammarDescription,
@@ -791,6 +950,7 @@ fn plan_follow_for_sites(
     }
 }
 
+/// Computes the follow recipe.
 fn follow_recipe(sequences: &[FirstSequence]) -> FollowRecipe {
     let mut first = sequences
         .iter()
@@ -807,6 +967,7 @@ fn follow_recipe(sequences: &[FirstSequence]) -> FollowRecipe {
     }
 }
 
+/// Computes the dispatch plan.
 fn dispatch_plan<'a>(
     owner: TypeId,
     kind: DispatchKind,
@@ -855,6 +1016,7 @@ fn dispatch_plan<'a>(
     }
 }
 
+/// Computes the freeze dispatch trie.
 fn freeze_dispatch_trie(branches: &[DispatchBranch]) -> DispatchTrieNode {
     let mut root = DispatchTrieNode::default();
     for branch in branches {
@@ -925,6 +1087,7 @@ fn freeze_dispatch_trie(branches: &[DispatchBranch]) -> DispatchTrieNode {
     root
 }
 
+/// Computes the trie targets declaration.
 fn trie_targets_declaration(node: &DispatchTrieNode, declaration: DeclId) -> bool {
     node.terminal
         .is_none_or(|terminal| terminal.declaration == declaration)
@@ -934,6 +1097,7 @@ fn trie_targets_declaration(node: &DispatchTrieNode, declaration: DeclId) -> boo
             .all(|edge| trie_targets_declaration(&edge.next, declaration))
 }
 
+/// Computes the required dispatch lookahead.
 fn required_dispatch_lookahead(branches: &[DispatchBranch], grammar: &GrammarDescription) -> usize {
     let mut required = usize::from(!branches.is_empty());
     for (left_index, left) in branches.iter().enumerate() {
@@ -951,6 +1115,7 @@ fn required_dispatch_lookahead(branches: &[DispatchBranch], grammar: &GrammarDes
     required.min(grammar.max_lookahead)
 }
 
+/// Computes the sequence discrimination depth.
 fn sequence_discrimination_depth(
     left: &DispatchSequence,
     right: &DispatchSequence,
@@ -977,12 +1142,14 @@ fn sequence_discrimination_depth(
         .then_some(left.positions.len().min(right.positions.len()) + 1)
 }
 
+/// Plans failure edges.
 fn plan_failure_edges(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
     dispatches: &[DispatchPlan],
     follow_recipes: &[FollowRecipe],
 ) -> Vec<FailureEdge> {
+    // Derive and sort failure edges after successful decisions so diagnostics cannot influence parse selection.
     let mut edges = Vec::new();
     for dispatch in dispatches {
         if dispatch.kind == DispatchKind::PrattLed {
@@ -1103,6 +1270,7 @@ fn plan_failure_edges(
     edges
 }
 
+/// Computes the expected is empty.
 fn expected_is_empty(expected: &ExpectedRecipe) -> bool {
     match expected {
         ExpectedRecipe::Static(first) => first.is_empty(),
@@ -1114,6 +1282,7 @@ fn expected_is_empty(expected: &ExpectedRecipe) -> bool {
     }
 }
 
+/// Computes the sequences overlap.
 fn sequences_overlap(
     left: &DispatchSequence,
     right: &DispatchSequence,
@@ -1142,11 +1311,13 @@ fn sequences_overlap(
         })
 }
 
+/// Sorts dedup positions.
 fn sort_dedup_positions(positions: &mut Vec<FirstPosition>) {
     positions.sort_by(compare_positions);
     positions.dedup();
 }
 
+/// Compares positions.
 fn compare_positions(left: &FirstPosition, right: &FirstPosition) -> Ordering {
     left.kinds
         .kind_count()
@@ -1155,6 +1326,7 @@ fn compare_positions(left: &FirstPosition, right: &FirstPosition) -> Ordering {
         .then_with(|| left.text_predicate.cmp(&right.text_predicate))
 }
 
+/// Renders sequence.
 fn render_sequence(sequence: &DispatchSequence, grammar: &GrammarDescription) -> String {
     let mut output = sequence
         .positions
@@ -1174,6 +1346,7 @@ fn render_sequence(sequence: &DispatchSequence, grammar: &GrammarDescription) ->
     output
 }
 
+/// Renders positions suffix.
 fn render_positions_suffix(positions: &[FirstPosition], grammar: &GrammarDescription) -> String {
     if positions.is_empty() {
         String::new()
@@ -1189,6 +1362,7 @@ fn render_positions_suffix(positions: &[FirstPosition], grammar: &GrammarDescrip
     }
 }
 
+/// Renders position.
 fn render_position(position: &FirstPosition, grammar: &GrammarDescription) -> String {
     let kinds = position
         .kinds
@@ -1201,6 +1375,7 @@ fn render_position(position: &FirstPosition, grammar: &GrammarDescription) -> St
     })
 }
 
+/// Computes the dispatch name.
 const fn dispatch_name(kind: DispatchKind) -> &'static str {
     match kind {
         DispatchKind::Enum => "enum",
@@ -1209,6 +1384,7 @@ const fn dispatch_name(kind: DispatchKind) -> &'static str {
     }
 }
 
+/// Computes the follow name.
 const fn follow_name(recipe: &FollowRecipe) -> &'static str {
     match recipe {
         FollowRecipe::Caller => "caller",
@@ -1217,10 +1393,12 @@ const fn follow_name(recipe: &FollowRecipe) -> &'static str {
     }
 }
 
+/// Whether the value is nud.
 const fn is_nud(position: PrattPosition) -> bool {
     matches!(position, PrattPosition::Atom | PrattPosition::Prefix { .. })
 }
 
+/// Whether the value is led.
 const fn is_led(position: PrattPosition) -> bool {
     matches!(
         position,

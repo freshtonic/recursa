@@ -1,3 +1,12 @@
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Source-independent semantic analysis over a normalized grammar.
+//!
+//! The pipeline validates dense identities before computing nullable, FIRST,
+//! FOLLOW, Pratt extender, conflict, and provenance facts. Successful facts
+//! are frozen into decision products; failed prerequisites suppress every
+//! dependent phase so diagnostics never describe invented semantics.
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::ir::{ContainerCardinality, ContainerSemantics};
@@ -9,24 +18,41 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The complete result of validating and analyzing one normalized grammar.
+///
+/// [`output`](Self::output) is present only when no error-severity diagnostic
+/// prevents publishing a coherent set of parser decisions. Warnings may
+/// accompany a successful output.
 pub struct AnalysisReport {
+    /// Diagnostics in deterministic source order.
     pub diagnostics: Vec<Diagnostic>,
+    /// Frozen semantic facts and decisions, absent when analysis failed.
     pub output: Option<AnalysisOutput>,
+    /// Source locations copied from the input for diagnostic rendering.
     locations: Vec<Location>,
+    /// Deduplicated provenance proofs referenced by facts and diagnostics.
     proofs: ProofArena,
+    /// Stable names and predicates needed to render normalized identities.
     diagnostic_context: DiagnosticContext,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// The diagnostic context representation used by semantic analysis.
 struct DiagnosticContext {
+    /// The kind names.
     kind_names: Vec<String>,
+    /// The atom names.
     atom_names: Vec<String>,
+    /// The declaration names.
     declaration_names: Vec<String>,
+    /// The type names.
     type_names: Vec<String>,
+    /// The text predicates.
     text_predicates: Vec<TextPredicate>,
 }
 
 impl DiagnosticContext {
+    /// Computes the from grammar.
     fn from_grammar(grammar: &GrammarDescription) -> Self {
         Self {
             kind_names: grammar.kinds.iter().map(|kind| kind.name.clone()).collect(),
@@ -43,14 +69,17 @@ impl DiagnosticContext {
 }
 
 impl AnalysisReport {
+    /// Returns the location table used by diagnostic labels.
     pub fn locations(&self) -> &[Location] {
         &self.locations
     }
 
+    /// Returns the provenance arena used by published facts and diagnostics.
     pub fn proofs(&self) -> &ProofArena {
         &self.proofs
     }
 
+    /// Renders diagnostics in the stable, location-aware acceptance format.
     pub fn canonical_diagnostics(&self) -> String {
         use std::fmt::Write as _;
 
@@ -100,6 +129,7 @@ impl AnalysisReport {
     }
 }
 
+/// Renders shared prefix.
 fn render_shared_prefix(
     rendered: &mut String,
     evidence: &crate::SharedPrefixEvidence,
@@ -133,6 +163,7 @@ fn render_shared_prefix(
     }
 }
 
+/// Renders conflict.
 fn render_conflict(
     rendered: &mut String,
     conflict: &ConflictEvidence,
@@ -170,6 +201,7 @@ fn render_conflict(
     );
 }
 
+/// Renders proof.
 fn render_proof(
     rendered: &mut String,
     label: &str,
@@ -187,30 +219,35 @@ fn render_proof(
 }
 
 impl DiagnosticContext {
+    /// Computes the kind name.
     fn kind_name(&self, kind: KindId) -> &str {
         self.kind_names
             .get(kind.index())
             .map_or("<missing kind>", String::as_str)
     }
 
+    /// Computes the atom name.
     fn atom_name(&self, atom: AtomId) -> &str {
         self.atom_names
             .get(atom.index())
             .map_or("<missing atom>", String::as_str)
     }
 
+    /// Computes the declaration name.
     fn declaration_name(&self, declaration: crate::DeclId) -> &str {
         self.declaration_names
             .get(declaration.index())
             .map_or("<missing declaration>", String::as_str)
     }
 
+    /// Computes the type name.
     fn type_name(&self, type_id: TypeId) -> &str {
         self.type_names
             .get(type_id.index())
             .map_or("<missing type>", String::as_str)
     }
 
+    /// Renders step.
     fn render_step(&self, step: &ProvenanceStep) -> String {
         match step {
             ProvenanceStep::DirectDeclaration { atom, kind, .. } => format!(
@@ -307,6 +344,7 @@ impl DiagnosticContext {
     }
 }
 
+/// Renders label.
 fn render_label(
     rendered: &mut String,
     style: &str,
@@ -332,69 +370,94 @@ fn render_label(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Successful source-independent facts and executable parser decisions.
+///
+/// All per-type and per-site slices use the dense IDs from the analyzed
+/// [`GrammarDescription`]. Callers must therefore keep the output paired with
+/// that grammar rather than combining facts from separate analyses.
 pub struct AnalysisOutput {
+    /// The first by type.
     first_by_type: Vec<FirstFacts>,
+    /// The extenders by type.
     extenders_by_type: Vec<Option<ExtenderFacts>>,
+    /// The first provenance by type.
     first_provenance_by_type: Vec<Vec<ProvenancedKindSet>>,
+    /// The extender provenance by type.
     extender_provenance_by_type: Vec<Option<Vec<ProvenancedKindSet>>>,
+    /// The follow by type.
     follow_by_type: Vec<FollowFacts>,
+    /// The follow by site.
     follow_by_site: Vec<FollowFacts>,
+    /// The decisions.
     decisions: crate::DecisionProducts,
 }
 
 impl AnalysisOutput {
+    /// Returns FIRST facts for `type_id`, or `None` for an out-of-range ID.
     pub fn first(&self, type_id: TypeId) -> Option<&FirstFacts> {
         self.first_by_type.get(type_id.index())
     }
 
+    /// Returns FIRST facts indexed by [`TypeId::index`](crate::TypeId::index).
     pub fn first_by_type(&self) -> &[FirstFacts] {
         &self.first_by_type
     }
 
+    /// Returns Pratt extender facts for `type_id` when it names a Pratt type.
     pub fn extenders(&self, type_id: TypeId) -> Option<&ExtenderFacts> {
         self.extenders_by_type
             .get(type_id.index())
             .and_then(Option::as_ref)
     }
 
+    /// Returns optional Pratt extender facts indexed by type ID.
     pub fn extenders_by_type(&self) -> &[Option<ExtenderFacts>] {
         &self.extenders_by_type
     }
 
+    /// Returns provenance for each FIRST position of every type.
     pub fn first_provenance_by_type(&self) -> &[Vec<ProvenancedKindSet>] {
         &self.first_provenance_by_type
     }
 
+    /// Returns provenance for the Pratt extender positions of `type_id`.
     pub fn extender_provenance(&self, type_id: TypeId) -> Option<&[ProvenancedKindSet]> {
         self.extender_provenance_by_type
             .get(type_id.index())
             .and_then(Option::as_deref)
     }
 
+    /// Returns optional Pratt extender provenance indexed by type ID.
     pub fn extender_provenance_by_type(&self) -> &[Option<Vec<ProvenancedKindSet>>] {
         &self.extender_provenance_by_type
     }
 
+    /// Returns FOLLOW facts for `type_id`, or `None` for an out-of-range ID.
     pub fn follow(&self, type_id: TypeId) -> Option<&FollowFacts> {
         self.follow_by_type.get(type_id.index())
     }
 
+    /// Returns caller FOLLOW facts for a particular parse site.
     pub fn follow_site(&self, site_id: SiteId) -> Option<&FollowFacts> {
         self.follow_by_site.get(site_id.index())
     }
 
+    /// Returns FOLLOW facts indexed by type ID.
     pub fn follow_by_type(&self) -> &[FollowFacts] {
         &self.follow_by_type
     }
 
+    /// Returns caller FOLLOW facts indexed by parse-site ID.
     pub fn follow_by_site(&self) -> &[FollowFacts] {
         &self.follow_by_site
     }
 
+    /// Returns the validated decisions consumed by generation.
     pub const fn decisions(&self) -> &crate::DecisionProducts {
         &self.decisions
     }
 
+    /// Renders the stable summary of FIRST, nullability, and Pratt extenders.
     pub fn canonical_facts(&self) -> String {
         use std::fmt::Write as _;
 
@@ -416,64 +479,87 @@ impl AnalysisOutput {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// FIRST positions, bounded prefixes, and nullability for one grammar type.
 pub struct FirstFacts {
+    /// Union of token kinds admitted at the first position.
     kinds: KindSet,
+    /// First-position alternatives, retaining optional text predicates.
     pub positions: Vec<FirstPosition>,
+    /// Bounded lookahead sequences used to distinguish shared prefixes.
     pub sequences: Vec<FirstSequence>,
+    /// Whether the type can consume no tokens.
     pub nullable: bool,
 }
 
 impl FirstFacts {
+    /// Returns the union of possible first token kinds.
     pub fn kinds(&self) -> &KindSet {
         &self.kinds
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Token kinds and positions that can extend a parsed Pratt left-hand side.
 pub struct ExtenderFacts {
+    /// The kinds.
     kinds: KindSet,
+    /// The positions.
     pub positions: Vec<FirstPosition>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Provenanced token kinds and EOF membership that may follow an entity.
 pub struct FollowFacts {
+    /// The kinds.
     kinds: ProvenancedKindSet,
+    /// The eof proof.
     eof_proof: Option<ProofId>,
 }
 
 impl FollowFacts {
+    /// Returns the token-kind portion of FOLLOW.
     pub fn kinds(&self) -> &KindSet {
         self.kinds.kinds()
     }
 
+    /// Returns whether end-of-input belongs to FOLLOW.
     pub const fn eof(&self) -> bool {
         self.eof_proof.is_some()
     }
 
+    /// Returns the provenance proof for EOF membership, when present.
     pub const fn eof_proof(&self) -> Option<ProofId> {
         self.eof_proof
     }
 
+    /// Returns the provenance proof for `kind` membership, when present.
     pub fn proof(&self, kind: KindId) -> Option<ProofId> {
         self.kinds.proof(kind)
     }
 }
 
 impl ExtenderFacts {
+    /// Returns the union of Pratt extender token kinds.
     pub fn kinds(&self) -> &KindSet {
         &self.kinds
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One token position in a bounded FIRST sequence.
 pub struct FirstPosition {
+    /// Token kinds accepted at this position.
     pub kinds: KindSet,
+    /// Optional exact-text refinement within those token kinds.
     pub text_predicate: Option<TextPredicateId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One bounded lookahead prefix retained for conflict analysis.
 pub struct FirstSequence {
+    /// Ordered positions in the prefix.
     pub positions: Vec<FirstPosition>,
+    /// Whether the described production can end after these positions.
     ends: bool,
 }
 
@@ -485,7 +571,15 @@ impl FirstSequence {
     }
 }
 
+/// Validates `grammar` and computes its complete semantic analysis.
+///
+/// Validation and left-recursion failures stop dependent phases. Once the
+/// grammar is structurally sound, FIRST, Pratt extenders, provenance, FOLLOW,
+/// conflicts, and frozen decisions are computed in dependency order. This
+/// ordering is part of the diagnostic contract: downstream phases never
+/// manufacture findings from invalid upstream facts.
 pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
+    // Phase boundary: stop after invalid prerequisites so later facts are never derived from an incoherent grammar.
     let locations = grammar.locations.clone();
     let diagnostic_context = DiagnosticContext::from_grammar(grammar);
     let diagnostics = validate(grammar);
@@ -594,6 +688,7 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
     report
 }
 
+/// Computes the publish decisions.
 fn publish_decisions(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
@@ -607,6 +702,7 @@ fn publish_decisions(
     Ok(decisions)
 }
 
+/// Computes the first sequences for decision sites.
 pub(crate) fn first_sequences_for_decision_sites(
     sites: &[SiteId],
     grammar: &GrammarDescription,
@@ -619,6 +715,7 @@ pub(crate) fn first_sequences_for_decision_sites(
     first_sequences_for_sites(sites, grammar, semantic, &previous, grammar.max_lookahead)
 }
 
+/// Compacts report proofs.
 fn compact_report_proofs(report: &mut AnalysisReport) {
     let mut roots = Vec::new();
     if let Some(output) = &report.output {
@@ -672,7 +769,9 @@ fn compact_report_proofs(report: &mut AnalysisReport) {
     }
 }
 
+/// Validates validate.
 fn validate(grammar: &GrammarDescription) -> Vec<Diagnostic> {
+    // Validation deliberately accumulates independent structural failures before any fixed-point computation begins.
     let mut diagnostics = Vec::new();
     if grammar.max_lookahead == 0 {
         diagnostics.push(Diagnostic::invalid_grammar(
@@ -874,6 +973,7 @@ fn validate(grammar: &GrammarDescription) -> Vec<Diagnostic> {
     diagnostics
 }
 
+/// Validates decl.
 fn validate_decl(
     declaration: crate::DeclId,
     grammar: &GrammarDescription,
@@ -888,6 +988,7 @@ fn validate_decl(
     }
 }
 
+/// Validates atom cycles.
 fn validate_atom_cycles(grammar: &GrammarDescription, diagnostics: &mut Vec<Diagnostic>) {
     let adjacency = grammar
         .atoms
@@ -954,6 +1055,7 @@ fn validate_atom_cycles(grammar: &GrammarDescription, diagnostics: &mut Vec<Diag
     diagnostics.extend(cycle_diagnostics);
 }
 
+/// Computes the sites of.
 fn sites_of(shape: &TypeShape) -> Vec<SiteId> {
     match shape {
         TypeShape::Token { .. } => Vec::new(),
@@ -970,6 +1072,7 @@ fn sites_of(shape: &TypeShape) -> Vec<SiteId> {
     }
 }
 
+/// Expands atoms.
 fn expand_atoms(grammar: &GrammarDescription) -> Vec<KindSet> {
     fn expand(id: AtomId, grammar: &GrammarDescription, cache: &mut [Option<KindSet>]) -> KindSet {
         if let Some(cached) = &cache[id.index()] {
@@ -1002,6 +1105,7 @@ fn expand_atoms(grammar: &GrammarDescription) -> Vec<KindSet> {
         .collect()
 }
 
+/// Computes first.
 fn compute_first(grammar: &GrammarDescription, atom_kinds: &[KindSet]) -> Vec<FirstFacts> {
     let empty = || first_facts(Vec::new(), false, grammar.kind_count);
     let mut facts = vec![empty(); grammar.types.len()];
@@ -1022,6 +1126,7 @@ fn compute_first(grammar: &GrammarDescription, atom_kinds: &[KindSet]) -> Vec<Fi
     facts
 }
 
+/// Computes the first for shape.
 fn first_for_shape(
     shape: &TypeShape,
     grammar: &GrammarDescription,
@@ -1069,6 +1174,7 @@ fn first_for_shape(
     }
 }
 
+/// Computes the first for sites.
 fn first_for_sites(
     sites: &[SiteId],
     grammar: &GrammarDescription,
@@ -1088,6 +1194,7 @@ fn first_for_sites(
     first_facts(positions, nullable, grammar.kind_count)
 }
 
+/// Computes the site nullable.
 fn site_nullable(site: &crate::ParseSite, target: &FirstFacts) -> bool {
     match container_semantics(site).cardinality {
         ContainerCardinality::One | ContainerCardinality::OneOrMore => target.nullable,
@@ -1097,12 +1204,14 @@ fn site_nullable(site: &crate::ParseSite, target: &FirstFacts) -> bool {
     }
 }
 
+/// Computes the container semantics.
 fn container_semantics(site: &crate::ParseSite) -> ContainerSemantics {
     site.container
         .semantics()
         .expect("container shapes are validated before analysis")
 }
 
+/// Merges positions.
 fn merge_positions(into: &mut Vec<FirstPosition>, from: &[FirstPosition]) {
     for position in from {
         if let Some(existing) = into
@@ -1121,6 +1230,7 @@ fn merge_positions(into: &mut Vec<FirstPosition>, from: &[FirstPosition]) {
     });
 }
 
+/// Computes the first facts.
 fn first_facts(positions: Vec<FirstPosition>, nullable: bool, kind_count: usize) -> FirstFacts {
     let mut kinds = KindSet::empty(kind_count);
     for position in &positions {
@@ -1134,6 +1244,7 @@ fn first_facts(positions: Vec<FirstPosition>, nullable: bool, kind_count: usize)
     }
 }
 
+/// Computes first sequences.
 fn compute_first_sequences(
     grammar: &GrammarDescription,
     atom_kinds: &[KindSet],
@@ -1159,6 +1270,7 @@ fn compute_first_sequences(
     }
 }
 
+/// Computes the first sequences for shape.
 fn first_sequences_for_shape(
     shape: &TypeShape,
     grammar: &GrammarDescription,
@@ -1213,6 +1325,7 @@ fn first_sequences_for_shape(
     sequences
 }
 
+/// Computes the first sequences for sites.
 fn first_sequences_for_sites(
     sites: &[SiteId],
     grammar: &GrammarDescription,
@@ -1233,6 +1346,7 @@ fn first_sequences_for_sites(
     combined
 }
 
+/// Computes the sequences for site.
 fn sequences_for_site(
     site: &crate::ParseSite,
     semantic: &[FirstFacts],
@@ -1262,6 +1376,7 @@ fn sequences_for_site(
     sequences
 }
 
+/// Computes the with empty sequence.
 fn with_empty_sequence(mut sequences: Vec<FirstSequence>) -> Vec<FirstSequence> {
     sequences.push(FirstSequence {
         positions: Vec::new(),
@@ -1271,6 +1386,7 @@ fn with_empty_sequence(mut sequences: Vec<FirstSequence>) -> Vec<FirstSequence> 
     sequences
 }
 
+/// Computes the repeat sequences.
 fn repeat_sequences(
     target: &[FirstSequence],
     separator: Option<&[FirstSequence]>,
@@ -1303,6 +1419,7 @@ fn repeat_sequences(
     }
 }
 
+/// Computes the concatenate sequence choices.
 fn concatenate_sequence_choices(
     prefixes: &[FirstSequence],
     suffixes: &[FirstSequence],
@@ -1334,11 +1451,13 @@ fn concatenate_sequence_choices(
     combined
 }
 
+/// Sorts dedup first sequences.
 fn sort_dedup_first_sequences(sequences: &mut Vec<FirstSequence>) {
     sequences.sort_by(compare_first_sequences);
     sequences.dedup();
 }
 
+/// Compares first sequences.
 fn compare_first_sequences(left: &FirstSequence, right: &FirstSequence) -> std::cmp::Ordering {
     left.positions
         .iter()
@@ -1361,12 +1480,17 @@ fn compare_first_sequences(left: &FirstSequence, right: &FirstSequence) -> std::
 }
 
 #[derive(Clone, Copy, Debug)]
+/// The first corner edge representation used by semantic analysis.
 struct FirstCornerEdge {
+    /// The from.
     from: TypeId,
+    /// The to.
     to: TypeId,
+    /// The declaration.
     declaration: crate::DeclId,
 }
 
+/// Detects left recursion.
 fn detect_left_recursion(grammar: &GrammarDescription, first: &[FirstFacts]) -> Vec<Diagnostic> {
     let edges: Vec<Vec<FirstCornerEdge>> = grammar
         .types
@@ -1430,6 +1554,7 @@ fn detect_left_recursion(grammar: &GrammarDescription, first: &[FirstFacts]) -> 
     diagnostics
 }
 
+/// Computes the first corner edges.
 fn first_corner_edges(
     owner: TypeId,
     shape: &TypeShape,
@@ -1459,6 +1584,7 @@ fn first_corner_edges(
     }
 }
 
+/// Computes the first corner edges for sites.
 fn first_corner_edges_for_sites(
     owner: TypeId,
     sites: &[SiteId],
@@ -1480,6 +1606,7 @@ fn first_corner_edges_for_sites(
     edges
 }
 
+/// Computes the edge source key.
 fn edge_source_key(
     edge: FirstCornerEdge,
     grammar: &GrammarDescription,
@@ -1495,6 +1622,7 @@ fn edge_source_key(
     )
 }
 
+/// Computes the declaration source key.
 fn declaration_source_key(
     declaration: crate::DeclId,
     grammar: &GrammarDescription,
@@ -1509,6 +1637,7 @@ fn declaration_source_key(
     )
 }
 
+/// Computes the diagnostic source key.
 fn diagnostic_source_key(
     diagnostic: &Diagnostic,
     grammar: &GrammarDescription,
@@ -1537,6 +1666,7 @@ fn diagnostic_source_key(
     )
 }
 
+/// Computes the strongly connected components.
 fn strongly_connected_components(edges: &[Vec<FirstCornerEdge>]) -> Vec<Vec<TypeId>> {
     let adjacency = edges
         .iter()
@@ -1553,6 +1683,7 @@ fn strongly_connected_components(edges: &[Vec<FirstCornerEdge>]) -> Vec<Vec<Type
         .collect()
 }
 
+/// Computes the strongly connected indices.
 fn strongly_connected_indices(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
     struct Tarjan<'a> {
         edges: &'a [Vec<usize>],
@@ -1617,17 +1748,24 @@ fn strongly_connected_indices(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The provenanced position representation used by semantic analysis.
 struct ProvenancedPosition {
+    /// The kinds.
     kinds: ProvenancedKindSet,
+    /// The text predicate.
     text_predicate: Option<TextPredicateId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The provenanced first representation used by semantic analysis.
 struct ProvenancedFirst {
+    /// The positions.
     positions: Vec<ProvenancedPosition>,
+    /// The nullable.
     nullable: bool,
 }
 
+/// Computes first provenance.
 fn compute_first_provenance(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
@@ -1682,6 +1820,7 @@ fn compute_first_provenance(
     (proofs, positions)
 }
 
+/// Computes the declaration source order.
 fn declaration_source_order(grammar: &GrammarDescription) -> Vec<u32> {
     let mut declarations = (0..grammar.declarations.len()).collect::<Vec<_>>();
     declarations.sort_by_key(|index| {
@@ -1710,6 +1849,7 @@ fn declaration_source_order(grammar: &GrammarDescription) -> Vec<u32> {
     order
 }
 
+/// Expands atom provenance.
 fn expand_atom_provenance(
     atom_id: AtomId,
     grammar: &GrammarDescription,
@@ -1794,6 +1934,7 @@ fn expand_atom_provenance(
     result
 }
 
+/// Wraps provenance.
 fn wrap_provenance(
     source: &ProvenancedKindSet,
     step: impl Fn(KindId, ProofId) -> ProvenanceStep,
@@ -1809,6 +1950,7 @@ fn wrap_provenance(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Computes the first for shape provenance.
 fn first_for_shape_provenance(
     owner: TypeId,
     description: &crate::TypeDescription,
@@ -1818,6 +1960,7 @@ fn first_for_shape_provenance(
     previous: &[Vec<ProvenancedPosition>],
     proofs: &mut ProofArena,
 ) -> ProvenancedFirst {
+    // Keep proof construction in lockstep with FIRST semantics so every admitted kind has one reproducible witness.
     let raw = match &description.shape {
         TypeShape::Token {
             atom,
@@ -1921,6 +2064,7 @@ fn first_for_shape_provenance(
     }
 }
 
+/// Computes the first for sites provenance.
 fn first_for_sites_provenance(
     owner: TypeId,
     sites: &[SiteId],
@@ -1978,6 +2122,7 @@ fn first_for_sites_provenance(
     }
 }
 
+/// Merges provenanced positions.
 fn merge_provenanced_positions(
     into: &mut Vec<ProvenancedPosition>,
     from: &[ProvenancedPosition],
@@ -1988,6 +2133,7 @@ fn merge_provenanced_positions(
     }
 }
 
+/// Merges provenanced position.
 fn merge_provenanced_position(
     into: &mut Vec<ProvenancedPosition>,
     position: ProvenancedPosition,
@@ -2009,25 +2155,37 @@ fn merge_provenanced_position(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The semantic follow representation used by semantic analysis.
 struct SemanticFollow {
+    /// The kinds.
     kinds: KindSet,
+    /// The eof.
     eof: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The provenanced follow representation used by semantic analysis.
 struct ProvenancedFollow {
+    /// The positions.
     positions: Vec<ProvenancedPosition>,
+    /// The eof proof.
     eof_proof: Option<ProofId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The follow edge representation used by semantic analysis.
 struct FollowEdge {
+    /// The from.
     from: TypeId,
+    /// The to.
     to: TypeId,
+    /// The site.
     site: Option<SiteId>,
+    /// The declaration.
     declaration: crate::DeclId,
 }
 
+/// Computes the site sequences.
 fn site_sequences<'a>(shape: &'a TypeShape, grammar: &GrammarDescription) -> Vec<&'a [SiteId]> {
     let mut sequences = match shape {
         TypeShape::Token { .. } => Vec::new(),
@@ -2051,6 +2209,7 @@ fn site_sequences<'a>(shape: &'a TypeShape, grammar: &GrammarDescription) -> Vec
     sequences
 }
 
+/// Computes the empty semantic follow.
 fn empty_semantic_follow(grammar: &GrammarDescription) -> SemanticFollow {
     SemanticFollow {
         kinds: KindSet::empty(grammar.kind_count),
@@ -2058,6 +2217,7 @@ fn empty_semantic_follow(grammar: &GrammarDescription) -> SemanticFollow {
     }
 }
 
+/// Computes the empty provenanced follow.
 fn empty_provenanced_follow() -> ProvenancedFollow {
     ProvenancedFollow {
         positions: Vec::new(),
@@ -2065,12 +2225,14 @@ fn empty_provenanced_follow() -> ProvenancedFollow {
     }
 }
 
+/// Computes follow.
 fn compute_follow(
     grammar: &GrammarDescription,
     first: &[FirstFacts],
     first_provenance: &[Vec<ProvenancedPosition>],
     proofs: &mut ProofArena,
 ) -> (Vec<FollowFacts>, Vec<FollowFacts>, Vec<ProvenancedFollow>) {
+    // Seed entry EOF facts first, then iterate monotone FOLLOW propagation to a fixed point before publishing site views.
     let reachable = reachable_types(grammar);
     let mut semantic_by_type = vec![empty_semantic_follow(grammar); grammar.types.len()];
     let mut semantic_by_site = vec![empty_semantic_follow(grammar); grammar.sites.len()];
@@ -2193,6 +2355,7 @@ fn compute_follow(
     (by_type, by_site, provenanced_by_site)
 }
 
+/// Computes the reachable types.
 fn reachable_types(grammar: &GrammarDescription) -> Vec<bool> {
     let mut reachable = vec![false; grammar.types.len()];
     let mut pending = grammar.entry_types.clone();
@@ -2216,6 +2379,7 @@ fn reachable_types(grammar: &GrammarDescription) -> Vec<bool> {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Collects semantic follow for sites.
 fn collect_semantic_follow_for_sites(
     owner: TypeId,
     sites: &[SiteId],
@@ -2288,6 +2452,7 @@ fn collect_semantic_follow_for_sites(
     }
 }
 
+/// Propagates semantic follow.
 fn propagate_semantic_follow(
     edges: &[FollowEdge],
     by_type: &mut [SemanticFollow],
@@ -2321,6 +2486,7 @@ fn propagate_semantic_follow(
     }
 }
 
+/// Applies semantic follow edge.
 fn apply_semantic_follow_edge(
     edge: FollowEdge,
     source_facts: &[SemanticFollow],
@@ -2336,6 +2502,7 @@ fn apply_semantic_follow_edge(
     }
 }
 
+/// Computes the follow component order.
 fn follow_component_order(
     node_count: usize,
     edges: &[FollowEdge],
@@ -2396,6 +2563,7 @@ fn follow_component_order(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Collects provenanced follow for sites.
 fn collect_provenanced_follow_for_sites(
     owner: TypeId,
     sites: &[SiteId],
@@ -2406,6 +2574,7 @@ fn collect_provenanced_follow_for_sites(
     by_site: &mut [ProvenancedFollow],
     proofs: &mut ProofArena,
 ) {
+    // Harvest site FOLLOW only after convergence; mixing collection into propagation would make proofs order-dependent.
     for (index, site_id) in sites.iter().copied().enumerate() {
         let site = &grammar.sites[site_id.index()];
         let suffix = first_for_sites_provenance(
@@ -2532,6 +2701,7 @@ fn collect_provenanced_follow_for_sites(
     }
 }
 
+/// Wraps follow positions.
 fn wrap_follow_positions(
     source: &[ProvenancedPosition],
     step: impl Fn(KindId, ProofId) -> ProvenanceStep + Copy,
@@ -2546,6 +2716,7 @@ fn wrap_follow_positions(
         .collect()
 }
 
+/// Propagates provenanced follow.
 fn propagate_provenanced_follow(
     edges: &[FollowEdge],
     by_type: &mut [ProvenancedFollow],
@@ -2580,6 +2751,7 @@ fn propagate_provenanced_follow(
     }
 }
 
+/// Applies provenanced follow edge.
 fn apply_provenanced_follow_edge(
     edge: FollowEdge,
     source_facts: &[ProvenancedFollow],
@@ -2619,12 +2791,14 @@ fn apply_provenanced_follow_edge(
     }
 }
 
+/// Merges eof proof.
 fn merge_eof_proof(slot: &mut Option<ProofId>, proof: ProofId, proofs: &ProofArena) {
     if slot.is_none_or(|current| proofs.compare(proof, current).is_lt()) {
         *slot = Some(proof);
     }
 }
 
+/// Computes the kinds for positions.
 fn kinds_for_positions(
     positions: &[ProvenancedPosition],
     grammar: &GrammarDescription,
@@ -2637,6 +2811,7 @@ fn kinds_for_positions(
     kinds
 }
 
+/// Computes extender provenance.
 fn compute_extender_provenance(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
@@ -2675,6 +2850,7 @@ fn compute_extender_provenance(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Computes the pratt extender provenance.
 fn pratt_extender_provenance(
     owner: TypeId,
     variant: &crate::PrattVariant,
@@ -2715,10 +2891,12 @@ fn pratt_extender_provenance(
     }
 }
 
+/// Whether the value is pratt nud.
 const fn is_pratt_nud(position: PrattPosition) -> bool {
     matches!(position, PrattPosition::Atom | PrattPosition::Prefix { .. })
 }
 
+/// Whether the value is pratt led.
 const fn is_pratt_led(position: PrattPosition) -> bool {
     matches!(
         position,
@@ -2727,23 +2905,32 @@ const fn is_pratt_led(position: PrattPosition) -> bool {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible decision item cases used by semantic analysis.
 enum DecisionItem {
+    /// The type case.
     Type(TypeId),
+    /// The site case.
     Site(SiteId),
+    /// The repeat tail case.
     RepeatTail {
+        /// The target.
         target: TypeId,
+        /// The separator.
         separator: Option<TypeId>,
     },
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The decision state representation used by semantic analysis.
 struct DecisionState(Vec<DecisionItem>);
 
 impl DecisionState {
+    /// Computes the from sites.
     fn from_sites(sites: &[SiteId]) -> Self {
         Self(sites.iter().copied().map(DecisionItem::Site).collect())
     }
 
+    /// Computes the consuming site and tail.
     fn consuming_site_and_tail(site: &crate::ParseSite, tail: &[SiteId]) -> Self {
         let semantics = container_semantics(site);
         let mut items = if semantics.cardinality.is_repeated() {
@@ -2763,51 +2950,78 @@ impl DecisionState {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible paired decision state cases used by semantic analysis.
 enum PairedDecisionState {
+    /// The residual case.
     Residual(DecisionState, DecisionState),
+    /// The end case.
     End,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible decision witness cases used by semantic analysis.
 enum DecisionWitness {
+    /// The token case.
     Token(crate::LookaheadWitnessPosition),
+    /// The end case.
     End,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The decision transition representation used by semantic analysis.
 struct DecisionTransition {
+    /// The position.
     position: FirstPosition,
+    /// The next.
     next: DecisionState,
+    /// The minimum stack depth.
     minimum_stack_depth: usize,
 }
 
 #[derive(Default)]
+/// The decision frontier representation used by semantic analysis.
 struct DecisionFrontier {
+    /// The can end.
     can_end: bool,
+    /// The transitions.
     transitions: Vec<DecisionTransition>,
 }
 
+/// The decision outcome representation used by semantic analysis.
 struct DecisionOutcome {
+    /// The sufficient depth.
     sufficient_depth: Option<usize>,
+    /// The witness.
     witness: Vec<crate::LookaheadWitnessPosition>,
+    /// The end of alternative.
     end_of_alternative: bool,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The decision parent representation used by semantic analysis.
 struct DecisionParent {
+    /// The state.
     state: PairedDecisionState,
+    /// The left minimum stack depth.
     left_minimum_stack_depth: usize,
+    /// The right minimum stack depth.
     right_minimum_stack_depth: usize,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The paired decision successor representation used by semantic analysis.
 struct PairedDecisionSuccessor {
+    /// The state.
     state: PairedDecisionState,
+    /// The witness.
     witness: DecisionWitness,
+    /// The left minimum stack depth.
     left_minimum_stack_depth: usize,
+    /// The right minimum stack depth.
     right_minimum_stack_depth: usize,
 }
 
+/// Computes the analyze decision.
 fn analyze_decision(
     left: DecisionState,
     right: DecisionState,
@@ -2840,6 +3054,7 @@ fn analyze_decision(
     }
 }
 
+/// Builds decision product.
 fn build_decision_product(
     start: PairedDecisionState,
     grammar: &GrammarDescription,
@@ -2875,6 +3090,7 @@ fn build_decision_product(
     graph
 }
 
+/// Computes the pumping ancestor.
 fn pumping_ancestor(
     current: &PairedDecisionState,
     successor: &PairedDecisionSuccessor,
@@ -2898,6 +3114,7 @@ fn pumping_ancestor(
     None
 }
 
+/// Computes the paired residual self embeds.
 fn paired_residual_self_embeds(
     ancestor: &PairedDecisionState,
     successor: &PairedDecisionState,
@@ -2915,6 +3132,7 @@ fn paired_residual_self_embeds(
             || ancestor_right.0.len() < successor_right.0.len())
 }
 
+/// Computes the residual self embeds.
 fn residual_self_embeds(ancestor: &DecisionState, successor: &DecisionState) -> bool {
     let Some((active, continuation)) = ancestor.0.split_first() else {
         return false;
@@ -2924,6 +3142,7 @@ fn residual_self_embeds(ancestor: &DecisionState, successor: &DecisionState) -> 
         && successor.0.ends_with(continuation)
 }
 
+/// Computes the path preserves continuations.
 fn path_preserves_continuations(
     ancestor: &PairedDecisionState,
     current: &PairedDecisionState,
@@ -2966,6 +3185,7 @@ fn path_preserves_continuations(
     false
 }
 
+/// Computes the paired decision successors.
 fn paired_decision_successors(
     state: &PairedDecisionState,
     grammar: &GrammarDescription,
@@ -3028,6 +3248,7 @@ fn paired_decision_successors(
     successors
 }
 
+/// Computes the paired residual.
 fn paired_residual(
     mut left: DecisionState,
     mut right: DecisionState,
@@ -3048,6 +3269,7 @@ fn paired_residual(
     PairedDecisionState::Residual(left, right)
 }
 
+/// Computes the decision items equivalent.
 fn decision_items_equivalent(
     left: &DecisionItem,
     right: &DecisionItem,
@@ -3074,11 +3296,13 @@ fn decision_items_equivalent(
     }
 }
 
+/// Computes the decision frontier.
 fn decision_frontier(
     start: &DecisionState,
     grammar: &GrammarDescription,
     atom_kinds: &[KindSet],
 ) -> DecisionFrontier {
+    // Explore the bounded lookahead product while deduplicating frontier states to terminate recursive shared prefixes.
     let mut frontier = DecisionFrontier::default();
     let mut best_minimum_depth = BTreeMap::from([(start.clone(), start.0.len())]);
     let mut queue = VecDeque::from([(start.clone(), start.0.len())]);
@@ -3257,6 +3481,7 @@ fn decision_frontier(
     frontier
 }
 
+/// Computes the queue decision expansion.
 fn queue_decision_expansion(
     mut expansion: Vec<DecisionItem>,
     rest: &[DecisionItem],
@@ -3276,6 +3501,7 @@ fn queue_decision_expansion(
     }
 }
 
+/// Compares first positions.
 fn compare_first_positions(left: &FirstPosition, right: &FirstPosition) -> std::cmp::Ordering {
     left.kinds
         .kind_count()
@@ -3284,6 +3510,7 @@ fn compare_first_positions(left: &FirstPosition, right: &FirstPosition) -> std::
         .then_with(|| left.text_predicate.cmp(&right.text_predicate))
 }
 
+/// Computes the decision graph has cycle.
 fn decision_graph_has_cycle(
     start: &PairedDecisionState,
     graph: &BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>>,
@@ -3310,6 +3537,7 @@ fn decision_graph_has_cycle(
     visit(start, graph, &mut BTreeSet::new(), &mut BTreeSet::new())
 }
 
+/// Computes the longest decision path.
 fn longest_decision_path(
     state: &PairedDecisionState,
     graph: &BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>>,
@@ -3327,6 +3555,7 @@ fn longest_decision_path(
     length
 }
 
+/// Computes the decision witness at depth.
 fn decision_witness_at_depth(
     start: &PairedDecisionState,
     graph: &BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>>,
@@ -3355,6 +3584,7 @@ fn decision_witness_at_depth(
     frontier.into_values().min()
 }
 
+/// Detects conflicts.
 fn detect_conflicts(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
@@ -3363,6 +3593,7 @@ fn detect_conflicts(
     proofs: &mut ProofArena,
     static_conflict_kinds_by_declaration: &mut [KindSet],
 ) -> Vec<Diagnostic> {
+    // Collect static conflicts before caller-FOLLOW checks so diagnostics preserve their semantic phase and remedy.
     let mut diagnostics = Vec::new();
     for (index, description) in grammar.types.iter().enumerate() {
         let owner = TypeId::new(index as u32);
@@ -3496,6 +3727,7 @@ fn detect_conflicts(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Detects pratt conflicts.
 fn detect_pratt_conflicts(
     owner: TypeId,
     owner_name: &str,
@@ -3545,6 +3777,7 @@ fn detect_pratt_conflicts(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Detects pratt group conflicts.
 fn detect_pratt_group_conflicts(
     owner: TypeId,
     owner_name: &str,
@@ -3557,6 +3790,7 @@ fn detect_pratt_group_conflicts(
     proofs: &mut ProofArena,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    // Compare Pratt groups as units because member-wise conflicts would lose the binding-power context.
     for left_index in 0..variants.len() {
         for right_index in left_index + 1..variants.len() {
             let left = variants[left_index];
@@ -3649,6 +3883,7 @@ fn detect_pratt_group_conflicts(
     }
 }
 
+/// Computes the pratt position name.
 const fn pratt_position_name(position: PrattPosition) -> &'static str {
     match position {
         PrattPosition::Atom => "atom",
@@ -3658,6 +3893,7 @@ const fn pratt_position_name(position: PrattPosition) -> &'static str {
     }
 }
 
+/// Computes the pratt overlap name.
 const fn pratt_overlap_name(left: PrattPosition, right: PrattPosition) -> &'static str {
     match (left, right) {
         (PrattPosition::Atom, PrattPosition::Atom) => "atom variants",
@@ -3675,6 +3911,7 @@ const fn pratt_overlap_name(left: PrattPosition, right: PrattPosition) -> &'stat
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Detects static conflicts for sites.
 fn detect_static_conflicts_for_sites(
     owner: TypeId,
     sites: &[SiteId],
@@ -3764,6 +4001,7 @@ fn detect_static_conflicts_for_sites(
     }
 }
 
+/// Computes the declaration label.
 fn declaration_label(
     declaration: crate::DeclId,
     grammar: &GrammarDescription,
@@ -3772,6 +4010,7 @@ fn declaration_label(
     crate::DiagnosticLabel::located(grammar.declarations[declaration.index()].location, message)
 }
 
+/// Detects follow conflicts.
 fn detect_follow_conflicts(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
@@ -3872,6 +4111,7 @@ fn detect_follow_conflicts(
     aggregate_follow_diagnostics(diagnostics, grammar, proofs)
 }
 
+/// Aggregates follow diagnostics.
 fn aggregate_follow_diagnostics(
     diagnostics: Vec<Diagnostic>,
     grammar: &GrammarDescription,
@@ -3921,6 +4161,7 @@ fn aggregate_follow_diagnostics(
     aggregated
 }
 
+/// Computes the follow source declaration.
 fn follow_source_declaration(
     proof: ProofId,
     site_declaration: crate::DeclId,
@@ -3933,6 +4174,7 @@ fn follow_source_declaration(
         .unwrap_or(site_declaration)
 }
 
+/// Computes the active extender provenance.
 fn active_extender_provenance(
     type_id: TypeId,
     min_bp: u8,
@@ -3968,6 +4210,7 @@ fn active_extender_provenance(
     positions
 }
 
+/// Computes the overlap evidence.
 fn overlap_evidence(
     left: &[ProvenancedPosition],
     right: &[ProvenancedPosition],
@@ -3983,6 +4226,7 @@ fn overlap_evidence(
     )
 }
 
+/// Computes the overlap evidence excluding.
 fn overlap_evidence_excluding(
     left: &[ProvenancedPosition],
     right: &[ProvenancedPosition],
@@ -4034,6 +4278,7 @@ fn overlap_evidence_excluding(
     })
 }
 
+/// Computes the proof pair is better.
 fn proof_pair_is_better(
     candidate: (ProofId, ProofId),
     current: (ProofId, ProofId),
@@ -4042,6 +4287,7 @@ fn proof_pair_is_better(
     compare_proof_pairs(candidate, current, proofs).is_lt()
 }
 
+/// Compares proof pairs.
 fn compare_proof_pairs(
     left: (ProofId, ProofId),
     right: (ProofId, ProofId),
@@ -4057,6 +4303,7 @@ fn compare_proof_pairs(
         .then_with(|| proofs.compare(left.1, right.1))
 }
 
+/// Computes the predicates overlap.
 pub(crate) fn predicates_overlap(
     left: Option<TextPredicateId>,
     right: Option<TextPredicateId>,
@@ -4101,6 +4348,11 @@ pub(crate) fn predicates_overlap(
     }
 }
 
+/// Finds the smallest lookahead depth that separates two FIRST-sequence sets.
+///
+/// Returns `None` when the sets still overlap at every depth through
+/// `max_depth`; it does not claim that no larger finite depth could separate
+/// them.
 pub fn disambiguation_depth(
     left: &[FirstSequence],
     right: &[FirstSequence],
@@ -4117,6 +4369,7 @@ pub fn disambiguation_depth(
     })
 }
 
+/// Computes the first sequences overlap within.
 fn first_sequences_overlap_within(
     left: &FirstSequence,
     right: &FirstSequence,
@@ -4151,6 +4404,7 @@ fn first_sequences_overlap_within(
         })
 }
 
+/// Computes extenders.
 fn compute_extenders(
     grammar: &GrammarDescription,
     first: &[FirstFacts],
@@ -4181,6 +4435,7 @@ fn compute_extenders(
         .collect()
 }
 
+/// Renders kind set.
 fn render_kind_set(set: &KindSet) -> String {
     let members = set
         .iter()

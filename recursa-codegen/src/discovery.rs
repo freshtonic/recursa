@@ -2,6 +2,14 @@
     dead_code,
     reason = "private source analysis discovery seam is consumed by later lowering and generation tickets"
 )]
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Deterministic discovery of an authored Rust module tree.
+//!
+//! Discovery follows active Rust module inclusions from the selected root and
+//! records both visited sources and every configuration, environment, or
+//! missing-path candidate that can invalidate the result. Logical module
+//! inclusions remain distinct even when they share one physical source file.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -18,89 +26,146 @@ use crate::lowering::{DiagnosticStage, DiscoveryInputs, ModuleId, RustEdition};
 use crate::source_syntax::{CargoCfgSnapshot, ConfigurationErrorKind, configure_attributes};
 
 #[derive(Clone, Copy, Debug)]
+/// The discovery input representation used by source analysis.
 pub(crate) struct DiscoveryInput<'input> {
+    /// The manifest dir.
     pub(crate) manifest_dir: &'input Path,
+    /// The selected root.
     pub(crate) selected_root: &'input Path,
+    /// The edition.
     pub(crate) edition: RustEdition,
+    /// The cfg.
     pub(crate) cfg: &'input CargoCfgSnapshot,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The discovery report representation used by source analysis.
 pub(crate) struct DiscoveryReport {
+    /// The discovery inputs.
     pub(crate) discovery_inputs: DiscoveryInputs,
+    /// The diagnostics.
     pub(crate) diagnostics: Vec<DiscoveryDiagnostic>,
+    /// The tree.
     pub(crate) tree: Option<DiscoveredModuleTree>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible discovery diagnostic kind cases used by source analysis.
 pub(crate) enum DiscoveryDiagnosticKind {
+    /// The invalid manifest case.
     InvalidManifest,
+    /// The absolute path case.
     AbsolutePath,
+    /// The package escape case.
     PackageEscape,
+    /// The symlink path case.
     SymlinkPath,
+    /// The missing root case.
     MissingRoot,
+    /// The unreadable source case.
     UnreadableSource,
+    /// The rust syntax case.
     RustSyntax,
+    /// The missing module case.
     MissingModule,
+    /// The ambiguous module case.
     AmbiguousModule,
+    /// The invalid module path case.
     InvalidModulePath,
+    /// The multiple module paths case.
     MultipleModulePaths,
+    /// The ancestor cycle case.
     AncestorCycle,
+    /// The unknown cfg case.
     UnknownCfg,
+    /// The invocation only cfg case.
     InvocationOnlyCfg,
+    /// The malformed cfg case.
     MalformedCfg,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The discovery diagnostic representation used by source analysis.
 pub(crate) struct DiscoveryDiagnostic {
+    /// The kind.
     pub(crate) kind: DiscoveryDiagnosticKind,
+    /// The stage.
     pub(crate) stage: DiagnosticStage,
+    /// The path.
     pub(crate) path: PathBuf,
+    /// The range.
     pub(crate) range: Option<Range<u32>>,
+    /// The message.
     pub(crate) message: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The discovered module tree representation used by source analysis.
 pub(crate) struct DiscoveredModuleTree {
+    /// The files.
     pub(crate) files: Vec<DiscoveredSourceFile>,
+    /// The inclusions.
     pub(crate) inclusions: Vec<ModuleInclusion>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The discovered source file representation used by source analysis.
 pub(crate) struct DiscoveredSourceFile {
+    /// The id.
     pub(crate) id: SourceId,
+    /// The path.
     pub(crate) path: PathBuf,
+    /// The text.
     pub(crate) text: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible module source kind cases used by source analysis.
 pub(crate) enum ModuleSourceKind {
+    /// The root case.
     Root,
+    /// The inline case.
     Inline,
+    /// The external case.
     External,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The module inclusion representation used by source analysis.
 pub(crate) struct ModuleInclusion {
+    /// The id.
     pub(crate) id: ModuleId,
+    /// The parent.
     pub(crate) parent: Option<ModuleId>,
+    /// The logical path.
     pub(crate) logical_path: Vec<String>,
+    /// The source.
     pub(crate) source: SourceId,
+    /// The declaration source.
     pub(crate) declaration_source: SourceId,
+    /// The source kind.
     pub(crate) source_kind: ModuleSourceKind,
+    /// The visibility.
     pub(crate) visibility: syn::Visibility,
+    /// The items.
     pub(crate) items: Vec<Item>,
+    /// The declaration range.
     pub(crate) declaration_range: Range<u32>,
+    /// The ownership.
     pub(crate) ownership: DirectoryOwnership,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The directory ownership representation used by source analysis.
 pub(crate) struct DirectoryOwnership {
+    /// The directory.
     pub(crate) directory: PathBuf,
+    /// The relative stem.
     pub(crate) relative_stem: Option<String>,
 }
 
 impl DirectoryOwnership {
+    /// Computes the default base.
     fn default_base(&self) -> PathBuf {
         self.relative_stem.as_ref().map_or_else(
             || self.directory.clone(),
@@ -109,7 +174,9 @@ impl DirectoryOwnership {
     }
 }
 
+/// Computes the discover module tree.
 pub(crate) fn discover_module_tree(input: DiscoveryInput<'_>) -> DiscoveryReport {
+    // Retain invalidation inputs on both success and failure; Cargo must rerun when a missing candidate later appears.
     let selected_root = input.selected_root.to_owned();
     let mut state = DiscoveryState {
         manifest_dir: PathBuf::new(),
@@ -211,18 +278,28 @@ pub(crate) fn discover_module_tree(input: DiscoveryInput<'_>) -> DiscoveryReport
     state.finish()
 }
 
+/// The discovery state representation used by source analysis.
 struct DiscoveryState<'cfg> {
+    /// The manifest dir.
     manifest_dir: PathBuf,
+    /// The cfg.
     cfg: &'cfg CargoCfgSnapshot,
+    /// The discovery inputs.
     discovery_inputs: DiscoveryInputs,
+    /// The diagnostics.
     diagnostics: Vec<DiscoveryDiagnostic>,
+    /// The files.
     files: Vec<DiscoveredSourceFile>,
+    /// The file by path.
     file_by_path: BTreeMap<PathBuf, SourceId>,
+    /// The inclusions.
     inclusions: Vec<ModuleInclusion>,
+    /// The candidates.
     candidates: BTreeSet<PathBuf>,
 }
 
 impl DiscoveryState<'_> {
+    /// Finishes finish.
     fn finish(mut self) -> DiscoveryReport {
         self.discovery_inputs.source_files =
             self.files.iter().map(|file| file.path.clone()).collect();
@@ -238,18 +315,21 @@ impl DiscoveryState<'_> {
         }
     }
 
+    /// Records diagnostic.
     fn push_diagnostic(&mut self, diagnostic: DiscoveryDiagnostic) {
         if !self.diagnostics.contains(&diagnostic) {
             self.diagnostics.push(diagnostic);
         }
     }
 
+    /// Records inclusion.
     fn push_inclusion(&mut self, inclusion: ModuleInclusion) -> ModuleId {
         let id = inclusion.id;
         self.inclusions.push(inclusion);
         id
     }
 
+    /// Visits items.
     fn visit_items(
         &mut self,
         items: &[Item],
@@ -259,6 +339,7 @@ impl DiscoveryState<'_> {
         ownership: &DirectoryOwnership,
         ancestors: &mut Vec<PathBuf>,
     ) {
+        // Walk active items in source order while recording inactive and missing module candidates for deterministic invalidation.
         for item in items {
             let Item::Mod(module) = item else {
                 continue;
@@ -431,6 +512,7 @@ impl DiscoveryState<'_> {
         }
     }
 
+    /// Configures module.
     fn configure_module(&mut self, module: &ItemMod, source: SourceId) -> Option<ConfiguredModule> {
         let configured_attributes = match configure_attributes(&module.attrs, self.cfg) {
             Ok(Some(attributes)) => attributes,
@@ -470,6 +552,7 @@ impl DiscoveryState<'_> {
         Some(configured)
     }
 
+    /// Selects default candidate.
     fn select_default_candidate(
         &mut self,
         module: &ItemMod,
@@ -517,6 +600,7 @@ impl DiscoveryState<'_> {
         }
     }
 
+    /// Loads source.
     fn load_source(
         &mut self,
         path: &ResolvedPath,
@@ -581,6 +665,7 @@ impl DiscoveryState<'_> {
         Some((id, syntax.items, length))
     }
 
+    /// Rejects symlink candidate.
     fn reject_symlink_candidate(
         &mut self,
         candidate: &ResolvedPath,
@@ -604,6 +689,7 @@ impl DiscoveryState<'_> {
         true
     }
 
+    /// Interns file.
     fn intern_file(&mut self, relative: &Path, text: String) -> SourceId {
         if let Some(id) = self.file_by_path.get(relative) {
             return *id;
@@ -623,10 +709,12 @@ impl DiscoveryState<'_> {
         id
     }
 
+    /// Computes the source path.
     fn source_path(&self, source: SourceId) -> &Path {
         &self.files[source.index()].path
     }
 
+    /// Resolves generated path.
     fn resolve_generated_path(&mut self, relative: &Path) -> Option<ResolvedPath> {
         let relative = match normalize_relative(relative) {
             Ok(path) => path,
@@ -647,6 +735,7 @@ impl DiscoveryState<'_> {
         })
     }
 
+    /// Resolves authored path.
     fn resolve_authored_path(
         &mut self,
         base: &Path,
@@ -691,30 +780,44 @@ impl DiscoveryState<'_> {
 }
 
 #[derive(Clone, Debug)]
+/// The resolved path representation used by source analysis.
 struct ResolvedPath {
+    /// The absolute.
     absolute: PathBuf,
+    /// The relative.
     relative: PathBuf,
 }
 
 #[derive(Clone, Debug)]
+/// The configured module representation used by source analysis.
 struct ConfiguredModule {
+    /// The active.
     active: bool,
+    /// The paths.
     paths: Vec<ActivePath>,
 }
 
 #[derive(Clone, Debug)]
+/// The active path representation used by source analysis.
 struct ActivePath {
+    /// The value.
     value: String,
+    /// The range.
     range: Range<u32>,
 }
 
 #[derive(Clone, Debug)]
+/// The cfg failure representation used by source analysis.
 pub(crate) struct CfgFailure {
+    /// The kind.
     pub(crate) kind: DiscoveryDiagnosticKind,
+    /// The range.
     pub(crate) range: Range<u32>,
+    /// The message.
     pub(crate) message: String,
 }
 
+/// Applies path attribute.
 fn apply_path_attribute(meta: &Meta, configured: &mut ConfiguredModule) -> Result<(), CfgFailure> {
     if meta.path().is_ident("path") {
         let Meta::NameValue(name_value) = meta else {
@@ -748,6 +851,7 @@ fn apply_path_attribute(meta: &Meta, configured: &mut ConfiguredModule) -> Resul
     }
 }
 
+/// Computes the discovery cfg diagnostic.
 fn discovery_cfg_diagnostic(kind: ConfigurationErrorKind) -> DiscoveryDiagnosticKind {
     match kind {
         ConfigurationErrorKind::Unknown => DiscoveryDiagnosticKind::UnknownCfg,
@@ -756,6 +860,7 @@ fn discovery_cfg_diagnostic(kind: ConfigurationErrorKind) -> DiscoveryDiagnostic
     }
 }
 
+/// Normalizes relative.
 fn normalize_relative(path: &Path) -> Result<PathBuf, ()> {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -773,6 +878,7 @@ fn normalize_relative(path: &Path) -> Result<PathBuf, ()> {
     Ok(normalized)
 }
 
+/// Computes the first symlink component.
 fn first_symlink_component(manifest_dir: &Path, relative: &Path) -> Option<PathBuf> {
     let mut current = manifest_dir.to_owned();
     let mut relative_current = PathBuf::new();
@@ -792,6 +898,7 @@ fn first_symlink_component(manifest_dir: &Path, relative: &Path) -> Option<PathB
     None
 }
 
+/// Computes the span range.
 fn span_range(span: Span) -> Range<u32> {
     let range = span.byte_range();
     range.start.try_into().unwrap_or(u32::MAX)..range.end.try_into().unwrap_or(u32::MAX)

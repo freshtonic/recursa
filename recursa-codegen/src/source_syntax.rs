@@ -2,6 +2,13 @@
     dead_code,
     reason = "private source analysis source-configuration seam is consumed by later pipeline tickets"
 )]
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Parsing of source-level grammar configuration and Rust syntax fragments.
+//!
+//! These helpers normalize only generator-owned syntax. Rust paths and token
+//! fragments outside the grammar-semantic reference set remain structured but
+//! unresolved, preserving the boundary between source analysis and rustc.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -17,17 +24,22 @@ use syn::{Attribute, Expr, Item, Lit, LitInt, Meta, Path, Token};
 use crate::TextEquivalence;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// The cargo cfg snapshot representation used by source analysis.
 pub(crate) struct CargoCfgSnapshot {
+    /// The flags.
     flags: BTreeSet<String>,
+    /// The values.
     values: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl CargoCfgSnapshot {
+    /// Computes the with flag.
     pub(crate) fn with_flag(mut self, name: impl Into<String>) -> Self {
         self.flags.insert(name.into());
         self
     }
 
+    /// Computes the with value.
     pub(crate) fn with_value(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.values
             .entry(name.into())
@@ -36,6 +48,7 @@ impl CargoCfgSnapshot {
         self
     }
 
+    /// Computes the from cargo environment.
     pub(crate) fn from_cargo_environment<I, K, V>(variables: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -71,6 +84,7 @@ impl CargoCfgSnapshot {
         snapshot
     }
 
+    /// Renders facts in canonical order.
     pub(crate) fn canonical_facts(&self) -> Vec<String> {
         let mut facts = self.flags.iter().cloned().collect::<Vec<_>>();
         for (name, values) in &self.values {
@@ -80,6 +94,7 @@ impl CargoCfgSnapshot {
         facts
     }
 
+    /// Computes the flag.
     fn flag(&self, name: &str) -> Result<bool, CfgLookupFailure> {
         if invocation_only_cfg(name) {
             return Err(CfgLookupFailure::InvocationOnly);
@@ -93,6 +108,7 @@ impl CargoCfgSnapshot {
         }
     }
 
+    /// Computes the value.
     fn value(&self, name: &str, value: &str) -> Result<bool, CfgLookupFailure> {
         if invocation_only_cfg(name) {
             return Err(CfgLookupFailure::InvocationOnly);
@@ -107,14 +123,17 @@ impl CargoCfgSnapshot {
     }
 }
 
+/// Computes the invocation only cfg.
 fn invocation_only_cfg(name: &str) -> bool {
     matches!(name, "test" | "doc" | "doctest")
 }
 
+/// Computes the empty value cfg.
 fn empty_value_cfg(name: &str) -> bool {
     matches!(name, "target_abi" | "target_env")
 }
 
+/// Computes the compiler owned cfg.
 fn compiler_owned_cfg(name: &str) -> bool {
     matches!(
         name,
@@ -147,22 +166,36 @@ fn compiler_owned_cfg(name: &str) -> bool {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The grammar config syntax representation used by source analysis.
 pub(crate) struct GrammarConfigSyntax {
+    /// The module.
     pub(crate) module: Path,
+    /// The facade.
     pub(crate) facade: syn::Ident,
+    /// The facade explicit.
     pub(crate) facade_explicit: bool,
+    /// The text equivalence.
     pub(crate) text_equivalence: TextEquivalence,
+    /// The invalid keyword matching.
     pub(crate) invalid_keyword_matching: Option<InvalidKeywordMatchingSyntax>,
+    /// The max lookahead.
     pub(crate) max_lookahead: usize,
+    /// The spans.
     pub(crate) spans: CaptureMode,
+    /// The derives.
     pub(crate) derives: Vec<Path>,
+    /// The diagrams.
     pub(crate) diagrams: bool,
+    /// The pretty.
     pub(crate) pretty: PrettyDefaults,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The pretty defaults representation used by source analysis.
 pub(crate) struct PrettyDefaults {
+    /// The max width.
     pub(crate) max_width: usize,
+    /// The indent.
     pub(crate) indent: usize,
 }
 
@@ -209,13 +242,18 @@ impl Parse for PrettyDefaults {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible capture mode cases used by source analysis.
 pub(crate) enum CaptureMode {
+    /// The off case.
     Off,
+    /// The optional case.
     Optional,
+    /// The mandatory case.
     Mandatory,
 }
 
 impl CaptureMode {
+    /// Parses parse.
     pub(crate) fn parse(value: syn::Ident) -> syn::Result<Self> {
         if value == "off" {
             Ok(Self::Off)
@@ -232,6 +270,7 @@ impl CaptureMode {
     }
 }
 
+/// Computes the capture override.
 pub(crate) fn capture_override(metas: &[Meta]) -> syn::Result<Option<CaptureMode>> {
     let mut capture = None;
     for meta in metas.iter().filter(|meta| meta.path().is_ident("spanned")) {
@@ -346,8 +385,11 @@ mod capture_tests {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The invalid keyword matching syntax representation used by source analysis.
 pub(crate) struct InvalidKeywordMatchingSyntax {
+    /// The authored.
     pub(crate) authored: String,
+    /// The range.
     pub(crate) range: std::ops::Range<u32>,
 }
 
@@ -440,6 +482,7 @@ impl Parse for GrammarConfigSyntax {
     }
 }
 
+/// Rejects duplicate.
 fn reject_duplicate<T>(value: &Option<T>, span: Span, name: &str) -> syn::Result<()> {
     if value.is_some() {
         Err(syn::Error::new(span, format!("duplicate {name} setting")))
@@ -449,24 +492,35 @@ fn reject_duplicate<T>(value: &Option<T>, span: Span, name: &str) -> syn::Result
 }
 
 #[derive(Clone, Debug)]
+/// The configured attributes representation used by source analysis.
 pub(crate) struct ConfiguredAttributes {
+    /// The metas.
     pub(crate) metas: Vec<Meta>,
 }
 
 #[derive(Clone, Debug)]
+/// The configuration error representation used by source analysis.
 pub(crate) struct ConfigurationError {
+    /// The kind.
     pub(crate) kind: ConfigurationErrorKind,
+    /// The range.
     pub(crate) range: Range<u32>,
+    /// The message.
     pub(crate) message: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible configuration error kind cases used by source analysis.
 pub(crate) enum ConfigurationErrorKind {
+    /// The unknown case.
     Unknown,
+    /// The invocation only case.
     InvocationOnly,
+    /// The malformed case.
     Malformed,
 }
 
+/// Configures attributes.
 pub(crate) fn configure_attributes(
     attributes: &[Attribute],
     cfg: &CargoCfgSnapshot,
@@ -482,6 +536,7 @@ pub(crate) fn configure_attributes(
     Ok(Some(ConfiguredAttributes { metas }))
 }
 
+/// Computes the configured attribute metas.
 pub(crate) fn configured_attribute_metas(
     attributes: &[Attribute],
     cfg: &CargoCfgSnapshot,
@@ -490,6 +545,7 @@ pub(crate) fn configured_attribute_metas(
         .map(|configured| configured.map(|configured| configured.metas))
 }
 
+/// Computes the item attributes.
 pub(crate) fn item_attributes(item: &Item) -> &[Attribute] {
     match item {
         Item::Const(item) => &item.attrs,
@@ -512,6 +568,7 @@ pub(crate) fn item_attributes(item: &Item) -> &[Attribute] {
     }
 }
 
+/// Computes the path text.
 pub(crate) fn path_text(path: &Path) -> String {
     path.segments
         .iter()
@@ -520,6 +577,7 @@ pub(crate) fn path_text(path: &Path) -> String {
         .join("::")
 }
 
+/// Applies meta.
 fn apply_meta(
     meta: &Meta,
     cfg: &CargoCfgSnapshot,
@@ -563,6 +621,7 @@ fn apply_meta(
     Ok(())
 }
 
+/// Computes the configuration error.
 fn configuration_error(span: Span, message: impl Into<String>) -> ConfigurationError {
     ConfigurationError {
         kind: ConfigurationErrorKind::Malformed,
@@ -571,6 +630,7 @@ fn configuration_error(span: Span, message: impl Into<String>) -> ConfigurationE
     }
 }
 
+/// Evaluates cfg.
 fn evaluate_cfg(meta: &Meta, snapshot: &CargoCfgSnapshot) -> Result<bool, ConfigurationError> {
     let name = meta
         .path()
@@ -624,11 +684,15 @@ fn evaluate_cfg(meta: &Meta, snapshot: &CargoCfgSnapshot) -> Result<bool, Config
 }
 
 #[derive(Clone, Copy, Debug)]
+/// The possible cfg lookup failure cases used by source analysis.
 enum CfgLookupFailure {
+    /// The unknown case.
     Unknown,
+    /// The invocation only case.
     InvocationOnly,
 }
 
+/// Computes the cfg lookup error.
 fn cfg_lookup_error(failure: CfgLookupFailure, span: Span, name: &str) -> ConfigurationError {
     match failure {
         CfgLookupFailure::Unknown => ConfigurationError {
@@ -644,6 +708,7 @@ fn cfg_lookup_error(failure: CfgLookupFailure, span: Span, name: &str) -> Config
     }
 }
 
+/// Computes the span range.
 pub(crate) fn span_range(span: Span) -> Range<u32> {
     let range = span.byte_range();
     range.start.try_into().unwrap_or(u32::MAX)..range.end.try_into().unwrap_or(u32::MAX)

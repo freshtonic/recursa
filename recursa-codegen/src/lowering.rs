@@ -2,6 +2,14 @@
     dead_code,
     reason = "private source analysis seam is consumed by later source-discovery and generation tickets"
 )]
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Lowering from the resolved source model to normalized grammar identities.
+//!
+//! The lowering map is deliberately explicit and bidirectional: every
+//! grammar-relevant source identity has one normalized counterpart and every
+//! normalized location can be traced back for diagnostics. Validation keeps
+//! that correlation total before semantic analysis consumes it.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -21,6 +29,7 @@ use crate::{
     SiteId, SourceId, TextEquivalence, TypeDescription, TypeId, TypeShape, analyze,
 };
 
+/// Computes the source id.
 macro_rules! source_id {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -48,46 +57,69 @@ source_id!(SourceDeclarationId);
 source_id!(SourceLocationId);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible rust edition cases used by source analysis.
 pub(crate) enum RustEdition {
+    /// The rust2024 case.
     Rust2024,
 }
 
 #[derive(Clone, Copy, Debug)]
+/// The single file input representation used by source analysis.
 pub(crate) struct SingleFileInput<'source> {
+    /// The manifest relative path.
     pub(crate) manifest_relative_path: &'source Path,
+    /// The source.
     pub(crate) source: &'source str,
+    /// The edition.
     pub(crate) edition: RustEdition,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible diagnostic stage cases used by source analysis.
 pub(crate) enum DiagnosticStage {
+    /// The discovery case.
     Discovery,
+    /// The syntax case.
     Syntax,
+    /// The lowering case.
     Lowering,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source diagnostic representation used by source analysis.
 pub(crate) struct SourceDiagnostic {
+    /// The stage.
     pub(crate) stage: DiagnosticStage,
+    /// The path.
     pub(crate) path: PathBuf,
+    /// The range.
     pub(crate) range: Option<Range<u32>>,
+    /// The message.
     pub(crate) message: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The single file analysis report representation used by source analysis.
 pub(crate) struct SingleFileAnalysisReport {
+    /// The diagnostics.
     pub(crate) diagnostics: Vec<SourceDiagnostic>,
+    /// The semantic diagnostics.
     pub(crate) semantic_diagnostics: Vec<Diagnostic>,
+    /// The analyzed.
     pub(crate) analyzed: Option<AnalyzedGrammar>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The analyzed grammar representation used by source analysis.
 pub(crate) struct AnalyzedGrammar {
+    /// The lowered.
     pub(crate) lowered: SingleFileLoweredGrammar,
+    /// The analysis.
     pub(crate) analysis: AnalysisReport,
 }
 
 impl AnalyzedGrammar {
+    /// Renders semantic projection in canonical order.
     pub(crate) fn canonical_semantic_projection(&self) -> Option<String> {
         let grammar = &self.lowered.grammar;
         let source = &self.lowered.source_model;
@@ -150,24 +182,37 @@ impl AnalyzedGrammar {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The single file lowered grammar representation used by source analysis.
 pub(crate) struct SingleFileLoweredGrammar {
+    /// The build inputs.
     pub(crate) build_inputs: BuildInputs,
+    /// The grammar.
     pub(crate) grammar: GrammarDescription,
+    /// The source model.
     pub(crate) source_model: SourceModel,
+    /// The lowering map.
     pub(crate) lowering_map: LoweringMap,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The discovery inputs representation used by source analysis.
 pub(crate) struct DiscoveryInputs {
+    /// The selected root.
     pub(crate) selected_root: PathBuf,
+    /// The source files.
     pub(crate) source_files: Vec<PathBuf>,
+    /// The edition.
     pub(crate) edition: RustEdition,
+    /// The watched module candidates.
     pub(crate) watched_module_candidates: Vec<PathBuf>,
+    /// The cfg snapshot.
     pub(crate) cfg_snapshot: Vec<String>,
+    /// The environment dependencies.
     pub(crate) environment_dependencies: Vec<String>,
 }
 
 impl DiscoveryInputs {
+    /// Computes the watched paths.
     pub(crate) fn watched_paths(&self) -> Vec<PathBuf> {
         let mut paths = self
             .source_files
@@ -183,27 +228,41 @@ impl DiscoveryInputs {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The build inputs representation used by source analysis.
 pub(crate) struct BuildInputs {
+    /// The discovery.
     pub(crate) discovery: DiscoveryInputs,
+    /// The module anchor.
     pub(crate) module_anchor: SelectedRootAnchor,
+    /// The facade.
     pub(crate) facade: FacadeMapping,
+    /// The text equivalence.
     pub(crate) text_equivalence: TextEquivalence,
+    /// The max lookahead.
     pub(crate) max_lookahead: usize,
+    /// The spans.
     pub(crate) spans: CaptureMode,
+    /// The diagrams.
     pub(crate) diagrams: bool,
+    /// The pretty.
     pub(crate) pretty: PrettyDefaults,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The selected root anchor representation used by source analysis.
 pub(crate) struct SelectedRootAnchor {
+    /// The segments.
     pub(crate) segments: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The facade mapping representation used by source analysis.
 pub(crate) struct FacadeMapping {
+    /// The ident.
     pub(crate) ident: String,
 }
 
+/// Computes the safe manifest relative path.
 fn safe_manifest_relative_path(path: &Path) -> bool {
     let mut depth = 0_usize;
     for component in path.components() {
@@ -218,183 +277,292 @@ fn safe_manifest_relative_path(path: &Path) -> bool {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source model representation used by source analysis.
 pub(crate) struct SourceModel {
+    /// The files.
     pub(crate) files: Vec<SourceFile>,
+    /// The modules.
     pub(crate) modules: Vec<SourceModule>,
+    /// The grammar.
     pub(crate) grammar: SourceGrammarConfig,
+    /// The nodes.
     pub(crate) nodes: Vec<SourceNode>,
+    /// The variants.
     pub(crate) variants: Vec<SourceVariant>,
+    /// The elements.
     pub(crate) elements: Vec<SourceElement>,
+    /// The token definitions.
     pub(crate) token_definitions: Vec<SourceTokenDefinition>,
+    /// The token uses.
     pub(crate) token_uses: Vec<SourceTokenUse>,
+    /// The declarations.
     pub(crate) declarations: Vec<SourceDeclaration>,
+    /// The locations.
     pub(crate) locations: Vec<SourceLocation>,
 }
 
 impl SourceModel {
+    /// Computes the location.
     pub(crate) fn location(&self, id: SourceLocationId) -> &SourceLocation {
         &self.locations[id.index()]
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source file representation used by source analysis.
 pub(crate) struct SourceFile {
+    /// The id.
     pub(crate) id: SourceId,
+    /// The path.
     pub(crate) path: PathBuf,
+    /// The text.
     pub(crate) text: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source module representation used by source analysis.
 pub(crate) struct SourceModule {
+    /// The id.
     pub(crate) id: ModuleId,
+    /// The file.
     pub(crate) file: SourceId,
+    /// The path.
     pub(crate) path: SynPath,
+    /// The location.
     pub(crate) location: SourceLocationId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source grammar config representation used by source analysis.
 pub(crate) struct SourceGrammarConfig {
+    /// The module.
     pub(crate) module: ModuleId,
+    /// The text equivalence.
     pub(crate) text_equivalence: TextEquivalence,
+    /// The max lookahead.
     pub(crate) max_lookahead: usize,
+    /// The location.
     pub(crate) location: SourceLocationId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source node representation used by source analysis.
 pub(crate) struct SourceNode {
+    /// The id.
     pub(crate) id: NodeId,
+    /// The module.
     pub(crate) module: ModuleId,
+    /// The declaration.
     pub(crate) declaration: SourceDeclarationId,
+    /// The ident.
     pub(crate) ident: syn::Ident,
+    /// The generics.
     pub(crate) generics: syn::Generics,
+    /// The visibility.
     pub(crate) visibility: syn::Visibility,
+    /// The location.
     pub(crate) location: SourceLocationId,
+    /// The elements.
     pub(crate) elements: Vec<ElementId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source variant representation used by source analysis.
 pub(crate) struct SourceVariant {
+    /// The id.
     pub(crate) id: VariantId,
+    /// The node.
     pub(crate) node: NodeId,
+    /// The declaration.
     pub(crate) declaration: SourceDeclarationId,
+    /// The ident.
     pub(crate) ident: syn::Ident,
+    /// The location.
     pub(crate) location: SourceLocationId,
+    /// The elements.
     pub(crate) elements: Vec<ElementId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source element representation used by source analysis.
 pub(crate) struct SourceElement {
+    /// The id.
     pub(crate) id: ElementId,
+    /// The node.
     pub(crate) node: NodeId,
+    /// The variant.
     pub(crate) variant: Option<VariantId>,
+    /// The declaration.
     pub(crate) declaration: SourceDeclarationId,
+    /// The ident.
     pub(crate) ident: Option<syn::Ident>,
+    /// The visibility.
     pub(crate) visibility: syn::Visibility,
+    /// The ty.
     pub(crate) ty: Type,
+    /// The token use.
     pub(crate) token_use: TokenUseId,
+    /// The location.
     pub(crate) location: SourceLocationId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source token definition representation used by source analysis.
 pub(crate) struct SourceTokenDefinition {
+    /// The id.
     pub(crate) id: TokenDefinitionId,
+    /// The module.
     pub(crate) module: ModuleId,
+    /// The declaration.
     pub(crate) declaration: SourceDeclarationId,
+    /// The ident.
     pub(crate) ident: syn::Ident,
+    /// The pattern.
     pub(crate) pattern: LitStr,
+    /// The location.
     pub(crate) location: SourceLocationId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source token use representation used by source analysis.
 pub(crate) struct SourceTokenUse {
+    /// The id.
     pub(crate) id: TokenUseId,
+    /// The definition.
     pub(crate) definition: TokenDefinitionId,
+    /// The element.
     pub(crate) element: ElementId,
+    /// The location.
     pub(crate) location: SourceLocationId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source declaration representation used by source analysis.
 pub(crate) struct SourceDeclaration {
+    /// The id.
     pub(crate) id: SourceDeclarationId,
+    /// The location.
     pub(crate) location: SourceLocationId,
+    /// The kind.
     pub(crate) kind: SourceDeclarationKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible source declaration kind cases used by source analysis.
 pub(crate) enum SourceDeclarationKind {
+    /// The node case.
     Node(NodeId),
+    /// The element case.
     Element(ElementId),
+    /// The token case.
     Token(TokenDefinitionId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source location representation used by source analysis.
 pub(crate) struct SourceLocation {
+    /// The id.
     pub(crate) id: SourceLocationId,
+    /// The source.
     pub(crate) source: SourceId,
+    /// The range.
     pub(crate) range: Range<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The lowering map representation used by source analysis.
 pub(crate) struct LoweringMap {
+    /// The source files.
     pub(crate) source_files: Vec<SourceFileCorrelation>,
+    /// The nodes.
     pub(crate) nodes: Vec<NodeTypeCorrelation>,
+    /// The elements.
     pub(crate) elements: Vec<ElementSiteCorrelation>,
+    /// The token definitions.
     pub(crate) token_definitions: Vec<TokenDefinitionCorrelation>,
+    /// The token uses.
     pub(crate) token_uses: Vec<TokenUseSiteCorrelation>,
+    /// The declarations.
     pub(crate) declarations: Vec<DeclarationCorrelation>,
+    /// The locations.
     pub(crate) locations: Vec<LocationCorrelation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The source file correlation representation used by source analysis.
 pub(crate) struct SourceFileCorrelation {
+    /// The source.
     pub(crate) source: SourceId,
+    /// The lowered.
     pub(crate) lowered: SourceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The node type correlation representation used by source analysis.
 pub(crate) struct NodeTypeCorrelation {
+    /// The source.
     pub(crate) source: NodeId,
+    /// The lowered.
     pub(crate) lowered: TypeId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The element site correlation representation used by source analysis.
 pub(crate) struct ElementSiteCorrelation {
+    /// The source.
     pub(crate) source: ElementId,
+    /// The lowered.
     pub(crate) lowered: SiteId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The token definition correlation representation used by source analysis.
 pub(crate) struct TokenDefinitionCorrelation {
+    /// The source.
     pub(crate) source: TokenDefinitionId,
+    /// The kind.
     pub(crate) kind: KindId,
+    /// The atom.
     pub(crate) atom: AtomId,
+    /// The ty.
     pub(crate) ty: TypeId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The token use site correlation representation used by source analysis.
 pub(crate) struct TokenUseSiteCorrelation {
+    /// The source.
     pub(crate) source: TokenUseId,
+    /// The lowered.
     pub(crate) lowered: SiteId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The declaration correlation representation used by source analysis.
 pub(crate) struct DeclarationCorrelation {
+    /// The source.
     pub(crate) source: SourceDeclarationId,
+    /// The lowered.
     pub(crate) lowered: DeclId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The location correlation representation used by source analysis.
 pub(crate) struct LocationCorrelation {
+    /// The source.
     pub(crate) source: SourceLocationId,
+    /// The lowered.
     pub(crate) lowered: LocationId,
 }
 
 impl LoweringMap {
+    /// Validates validate.
     pub(crate) fn validate(
         &self,
         source: &SourceModel,
         grammar: &GrammarDescription,
     ) -> Result<(), String> {
+        // Check every forward and reverse correlation together; generation relies on this map being total and bijective.
         validate_targets(
             "source file identity",
             source.files.len(),
@@ -809,6 +977,7 @@ impl LoweringMap {
     }
 }
 
+/// Computes the lowered declaration.
 fn lowered_declaration(
     lowering_map: &LoweringMap,
     source: SourceDeclarationId,
@@ -821,6 +990,7 @@ fn lowered_declaration(
         .ok_or_else(|| "source declaration has no semantic analysis origin".to_owned())
 }
 
+/// Validates total.
 fn validate_total<T>(
     name: &str,
     expected: usize,
@@ -837,6 +1007,7 @@ fn validate_total<T>(
     Ok(())
 }
 
+/// Validates targets.
 fn validate_targets(
     name: &str,
     upper_bound: usize,
@@ -849,6 +1020,7 @@ fn validate_targets(
     Ok(())
 }
 
+/// Validates unique targets.
 fn validate_unique_targets(
     name: &str,
     upper_bound: usize,
@@ -863,6 +1035,7 @@ fn validate_unique_targets(
     Ok(seen)
 }
 
+/// Computes the analyze single file.
 pub(crate) fn analyze_single_file(input: SingleFileInput<'_>) -> SingleFileAnalysisReport {
     let lowering = lower_single_file(input);
     if !lowering.diagnostics.is_empty() {
@@ -891,12 +1064,17 @@ pub(crate) fn analyze_single_file(input: SingleFileInput<'_>) -> SingleFileAnaly
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The lowering report representation used by source analysis.
 pub(crate) struct LoweringReport {
+    /// The diagnostics.
     pub(crate) diagnostics: Vec<SourceDiagnostic>,
+    /// The lowered.
     pub(crate) lowered: Option<SingleFileLoweredGrammar>,
 }
 
+/// Lowers single file.
 pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
+    // Resolve source meaning before projection, then validate the normalized grammar and all retained correlations.
     let syntax = match syn::parse_file(input.source) {
         Ok(syntax) => syntax,
         Err(error) => {
@@ -1181,10 +1359,12 @@ pub(crate) fn lower_single_file(input: SingleFileInput<'_>) -> LoweringReport {
     }
 }
 
+/// Lowers semantics.
 fn lower_semantics(
     source: &SourceModel,
     config: &GrammarConfigSyntax,
 ) -> (GrammarDescription, LoweringMap) {
+    // Lower declarations in source order so dense normalized IDs and diagnostic projections remain deterministic.
     let token = &source.token_definitions[0];
     let node = &source.nodes[0];
     let element = &source.elements[0];
@@ -1307,11 +1487,13 @@ fn lower_semantics(
     (grammar, map)
 }
 
+/// Computes the source lowered location.
 fn source_lowered_location(source: &SourceModel, id: SourceLocationId) -> Location {
     let location = source.location(id);
     Location::new(location.source, location.range.clone())
 }
 
+/// Computes the failure.
 fn failure(
     path: &Path,
     stage: DiagnosticStage,
@@ -1329,6 +1511,7 @@ fn failure(
     }
 }
 
+/// Records source location.
 fn push_source_location(
     locations: &mut Vec<SourceLocation>,
     source: SourceId,
@@ -1343,12 +1526,14 @@ fn push_source_location(
     id
 }
 
+/// Computes the span range.
 fn span_range(span: Span) -> Range<u32> {
     let range = span.byte_range();
     range.start.try_into().expect("source offset overflow")
         ..range.end.try_into().expect("source offset overflow")
 }
 
+/// Computes the path is.
 fn path_is(path: &SynPath, expected: &[&str]) -> bool {
     path.segments.len() == expected.len()
         && path
@@ -1358,6 +1543,7 @@ fn path_is(path: &SynPath, expected: &[&str]) -> bool {
             .all(|(segment, expected)| segment.ident == *expected)
 }
 
+/// Whether the value has node derive.
 fn has_node_derive(attributes: &[Attribute]) -> bool {
     attributes
         .iter()
@@ -1372,6 +1558,7 @@ fn has_node_derive(attributes: &[Attribute]) -> bool {
         })
 }
 
+/// Parses lex.
 fn parse_lex(attribute: &Attribute) -> syn::Result<LitStr> {
     let mut pattern = None;
     attribute.parse_nested_meta(|meta| {
@@ -1388,6 +1575,7 @@ fn parse_lex(attribute: &Attribute) -> syn::Result<LitStr> {
     pattern.ok_or_else(|| syn::Error::new(attribute.span(), "#[lex] requires pattern = r\"...\""))
 }
 
+/// Computes the token type ident.
 fn token_type_ident(ty: &Type) -> Result<syn::Ident, String> {
     let Type::Path(path) = ty else {
         return Err(
