@@ -57,3 +57,9 @@ remain part of the default suite even when their fixture compilation is relative
   one, keep it ignored and manual as above.
 - Keep exhaustive execution in the Stable lane. The MSRV lane checks all targets and features and
   runs only the representative downstream-generation smoke test.
+- Exercise planner diagnostics directly at the source-analysis or emission-planning seam. Retain a
+  small downstream-Cargo smoke matrix for errors whose observable contract includes Cargo or Rust
+  compiler integration.
+- When many scenarios need the same downstream fixture, use one serialized, stable fixture
+  workspace and reset its authored and generated state between scenarios. Reuse compiled dependency
+  artifacts only; do not share a target directory between independent temporary package roots.
