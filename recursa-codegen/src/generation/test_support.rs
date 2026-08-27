@@ -779,6 +779,18 @@ pub(super) fn explorer_rendering_consumes_its_frozen_schema_plan() {
             "rendered explorer content must consume frozen decision {frozen}"
         );
     }
+    assert!(
+        generated.contains("type __RecursaExplorerSampleCallback = fn"),
+        "capable roots must name the erased sample callback instead of emitting a lint-prone nested function type"
+    );
+    assert!(
+        generated.contains("Option < __RecursaExplorerSampleCallback >"),
+        "the matching-version sample macro must retain its optional callback ABI through the named alias"
+    );
+    assert!(
+        !generated.contains("Option < fn (& [u8]) -> Result"),
+        "generated adapter bindings must not restore the type-complexity shape"
+    );
 
     let schema_source = render_explorer_static_schema(
         &plan,

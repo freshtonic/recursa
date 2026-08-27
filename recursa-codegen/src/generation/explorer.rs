@@ -1716,12 +1716,13 @@ pub(super) fn render_node_application_explorer(
         });
         let arbitrary_binding = if arbitrary {
             quote! {
+                type __RecursaExplorerSampleCallback = fn(&[u8]) -> Result<
+                    #facade::explorer::ExplorerDocument<'static>,
+                    #facade::explorer::SampleError,
+                >;
                 let (arbitrary, sample): (
                     bool,
-                    Option<fn(&[u8]) -> Result<
-                        #facade::explorer::ExplorerDocument<'static>,
-                        #facade::explorer::SampleError,
-                    >>,
+                    Option<__RecursaExplorerSampleCallback>,
                 ) = __recursa_explorer_sample!(#sample);
             }
         } else {
