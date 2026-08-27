@@ -17,6 +17,10 @@ jobs:
   msrv:
     name: Rust 1.88
     runs-on: ubuntu-latest
+    env:
+      # Nested Cargo processes spawned by the downstream fixture must use the
+      # same compiler as the outer smoke test.
+      RUSTUP_TOOLCHAIN: 1.88.0
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -24,8 +28,10 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88
         uses: dtolnay/rust-toolchain@1.88.0
-      - name: Test workspace
-        run: cargo +1.88.0 test --workspace --all-targets
+      - name: Check workspace
+        run: cargo +1.88.0 check --workspace --all-targets --all-features --locked
+      - name: Smoke test generated downstream crate
+        run: cargo +1.88.0 test -p recursa-codegen --test generated_lexing --locked a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text -- --exact
 
   stable:
     name: Stable

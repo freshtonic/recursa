@@ -5,12 +5,25 @@ benchmarks, enforcing execution-time budgets, or recursively rerunning acceptanc
 
 ## Default suites
 
-The default commands are:
+Stable Rust owns exhaustive test execution. The default exhaustive commands are:
 
 ```sh
 cargo test --workspace --all-targets
 cargo test --workspace --all-targets --all-features
 ```
+
+The Rust 1.88 lane proves MSRV compatibility without executing that suite a second time. It checks
+every workspace target and feature, then executes one representative generated downstream crate:
+
+```sh
+cargo +1.88.0 check --workspace --all-targets --all-features --locked
+RUSTUP_TOOLCHAIN=1.88.0 cargo +1.88.0 test -p recursa-codegen \
+  --test generated_lexing --locked \
+  a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text -- --exact
+```
+
+Keep `RUSTUP_TOOLCHAIN` set for the smoke test because its test harness starts a nested Cargo
+process. This ensures the downstream generated crate is also compiled with Rust 1.88.
 
 Tests reached by these commands must assert behavior, structure, diagnostics, or compatibility—not
 wall-clock duration. A test may use a timeout only to prove termination or prevent a hung process;
@@ -42,3 +55,5 @@ remain part of the default suite even when their fixture compilation is relative
 - Keep machine-speed thresholds out of default tests and CI.
 - Avoid aggregate tests that invoke other default test commands; when historical acceptance requires
   one, keep it ignored and manual as above.
+- Keep exhaustive execution in the Stable lane. The MSRV lane checks all targets and features and
+  runs only the representative downstream-generation smoke test.
