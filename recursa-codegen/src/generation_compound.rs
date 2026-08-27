@@ -20,7 +20,7 @@ use crate::decision_plan::{
     ContainerOperation, DispatchKind, ExpectedRecipe, FailureEdgeKind, FollowRecipe,
 };
 use crate::lexical::{KeywordRecognition, LexicalMatcher, LexicalPriority, TokenKindIdentity};
-use crate::lowering::{ModuleId, NodeId, TokenUseId};
+use crate::lowering::{ModuleId, NodeId, TokenDefinitionId, TokenUseId};
 use crate::m3::{CargoOutput, M3Input, analyze_source_tree, internal_generate_error};
 use crate::materialization::{
     ClosedType, MaterializedApplicationId, MaterializedElement, MaterializedFixedAttachment,
@@ -341,9 +341,15 @@ struct ExtensionArtifactPlan {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ExplorerPlan {
+    grammar: ExplorerGrammarPlan,
     roots: Vec<ExplorerRootPlan>,
     nodes: Vec<ExplorerNodePlan>,
     tokens: Vec<ExplorerTokenPlan>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExplorerGrammarPlan {
+    name: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -361,16 +367,35 @@ struct ExplorerCapabilityPlan {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ExplorerTokenPlan {
-    token: ContentTokenId,
-    schema_name: String,
+    kind_index: u16,
+    semantic: Option<ContentTokenId>,
+    name: String,
+    qualified_name: String,
+    kind: ExplorerTokenKindPlan,
+    canonical_text: Option<String>,
+    highlight: ExplorerHighlightClassPlan,
     display: ExplorerDisplayPlan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExplorerTokenKindPlan {
+    Fixed,
+    Content,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExplorerHighlightClassPlan {
+    Keyword,
+    Punctuation,
+    Content,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ExplorerNodePlan {
     node: NodeId,
     application: MaterializedApplicationId,
-    schema_name: String,
+    name: String,
+    qualified_name: String,
     display: ExplorerDisplayPlan,
     body: ExplorerNodeBodyPlan,
 }
@@ -386,6 +411,7 @@ enum ExplorerNodeBodyPlan {
 struct ExplorerVariantPlan {
     variant: Option<ResolvedVariantId>,
     name: Option<String>,
+    qualified_name: Option<String>,
     elements: Vec<ExplorerElementPlan>,
 }
 
@@ -396,8 +422,16 @@ struct ExplorerElementPlan {
     role: ExplorerElementRolePlan,
     cardinality: ExplorerCardinalityPlan,
     token_classification: Option<ExplorerTokenClassificationPlan>,
+    target: Option<ExplorerElementTargetPlan>,
+    token_kind: Option<u16>,
     display: ExplorerDisplayPlan,
     occurrence: ExplorerOccurrencePlan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExplorerElementTargetPlan {
+    Node(MaterializedApplicationId),
+    ContentToken(ContentTokenId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -628,6 +662,7 @@ struct AttachedFixedParsePlan {
 #[derive(Clone, Debug)]
 enum ElementParseKind {
     Fixed {
+        kind: u16,
         expected: ExpectedSet,
         capture: PlannedCapturePolicy,
         spelling: String,
@@ -1443,11 +1478,12 @@ impl EmissionPlan {
         let frozen_diagrams = None;
         let private_abi = emitted_private_abi_plan();
         #[cfg(feature = "explorer")]
-        let explorer =
-            emitted_explorer_plan(&nodes, &tokens).map(|explorer| ExtensionEmissionPlan {
+        let explorer = emitted_explorer_plan(&nodes, lowered, &kind_variants)?.map(|explorer| {
+            ExtensionEmissionPlan {
                 artifacts: Vec::new(),
                 explorer,
-            });
+            }
+        });
         #[cfg(not(feature = "explorer"))]
         let explorer: Option<ExtensionEmissionPlan> = None;
         if explorer.is_some() {
@@ -3226,8 +3262,9 @@ fn pretty_family_identity(plan: &PrettyEmissionPlan) -> Option<u64> {
 
 fn emitted_explorer_plan(
     nodes: &[NodeParsePlan],
-    tokens: &[TokenParsePlan],
-) -> Option<ExplorerPlan> {
+    lowered: &crate::materialization::LoweredGrammar,
+    kind_variants: &[Ident],
+) -> Result<Option<ExplorerPlan>, String> {
     let mut roots = nodes
         .iter()
         .filter(|node| explorer_emitted_application_is_eligible(node))
@@ -3258,18 +3295,15 @@ fn emitted_explorer_plan(
         })
         .collect::<Vec<_>>();
     planned_nodes.sort_by_key(|node| node.application.index());
-    (!roots.is_empty()).then(|| ExplorerPlan {
+    Ok((!roots.is_empty()).then(|| ExplorerPlan {
+        grammar: ExplorerGrammarPlan {
+            name: lowered.grammar.name.clone(),
+        },
         roots,
         nodes: planned_nodes,
-        tokens: tokens
-            .iter()
-            .map(|token| ExplorerTokenPlan {
-                token: token.semantic,
-                schema_name: token.kind_variant.unraw().to_string(),
-                display: ExplorerDisplayPlan::MatchedOrStored,
-            })
-            .collect(),
-    })
+        tokens: explorer_token_plans(lowered, kind_variants)
+            .expect("validated lexical kinds produce explorer Token descriptors"),
+    }))
 }
 
 fn authoritative_explorer_plan(
@@ -3314,35 +3348,102 @@ fn authoritative_explorer_plan(
     }
 
     let kind_variants = planned_kind_variants(lowered)?;
-    let tokens = resolved
-        .content_tokens
-        .iter()
-        .map(|token| {
-            let target = lowered
-                .lexical_plan
-                .parser_targets
-                .iter()
-                .find(|target| target.semantic == token.id)
-                .ok_or_else(|| {
-                    format!("content token `{}` lacks an explorer target", token.ident)
-                })?;
-            Ok(ExplorerTokenPlan {
-                token: token.id,
-                schema_name: kind_variants[target.base_kind.index()].unraw().to_string(),
-                display: ExplorerDisplayPlan::MatchedOrStored,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let tokens = explorer_token_plans(lowered, &kind_variants)?;
     let nodes = lowered
         .applications
         .iter()
         .map(|application| authoritative_explorer_node(lowered, application))
         .collect::<Result<Vec<_>, String>>()?;
     Ok(Some(ExplorerPlan {
+        grammar: ExplorerGrammarPlan {
+            name: lowered.grammar.name.clone(),
+        },
         roots,
         nodes,
         tokens,
     }))
+}
+
+fn explorer_token_plans(
+    lowered: &crate::materialization::LoweredGrammar,
+    kind_variants: &[Ident],
+) -> Result<Vec<ExplorerTokenPlan>, String> {
+    lowered
+        .lexical_plan
+        .token_kinds
+        .iter()
+        .zip(kind_variants)
+        .map(|(kind, variant)| {
+            let kind_index = u16::try_from(kind.id.index())
+                .map_err(|_| "an explorer token kind exceeds runtime width".to_owned())?;
+            let name = variant.unraw().to_string();
+            let qualified_name = format!("{}::{name}", lowered.grammar.name);
+            let semantic = lowered
+                .lexical_plan
+                .parser_targets
+                .iter()
+                .find(|target| target.base_kind == kind.id)
+                .map(|target| target.semantic);
+            let (token_kind, canonical_text, highlight, display) = match &kind.identity {
+                TokenKindIdentity::Fixed(spelling) => {
+                    let highlight = if lowered
+                        .lexical_plan
+                        .keywords
+                        .iter()
+                        .any(|keyword| keyword.kind == kind.id)
+                    {
+                        ExplorerHighlightClassPlan::Keyword
+                    } else {
+                        ExplorerHighlightClassPlan::Punctuation
+                    };
+                    (
+                        ExplorerTokenKindPlan::Fixed,
+                        Some(fixed_pretty_spelling(
+                            spelling,
+                            lowered.grammar.text_equivalence,
+                        )),
+                        highlight,
+                        ExplorerDisplayPlan::Fixed(fixed_pretty_spelling(
+                            spelling,
+                            lowered.grammar.text_equivalence,
+                        )),
+                    )
+                }
+                TokenKindIdentity::ContentBase(_) => (
+                    ExplorerTokenKindPlan::Content,
+                    None,
+                    ExplorerHighlightClassPlan::Content,
+                    ExplorerDisplayPlan::MatchedOrStored,
+                ),
+            };
+            Ok(ExplorerTokenPlan {
+                kind_index,
+                semantic,
+                name,
+                qualified_name,
+                kind: token_kind,
+                canonical_text,
+                highlight,
+                display,
+            })
+        })
+        .collect()
+}
+
+fn explorer_kind_index(
+    lowered: &crate::materialization::LoweredGrammar,
+    definition: TokenDefinitionId,
+) -> Result<u16, String> {
+    let kind = lowered
+        .lexical_plan
+        .lowering_map
+        .token_definitions
+        .iter()
+        .find(|correlation| correlation.source == definition)
+        .ok_or_else(|| "an explorer fixed token lacks a lexical kind".to_owned())?
+        .lowered;
+    u16::try_from(kind.index())
+        .map_err(|_| "an explorer fixed token kind exceeds runtime width".to_owned())
 }
 
 fn explorer_emitted_application_is_eligible(node: &NodeParsePlan) -> bool {
@@ -3372,10 +3473,11 @@ fn emitted_explorer_node(
     node: &NodeParsePlan,
     application: &NodeApplicationParsePlan,
 ) -> ExplorerNodePlan {
+    let qualified_name = node.semantic_key.clone();
     let body = match &application.body {
-        NodeBodyPlan::Struct { elements, .. } => {
-            ExplorerNodeBodyPlan::Struct(emitted_explorer_variant(None, None, elements.iter()))
-        }
+        NodeBodyPlan::Struct { elements, .. } => ExplorerNodeBodyPlan::Struct(
+            emitted_explorer_variant(None, None, &qualified_name, elements.iter()),
+        ),
         NodeBodyPlan::Enum { variants, .. } => ExplorerNodeBodyPlan::Enum(
             variants
                 .iter()
@@ -3383,6 +3485,7 @@ fn emitted_explorer_node(
                     emitted_explorer_variant(
                         Some(variant.resolved_variant),
                         Some(variant.ident.unraw().to_string()),
+                        &qualified_name,
                         variant.elements.iter(),
                     )
                 })
@@ -3396,6 +3499,7 @@ fn emitted_explorer_node(
                     emitted_explorer_variant(
                         Some(branch.variant.resolved_variant),
                         Some(branch.variant.ident.unraw().to_string()),
+                        &qualified_name,
                         branch.variant.elements.iter(),
                     )
                 })
@@ -3403,6 +3507,7 @@ fn emitted_explorer_node(
                     emitted_explorer_variant(
                         Some(branch.variant.resolved_variant),
                         Some(branch.variant.ident.unraw().to_string()),
+                        &qualified_name,
                         std::iter::once(&branch.lhs).chain(branch.variant.elements.iter()),
                     )
                 }))
@@ -3412,7 +3517,8 @@ fn emitted_explorer_node(
     ExplorerNodePlan {
         node: node.node,
         application: application.application,
-        schema_name: node.ident.unraw().to_string(),
+        name: node.ident.unraw().to_string(),
+        qualified_name,
         display: ExplorerDisplayPlan::None,
         body,
     }
@@ -3421,23 +3527,30 @@ fn emitted_explorer_node(
 fn emitted_explorer_variant<'a>(
     variant: Option<ResolvedVariantId>,
     name: Option<String>,
+    node_qualified_name: &str,
     elements: impl IntoIterator<Item = &'a ElementParsePlan>,
 ) -> ExplorerVariantPlan {
+    let qualified_name = name
+        .as_ref()
+        .map(|name| format!("{node_qualified_name}::{name}"));
     ExplorerVariantPlan {
         variant,
         name,
+        qualified_name,
         elements: elements.into_iter().map(emitted_explorer_element).collect(),
     }
 }
 
 fn emitted_explorer_element(element: &ElementParsePlan) -> ExplorerElementPlan {
     match &element.kind {
-        ElementParseKind::Fixed { spelling, .. } => ExplorerElementPlan {
+        ElementParseKind::Fixed { kind, spelling, .. } => ExplorerElementPlan {
             source: element.explorer_source,
             name: element.metadata_name.clone(),
             role: ExplorerElementRolePlan::FixedToken,
             cardinality: ExplorerCardinalityPlan::One,
             token_classification: Some(ExplorerTokenClassificationPlan::Fixed),
+            target: None,
+            token_kind: Some(*kind),
             display: ExplorerDisplayPlan::Fixed(spelling.clone()),
             occurrence: ExplorerOccurrencePlan::Leaf,
         },
@@ -3452,6 +3565,15 @@ fn emitted_explorer_element(element: &ElementParsePlan) -> ExplorerElementPlan {
             cardinality: explorer_cardinality_plan(wrappers),
             token_classification: matches!(explorer_terminal, ExplorerTerminalPlan::Content(_))
                 .then_some(ExplorerTokenClassificationPlan::Content),
+            target: Some(match explorer_terminal {
+                ExplorerTerminalPlan::Node(application) => {
+                    ExplorerElementTargetPlan::Node(*application)
+                }
+                ExplorerTerminalPlan::Content(token) => {
+                    ExplorerElementTargetPlan::ContentToken(*token)
+                }
+            }),
+            token_kind: None,
             display: ExplorerDisplayPlan::None,
             occurrence: ExplorerOccurrencePlan::Children {
                 wrappers: wrappers.clone(),
@@ -3547,6 +3669,10 @@ fn authoritative_explorer_node(
                                 role: ExplorerElementRolePlan::SemanticField,
                                 cardinality: ExplorerCardinalityPlan::One,
                                 token_classification: None,
+                                target: Some(ExplorerElementTargetPlan::Node(
+                                    led.lhs.owner.application,
+                                )),
+                                token_kind: None,
                                 display: ExplorerDisplayPlan::None,
                                 occurrence: ExplorerOccurrencePlan::Children {
                                     wrappers: vec![FieldWrapper::Boxed],
@@ -3577,7 +3703,8 @@ fn authoritative_explorer_node(
     Ok(ExplorerNodePlan {
         node: node.id,
         application: application.id,
-        schema_name: node.ident.clone(),
+        name: node.ident.clone(),
+        qualified_name: node.key.segments.join("::"),
         display: ExplorerDisplayPlan::None,
         body,
     })
@@ -3590,9 +3717,11 @@ fn authoritative_explorer_variant(
     name: Option<&str>,
     elements: &[MaterializedElement],
 ) -> Result<ExplorerVariantPlan, String> {
+    let qualified_name = name.map(|name| format!("{}::{name}", node.key.segments.join("::")));
     Ok(ExplorerVariantPlan {
         variant,
         name: name.map(str::to_owned),
+        qualified_name,
         elements: elements
             .iter()
             .map(|element| authoritative_explorer_element(lowered, node, variant, name, element))
@@ -3621,6 +3750,8 @@ fn authoritative_explorer_element(
                 role: ExplorerElementRolePlan::FixedToken,
                 cardinality: ExplorerCardinalityPlan::One,
                 token_classification: Some(ExplorerTokenClassificationPlan::Fixed),
+                target: None,
+                token_kind: Some(explorer_kind_index(lowered, definition.id)?),
                 display: ExplorerDisplayPlan::Fixed(fixed_pretty_spelling(
                     &fixed.spelling,
                     lowered.grammar.text_equivalence,
@@ -3674,6 +3805,15 @@ fn authoritative_explorer_element(
                 cardinality: explorer_cardinality_plan(&wrappers),
                 token_classification: matches!(terminal, ExplorerTerminalPlan::Content(_))
                     .then_some(ExplorerTokenClassificationPlan::Content),
+                target: Some(match terminal {
+                    ExplorerTerminalPlan::Node(application) => {
+                        ExplorerElementTargetPlan::Node(application)
+                    }
+                    ExplorerTerminalPlan::Content(token) => {
+                        ExplorerElementTargetPlan::ContentToken(token)
+                    }
+                }),
+                token_kind: None,
                 display: ExplorerDisplayPlan::None,
                 occurrence: ExplorerOccurrencePlan::Children { wrappers, terminal },
             })
@@ -4652,6 +4792,7 @@ fn declaration_elements(
                     explorer_source: ExplorerElementSource::Fixed(*token_use),
                     metadata_name: name.clone(),
                     kind: ElementParseKind::Fixed {
+                        kind: explorer_kind_index(lowered, definition.id)?,
                         expected: ExpectedSet::empty(kind_count),
                         capture: PlannedCapturePolicy::Inherited,
                         spelling: fixed_pretty_spelling(
@@ -5801,6 +5942,7 @@ fn plan_elements(
                     explorer_source: ExplorerElementSource::Fixed(token_use_id),
                     metadata_name: name,
                     kind: ElementParseKind::Fixed {
+                        kind: explorer_kind_index(lowered, definition.id)?,
                         expected,
                         capture,
                         spelling: fixed_pretty_spelling(
@@ -8069,10 +8211,10 @@ fn render_token(
         let explorer = explorer
             .tokens
             .iter()
-            .find(|candidate| candidate.token == token.semantic)
+            .find(|candidate| candidate.semantic == Some(token.semantic))
             .expect("typed explorer plan retains every content token");
         let schema = format_ident!("__RECURSA_EXPLORER_TOKEN_SCHEMA_{index}");
-        let name = &explorer.schema_name;
+        let name = &explorer.name;
         let display = match explorer.display {
             ExplorerDisplayPlan::MatchedOrStored => quote!(Some(self.text().into())),
             ExplorerDisplayPlan::None | ExplorerDisplayPlan::Fixed(_) => {
@@ -10803,7 +10945,7 @@ fn render_explorer_schema(
     node_index: usize,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
-    let node_name = &node.schema_name;
+    let node_name = &node.name;
     match &node.body {
         ExplorerNodeBodyPlan::Struct(variant) => {
             let definitions =
@@ -13451,10 +13593,85 @@ struct B;
                 .body = ExplorerNodeBodyPlan::Struct(ExplorerVariantPlan {
                 variant: None,
                 name: None,
+                qualified_name: None,
                 elements: Vec::new(),
             });
             assert_plan_family_is_unselectable(package.path(), &explorer_schema, "explorer");
         }
+    }
+
+    #[cfg(feature = "explorer")]
+    #[test]
+    fn explorer_plan_freezes_the_complete_typed_static_schema() {
+        let (_, plan) = joined_pratt_fixture();
+        let explorer = plan
+            .explorer
+            .as_ref()
+            .expect("Visit fixture has an explorer plan");
+
+        assert_eq!(explorer.grammar.name, plan.grammar_name);
+        assert_eq!(explorer.tokens.len(), plan.kind_count - 1);
+        assert!(explorer.tokens.iter().any(|token| {
+            token.canonical_text.as_deref() == Some("+")
+                && token.kind == ExplorerTokenKindPlan::Fixed
+                && token.highlight == ExplorerHighlightClassPlan::Punctuation
+        }));
+        assert!(explorer.tokens.iter().any(|token| {
+            token.canonical_text.is_none()
+                && token.kind == ExplorerTokenKindPlan::Content
+                && token.highlight == ExplorerHighlightClassPlan::Content
+        }));
+
+        let node = explorer
+            .nodes
+            .iter()
+            .find(|node| matches!(node.body, ExplorerNodeBodyPlan::Pratt(_)))
+            .expect("Pratt application has a Node descriptor");
+        assert!(
+            explorer
+                .roots
+                .iter()
+                .any(|root| root.application == node.application)
+        );
+        assert!(node.qualified_name.ends_with(&format!("::{}", node.name)));
+        let variants = match &node.body {
+            ExplorerNodeBodyPlan::Pratt(variants) => variants,
+            ExplorerNodeBodyPlan::Struct(_) | ExplorerNodeBodyPlan::Enum(_) => {
+                panic!("Pratt root keeps its complete variant table")
+            }
+        };
+        assert!(variants.iter().all(|variant| {
+            variant
+                .qualified_name
+                .as_ref()
+                .is_some_and(|qualified| qualified.starts_with(&node.qualified_name))
+        }));
+        assert!(
+            variants
+                .iter()
+                .flat_map(|variant| &variant.elements)
+                .any(|element| matches!(element.target, Some(ExplorerElementTargetPlan::Node(_))))
+        );
+        let all_variants = explorer.nodes.iter().flat_map(|node| match &node.body {
+            ExplorerNodeBodyPlan::Struct(variant) => std::slice::from_ref(variant),
+            ExplorerNodeBodyPlan::Enum(variants) | ExplorerNodeBodyPlan::Pratt(variants) => {
+                variants.as_slice()
+            }
+        });
+        assert!(
+            all_variants
+                .clone()
+                .flat_map(|variant| &variant.elements)
+                .any(|element| matches!(
+                    element.target,
+                    Some(ExplorerElementTargetPlan::ContentToken(_))
+                ))
+        );
+        assert!(
+            all_variants
+                .flat_map(|variant| &variant.elements)
+                .any(|element| element.target.is_none() && element.token_kind.is_some())
+        );
     }
 
     #[cfg(feature = "explorer")]
@@ -13465,7 +13682,7 @@ struct B;
             .explorer
             .as_mut()
             .expect("Visit fixture has an explorer plan");
-        explorer.nodes[0].schema_name = "FrozenExplorerSchema".to_owned();
+        explorer.nodes[0].name = "FrozenExplorerSchema".to_owned();
         let element = explorer
             .nodes
             .iter_mut()
