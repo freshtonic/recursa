@@ -11,16 +11,29 @@ pub(crate) struct PrettyProvenance {
     text: Option<String>,
     span: Option<Span>,
     children: Box<[PrettyProvenance]>,
+    repetition_separators: Box<[RepetitionSeparatorProvenance]>,
 }
 
 impl PrettyProvenance {
-    pub(crate) fn new(text: Option<String>, span: Option<Span>, children: Box<[Self]>) -> Self {
+    pub(crate) fn new(
+        text: Option<String>,
+        span: Option<Span>,
+        children: Box<[Self]>,
+        repetition_separators: Box<[RepetitionSeparatorProvenance]>,
+    ) -> Self {
         Self {
             text,
             span,
             children,
+            repetition_separators,
         }
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct RepetitionSeparatorProvenance {
+    pub(crate) text: String,
+    pub(crate) span: Span,
 }
 
 /// Width and indentation used by the structured Pretty renderer.
@@ -95,7 +108,7 @@ enum PrettyEvent {
     },
     SoftBreak(String),
     RepetitionBreak {
-        separator: Option<String>,
+        separator: Option<MappedText>,
         leading: bool,
         hard: bool,
         space_before_separator: bool,
@@ -106,6 +119,12 @@ enum PrettyEvent {
     EndGroup,
     Indent,
     Dedent,
+}
+
+#[derive(Clone, Debug)]
+struct MappedText {
+    text: String,
+    source: Span,
 }
 
 /// Facade-owned structured document sink used by [`PrettyContext`].
@@ -180,7 +199,9 @@ impl PrettySink {
                                 column
                                     .saturating_add(1)
                                     .saturating_add(
-                                        separator.as_ref().map_or(0, |text| text.chars().count()),
+                                        separator
+                                            .as_ref()
+                                            .map_or(0, |mapped| mapped.text.chars().count()),
                                     )
                                     .saturating_add(flat_width_to_next_break(
                                         &self.events,
@@ -193,23 +214,23 @@ impl PrettySink {
                     if broken {
                         if !leading && let Some(separator) = separator {
                             let start = output.len();
-                            output.push_str(separator);
+                            output.push_str(&separator.text);
                             source_map.push(SourceMapEntry {
                                 output: start..output.len(),
-                                source: Span::SYNTHETIC,
+                                source: separator.source,
                             });
-                            column = column_after(column, separator);
+                            column = column_after(column, &separator.text);
                         }
                         newline(&mut output, &mut column, indent, self.config.indent);
                         if *leading && let Some(separator) = separator {
                             let start = output.len();
-                            output.push_str(separator);
+                            output.push_str(&separator.text);
                             source_map.push(SourceMapEntry {
                                 output: start..output.len(),
-                                source: Span::SYNTHETIC,
+                                source: separator.source,
                             });
                             output.push(' ');
-                            column = column_after(column, separator).saturating_add(1);
+                            column = column_after(column, &separator.text).saturating_add(1);
                         }
                     } else {
                         if *space_before_separator {
@@ -218,12 +239,12 @@ impl PrettySink {
                         }
                         if let Some(separator) = separator {
                             let start = output.len();
-                            output.push_str(separator);
+                            output.push_str(&separator.text);
                             source_map.push(SourceMapEntry {
                                 output: start..output.len(),
-                                source: Span::SYNTHETIC,
+                                source: separator.source,
                             });
-                            column = column_after(column, separator);
+                            column = column_after(column, &separator.text);
                         }
                         output.push(' ');
                         column = column.saturating_add(1);
@@ -284,8 +305,12 @@ fn flat_width(events: &[PrettyEvent], start: usize) -> Option<usize> {
                 if *hard {
                     return None;
                 }
-                width = width
-                    .saturating_add(separator.as_ref().map_or(0, |text| text.chars().count()) + 1);
+                width = width.saturating_add(
+                    separator
+                        .as_ref()
+                        .map_or(0, |mapped| mapped.text.chars().count())
+                        + 1,
+                );
             }
             PrettyEvent::BeginGroup | PrettyEvent::BeginInconsistentGroup => depth += 1,
             PrettyEvent::EndGroup if depth == 0 => return Some(width),
@@ -320,8 +345,12 @@ fn flat_width_to_next_break(events: &[PrettyEvent], start: usize) -> usize {
                 if *hard {
                     break;
                 }
-                width = width
-                    .saturating_add(separator.as_ref().map_or(0, |text| text.chars().count()) + 1);
+                width = width.saturating_add(
+                    separator
+                        .as_ref()
+                        .map_or(0, |mapped| mapped.text.chars().count())
+                        + 1,
+                );
             }
             PrettyEvent::HardBreak => break,
             PrettyEvent::BeginGroup | PrettyEvent::BeginInconsistentGroup => depth += 1,
@@ -474,6 +503,15 @@ impl PrettyContext {
             text: text.to_owned(),
             source,
         });
+    }
+
+    fn tight_mapped_token(&mut self, mapped: &MappedText) {
+        self.push_text(&mapped.text, mapped.source);
+        self.needs_separator = !mapped.text.is_empty();
+        self.separator_supplied = false;
+        self.previous_auto_punctuation = false;
+        self.requested_space_after = false;
+        self.has_emitted_token |= !mapped.text.is_empty();
     }
 
     /// Emits an opening delimiter tightly and suppresses spacing after it.
@@ -771,22 +809,41 @@ impl PrettyContext {
             if let Some(layout) = &layout
                 && (index + 1 < length || layout.trailing)
             {
+                let separator = self.repetition_separator(index, layout);
                 if index + 1 < length {
                     self.sink.events.push(PrettyEvent::RepetitionBreak {
-                        separator: layout.separator.clone(),
+                        separator,
                         leading: layout.leading_separator,
                         hard: layout.hard_break,
                         space_before_separator: layout.space_before_separator,
                     });
                     self.separator_supplied = true;
-                } else if let Some(separator) = &layout.separator {
-                    let separator = separator.clone();
-                    self.without_provenance(|context| context.tight_token(&separator))?;
+                } else if let Some(separator) = separator {
+                    self.tight_mapped_token(&separator);
                 }
             }
         }
         self.repetition = layout;
         Ok(())
+    }
+
+    fn repetition_separator(&self, index: usize, layout: &RepetitionLayout) -> Option<MappedText> {
+        let fallback = layout.separator.as_ref()?;
+        Some(
+            self.provenance
+                .as_ref()
+                .and_then(|provenance| provenance.repetition_separators.get(index))
+                .map_or_else(
+                    || MappedText {
+                        text: fallback.clone(),
+                        source: Span::SYNTHETIC,
+                    },
+                    |separator| MappedText {
+                        text: separator.text.clone(),
+                        source: separator.span,
+                    },
+                ),
+        )
     }
 
     /// Runs structured rendering with one captured occurrence as provenance.

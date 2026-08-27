@@ -10225,10 +10225,9 @@ fn render_repeated_parse(
                     }
                     return Err(context.unexpected(&#continuation_value));
                 }
-                let _separator = context.parse_fixed(
-                    &#separator_name,
-                    #facade::__private::CapturePolicy::Off,
-                )?;
+                let separator_occurrence =
+                    context.parse_repetition_separator(&#separator_name)?;
+                separator_occurrences.push(separator_occurrence);
                 if context.next_is(&#element_name) {
                     #parse_item
                     continue;
@@ -10285,6 +10284,11 @@ fn render_repeated_parse(
     } else {
         quote!(let #value = #present;)
     };
+    let separator_occurrences = if separator_selector.is_some() {
+        quote!(let mut separator_occurrences = Vec::new();)
+    } else {
+        quote!(let separator_occurrences = Vec::new();)
+    };
 
     quote! {
         #element_definition
@@ -10297,16 +10301,18 @@ fn render_repeated_parse(
         let element_start = context.cursor();
         let mut parsed_values = Vec::new();
         let mut child_occurrences = #facade::__private::Occurrences::new();
+        #separator_occurrences
         #start
         if !parsed_values.is_empty() {
             #continuation
         }
         let element_span = context.consumed_span_from(element_start);
         #has_values
-        let #occurrence = context.finish_group(
+        let #occurrence = context.finish_repeated_group(
             #capture,
             element_span,
             child_occurrences,
+            separator_occurrences,
         )?;
         #semantic
     }

@@ -8,8 +8,8 @@ pub use recursa_core::__private::arbitrary::Arbitrary;
 pub use recursa_core::{
     ElementMetadata, ElementRole, ElementView, Elements, HasSpan, Node, NodeView, OffsetOverflow,
     Parse, ParseError, ParseErrorKind, Parsed, Pretty, PrettyConfig, PrettyContext, PrettySink,
-    Repeated, RepeatedIter, Span, TotalVisitor, TotalVisitorMut, Vec1, Visit, VisitBreak, VisitMut,
-    Visitor, VisitorMut,
+    Repeated, RepeatedIter, SourceMap, SourceMapEntry, Span, TotalVisitor, TotalVisitorMut, Vec1,
+    Visit, VisitBreak, VisitMut, Visitor, VisitorMut,
 };
 pub use recursa_macros::{Node, TotalVisitor, TotalVisitorMut, grammar, tokens};
 
