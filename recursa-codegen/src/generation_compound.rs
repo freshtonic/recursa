@@ -44,6 +44,8 @@ use crate::{AtomExpression, FirstPosition, KindSet, SiteId, TextEquivalence, Tex
 const PRIVATE_PROTOCOL: u32 = 1;
 const EMITTER_IDENTITY: &str = "recursa-m4-compound-v3";
 const SELECTED_GENERATION: &str = "recursa-selected.rs";
+const DEBUG_DIRECTORY_ENVIRONMENT: &str = "RECURSA_DEBUG_DIR";
+const DEBUG_BUNDLE_FORMAT: &str = "recursa-generated-code-debug-v1";
 
 /// One complete published logical output.
 pub struct Generation {
@@ -67,6 +69,8 @@ impl CargoOutput for StdoutCargo {
 
 /// Analyzes, renders, stages, and atomically selects one complete Generation.
 pub fn generate(root: impl AsRef<Path>) -> Result<Generation, GenerateError> {
+    let mut cargo = StdoutCargo;
+    emit_debug_directory_invalidation(&mut cargo);
     let out_dir = env::var_os("OUT_DIR")
         .map(PathBuf::from)
         .ok_or_else(|| failure(root.as_ref(), "OUT_DIR is unavailable"))?;
@@ -74,8 +78,8 @@ pub fn generate(root: impl AsRef<Path>) -> Result<Generation, GenerateError> {
     let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
         .ok_or_else(|| failure(root.as_ref(), "CARGO_MANIFEST_DIR is unavailable"))?;
+    let debug_directory = env::var_os(DEBUG_DIRECTORY_ENVIRONMENT).map(PathBuf::from);
     let cfg = CargoCfgSnapshot::from_cargo_environment(env::vars_os());
-    let mut cargo = StdoutCargo;
     let success = analyze_source_tree(
         M3Input::new(
             &manifest_dir,
@@ -102,11 +106,22 @@ pub fn generate(root: impl AsRef<Path>) -> Result<Generation, GenerateError> {
     let plan = EmissionPlan::join(&success.analyzed, &cfg)
         .map_err(|detail| failure(root.as_ref(), &detail))?;
     let rendered = render(&plan).map_err(|detail| failure(root.as_ref(), &detail))?;
-    publish(&out_dir, &plan.identity, &rendered)
+    let debug_bundle = debug_directory
+        .as_deref()
+        .map(|directory| stage_debug_bundle(directory, &plan, &rendered))
+        .transpose()
+        .map_err(|detail| failure(root.as_ref(), &detail))?;
+    publish_generation_and_debug(&out_dir, &plan.identity, &rendered, debug_bundle)
         .map_err(|detail| failure(root.as_ref(), &detail))?;
     Ok(Generation {
         report: success.build_report,
     })
+}
+
+fn emit_debug_directory_invalidation(cargo: &mut impl CargoOutput) {
+    cargo.emit(format!(
+        "cargo::rerun-if-env-changed={DEBUG_DIRECTORY_ENVIRONMENT}"
+    ));
 }
 
 fn failure(selected_root: &Path, detail: &str) -> GenerateError {
@@ -6871,6 +6886,381 @@ fn render(plan: &EmissionPlan) -> Result<RenderedGeneration, String> {
     })
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DebugLogicalFile {
+    role: &'static str,
+    logical_name: String,
+    private_name: String,
+    contents: String,
+}
+
+struct StagedDebugBundle {
+    staging: Option<PathBuf>,
+    published: PathBuf,
+}
+
+impl StagedDebugBundle {
+    fn commit(mut self) -> Result<(), String> {
+        let Some(staging) = self.staging.as_ref() else {
+            return Ok(());
+        };
+        match fs::rename(staging, &self.published) {
+            Ok(()) => {
+                self.staging = None;
+                Ok(())
+            }
+            Err(error) => Err(format!(
+                "cannot atomically publish the generated-code debug bundle: {error}"
+            )),
+        }
+    }
+}
+
+impl Drop for StagedDebugBundle {
+    fn drop(&mut self) {
+        if let Some(staging) = self.staging.take() {
+            let _ = remove_debug_staging(&staging);
+        }
+    }
+}
+
+fn publish_generation_and_debug(
+    out_dir: &Path,
+    identity: &str,
+    rendered: &RenderedGeneration,
+    debug_bundle: Option<StagedDebugBundle>,
+) -> Result<(), String> {
+    publish(out_dir, identity, rendered)?;
+    if let Err(detail) = debug_bundle.map(StagedDebugBundle::commit).transpose() {
+        return Err(match invalidate_selection(out_dir) {
+            Ok(()) => detail,
+            Err(invalidation) => format!(
+                "{detail}; the failed debug emission also could not invalidate the Generation selector: {invalidation}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn stage_debug_bundle(
+    directory: &Path,
+    plan: &EmissionPlan,
+    rendered: &RenderedGeneration,
+) -> Result<StagedDebugBundle, String> {
+    if directory.as_os_str().is_empty() {
+        return Err(format!(
+            "{DEBUG_DIRECTORY_ENVIRONMENT} names an empty debug destination"
+        ));
+    }
+    ensure_plain_directory(directory, "generated-code debug destination")?;
+    let bundles = directory.join(format!(".{DEBUG_BUNDLE_FORMAT}"));
+    ensure_plain_directory(&bundles, "generated-code debug bundle namespace")?;
+
+    let files = render_debug_logical_files(plan, rendered)?;
+    let index = render_debug_index(&plan.identity, &files);
+    let published = bundles.join(&plan.identity);
+    if published.try_exists().map_err(|error| {
+        format!("cannot inspect the generated-code debug bundle destination: {error}")
+    })? {
+        verify_existing_debug_bundle(&published, &index, &files)?;
+        return Ok(StagedDebugBundle {
+            staging: None,
+            published,
+        });
+    }
+
+    let nonce = staging_nonce()?;
+    let staging = bundles.join(format!(
+        ".staging-{}-{nonce}-{}",
+        std::process::id(),
+        plan.identity
+    ));
+    fs::create_dir(&staging)
+        .map_err(|error| format!("cannot create debug bundle staging directory: {error}"))?;
+    let result = (|| {
+        write_debug_file(&staging.join("index"), index.as_bytes())?;
+        for file in &files {
+            write_debug_file(&staging.join(&file.private_name), file.contents.as_bytes())?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = remove_debug_staging(&staging);
+        return Err(error);
+    }
+    Ok(StagedDebugBundle {
+        staging: Some(staging),
+        published,
+    })
+}
+
+fn ensure_plain_directory(path: &Path, role: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(format!("the {role} may not be a symbolic link"))
+        }
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(format!("the {role} is not a directory")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(path)
+                .map_err(|error| format!("cannot create the {role}: {error}"))?;
+            let metadata = fs::symlink_metadata(path)
+                .map_err(|error| format!("cannot inspect the created {role}: {error}"))?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(format!("the created {role} is not a plain directory"));
+            }
+            Ok(())
+        }
+        Err(error) => Err(format!("cannot inspect the {role}: {error}")),
+    }
+}
+
+fn remove_debug_staging(staging: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(staging) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::remove_file(staging),
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(staging),
+        Ok(_) => fs::remove_file(staging),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn write_debug_file(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("cannot create debug bundle file: {error}"))?;
+    file.write_all(contents)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("cannot write debug bundle file: {error}"))
+}
+
+fn render_debug_logical_files(
+    plan: &EmissionPlan,
+    rendered: &RenderedGeneration,
+) -> Result<Vec<DebugLogicalFile>, String> {
+    let mut files = Vec::new();
+    files.push(DebugLogicalFile {
+        role: "root",
+        logical_name: plan.grammar_name.clone(),
+        private_name: "root.rs".to_owned(),
+        contents: format_debug_rust("root", &rendered.root)?,
+    });
+    for (index, ((_, contents), node)) in rendered.nodes.iter().zip(&plan.nodes).enumerate() {
+        files.push(DebugLogicalFile {
+            role: "node",
+            logical_name: node.semantic_key.clone(),
+            private_name: format!("node-{index:04}.rs"),
+            contents: format_debug_rust("Node", contents)?,
+        });
+    }
+
+    let mut capabilities = render_debug_capability_fragments(plan)?;
+    for (index, (logical_name, contents)) in capabilities.drain(..).enumerate() {
+        files.push(DebugLogicalFile {
+            role: "capability",
+            logical_name,
+            private_name: format!("capability-{index:04}.rs"),
+            contents: format_debug_rust("capability", &contents)?,
+        });
+    }
+    Ok(files)
+}
+
+fn render_debug_capability_fragments(plan: &EmissionPlan) -> Result<Vec<(String, String)>, String> {
+    let mut fragments = Vec::new();
+    for capability in &plan.capabilities {
+        fragments.push((
+            format!(
+                "facade:core,diagrams={},explorer={},arbitrary={},serde={}",
+                capability.diagrams, capability.explorer, capability.arbitrary, capability.serde
+            ),
+            render_facade_capability_fragment(plan, *capability).to_string(),
+        ));
+    }
+    for (index, node) in plan.nodes.iter().enumerate() {
+        let mut emitted_serde = false;
+        for recipe in &node.configured_traits {
+            let (name, body) = match recipe {
+                ConfiguredTraitRecipe::Debug
+                | ConfiguredTraitRecipe::Clone
+                | ConfiguredTraitRecipe::Copy
+                | ConfiguredTraitRecipe::PartialEq
+                | ConfiguredTraitRecipe::Eq
+                | ConfiguredTraitRecipe::PartialOrd
+                | ConfiguredTraitRecipe::Ord
+                | ConfiguredTraitRecipe::Hash => (
+                    format!("configured:{}:{recipe:?}", node.semantic_key),
+                    render_node_standard_trait(plan, node, *recipe),
+                ),
+                ConfiguredTraitRecipe::Serialize | ConfiguredTraitRecipe::Deserialize => {
+                    if emitted_serde {
+                        continue;
+                    }
+                    emitted_serde = true;
+                    (
+                        format!("configured:{}:Serde", node.semantic_key),
+                        render_node_serde(plan, node),
+                    )
+                }
+                ConfiguredTraitRecipe::Arbitrary => (
+                    format!("configured:{}:Arbitrary", node.semantic_key),
+                    render_node_arbitrary(plan, node),
+                ),
+                ConfiguredTraitRecipe::Pretty => (
+                    format!("configured:{}:Pretty", node.semantic_key),
+                    render_node_pretty(plan, node, index),
+                ),
+                ConfiguredTraitRecipe::Visit => (
+                    format!("configured:{}:Visit", node.semantic_key),
+                    render_node_visit(plan, node, false),
+                ),
+                ConfiguredTraitRecipe::VisitMut => (
+                    format!("configured:{}:VisitMut", node.semantic_key),
+                    render_node_visit(plan, node, true),
+                ),
+            };
+            fragments.push((name, body.to_string()));
+        }
+    }
+    for (index, token) in plan.tokens.iter().enumerate() {
+        for recipe in &token.configured_traits {
+            fragments.push((
+                format!("configured-token:{}:{recipe:?}", token.ident),
+                render_token(plan, token, index).to_string(),
+            ));
+        }
+    }
+    #[cfg(feature = "diagrams")]
+    if let Some(diagrams) = &plan.diagrams {
+        let documentation = syn::LitStr::new(
+            &render_aggregate_diagram_document(diagrams),
+            proc_macro2::Span::call_site(),
+        );
+        fragments.push((
+            "diagrams:aggregate".to_owned(),
+            quote!(#[doc = #documentation] pub mod grammar_docs {}).to_string(),
+        ));
+        for node in &diagrams.nodes {
+            let documentation = syn::LitStr::new(
+                &render_node_diagram_document(node),
+                proc_macro2::Span::call_site(),
+            );
+            fragments.push((
+                format!("diagrams:{}", node.semantic_key),
+                quote!(#[doc = #documentation] mod node_diagram {}).to_string(),
+            ));
+        }
+    }
+    if let Some(explorer) = &plan.explorer {
+        for artifact in &explorer.artifacts {
+            fragments.push((
+                format!("explorer:{}", artifact.logical_name),
+                artifact.content.clone(),
+            ));
+        }
+    }
+    Ok(fragments)
+}
+
+fn render_facade_capability_fragment(
+    plan: &EmissionPlan,
+    capability: FacadeCapability,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let release_text = &plan.private_abi.release;
+    let release = format!("release_{release_text}").replace(['.', '-'], "_");
+    let release = format_ident!("{release}");
+    let protocol_number = plan.private_abi.protocol;
+    let protocol = format_ident!("protocol_{protocol_number}");
+    let diagrams = u8::from(capability.diagrams);
+    let explorer = u8::from(capability.explorer);
+    let arbitrary = u8::from(capability.arbitrary);
+    let serde = u8::from(capability.serde);
+    let capability = format_ident!("cap_core_d{diagrams}_e{explorer}_a{arbitrary}_s{serde}");
+    quote! {
+        macro_rules! __recursa_debug_capability {
+            (#release, #protocol, #capability) => {
+                const _: #facade::__private::FacadeCompatibility<
+                    { #facade::__private::release_stamp(#release_text) },
+                    #protocol_number,
+                > = #facade::__private::FACADE_COMPATIBILITY;
+            };
+        }
+    }
+}
+
+fn format_debug_rust(role: &str, source: &str) -> Result<String, String> {
+    let syntax = syn::parse_file(source)
+        .map_err(|error| format!("the logical generated {role} is invalid Rust: {error}"))?;
+    let formatted = prettyplease::unparse(&syntax);
+    syn::parse_file(&formatted)
+        .map_err(|error| format!("the formatted generated {role} is invalid Rust: {error}"))?;
+    Ok(formatted)
+}
+
+fn render_debug_index(identity: &str, files: &[DebugLogicalFile]) -> String {
+    let mut index = format!("{DEBUG_BUNDLE_FORMAT}\ngeneration\t{identity}\n");
+    for file in files {
+        index.push_str(file.role);
+        index.push('\t');
+        index.push_str(&file.logical_name);
+        index.push('\t');
+        index.push_str(&file.private_name);
+        index.push('\n');
+    }
+    index
+}
+
+fn verify_existing_debug_bundle(
+    published: &Path,
+    index: &str,
+    files: &[DebugLogicalFile],
+) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(published)
+        .map_err(|error| format!("cannot inspect the existing debug bundle: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("the existing debug bundle is not a plain directory".to_owned());
+    }
+    let mut expected = BTreeMap::from([("index".to_owned(), index.as_bytes())]);
+    for file in files {
+        expected.insert(file.private_name.clone(), file.contents.as_bytes());
+    }
+    let mut actual = fs::read_dir(published)
+        .map_err(|error| format!("cannot read the existing debug bundle: {error}"))?
+        .map(|entry| {
+            let entry = entry.map_err(|error| {
+                format!("cannot inspect an existing debug bundle entry: {error}")
+            })?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "an existing debug bundle filename is not UTF-8".to_owned())?;
+            Ok((name, entry.path()))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    if actual.len() != expected.len() {
+        return Err("an existing generated-code debug bundle is incomplete or modified".to_owned());
+    }
+    for (name, expected_contents) in expected {
+        let path = actual
+            .remove(&name)
+            .ok_or_else(|| "an existing generated-code debug bundle is incomplete".to_owned())?;
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("cannot inspect existing debug bundle file: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err("an existing debug bundle entry is not a plain file".to_owned());
+        }
+        let contents = fs::read(path)
+            .map_err(|error| format!("cannot read existing debug bundle file: {error}"))?;
+        if contents != expected_contents {
+            return Err("an existing generated-code debug bundle is modified".to_owned());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "diagrams")]
 fn render_aggregate_diagram_document(plan: &DiagramPlan) -> String {
     let mut document = format!(
@@ -13359,6 +13749,148 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_directory_environment_is_always_tracked_by_cargo() {
+        let mut cargo = Vec::new();
+        emit_debug_directory_invalidation(&mut cargo);
+        assert_eq!(cargo, ["cargo::rerun-if-env-changed=RECURSA_DEBUG_DIR"]);
+    }
+
+    #[test]
+    fn debug_bundle_is_deterministic_formatted_complete_and_identity_neutral() {
+        let (_package, plan) = joined_pratt_fixture();
+        let rendered = render(&plan).unwrap();
+        let identity = plan.identity.clone();
+        let authoritative_root = rendered.root.clone();
+        let authoritative_nodes = rendered.nodes.clone();
+        let destination = tempfile::tempdir().unwrap();
+        fs::write(destination.path().join("owned-by-caller"), "preserve me").unwrap();
+
+        let staged = stage_debug_bundle(destination.path(), &plan, &rendered).unwrap();
+        let published = staged.published.clone();
+        assert!(!published.exists(), "a staged bundle is not yet observable");
+        staged.commit().unwrap();
+
+        assert_eq!(plan.identity, identity);
+        assert_eq!(rendered.root, authoritative_root);
+        assert_eq!(rendered.nodes, authoritative_nodes);
+        assert_eq!(
+            fs::read_to_string(destination.path().join("owned-by-caller")).unwrap(),
+            "preserve me"
+        );
+        let index = fs::read_to_string(published.join("index")).unwrap();
+        assert!(index.starts_with(DEBUG_BUNDLE_FORMAT));
+        assert_eq!(
+            index
+                .lines()
+                .filter(|line| line.starts_with("root\t"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            index
+                .lines()
+                .filter(|line| line.starts_with("node\t"))
+                .count(),
+            plan.nodes.len()
+        );
+        assert!(
+            index
+                .lines()
+                .any(|line| line.starts_with("capability\tconfigured:")),
+            "configured capability bodies are indexed"
+        );
+        for line in index.lines().skip(2) {
+            let [_, _, private_name] = line.split('\t').collect::<Vec<_>>()[..] else {
+                panic!("debug index row is malformed: {line}");
+            };
+            let source = fs::read_to_string(published.join(private_name)).unwrap();
+            let syntax = syn::parse_file(&source).expect("every logical view is parseable Rust");
+            assert_eq!(
+                prettyplease::unparse(&syntax),
+                source,
+                "every logical view is stable under the formatter"
+            );
+        }
+
+        let repeated = stage_debug_bundle(destination.path(), &plan, &rendered).unwrap();
+        assert!(repeated.staging.is_none());
+        repeated.commit().unwrap();
+        assert_eq!(fs::read_to_string(published.join("index")).unwrap(), index);
+    }
+
+    #[cfg(feature = "diagrams")]
+    #[test]
+    fn debug_bundle_includes_every_enabled_diagram_capability_body() {
+        let (_package, plan) = joined_pratt_diagram_fixture();
+        let rendered = render(&plan).unwrap();
+        let files = render_debug_logical_files(&plan, &rendered).unwrap();
+        let index = render_debug_index(&plan.identity, &files);
+        assert!(index.contains("capability\tdiagrams:aggregate\t"));
+        for node in &plan.nodes {
+            assert!(
+                index.contains(&format!("capability\tdiagrams:{}\t", node.semantic_key)),
+                "missing diagram body for {}\n{index}",
+                node.semantic_key
+            );
+        }
+    }
+
+    #[test]
+    fn failed_debug_commit_is_cleaned_and_makes_the_generation_unselectable() {
+        let (_package, plan) = joined_pratt_fixture();
+        let rendered = render(&plan).unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let staged = stage_debug_bundle(destination.path(), &plan, &rendered).unwrap();
+        let staging = staged.staging.clone().unwrap();
+        fs::create_dir(&staged.published).unwrap();
+        fs::write(staged.published.join("caller-data"), "do not remove").unwrap();
+        let output = tempfile::tempdir().unwrap();
+
+        let detail =
+            publish_generation_and_debug(output.path(), &plan.identity, &rendered, Some(staged))
+                .unwrap_err();
+        assert!(detail.contains("debug bundle"), "{detail}");
+        assert_eq!(selected_generation(output.path()), None);
+        assert!(!staging.exists());
+        assert_eq!(
+            fs::read_to_string(
+                destination
+                    .path()
+                    .join(format!(".{DEBUG_BUNDLE_FORMAT}"))
+                    .join(&plan.identity)
+                    .join("caller-data")
+            )
+            .unwrap(),
+            "do not remove"
+        );
+        let error = failure(Path::new("grammar.rs"), &detail);
+        let [diagnostic] = error.report().diagnostics() else {
+            panic!("one debug emission failure is required");
+        };
+        assert_eq!(diagnostic.code().as_str(), "RCA9105");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debug_destination_and_bundle_entries_reject_symlinks_without_following_them() {
+        use std::os::unix::fs::symlink;
+
+        let (_package, plan) = joined_pratt_fixture();
+        let rendered = render(&plan).unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let target = parent.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let destination = parent.path().join("debug-link");
+        symlink(&target, &destination).unwrap();
+        let error = match stage_debug_bundle(&destination, &plan, &rendered) {
+            Ok(_) => panic!("a symlink destination must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("symbolic link"), "{error}");
+        assert!(fs::read_dir(target).unwrap().next().is_none());
+    }
 
     #[test]
     fn nested_visit_variant_uses_the_path_relative_to_the_grammar_module() {

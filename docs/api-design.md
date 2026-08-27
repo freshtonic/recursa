@@ -684,6 +684,21 @@ output can compile. `OUT_DIR` is authoritative and uncommitted. Optional
 formatted debug dumps are non-authoritative; there is no checked-in generated
 megafile, persistent-emission correctness path, or drift gate.
 
+Set the Cargo-tracked `RECURSA_DEBUG_DIR` environment variable to an explicit
+directory to inspect one successful Generation. Recursa writes a deterministic
+index and rustfmt-style, parseable logical views of the generated root, every
+Node, and the enabled capability bodies. The destination must be a plain
+directory rather than a symbolic link. Recursa writes only inside its private
+bundle namespace and does not remove unrelated destination contents.
+
+This output is a generated-code debug bundle, not a generated source tree. Its
+filenames, directories, index syntax, and retention are private implementation
+details. Neither Recursa nor a consuming build loads the bundle, checks it in,
+compares it for drift, or uses it as a fallback. Enabling or moving the bundle
+may rerun Cargo generation, but it does not participate in Generation identity,
+capability selection, or the authoritative compiled payload. A generation
+failure publishes no partial bundle.
+
 ### Node loading, identity, and privacy
 
 `#[derive(recursa::Node)]` declares grammar membership, legalizes helper

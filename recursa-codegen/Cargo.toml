@@ -13,6 +13,7 @@ explorer = []
 
 [dependencies]
 proc-macro2 = { version = "1", features = ["span-locations"] }
+prettyplease = "0.2"
 quote = "1"
 regex-automata = "0.4"
 regex-syntax = "0.8"
