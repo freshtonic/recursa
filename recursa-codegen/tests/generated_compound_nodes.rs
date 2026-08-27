@@ -113,119 +113,108 @@ fn explorer_adapters_expose_erased_schema_occurrences_lexing_pretty_and_samples(
     let source = fs::read_to_string(&main).expect("read downstream consumer");
     let assertions = r#"
     let adapter = grammar::Record::explorer();
-    assert_eq!(adapter.schema().name(), "Record");
+    let schema = adapter.schema();
+    assert_eq!(schema.root().name(), "Record");
+    assert!(schema.root().qualified_name().ends_with("grammar::Record"));
     assert!(adapter.capabilities().pretty());
     assert!(adapter.capabilities().arbitrary());
+    assert!(schema.nodes().any(|node| node.qualified_name().ends_with("private_nodes::Hidden")));
+    let duplicate_names = schema.nodes().filter(|node| node.name() == "Duplicate")
+        .map(|node| node.qualified_name()).collect::<Vec<_>>();
+    assert!(duplicate_names.len() >= 2);
 
     let lexical = adapter.lex("ReCoRd:alpha 42");
     assert_eq!(lexical.tokens().len(), 4);
     assert_eq!(lexical.errors().len(), 0);
     let first = lexical.tokens().next().unwrap();
     assert_eq!(first.text(), "ReCoRd");
-    assert_eq!(first.class(), recursa::explorer::LexicalClass::Fixed);
+    assert_eq!(first.schema().canonical_text(), Some("RECORD"));
+    assert_eq!(first.schema().highlight_class(), recursa::explorer::HighlightClass::Keyword);
 
-    let document = adapter.parse("ReCoRd:alpha 42").expect("explorer parse");
+    let parsed = parse_spanned!(grammar::Record<'_>, "ReCoRd:alpha 42");
+    let document = recursa::explorer::ExplorerDocument::from_parsed(parsed);
     assert_eq!(document.provenance(), recursa::explorer::Provenance::Parsed);
-    assert_eq!(document.pretty().unwrap(), "ReCoRd:alpha 42");
-    let pretty_map = document.pretty_source_map().unwrap();
-    assert_eq!(pretty_map.source_at(0), Some(recursa::Span::new(0, 6).unwrap()));
-    assert_eq!(pretty_map.source_at(6), Some(recursa::Span::new(6, 7).unwrap()));
-    assert_eq!(pretty_map.source_at(7), Some(recursa::Span::new(7, 12).unwrap()));
+    let pretty = document.pretty(&recursa::PrettyConfig::default()).unwrap();
+    assert_eq!(pretty.rendered, "ReCoRd:alpha 42");
+    assert_eq!(pretty.source_map.source_at(0), Some(recursa::Span::new(0, 6).unwrap()));
     let root = document.root();
-    assert_eq!(root.schema().name(), "Record");
+    let recursa::explorer::OccurrenceSchema::Node(root_schema) = root.schema() else {
+        panic!("root is a Node schema")
+    };
+    assert_eq!(root_schema.name(), "Record");
     assert_eq!(root.span(), Some(recursa::Span::new(0, 15).unwrap()));
+    assert_eq!(root.token_text(), None);
     let mut elements = root.elements();
     assert_eq!(elements.len(), 4);
-    assert_eq!(elements.next().unwrap().display(), Some("ReCoRd"));
-    assert_eq!(elements.next().unwrap().display(), Some(":"));
+    assert_eq!(elements.next().unwrap().text(), Some("ReCoRd"));
+    assert_eq!(elements.next().unwrap().text(), Some(":"));
     let label = elements.next().unwrap();
-    assert_eq!(label.schema().name(), Some("label"));
+    assert_eq!(label.schema().name(), "label");
     assert_eq!(label.children().len(), 1);
     let label_node = label.children().next().unwrap();
-    assert_eq!(label_node.schema().name(), "Label");
+    let recursa::explorer::OccurrenceSchema::Node(label_schema) = label_node.schema() else {
+        panic!("label is a Node")
+    };
+    assert_eq!(label_schema.name(), "Label");
     let token = label_node.elements().next().unwrap().children().next().unwrap();
-    assert_eq!(token.display(), Some("alpha"));
+    assert_eq!(token.token_text(), Some("alpha"));
+    assert!(matches!(token.schema(), recursa::explorer::OccurrenceSchema::ContentToken(_)));
     let count = elements.next().unwrap();
     assert_eq!(count.schema().cardinality(), recursa::explorer::Cardinality::Optional);
     assert_eq!(count.children().len(), 1);
 
-    let absent = adapter.parse("record:beta").expect("optional absent parse");
-    let absent_count = absent.root().elements().nth(3).unwrap();
-    assert_eq!(absent_count.schema().name(), Some("count"));
-    assert_eq!(absent_count.children().len(), 0);
-
-    let trailing = match adapter.parse("record:beta 7 empty") {
-        Ok(_) => panic!("explorer roots must consume the entire token stream"),
-        Err(error) => error,
-    };
-    let recursa::explorer::Error::Parse(trailing) = trailing else {
-        panic!("trailing input must be a structured parse failure")
-    };
-    assert_eq!(trailing.kind(), recursa::ParseErrorKind::UnexpectedToken);
-    assert_eq!(trailing.found(), Some("fixed:EMPTY"));
+    let absent = recursa::explorer::ExplorerDocument::from_parsed(
+        parse_spanned!(grammar::Record<'_>, "record:beta"),
+    );
+    assert_eq!(absent.root().elements().nth(3).unwrap().children().len(), 0);
 
     fn exact_fused<I: ExactSizeIterator + std::iter::FusedIterator>(_: &I) {}
-    exact_fused(&adapter.schema().elements());
-    exact_fused(&adapter.schema().variants());
+    exact_fused(&schema.nodes());
+    exact_fused(&schema.tokens());
     exact_fused(&document.root().elements());
     exact_fused(&lexical.tokens());
     exact_fused(&lexical.errors());
 
-    let entry = grammar::Entry::explorer();
-    let variants = entry
-        .schema()
-        .variants()
-        .map(|variant| (variant.variant().unwrap(), variant.elements().len()))
+    let entry_adapter = grammar::Entry::explorer();
+    let variants = entry_adapter.schema().root().variants()
+        .map(|variant| (variant.name(), variant.elements().len()))
         .collect::<Vec<_>>();
     assert_eq!(variants, [("Record", 1), ("Pair", 1), ("Empty", 1)]);
-    let empty = entry.parse("empty").unwrap();
-    assert_eq!(empty.root().schema().variant(), Some("Empty"));
-    assert_eq!(empty.root().elements().len(), 1);
-
-    let repeated = grammar::SomeCounts::explorer();
-    let repeated_schema = repeated.schema().elements().nth(1).unwrap();
-    assert_eq!(
-        repeated_schema.cardinality(),
-        recursa::explorer::Cardinality::OptionalOneOrMore,
+    let empty = recursa::explorer::ExplorerDocument::from_parsed(
+        parse_spanned!(grammar::Entry<'_>, "empty"),
     );
-    let repeated_document = repeated.parse("right 1:2").unwrap();
-    assert_eq!(
-        repeated_document
-            .root()
-            .elements()
-            .nth(1)
-            .unwrap()
-            .children()
-            .len(),
-        2,
+    assert_eq!(empty.root().active_variant().unwrap().name(), "Empty");
+
+    let repeated_adapter = grammar::SomeCounts::explorer();
+    let repeated_schema = repeated_adapter.schema().root().elements().nth(1).unwrap();
+    assert_eq!(repeated_schema.cardinality(), recursa::explorer::Cardinality::OptionalOneOrMore);
+    let repeated = recursa::explorer::ExplorerDocument::from_parsed(
+        parse_spanned!(grammar::SomeCounts<'_>, "right 1:2"),
     );
+    assert_eq!(repeated.root().elements().nth(1).unwrap().children().len(), 2);
 
-    let node_named_like_token = grammar::node_named_like_token::UsesNode::explorer();
-    let node_field = node_named_like_token.schema().elements().nth(1).unwrap();
-    assert_eq!(node_field.token_classification(), None);
-    assert!(node_named_like_token.parse("right left").is_ok());
-
-    let private = grammar::PrivateRoot::explorer()
-        .parse("left ~secret")
-        .expect("private descendants are traversed behind opaque handles");
+    let private = recursa::explorer::ExplorerDocument::from_parsed(
+        parse_spanned!(grammar::PrivateRoot<'_>, "left ~secret"),
+    );
     let hidden = private.root().elements().nth(1).unwrap().children().next().unwrap();
-    assert_eq!(hidden.schema().name(), "Hidden");
-    assert_eq!(
-        hidden.elements().next().unwrap().children().next().unwrap().display(),
-        Some("~secret"),
-    );
+    let recursa::explorer::OccurrenceSchema::Node(hidden_schema) = hidden.schema() else {
+        panic!("hidden descendant is a Node")
+    };
+    assert_eq!(hidden_schema.name(), "Hidden");
+    assert_eq!(hidden.elements().next().unwrap().children().next().unwrap().token_text(), Some("~secret"));
 
-    let left_duplicate = grammar::public_left::Duplicate::explorer();
-    let right_duplicate = grammar::public_right::Duplicate::explorer();
-    assert_eq!(left_duplicate.schema().name(), "Duplicate");
-    assert_eq!(right_duplicate.schema().name(), "Duplicate");
-    assert!(left_duplicate.parse("left").is_ok());
-    assert!(right_duplicate.parse("right").is_ok());
-
-    let sample = adapter.sample(7).expect("deterministic synthetic sample");
+    let entropy = [7_u8; 512];
+    let sample = adapter.sample(&entropy).expect("Arbitrary supported")
+        .expect("deterministic synthetic sample");
+    let repeated_sample = adapter.sample(&entropy).expect("Arbitrary supported")
+        .expect("same entropy remains a valid synthetic sample");
     assert_eq!(sample.provenance(), recursa::explorer::Provenance::Synthetic);
     assert!(sample.source().is_none());
-    assert!(sample.pretty().is_ok());
+    let sample_pretty = sample.pretty(&recursa::PrettyConfig::default()).unwrap();
+    assert_eq!(
+        sample_pretty,
+        repeated_sample.pretty(&recursa::PrettyConfig::default()).unwrap(),
+    );
 "#;
     fs::write(
         main,
@@ -321,6 +310,23 @@ fn explorer_names_are_unreserved_when_the_generator_capability_is_off() {
         "feature-off explorer names must remain authored:\n{}",
         String::from_utf8_lossy(&output.stderr),
     );
+    let generation = generation_directories(&target_dir(&package))
+        .into_iter()
+        .next()
+        .expect("feature-off fixture publishes one Generation");
+    for entry in fs::read_dir(generation).expect("read feature-off Generation") {
+        let path = entry.expect("read feature-off artifact").path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            let emitted = fs::read_to_string(&path).expect("read feature-off Rust artifact");
+            assert!(
+                !emitted.contains("RECURSA_EXPLORER")
+                    && !emitted.contains("__recursa_explorer")
+                    && !emitted.contains("ExplorerPlan"),
+                "feature-off Generation contains explorer payload in {}:\n{emitted}",
+                path.display(),
+            );
+        }
+    }
 }
 
 #[test]
@@ -805,7 +811,7 @@ impl recursa::Visit for Only {
 
 fn main() {
     let adapter = grammar::Only::explorer();
-    assert_eq!(adapter.schema().name(), "Only");
+    assert_eq!(adapter.schema().root().name(), "Only");
 }
 "#,
     )

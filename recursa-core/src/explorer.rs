@@ -945,6 +945,43 @@ pub const unsafe fn construct_adapter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    struct CountingAllocator;
+
+    std::thread_local! {
+        static COUNTING: Cell<bool> = const { Cell::new(false) };
+        static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    unsafe impl GlobalAlloc for CountingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            COUNTING.with(|counting| {
+                if counting.get() {
+                    ALLOCATIONS.with(|allocations| allocations.set(allocations.get() + 1));
+                }
+            });
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(pointer, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static TEST_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+    fn count_allocations<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+        COUNTING.with(|counting| counting.set(false));
+        ALLOCATIONS.with(|allocations| allocations.set(0));
+        COUNTING.with(|counting| counting.set(true));
+        let result = operation();
+        COUNTING.with(|counting| counting.set(false));
+        let allocations = ALLOCATIONS.with(Cell::get);
+        (result, allocations)
+    }
 
     static WORD: TokenSchemaData = token_schema(
         "Word",
@@ -1077,5 +1114,40 @@ mod tests {
         assert_eq!(tokens.len(), 1);
         assert_eq!(grammar.root().qualified_name(), "grammar::Root");
         assert_eq!(tokens.into_iter().next().unwrap().kind(), "WORD");
+    }
+
+    #[test]
+    fn adapters_report_unsupported_sampling_as_none() {
+        fn lex(source: &str) -> LexResult<'_> {
+            lex_result(source, [], [])
+        }
+
+        let adapter = unsafe { construct_adapter(&GRAMMAR, false, false, lex, None) };
+        assert!(!adapter.capabilities().arbitrary());
+        assert!(adapter.sample(&[]).is_none());
+    }
+
+    #[test]
+    fn document_erasure_allocates_once_and_navigation_allocates_nothing() {
+        // Warm the thread-local counters before measuring the erased Box.
+        let _ = count_allocations(|| ());
+        let (document, erasure_allocations) = count_allocations(|| {
+            ExplorerDocument::from_parsed(Parsed::synthetic(Root { child: Child }))
+        });
+        assert_eq!(erasure_allocations, 1);
+
+        let ((), navigation_allocations) = count_allocations(|| {
+            for _ in 0..128 {
+                let root = document.root();
+                let mut elements = root.elements();
+                let element = elements.next().expect("root element");
+                assert!(elements.next().is_none());
+                let mut children = element.children();
+                let child = children.next().expect("child occurrence");
+                assert_eq!(child.elements().len(), 0);
+                assert!(children.next().is_none());
+            }
+        });
+        assert_eq!(navigation_allocations, 0);
     }
 }
