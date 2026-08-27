@@ -1,0 +1,40 @@
+# recursa-core
+
+`recursa-core` is the grammar-erased runtime beneath the `recursa` facade. It
+provides checked spans, parse errors, parsed occurrence provenance, node views,
+AST traversal contracts, structured Pretty output and source maps, and the
+non-empty `Vec1<T>` container.
+
+Most applications should depend on
+[`recursa`](https://docs.rs/recursa/latest/recursa/) instead. The facade
+re-exports the supported runtime types and keeps generated grammars aligned
+with the matching runtime and macros.
+
+## Public boundary
+
+The public runtime surface includes:
+
+- `Span`, `ParseError`, and `ParseErrorKind`;
+- `Parsed<T>`, `Node`, `NodeView`, element views, and repeated views;
+- `Visit`/`VisitMut` and visitor contracts;
+- `Pretty`, `PrettyConfig`, `PrettyContext`, `PrettySink`, and source maps;
+- `HasSpan` and `Vec1<T>`.
+
+Grammar-local token, lexer, input, and parse entry types are generated for each
+authored grammar. The hidden `__private` module in this crate exists only for
+matching-version generated code and is not a general-purpose lexer or parser
+API.
+
+## Features
+
+No features are enabled by default.
+
+- `arbitrary` supports configured generated `Arbitrary` implementations.
+- `serde` supports configured serialization implementations for runtime-backed
+  values.
+- `explorer` exposes grammar-erased schema, lexing, document, and occurrence
+  contracts. It does not include a server or browser UI.
+
+Recursa uses Rust edition 2024 and requires Rust 1.88 or newer. See the
+[API reference](https://docs.rs/recursa-core/latest/recursa_core/) and the
+[workspace package map](https://github.com/freshtonic/recursa#workspace-packages).
