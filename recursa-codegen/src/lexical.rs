@@ -2,6 +2,14 @@
     dead_code,
     reason = "private source analysis lexical-planning seam is consumed by later pipeline tickets"
 )]
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Grammar-wide lexical planning for source analysis.
+//!
+//! This module merges token definitions, validates lexical languages, proves
+//! keyword-carrier relationships, and assigns deterministic rule priority.
+//! It publishes typed token-kind meaning rather than backend-specific lexer
+//! state, leaving generation free to render the accepted plan.
 
 use crate::{KindId, KindSet, TextEquivalence};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -15,31 +23,48 @@ use crate::source_model::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The lexical plan report representation used by source analysis.
 pub(crate) struct LexicalPlanReport {
+    /// The diagnostics.
     pub(crate) diagnostics: Vec<LexicalDiagnostic>,
+    /// The plan.
     pub(crate) plan: Option<LexicalPlan>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The lexical plan representation used by source analysis.
 pub(crate) struct LexicalPlan {
+    /// The text equivalence.
     pub(crate) text_equivalence: TextEquivalence,
+    /// The selection order.
     pub(crate) selection_order: LexicalSelectionOrder,
+    /// The token kinds.
     pub(crate) token_kinds: Vec<TokenKindPlan>,
+    /// The content bases.
     pub(crate) content_bases: Vec<ContentBasePlan>,
+    /// The keywords.
     pub(crate) keywords: Vec<KeywordPlan>,
+    /// The parser targets.
     pub(crate) parser_targets: Vec<ParserTargetPlan>,
+    /// The rules.
     pub(crate) rules: Vec<LexicalRule>,
+    /// The non token rules.
     pub(crate) non_token_rules: Vec<NonTokenLexicalRule>,
+    /// The lowering map.
     pub(crate) lowering_map: LexicalLoweringMap,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible lexical selection order cases used by source analysis.
 pub(crate) enum LexicalSelectionOrder {
+    /// The longest prefix then fixed then authored pattern priority case.
     LongestPrefixThenFixedThenAuthoredPatternPriority,
 }
 
 impl LexicalPlan {
+    /// Renders lexical projection in canonical order.
     pub(crate) fn canonical_lexical_projection(&self) -> String {
+        // Render identity-bearing lexical facts in canonical order so source permutations do not perturb review artifacts.
         let mut rendered = String::new();
         writeln!(rendered, "equivalence {:?}", self.text_equivalence)
             .expect("writing to String cannot fail");
@@ -181,6 +206,7 @@ impl LexicalPlan {
     }
 }
 
+/// Computes the lexical priority projection key.
 const fn lexical_priority_projection_key(priority: LexicalPriority) -> (u8, Option<u32>) {
     match priority {
         LexicalPriority::Fixed => (0, None),
@@ -188,6 +214,7 @@ const fn lexical_priority_projection_key(priority: LexicalPriority) -> (u8, Opti
     }
 }
 
+/// Computes the kind label.
 pub(crate) fn kind_label(identity: &TokenKindIdentity) -> String {
     match identity {
         TokenKindIdentity::Fixed(spelling) => format!("fixed:{spelling}"),
@@ -205,93 +232,146 @@ pub(crate) fn kind_label(identity: &TokenKindIdentity) -> String {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The token kind plan representation used by source analysis.
 pub(crate) struct TokenKindPlan {
+    /// The id.
     pub(crate) id: KindId,
+    /// The identity.
     pub(crate) identity: TokenKindIdentity,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible token kind identity cases used by source analysis.
 pub(crate) enum TokenKindIdentity {
+    /// The fixed case.
     Fixed(String),
+    /// The content base case.
     ContentBase(ContentBaseIdentity),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The content base identity representation used by source analysis.
 pub(crate) struct ContentBaseIdentity {
+    /// The pattern.
     pub(crate) pattern: String,
+    /// The callback.
     pub(crate) callback: Option<syn::Path>,
+    /// The priority.
     pub(crate) priority: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The content base plan representation used by source analysis.
 pub(crate) struct ContentBasePlan {
+    /// The kind.
     pub(crate) kind: KindId,
+    /// The target names.
     pub(crate) target_names: Vec<String>,
+    /// The pattern.
     pub(crate) pattern: String,
+    /// The callback.
     pub(crate) callback: Option<syn::Path>,
+    /// The authored priority.
     pub(crate) authored_priority: Option<u32>,
 }
 
+/// The content base group representation used by source analysis.
 struct ContentBaseGroup<'source> {
+    /// The identity.
     identity: ContentBaseIdentity,
+    /// The definitions.
     definitions: NonEmpty<&'source crate::source_model::TokenDefinition>,
 }
 
+/// The pattern contender representation used by source analysis.
 struct PatternContender {
+    /// The pattern.
     pattern: String,
+    /// The target names.
     target_names: Vec<String>,
+    /// The authored priority.
     authored_priority: Option<u32>,
+    /// The priority authorable.
     priority_authorable: bool,
+    /// The outcome.
     outcome: LexicalPatternOutcome,
+    /// The sites.
     sites: Vec<SourceSite>,
 }
 
+/// The non token rule group representation used by source analysis.
 struct NonTokenRuleGroup {
+    /// The pattern.
     pattern: String,
+    /// The outcome.
     outcome: crate::source_model::NonTokenLexerOutcome,
+    /// The sites.
     sites: NonEmpty<SourceSite>,
 }
 
+/// The retained fixed matcher representation used by source analysis.
 struct RetainedFixedMatcher {
+    /// The spelling.
     spelling: String,
+    /// The ascii insensitive.
     ascii_insensitive: bool,
 }
 
+/// The fixed matcher representation used by source analysis.
 struct FixedMatcher {
+    /// The spelling.
     spelling: String,
+    /// The word shaped.
     word_shaped: bool,
+    /// The ascii insensitive.
     ascii_insensitive: bool,
 }
 
+/// The symbolic carrier proof representation used by source analysis.
 struct SymbolicCarrierProof {
+    /// The carrier.
     carrier: ContentBaseIdentity,
+    /// The additional carriers.
     additional_carriers: Vec<ContentBaseIdentity>,
 }
 
 impl SymbolicCarrierProof {
+    /// Computes the identities.
     fn identities(&self) -> impl Iterator<Item = &ContentBaseIdentity> {
         std::iter::once(&self.carrier).chain(&self.additional_carriers)
     }
 }
 
+/// The carrier proof cache representation used by source analysis.
 struct CarrierProofCache {
+    /// The proofs.
     proofs: BTreeMap<String, Option<SymbolicCarrierProof>>,
+    /// The matcher constructions.
     matcher_constructions: usize,
+    /// The proof evaluations.
     proof_evaluations: usize,
 }
 
+/// The possible carrier candidate cases used by source analysis.
 enum CarrierCandidate {
+    /// The emitting case.
     Emitting {
+        /// The group.
         group: usize,
+        /// The opaque.
         opaque: bool,
+        /// The priority.
         priority: u32,
     },
+    /// The non emitting case.
     NonEmitting {
+        /// The priority.
         priority: u32,
     },
 }
 
 impl CarrierCandidate {
+    /// Computes the priority.
     const fn priority(&self) -> u32 {
         match self {
             Self::Emitting { priority, .. } | Self::NonEmitting { priority } => *priority,
@@ -299,13 +379,18 @@ impl CarrierCandidate {
     }
 }
 
+/// The carrier prover representation used by source analysis.
 struct CarrierProver {
+    /// The dfa.
     dfa: Option<dense::DFA<Vec<u32>>>,
+    /// The candidates.
     candidates: Vec<CarrierCandidate>,
+    /// The matcher constructions.
     matcher_constructions: usize,
 }
 
 impl ContentBaseGroup<'_> {
+    /// Computes the sites.
     fn sites(&self) -> Vec<SourceSite> {
         self.definitions
             .iter()
@@ -313,6 +398,7 @@ impl ContentBaseGroup<'_> {
             .collect()
     }
 
+    /// Computes the priority authorable.
     fn priority_authorable(&self) -> bool {
         self.definitions
             .iter()
@@ -321,32 +407,49 @@ impl ContentBaseGroup<'_> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The keyword plan representation used by source analysis.
 pub(crate) struct KeywordPlan {
+    /// The canonical spelling.
     pub(crate) canonical_spelling: String,
+    /// The kind.
     pub(crate) kind: KindId,
+    /// The recognition.
     pub(crate) recognition: KeywordRecognition,
+    /// The definition sites.
     pub(crate) definition_sites: Vec<SourceSite>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible keyword recognition cases used by source analysis.
 pub(crate) enum KeywordRecognition {
+    /// The standalone case.
     Standalone,
+    /// The combined carriers case.
     CombinedCarriers {
+        /// The carrier.
         carrier: KindId,
+        /// The additional carriers.
         additional_carriers: Vec<KindId>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The parser target plan representation used by source analysis.
 pub(crate) struct ParserTargetPlan {
+    /// The definition.
     pub(crate) definition: crate::lowering::TokenDefinitionId,
+    /// The semantic.
     pub(crate) semantic: crate::resolution::ContentTokenId,
+    /// The name.
     pub(crate) name: String,
+    /// The base kind.
     pub(crate) base_kind: KindId,
+    /// The admitted kinds.
     pub(crate) admitted_kinds: KindSet,
 }
 
 impl ParserTargetPlan {
+    /// Computes the accepted kinds.
     pub(crate) fn accepted_kinds(&self) -> KindSet {
         let mut accepted = self.admitted_kinds.clone();
         accepted
@@ -357,44 +460,63 @@ impl ParserTargetPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The lexical rule representation used by source analysis.
 pub(crate) struct LexicalRule {
+    /// The matcher.
     pub(crate) matcher: LexicalMatcher,
+    /// The kind.
     pub(crate) kind: KindId,
+    /// The role.
     pub(crate) role: LexicalRuleRole,
+    /// The priority.
     pub(crate) priority: LexicalPriority,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The non token lexical rule representation used by source analysis.
 pub(crate) struct NonTokenLexicalRule {
+    /// The matcher.
     pub(crate) matcher: LexicalMatcher,
+    /// The outcome.
     pub(crate) outcome: NonTokenLexicalOutcome,
+    /// The sites.
     pub(crate) sites: NonEmpty<SourceSite>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible non token lexical outcome cases used by source analysis.
 pub(crate) enum NonTokenLexicalOutcome {
+    /// The non emitting case.
     NonEmitting,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The lexical lowering map representation used by source analysis.
 pub(crate) struct LexicalLoweringMap {
+    /// The token definitions.
     pub(crate) token_definitions: Vec<TokenDefinitionKindCorrelation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The token definition kind correlation representation used by source analysis.
 pub(crate) struct TokenDefinitionKindCorrelation {
+    /// The source.
     pub(crate) source: crate::lowering::TokenDefinitionId,
+    /// The lowered.
     pub(crate) lowered: KindId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The non empty representation used by source analysis.
 pub(crate) struct NonEmpty<T>(Vec<T>);
 
 impl<T> NonEmpty<T> {
+    /// Creates a value with the supplied analysis inputs.
     fn new(first: T) -> Self {
         Self(vec![first])
     }
 
+    /// Computes the from vec.
     fn from_vec(values: Vec<T>) -> Option<Self> {
         if values.is_empty() {
             None
@@ -403,61 +525,91 @@ impl<T> NonEmpty<T> {
         }
     }
 
+    /// Records push.
     fn push(&mut self, value: T) {
         self.0.push(value);
     }
 
+    /// Computes the iter.
     fn iter(&self) -> impl Iterator<Item = &T> {
         self.0.iter()
     }
 
+    /// Returns the slice.
     fn as_slice(&self) -> &[T] {
         &self.0
     }
 
+    /// Sorts by.
     fn sort_by(&mut self, compare: impl FnMut(&T, &T) -> std::cmp::Ordering) {
         self.0.sort_by(compare);
     }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible lexical matcher cases used by source analysis.
 pub(crate) enum LexicalMatcher {
+    /// The fixed case.
     Fixed(String),
+    /// The regex case.
     Regex(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible lexical priority cases used by source analysis.
 pub(crate) enum LexicalPriority {
+    /// The fixed case.
     Fixed,
-    Pattern { authored: Option<u32> },
+    /// The pattern case.
+    Pattern {
+        #[doc = "Optional priority explicitly supplied by the grammar author."]
+        authored: Option<u32>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible lexical rule role cases used by source analysis.
 pub(crate) enum LexicalRuleRole {
+    /// The standalone keyword case.
     StandaloneKeyword,
+    /// The standalone fixed case.
     StandaloneFixed,
+    /// The content pattern case.
     ContentPattern,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The lexical diagnostic representation used by source analysis.
 pub(crate) struct LexicalDiagnostic {
+    /// The code.
     pub(crate) code: LexicalDiagnosticCode,
+    /// The sites.
     pub(crate) sites: Vec<SourceSite>,
+    /// The evidence.
     pub(crate) evidence: LexicalDiagnosticEvidence,
+    /// The remedies.
     pub(crate) remedies: Vec<LexicalRemedy>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible lexical diagnostic code cases used by source analysis.
 pub(crate) enum LexicalDiagnosticCode {
+    /// The rca3001 case.
     Rca3001,
+    /// The rca3002 case.
     Rca3002,
+    /// The rca3003 case.
     Rca3003,
+    /// The rca3004 case.
     Rca3004,
+    /// The rca3005 case.
     Rca3005,
+    /// The rca3006 case.
     Rca3006,
 }
 
 impl LexicalDiagnosticCode {
+    /// The all constant used by source analysis.
     pub(crate) const ALL: [Self; 6] = [
         Self::Rca3001,
         Self::Rca3002,
@@ -467,6 +619,7 @@ impl LexicalDiagnosticCode {
         Self::Rca3006,
     ];
 
+    /// Returns the str.
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Rca3001 => "RCA3001",
@@ -478,6 +631,7 @@ impl LexicalDiagnosticCode {
         }
     }
 
+    /// Computes the spec.
     pub(crate) const fn spec(self) -> LexicalDiagnosticSpec {
         match self {
             Self::Rca3001 => LexicalDiagnosticSpec {
@@ -521,133 +675,217 @@ impl LexicalDiagnosticCode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The lexical diagnostic spec representation used by source analysis.
 pub(crate) struct LexicalDiagnosticSpec {
+    /// The code.
     pub(crate) code: LexicalDiagnosticCode,
+    /// The condition.
     pub(crate) condition: LexicalDiagnosticCondition,
+    /// The evidence.
     pub(crate) evidence: LexicalEvidenceKind,
+    /// The remedy.
     pub(crate) remedy: LexicalRemedyKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible lexical diagnostic condition cases used by source analysis.
 pub(crate) enum LexicalDiagnosticCondition {
+    /// The invalid keyword matching policy case.
     InvalidKeywordMatchingPolicy,
+    /// The fixed token classification mismatch case.
     FixedTokenClassificationMismatch,
+    /// The conflicting token definition case.
     ConflictingTokenDefinition,
+    /// The unsupported lexical pattern case.
     UnsupportedLexicalPattern,
+    /// The unresolved lexical overlap case.
     UnresolvedLexicalOverlap,
+    /// The tied lexical priority case.
     TiedLexicalPriority,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible lexical evidence kind cases used by source analysis.
 pub(crate) enum LexicalEvidenceKind {
+    /// The keyword matching policy case.
     KeywordMatchingPolicy,
+    /// The fixed token classification case.
     FixedTokenClassification,
+    /// The conflicting definition metadata case.
     ConflictingDefinitionMetadata,
+    /// The invalid pattern case.
     InvalidPattern,
+    /// The pattern overlap case.
     PatternOverlap,
+    /// The priority tie case.
     PriorityTie,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible lexical remedy kind cases used by source analysis.
 pub(crate) enum LexicalRemedyKind {
+    /// The choose supported keyword matching policy case.
     ChooseSupportedKeywordMatchingPolicy,
+    /// The use mechanical fixed token class case.
     UseMechanicalFixedTokenClass,
+    /// The make definition metadata equivalent case.
     MakeDefinitionMetadataEquivalent,
+    /// The use supported non empty pattern case.
     UseSupportedNonEmptyPattern,
+    /// The add priority or separate patterns case.
     AddPriorityOrSeparatePatterns,
+    /// The assign distinct priority case.
     AssignDistinctPriority,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible fixed token class cases used by source analysis.
 pub(crate) enum FixedTokenClass {
+    /// The keyword case.
     Keyword,
+    /// The punctuation case.
     Punctuation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible lexical diagnostic evidence cases used by source analysis.
 pub(crate) enum LexicalDiagnosticEvidence {
+    /// The invalid keyword matching policy case.
     InvalidKeywordMatchingPolicy {
+        /// The authored.
         authored: String,
     },
+    /// The fixed token classification mismatch case.
     FixedTokenClassificationMismatch {
+        /// The spelling.
         spelling: String,
+        /// The authored.
         authored: FixedTokenClass,
+        /// The mechanical.
         mechanical: FixedTokenClass,
     },
+    /// The conflicting token definition case.
     ConflictingTokenDefinition {
+        /// The identity.
         identity: String,
+        /// The normalized metadata.
         normalized_metadata: Vec<LexicalDefinitionMetadata>,
     },
+    /// The invalid pattern case.
     InvalidPattern {
+        /// The pattern.
         pattern: String,
+        /// The reason.
         reason: UnsupportedPatternReason,
     },
+    /// The pattern overlap case.
     PatternOverlap {
+        /// The contenders.
         contenders: Vec<LexicalPatternEvidence>,
+        /// The witness.
         witness: String,
     },
+    /// The priority tie case.
     PriorityTie {
+        /// The contenders.
         contenders: Vec<LexicalPatternEvidence>,
+        /// The priority.
         priority: u32,
+        /// The witness.
         witness: String,
     },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible unsupported pattern reason cases used by source analysis.
 pub(crate) enum UnsupportedPatternReason {
+    /// The invalid or unsupported syntax case.
     InvalidOrUnsupportedSyntax,
+    /// The word boundary case.
     WordBoundary,
+    /// The anchor case.
     Anchor,
+    /// The empty match case.
     EmptyMatch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible lexical definition metadata cases used by source analysis.
 pub(crate) enum LexicalDefinitionMetadata {
+    /// The fixed case.
     Fixed {
+        /// The class.
         class: FixedTokenClass,
+        /// The canonical spelling.
         canonical_spelling: String,
     },
+    /// The content case.
     Content {
+        /// The pattern.
         pattern: String,
+        /// The callback.
         callback: Option<syn::Path>,
+        /// The authored priority.
         authored_priority: Option<u32>,
+        /// The admitted fixed tokens.
         admitted_fixed_tokens: Vec<String>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The lexical pattern evidence representation used by source analysis.
 pub(crate) struct LexicalPatternEvidence {
+    /// The pattern.
     pub(crate) pattern: String,
+    /// The target names.
     pub(crate) target_names: Vec<String>,
+    /// The authored priority.
     pub(crate) authored_priority: Option<u32>,
+    /// The outcome.
     pub(crate) outcome: LexicalPatternOutcome,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible lexical pattern outcome cases used by source analysis.
 pub(crate) enum LexicalPatternOutcome {
+    /// The emits token kind case.
     EmitsTokenKind,
+    /// The non emitting case.
     NonEmitting,
+    /// The opaque callback case.
     OpaqueCallback,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible lexical remedy cases used by source analysis.
 pub(crate) enum LexicalRemedy {
+    /// The choose supported keyword matching policy case.
     ChooseSupportedKeywordMatchingPolicy,
+    /// The use mechanical fixed token class case.
     UseMechanicalFixedTokenClass {
+        /// The class.
         class: FixedTokenClass,
     },
+    /// The make definition metadata equivalent case.
     MakeDefinitionMetadataEquivalent {
+        /// The identity.
         identity: String,
     },
+    /// The use supported non empty pattern case.
     UseSupportedNonEmptyPattern,
+    /// The assign distinct priority case.
     AssignDistinctPriority {
+        /// The contenders.
         contenders: Vec<LexicalPatternEvidence>,
     },
+    /// The make patterns disjoint case.
     MakePatternsDisjoint {
+        /// The contenders.
         contenders: Vec<LexicalPatternEvidence>,
     },
 }
 
+/// Computes the non token rule groups.
 fn non_token_rule_groups(source: &SourceModeledGrammar) -> Vec<NonTokenRuleGroup> {
     let mut groups = Vec::<NonTokenRuleGroup>::new();
     for record in &source.source_model().lexer_records {
@@ -676,12 +914,14 @@ fn non_token_rule_groups(source: &SourceModeledGrammar) -> Vec<NonTokenRuleGroup
     groups
 }
 
+/// Computes the non token source outcome key.
 const fn non_token_source_outcome_key(outcome: crate::source_model::NonTokenLexerOutcome) -> u8 {
     match outcome {
         crate::source_model::NonTokenLexerOutcome::NonEmitting => 0,
     }
 }
 
+/// Plans non token outcome.
 const fn plan_non_token_outcome(
     outcome: crate::source_model::NonTokenLexerOutcome,
 ) -> NonTokenLexicalOutcome {
@@ -692,6 +932,7 @@ const fn plan_non_token_outcome(
     }
 }
 
+/// Computes the fixed matchers.
 fn fixed_matchers(model: &SourceModel, text_equivalence: TextEquivalence) -> Vec<FixedMatcher> {
     let mut fixed = BTreeMap::<String, (bool, bool)>::new();
     for definition in &model.token_definitions {
@@ -718,6 +959,7 @@ fn fixed_matchers(model: &SourceModel, text_equivalence: TextEquivalence) -> Vec
 }
 
 impl CarrierProofCache {
+    /// Creates a value with the supplied analysis inputs.
     fn new(
         text_equivalence: TextEquivalence,
         content_groups: &[ContentBaseGroup<'_>],
@@ -763,11 +1005,13 @@ impl CarrierProofCache {
         }
     }
 
+    /// Computes the proof.
     fn proof(&self, spelling: &str) -> Option<&SymbolicCarrierProof> {
         self.proofs.get(spelling).and_then(Option::as_ref)
     }
 }
 
+/// Computes the retained fixed matchers.
 fn retained_fixed_matchers(
     fixed_matchers: &[FixedMatcher],
     carrier_proofs: &CarrierProofCache,
@@ -782,7 +1026,9 @@ fn retained_fixed_matchers(
         .collect()
 }
 
+/// Plans lexical.
 pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
+    // Resolve definitions, validate patterns, prove carriers, and assign priority in order; each phase consumes only validated facts.
     let model = source.source_model();
     let text_equivalence = source.resolved().configuration.syntax.text_equivalence;
     let content_groups = content_base_groups(model);
@@ -1083,6 +1329,7 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
     }
 }
 
+/// Computes the fixed classification diagnostics.
 fn fixed_classification_diagnostics(source: &SourceModeledGrammar) -> Vec<LexicalDiagnostic> {
     source
         .source_model()
@@ -1122,6 +1369,7 @@ fn fixed_classification_diagnostics(source: &SourceModeledGrammar) -> Vec<Lexica
         .collect()
 }
 
+/// Computes the authored fixed class.
 const fn authored_fixed_class(class: AuthoredFixedTokenClass) -> FixedTokenClass {
     match class {
         AuthoredFixedTokenClass::Keyword => FixedTokenClass::Keyword,
@@ -1129,6 +1377,7 @@ const fn authored_fixed_class(class: AuthoredFixedTokenClass) -> FixedTokenClass
     }
 }
 
+/// Computes the definition conflict diagnostics.
 fn definition_conflict_diagnostics(
     source: &SourceModeledGrammar,
     text_equivalence: TextEquivalence,
@@ -1217,6 +1466,7 @@ fn definition_conflict_diagnostics(
         .collect()
 }
 
+/// Computes the definition metadata key.
 fn definition_metadata_key(metadata: &LexicalDefinitionMetadata) -> String {
     match metadata {
         LexicalDefinitionMetadata::Fixed {
@@ -1237,6 +1487,7 @@ fn definition_metadata_key(metadata: &LexicalDefinitionMetadata) -> String {
     }
 }
 
+/// Computes the content base identity.
 fn content_base_identity(
     content: &crate::source_model::ContentTokenDefinition,
 ) -> ContentBaseIdentity {
@@ -1247,6 +1498,7 @@ fn content_base_identity(
     }
 }
 
+/// Computes the content base groups.
 fn content_base_groups(source: &SourceModel) -> Vec<ContentBaseGroup<'_>> {
     let mut grouped = Vec::<ContentBaseGroup<'_>>::new();
     for definition in &source.token_definitions {
@@ -1289,6 +1541,7 @@ fn content_base_groups(source: &SourceModel) -> Vec<ContentBaseGroup<'_>> {
     grouped
 }
 
+/// Computes the content base identity for definition.
 fn content_base_identity_for_definition(
     definition: &crate::source_model::TokenDefinition,
 ) -> Option<ContentBaseIdentity> {
@@ -1303,6 +1556,7 @@ fn content_base_identity_for_definition(
     }
 }
 
+/// Computes the token kind by identity.
 fn token_kind_by_identity(kinds: &[TokenKindPlan], identity: &TokenKindIdentity) -> KindId {
     kinds
         .iter()
@@ -1310,6 +1564,7 @@ fn token_kind_by_identity(kinds: &[TokenKindPlan], identity: &TokenKindIdentity)
         .expect("every token-kind identity receives one kind")
 }
 
+/// Computes the content base kind.
 fn content_base_kind(
     kinds: &[(ContentBaseIdentity, KindId)],
     identity: &ContentBaseIdentity,
@@ -1320,12 +1575,14 @@ fn content_base_kind(
         .expect("every content base receives one token kind")
 }
 
+/// Computes the lexical diagnostics.
 fn lexical_diagnostics(
     source: &SourceModeledGrammar,
     content_groups: &[ContentBaseGroup<'_>],
     non_token_groups: &[NonTokenRuleGroup],
     retained_fixed_matchers: &[RetainedFixedMatcher],
 ) -> Vec<LexicalDiagnostic> {
+    // Adapt all independent lexical findings before sorting, preserving stable codes and authored source sites.
     let mut diagnostics = Vec::new();
     let mut contenders = Vec::new();
     for group in non_token_groups {
@@ -1454,6 +1711,7 @@ fn lexical_diagnostics(
     diagnostics
 }
 
+/// Validates pattern.
 fn validate_pattern(pattern: &str) -> Result<(), UnsupportedPatternReason> {
     let hir = regex_syntax::Parser::new()
         .parse(pattern)
@@ -1473,6 +1731,7 @@ fn validate_pattern(pattern: &str) -> Result<(), UnsupportedPatternReason> {
     Ok(())
 }
 
+/// Computes the pattern evidence.
 fn pattern_evidence(contender: &PatternContender) -> LexicalPatternEvidence {
     LexicalPatternEvidence {
         pattern: contender.pattern.clone(),
@@ -1482,6 +1741,7 @@ fn pattern_evidence(contender: &PatternContender) -> LexicalPatternEvidence {
     }
 }
 
+/// Computes the accepts empty.
 fn accepts_empty<A: regex_automata::dfa::Automaton>(dfa: &A) -> bool {
     let input = Input::new(b"").anchored(Anchored::Yes);
     let Ok(state) = dfa.start_state_forward(&input) else {
@@ -1490,6 +1750,7 @@ fn accepts_empty<A: regex_automata::dfa::Automaton>(dfa: &A) -> bool {
     dfa.is_match_state(dfa.next_eoi_state(state))
 }
 
+/// Computes the pattern ambiguities.
 fn pattern_ambiguities(
     contenders: &[PatternContender],
     retained_fixed_matchers: &[RetainedFixedMatcher],
@@ -1568,11 +1829,13 @@ fn pattern_ambiguities(
     ambiguities.into_iter().collect()
 }
 
+/// Computes the sorted sites.
 fn sorted_sites(source: &SourceModeledGrammar, mut sites: Vec<SourceSite>) -> Vec<SourceSite> {
     sites.sort_by_key(|site| source_site_key(source, site));
     sites
 }
 
+/// Computes the diagnostic key.
 fn diagnostic_key(
     source: &SourceModeledGrammar,
     diagnostic: &LexicalDiagnostic,
@@ -1583,6 +1846,7 @@ fn diagnostic_key(
     (source_site_key(source, site), diagnostic.code)
 }
 
+/// Computes the source site key.
 fn source_site_key(
     source: &SourceModeledGrammar,
     site: &SourceSite,
@@ -1590,6 +1854,7 @@ fn source_site_key(
     source.source_order_key(site)
 }
 
+/// Renders fixed spelling in canonical order.
 fn canonical_fixed_spelling(spelling: &str, equivalence: TextEquivalence) -> String {
     if is_word_shaped(spelling) && equivalence == TextEquivalence::AsciiInsensitive {
         spelling.to_ascii_uppercase()
@@ -1599,6 +1864,7 @@ fn canonical_fixed_spelling(spelling: &str, equivalence: TextEquivalence) -> Str
 }
 
 impl CarrierProver {
+    /// Creates a value with the supplied analysis inputs.
     fn new(
         content_groups: &[ContentBaseGroup<'_>],
         non_token_records: &[crate::source_model::NonTokenLexerRecord],
@@ -1640,6 +1906,7 @@ impl CarrierProver {
         }
     }
 
+    /// Computes the prove.
     fn prove(&self, text_equivalence: TextEquivalence, spelling: &str) -> Option<Vec<usize>> {
         let dfa = self.dfa.as_ref()?;
         let input = Input::new(b"").anchored(Anchored::Yes);
@@ -1705,6 +1972,7 @@ impl CarrierProver {
     }
 }
 
+/// Whether the value is word shaped.
 fn is_word_shaped(spelling: &str) -> bool {
     let mut characters = spelling.chars();
     let Some(first) = characters.next() else {

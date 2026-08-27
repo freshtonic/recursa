@@ -2,6 +2,14 @@
     dead_code,
     reason = "the private source-analysis seam is consumed by the generation pipeline"
 )]
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Orchestration and diagnostic adaptation for the source-analysis pipeline.
+//!
+//! Each stage consumes only the preceding stage's successful value while
+//! preserving its build inputs on failure. Stage-specific findings are
+//! adapted once into stable build diagnostics and Cargo invalidation output is
+//! emitted independently of analysis success.
 
 use std::path::Path;
 
@@ -32,14 +40,20 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
+/// Borrowed invocation inputs for one source-analysis run.
 pub(crate) struct SourceAnalysisInput<'input> {
+    /// Package root against which selected and discovered paths are confined.
     manifest_dir: &'input Path,
+    /// Authored Rust file selected as the grammar root.
     selected_root: &'input Path,
+    /// Rust edition used to parse the selected module tree.
     edition: RustEdition,
+    /// Cargo configuration snapshot controlling module inclusion.
     cfg: CargoCfgSnapshot,
 }
 
 impl<'input> SourceAnalysisInput<'input> {
+    /// Creates default Rust 2024 inputs for tests and fixed fixtures.
     pub(crate) fn rust_2024(manifest_dir: &'input Path, selected_root: &'input str) -> Self {
         Self {
             manifest_dir,
@@ -49,6 +63,7 @@ impl<'input> SourceAnalysisInput<'input> {
         }
     }
 
+    /// Creates a value with the supplied analysis inputs.
     pub(crate) fn new(
         manifest_dir: &'input Path,
         selected_root: &'input Path,
@@ -64,7 +79,12 @@ impl<'input> SourceAnalysisInput<'input> {
     }
 }
 
+/// Private sink for line-oriented Cargo build-script instructions.
+///
+/// Source analysis emits invalidation before it can fail and warnings exactly
+/// once at the boundary where their stage is known.
 pub(crate) trait CargoOutput {
+    /// Emits one complete Cargo instruction without an ending newline.
     fn emit(&mut self, instruction: String);
 }
 
@@ -75,21 +95,33 @@ impl CargoOutput for Vec<String> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A validated lowered grammar paired with successful semantic facts.
 pub(crate) struct AnalyzedGrammar {
+    /// Authored and normalized structures with total correlations.
     pub(crate) lowered: LoweredGrammar,
+    /// Successful source-independent semantic result.
     pub(crate) analysis: AnalysisReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Successful pipeline value returned to generation.
 pub(crate) struct SourceAnalysisSuccess {
+    /// Grammar and semantic facts generation may join into an emission plan.
     pub(crate) analyzed: AnalyzedGrammar,
+    /// Non-fatal warnings retained for programmatic consumers.
     pub(crate) build_report: BuildReport,
 }
 
+/// Analyzes one selected Rust grammar tree through all dependent stages.
+///
+/// The first failing stage returns every independent error from that stage and
+/// suppresses dependent stages. Cargo invalidation instructions survive all
+/// failure paths, and successful warnings are emitted once before return.
 pub(crate) fn analyze_source_tree(
     input: SourceAnalysisInput<'_>,
     cargo: &mut impl CargoOutput,
 ) -> Result<SourceAnalysisSuccess, GenerateError> {
+    // Run discovery, resolution, modeling, materialization, lexical planning, lowering, and semantic analysis in dependency order.
     let mut collector = DiagnosticCollector::default();
     let discovery = discover_module_tree(DiscoveryInput {
         manifest_dir: input.manifest_dir,
@@ -214,15 +246,19 @@ pub(crate) fn analyze_source_tree(
 }
 
 #[derive(Default)]
+/// Stage-aware accumulator enforcing earliest-failure diagnostic policy.
 struct DiagnosticCollector {
+    /// The diagnostics.
     diagnostics: Vec<RecursaDiagnostic>,
 }
 
 impl DiagnosticCollector {
+    /// Adds independently produced diagnostics without rendering them.
     fn extend(&mut self, diagnostics: impl IntoIterator<Item = RecursaDiagnostic>) {
         self.diagnostics.extend(diagnostics);
     }
 
+    /// Stops at the earliest failing stage and emits its retained warnings.
     fn stop_if_errors(&mut self, cargo: &mut impl CargoOutput) -> Result<(), GenerateError> {
         let Some(earliest) = self
             .diagnostics
@@ -242,6 +278,7 @@ impl DiagnosticCollector {
         Err(GenerateError::new(report))
     }
 
+    /// Converts a violated pipeline invariant into the stage's internal code.
     fn internal_failure(
         &mut self,
         stage: DiagnosticStage,
@@ -256,15 +293,18 @@ impl DiagnosticCollector {
         GenerateError::new(report)
     }
 
+    /// Moves accumulated diagnostics into a canonically ordered report.
     fn take_report(&mut self) -> BuildReport {
         BuildReport::new(std::mem::take(&mut self.diagnostics))
     }
 
+    /// Finishes a successful report without discarding warnings.
     fn finish(self) -> BuildReport {
         BuildReport::new(self.diagnostics)
     }
 }
 
+/// Returns the reserved internal-invariant code for a pipeline stage.
 fn internal_code(stage: DiagnosticStage) -> &'static str {
     match stage {
         DiagnosticStage::Discovery => "RCA9101",
@@ -280,6 +320,7 @@ fn internal_code(stage: DiagnosticStage) -> &'static str {
     clippy::manual_ok_err,
     reason = "this is the explicit last-resort global fallback after selected-root validation fails"
 )]
+/// Computes the internal diagnostic.
 fn internal_diagnostic(
     stage: DiagnosticStage,
     detail: &str,
@@ -302,6 +343,7 @@ fn internal_diagnostic(
     )
 }
 
+/// Computes the internal generate error.
 pub(crate) fn internal_generate_error(
     stage: DiagnosticStage,
     detail: &str,
@@ -314,6 +356,7 @@ pub(crate) fn internal_generate_error(
     )]))
 }
 
+/// Computes the checked location.
 pub(crate) fn checked_location(
     stage: DiagnosticStage,
     path: &Path,
@@ -329,6 +372,7 @@ pub(crate) fn checked_location(
     })
 }
 
+/// Emits invalidation.
 fn emit_invalidation(inputs: &DiscoveryInputs, cargo: &mut impl CargoOutput) {
     for path in inputs.watched_paths() {
         cargo.emit(format!("cargo::rerun-if-changed={}", path.display()));
@@ -341,6 +385,7 @@ fn emit_invalidation(inputs: &DiscoveryInputs, cargo: &mut impl CargoOutput) {
     }
 }
 
+/// Emits warnings.
 pub(crate) fn emit_warnings(report: &BuildReport, cargo: &mut impl CargoOutput) {
     for warning in report.warnings() {
         let location = cargo_one_line(&warning.primary().location().map_or_else(
@@ -362,6 +407,7 @@ pub(crate) fn emit_warnings(report: &BuildReport, cargo: &mut impl CargoOutput) 
     }
 }
 
+/// Computes the cargo one line.
 fn cargo_one_line(value: &str) -> String {
     value
         .chars()
@@ -372,6 +418,7 @@ fn cargo_one_line(value: &str) -> String {
         .collect()
 }
 
+/// Constructs diagnostic.
 fn make_diagnostic(
     code: &'static str,
     summary: &str,
@@ -401,6 +448,7 @@ fn make_diagnostic(
     diagnostic
 }
 
+/// Adapts discovery.
 fn adapt_discovery(
     diagnostic: &DiscoveryDiagnostic,
     inputs: &DiscoveryInputs,
@@ -452,6 +500,7 @@ fn adapt_discovery(
     )
 }
 
+/// Adapts resolution.
 fn adapt_resolution(
     diagnostic: &ResolutionDiagnostic,
     inputs: &DiscoveryInputs,
@@ -492,11 +541,15 @@ fn adapt_resolution(
 }
 
 #[derive(Clone, Copy, Default)]
+/// The logical diagnostic origin representation used by source analysis.
 struct LogicalDiagnosticOrigin<'a> {
+    /// The module.
     module: Option<crate::lowering::ModuleId>,
+    /// The path.
     path: Option<&'a [String]>,
 }
 
+/// Computes the located diagnostic.
 fn located_diagnostic(
     code: &'static str,
     summary: &str,
@@ -545,6 +598,7 @@ fn located_diagnostic(
     )
 }
 
+/// Computes the source path order.
 fn source_path_order(
     inputs: &DiscoveryInputs,
     path: &Path,
@@ -558,6 +612,7 @@ fn source_path_order(
     Some(((source << 32) | start, path.display().to_string()))
 }
 
+/// Adapts source model.
 fn adapt_source_model(
     diagnostic: &SourceModelDiagnostic,
     selected_root: &Path,
@@ -597,6 +652,7 @@ fn adapt_source_model(
     adapted
 }
 
+/// Computes the source model code.
 pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'static str {
     match kind {
         SourceModelDiagnosticKind::InvalidConfiguration => "RCA3101",
@@ -622,6 +678,7 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
     }
 }
 
+/// Adapts lexical.
 fn adapt_lexical(diagnostic: &LexicalDiagnostic, selected_root: &Path) -> RecursaDiagnostic {
     let code = lexical_code(diagnostic.code);
     let summary = lexical_summary(diagnostic.code);
@@ -665,10 +722,12 @@ fn adapt_lexical(diagnostic: &LexicalDiagnostic, selected_root: &Path) -> Recurs
     adapted
 }
 
+/// Computes the lexical code.
 pub(crate) const fn lexical_code(code: LexicalDiagnosticCode) -> &'static str {
     code.as_str()
 }
 
+/// Computes the lexical summary.
 const fn lexical_summary(code: LexicalDiagnosticCode) -> &'static str {
     match code {
         LexicalDiagnosticCode::Rca3001 => "unsupported keyword matching policy",
@@ -680,6 +739,7 @@ const fn lexical_summary(code: LexicalDiagnosticCode) -> &'static str {
     }
 }
 
+/// Computes the lexical evidence.
 fn lexical_evidence(evidence: &LexicalDiagnosticEvidence) -> DiagnosticEvidence {
     let (condition, facts, witness) = match evidence {
         LexicalDiagnosticEvidence::InvalidKeywordMatchingPolicy { authored } => (
@@ -755,6 +815,7 @@ fn lexical_evidence(evidence: &LexicalDiagnosticEvidence) -> DiagnosticEvidence 
     }
 }
 
+/// Computes the pattern facts.
 fn pattern_facts(contenders: &[LexicalPatternEvidence]) -> Vec<DiagnosticFact> {
     contenders
         .iter()
@@ -774,6 +835,7 @@ fn pattern_facts(contenders: &[LexicalPatternEvidence]) -> Vec<DiagnosticFact> {
         .collect()
 }
 
+/// Renders lexical metadata.
 fn render_lexical_metadata(metadata: &LexicalDefinitionMetadata) -> String {
     match metadata {
         LexicalDefinitionMetadata::Fixed {
@@ -795,6 +857,7 @@ fn render_lexical_metadata(metadata: &LexicalDefinitionMetadata) -> String {
     }
 }
 
+/// Adapts lexical remedy.
 fn adapt_lexical_remedy(remedy: &LexicalRemedy) -> DiagnosticRemedy {
     match remedy {
         LexicalRemedy::ChooseSupportedKeywordMatchingPolicy => {
@@ -816,6 +879,7 @@ fn adapt_lexical_remedy(remedy: &LexicalRemedy) -> DiagnosticRemedy {
     }
 }
 
+/// Computes the fact.
 fn fact(name: impl Into<String>, value: impl Into<String>) -> DiagnosticFact {
     DiagnosticFact {
         name: name.into(),
@@ -823,6 +887,7 @@ fn fact(name: impl Into<String>, value: impl Into<String>) -> DiagnosticFact {
     }
 }
 
+/// Computes the fixed class.
 const fn fixed_class(class: FixedTokenClass) -> &'static str {
     match class {
         FixedTokenClass::Keyword => "keyword",
@@ -830,6 +895,7 @@ const fn fixed_class(class: FixedTokenClass) -> &'static str {
     }
 }
 
+/// Computes the site diagnostic.
 fn site_diagnostic(
     code: &'static str,
     summary: &str,
@@ -873,6 +939,7 @@ fn site_diagnostic(
     make_diagnostic(code, summary, location, evidence, remedy, order)
 }
 
+/// Adapts materialization.
 fn adapt_materialization(
     diagnostic: &MaterializationDiagnostic,
     selected_root: &Path,
@@ -925,6 +992,7 @@ fn adapt_materialization(
     )
 }
 
+/// Computes the materialization code.
 pub(crate) const fn materialization_code(kind: MaterializationDiagnosticKind) -> &'static str {
     match kind {
         MaterializationDiagnosticKind::OpenApplication => "RCA3202",
@@ -940,6 +1008,7 @@ pub(crate) const fn materialization_code(kind: MaterializationDiagnosticKind) ->
     }
 }
 
+/// Adapts analysis.
 fn adapt_analysis(
     diagnostic: &crate::Diagnostic,
     report: &AnalysisReport,
@@ -1013,11 +1082,13 @@ fn adapt_analysis(
     adapted
 }
 
+/// Computes the diagnostic site name.
 fn diagnostic_site_name(site: crate::SiteId, grammar: &crate::GrammarDescription) -> String {
     let site = &grammar.sites[site.index()];
     grammar.declarations[site.declaration.index()].name.clone()
 }
 
+/// Adapts conflict remedy.
 pub(crate) fn adapt_conflict_remedy(
     remedy: &ConflictRemedy,
     grammar: &crate::GrammarDescription,
@@ -1075,6 +1146,7 @@ pub(crate) fn adapt_conflict_remedy(
     }
 }
 
+/// Computes the analysis evidence.
 fn analysis_evidence(
     diagnostic: &crate::Diagnostic,
     lowered: &LoweredGrammar,
@@ -1145,6 +1217,7 @@ fn analysis_evidence(
     }
 }
 
+/// Adapts analysis label.
 fn adapt_analysis_label(
     label: &crate::DiagnosticLabel,
     report: &AnalysisReport,

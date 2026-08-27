@@ -2,6 +2,14 @@
     dead_code,
     reason = "private source analysis source-model seam is consumed by later pipeline tickets"
 )]
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Grammar-relevant authored structure retained with source locations.
+//!
+//! Source modeling lowers supported attributes and Rust item shapes into one
+//! source-ordered vocabulary without resolving grammar-semantic paths. The
+//! model retains opaque Rust fragments and precise sites so later resolution,
+//! materialization, and diagnostics share the same authored evidence.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Range;
@@ -29,28 +37,39 @@ use crate::source_syntax::{
 };
 
 #[derive(Clone, Debug)]
+/// The source model input representation used by source analysis.
 pub(crate) struct SourceModelInput<'cfg> {
+    /// The resolved.
     pub(crate) resolved: ResolvedSourceGrammar,
+    /// The cfg.
     pub(crate) cfg: &'cfg CargoCfgSnapshot,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source model report representation used by source analysis.
 pub(crate) struct SourceModelReport {
+    /// The diagnostics.
     pub(crate) diagnostics: Vec<SourceModelDiagnostic>,
+    /// The source modeled.
     pub(crate) source_modeled: Option<SourceModeledGrammar>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source modeled grammar representation used by source analysis.
 pub(crate) struct SourceModeledGrammar {
+    /// The resolved.
     resolved: ResolvedSourceGrammar,
+    /// The source model.
     source_model: SourceModel,
 }
 
 impl SourceModeledGrammar {
+    /// Computes the resolved.
     pub(crate) const fn resolved(&self) -> &ResolvedSourceGrammar {
         &self.resolved
     }
 
+    /// Computes the source model.
     pub(crate) const fn source_model(&self) -> &SourceModel {
         &self.source_model
     }
@@ -60,10 +79,12 @@ impl SourceModeledGrammar {
         &mut self.source_model
     }
 
+    /// Computes the source order key.
     pub(crate) fn source_order_key(&self, site: &SourceSite) -> SourceOrderKey {
         canonical_source_order_key(site)
     }
 
+    /// Computes the grammar configuration site.
     pub(crate) fn grammar_configuration_site(&self, range: Range<u32>) -> SourceSite {
         let root = self
             .resolved
@@ -83,45 +104,70 @@ impl SourceModeledGrammar {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source model representation used by source analysis.
 pub(crate) struct SourceModel {
+    /// The grammar trait defaults.
     pub(crate) grammar_trait_defaults: Vec<ConfiguredTraitSelection>,
+    /// The nodes.
     pub(crate) nodes: Vec<Node>,
+    /// The token definitions.
     pub(crate) token_definitions: Vec<TokenDefinition>,
+    /// The lexer records.
     pub(crate) lexer_records: Vec<NonTokenLexerRecord>,
+    /// The token uses.
     pub(crate) token_uses: Vec<TokenUse>,
+    /// The post lex.
     pub(crate) post_lex: Option<syn::Path>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The non token lexer record representation used by source analysis.
 pub(crate) struct NonTokenLexerRecord {
+    /// The pattern.
     pub(crate) pattern: String,
+    /// The outcome.
     pub(crate) outcome: NonTokenLexerOutcome,
+    /// The site.
     pub(crate) site: SourceSite,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible non token lexer outcome cases used by source analysis.
 pub(crate) enum NonTokenLexerOutcome {
+    /// The non emitting case.
     NonEmitting,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The node representation used by source analysis.
 pub(crate) struct Node {
+    /// The resolved node.
     pub(crate) resolved_node: NodeId,
+    /// The name.
     pub(crate) name: String,
+    /// The body.
     pub(crate) body: NodeBody,
+    /// The configured traits.
     pub(crate) configured_traits: ConfiguredTraitPlan,
+    /// The pretty.
     pub(crate) pretty: PrettyHints,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible node body cases used by source analysis.
 pub(crate) enum NodeBody {
+    /// The struct case.
     Struct(Vec<GrammarElement>),
+    /// The presence case.
     Presence(Vec<GrammarElement>),
+    /// The enum case.
     Enum(Vec<Variant>),
+    /// The pratt case.
     Pratt(Vec<SourcePrattVariant>),
 }
 
 impl Node {
+    /// Computes the shape.
     pub(crate) const fn shape(&self) -> NodeShape {
         match self.body {
             NodeBody::Struct(_) => NodeShape::Struct,
@@ -131,6 +177,7 @@ impl Node {
         }
     }
 
+    /// Computes the elements.
     pub(crate) fn elements(&self) -> &[GrammarElement] {
         match &self.body {
             NodeBody::Struct(elements) | NodeBody::Presence(elements) => elements,
@@ -138,6 +185,7 @@ impl Node {
         }
     }
 
+    /// Computes the variants.
     pub(crate) fn variants(&self) -> &[Variant] {
         match &self.body {
             NodeBody::Enum(variants) => variants,
@@ -145,6 +193,7 @@ impl Node {
         }
     }
 
+    /// Computes the pratt variants.
     pub(crate) fn pratt_variants(&self) -> &[SourcePrattVariant] {
         match &self.body {
             NodeBody::Pratt(variants) => variants,
@@ -154,162 +203,265 @@ impl Node {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The variant representation used by source analysis.
 pub(crate) struct Variant {
+    /// The resolved variant.
     pub(crate) resolved_variant: ResolvedVariantId,
+    /// The name.
     pub(crate) name: String,
+    /// The elements.
     pub(crate) elements: Vec<GrammarElement>,
+    /// The site.
     pub(crate) site: SourceSite,
+    /// The pretty.
     pub(crate) pretty: PrettyHints,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// The pretty hints representation used by source analysis.
 pub(crate) struct PrettyHints {
+    /// The group.
     pub(crate) group: Option<PrettyGroup>,
+    /// The indent.
     pub(crate) indent: bool,
+    /// The break before.
     pub(crate) break_before: Option<PrettyBreak>,
+    /// The break after.
     pub(crate) break_after: Option<PrettyBreak>,
+    /// The separator.
     pub(crate) separator: Option<PrettySeparatorPosition>,
+    /// The trailing separator.
     pub(crate) trailing_separator: Option<PrettyTrailingSeparator>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible pretty group cases used by source analysis.
 pub(crate) enum PrettyGroup {
+    /// The consistent case.
     Consistent,
+    /// The inconsistent case.
     Inconsistent,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible pretty break cases used by source analysis.
 pub(crate) enum PrettyBreak {
+    /// The soft case.
     Soft,
+    /// The hard case.
     Hard,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible pretty separator position cases used by source analysis.
 pub(crate) enum PrettySeparatorPosition {
+    /// The leading case.
     Leading,
+    /// The trailing case.
     Trailing,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible pretty trailing separator cases used by source analysis.
 pub(crate) enum PrettyTrailingSeparator {
+    /// The always case.
     Always,
+    /// The never case.
     Never,
 }
 
 impl PrettyHints {
+    /// Whether the value is empty.
     fn is_empty(&self) -> bool {
         self == &Self::default()
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source pratt variant representation used by source analysis.
 pub(crate) struct SourcePrattVariant {
+    /// The common.
     pub(crate) common: Variant,
+    /// The position.
     pub(crate) position: SourcePrattPosition,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible source pratt position cases used by source analysis.
 pub(crate) enum SourcePrattPosition {
+    /// The atom case.
     Atom,
-    Prefix { bp: u8 },
-    Infix { lbp: u8, rbp: u8 },
-    Postfix { bp: u8 },
+    /// The prefix case.
+    Prefix {
+        #[doc = "Authored right binding power of the prefix operand."]
+        bp: u8,
+    },
+    /// The infix case.
+    Infix {
+        #[doc = "Authored left binding power of the infix operator."]
+        lbp: u8,
+        #[doc = "Authored right binding power of the infix operand."]
+        rbp: u8,
+    },
+    /// The postfix case.
+    Postfix {
+        #[doc = "Authored left binding power of the postfix operator."]
+        bp: u8,
+    },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// The configured trait plan representation used by source analysis.
 pub(crate) struct ConfiguredTraitPlan {
+    /// The effective.
     pub(crate) effective: Vec<ConfiguredTraitSelection>,
+    /// The additions.
     pub(crate) additions: Vec<ConfiguredTraitSelection>,
+    /// The omissions.
     pub(crate) omissions: Vec<ConfiguredTraitOmission>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The configured trait selection representation used by source analysis.
 pub(crate) struct ConfiguredTraitSelection {
+    /// The recipe.
     pub(crate) recipe: ConfiguredTraitRecipe,
+    /// The ownership.
     pub(crate) ownership: ConfiguredTraitOwnership,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The configured trait omission representation used by source analysis.
 pub(crate) struct ConfiguredTraitOmission {
+    /// The recipe.
     pub(crate) recipe: ConfiguredTraitRecipe,
+    /// The ownership.
     pub(crate) ownership: ConfiguredTraitOwnership,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible configured trait recipe cases used by source analysis.
 pub(crate) enum ConfiguredTraitRecipe {
+    /// The debug case.
     Debug,
+    /// The clone case.
     Clone,
+    /// The copy case.
     Copy,
+    /// The partial eq case.
     PartialEq,
+    /// The eq case.
     Eq,
+    /// The partial ord case.
     PartialOrd,
+    /// The ord case.
     Ord,
+    /// The hash case.
     Hash,
+    /// The pretty case.
     Pretty,
+    /// The visit case.
     Visit,
+    /// The visit mut case.
     VisitMut,
+    /// The arbitrary case.
     Arbitrary,
+    /// The serialize case.
     Serialize,
+    /// The deserialize case.
     Deserialize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible configured trait ownership cases used by source analysis.
 pub(crate) enum ConfiguredTraitOwnership {
+    /// The grammar default case.
     GrammarDefault,
+    /// The local addition case.
     LocalAddition,
+    /// The local omission case.
     LocalOmission,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible node shape cases used by source analysis.
 pub(crate) enum NodeShape {
+    /// The struct case.
     Struct,
+    /// The enum case.
     Enum,
+    /// The pratt case.
     Pratt,
+    /// The presence case.
     Presence,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible grammar element cases used by source analysis.
 pub(crate) enum GrammarElement {
+    /// The fixed token case.
     FixedToken {
+        /// The id.
         id: GrammarElementId,
+        /// The token use.
         token_use: TokenUseId,
+        /// The site.
         site: SourceSite,
     },
+    /// The semantic field case.
     SemanticField {
+        /// The id.
         id: GrammarElementId,
+        /// The resolved field.
         resolved_field: ResolvedFieldId,
+        /// The name.
         name: Option<String>,
+        /// The attachment.
         attachment: Option<FixedTokenAttachment>,
+        /// The separator.
         separator: Option<Separator>,
+        /// The pretty.
         pretty: PrettyHints,
+        /// The attachment before.
         attachment_before: usize,
+        /// The attachment after.
         attachment_after: usize,
+        /// The site.
         site: SourceSite,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The fixed token attachment representation used by source analysis.
 pub(crate) struct FixedTokenAttachment {
+    /// The before.
     pub(crate) before: Vec<AttachedFixedToken>,
+    /// The after.
     pub(crate) after: Vec<AttachedFixedToken>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The attached fixed token representation used by source analysis.
 pub(crate) struct AttachedFixedToken {
+    /// The token use.
     pub(crate) token_use: TokenUseId,
+    /// The site.
     pub(crate) site: SourceSite,
 }
 
 impl GrammarElement {
+    /// Computes the id.
     pub(crate) const fn id(&self) -> GrammarElementId {
         match self {
             Self::FixedToken { id, .. } | Self::SemanticField { id, .. } => *id,
         }
     }
 
+    /// Sets id.
     fn set_id(&mut self, value: GrammarElementId) {
         match self {
             Self::FixedToken { id, .. } | Self::SemanticField { id, .. } => *id = value,
         }
     }
 
+    /// Computes the kind.
     pub(crate) const fn kind(&self) -> GrammarElementKind {
         match self {
             Self::FixedToken { .. } => GrammarElementKind::FixedToken,
@@ -317,6 +469,7 @@ impl GrammarElement {
         }
     }
 
+    /// Computes the separator.
     pub(crate) fn separator(&self) -> Option<&Separator> {
         match self {
             Self::SemanticField { separator, .. } => separator.as_ref(),
@@ -324,6 +477,7 @@ impl GrammarElement {
         }
     }
 
+    /// Computes the attachment.
     pub(crate) fn attachment(&self) -> Option<&FixedTokenAttachment> {
         match self {
             Self::SemanticField { attachment, .. } => attachment.as_ref(),
@@ -333,130 +487,203 @@ impl GrammarElement {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The separator representation used by source analysis.
 pub(crate) struct Separator {
+    /// The token use.
     pub(crate) token_use: TokenUseId,
+    /// The declared repetition.
     pub(crate) declared_repetition: Option<DeclaredRepetition>,
+    /// The optional trailing.
     pub(crate) optional_trailing: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible declared repetition cases used by source analysis.
 pub(crate) enum DeclaredRepetition {
+    /// The zero or more case.
     ZeroOrMore,
+    /// The one or more case.
     OneOrMore,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible grammar element kind cases used by source analysis.
 pub(crate) enum GrammarElementKind {
+    /// The fixed token case.
     FixedToken,
+    /// The semantic field case.
     SemanticField,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The token definition representation used by source analysis.
 pub(crate) struct TokenDefinition {
+    /// The id.
     pub(crate) id: TokenDefinitionId,
+    /// The name.
     pub(crate) name: String,
+    /// The kind.
     pub(crate) kind: TokenDefinitionKind,
+    /// The definition sites.
     pub(crate) definition_sites: Vec<SourceSite>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible token definition kind cases used by source analysis.
 pub(crate) enum TokenDefinitionKind {
+    /// The fixed case.
     Fixed(FixedTokenDefinition),
+    /// The content case.
     Content(ContentTokenDefinition),
+    /// The lexical base case.
     LexicalBase(LexicalBaseTokenDefinition),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The fixed token definition representation used by source analysis.
 pub(crate) struct FixedTokenDefinition {
+    /// The spelling.
     pub(crate) spelling: String,
+    /// The authored classifications.
     pub(crate) authored_classifications: Vec<AuthoredFixedClassification>,
+    /// The pretty spacing.
     pub(crate) pretty_spacing: PrettySpacing,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// The possible pretty spacing cases used by source analysis.
 pub(crate) enum PrettySpacing {
     #[default]
+    /// The auto case.
     Auto,
+    /// The tight case.
     Tight,
+    /// The before case.
     Before,
+    /// The after case.
     After,
+    /// The around case.
     Around,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible authored fixed token class cases used by source analysis.
 pub(crate) enum AuthoredFixedTokenClass {
+    /// The keyword case.
     Keyword,
+    /// The punctuation case.
     Punctuation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The authored fixed classification representation used by source analysis.
 pub(crate) struct AuthoredFixedClassification {
+    /// The class.
     pub(crate) class: AuthoredFixedTokenClass,
+    /// The site.
     pub(crate) site: SourceSite,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The content token definition representation used by source analysis.
 pub(crate) struct ContentTokenDefinition {
+    /// The semantic.
     pub(crate) semantic: ContentTokenId,
+    /// The pattern.
     pub(crate) pattern: String,
+    /// The callback.
     pub(crate) callback: Option<syn::Path>,
+    /// The priority.
     pub(crate) priority: Option<u32>,
+    /// The admission set.
     pub(crate) admission_set: Vec<TokenDefinitionId>,
+    /// The authored admissions.
     pub(crate) authored_admissions: Vec<AuthoredAdmissions>,
+    /// The text.
     pub(crate) text: ContentTextStorage,
+    /// The configured traits.
     pub(crate) configured_traits: ConfiguredTraitPlan,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The lexical base token definition representation used by source analysis.
 pub(crate) struct LexicalBaseTokenDefinition {
+    /// The pattern.
     pub(crate) pattern: String,
+    /// The callback.
     pub(crate) callback: Option<syn::Path>,
+    /// The priority.
     pub(crate) priority: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The authored admissions representation used by source analysis.
 pub(crate) struct AuthoredAdmissions {
+    /// The site.
     pub(crate) site: SourceSite,
+    /// The definitions.
     pub(crate) definitions: Vec<TokenDefinitionId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible content text storage cases used by source analysis.
 pub(crate) enum ContentTextStorage {
+    /// The borrowed or owned matched text case.
     BorrowedOrOwnedMatchedText,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The token use representation used by source analysis.
 pub(crate) struct TokenUse {
+    /// The id.
     pub(crate) id: TokenUseId,
+    /// The definition.
     pub(crate) definition: TokenDefinitionId,
+    /// The role.
     pub(crate) role: TokenUseRole,
+    /// The site.
     pub(crate) site: SourceSite,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible token use role cases used by source analysis.
 pub(crate) enum TokenUseRole {
+    /// The fixed element case.
     FixedElement,
+    /// The separator case.
     Separator,
+    /// The content admission case.
     ContentAdmission,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source site representation used by source analysis.
 pub(crate) struct SourceSite {
+    /// The module.
     pub(crate) module: ModuleId,
+    /// The logical module.
     pub(crate) logical_module: Vec<String>,
+    /// The source.
     pub(crate) source: crate::SourceId,
+    /// The path.
     pub(crate) path: PathBuf,
+    /// The range.
     pub(crate) range: Range<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The source order key representation used by source analysis.
 pub(crate) struct SourceOrderKey {
+    /// The module.
     module: usize,
+    /// The start.
     start: u32,
+    /// The end.
     end: u32,
 }
 
 impl SourceOrderKey {
+    /// The last constant used by source analysis.
     pub(crate) const LAST: Self = Self {
         module: usize::MAX,
         start: u32::MAX,
@@ -465,42 +692,71 @@ impl SourceOrderKey {
 }
 
 #[derive(Clone, Copy)]
+/// The source origin representation used by source analysis.
 struct SourceOrigin {
+    /// The module.
     module: ModuleId,
+    /// The source.
     source: crate::SourceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible source model diagnostic kind cases used by source analysis.
 pub(crate) enum SourceModelDiagnosticKind {
+    /// The invalid configuration case.
     InvalidConfiguration,
+    /// The invalid pretty hint case.
     InvalidPrettyHint,
+    /// The inapplicable pretty hint case.
     InapplicablePrettyHint,
+    /// The unsafe pretty hint case.
     UnsafePrettyHint,
+    /// The multiple token sequences case.
     MultipleTokenSequences,
+    /// The empty token sequence case.
     EmptyTokenSequence,
+    /// The multiple this anchors case.
     MultipleThisAnchors,
+    /// The empty this anchor case.
     EmptyThisAnchor,
+    /// The unresolved fixed token case.
     UnresolvedFixedToken,
+    /// The unsupported configured trait case.
     UnsupportedConfiguredTrait,
+    /// The invalid trait delta case.
     InvalidTraitDelta,
+    /// The conflicting trait delta case.
     ConflictingTraitDelta,
+    /// The invalid content token case.
     InvalidContentToken,
+    /// The content display override case.
     ContentDisplayOverride,
+    /// The invalid separator case.
     InvalidSeparator,
+    /// The unsupported fixed syntax case.
     UnsupportedFixedSyntax,
+    /// The invalid token placement case.
     InvalidTokenPlacement,
+    /// The invalid pratt token placement case.
     InvalidPrattTokenPlacement,
+    /// The configured ordinary derive conflict case.
     ConfiguredOrdinaryDeriveConflict,
+    /// The multiple post lex hooks case.
     MultiplePostLexHooks,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The source model diagnostic representation used by source analysis.
 pub(crate) struct SourceModelDiagnostic {
+    /// The kind.
     pub(crate) kind: SourceModelDiagnosticKind,
+    /// The sites.
     pub(crate) sites: Vec<SourceSite>,
+    /// The message.
     pub(crate) message: String,
 }
 
+/// Lowers source model.
 pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelReport {
     let semantic_facts = SemanticFacts::from_resolved(&input.resolved);
     let mut diagnostics = Vec::new();
@@ -530,57 +786,88 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
     builder.finish()
 }
 
+/// The source model builder representation used by source analysis.
 struct SourceModelBuilder<'cfg> {
+    /// The resolved.
     resolved: ResolvedSourceGrammar,
+    /// The cfg.
     cfg: &'cfg CargoCfgSnapshot,
+    /// The semantic facts.
     semantic_facts: SemanticFacts,
+    /// The trait planner.
     trait_planner: TraitPlanner,
+    /// The nodes.
     nodes: Vec<Node>,
+    /// The tokens.
     tokens: TokenCatalog,
+    /// The diagnostics.
     diagnostics: Vec<SourceModelDiagnostic>,
 }
 
 #[derive(Clone, Copy)]
+/// The possible token attachment cases used by source analysis.
 enum TokenAttachment {
+    /// The struct body case.
     StructBody,
+    /// The field case.
     Field,
+    /// The variant case.
     Variant,
+    /// The pratt variant case.
     PrattVariant {
+        /// The position.
         position: SourcePrattPosition,
+        /// The second field attachment.
         second_field_attachment: Option<usize>,
     },
 }
 
 #[derive(Default)]
+/// The lowered fields representation used by source analysis.
 struct LoweredFields {
+    /// The elements.
     elements: Vec<GrammarElement>,
+    /// The attachment starts.
     attachment_starts: Vec<usize>,
 }
 
 #[derive(Clone)]
+/// The possible pretty boundary kind cases used by source analysis.
 enum PrettyBoundaryKind {
+    /// The fixed case.
     Fixed(TokenDefinitionId),
+    /// The dynamic case.
     Dynamic(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible materialized pretty boundary cases used by source analysis.
 pub(crate) enum MaterializedPrettyBoundary {
+    /// The fixed case.
     Fixed(TokenDefinitionId),
+    /// The regex case.
     Regex(String),
 }
 
 #[derive(Clone)]
+/// The pretty boundary representation used by source analysis.
 struct PrettyBoundary {
+    /// The kind.
     kind: PrettyBoundaryKind,
+    /// The site.
     site: SourceSite,
 }
 
 #[derive(Clone, Copy)]
+/// The possible pretty boundary side cases used by source analysis.
 enum PrettyBoundarySide {
+    /// The first case.
     First,
+    /// The last case.
     Last,
 }
 
+/// Whether the value is word shaped.
 fn is_word_shaped(spelling: &str) -> bool {
     spelling
         .chars()
@@ -589,6 +876,7 @@ fn is_word_shaped(spelling: &str) -> bool {
         && spelling.chars().all(unicode_ident::is_xid_continue)
 }
 
+/// Computes the fixed lexical pattern.
 fn fixed_lexical_pattern(spelling: &str, equivalence: crate::TextEquivalence) -> String {
     if equivalence != crate::TextEquivalence::AsciiInsensitive || !is_word_shaped(spelling) {
         return regex_syntax::escape(spelling);
@@ -609,6 +897,7 @@ fn fixed_lexical_pattern(spelling: &str, equivalence: crate::TextEquivalence) ->
         .collect()
 }
 
+/// Computes the fixed pretty pattern.
 fn fixed_pretty_pattern(
     fixed: &FixedTokenDefinition,
     equivalence: crate::TextEquivalence,
@@ -616,6 +905,7 @@ fn fixed_pretty_pattern(
     fixed_lexical_pattern(&fixed.spelling, equivalence)
 }
 
+/// Computes the dfa accepts state.
 fn dfa_accepts_state(
     dfa: &dense::DFA<Vec<u32>>,
     state: regex_automata::util::primitives::StateID,
@@ -623,6 +913,7 @@ fn dfa_accepts_state(
     dfa.is_match_state(dfa.next_eoi_state(state))
 }
 
+/// Computes the patterns cross into pattern.
 fn patterns_cross_into_pattern(left: &str, right: &str, lexical_pattern: &str) -> bool {
     let (Ok(left_dfa), Ok(right_dfa), Ok(lexical_dfa)) = (
         dense::DFA::new(left),
@@ -710,6 +1001,7 @@ fn patterns_cross_into_pattern(left: &str, right: &str, lexical_pattern: &str) -
     false
 }
 
+/// Computes the pattern then fixed intersects pattern.
 fn pattern_then_fixed_intersects_pattern(
     pattern: &str,
     fixed: &str,
@@ -718,6 +1010,7 @@ fn pattern_then_fixed_intersects_pattern(
     patterns_cross_into_pattern(pattern, &regex_syntax::escape(fixed), lexical_pattern)
 }
 
+/// Computes the fixed then pattern intersects pattern.
 fn fixed_then_pattern_intersects_pattern(
     fixed: &str,
     pattern: &str,
@@ -726,6 +1019,7 @@ fn fixed_then_pattern_intersects_pattern(
     patterns_cross_into_pattern(&regex_syntax::escape(fixed), pattern, lexical_pattern)
 }
 
+/// Computes the source trivia supports.
 fn source_trivia_supports(source: &SourceModel, required: char) -> bool {
     source.lexer_records.iter().any(|record| {
         regex_syntax::Parser::new()
@@ -734,12 +1028,14 @@ fn source_trivia_supports(source: &SourceModel, required: char) -> bool {
     })
 }
 
+/// Computes the source trivia supports breaks.
 fn source_trivia_supports_breaks(source: &SourceModel) -> bool {
     [' ', '\n']
         .into_iter()
         .all(|required| source_trivia_supports(source, required))
 }
 
+/// Computes the materialized pretty boundary changes lexing.
 pub(crate) fn materialized_pretty_boundary_changes_lexing(
     source: &SourceModel,
     equivalence: crate::TextEquivalence,
@@ -829,6 +1125,7 @@ pub(crate) fn materialized_pretty_boundary_changes_lexing(
     })
 }
 
+/// Computes the hir matches single char.
 fn hir_matches_single_char(hir: &regex_syntax::hir::Hir, required: char) -> (bool, bool) {
     use regex_syntax::hir::{Class, HirKind};
 
@@ -890,7 +1187,9 @@ fn hir_matches_single_char(hir: &regex_syntax::hir::Hir, required: char) -> (boo
     }
 }
 
+/// Parses pretty hints.
 fn parse_pretty_hints(metas: &[Meta]) -> Result<PrettyHints, String> {
+    // Parse all Pretty options before validation so duplicate, unknown, and interacting settings share one diagnostic boundary.
     let named_pretty = metas
         .iter()
         .filter(|meta| {
@@ -1016,21 +1315,25 @@ fn parse_pretty_hints(metas: &[Meta]) -> Result<PrettyHints, String> {
 }
 
 impl LoweredFields {
+    /// Records attachment.
     fn push_attachment(&mut self, elements: Vec<GrammarElement>) {
         self.attachment_starts.push(self.elements.len());
         self.elements.extend(elements);
     }
 
+    /// Computes the second attachment start.
     fn second_attachment_start(&self) -> Option<usize> {
         self.attachment_starts.get(1).copied()
     }
 
+    /// Converts this value into the elements.
     fn into_elements(self) -> Vec<GrammarElement> {
         self.elements
     }
 }
 
 impl SourceModelBuilder<'_> {
+    /// Validates pretty spacing.
     fn validate_pretty_spacing(&mut self) {
         let mut diagnostics = Vec::new();
         for node in &self.nodes {
@@ -1123,6 +1426,7 @@ impl SourceModelBuilder<'_> {
         self.diagnostics.extend(diagnostics);
     }
 
+    /// Computes the report disabled pretty hints.
     fn report_disabled_pretty_hints(
         &self,
         node: &Node,
@@ -1174,6 +1478,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Validates pretty scope.
     fn validate_pretty_scope(
         &self,
         pretty: &PrettyHints,
@@ -1189,6 +1494,7 @@ impl SourceModelBuilder<'_> {
         );
     }
 
+    /// Validates pretty scope facts.
     fn validate_pretty_scope_facts(
         &self,
         pretty: &PrettyHints,
@@ -1230,6 +1536,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Validates pretty multi scope.
     fn validate_pretty_multi_scope<'a>(
         &self,
         pretty: &PrettyHints,
@@ -1242,6 +1549,7 @@ impl SourceModelBuilder<'_> {
         self.validate_pretty_scope_facts(pretty, has_soft_opportunity, scope, diagnostics);
     }
 
+    /// Computes the pretty scope has soft opportunity.
     fn pretty_scope_has_soft_opportunity(
         &self,
         elements: &[GrammarElement],
@@ -1296,6 +1604,7 @@ impl SourceModelBuilder<'_> {
         })
     }
 
+    /// Computes the pretty type has soft opportunity.
     fn pretty_type_has_soft_opportunity(
         &self,
         ty: &ResolvedType,
@@ -1360,6 +1669,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Whether the value is pretty pratt grouping.
     fn is_pretty_pratt_grouping(&self, node: NodeId, variant: &Variant) -> bool {
         if let [
             GrammarElement::SemanticField {
@@ -1385,6 +1695,7 @@ impl SourceModelBuilder<'_> {
         self.is_direct_recursive_operand(&self.resolved_field(*resolved_field).ty, node)
     }
 
+    /// Whether the value is direct recursive operand.
     fn is_direct_recursive_operand(&self, ty: &ResolvedType, node: NodeId) -> bool {
         match &ty.kind {
             ResolvedTypeKind::Semantic {
@@ -1422,11 +1733,13 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Validates pretty element boundaries.
     fn validate_pretty_element_boundaries(
         &self,
         elements: &[GrammarElement],
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
+        // Validate neighboring semantic elements as a sequence because spacing and breaks are boundary properties.
         for (index, element) in elements.iter().enumerate() {
             let GrammarElement::SemanticField {
                 resolved_field,
@@ -1561,6 +1874,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Computes the pretty attachment has soft opportunity.
     fn pretty_attachment_has_soft_opportunity(
         &self,
         field: ResolvedFieldId,
@@ -1607,6 +1921,7 @@ impl SourceModelBuilder<'_> {
             })
     }
 
+    /// Validates pretty attachment boundaries.
     fn validate_pretty_attachment_boundaries(
         &self,
         field: ResolvedFieldId,
@@ -1653,12 +1968,14 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Computes the pretty trivia supports breaks.
     fn pretty_trivia_supports_breaks(&self) -> bool {
         [' ', '\n']
             .into_iter()
             .all(|required| self.pretty_trivia_supports(required))
     }
 
+    /// Computes the pretty trivia supports.
     fn pretty_trivia_supports(&self, required: char) -> bool {
         self.tokens.lexer_records.iter().any(|record| {
             regex_syntax::Parser::new()
@@ -1667,6 +1984,7 @@ impl SourceModelBuilder<'_> {
         })
     }
 
+    /// Computes the field has repetition.
     fn field_has_repetition(&self, field: ResolvedFieldId) -> Option<bool> {
         fn repeated(builder: &SourceModelBuilder<'_>, ty: &ResolvedType) -> Option<bool> {
             match &ty.kind {
@@ -1702,6 +2020,7 @@ impl SourceModelBuilder<'_> {
         repeated(self, &self.resolved_field(field).ty)
     }
 
+    /// Computes the pretty lexical patterns.
     fn pretty_lexical_patterns(&self) -> Vec<String> {
         let equivalence = self.resolved.configuration.syntax.text_equivalence;
         self.tokens
@@ -1723,12 +2042,14 @@ impl SourceModelBuilder<'_> {
             .collect()
     }
 
+    /// Validates pretty boundary.
     fn validate_pretty_boundary(
         &self,
         left: &PrettyBoundary,
         right: &PrettyBoundary,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
+        // Check the closed Pretty policy matrix explicitly; implicit fallthrough would accept unsupported formatting states.
         let left_fixed = match left.kind {
             PrettyBoundaryKind::Fixed(id) => Some(self.fixed_definition_by_id(id)),
             PrettyBoundaryKind::Dynamic(_) => None,
@@ -1855,6 +2176,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Validates pretty fixed boundary.
     fn validate_pretty_fixed_boundary(
         &self,
         left_fixed: &FixedTokenDefinition,
@@ -1920,6 +2242,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Computes the fixed definition by id.
     fn fixed_definition_by_id(&self, id: TokenDefinitionId) -> &FixedTokenDefinition {
         let TokenDefinitionKind::Fixed(fixed) = &self.tokens.definitions[id.index()].kind else {
             unreachable!("fixed boundary points to fixed syntax")
@@ -1927,10 +2250,12 @@ impl SourceModelBuilder<'_> {
         fixed
     }
 
+    /// Computes the fixed definition for use.
     fn fixed_definition_for_use(&self, id: TokenUseId) -> &FixedTokenDefinition {
         self.fixed_definition_by_id(self.tokens.uses[id.index()].definition)
     }
 
+    /// Computes the pretty boundary emits soft break.
     fn pretty_boundary_emits_soft_break(
         &self,
         left: &PrettyBoundary,
@@ -1986,6 +2311,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Computes the pretty boundary spacing.
     fn pretty_boundary_spacing(&self, boundary: &PrettyBoundary) -> Option<PrettySpacing> {
         match boundary.kind {
             PrettyBoundaryKind::Fixed(id) => Some(self.fixed_definition_by_id(id).pretty_spacing),
@@ -1993,6 +2319,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Computes the pretty boundary forces tight after.
     fn pretty_boundary_forces_tight_after(&self, boundary: &PrettyBoundary) -> bool {
         matches!(
             self.pretty_boundary_spacing(boundary),
@@ -2000,6 +2327,7 @@ impl SourceModelBuilder<'_> {
         )
     }
 
+    /// Computes the pretty boundary forces tight before.
     fn pretty_boundary_forces_tight_before(&self, boundary: &PrettyBoundary) -> bool {
         matches!(
             self.pretty_boundary_spacing(boundary),
@@ -2007,6 +2335,7 @@ impl SourceModelBuilder<'_> {
         )
     }
 
+    /// Computes the pretty element boundaries.
     fn pretty_element_boundaries(
         &self,
         element: &GrammarElement,
@@ -2049,6 +2378,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Computes the pretty type boundaries.
     fn pretty_type_boundaries(
         &self,
         ty: &ResolvedType,
@@ -2117,6 +2447,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Computes the pretty node boundaries.
     fn pretty_node_boundaries(
         &self,
         node: NodeId,
@@ -2164,6 +2495,7 @@ impl SourceModelBuilder<'_> {
         boundaries
     }
 
+    /// Computes the pretty fixed element.
     fn pretty_fixed_element<'model, 'element>(
         &'model self,
         element: &'element GrammarElement,
@@ -2182,6 +2514,7 @@ impl SourceModelBuilder<'_> {
         Some((fixed, site))
     }
 
+    /// Lowers central content definitions.
     fn lower_central_content_definitions(&mut self) {
         for definition in std::mem::take(&mut self.tokens.central_content) {
             if let Some(semantic) = definition.semantic {
@@ -2205,6 +2538,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Finishes finish.
     fn finish(mut self) -> SourceModelReport {
         normalize_source_order(&mut self.nodes, &mut self.tokens);
         let source_modeled = self.diagnostics.is_empty().then(|| SourceModeledGrammar {
@@ -2224,6 +2558,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Rejects misplaced content declarations.
     fn reject_misplaced_content_declarations(&mut self) {
         for inclusion in self.resolved.tree.inclusions.clone() {
             let origin = SourceOrigin {
@@ -2275,7 +2610,9 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Lowers nodes.
     fn lower_nodes(&mut self) {
+        // Allocate Node identities before lowering bodies so recursive references resolve without source-order dependence.
         for node in self.resolved.nodes.clone() {
             let origin = SourceOrigin {
                 module: node.module,
@@ -2469,6 +2806,7 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Lowers fields.
     fn lower_fields(&mut self, origin: SourceOrigin, fields: &[ResolvedFieldId]) -> LoweredFields {
         let mut body = LoweredFields::default();
         for field in fields {
@@ -2550,6 +2888,7 @@ impl SourceModelBuilder<'_> {
         body
     }
 
+    /// Computes the resolved field.
     fn resolved_field(&self, id: ResolvedFieldId) -> &ResolvedNodeField {
         self.resolved
             .nodes
@@ -2559,6 +2898,7 @@ impl SourceModelBuilder<'_> {
             .expect("resolved Node body owns every field identity")
     }
 
+    /// Lowers pretty hints.
     fn lower_pretty_hints(
         &mut self,
         origin: SourceOrigin,
@@ -2578,16 +2918,20 @@ impl SourceModelBuilder<'_> {
         }
     }
 
+    /// Computes the site.
     fn site(&self, origin: SourceOrigin, range: Range<u32>) -> SourceSite {
         source_site(&self.resolved, origin, range)
     }
 }
 
+/// The semantic facts representation used by source analysis.
 struct SemanticFacts {
+    /// The content token names.
     content_token_names: BTreeMap<ContentTokenId, String>,
 }
 
 impl SemanticFacts {
+    /// Computes the from resolved.
     fn from_resolved(resolved: &ResolvedSourceGrammar) -> Self {
         let content_token_names = resolved
             .content_tokens
@@ -2599,6 +2943,7 @@ impl SemanticFacts {
         }
     }
 
+    /// Computes the target for field.
     fn target_for_field(field: &ResolvedNodeField) -> Option<SemanticTarget> {
         let ResolvedTypeKind::Semantic { target, .. } = field.ty.kind else {
             return None;
@@ -2606,6 +2951,7 @@ impl SemanticFacts {
         Some(target)
     }
 
+    /// Computes the content token.
     fn content_token(&self, field: &ResolvedNodeField) -> Option<(ContentTokenId, String)> {
         let SemanticTarget::ContentToken(token) = Self::target_for_field(field)? else {
             return None;
@@ -2613,6 +2959,7 @@ impl SemanticFacts {
         Some((token, self.content_token_names.get(&token)?.clone()))
     }
 
+    /// Computes the declared repetition.
     fn declared_repetition(&self, field: &ResolvedNodeField) -> Option<DeclaredRepetition> {
         match Self::target_for_field(field)? {
             SemanticTarget::Catalog(CatalogType::Vec) => Some(DeclaredRepetition::ZeroOrMore),
@@ -2627,26 +2974,42 @@ impl SemanticFacts {
 }
 
 #[derive(Default)]
+/// The token catalog representation used by source analysis.
 struct TokenCatalog {
+    /// The definitions.
     definitions: Vec<TokenDefinition>,
+    /// The fixed by name.
     fixed_by_name: BTreeMap<String, TokenDefinitionId>,
+    /// The content by name.
     content_by_name: BTreeMap<String, Vec<TokenDefinitionId>>,
+    /// The central content.
     central_content: Vec<CentralContentDefinition>,
+    /// The lexer records.
     lexer_records: Vec<NonTokenLexerRecord>,
+    /// The uses.
     uses: Vec<TokenUse>,
+    /// The post lex.
     post_lex: Option<syn::Path>,
+    /// The post lex sites.
     post_lex_sites: Vec<SourceSite>,
 }
 
+/// The central content definition representation used by source analysis.
 struct CentralContentDefinition {
+    /// The semantic.
     semantic: Option<ContentTokenId>,
+    /// The name.
     name: String,
+    /// The pattern.
     pattern: String,
+    /// The callback.
     callback: Option<syn::Path>,
+    /// The site.
     site: SourceSite,
 }
 
 impl TokenCatalog {
+    /// Collects fixed definitions.
     fn collect_fixed_definitions(
         &mut self,
         resolved: &ResolvedSourceGrammar,
@@ -2709,6 +3072,7 @@ impl TokenCatalog {
         }
     }
 
+    /// Collects fixed definitions from metas.
     fn collect_fixed_definitions_from_metas(
         &mut self,
         resolved: &ResolvedSourceGrammar,
@@ -2739,6 +3103,7 @@ impl TokenCatalog {
         }
     }
 
+    /// Collects central definitions.
     fn collect_central_definitions(
         &mut self,
         resolved: &ResolvedSourceGrammar,
@@ -2789,6 +3154,7 @@ impl TokenCatalog {
             );
     }
 
+    /// Defines fixed.
     fn define_fixed(
         &mut self,
         resolved: &ResolvedSourceGrammar,
@@ -2835,10 +3201,12 @@ impl TokenCatalog {
         });
     }
 
+    /// Computes the fixed definition.
     fn fixed_definition(&self, name: &str) -> Option<TokenDefinitionId> {
         self.fixed_by_name.get(name).copied()
     }
 
+    /// Computes the record use.
     fn record_use(
         &mut self,
         definition: TokenDefinitionId,
@@ -2855,6 +3223,7 @@ impl TokenCatalog {
         id
     }
 
+    /// Computes the fixed element.
     fn fixed_element(
         &mut self,
         resolved: &ResolvedSourceGrammar,
@@ -2895,11 +3264,14 @@ impl TokenCatalog {
     }
 }
 
+/// The trait planner representation used by source analysis.
 struct TraitPlanner {
+    /// The grammar defaults.
     grammar_defaults: Vec<ConfiguredTraitSelection>,
 }
 
 impl TraitPlanner {
+    /// Computes the from grammar.
     fn from_grammar(
         resolved: &ResolvedSourceGrammar,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
@@ -2941,6 +3313,7 @@ impl TraitPlanner {
         Self { grammar_defaults }
     }
 
+    /// Computes the node plan.
     fn node_plan(
         &self,
         resolved: &ResolvedSourceGrammar,
@@ -2948,6 +3321,7 @@ impl TraitPlanner {
         metas: &[Meta],
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) -> ConfiguredTraitPlan {
+        // Derive one source-ordered plan per Node while retaining the locations needed by every later diagnostic.
         let node_metas = metas
             .iter()
             .filter(|meta| meta.path().is_ident("node"))
@@ -3056,6 +3430,7 @@ impl TraitPlanner {
         }
     }
 
+    /// Computes the grammar default plan.
     fn grammar_default_plan(&self) -> ConfiguredTraitPlan {
         ConfiguredTraitPlan {
             effective: self.grammar_defaults.clone(),
@@ -3064,6 +3439,7 @@ impl TraitPlanner {
         }
     }
 
+    /// Normalizes paths.
     fn normalize_paths(
         &self,
         resolved: &ResolvedSourceGrammar,
@@ -3096,6 +3472,7 @@ impl TraitPlanner {
         selections
     }
 
+    /// Validates ordinary derive ownership.
     fn validate_ordinary_derive_ownership(
         &self,
         resolved: &ResolvedSourceGrammar,
@@ -3138,10 +3515,12 @@ impl TraitPlanner {
     }
 }
 
+/// The separator planner representation used by source analysis.
 struct SeparatorPlanner;
 
 impl SeparatorPlanner {
     #[allow(clippy::too_many_arguments)]
+    /// Lowers lower.
     fn lower(
         resolved: &ResolvedSourceGrammar,
         semantic_facts: &SemanticFacts,
@@ -3151,6 +3530,7 @@ impl SeparatorPlanner {
         metas: &[Meta],
         field: &ResolvedNodeField,
     ) -> Option<Separator> {
+        // Lower attributes, fields, and variants in authored order, collecting independent source-model diagnostics in one pass.
         let separator_metas = metas
             .iter()
             .filter(|meta| meta.path().is_ident("sep"))
@@ -3217,9 +3597,11 @@ impl SeparatorPlanner {
     }
 }
 
+/// The positional token planner representation used by source analysis.
 struct PositionalTokenPlanner;
 
 impl PositionalTokenPlanner {
+    /// Lowers lower.
     fn lower(
         resolved: &ResolvedSourceGrammar,
         tokens: &mut TokenCatalog,
@@ -3376,6 +3758,7 @@ impl PositionalTokenPlanner {
         Self::place_anchorless(fixed, body, attachment)
     }
 
+    /// Computes the place anchorless.
     fn place_anchorless(
         mut fixed: Vec<GrammarElement>,
         mut body: Vec<GrammarElement>,
@@ -3410,6 +3793,7 @@ impl PositionalTokenPlanner {
         }
     }
 
+    /// Rejects legacy syntax.
     fn reject_legacy_syntax(
         resolved: &ResolvedSourceGrammar,
         origin: SourceOrigin,
@@ -3435,6 +3819,7 @@ impl PositionalTokenPlanner {
 }
 
 impl SourcePrattPosition {
+    /// Computes the from attributes.
     fn from_attributes(
         resolved: &ResolvedSourceGrammar,
         origin: SourceOrigin,
@@ -3483,6 +3868,7 @@ impl SourcePrattPosition {
     }
 }
 
+/// Rejects pratt marker.
 fn reject_pratt_marker(
     resolved: &ResolvedSourceGrammar,
     origin: SourceOrigin,
@@ -3521,6 +3907,7 @@ fn reject_pratt_marker(
     true
 }
 
+/// Rejects pratt roles off pratt.
 fn reject_pratt_roles_off_pratt(
     resolved: &ResolvedSourceGrammar,
     origin: SourceOrigin,
@@ -3544,6 +3931,7 @@ fn reject_pratt_roles_off_pratt(
     }
 }
 
+/// Whether the value is pratt role meta.
 fn is_pratt_role_meta(meta: &Meta) -> bool {
     let Meta::List(list) = meta else {
         return false;
@@ -3558,6 +3946,7 @@ fn is_pratt_role_meta(meta: &Meta) -> bool {
     )
 }
 
+/// Rejects misplaced content declarations.
 fn reject_misplaced_content_declarations(
     resolved: &ResolvedSourceGrammar,
     origin: SourceOrigin,
@@ -3574,6 +3963,7 @@ fn reject_misplaced_content_declarations(
     }
 }
 
+/// Computes the source site.
 fn source_site(
     resolved: &ResolvedSourceGrammar,
     origin: SourceOrigin,
@@ -3590,6 +3980,7 @@ fn source_site(
     }
 }
 
+/// Renders source order key in canonical order.
 fn canonical_source_order_key(site: &SourceSite) -> SourceOrderKey {
     SourceOrderKey {
         module: site.module.index(),
@@ -3599,6 +3990,7 @@ fn canonical_source_order_key(site: &SourceSite) -> SourceOrderKey {
 }
 
 impl TokenCatalog {
+    /// Defines lexical base.
     fn define_lexical_base(&mut self, definition: CentralContentDefinition) {
         if let Some(existing) = self.definitions.iter_mut().find(|existing| {
             existing.name == definition.name
@@ -3627,6 +4019,7 @@ impl TokenCatalog {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Lowers content definition.
     fn lower_content_definition(
         &mut self,
         resolved: &ResolvedSourceGrammar,
@@ -3637,6 +4030,7 @@ impl TokenCatalog {
         field: &ResolvedNodeField,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
+        // Normalize a content-token definition before merging it, so equivalent declarations share one semantic identity.
         let lex_metas = metas
             .iter()
             .filter(|meta| meta.path().is_ident("lex"))
@@ -3731,6 +4125,7 @@ impl TokenCatalog {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Defines content.
     fn define_content(
         &mut self,
         semantic: ContentTokenId,
@@ -3793,28 +4188,45 @@ impl TokenCatalog {
     }
 }
 
+/// The central tokens syntax representation used by source analysis.
 struct CentralTokensSyntax {
+    /// The fixed.
     fixed: Vec<CentralFixedSyntax>,
+    /// The content.
     content: Vec<CentralContentSyntax>,
+    /// The non token lexer records.
     non_token_lexer_records: Vec<CentralNonTokenLexerRecordSyntax>,
+    /// The post lex.
     post_lex: Vec<syn::Path>,
 }
 
+/// The central non token lexer record syntax representation used by source analysis.
 struct CentralNonTokenLexerRecordSyntax {
+    /// The pattern.
     pattern: LitStr,
+    /// The outcome.
     outcome: NonTokenLexerOutcome,
 }
 
+/// The central fixed syntax representation used by source analysis.
 struct CentralFixedSyntax {
+    /// The name.
     name: syn::Ident,
+    /// The spelling.
     spelling: LitStr,
+    /// The authored class.
     authored_class: AuthoredFixedTokenClass,
+    /// The pretty spacing.
     pretty_spacing: PrettySpacing,
 }
 
+/// The central content syntax representation used by source analysis.
 struct CentralContentSyntax {
+    /// The name.
     name: syn::Ident,
+    /// The pattern.
     pattern: LitStr,
+    /// The callback.
     callback: Option<syn::Path>,
 }
 
@@ -3904,6 +4316,7 @@ impl Parse for CentralTokensSyntax {
     }
 }
 
+/// Parses fixed pretty spacing.
 fn parse_fixed_pretty_spacing(
     input: ParseStream<'_>,
     spelling: &LitStr,
@@ -3964,6 +4377,7 @@ fn parse_fixed_pretty_spacing(
     Ok(spacing)
 }
 
+/// Computes the skip central entry tail.
 fn skip_central_entry_tail(input: ParseStream<'_>) -> syn::Result<()> {
     while !input.is_empty() && !input.peek(Token![,]) {
         input.parse::<proc_macro2::TokenTree>()?;
@@ -3975,21 +4389,31 @@ fn skip_central_entry_tail(input: ParseStream<'_>) -> syn::Result<()> {
 }
 
 #[derive(Clone)]
+/// The token sequence representation used by source analysis.
 struct TokenSequence(Vec<TokenSequenceEntry>);
 
 #[derive(Clone)]
+/// The possible token sequence entry cases used by source analysis.
 enum TokenSequenceEntry {
+    /// The definition case.
     Definition(LitStr),
+    /// The reference case.
     Reference(syn::Ident),
+    /// The this case.
     This(Span),
 }
 
+/// The possible fixed token syntax cases used by source analysis.
 enum FixedTokenSyntax {
+    /// The definition case.
     Definition(LitStr),
+    /// The reference case.
     Reference(syn::Ident),
 }
 
+/// The pratt syntax representation used by source analysis.
 struct PrattSyntax {
+    /// The position.
     position: SourcePrattPosition,
 }
 
@@ -4060,8 +4484,11 @@ impl Parse for PrattSyntax {
     }
 }
 
+/// The separator syntax representation used by source analysis.
 struct SeparatorSyntax {
+    /// The token.
     token: FixedTokenSyntax,
+    /// The optional trailing.
     optional_trailing: bool,
 }
 
@@ -4095,11 +4522,17 @@ impl Parse for SeparatorSyntax {
     }
 }
 
+/// The lex syntax representation used by source analysis.
 struct LexSyntax {
+    /// The pattern.
     pattern: LitStr,
+    /// The callback.
     callback: Option<syn::Path>,
+    /// The priority.
     priority: Option<u32>,
+    /// The admissions.
     admissions: Vec<syn::Ident>,
+    /// The display.
     display: Option<LitStr>,
 }
 
@@ -4162,8 +4595,11 @@ impl Parse for LexSyntax {
     }
 }
 
+/// The node trait delta syntax representation used by source analysis.
 struct NodeTraitDeltaSyntax {
+    /// The additions.
     additions: Vec<syn::Path>,
+    /// The omissions.
     omissions: Vec<syn::Path>,
 }
 
@@ -4226,6 +4662,7 @@ impl Parse for TokenSequence {
     }
 }
 
+/// Computes the configured trait recipe.
 pub(crate) fn configured_trait_recipe(
     path: &syn::Path,
     facade: &str,
@@ -4267,6 +4704,7 @@ pub(crate) fn configured_trait_recipe(
     }
 }
 
+/// Normalizes source order.
 fn normalize_source_order(nodes: &mut [Node], tokens: &mut TokenCatalog) {
     tokens
         .lexer_records
@@ -4350,6 +4788,7 @@ fn normalize_source_order(nodes: &mut [Node], tokens: &mut TokenCatalog) {
     }
 }
 
+/// Computes the reassign element ids.
 fn reassign_element_ids(mut elements: Vec<GrammarElement>) -> Vec<GrammarElement> {
     for (index, element) in elements.iter_mut().enumerate() {
         element.set_id(GrammarElementId::next(index));
@@ -4357,6 +4796,7 @@ fn reassign_element_ids(mut elements: Vec<GrammarElement>) -> Vec<GrammarElement
     elements
 }
 
+/// Computes the assign ordered elements.
 fn assign_ordered_elements(
     elements: &mut [GrammarElement],
     next_element: &mut usize,

@@ -2,6 +2,14 @@
     dead_code,
     reason = "private source analysis materialization seam is consumed by final source lowering"
 )]
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Materialization of closed grammar type applications and container shapes.
+//!
+//! Resolved Node declarations become concrete applications only after generic
+//! arguments and the closed container catalog are known. Memoized application
+//! identities permit legal recursive Nodes while explicit alias tracking
+//! rejects open, cyclic, or unsupported authored types.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -29,6 +37,7 @@ use crate::{
     TypeDescription, TypeId, TypeShape,
 };
 
+/// Computes the materialization id.
 macro_rules! materialization_id {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -49,100 +58,164 @@ macro_rules! materialization_id {
 materialization_id!(MaterializedApplicationId);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The materialization report representation used by source analysis.
 pub(crate) struct MaterializationReport {
+    /// The lexical diagnostics.
     pub(crate) lexical_diagnostics: Vec<LexicalDiagnostic>,
+    /// The diagnostics.
     pub(crate) diagnostics: Vec<MaterializationDiagnostic>,
+    /// The lowered.
     pub(crate) lowered: Option<LoweredGrammar>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The lowered grammar representation used by source analysis.
 pub(crate) struct LoweredGrammar {
+    /// The source modeled.
     pub(crate) source_modeled: SourceModeledGrammar,
+    /// The lexical plan.
     pub(crate) lexical_plan: LexicalPlan,
+    /// The applications.
     pub(crate) applications: Vec<MaterializedNodeApplication>,
+    /// The grammar.
     pub(crate) grammar: GrammarDescription,
+    /// The lowering map.
     pub(crate) lowering_map: LoweringMap,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The lowering map representation used by source analysis.
 pub(crate) struct LoweringMap {
+    /// The sources.
     pub(crate) sources: Vec<SourceCorrelation>,
+    /// The token definitions.
     pub(crate) token_definitions: Vec<TokenDefinitionKindCorrelation>,
+    /// The content targets.
     pub(crate) content_targets: Vec<ContentTargetTypeCorrelation>,
+    /// The applications.
     pub(crate) applications: Vec<ApplicationTypeCorrelation>,
+    /// The variants.
     pub(crate) variants: Vec<VariantAlternativeCorrelation>,
+    /// The fields.
     pub(crate) fields: Vec<MaterializedFieldCorrelation>,
+    /// The attachments.
     pub(crate) attachments: Vec<AttachmentUnitCorrelation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The content target type correlation representation used by source analysis.
 pub(crate) struct ContentTargetTypeCorrelation {
+    /// The semantic.
     pub(crate) semantic: ContentTokenId,
+    /// The lowered.
     pub(crate) lowered: TypeId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The source correlation representation used by source analysis.
 pub(crate) struct SourceCorrelation {
+    /// The resolved.
     pub(crate) resolved: SourceId,
+    /// The lowered.
     pub(crate) lowered: SourceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The application type correlation representation used by source analysis.
 pub(crate) struct ApplicationTypeCorrelation {
+    /// The application.
     pub(crate) application: MaterializedApplicationId,
+    /// The node.
     pub(crate) node: NodeId,
+    /// The lowered.
     pub(crate) lowered: TypeId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The materialized field correlation representation used by source analysis.
 pub(crate) struct MaterializedFieldCorrelation {
+    /// The application.
     pub(crate) application: MaterializedApplicationId,
+    /// The field.
     pub(crate) field: ResolvedFieldId,
+    /// The lowered.
     pub(crate) lowered: MaterializedFieldLowering,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible materialized field lowering cases used by source analysis.
 pub(crate) enum MaterializedFieldLowering {
+    /// The parse site case.
     ParseSite(SiteId),
-    PrattLhs { owner: TypeId, variant: DeclId },
+    /// The pratt lhs case.
+    PrattLhs {
+        #[doc = "Normalized Pratt type that owns the implicit left-hand side."]
+        owner: TypeId,
+        #[doc = "Normalized led variant containing the implicit left-hand side."]
+        variant: DeclId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The attachment unit correlation representation used by source analysis.
 pub(crate) struct AttachmentUnitCorrelation {
+    /// The application.
     pub(crate) application: MaterializedApplicationId,
+    /// The field.
     pub(crate) field: ResolvedFieldId,
+    /// The outer.
     pub(crate) outer: SiteId,
+    /// The unit.
     pub(crate) unit: TypeId,
+    /// The sites.
     pub(crate) sites: Vec<SiteId>,
+    /// The semantic index.
     pub(crate) semantic_index: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The variant alternative correlation representation used by source analysis.
 pub(crate) struct VariantAlternativeCorrelation {
+    /// The application.
     pub(crate) application: MaterializedApplicationId,
+    /// The variant.
     pub(crate) variant: ResolvedVariantId,
+    /// The lowered.
     pub(crate) lowered: DeclId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The materialized node application representation used by source analysis.
 pub(crate) struct MaterializedNodeApplication {
+    /// The id.
     pub(crate) id: MaterializedApplicationId,
+    /// The node.
     pub(crate) node: NodeId,
+    /// The display name.
     pub(crate) display_name: String,
+    /// The type arguments.
     pub(crate) type_arguments: Vec<ClosedType>,
+    /// The pretty.
     pub(crate) pretty: crate::source_model::PrettyHints,
+    /// The body.
     pub(crate) body: MaterializedNodeBody,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible materialized node body cases used by source analysis.
 pub(crate) enum MaterializedNodeBody {
+    /// The struct case.
     Struct(Vec<MaterializedElement>),
+    /// The presence case.
     Presence(Vec<MaterializedElement>),
+    /// The enum case.
     Enum(Vec<MaterializedVariant>),
+    /// The pratt case.
     Pratt(Vec<MaterializedPrattVariant>),
 }
 
 impl MaterializedNodeBody {
+    /// Computes the parsed elements.
     fn parsed_elements(&self) -> impl Iterator<Item = &MaterializedElement> {
         let mut elements = Vec::new();
         match self {
@@ -161,6 +234,7 @@ impl MaterializedNodeBody {
         elements.into_iter()
     }
 
+    /// Computes the fields.
     fn fields(&self) -> impl Iterator<Item = MaterializedFieldView<'_>> {
         let mut fields = Vec::new();
         match self {
@@ -196,20 +270,29 @@ impl MaterializedNodeBody {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The materialized variant representation used by source analysis.
 pub(crate) struct MaterializedVariant {
+    /// The resolved variant.
     pub(crate) resolved_variant: ResolvedVariantId,
+    /// The name.
     pub(crate) name: String,
+    /// The pretty.
     pub(crate) pretty: crate::source_model::PrettyHints,
+    /// The elements.
     pub(crate) elements: Vec<MaterializedElement>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible materialized pratt variant cases used by source analysis.
 pub(crate) enum MaterializedPrattVariant {
+    /// The nud case.
     Nud(MaterializedPrattNud),
+    /// The led case.
     Led(MaterializedPrattLed),
 }
 
 impl MaterializedPrattVariant {
+    /// Computes the common.
     fn common(&self) -> &MaterializedPrattCommon {
         match self {
             Self::Nud(variant) => &variant.common,
@@ -217,6 +300,7 @@ impl MaterializedPrattVariant {
         }
     }
 
+    /// Computes the parsed elements.
     fn parsed_elements(&self) -> std::slice::Iter<'_, MaterializedElement> {
         match self {
             Self::Nud(variant) => variant.body.iter(),
@@ -226,84 +310,144 @@ impl MaterializedPrattVariant {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The materialized pratt common representation used by source analysis.
 pub(crate) struct MaterializedPrattCommon {
+    /// The resolved variant.
     pub(crate) resolved_variant: ResolvedVariantId,
+    /// The name.
     pub(crate) name: String,
+    /// The pretty.
     pub(crate) pretty: crate::source_model::PrettyHints,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The materialized pratt nud representation used by source analysis.
 pub(crate) struct MaterializedPrattNud {
+    /// The common.
     pub(crate) common: MaterializedPrattCommon,
+    /// The position.
     pub(crate) position: MaterializedPrattNudPosition,
+    /// The body.
     pub(crate) body: Vec<MaterializedElement>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible materialized pratt nud position cases used by source analysis.
 pub(crate) enum MaterializedPrattNudPosition {
+    /// The atom case.
     Atom,
-    Prefix { bp: u8 },
+    /// The prefix case.
+    Prefix {
+        #[doc = "Right binding power of the recursive prefix operand."]
+        bp: u8,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The materialized pratt led representation used by source analysis.
 pub(crate) struct MaterializedPrattLed {
+    /// The common.
     pub(crate) common: MaterializedPrattCommon,
+    /// The position.
     pub(crate) position: MaterializedPrattLedPosition,
+    /// The lhs.
     pub(crate) lhs: MaterializedPrattLhs,
+    /// The tail.
     pub(crate) tail: Vec<MaterializedElement>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible materialized pratt led position cases used by source analysis.
 pub(crate) enum MaterializedPrattLedPosition {
-    Infix { lbp: u8, rbp: u8 },
-    Postfix { bp: u8 },
+    /// The infix case.
+    Infix {
+        #[doc = "Left binding power required to select the infix operator."]
+        lbp: u8,
+        #[doc = "Right binding power used for the infix operand."]
+        rbp: u8,
+    },
+    /// The postfix case.
+    Postfix {
+        #[doc = "Left binding power required to select the postfix operator."]
+        bp: u8,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The materialized pratt lhs representation used by source analysis.
 pub(crate) struct MaterializedPrattLhs {
+    /// The field.
     pub(crate) field: ResolvedFieldId,
+    /// The owner.
     pub(crate) owner: MaterializedNodeUse,
+    /// The trace.
     pub(crate) trace: MaterializationTrace,
+    /// The pretty.
     pub(crate) pretty: crate::source_model::PrettyHints,
+    /// The attachment before.
     pub(crate) attachment_before: usize,
+    /// The attachment after.
     pub(crate) attachment_after: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible materialized element cases used by source analysis.
 pub(crate) enum MaterializedElement {
+    /// The fixed token case.
     FixedToken {
+        /// The token use.
         token_use: TokenUseId,
     },
+    /// The semantic field case.
     SemanticField {
+        /// The field.
         field: ResolvedFieldId,
+        /// The ty.
         ty: ClosedType,
+        /// The trace.
         trace: MaterializationTrace,
+        /// The attachment.
         attachment: Option<MaterializedFixedAttachment>,
+        /// The separator.
         separator: Option<Separator>,
+        /// The pretty.
         pretty: crate::source_model::PrettyHints,
+        /// The attachment before.
         attachment_before: usize,
+        /// The attachment after.
         attachment_after: usize,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The materialized fixed attachment representation used by source analysis.
 pub(crate) struct MaterializedFixedAttachment {
+    /// The before.
     pub(crate) before: Vec<TokenUseId>,
+    /// The after.
     pub(crate) after: Vec<TokenUseId>,
 }
 
 #[derive(Clone, Copy, Debug)]
+/// The possible materialized field view cases used by source analysis.
 pub(crate) enum MaterializedFieldView<'a> {
+    /// The parsed case.
     Parsed {
+        /// The field.
         field: ResolvedFieldId,
+        /// The ty.
         ty: &'a ClosedType,
+        /// The trace.
         trace: &'a MaterializationTrace,
+        /// The separator.
         separator: Option<&'a Separator>,
     },
+    /// The pratt lhs case.
     PrattLhs(&'a MaterializedPrattLhs),
 }
 
 impl<'a> MaterializedFieldView<'a> {
+    /// Computes the parsed.
     fn parsed(element: &'a MaterializedElement) -> Option<Self> {
         match element {
             MaterializedElement::SemanticField {
@@ -324,10 +468,12 @@ impl<'a> MaterializedFieldView<'a> {
 }
 
 impl MaterializedNodeApplication {
+    /// Computes the fields.
     pub(crate) fn fields(&self) -> impl Iterator<Item = MaterializedFieldView<'_>> {
         self.body.fields()
     }
 
+    /// Computes the parsed fields.
     pub(crate) fn parsed_fields(&self) -> impl Iterator<Item = &MaterializedElement> {
         self.body
             .parsed_elements()
@@ -336,95 +482,153 @@ impl MaterializedNodeApplication {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible closed type cases used by source analysis.
 pub(crate) enum ClosedType {
+    /// The node case.
     Node(MaterializedNodeUse),
+    /// The content token case.
     ContentToken(ContentTokenId),
+    /// The boxed case.
     Boxed(Box<Self>),
+    /// The optional case.
     Optional(Box<Self>),
+    /// The zero or more case.
     ZeroOrMore(Box<Self>),
+    /// The one or more case.
     OneOrMore(Box<Self>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The materialized node use representation used by source analysis.
 pub(crate) struct MaterializedNodeUse {
+    /// The application.
     pub(crate) application: MaterializedApplicationId,
+    /// The lifetimes.
     pub(crate) lifetimes: Vec<syn::Lifetime>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The materialization trace representation used by source analysis.
 pub(crate) struct MaterializationTrace {
+    /// The steps.
     pub(crate) steps: Vec<MaterializationTraceStep>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible materialization trace step cases used by source analysis.
 pub(crate) enum MaterializationTraceStep {
+    /// The use case.
     Use(SemanticUseId),
+    /// The resolution case.
     Resolution(ResolutionTraceId),
+    /// The alias case.
     Alias(TypeAliasId),
+    /// The parameter case.
     Parameter(GenericParameterId),
+    /// The self application case.
     SelfApplication(MaterializedApplicationId),
+    /// The catalog case.
     Catalog(CatalogType),
+    /// The application case.
     Application(MaterializedApplicationId),
+    /// The content token case.
     ContentToken(ContentTokenId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible materialization diagnostic kind cases used by source analysis.
 pub(crate) enum MaterializationDiagnosticKind {
+    /// The open application case.
     OpenApplication,
+    /// The const generic case.
     ConstGeneric,
+    /// The unsupported type case.
     UnsupportedType,
+    /// The invalid arguments case.
     InvalidArguments,
+    /// The invalid container case.
     InvalidContainer,
+    /// The invalid pratt shape case.
     InvalidPrattShape,
+    /// The inapplicable pretty hint case.
     InapplicablePrettyHint,
+    /// The unsafe pretty boundary case.
     UnsafePrettyBoundary,
+    /// The alias cycle case.
     AliasCycle,
+    /// The non regular recursion case.
     NonRegularRecursion,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The materialization diagnostic representation used by source analysis.
 pub(crate) struct MaterializationDiagnostic {
+    /// The kind.
     pub(crate) kind: MaterializationDiagnosticKind,
+    /// The module.
     pub(crate) module: Option<crate::lowering::ModuleId>,
+    /// The logical module.
     pub(crate) logical_module: Option<Vec<String>>,
+    /// The path.
     pub(crate) path: PathBuf,
+    /// The range.
     pub(crate) range: Option<Range<u32>>,
+    /// The message.
     pub(crate) message: String,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The application key representation used by source analysis.
 struct ApplicationKey {
+    /// The node.
     node: NodeId,
+    /// The arguments.
     arguments: Vec<Vec<TypeIdentityAtom>>,
 }
 
 #[derive(Clone)]
+/// The attachment unit projection representation used by source analysis.
 struct AttachmentUnitProjection {
+    /// The id.
     id: TypeId,
+    /// The application.
     application: MaterializedApplicationId,
+    /// The field.
     field: ResolvedFieldId,
+    /// The ty.
     ty: ClosedType,
+    /// The attachment.
     attachment: MaterializedFixedAttachment,
+    /// The recursive min bp.
     recursive_min_bp: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible type identity atom cases used by source analysis.
 enum TypeIdentityAtom {
+    /// The node case.
     Node(MaterializedApplicationId),
+    /// The content token case.
     ContentToken(ContentTokenId),
+    /// The boxed case.
     Boxed,
+    /// The optional case.
     Optional,
+    /// The zero or more case.
     ZeroOrMore,
+    /// The one or more case.
     OneOrMore,
 }
 
 impl ClosedType {
+    /// Computes the identity.
     fn identity(&self) -> Vec<TypeIdentityAtom> {
         let mut identity = Vec::new();
         self.extend_identity(&mut identity);
         identity
     }
 
+    /// Computes the extend identity.
     fn extend_identity(&self, identity: &mut Vec<TypeIdentityAtom>) {
         match self {
             Self::Node(node) => identity.push(TypeIdentityAtom::Node(node.application)),
@@ -450,40 +654,62 @@ impl ClosedType {
 }
 
 #[derive(Clone)]
+/// The evaluated type representation used by source analysis.
 struct EvaluatedType {
+    /// The closed.
     closed: ClosedType,
+    /// The trace.
     trace: Vec<MaterializationTraceStep>,
 }
 
 #[derive(Clone, Default)]
+/// The evaluation environment representation used by source analysis.
 struct EvaluationEnvironment {
+    /// The types.
     types: BTreeMap<GenericParameterId, EvaluatedType>,
+    /// The lifetimes.
     lifetimes: BTreeMap<String, syn::Lifetime>,
 }
 
+/// The materializer representation used by source analysis.
 struct Materializer {
+    /// The source modeled.
     source_modeled: SourceModeledGrammar,
+    /// The lexical plan.
     lexical_plan: Option<LexicalPlan>,
+    /// The application by key.
     application_by_key: BTreeMap<ApplicationKey, MaterializedApplicationId>,
+    /// The applications.
     applications: Vec<MaterializedNodeApplication>,
+    /// The diagnostics.
     diagnostics: Vec<MaterializationDiagnostic>,
+    /// The active aliases.
     active_aliases: Vec<TypeAliasId>,
+    /// The active applications.
     active_applications: Vec<ApplicationKey>,
 }
 
 #[derive(Clone, Debug, Default)]
+/// The pretty boundary summary representation used by source analysis.
 struct PrettyBoundarySummary {
+    /// The first.
     first: Vec<MaterializedPrettyBoundary>,
+    /// The last.
     last: Vec<MaterializedPrettyBoundary>,
+    /// The nullable.
     nullable: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible pretty boundary site cases used by source analysis.
 enum PrettyBoundarySite {
+    /// The fixed case.
     Fixed(TokenUseId),
+    /// The field case.
     Field(ResolvedFieldId),
 }
 
+/// Computes the materialize.
 pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> MaterializationReport {
     let lexical = plan_lexical(&source_modeled);
     let materializer = Materializer {
@@ -499,20 +725,24 @@ pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> Materializati
 }
 
 impl Materializer {
+    /// Computes the lexical plan.
     fn lexical_plan(&self) -> &LexicalPlan {
         self.lexical_plan
             .as_ref()
             .expect("semantic analysis projection runs only after successful lexical planning")
     }
 
+    /// Computes the resolved.
     fn resolved(&self) -> &ResolvedSourceGrammar {
         self.source_modeled.resolved()
     }
 
+    /// Computes the source model.
     fn source_model(&self) -> &SourceModel {
         self.source_modeled.source_model()
     }
 
+    /// Computes the kind for definition.
     fn kind_for_definition(&self, definition: crate::lowering::TokenDefinitionId) -> crate::KindId {
         self.lexical_plan()
             .lowering_map
@@ -524,6 +754,7 @@ impl Materializer {
             .expect("every source token definition has a lexical KindId correlation")
     }
 
+    /// Computes the run.
     fn run(mut self, lexical_diagnostics: Vec<LexicalDiagnostic>) -> MaterializationReport {
         let seeds = self
             .resolved()
@@ -573,6 +804,7 @@ impl Materializer {
         }
     }
 
+    /// Validates closed pretty boundaries.
     fn validate_closed_pretty_boundaries(&mut self) {
         let invalid = self
             .applications
@@ -627,6 +859,7 @@ impl Materializer {
         }
     }
 
+    /// Computes the body pretty lexing violation.
     fn body_pretty_lexing_violation(
         &self,
         body: &MaterializedNodeBody,
@@ -651,6 +884,7 @@ impl Materializer {
         }
     }
 
+    /// Computes the sequence pretty lexing violation.
     fn sequence_pretty_lexing_violation(
         &self,
         elements: &[MaterializedElement],
@@ -673,6 +907,7 @@ impl Materializer {
         None
     }
 
+    /// Computes the element pretty boundary site.
     fn element_pretty_boundary_site(element: &MaterializedElement) -> PrettyBoundarySite {
         match element {
             MaterializedElement::FixedToken { token_use } => PrettyBoundarySite::Fixed(*token_use),
@@ -680,6 +915,7 @@ impl Materializer {
         }
     }
 
+    /// Computes the attachment changes pretty lexing.
     fn attachment_changes_pretty_lexing(&self, element: &MaterializedElement) -> bool {
         let MaterializedElement::SemanticField {
             ty,
@@ -716,6 +952,7 @@ impl Materializer {
         false
     }
 
+    /// Computes the pretty boundary pairs change lexing.
     fn pretty_boundary_pairs_change_lexing(
         &self,
         left: &[MaterializedPrettyBoundary],
@@ -734,6 +971,7 @@ impl Materializer {
         })
     }
 
+    /// Computes the element pretty boundaries.
     fn element_pretty_boundaries(
         &self,
         element: &MaterializedElement,
@@ -758,6 +996,7 @@ impl Materializer {
         }
     }
 
+    /// Computes the fixed pretty boundaries.
     fn fixed_pretty_boundaries(&self, token_use: TokenUseId) -> PrettyBoundarySummary {
         let definition = self.source_model().token_uses[token_use.index()].definition;
         let boundary = MaterializedPrettyBoundary::Fixed(definition);
@@ -768,6 +1007,7 @@ impl Materializer {
         }
     }
 
+    /// Computes the closed pretty boundaries.
     fn closed_pretty_boundaries(
         &self,
         ty: &ClosedType,
@@ -819,6 +1059,7 @@ impl Materializer {
         }
     }
 
+    /// Computes the body pretty boundaries.
     fn body_pretty_boundaries(
         &self,
         body: &MaterializedNodeBody,
@@ -846,6 +1087,7 @@ impl Materializer {
         }
     }
 
+    /// Computes the elements pretty boundaries.
     fn elements_pretty_boundaries(
         &self,
         elements: &[MaterializedElement],
@@ -876,6 +1118,7 @@ impl Materializer {
         }
     }
 
+    /// Computes the alternative pretty boundaries.
     fn alternative_pretty_boundaries(
         &self,
         summaries: impl Iterator<Item = PrettyBoundarySummary>,
@@ -889,11 +1132,13 @@ impl Materializer {
         combined
     }
 
+    /// Ensures application.
     fn ensure_application(
         &mut self,
         node_id: NodeId,
         type_arguments: Vec<EvaluatedType>,
     ) -> Option<MaterializedApplicationId> {
+        // Memoize before descending through recursive applications so legal recursion terminates with stable identities.
         let key = ApplicationKey {
             node: node_id,
             arguments: type_arguments
@@ -1054,6 +1299,7 @@ impl Materializer {
         Some(id)
     }
 
+    /// Computes the materialize pratt variant.
     fn materialize_pratt_variant(
         &mut self,
         variant: SourcePrattVariant,
@@ -1127,6 +1373,7 @@ impl Materializer {
         }
     }
 
+    /// Validates single pratt operand.
     fn validate_single_pratt_operand(
         &mut self,
         variant: ResolvedVariantId,
@@ -1167,6 +1414,7 @@ impl Materializer {
         false
     }
 
+    /// Computes the resolved variant site.
     fn resolved_variant_site(&self, variant: ResolvedVariantId) -> (SourceId, Range<u32>) {
         self.resolved()
             .nodes
@@ -1181,12 +1429,14 @@ impl Materializer {
             .expect("source Pratt variant has a resolved identity")
     }
 
+    /// Takes pratt lhs.
     fn take_pratt_lhs(
         &mut self,
         variant: ResolvedVariantId,
         current_application: &MaterializedNodeUse,
         elements: &mut Vec<MaterializedElement>,
     ) -> Option<MaterializedPrattLhs> {
+        // Extract exactly one typed Pratt left-hand side before materializing led fields and binding-power thresholds.
         let (variant_source, resolved_variant) = self
             .resolved()
             .nodes
@@ -1298,12 +1548,14 @@ impl Materializer {
         })
     }
 
+    /// Computes the materialize elements.
     fn materialize_elements(
         &mut self,
         elements: &[GrammarElement],
         current_application: &MaterializedNodeUse,
         environment: &EvaluationEnvironment,
     ) -> Vec<MaterializedElement> {
+        // Preserve authored element order while separating syntax-only attachments from semantic fields.
         let mut materialized = Vec::new();
         for element in elements {
             match element {
@@ -1415,6 +1667,7 @@ impl Materializer {
         materialized
     }
 
+    /// Computes the resolved field.
     fn resolved_field(&self, id: ResolvedFieldId) -> &crate::resolution::ResolvedNodeField {
         self.resolved()
             .nodes
@@ -1424,12 +1677,14 @@ impl Materializer {
             .expect("source-model field identity belongs to resolved grammar")
     }
 
+    /// Evaluates type.
     fn evaluate_type(
         &mut self,
         ty: &ResolvedType,
         current_application: Option<MaterializedNodeUse>,
         environment: &EvaluationEnvironment,
     ) -> Option<EvaluatedType> {
+        // Classify containers before resolving their terminal target so unsupported shapes fail at the authored boundary.
         match &ty.kind {
             ResolvedTypeKind::Group(inner) | ResolvedTypeKind::Parenthesized(inner) => {
                 self.evaluate_type(inner, current_application, environment)
@@ -1567,6 +1822,7 @@ impl Materializer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Computes the bind node arguments.
     fn bind_node_arguments(
         &mut self,
         node: NodeId,
@@ -1638,6 +1894,7 @@ impl Materializer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Evaluates alias.
     fn evaluate_alias(
         &mut self,
         alias: TypeAliasId,
@@ -1647,6 +1904,7 @@ impl Materializer {
         caller_environment: &EvaluationEnvironment,
         prefix: Vec<MaterializationTraceStep>,
     ) -> Option<EvaluatedType> {
+        // Track the alias stack explicitly to distinguish a legal recursive Node application from an alias cycle.
         if self.active_aliases.contains(&alias) {
             let declaration = &self.resolved().type_aliases[alias.index()];
             self.push_diagnostic(
@@ -1795,7 +2053,9 @@ impl Materializer {
         })
     }
 
+    /// Projects normalized grammar.
     fn project_normalized_grammar(&self) -> (GrammarDescription, LoweringMap) {
+        // Allocate all dense identities first, then populate shapes and correlations without order-dependent backpatching.
         let mut grammar = GrammarDescription::new(
             self.resolved()
                 .build_inputs
@@ -2174,6 +2434,7 @@ impl Materializer {
         )
     }
 
+    /// Computes the attachment unit projections.
     fn attachment_unit_projections(
         &self,
         terminal_type_count: usize,
@@ -2241,6 +2502,7 @@ impl Materializer {
         units
     }
 
+    /// Projects attachment unit.
     fn project_attachment_unit(
         &self,
         grammar: &mut GrammarDescription,
@@ -2307,6 +2569,7 @@ impl Materializer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Projects elements.
     fn project_elements(
         &self,
         grammar: &mut GrammarDescription,
@@ -2393,6 +2656,7 @@ impl Materializer {
             .collect()
     }
 
+    /// Computes the display application.
     fn display_application(&self, node: &ResolvedNode, arguments: &[EvaluatedType]) -> String {
         let name = node.key.segments.join("::");
         if arguments.is_empty() {
@@ -2408,6 +2672,7 @@ impl Materializer {
         )
     }
 
+    /// Computes the display type.
     fn display_type(&self, ty: &ClosedType) -> String {
         match ty {
             ClosedType::Node(node) => self.applications[node.application.index()]
@@ -2423,6 +2688,7 @@ impl Materializer {
         }
     }
 
+    /// Records node diagnostic.
     fn push_node_diagnostic(
         &mut self,
         node: &ResolvedNode,
@@ -2438,6 +2704,7 @@ impl Materializer {
         );
     }
 
+    /// Records invalid arguments.
     fn push_invalid_arguments(&mut self, ty: &ResolvedType, name: &str) {
         self.push_diagnostic(
             ty.source,
@@ -2447,6 +2714,7 @@ impl Materializer {
         );
     }
 
+    /// Records diagnostic.
     fn push_diagnostic(
         &mut self,
         source: crate::SourceId,
@@ -2461,6 +2729,7 @@ impl Materializer {
         self.push_diagnostic_in_module(module, source, range, kind, message);
     }
 
+    /// Records diagnostic in module.
     fn push_diagnostic_in_module(
         &mut self,
         module: Option<crate::lowering::ModuleId>,
@@ -2484,6 +2753,7 @@ impl Materializer {
     }
 }
 
+/// Wraps catalog.
 fn wrap_catalog(
     catalog: CatalogType,
     mut prefix: Vec<MaterializationTraceStep>,
@@ -2512,11 +2782,15 @@ fn wrap_catalog(
 }
 
 #[derive(Clone, Copy)]
+/// The possible terminal cases used by source analysis.
 enum Terminal {
+    /// The node case.
     Node(MaterializedApplicationId),
+    /// The content token case.
     ContentToken(ContentTokenId),
 }
 
+/// Computes the exact pratt self operand.
 fn exact_pratt_self_operand(
     element: &MaterializedElement,
     current_application: &MaterializedNodeUse,
@@ -2533,6 +2807,7 @@ fn exact_pratt_self_operand(
     exact_pratt_self_parts(ty, trace, separator.as_ref(), current_application)
 }
 
+/// Computes the exact pratt self parts.
 fn exact_pratt_self_parts(
     ty: &ClosedType,
     trace: &MaterializationTrace,
@@ -2554,6 +2829,7 @@ fn exact_pratt_self_parts(
             ))
 }
 
+/// Whether the value is recursive pratt operand.
 fn is_recursive_pratt_operand(ty: &ClosedType, owner: MaterializedApplicationId) -> bool {
     match ty {
         ClosedType::Node(node) => node.application == owner,
@@ -2565,6 +2841,7 @@ fn is_recursive_pratt_operand(ty: &ClosedType, owner: MaterializedApplicationId)
     }
 }
 
+/// Computes the attachment terminal.
 fn attachment_terminal(ty: &ClosedType) -> &ClosedType {
     match ty {
         ClosedType::Boxed(inner)
@@ -2575,6 +2852,7 @@ fn attachment_terminal(ty: &ClosedType) -> &ClosedType {
     }
 }
 
+/// Computes the terminal and container.
 fn terminal_and_container(
     ty: &ClosedType,
     separator: Option<RepeatSeparator>,

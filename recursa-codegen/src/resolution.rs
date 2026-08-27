@@ -2,6 +2,14 @@
     dead_code,
     reason = "private source analysis resolution seam is consumed by later lowering tickets"
 )]
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Anchored resolution of grammar-semantic source references.
+//!
+//! Resolution models the supported Rust module, import, re-export, alias, and
+//! visibility rules from the selected-root anchor. It traces only references
+//! that change grammar meaning; callback, derive, and hook paths remain opaque
+//! Rust fragments for faithful generation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -26,6 +34,7 @@ use crate::source_syntax::{
     span_range,
 };
 
+/// Computes the resolution id.
 macro_rules! resolution_id {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -55,468 +64,799 @@ resolution_id!(ResolvedFieldId);
 resolution_id!(ResolvedVariantId);
 
 #[derive(Clone, Debug)]
+/// The resolution input representation used by source analysis.
 pub(crate) struct ResolutionInput<'cfg> {
+    /// The discovery inputs.
     pub(crate) discovery_inputs: DiscoveryInputs,
+    /// The tree.
     pub(crate) tree: DiscoveredModuleTree,
+    /// The cfg.
     pub(crate) cfg: &'cfg CargoCfgSnapshot,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolution report representation used by source analysis.
 pub(crate) struct ResolutionReport {
+    /// The discovery inputs.
     pub(crate) discovery_inputs: DiscoveryInputs,
+    /// The build inputs.
     pub(crate) build_inputs: Option<BuildInputs>,
+    /// The diagnostics.
     pub(crate) diagnostics: Vec<ResolutionDiagnostic>,
+    /// The resolved.
     pub(crate) resolved: Option<ResolvedSourceGrammar>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolved source grammar representation used by source analysis.
 pub(crate) struct ResolvedSourceGrammar {
+    /// The build inputs.
     pub(crate) build_inputs: BuildInputs,
+    /// The configuration.
     pub(crate) configuration: SelectedGrammarConfiguration,
+    /// The tree.
     pub(crate) tree: DiscoveredModuleTree,
+    /// The nodes.
     pub(crate) nodes: Vec<ResolvedNode>,
+    /// The type aliases.
     pub(crate) type_aliases: Vec<ResolvedTypeAlias>,
+    /// The generic parameters.
     pub(crate) generic_parameters: Vec<ResolvedGenericParameter>,
+    /// The content tokens.
     pub(crate) content_tokens: Vec<ResolvedContentToken>,
+    /// The token bindings.
     pub(crate) token_bindings: Vec<TokenTypeBinding>,
+    /// The imports.
     pub(crate) imports: Vec<ResolvedImport>,
+    /// The uses.
     pub(crate) uses: Vec<SemanticUse>,
+    /// The resolutions.
     pub(crate) resolutions: Vec<SemanticResolution>,
+    /// The traces.
     pub(crate) traces: Vec<ResolutionTrace>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The selected grammar configuration representation used by source analysis.
 pub(crate) struct SelectedGrammarConfiguration {
+    /// The syntax.
     pub(crate) syntax: GrammarConfigSyntax,
+    /// The source.
     pub(crate) source: SourceId,
+    /// The range.
     pub(crate) range: Range<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The node key representation used by source analysis.
 pub(crate) struct NodeKey {
+    /// The segments.
     pub(crate) segments: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolved node representation used by source analysis.
 pub(crate) struct ResolvedNode {
+    /// The id.
     pub(crate) id: NodeId,
+    /// The module.
     pub(crate) module: ModuleId,
+    /// The source.
     pub(crate) source: SourceId,
+    /// The ident.
     pub(crate) ident: String,
+    /// The visibility.
     pub(crate) visibility: Visibility,
+    /// The key.
     pub(crate) key: NodeKey,
+    /// The range.
     pub(crate) range: Range<u32>,
+    /// The generics.
     pub(crate) generics: syn::Generics,
+    /// The metas.
     pub(crate) metas: Vec<Meta>,
+    /// The capture.
     pub(crate) capture: Option<CaptureMode>,
+    /// The body.
     pub(crate) body: ResolvedNodeBody,
+    /// The fields.
     pub(crate) fields: Vec<ResolvedNodeField>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible resolved node body cases used by source analysis.
 pub(crate) enum ResolvedNodeBody {
-    Struct { style: ResolvedFieldStyle },
-    Enum { variants: Vec<ResolvedNodeVariant> },
+    /// The struct case.
+    Struct {
+        #[doc = "Authored field style retained for the resolved struct body."]
+        style: ResolvedFieldStyle,
+    },
+    /// The enum case.
+    Enum {
+        #[doc = "Resolved variants in authored declaration order."]
+        variants: Vec<ResolvedNodeVariant>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible resolved field style cases used by source analysis.
 pub(crate) enum ResolvedFieldStyle {
+    /// The named case.
     Named,
+    /// The unnamed case.
     Unnamed,
+    /// The unit case.
     Unit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolved node variant representation used by source analysis.
 pub(crate) struct ResolvedNodeVariant {
+    /// The id.
     pub(crate) id: ResolvedVariantId,
+    /// The ident.
     pub(crate) ident: String,
+    /// The style.
     pub(crate) style: ResolvedFieldStyle,
+    /// The range.
     pub(crate) range: Range<u32>,
+    /// The metas.
     pub(crate) metas: Vec<Meta>,
+    /// The capture.
     pub(crate) capture: Option<CaptureMode>,
+    /// The fields.
     pub(crate) fields: Vec<ResolvedFieldId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolved node field representation used by source analysis.
 pub(crate) struct ResolvedNodeField {
+    /// The id.
     pub(crate) id: ResolvedFieldId,
+    /// The syntax.
     pub(crate) syntax: Field,
+    /// The metas.
     pub(crate) metas: Vec<Meta>,
+    /// The capture.
     pub(crate) capture: Option<CaptureMode>,
+    /// The range.
     pub(crate) range: Range<u32>,
+    /// The ty.
     pub(crate) ty: ResolvedType,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolved type representation used by source analysis.
 pub(crate) struct ResolvedType {
+    /// The syntax.
     pub(crate) syntax: Type,
+    /// The source.
     pub(crate) source: SourceId,
+    /// The range.
     pub(crate) range: Range<u32>,
+    /// The kind.
     pub(crate) kind: ResolvedTypeKind,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible resolved type kind cases used by source analysis.
 pub(crate) enum ResolvedTypeKind {
+    /// The semantic case.
     Semantic {
+        /// The use site.
         use_site: SemanticUseId,
+        /// The target.
         target: SemanticTarget,
+        /// The trace.
         trace: ResolutionTraceId,
+        /// The arguments.
         arguments: Vec<ResolvedGenericArgument>,
     },
+    /// The group case.
     Group(Box<ResolvedType>),
+    /// The parenthesized case.
     Parenthesized(Box<ResolvedType>),
+    /// The reference case.
     Reference(Box<ResolvedType>),
+    /// The tuple case.
     Tuple(Vec<ResolvedType>),
+    /// The unsupported case.
     Unsupported,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The possible resolved generic argument cases used by source analysis.
 pub(crate) enum ResolvedGenericArgument {
+    /// The lifetime case.
     Lifetime(syn::Lifetime),
+    /// The type case.
     Type(ResolvedType),
+    /// The unsupported case.
     Unsupported(GenericArgument),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolved generic parameter representation used by source analysis.
 pub(crate) struct ResolvedGenericParameter {
+    /// The id.
     pub(crate) id: GenericParameterId,
+    /// The owner.
     pub(crate) owner: SemanticOwner,
+    /// The ident.
     pub(crate) ident: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible semantic owner cases used by source analysis.
 pub(crate) enum SemanticOwner {
+    /// The node case.
     Node(NodeId),
+    /// The type alias case.
     TypeAlias(TypeAliasId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolved type alias representation used by source analysis.
 pub(crate) struct ResolvedTypeAlias {
+    /// The id.
     pub(crate) id: TypeAliasId,
+    /// The module.
     pub(crate) module: ModuleId,
+    /// The source.
     pub(crate) source: SourceId,
+    /// The ident.
     pub(crate) ident: String,
+    /// The range.
     pub(crate) range: Range<u32>,
+    /// The generics.
     pub(crate) generics: syn::Generics,
+    /// The ty.
     pub(crate) ty: Type,
+    /// The target.
     pub(crate) target: Option<ResolvedType>,
+    /// The defaults.
     pub(crate) defaults: Vec<ResolvedAliasDefault>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolved alias default representation used by source analysis.
 pub(crate) struct ResolvedAliasDefault {
+    /// The parameter.
     pub(crate) parameter: GenericParameterId,
+    /// The ty.
     pub(crate) ty: ResolvedType,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolved content token representation used by source analysis.
 pub(crate) struct ResolvedContentToken {
+    /// The id.
     pub(crate) id: ContentTokenId,
+    /// The ident.
     pub(crate) ident: String,
+    /// The sites.
     pub(crate) sites: Vec<ContentTokenSite>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The content token site representation used by source analysis.
 pub(crate) struct ContentTokenSite {
+    /// The module.
     pub(crate) module: ModuleId,
+    /// The source.
     pub(crate) source: SourceId,
+    /// The range.
     pub(crate) range: Range<u32>,
+    /// The visibility.
     pub(crate) visibility: Visibility,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The token type binding representation used by source analysis.
 pub(crate) struct TokenTypeBinding {
+    /// The module.
     pub(crate) module: ModuleId,
+    /// The source.
     pub(crate) source: SourceId,
+    /// The range.
     pub(crate) range: Range<u32>,
+    /// The ident.
     pub(crate) ident: String,
+    /// The target.
     pub(crate) target: ContentTokenId,
+    /// The visibility.
     pub(crate) visibility: Visibility,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolved import representation used by source analysis.
 pub(crate) struct ResolvedImport {
+    /// The id.
     pub(crate) id: ImportId,
+    /// The module.
     pub(crate) module: ModuleId,
+    /// The source.
     pub(crate) source: SourceId,
+    /// The range.
     pub(crate) range: Range<u32>,
+    /// The authored.
     pub(crate) authored: String,
+    /// The local name.
     pub(crate) local_name: Option<String>,
+    /// The glob.
     pub(crate) glob: bool,
+    /// The target.
     pub(crate) target: Option<ImportTarget>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible import target cases used by source analysis.
 pub(crate) enum ImportTarget {
+    /// The module case.
     Module(ModuleId),
+    /// The node case.
     Node(NodeId),
+    /// The type alias case.
     TypeAlias(TypeAliasId),
+    /// The content token case.
     ContentToken(ContentTokenId),
+    /// The catalog case.
     Catalog(CatalogType),
+    /// The unsupported case.
     Unsupported,
+    /// The external case.
     External,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The semantic use representation used by source analysis.
 pub(crate) struct SemanticUse {
+    /// The id.
     pub(crate) id: SemanticUseId,
+    /// The module.
     pub(crate) module: ModuleId,
+    /// The owner.
     pub(crate) owner: SemanticOwner,
+    /// The source.
     pub(crate) source: SourceId,
+    /// The range.
     pub(crate) range: Range<u32>,
+    /// The authored.
     pub(crate) authored: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The semantic resolution representation used by source analysis.
 pub(crate) struct SemanticResolution {
+    /// The use site.
     pub(crate) use_site: SemanticUseId,
+    /// The authored.
     pub(crate) authored: String,
+    /// The target.
     pub(crate) target: SemanticTarget,
+    /// The trace.
     pub(crate) trace: ResolutionTraceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible semantic target cases used by source analysis.
 pub(crate) enum SemanticTarget {
+    /// The node case.
     Node(NodeId),
+    /// The type alias case.
     TypeAlias(TypeAliasId),
+    /// The generic parameter case.
     GenericParameter(GenericParameterId),
+    /// The content token case.
     ContentToken(ContentTokenId),
+    /// The catalog case.
     Catalog(CatalogType),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible catalog type cases used by source analysis.
 pub(crate) enum CatalogType {
+    /// The option case.
     Option,
+    /// The box case.
     Box,
+    /// The vec case.
     Vec,
+    /// The vec1 case.
     Vec1,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolution trace representation used by source analysis.
 pub(crate) struct ResolutionTrace {
+    /// The id.
     pub(crate) id: ResolutionTraceId,
+    /// The steps.
     pub(crate) steps: Vec<ResolutionTraceStep>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible resolution trace step cases used by source analysis.
 pub(crate) enum ResolutionTraceStep {
+    /// The start case.
     Start(ModuleId),
+    /// The containing node case.
     ContainingNode(NodeId),
+    /// The current module case.
     CurrentModule(ModuleId),
+    /// The parent module case.
     ParentModule(ModuleId),
+    /// The anchor case.
     Anchor(ModuleId),
+    /// The module case.
     Module(ModuleId),
+    /// The import case.
     Import(ImportId),
+    /// The declaration case.
     Declaration(NodeId),
+    /// The type alias case.
     TypeAlias(TypeAliasId),
+    /// The token binding case.
     TokenBinding(ContentTokenId),
+    /// The generic parameter case.
     GenericParameter(GenericParameterId),
+    /// The prelude case.
     Prelude(CatalogType),
+    /// The catalog case.
     Catalog(CatalogType),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible resolution diagnostic kind cases used by source analysis.
 pub(crate) enum ResolutionDiagnosticKind {
+    /// The missing grammar config case.
     MissingGrammarConfig,
+    /// The multiple grammar configs case.
     MultipleGrammarConfigs,
+    /// The invalid grammar config case.
     InvalidGrammarConfig,
+    /// The invalid configuration case.
     InvalidConfiguration,
+    /// The duplicate declaration case.
     DuplicateDeclaration,
+    /// The duplicate explicit import case.
     DuplicateExplicitImport,
+    /// The import collision case.
     ImportCollision,
+    /// The ambiguous import case.
     AmbiguousImport,
+    /// The inaccessible reexport case.
     InaccessibleReexport,
+    /// The token binding collision case.
     TokenBindingCollision,
+    /// The inaccessible token binding case.
     InaccessibleTokenBinding,
+    /// The invalid visibility case.
     InvalidVisibility,
+    /// The unsupported declaration case.
     UnsupportedDeclaration,
+    /// The unresolved case.
     Unresolved,
+    /// The inaccessible case.
     Inaccessible,
+    /// The above anchor case.
     AboveAnchor,
+    /// The outside anchor case.
     OutsideAnchor,
+    /// The external path case.
     ExternalPath,
+    /// The leading external path case.
     LeadingExternalPath,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The resolution diagnostic representation used by source analysis.
 pub(crate) struct ResolutionDiagnostic {
+    /// The kind.
     pub(crate) kind: ResolutionDiagnosticKind,
+    /// The module.
     pub(crate) module: Option<ModuleId>,
+    /// The logical module.
     pub(crate) logical_module: Option<Vec<String>>,
+    /// The path.
     pub(crate) path: PathBuf,
+    /// The range.
     pub(crate) range: Option<Range<u32>>,
+    /// The message.
     pub(crate) message: String,
 }
 
 #[derive(Clone, Debug)]
+/// The binding representation used by source analysis.
 struct Binding {
+    /// The id.
     id: BindingId,
+    /// The module.
     module: ModuleId,
+    /// The name.
     name: String,
+    /// The kind.
     kind: BindingKind,
+    /// The visibility.
     visibility: Visibility,
+    /// The source.
     source: SourceId,
+    /// The range.
     range: Range<u32>,
+    /// The origin.
     origin: BindingOrigin,
+    /// The import chain.
     import_chain: Vec<ImportId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// The possible binding kind cases used by source analysis.
 enum BindingKind {
+    /// The module case.
     Module(ModuleId),
+    /// The node case.
     Node(NodeId),
+    /// The type alias case.
     TypeAlias(TypeAliasId),
+    /// The content token case.
     ContentToken(ContentTokenId),
+    /// The catalog case.
     Catalog(CatalogType),
+    /// The unsupported case.
     Unsupported(OpaqueTargetId),
+    /// The external case.
     External(OpaqueTargetId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The possible binding origin cases used by source analysis.
 enum BindingOrigin {
+    /// The declaration case.
     Declaration,
+    /// The explicit import case.
     ExplicitImport,
+    /// The glob import case.
     GlobImport,
+    /// The content token case.
     ContentToken,
 }
 
 #[derive(Clone, Debug)]
+/// The import directive representation used by source analysis.
 struct ImportDirective {
+    /// The id.
     id: ImportId,
+    /// The module.
     module: ModuleId,
+    /// The source.
     source: SourceId,
+    /// The range.
     range: Range<u32>,
+    /// The visibility.
     visibility: Visibility,
+    /// The names.
     names: Vec<String>,
+    /// The local name.
     local_name: Option<String>,
+    /// The glob.
     glob: bool,
+    /// The leading colon.
     leading_colon: bool,
 }
 
+/// The import resolution representation used by source analysis.
 struct ImportResolution {
+    /// The kind.
     kind: BindingKind,
+    /// The import chain.
     import_chain: Vec<ImportId>,
+    /// The visibility scope.
     visibility_scope: ModuleId,
+    /// The publicly exportable.
     publicly_exportable: bool,
 }
 
+/// The selected path start representation used by source analysis.
 struct SelectedPathStart {
+    /// The module.
     module: ModuleId,
+    /// The consumed.
     consumed: usize,
+    /// The explicit local.
     explicit_local: bool,
+    /// The steps.
     steps: Vec<ResolutionTraceStep>,
 }
 
 #[derive(Clone, Copy)]
+/// The possible binding walk step cases used by source analysis.
 enum BindingWalkStep {
+    /// The import case.
     Import(ImportId),
+    /// The module case.
     Module(ModuleId),
 }
 
+/// The binding walk representation used by source analysis.
 struct BindingWalk<'resolver> {
+    /// The terminal.
     terminal: &'resolver Binding,
+    /// The steps.
     steps: Vec<BindingWalkStep>,
 }
 
+/// The possible binding walk error cases used by source analysis.
 enum BindingWalkError<'resolver> {
+    /// The diagnostic case.
     Diagnostic(ResolutionDiagnosticKind, String),
+    /// The inaccessible case.
     Inaccessible(&'resolver Binding),
+    /// The non module case.
     NonModule(&'resolver Binding),
+    /// The missing child case.
     MissingChild {
+        /// The module.
         module: &'resolver Binding,
+        /// The name.
         name: String,
     },
 }
 
+/// The flattened use representation used by source analysis.
 struct FlattenedUse {
+    /// The names.
     names: Vec<String>,
+    /// The local name.
     local_name: Option<String>,
+    /// The glob.
     glob: bool,
+    /// The range.
     range: Range<u32>,
 }
 
 #[derive(Clone, Debug)]
+/// The pending content token site representation used by source analysis.
 struct PendingContentTokenSite {
+    /// The module.
     module: ModuleId,
+    /// The source.
     source: SourceId,
+    /// The range.
     range: Range<u32>,
+    /// The ident.
     ident: String,
+    /// The visibility.
     visibility: Visibility,
 }
 
+/// The configured node field representation used by source analysis.
 struct ConfiguredNodeField {
+    /// The field.
     field: Field,
+    /// The metas.
     metas: Vec<Meta>,
+    /// The capture.
     capture: Option<CaptureMode>,
 }
 
+/// The configured node variant representation used by source analysis.
 struct ConfiguredNodeVariant {
+    /// The ident.
     ident: String,
+    /// The style.
     style: ResolvedFieldStyle,
+    /// The range.
     range: Range<u32>,
+    /// The metas.
     metas: Vec<Meta>,
+    /// The capture.
     capture: Option<CaptureMode>,
+    /// The fields.
     fields: Vec<ConfiguredNodeField>,
 }
 
+/// The possible configured node body cases used by source analysis.
 enum ConfiguredNodeBody {
+    /// The struct case.
     Struct {
+        /// The style.
         style: ResolvedFieldStyle,
+        /// The fields.
         fields: Vec<ConfiguredNodeField>,
     },
+    /// The enum case.
     Enum {
+        /// The variants.
         variants: Vec<ConfiguredNodeVariant>,
     },
 }
 
 #[derive(Clone, Debug)]
+/// The pending node representation used by source analysis.
 struct PendingNode {
+    /// The resolved.
     resolved: ResolvedNode,
+    /// The generic parameters.
     generic_parameters: BTreeMap<String, GenericParameterId>,
+    /// The fields.
     fields: Vec<PendingNodeField>,
 }
 
 #[derive(Clone, Debug)]
+/// The pending node field representation used by source analysis.
 struct PendingNodeField {
+    /// The id.
     id: ResolvedFieldId,
+    /// The syntax.
     syntax: Field,
+    /// The metas.
     metas: Vec<Meta>,
+    /// The capture.
     capture: Option<CaptureMode>,
+    /// The range.
     range: Range<u32>,
 }
 
 #[derive(Clone, Debug)]
+/// The pending type alias representation used by source analysis.
 struct PendingTypeAlias {
+    /// The resolved.
     resolved: ResolvedTypeAlias,
+    /// The generic parameters.
     generic_parameters: BTreeMap<String, GenericParameterId>,
 }
 
+/// The resolver representation used by source analysis.
 struct Resolver<'cfg> {
+    /// The cfg.
     cfg: &'cfg CargoCfgSnapshot,
+    /// The build inputs.
     build_inputs: BuildInputs,
+    /// The configuration.
     configuration: SelectedGrammarConfiguration,
+    /// The tree.
     tree: DiscoveredModuleTree,
+    /// The items.
     items: BTreeMap<ModuleId, Vec<Item>>,
+    /// The bindings.
     bindings: Vec<Binding>,
+    /// The binding by name.
     binding_by_name: BTreeMap<(ModuleId, String), BindingId>,
+    /// The glob candidates.
     glob_candidates: BTreeMap<(ModuleId, String), Vec<Binding>>,
+    /// The import directives.
     import_directives: Vec<ImportDirective>,
+    /// The resolved imports.
     resolved_imports: Vec<ResolvedImport>,
+    /// The content tokens.
     content_tokens: Vec<ResolvedContentToken>,
+    /// The token bindings.
     token_bindings: Vec<TokenTypeBinding>,
+    /// The pending content tokens.
     pending_content_tokens: Vec<PendingContentTokenSite>,
+    /// The next opaque target.
     next_opaque_target: usize,
+    /// The next resolved field.
     next_resolved_field: usize,
+    /// The next resolved variant.
     next_resolved_variant: usize,
+    /// The nodes.
     nodes: Vec<PendingNode>,
+    /// The type aliases.
     type_aliases: Vec<PendingTypeAlias>,
+    /// The generic parameters.
     generic_parameters: Vec<ResolvedGenericParameter>,
+    /// The uses.
     uses: Vec<SemanticUse>,
+    /// The resolutions.
     resolutions: Vec<SemanticResolution>,
+    /// The traces.
     traces: Vec<ResolutionTrace>,
+    /// The diagnostics.
     diagnostics: Vec<ResolutionDiagnostic>,
 }
 
+/// Resolves local semantics.
 pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionReport {
     let discovery_inputs = input.discovery_inputs.clone();
     let items = input
@@ -579,6 +919,7 @@ pub(crate) fn resolve_local_semantics(input: ResolutionInput<'_>) -> ResolutionR
 }
 
 impl Resolver<'_> {
+    /// Finishes finish.
     fn finish(self) -> ResolutionReport {
         let resolved = self.diagnostics.is_empty().then(|| ResolvedSourceGrammar {
             build_inputs: self.build_inputs.clone(),
@@ -606,7 +947,9 @@ impl Resolver<'_> {
         }
     }
 
+    /// Builds symbols.
     fn build_symbols(&mut self) {
+        // Index declarations before resolving uses so module traversal order cannot change name lookup results.
         let inclusions = self.tree.inclusions.clone();
         for inclusion in inclusions.iter().filter(|module| module.parent.is_some()) {
             let parent = inclusion.parent.expect("filtered module has parent");
@@ -837,6 +1180,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Registers node field.
     fn register_node_field(&mut self, configured: ConfiguredNodeField) -> PendingNodeField {
         let id = ResolvedFieldId::next(self.next_resolved_field);
         self.next_resolved_field += 1;
@@ -849,6 +1193,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Registers generic parameters.
     fn register_generic_parameters(
         &mut self,
         generics: &syn::Generics,
@@ -873,6 +1218,7 @@ impl Resolver<'_> {
             .collect()
     }
 
+    /// Records binding.
     fn insert_binding(&mut self, binding: Binding) {
         let key = (binding.module, binding.name.clone());
         if self.binding_by_name.contains_key(&key) {
@@ -892,13 +1238,16 @@ impl Resolver<'_> {
         self.bindings.push(binding);
     }
 
+    /// Allocates opaque target.
     fn allocate_opaque_target(&mut self) -> OpaqueTargetId {
         let id = OpaqueTargetId::next(self.next_opaque_target);
         self.next_opaque_target += 1;
         id
     }
 
+    /// Builds content token bindings.
     fn build_content_token_bindings(&mut self) {
+        // Synthesize type-namespace bindings only after duplicate token definitions have a single semantic identity.
         let logical_paths = self
             .tree
             .inclusions
@@ -1011,6 +1360,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Computes the visibility is broader.
     fn visibility_is_broader(
         &self,
         module: ModuleId,
@@ -1035,6 +1385,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Resolves imports.
     fn resolve_imports(&mut self) {
         self.prepare_import_directives();
         let diagnosed_duplicate_ids = self.diagnose_duplicate_explicit_imports();
@@ -1043,6 +1394,7 @@ impl Resolver<'_> {
         self.diagnose_unresolved_imports(&complete);
     }
 
+    /// Prepares import directives.
     fn prepare_import_directives(&mut self) {
         let logical_paths = self
             .tree
@@ -1087,6 +1439,7 @@ impl Resolver<'_> {
             .collect();
     }
 
+    /// Diagnoses duplicate explicit imports.
     fn diagnose_duplicate_explicit_imports(&mut self) -> BTreeSet<ImportId> {
         let mut duplicate_imports = BTreeMap::<(ModuleId, String), Vec<ImportId>>::new();
         for directive in self
@@ -1123,6 +1476,7 @@ impl Resolver<'_> {
         diagnosed_duplicate_ids
     }
 
+    /// Resolves import fixed point.
     fn resolve_import_fixed_point(
         &mut self,
         diagnosed_duplicate_ids: &BTreeSet<ImportId>,
@@ -1152,6 +1506,7 @@ impl Resolver<'_> {
         complete
     }
 
+    /// Resolves explicit import.
     fn resolve_explicit_import(
         &mut self,
         directive: &ImportDirective,
@@ -1225,6 +1580,7 @@ impl Resolver<'_> {
         true
     }
 
+    /// Computes the import visibility exceeds target.
     fn import_visibility_exceeds_target(
         &self,
         directive: &ImportDirective,
@@ -1236,6 +1592,7 @@ impl Resolver<'_> {
                 && !resolution.publicly_exportable
     }
 
+    /// Propagates glob import.
     fn propagate_glob_import(
         &mut self,
         directive: &ImportDirective,
@@ -1275,6 +1632,7 @@ impl Resolver<'_> {
         progress
     }
 
+    /// Computes the glob candidate visible.
     fn glob_candidate_visible(
         &self,
         directive: &ImportDirective,
@@ -1292,6 +1650,7 @@ impl Resolver<'_> {
                 || matches!(candidate.visibility, Visibility::Public(_)))
     }
 
+    /// Seeds external imports.
     fn seed_external_imports(
         &mut self,
         directives: &[ImportDirective],
@@ -1344,6 +1703,7 @@ impl Resolver<'_> {
         progress
     }
 
+    /// Records import collision.
     fn push_import_collision(
         &mut self,
         directive: &ImportDirective,
@@ -1366,6 +1726,7 @@ impl Resolver<'_> {
         );
     }
 
+    /// Computes the revalidate explicit imports.
     fn revalidate_explicit_imports(&mut self) {
         let directives = self
             .import_directives
@@ -1400,6 +1761,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Diagnoses unresolved imports.
     fn diagnose_unresolved_imports(&mut self, complete: &[bool]) {
         let directives = self.import_directives.clone();
         for directive in directives {
@@ -1496,6 +1858,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Resolves import target.
     fn resolve_import_target(
         &self,
         directive: &ImportDirective,
@@ -1556,6 +1919,7 @@ impl Resolver<'_> {
         )
     }
 
+    /// Computes the selected path start.
     fn selected_path_start(
         &self,
         use_module: ModuleId,
@@ -1629,6 +1993,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Resolves import from binding.
     fn resolve_import_from_binding<'resolver>(
         &'resolver self,
         binding: &'resolver Binding,
@@ -1657,6 +2022,7 @@ impl Resolver<'_> {
         })
     }
 
+    /// Walks binding path.
     fn walk_binding_path<'resolver>(
         &'resolver self,
         mut binding: &'resolver Binding,
@@ -1702,12 +2068,14 @@ impl Resolver<'_> {
         }
     }
 
+    /// Looks up direct.
     fn lookup_direct(&self, module: ModuleId, name: &str) -> Option<&Binding> {
         self.binding_by_name
             .get(&(module, name.to_owned()))
             .map(|id| &self.bindings[id.index()])
     }
 
+    /// Looks up available.
     fn lookup_available(
         &self,
         module: ModuleId,
@@ -1716,6 +2084,7 @@ impl Resolver<'_> {
         self.lookup_available_ignoring(module, name, None)
     }
 
+    /// Looks up available ignoring.
     fn lookup_available_ignoring(
         &self,
         module: ModuleId,
@@ -1748,6 +2117,7 @@ impl Resolver<'_> {
         Ok(candidates.first())
     }
 
+    /// Computes the module binding candidates.
     fn module_binding_candidates(&self, module: ModuleId) -> Vec<Binding> {
         let mut candidates = self
             .bindings
@@ -1770,6 +2140,7 @@ impl Resolver<'_> {
         candidates
     }
 
+    /// Records glob candidate.
     fn insert_glob_candidate(&mut self, binding: Binding) -> bool {
         if self.lookup_direct(binding.module, &binding.name).is_some() {
             return false;
@@ -1810,6 +2181,7 @@ impl Resolver<'_> {
         true
     }
 
+    /// Validates visibility scopes.
     fn validate_visibility_scopes(&mut self) {
         let bindings = self.bindings.clone();
         for binding in bindings {
@@ -1848,6 +2220,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Resolves fields.
     fn resolve_fields(&mut self) {
         for node_index in 0..self.nodes.len() {
             let node = self.nodes[node_index].clone();
@@ -1912,6 +2285,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Resolves type.
     fn resolve_type(
         &mut self,
         ty: &Type,
@@ -1919,6 +2293,7 @@ impl Resolver<'_> {
         owner: SemanticOwner,
         source: SourceId,
     ) -> Option<ResolvedType> {
+        // Resolve container layers and terminal grammar targets separately to retain an exact trace for diagnostics.
         let range = span_range(ty.span());
         match ty {
             Type::Path(type_path) => {
@@ -2042,6 +2417,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Resolves path.
     fn resolve_path(
         &self,
         path: &Path,
@@ -2049,6 +2425,7 @@ impl Resolver<'_> {
         owner: SemanticOwner,
     ) -> Result<(SemanticTarget, Vec<ResolutionTraceStep>), (ResolutionDiagnosticKind, String)>
     {
+        // Apply anchored Rust path rules segment by segment, recording the chosen import or re-export at each hop.
         let names = path
             .segments
             .iter()
@@ -2149,6 +2526,7 @@ impl Resolver<'_> {
         self.resolve_from_binding(binding, &names, consumed + 1, use_module, steps)
     }
 
+    /// Resolves from binding.
     fn resolve_from_binding<'resolver>(
         &'resolver self,
         binding: &'resolver Binding,
@@ -2196,6 +2574,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Computes the generic parameter.
     fn generic_parameter(&self, owner: SemanticOwner, name: &str) -> Option<GenericParameterId> {
         match owner {
             SemanticOwner::Node(node) => self.nodes[node.index()]
@@ -2209,15 +2588,18 @@ impl Resolver<'_> {
         }
     }
 
+    /// Computes the binding visible.
     fn binding_visible(&self, binding: &Binding, use_module: ModuleId) -> bool {
         self.visibility_scope(binding)
             .is_some_and(|scope| self.is_descendant(use_module, scope))
     }
 
+    /// Computes the visibility scope.
     fn visibility_scope(&self, binding: &Binding) -> Option<ModuleId> {
         self.declared_visibility_scope(binding.module, &binding.visibility)
     }
 
+    /// Computes the declared visibility scope.
     fn declared_visibility_scope(
         &self,
         declaring_module: ModuleId,
@@ -2275,6 +2657,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Computes the module visibility scope.
     fn module_visibility_scope(&self, module: ModuleId) -> ModuleId {
         if module == self.root_module() {
             return module;
@@ -2286,6 +2669,7 @@ impl Resolver<'_> {
             .unwrap_or(module)
     }
 
+    /// Computes the module publicly exportable.
     fn module_publicly_exportable(&self, module: ModuleId) -> bool {
         self.bindings.iter().any(|binding| {
             binding.kind == BindingKind::Module(module)
@@ -2293,6 +2677,7 @@ impl Resolver<'_> {
         })
     }
 
+    /// Computes the root module.
     fn root_module(&self) -> ModuleId {
         self.tree
             .inclusions
@@ -2302,10 +2687,12 @@ impl Resolver<'_> {
             .id
     }
 
+    /// Computes the module.
     fn module(&self, id: ModuleId) -> &ModuleInclusion {
         &self.tree.inclusions[id.index()]
     }
 
+    /// Computes the module by logical path.
     fn module_by_logical_path(&self, path: &[String]) -> Option<ModuleId> {
         self.tree
             .inclusions
@@ -2314,6 +2701,7 @@ impl Resolver<'_> {
             .map(|module| module.id)
     }
 
+    /// Whether the value is descendant.
     fn is_descendant(&self, mut module: ModuleId, ancestor: ModuleId) -> bool {
         loop {
             if module == ancestor {
@@ -2326,6 +2714,7 @@ impl Resolver<'_> {
         }
     }
 
+    /// Records site diagnostic.
     fn push_site_diagnostic(
         &mut self,
         kind: ResolutionDiagnosticKind,
@@ -2345,6 +2734,7 @@ impl Resolver<'_> {
     }
 }
 
+/// Finds grammar config.
 fn find_grammar_config(
     tree: &DiscoveredModuleTree,
     items: &BTreeMap<ModuleId, Vec<Item>>,
@@ -2357,6 +2747,7 @@ fn find_grammar_config(
     )>,
     Vec<ResolutionDiagnostic>,
 ) {
+    // Collect every candidate before selecting one so duplicate or malformed configuration is diagnosed deterministically.
     let mut diagnostics = Vec::new();
     let mut configurations = Vec::new();
     for inclusion in tree
@@ -2480,6 +2871,7 @@ fn find_grammar_config(
     )
 }
 
+/// Computes the selected anchor.
 fn selected_anchor(path: &Path) -> Option<SelectedRootAnchor> {
     if path.leading_colon.is_some()
         || path.segments.first()?.ident != "crate"
@@ -2500,6 +2892,7 @@ fn selected_anchor(path: &Path) -> Option<SelectedRootAnchor> {
     })
 }
 
+/// Computes the item declaration.
 fn item_declaration(item: &Item) -> Option<(syn::Ident, Visibility, syn::Generics, bool)> {
     match item {
         Item::Struct(item) => Some((
@@ -2542,6 +2935,7 @@ fn item_declaration(item: &Item) -> Option<(syn::Ident, Visibility, syn::Generic
     }
 }
 
+/// Computes the configured node body.
 fn configured_node_body(
     item: &Item,
     cfg: &CargoCfgSnapshot,
@@ -2550,6 +2944,7 @@ fn configured_node_body(
     module: ModuleId,
     source: SourceId,
 ) -> ConfiguredNodeBody {
+    // Apply configuration after structural resolution; configuration may refine supported meaning but never invent a target.
     fn configured_fields(
         fields: impl IntoIterator<Item = Field>,
         cfg: &CargoCfgSnapshot,
@@ -2665,6 +3060,7 @@ fn configured_node_body(
     }
 }
 
+/// Computes the resolved field style.
 fn resolved_field_style(fields: &syn::Fields) -> ResolvedFieldStyle {
     match fields {
         syn::Fields::Named(_) => ResolvedFieldStyle::Named,
@@ -2673,6 +3069,7 @@ fn resolved_field_style(fields: &syn::Fields) -> ResolvedFieldStyle {
     }
 }
 
+/// Computes the pending content token site.
 fn pending_content_token_site(
     configured: &PendingNodeField,
 ) -> Option<(String, Visibility, Range<u32>)> {
@@ -2707,6 +3104,7 @@ fn pending_content_token_site(
     ))
 }
 
+/// Flattens use tree.
 fn flatten_use_tree(tree: &UseTree, prefix: &mut Vec<String>, output: &mut Vec<FlattenedUse>) {
     match tree {
         UseTree::Path(path) => {
@@ -2766,6 +3164,7 @@ fn flatten_use_tree(tree: &UseTree, prefix: &mut Vec<String>, output: &mut Vec<F
     }
 }
 
+/// Computes the import target.
 fn import_target(kind: BindingKind) -> ImportTarget {
     match kind {
         BindingKind::Module(module) => ImportTarget::Module(module),
@@ -2778,6 +3177,7 @@ fn import_target(kind: BindingKind) -> ImportTarget {
     }
 }
 
+/// Computes the import error must be diagnosed.
 fn import_error_must_be_diagnosed(error: Option<&(ResolutionDiagnosticKind, String)>) -> bool {
     error.is_some_and(|(kind, _)| {
         matches!(
@@ -2791,6 +3191,7 @@ fn import_error_must_be_diagnosed(error: Option<&(ResolutionDiagnosticKind, Stri
     })
 }
 
+/// Computes the inaccessible binding kind.
 fn inaccessible_binding_kind(binding: &Binding) -> ResolutionDiagnosticKind {
     if binding.origin == BindingOrigin::ContentToken {
         ResolutionDiagnosticKind::InaccessibleTokenBinding
@@ -2799,6 +3200,7 @@ fn inaccessible_binding_kind(binding: &Binding) -> ResolutionDiagnosticKind {
     }
 }
 
+/// Computes the import binding walk error.
 fn import_binding_walk_error(
     error: BindingWalkError<'_>,
     names: &[String],
@@ -2820,6 +3222,7 @@ fn import_binding_walk_error(
     }
 }
 
+/// Computes the semantic binding walk error.
 fn semantic_binding_walk_error(error: BindingWalkError<'_>) -> (ResolutionDiagnosticKind, String) {
     match error {
         BindingWalkError::Diagnostic(kind, message) => (kind, message),
@@ -2841,6 +3244,7 @@ fn semantic_binding_walk_error(error: BindingWalkError<'_>) -> (ResolutionDiagno
     }
 }
 
+/// Computes the import text.
 fn import_text(directive: &ImportDirective) -> String {
     let mut authored = directive.names.join("::");
     if directive.leading_colon {
@@ -2855,6 +3259,7 @@ fn import_text(directive: &ImportDirective) -> String {
     authored
 }
 
+/// Whether the value has node derive.
 fn has_node_derive(metas: &[Meta], facade: &str) -> bool {
     metas
         .iter()
@@ -2876,6 +3281,7 @@ fn has_node_derive(metas: &[Meta], facade: &str) -> bool {
         })
 }
 
+/// Computes the catalog path.
 fn catalog_path(names: &[String], facade: &str) -> Option<CatalogType> {
     match names {
         [name] if name == "Option" => Some(CatalogType::Option),
