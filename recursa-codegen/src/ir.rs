@@ -47,7 +47,7 @@ pub struct GrammarDescription {
 }
 
 impl GrammarDescription {
-    /// Creates a value with the supplied analysis inputs.
+    /// Assembles one normalized grammar and checks collection widths while indexing it.
     pub fn new(
         name: impl Into<String>,
         kind_count: usize,
@@ -151,7 +151,7 @@ pub struct Location {
 }
 
 impl Location {
-    /// Creates a value with the supplied analysis inputs.
+    /// Associates a byte range with its entry in the grammar source table.
     pub fn new(source: SourceId, range: Range<u32>) -> Self {
         Self { source, range }
     }
@@ -167,7 +167,7 @@ pub struct Declaration {
 }
 
 impl Declaration {
-    /// Creates a value with the supplied analysis inputs.
+    /// Records a named declaration at its authored source location.
     pub fn new(name: impl Into<String>, location: LocationId) -> Self {
         Self {
             name: name.into(),
@@ -179,14 +179,14 @@ impl Declaration {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// A grammar-local token kind and its declaring source identity.
 pub struct KindDescription {
-    /// The name.
+    /// Supplies the name to normalized grammar consumers.
     pub name: String,
-    /// The declaration.
+    /// Supplies the declaration to normalized grammar consumers.
     pub declaration: DeclId,
 }
 
 impl KindDescription {
-    /// Creates a value with the supplied analysis inputs.
+    /// Associates a token-kind name with the declaration that introduced it.
     pub fn new(name: impl Into<String>, declaration: DeclId) -> Self {
         Self {
             name: name.into(),
@@ -198,16 +198,16 @@ impl KindDescription {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// A named lexical atom expression and its declaring source identity.
 pub struct AtomDescription {
-    /// The name.
+    /// Supplies the name to normalized grammar consumers.
     pub name: String,
-    /// The declaration.
+    /// Supplies the declaration to normalized grammar consumers.
     pub declaration: DeclId,
-    /// The expression.
+    /// Supplies the expression to normalized grammar consumers.
     pub expression: AtomExpression,
 }
 
 impl AtomDescription {
-    /// Creates a value with the supplied analysis inputs.
+    /// Defines a named atom from its declaration and normalized expression.
     pub fn new(name: impl Into<String>, declaration: DeclId, expression: AtomExpression) -> Self {
         Self {
             name: name.into(),
@@ -218,7 +218,7 @@ impl AtomDescription {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The closed ways a lexical atom contributes token kinds.
+/// Supplies the closed ways a lexical atom contributes token kinds to normalized grammar consumers.
 pub enum AtomExpression {
     /// One concrete token kind.
     Kind(KindId),
@@ -236,7 +236,7 @@ pub enum AtomExpression {
 }
 
 impl AtomExpression {
-    /// Computes the references.
+    /// Derives the references from canonical normalized grammar structure.
     pub(crate) fn references(&self) -> Vec<AtomId> {
         match self {
             Self::Kind(_) => Vec::new(),
@@ -252,7 +252,7 @@ impl AtomExpression {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// The grammar-wide comparison policy for exact token text.
+/// Supplies the grammar-wide comparison policy for exact token text to normalized grammar consumers.
 pub enum TextEquivalence {
     /// Unicode scalar strings must match exactly.
     Sensitive,
@@ -299,7 +299,7 @@ pub struct ParseSite {
 }
 
 impl ParseSite {
-    /// Creates a value with the supplied analysis inputs.
+    /// Records one typed parse edge and the grammar position that owns it.
     pub fn new(
         owner: TypeId,
         target: TypeId,
@@ -325,9 +325,9 @@ impl ParseSite {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Semantic cardinality of a repeated parse site.
 pub enum RepetitionCardinality {
-    /// The zero or more case.
+    /// Identifies the zero or more normalized grammar form.
     ZeroOrMore,
-    /// The one or more case.
+    /// Identifies the one or more normalized grammar form.
     OneOrMore,
 }
 
@@ -361,11 +361,11 @@ pub enum ContainerShape {
     Optional(Box<ContainerShape>),
     /// A repeated nested shape with optional separator syntax.
     Repeat {
-        /// The element.
+        /// Supplies the element to normalized grammar consumers.
         element: Box<ContainerShape>,
-        /// The cardinality.
+        /// Supplies the cardinality to normalized grammar consumers.
         cardinality: RepetitionCardinality,
-        /// The separator.
+        /// Supplies the separator to normalized grammar consumers.
         separator: Option<RepeatSeparator>,
     },
 }
@@ -412,7 +412,7 @@ impl ContainerShape {
         }
     }
 
-    /// Computes the semantics.
+    /// Derives the semantics from canonical normalized grammar structure.
     pub(crate) fn semantics(&self) -> Option<ContainerSemantics> {
         let mut layers = Vec::new();
         self.collect_cardinality_layers(&mut layers);
@@ -457,7 +457,7 @@ impl ContainerShape {
         }
     }
 
-    /// Visits separators.
+    /// Visits repetition separators from the outermost container layer inward.
     pub(crate) fn visit_separators(&self, visit: &mut impl FnMut(TypeId)) {
         match self {
             Self::Direct => {}
@@ -473,7 +473,7 @@ impl ContainerShape {
         }
     }
 
-    /// Collects cardinality layers.
+    /// Flattens nested containers into their semantic cardinality sequence.
     fn collect_cardinality_layers(&self, layers: &mut Vec<CardinalityLayer>) {
         match self {
             Self::Direct => {}
@@ -518,22 +518,22 @@ impl std::fmt::Display for ContainerShape {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible container cardinality cases used by semantic analysis.
+/// Classifies the container cardinality forms preserved in normalized grammar.
 pub(crate) enum ContainerCardinality {
-    /// The one case.
+    /// Identifies the one normalized grammar form.
     One,
-    /// The optional case.
+    /// Identifies the optional normalized grammar form.
     Optional,
-    /// The zero or more case.
+    /// Identifies the zero or more normalized grammar form.
     ZeroOrMore,
-    /// The one or more case.
+    /// Identifies the one or more normalized grammar form.
     OneOrMore,
-    /// The optional one or more case.
+    /// Identifies the optional one or more normalized grammar form.
     OptionalOneOrMore,
 }
 
 impl ContainerCardinality {
-    /// Whether the value is repeated.
+    /// Reports whether this value is repeated.
     pub(crate) const fn is_repeated(self) -> bool {
         matches!(
             self,
@@ -543,16 +543,16 @@ impl ContainerCardinality {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The container semantics representation used by semantic analysis.
+/// Carries the container semantics within the normalized grammar IR.
 pub(crate) struct ContainerSemantics {
-    /// The cardinality.
+    /// Supplies the cardinality to normalized grammar consumers.
     pub cardinality: ContainerCardinality,
-    /// The separator.
+    /// Supplies the separator to normalized grammar consumers.
     pub separator: Option<RepeatSeparator>,
 }
 
 impl ContainerSemantics {
-    /// Computes the separator type.
+    /// Derives the separator type from canonical normalized grammar structure.
     pub(crate) const fn separator_type(self) -> Option<TypeId> {
         match self.separator {
             Some(separator) => Some(separator.type_id),
@@ -562,15 +562,15 @@ impl ContainerSemantics {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The possible cardinality layer cases used by semantic analysis.
+/// Classifies the cardinality layer forms preserved in normalized grammar.
 enum CardinalityLayer {
-    /// The optional case.
+    /// Identifies the optional normalized grammar form.
     Optional,
-    /// The repeat case.
+    /// Identifies the repeat normalized grammar form.
     Repeat {
-        /// The cardinality.
+        /// Supplies the cardinality to normalized grammar consumers.
         cardinality: RepetitionCardinality,
-        /// The separator.
+        /// Supplies the separator to normalized grammar consumers.
         separator: Option<RepeatSeparator>,
     },
 }
@@ -578,16 +578,16 @@ enum CardinalityLayer {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// A named normalized grammar type and its semantic shape.
 pub struct TypeDescription {
-    /// The name.
+    /// Supplies the name to normalized grammar consumers.
     pub name: String,
-    /// The declaration.
+    /// Supplies the declaration to normalized grammar consumers.
     pub declaration: DeclId,
-    /// The shape.
+    /// Supplies the shape to normalized grammar consumers.
     pub shape: TypeShape,
 }
 
 impl TypeDescription {
-    /// Creates a value with the supplied analysis inputs.
+    /// Defines a named grammar type from its declaration and normalized shape.
     pub fn new(name: impl Into<String>, declaration: DeclId, shape: TypeShape) -> Self {
         Self {
             name: name.into(),
@@ -598,33 +598,33 @@ impl TypeDescription {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// The closed semantic forms of normalized grammar types.
+/// Supplies the closed semantic forms of normalized grammar types to normalized grammar consumers.
 pub enum TypeShape {
-    /// The token case.
+    /// Identifies the token normalized grammar form.
     Token {
-        /// The atom.
+        /// Supplies the atom to normalized grammar consumers.
         atom: AtomId,
-        /// The text predicate.
+        /// Supplies the text predicate to normalized grammar consumers.
         text_predicate: Option<TextPredicateId>,
     },
-    /// The alias case.
+    /// Identifies the alias normalized grammar form.
     Alias {
-        /// The site.
+        /// Supplies the site to normalized grammar consumers.
         site: SiteId,
     },
-    /// The sequence case.
+    /// Identifies the sequence normalized grammar form.
     Sequence {
-        /// The sites.
+        /// Supplies the sites to normalized grammar consumers.
         sites: Vec<SiteId>,
     },
-    /// The enum case.
+    /// Identifies the enum normalized grammar form.
     Enum {
-        /// The alternatives.
+        /// Supplies the alternatives to normalized grammar consumers.
         alternatives: Vec<Alternative>,
     },
-    /// The pratt case.
+    /// Identifies the pratt normalized grammar form.
     Pratt {
-        /// The variants.
+        /// Supplies the variants to normalized grammar consumers.
         variants: Vec<PrattVariant>,
     },
 }
@@ -632,41 +632,41 @@ pub enum TypeShape {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One enum alternative and its ordered parse sites.
 pub struct Alternative {
-    /// The declaration.
+    /// Supplies the declaration to normalized grammar consumers.
     pub declaration: DeclId,
-    /// The sites.
+    /// Supplies the sites to normalized grammar consumers.
     pub sites: Vec<SiteId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One Pratt variant, role, binding power, and ordered parse sites.
 pub struct PrattVariant {
-    /// The declaration.
+    /// Supplies the declaration to normalized grammar consumers.
     pub declaration: DeclId,
-    /// The position.
+    /// Supplies the position to normalized grammar consumers.
     pub position: PrattPosition,
-    /// The sites.
+    /// Supplies the sites to normalized grammar consumers.
     pub sites: Vec<SiteId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Structural role and binding powers of a Pratt variant.
 pub enum PrattPosition {
-    /// The atom case.
+    /// Identifies the atom normalized grammar form.
     Atom,
-    /// The prefix case.
+    /// Identifies the prefix normalized grammar form.
     Prefix {
         #[doc = "Right binding power of the prefix operand."]
         bp: u8,
     },
-    /// The infix case.
+    /// Identifies the infix normalized grammar form.
     Infix {
         #[doc = "Left binding power required to select the operator."]
         lbp: u8,
         #[doc = "Right binding power used to parse the operand."]
         rbp: u8,
     },
-    /// The postfix case.
+    /// Identifies the postfix normalized grammar form.
     Postfix {
         #[doc = "Left binding power required to select the operator."]
         bp: u8,

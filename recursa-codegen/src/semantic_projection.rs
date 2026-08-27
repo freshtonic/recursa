@@ -282,7 +282,7 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
     rendered
 }
 
-/// Computes the projected field site.
+/// Selects the authored site corresponding to a projected semantic field.
 fn projected_field_site(
     lowered: &LoweredGrammar,
     _application: crate::materialization::MaterializedApplicationId,
@@ -295,7 +295,7 @@ fn projected_field_site(
     attachment.sites[attachment.semantic_index]
 }
 
-/// Renders container machine.
+/// Appends a container state machine to the canonical semantic projection.
 fn render_container_machine(
     rendered: &mut String,
     machine: &crate::decision_plan::ContainerMachine,
@@ -332,7 +332,7 @@ fn render_container_machine(
     }
 }
 
-/// Renders failure edge.
+/// Appends one parser failure edge and its expectation recipe.
 fn render_failure_edge(
     rendered: &mut String,
     edge: &crate::decision_plan::FailureEdge,
@@ -354,7 +354,7 @@ fn render_failure_edge(
     .expect("writing to a String cannot fail");
 }
 
-/// Computes the source field name.
+/// Returns the authored field name, falling back to its positional index.
 fn source_field_name(
     lowered: &LoweredGrammar,
     application_id: crate::materialization::MaterializedApplicationId,
@@ -425,7 +425,7 @@ pub(crate) fn canonical_fixture_projection(name: &str, analyzed: &AnalyzedGramma
     rendered
 }
 
-/// Renders shape.
+/// Appends one normalized grammar shape and its semantic decisions.
 fn render_shape(owner: crate::TypeId, shape: &TypeShape, lowered: &LoweredGrammar) -> String {
     let grammar = &lowered.grammar;
     match shape {
@@ -493,7 +493,7 @@ fn render_shape(owner: crate::TypeId, shape: &TypeShape, lowered: &LoweredGramma
     )
 }
 
-/// Renders projected sites.
+/// Appends source-aware parse sites in normalized order.
 fn render_projected_sites(site: SiteId, lowered: &LoweredGrammar) -> Vec<String> {
     direct_attachment_unit(site, lowered).map_or_else(
         || vec![render_site(site, lowered)],
@@ -506,7 +506,7 @@ fn render_projected_sites(site: SiteId, lowered: &LoweredGrammar) -> Vec<String>
     )
 }
 
-/// Renders site.
+/// Appends one parse site with its source correlation.
 fn render_site(site: SiteId, lowered: &LoweredGrammar) -> String {
     let grammar = &lowered.grammar;
     let site_id = site;
@@ -553,7 +553,7 @@ fn render_site(site: SiteId, lowered: &LoweredGrammar) -> String {
     )
 }
 
-/// Renders kinds.
+/// Appends a token-kind set in stable identity order.
 fn render_kinds(kinds: &KindSet, grammar: &GrammarDescription) -> String {
     let mut names = kinds
         .iter()
@@ -563,7 +563,7 @@ fn render_kinds(kinds: &KindSet, grammar: &GrammarDescription) -> String {
     names.join(",")
 }
 
-/// Renders follow facts.
+/// Appends FOLLOW membership and EOF state.
 fn render_follow_facts(follow: &crate::FollowFacts, grammar: &GrammarDescription) -> String {
     let mut facts = follow
         .kinds()
@@ -577,7 +577,7 @@ fn render_follow_facts(follow: &crate::FollowFacts, grammar: &GrammarDescription
     facts.join(",")
 }
 
-/// Renders positions.
+/// Appends FIRST positions and exact-text predicates in canonical order.
 fn render_positions(positions: &[FirstPosition], grammar: &GrammarDescription) -> String {
     positions
         .iter()
@@ -591,7 +591,7 @@ fn render_positions(positions: &[FirstPosition], grammar: &GrammarDescription) -
         .join("|")
 }
 
-/// Renders first sequences.
+/// Appends bounded FIRST sequences used by predictive dispatch.
 fn render_first_sequences(
     sequences: &[crate::FirstSequence],
     grammar: &GrammarDescription,
@@ -617,7 +617,7 @@ fn render_first_sequences(
         .join(" | ")
 }
 
-/// Renders follow recipe.
+/// Appends the static and caller components of a FOLLOW recipe.
 fn render_follow_recipe(recipe: &FollowRecipe, grammar: &GrammarDescription) -> String {
     match recipe {
         FollowRecipe::Caller => "caller".to_owned(),
@@ -630,7 +630,7 @@ fn render_follow_recipe(recipe: &FollowRecipe, grammar: &GrammarDescription) -> 
     }
 }
 
-/// Renders expected.
+/// Appends an expected-token recipe used by a failure edge.
 fn render_expected(expected: &ExpectedRecipe, grammar: &GrammarDescription) -> String {
     match expected {
         ExpectedRecipe::Static(first) => format!("static[{}]", render_positions(first, grammar)),
@@ -655,12 +655,12 @@ fn render_expected(expected: &ExpectedRecipe, grammar: &GrammarDescription) -> S
     }
 }
 
-/// Computes the declaration name.
+/// Resolves a normalized declaration identity to its stable projected name.
 fn declaration_name(id: crate::DeclId, grammar: &GrammarDescription) -> &str {
     &grammar.declarations[id.index()].name
 }
 
-/// Computes the attachment for unit.
+/// Finds the source attachment whose repeated unit owns the projected type.
 fn attachment_for_unit(
     unit: crate::TypeId,
     lowered: &LoweredGrammar,
@@ -672,7 +672,7 @@ fn attachment_for_unit(
         .find(|attachment| attachment.unit == unit)
 }
 
-/// Computes the attachment for outer.
+/// Finds the source attachment whose outer parse site matches the projection.
 fn attachment_for_outer(
     outer: SiteId,
     lowered: &LoweredGrammar,
@@ -684,7 +684,7 @@ fn attachment_for_outer(
         .find(|attachment| attachment.outer == outer)
 }
 
-/// Computes the direct attachment unit.
+/// Finds a directly correlated attachment unit for a normalized type.
 fn direct_attachment_unit(site: SiteId, lowered: &LoweredGrammar) -> Option<&[SiteId]> {
     let parsed = &lowered.grammar.sites[site.index()];
     if parsed
@@ -697,7 +697,7 @@ fn direct_attachment_unit(site: SiteId, lowered: &LoweredGrammar) -> Option<&[Si
     attachment_for_outer(site, lowered).map(|attachment| attachment.sites.as_slice())
 }
 
-/// Computes the attachment outer for inner.
+/// Finds an attachment outer site from one of its nested semantic sites.
 fn attachment_outer_for_inner(
     site: SiteId,
     lowered: &LoweredGrammar,
@@ -715,7 +715,7 @@ fn attachment_outer_for_inner(
         })
 }
 
-/// Computes the projected site name.
+/// Produces the stable source-aware label for one projected parse site.
 fn projected_site_name(site: SiteId, lowered: &LoweredGrammar) -> String {
     let (authored, inner_offset) = attachment_outer_for_inner(site, lowered)
         .map_or((site, 0), |(attachment, index)| (attachment.outer, index));
@@ -756,7 +756,7 @@ fn projected_site_name(site: SiteId, lowered: &LoweredGrammar) -> String {
     semantic_site_name(site, grammar)
 }
 
-/// Computes the expanded site index.
+/// Maps a nested semantic index to its expanded source element position.
 fn expanded_site_index(
     siblings: &[SiteId],
     target: SiteId,
@@ -772,7 +772,7 @@ fn expanded_site_index(
     None
 }
 
-/// Computes the projected owner name.
+/// Resolves a projected site's owning normalized type to its display name.
 fn projected_owner_name(owner: crate::TypeId, lowered: &LoweredGrammar) -> &str {
     let grammar = &lowered.grammar;
     let Some(attachment) = attachment_for_unit(owner, lowered) else {
@@ -781,7 +781,7 @@ fn projected_owner_name(owner: crate::TypeId, lowered: &LoweredGrammar) -> &str 
     &grammar.types[grammar.sites[attachment.outer.index()].owner.index()].name
 }
 
-/// Computes the semantic site name.
+/// Produces a source-aware label for a normalized semantic parse site.
 fn semantic_site_name(site: SiteId, grammar: &GrammarDescription) -> String {
     for description in &grammar.types {
         match &description.shape {
