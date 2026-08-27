@@ -781,6 +781,14 @@ fn pattern_matches_entire(pattern: &str, text: &str) -> bool {
         .unwrap_or(true)
 }
 
+fn source_trivia_supports(source: &SourceModel, required: char) -> bool {
+    source.lexer_records.iter().any(|record| {
+        regex_syntax::Parser::new()
+            .parse(&record.pattern)
+            .is_ok_and(|hir| hir_matches_single_char(&hir, required).1)
+    })
+}
+
 pub(crate) fn materialized_pretty_boundary_changes_lexing(
     source: &SourceModel,
     equivalence: crate::TextEquivalence,
@@ -811,9 +819,6 @@ pub(crate) fn materialized_pretty_boundary_changes_lexing(
             PrettySpacing::Before | PrettySpacing::Around
         )
     });
-    if left_requests_space || right_requests_space {
-        return false;
-    }
     let explicitly_tight = left_fixed.is_some_and(|fixed| {
         matches!(
             fixed.pretty_spacing,
@@ -837,8 +842,9 @@ pub(crate) fn materialized_pretty_boundary_changes_lexing(
     let right_auto_punctuation = right_fixed.is_some_and(|fixed| {
         fixed.pretty_spacing == PrettySpacing::Auto && !is_word_shaped(&fixed.spelling)
     });
-    if !explicitly_tight && !left_auto_open && !(right_auto_punctuation && !left_auto_punctuation) {
-        return false;
+    let runtime_auto_tight = left_auto_open || (right_auto_punctuation && !left_auto_punctuation);
+    if left_requests_space || right_requests_space || (!explicitly_tight && !runtime_auto_tight) {
+        return !source_trivia_supports(source, ' ');
     }
 
     let lexical_patterns = source
@@ -1744,12 +1750,16 @@ impl SourceModelBuilder<'_> {
     }
 
     fn pretty_trivia_supports_breaks(&self) -> bool {
-        [' ', '\n'].into_iter().all(|required| {
-            self.tokens.lexer_records.iter().any(|record| {
-                regex_syntax::Parser::new()
-                    .parse(&record.pattern)
-                    .is_ok_and(|hir| hir_matches_single_char(&hir, required).1)
-            })
+        [' ', '\n']
+            .into_iter()
+            .all(|required| self.pretty_trivia_supports(required))
+    }
+
+    fn pretty_trivia_supports(&self, required: char) -> bool {
+        self.tokens.lexer_records.iter().any(|record| {
+            regex_syntax::Parser::new()
+                .parse(&record.pattern)
+                .is_ok_and(|hir| hir_matches_single_char(&hir, required).1)
         })
     }
 
@@ -1831,9 +1841,6 @@ impl SourceModelBuilder<'_> {
             right_fixed.map(|fixed| fixed.pretty_spacing),
             Some(PrettySpacing::Before | PrettySpacing::Around)
         );
-        if left_requests_space || right_requests_space {
-            return;
-        }
         let explicitly_tight = matches!(
             left_fixed.map(|fixed| fixed.pretty_spacing),
             Some(PrettySpacing::Tight | PrettySpacing::Before)
@@ -1855,6 +1862,25 @@ impl SourceModelBuilder<'_> {
         });
         let runtime_auto_tight =
             left_auto_open || (right_auto_punctuation && !left_auto_punctuation);
+        let known = |boundary: &PrettyBoundary| !matches!(&boundary.kind, PrettyBoundaryKind::Dynamic(pattern) if pattern.is_empty());
+        if known(left)
+            && known(right)
+            && (left_requests_space
+                || right_requests_space
+                || (!explicitly_tight && !runtime_auto_tight))
+            && !self.pretty_trivia_supports(' ')
+        {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::UnsafePrettyHint,
+                sites: vec![left.site.clone(), right.site.clone()],
+                message: "Pretty spacing would insert whitespace without ignored lexer trivia accepting spaces"
+                    .to_owned(),
+            });
+            return;
+        }
+        if left_requests_space || right_requests_space {
+            return;
+        }
         if !explicitly_tight && !runtime_auto_tight {
             return;
         }
@@ -6179,6 +6205,46 @@ recursa::tokens! {
     }
 
     #[test]
+    fn pretty_spacing_requires_ignored_trivia_for_automatic_spaces() {
+        let unsafe_report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+#[derive(recursa::Node)]
+struct Root<'input> {
+    #[lex(pattern = r"[0-9]+")] left: LeftText<'input>,
+    #[lex(pattern = r"[A-Za-z]+")] right: RightText<'input>,
+}
+"#,
+        );
+        assert!(unsafe_report.source_modeled.is_none());
+        assert!(unsafe_report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::UnsafePrettyHint
+                && diagnostic.sites.len() == 2
+                && diagnostic
+                    .message
+                    .contains("ignored lexer trivia accepting spaces")
+        }));
+
+        let safe_report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { ignore = r"[ ]+" }
+#[derive(recursa::Node)]
+struct Root<'input> {
+    #[lex(pattern = r"[0-9]+")] left: LeftText<'input>,
+    #[lex(pattern = r"[A-Za-z]+")] right: RightText<'input>,
+}
+"#,
+        );
+        assert!(
+            safe_report.diagnostics.is_empty(),
+            "{:?}",
+            safe_report.diagnostics
+        );
+        assert!(safe_report.source_modeled.is_some());
+    }
+
+    #[test]
     fn pretty_spacing_rejects_a_tight_unicode_identifier_boundary() {
         let report = model(
             r#"
@@ -6209,6 +6275,7 @@ struct Root;
             r#"
 recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
+    ignore = r"[ ]+",
     punctuation {
         COLON => ":", spacing = after,
         DOUBLE_COLON => "::",
@@ -6417,6 +6484,7 @@ enum Expr<'input> {
             r#"
 recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
+    ignore = r"[ ]+",
     keywords { BEGIN => "begin", END => "end" }
     punctuation { PLUS => "+" }
 }
@@ -6581,7 +6649,7 @@ struct Root { first: Leaf, second: Leaf }
         let cfg_selected = model_with_cfg(
             r#"
 recursa::grammar! { module = crate, derives(Pretty) }
-recursa::tokens! { keywords { A => "a", B => "b" } }
+recursa::tokens! { ignore = r"[ ]+", keywords { A => "a", B => "b" } }
 #[derive(recursa::Node)]
 #[cfg_attr(feature = "pretty-layout", pretty(group = inconsistent))]
 #[tok(A, B)]
