@@ -6,58 +6,86 @@
 use super::*;
 
 #[derive(Clone)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen token parse plan data owned by the lexing boundary; declaration order remains deterministic.
 pub(super) struct TokenParsePlan {
+    /// Semantic associated with this value.
     pub(super) semantic: ContentTokenId,
+    /// Ident associated with this value.
     pub(super) ident: Ident,
+    /// Kind associated with this value.
     pub(super) kind: u16,
+    /// Kind variant associated with this value.
     pub(super) kind_variant: Ident,
+    /// Accepted kind variants associated with this value.
     pub(super) accepted_kind_variants: Vec<Ident>,
+    /// Expected associated with this value.
     pub(super) expected: ExpectedSet,
+    /// Capture associated with this value.
     pub(super) capture: PlannedCapturePolicy,
+    /// Arbitrary spelling associated with this value.
     pub(super) arbitrary_spelling: String,
+    /// Configured traits associated with this value.
     pub(super) configured_traits: Vec<ConfiguredTraitRecipe>,
 }
 
 #[derive(Clone)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen token binding plan data owned by the lexing boundary; declaration order remains deterministic.
 pub(super) struct TokenBindingPlan {
+    /// Module associated with this value.
     pub(super) module: ModuleId,
+    /// Semantic key associated with this value.
     pub(super) semantic_key: String,
+    /// Ident associated with this value.
     pub(super) ident: Ident,
+    /// Visibility associated with this value.
     pub(super) visibility: Visibility,
+    /// Publicly materialized associated with this value.
     pub(super) publicly_materialized: bool,
+    /// Token associated with this value.
     pub(super) token: usize,
 }
 #[derive(Clone)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen lex rule plan data owned by the lexing boundary; declaration order remains deterministic.
 pub(super) struct LexRulePlan {
+    /// Pattern associated with this value.
     pub(super) pattern: String,
+    /// Kind associated with this value.
     pub(super) kind: u16,
+    /// Skip associated with this value.
     pub(super) skip: bool,
+    /// Callback associated with this value.
     pub(super) callback: Option<syn::Path>,
+    /// Fixed associated with this value.
     pub(super) fixed: bool,
+    /// Priority associated with this value.
     pub(super) priority: u32,
 }
 
 #[derive(Clone)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen keyword classifier plan data owned by the lexing boundary; declaration order remains deterministic.
 pub(super) struct KeywordClassifierPlan {
+    /// Canonical spelling associated with this value.
     pub(super) canonical_spelling: String,
+    /// Kind associated with this value.
     pub(super) kind: u16,
+    /// Carriers associated with this value.
     pub(super) carriers: Vec<u16>,
+    /// Ascii insensitive associated with this value.
     pub(super) ascii_insensitive: bool,
 }
 
 #[derive(Clone)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen word classifier plan data owned by the lexing boundary; declaration order remains deterministic.
 pub(super) struct WordClassifierPlan {
+    /// Canonical spelling associated with this value.
     pub(super) canonical_spelling: String,
+    /// Kind associated with this value.
     pub(super) kind: u16,
+    /// Ascii insensitive associated with this value.
     pub(super) ascii_insensitive: bool,
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds fixed lexical pattern from frozen inputs without changing canonical generation order.
 pub(super) fn fixed_lexical_pattern(spelling: &str, equivalence: TextEquivalence) -> String {
     let word_shaped = is_word_shaped(spelling);
     if equivalence != TextEquivalence::AsciiInsensitive || !word_shaped {
@@ -79,7 +107,7 @@ pub(super) fn fixed_lexical_pattern(spelling: &str, equivalence: TextEquivalence
         .collect()
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds is word shaped from frozen inputs without changing canonical generation order.
 pub(super) fn is_word_shaped(spelling: &str) -> bool {
     let mut characters = spelling.chars();
     characters.next().is_some_and(|first| {
@@ -88,7 +116,7 @@ pub(super) fn is_word_shaped(spelling: &str) -> bool {
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds fixed pretty spelling from frozen inputs without changing canonical generation order.
 pub(super) fn fixed_pretty_spelling(spelling: &str, equivalence: TextEquivalence) -> String {
     if equivalence == TextEquivalence::AsciiInsensitive && is_word_shaped(spelling) {
         spelling.to_ascii_uppercase()
@@ -97,7 +125,7 @@ pub(super) fn fixed_pretty_spelling(spelling: &str, equivalence: TextEquivalence
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds lexical pattern witness from frozen inputs without changing canonical generation order.
 pub(super) fn lexical_pattern_witness(pattern: &str) -> Result<String, String> {
     use regex_syntax::hir::{Class, Hir, HirKind};
 
@@ -143,7 +171,13 @@ pub(super) fn lexical_pattern_witness(pattern: &str) -> Result<String, String> {
     }
     Ok(witness)
 }
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render token from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: emits the grammar-bound lexer and token API from one frozen lexical plan.
+/// Invariants: priority, longest-match behavior, exact matched text, and post-lex validation remain plan-driven.
+/// Phases: declares kinds and records, emits matching callbacks, finalizes records, then exposes lexing.
 pub(super) fn render_token(
     plan: &EmissionPlan,
     token: &TokenParsePlan,
@@ -465,7 +499,7 @@ pub(super) fn render_token(
         #explorer_impl
     }
 }
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render token binding from frozen inputs without changing canonical generation order.
 pub(super) fn render_token_binding(
     plan: &EmissionPlan,
     binding: &TokenBindingPlan,

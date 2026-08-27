@@ -19,12 +19,12 @@ mod tests {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds is public from frozen inputs without changing canonical generation order.
 pub(super) fn is_public(visibility: &Visibility) -> bool {
     matches!(visibility, Visibility::Public(_))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds typed visit node variant from frozen inputs without changing canonical generation order.
 pub(super) fn typed_visit_node_variant(plan: &EmissionPlan, node: &NodeParsePlan) -> Option<Ident> {
     (node.publicly_materialized
         && node
@@ -35,7 +35,7 @@ pub(super) fn typed_visit_node_variant(plan: &EmissionPlan, node: &NodeParsePlan
     .then(|| visit_variant_ident(plan, &node.semantic_key))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds typed visit token binding from frozen inputs without changing canonical generation order.
 pub(super) fn typed_visit_token_binding(
     plan: &EmissionPlan,
     token: usize,
@@ -45,7 +45,7 @@ pub(super) fn typed_visit_token_binding(
         .find(|binding| binding.token == token && binding.publicly_materialized)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds visit variant ident from frozen inputs without changing canonical generation order.
 pub(super) fn visit_variant_ident(plan: &EmissionPlan, semantic_key: &str) -> Ident {
     let anchor = plan
         .module_anchor
@@ -58,7 +58,7 @@ pub(super) fn visit_variant_ident(plan: &EmissionPlan, semantic_key: &str) -> Id
     format_ident!("{}", visit_variant_name(&anchor, semantic_key))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds visit variant name from frozen inputs without changing canonical generation order.
 pub(super) fn visit_variant_name(anchor: &str, semantic_key: &str) -> String {
     let segments = semantic_key.split("::").collect::<Vec<_>>();
     let anchor_index = segments
@@ -73,7 +73,7 @@ pub(super) fn visit_variant_name(anchor: &str, semantic_key: &str) -> String {
     visit_nested_variant(&relative)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds visit nested variant from frozen inputs without changing canonical generation order.
 pub(super) fn visit_nested_variant(relative: &str) -> String {
     let suffix = relative
         .split("::")
@@ -83,7 +83,13 @@ pub(super) fn visit_nested_variant(relative: &str) -> String {
     format!("__RecursaTarget_{suffix}")
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render visit events from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: emits the closed event family and dispatch surface together.
+/// Invariants: event variants are source-relative, collision-free, and borrow values for the visit duration.
+/// Phases: declares immutable and mutable events, visitor traits, then event dispatch helpers.
 pub(super) fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
@@ -244,7 +250,7 @@ pub(super) fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStre
     quote!(#visit_event #visit_mut_event)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node visit from frozen inputs without changing canonical generation order.
 pub(super) fn render_node_visit(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -342,7 +348,7 @@ pub(super) fn render_node_visit(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render visit children from frozen inputs without changing canonical generation order.
 pub(super) fn render_visit_children(
     facade: &Ident,
     node: &NodeParsePlan,

@@ -20,9 +20,11 @@ mod tests {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen extension emission plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) struct ExtensionEmissionPlan {
+    /// Artifacts associated with this value.
     pub(super) artifacts: Vec<ExtensionArtifactPlan>,
+    /// Explorer associated with this value.
     pub(super) explorer: ExplorerPlan,
 }
 
@@ -41,181 +43,253 @@ impl std::ops::DerefMut for ExtensionEmissionPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen extension artifact plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) struct ExtensionArtifactPlan {
+    /// Logical name associated with this value.
     pub(super) logical_name: String,
+    /// Content associated with this value.
     pub(super) content: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) struct ExplorerPlan {
+    /// Grammar associated with this value.
     pub(super) grammar: ExplorerGrammarPlan,
+    /// Roots associated with this value.
     pub(super) roots: Vec<ExplorerRootPlan>,
+    /// Nodes associated with this value.
     pub(super) nodes: Vec<ExplorerNodePlan>,
+    /// Tokens associated with this value.
     pub(super) tokens: Vec<ExplorerTokenPlan>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer grammar plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) struct ExplorerGrammarPlan {
+    /// Name associated with this value.
     pub(super) name: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer root plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) struct ExplorerRootPlan {
+    /// Node associated with this value.
     pub(super) node: NodeId,
+    /// Application associated with this value.
     pub(super) application: MaterializedApplicationId,
+    /// Capabilities associated with this value.
     pub(super) capabilities: ExplorerCapabilityPlan,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer capability plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) struct ExplorerCapabilityPlan {
+    /// Pretty associated with this value.
     pub(super) pretty: bool,
+    /// Arbitrary associated with this value.
     pub(super) arbitrary: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer token plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) struct ExplorerTokenPlan {
+    /// Kind index associated with this value.
     pub(super) kind_index: u16,
+    /// Semantic associated with this value.
     pub(super) semantic: Option<ContentTokenId>,
+    /// Name associated with this value.
     pub(super) name: String,
+    /// Qualified name associated with this value.
     pub(super) qualified_name: String,
+    /// Kind name associated with this value.
     pub(super) kind_name: String,
+    /// Kind associated with this value.
     pub(super) kind: ExplorerTokenKindPlan,
+    /// Canonical text associated with this value.
     pub(super) canonical_text: Option<String>,
+    /// Highlight associated with this value.
     pub(super) highlight: ExplorerHighlightClassPlan,
+    /// Display associated with this value.
     pub(super) display: ExplorerDisplayPlan,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(not(feature = "explorer"), allow(dead_code))]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer token kind plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) enum ExplorerTokenKindPlan {
+    /// The `Fixed` case of this explorer contract.
     Fixed,
+    /// The `Content` case of this explorer contract.
     Content,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(not(feature = "explorer"), allow(dead_code))]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer highlight class plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) enum ExplorerHighlightClassPlan {
+    /// The `Keyword` case of this explorer contract.
     Keyword,
+    /// The `Punctuation` case of this explorer contract.
     Punctuation,
+    /// The `Content` case of this explorer contract.
     Content,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer node plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) struct ExplorerNodePlan {
+    /// Node associated with this value.
     pub(super) node: NodeId,
+    /// Application associated with this value.
     pub(super) application: MaterializedApplicationId,
+    /// Name associated with this value.
     pub(super) name: String,
+    /// Qualified name associated with this value.
     pub(super) qualified_name: String,
+    /// Display associated with this value.
     pub(super) display: ExplorerDisplayPlan,
+    /// Body associated with this value.
     pub(super) body: ExplorerNodeBodyPlan,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer node body plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) enum ExplorerNodeBodyPlan {
+    /// The `Struct` case of this explorer contract.
     Struct(ExplorerVariantPlan),
+    /// The `Enum` case of this explorer contract.
     Enum(Vec<ExplorerVariantPlan>),
+    /// The `Pratt` case of this explorer contract.
     Pratt(Vec<ExplorerVariantPlan>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer variant plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) struct ExplorerVariantPlan {
+    /// Variant associated with this value.
     pub(super) variant: Option<ResolvedVariantId>,
+    /// Name associated with this value.
     pub(super) name: Option<String>,
+    /// Qualified name associated with this value.
     pub(super) qualified_name: Option<String>,
+    /// Elements associated with this value.
     pub(super) elements: Vec<ExplorerElementPlan>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer element plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) struct ExplorerElementPlan {
+    /// Source associated with this value.
     pub(super) source: ExplorerElementSource,
+    /// Name associated with this value.
     pub(super) name: String,
+    /// Role associated with this value.
     pub(super) role: ExplorerElementRolePlan,
+    /// Cardinality associated with this value.
     pub(super) cardinality: ExplorerCardinalityPlan,
+    /// Token classification associated with this value.
     pub(super) token_classification: Option<ExplorerTokenClassificationPlan>,
+    /// Target associated with this value.
     pub(super) target: Option<ExplorerElementTargetPlan>,
+    /// Token kind associated with this value.
     pub(super) token_kind: Option<u16>,
+    /// Attachment semantic child associated with this value.
     pub(super) attachment_semantic_child: Option<usize>,
+    /// Display associated with this value.
     pub(super) display: ExplorerDisplayPlan,
+    /// Occurrence associated with this value.
     pub(super) occurrence: ExplorerOccurrencePlan,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer element target plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) enum ExplorerElementTargetPlan {
+    /// The `Node` case of this explorer contract.
     Node(MaterializedApplicationId),
+    /// The `ContentToken` case of this explorer contract.
     ContentToken(ContentTokenId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer element source data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) enum ExplorerElementSource {
+    /// The `Fixed` case of this explorer contract.
     Fixed(TokenUseId),
+    /// The `Semantic` case of this explorer contract.
     Semantic(ResolvedFieldId),
+    /// The `PrattLhs` case of this explorer contract.
     PrattLhs(ResolvedFieldId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer element role plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) enum ExplorerElementRolePlan {
+    /// The `FixedToken` case of this explorer contract.
     FixedToken,
+    /// The `SemanticField` case of this explorer contract.
     SemanticField,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer cardinality plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) enum ExplorerCardinalityPlan {
+    /// The `One` case of this explorer contract.
     One,
+    /// The `Optional` case of this explorer contract.
     Optional,
+    /// The `ZeroOrMore` case of this explorer contract.
     ZeroOrMore,
+    /// The `OneOrMore` case of this explorer contract.
     OneOrMore,
+    /// The `OptionalOneOrMore` case of this explorer contract.
     OptionalOneOrMore,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer token classification plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) enum ExplorerTokenClassificationPlan {
+    /// The `Fixed` case of this explorer contract.
     Fixed,
+    /// The `Content` case of this explorer contract.
     Content,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(not(feature = "explorer"), allow(dead_code))]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer display plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) enum ExplorerDisplayPlan {
+    /// The `None` case of this explorer contract.
     None,
+    /// The `Fixed` case of this explorer contract.
     Fixed(String),
+    /// The `MatchedOrStored` case of this explorer contract.
     MatchedOrStored,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer occurrence plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) enum ExplorerOccurrencePlan {
+    /// The `Leaf` case of this explorer contract.
     Leaf,
+    /// The `Children` case of this explorer contract.
     Children {
+        /// Wrappers associated with this value.
         wrappers: Vec<FieldWrapper>,
+        /// Terminal associated with this value.
         terminal: ExplorerTerminalPlan,
     },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen explorer terminal plan data owned by the explorer boundary; declaration order remains deterministic.
 pub(super) enum ExplorerTerminalPlan {
+    /// The `Node` case of this explorer contract.
     Node(MaterializedApplicationId),
+    /// The `Content` case of this explorer contract.
     Content(ContentTokenId),
 }
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds emitted explorer plan from frozen inputs without changing canonical generation order.
 #[cfg(feature = "explorer")]
 pub(super) fn emitted_explorer_plan(
     nodes: &[NodeParsePlan],
@@ -267,7 +341,7 @@ pub(super) fn emitted_explorer_plan(
 }
 
 #[cfg(feature = "explorer")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative explorer plan from frozen inputs without changing canonical generation order.
 pub(super) fn authoritative_explorer_plan(
     lowered: &crate::materialization::LoweredGrammar,
 ) -> Result<Option<ExplorerPlan>, String> {
@@ -327,7 +401,7 @@ pub(super) fn authoritative_explorer_plan(
 }
 
 #[cfg(feature = "explorer")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer token plans from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_token_plans(
     lowered: &crate::materialization::LoweredGrammar,
     kind_variants: &[Ident],
@@ -395,7 +469,7 @@ pub(super) fn explorer_token_plans(
         .collect()
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer kind index from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_kind_index(
     lowered: &crate::materialization::LoweredGrammar,
     definition: TokenDefinitionId,
@@ -413,13 +487,13 @@ pub(super) fn explorer_kind_index(
 }
 
 #[cfg(feature = "explorer")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer emitted application is eligible from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_emitted_application_is_eligible(node: &NodeParsePlan) -> bool {
     node.publicly_materialized && node.explorer_visit_configured
 }
 
 #[cfg(feature = "explorer")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer source application is eligible from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_source_application_is_eligible(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     node: &ResolvedNode,
@@ -440,7 +514,7 @@ pub(super) fn explorer_source_application_is_eligible(
 }
 
 #[cfg(feature = "explorer")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds emitted explorer node from frozen inputs without changing canonical generation order.
 pub(super) fn emitted_explorer_node(
     node: &NodeParsePlan,
     application: &NodeApplicationParsePlan,
@@ -497,7 +571,7 @@ pub(super) fn emitted_explorer_node(
 }
 
 #[cfg(feature = "explorer")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds emitted explorer variant from frozen inputs without changing canonical generation order.
 pub(super) fn emitted_explorer_variant<'a>(
     variant: Option<ResolvedVariantId>,
     name: Option<String>,
@@ -516,7 +590,7 @@ pub(super) fn emitted_explorer_variant<'a>(
 }
 
 #[cfg(feature = "explorer")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds emitted explorer element from frozen inputs without changing canonical generation order.
 pub(super) fn emitted_explorer_element(element: &ElementParsePlan) -> ExplorerElementPlan {
     match &element.kind {
         ElementParseKind::Fixed { kind, spelling, .. } => ExplorerElementPlan {
@@ -564,7 +638,13 @@ pub(super) fn emitted_explorer_element(element: &ElementParsePlan) -> ExplorerEl
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative explorer node from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: freezes one erased Explorer node from source-owned application and view facts.
+/// Invariants: only source-visible eligible applications enter the schema and declaration order remains stable.
+/// Phases: resolves the application, projects schema elements, then records callable capabilities.
 pub(super) fn authoritative_explorer_node(
     lowered: &crate::materialization::LoweredGrammar,
     application: &MaterializedNodeApplication,
@@ -693,7 +773,7 @@ pub(super) fn authoritative_explorer_node(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative explorer variant from frozen inputs without changing canonical generation order.
 pub(super) fn authoritative_explorer_variant(
     lowered: &crate::materialization::LoweredGrammar,
     node: &ResolvedNode,
@@ -713,7 +793,7 @@ pub(super) fn authoritative_explorer_variant(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative explorer element from frozen inputs without changing canonical generation order.
 pub(super) fn authoritative_explorer_element(
     lowered: &crate::materialization::LoweredGrammar,
     node: &ResolvedNode,
@@ -815,7 +895,7 @@ pub(super) fn authoritative_explorer_element(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer cardinality plan from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_cardinality_plan(wrappers: &[FieldWrapper]) -> ExplorerCardinalityPlan {
     let optional = wrappers
         .iter()
@@ -839,7 +919,7 @@ pub(super) fn explorer_cardinality_plan(wrappers: &[FieldWrapper]) -> ExplorerCa
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds planned kind variants from frozen inputs without changing canonical generation order.
 pub(super) fn planned_kind_variants(
     lowered: &crate::materialization::LoweredGrammar,
 ) -> Result<Vec<Ident>, String> {
@@ -884,7 +964,7 @@ pub(super) fn planned_kind_variants(
     Ok(variants)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Validates validate view collisions from frozen inputs without changing canonical generation order.
 pub(super) fn validate_view_collisions(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     cfg: &CargoCfgSnapshot,
@@ -950,7 +1030,13 @@ pub(super) fn validate_view_collisions(
     Ok(())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Validates validate explorer collisions from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: checks the entire generated Explorer namespace before rendering any adapter.
+/// Invariants: every generated type, method, value, and schema name is unique under Rust lookup.
+/// Phases: collects authored and generated names, reports collisions, then validates artifacts.
 pub(super) fn validate_explorer_collisions(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     cfg: &CargoCfgSnapshot,
@@ -1068,7 +1154,7 @@ pub(super) fn validate_explorer_collisions(
     Ok(())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer application parse plan from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_application_parse_plan(
     nodes: &[NodeParsePlan],
     application: MaterializedApplicationId,
@@ -1084,7 +1170,7 @@ pub(super) fn explorer_application_parse_plan(
         .expect("typed explorer plan retains its materialized application")
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds value item ident from frozen inputs without changing canonical generation order.
 pub(super) fn value_item_ident(item: &syn::Item) -> Option<String> {
     let ident = match item {
         syn::Item::Const(item) => &item.ident,
@@ -1096,7 +1182,7 @@ pub(super) fn value_item_ident(item: &syn::Item) -> Option<String> {
     Some(ident.unraw().to_string())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authored inherent method from frozen inputs without changing canonical generation order.
 pub(super) fn authored_inherent_method(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     cfg: &CargoCfgSnapshot,
@@ -1119,7 +1205,7 @@ pub(super) fn authored_inherent_method(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authored item has inherent method from frozen inputs without changing canonical generation order.
 pub(super) fn authored_item_has_inherent_method(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     cfg: &CargoCfgSnapshot,
@@ -1171,7 +1257,7 @@ pub(super) fn authored_item_has_inherent_method(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds inherent self targets node from frozen inputs without changing canonical generation order.
 pub(super) fn inherent_self_targets_node(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     impl_module: ModuleId,
@@ -1249,7 +1335,7 @@ pub(super) fn inherent_self_targets_node(
     resolved_path == target.key.segments
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds item ident from frozen inputs without changing canonical generation order.
 pub(super) fn item_ident(item: &syn::Item) -> Option<String> {
     let ident = match item {
         syn::Item::Enum(item) => &item.ident,
@@ -1265,7 +1351,7 @@ pub(super) fn item_ident(item: &syn::Item) -> Option<String> {
     Some(ident.unraw().to_string())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render explorer lex from frozen inputs without changing canonical generation order.
 pub(super) fn render_explorer_lex(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let explorer_lex = explorer_lex_function();
@@ -1304,7 +1390,7 @@ pub(super) fn render_explorer_lex(plan: &EmissionPlan) -> proc_macro2::TokenStre
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render token explorer from frozen inputs without changing canonical generation order.
 pub(super) fn render_token_explorer(
     plan: &EmissionPlan,
     token: &TokenParsePlan,
@@ -1358,7 +1444,7 @@ pub(super) fn render_token_explorer(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer elements for body from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_elements_for_body(body: &NodeBodyPlan) -> Vec<&ElementParsePlan> {
     match body {
         NodeBodyPlan::Struct { elements, .. } => elements.iter().collect(),
@@ -1377,7 +1463,7 @@ pub(super) fn explorer_elements_for_body(body: &NodeBodyPlan) -> Vec<&ElementPar
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer impl generics from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_impl_generics(
     plan: &EmissionPlan,
     application: &NodeApplicationParsePlan,
@@ -1412,7 +1498,7 @@ pub(super) fn explorer_impl_generics(
     generics
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer variant pattern and bindings from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_variant_pattern_and_bindings(
     node_ident: &Ident,
     variant: &VariantParsePlan,
@@ -1457,7 +1543,7 @@ pub(super) fn explorer_variant_pattern_and_bindings(
     (pattern, bindings)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node explorer from frozen inputs without changing canonical generation order.
 pub(super) fn render_node_explorer(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -1472,7 +1558,13 @@ pub(super) fn render_node_explorer(
     quote!(#(#applications)*)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node application explorer from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: keeps an application adapter's schema, occurrence traversal, parsing, Pretty, and sampling in one emitted impl.
+/// Invariants: the erased API never exposes semantic Rust types or outlives its input.
+/// Phases: renders identity and schema, occurrence access, parse entry, then optional capabilities.
 pub(super) fn render_node_application_explorer(
     plan: &EmissionPlan,
     explorer_plan: &ExplorerPlan,
@@ -1723,7 +1815,7 @@ pub(super) fn render_node_application_explorer(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer schema static from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_schema_static(node_index: usize, variant: Option<usize>) -> Ident {
     match variant {
         Some(variant) => {
@@ -1733,37 +1825,37 @@ pub(super) fn explorer_schema_static(node_index: usize, variant: Option<usize>) 
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer lex function from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_lex_function() -> Ident {
     format_ident!("__recursa_explorer_lex")
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer sample function from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_sample_function(node_index: usize) -> Ident {
     format_ident!("__recursa_explorer_sample_{node_index}")
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer token schema static from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_token_schema_static(kind_index: u16) -> Ident {
     format_ident!("__RECURSA_EXPLORER_TOKEN_SCHEMA_{kind_index}")
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer grammar schema static from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_grammar_schema_static(node_index: usize) -> Ident {
     format_ident!("__RECURSA_EXPLORER_GRAMMAR_SCHEMA_{node_index}")
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer node schemas static from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_node_schemas_static() -> Ident {
     format_ident!("__RECURSA_EXPLORER_NODE_SCHEMAS")
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer token schemas static from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_token_schemas_static() -> Ident {
     format_ident!("__RECURSA_EXPLORER_TOKEN_SCHEMAS")
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render explorer token schemas from frozen inputs without changing canonical generation order.
 pub(super) fn render_explorer_token_schemas(
     plan: &EmissionPlan,
     explorer: &ExplorerPlan,
@@ -1803,7 +1895,7 @@ pub(super) fn render_explorer_token_schemas(
     quote!(#(#definitions)*)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render explorer static schema from frozen inputs without changing canonical generation order.
 pub(super) fn render_explorer_static_schema(
     plan: &EmissionPlan,
     explorer: &ExplorerPlan,
@@ -1866,7 +1958,7 @@ pub(super) fn render_explorer_static_schema(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer application schema static from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_application_schema_static(
     plan: &EmissionPlan,
     application: MaterializedApplicationId,
@@ -1877,7 +1969,7 @@ pub(super) fn explorer_application_schema_static(
     explorer_schema_static(parse_index, None)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer content token schema static from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_content_token_schema_static(
     explorer: &ExplorerPlan,
     token: ContentTokenId,
@@ -1891,7 +1983,7 @@ pub(super) fn explorer_content_token_schema_static(
     explorer_token_schema_static(kind_index)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer element schema static from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_element_schema_static(
     node_index: usize,
     variant: Option<usize>,
@@ -1905,7 +1997,7 @@ pub(super) fn explorer_element_schema_static(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render explorer schema entries from frozen inputs without changing canonical generation order.
 pub(super) fn render_explorer_schema_entries(
     plan: &EmissionPlan,
     node_index: usize,
@@ -1979,7 +2071,7 @@ pub(super) fn render_explorer_schema_entries(
     quote!(#(#definitions)*)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render explorer schema from frozen inputs without changing canonical generation order.
 pub(super) fn render_explorer_schema(
     plan: &EmissionPlan,
     node: &ExplorerNodePlan,
@@ -2055,7 +2147,7 @@ pub(super) fn render_explorer_schema(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render explorer child count from frozen inputs without changing canonical generation order.
 pub(super) fn render_explorer_child_count(
     element: &ExplorerElementPlan,
     field_value: Option<proc_macro2::TokenStream>,
@@ -2090,7 +2182,7 @@ pub(super) fn render_explorer_child_count(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render explorer child from frozen inputs without changing canonical generation order.
 pub(super) fn render_explorer_child(
     facade: &Ident,
     element_index: usize,
@@ -2160,7 +2252,7 @@ pub(super) fn render_explorer_child(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render explorer variant child count from frozen inputs without changing canonical generation order.
 pub(super) fn render_explorer_variant_child_count(
     explorer: &ExplorerVariantPlan,
     parse_elements: &[ElementParsePlan],
@@ -2181,7 +2273,7 @@ pub(super) fn render_explorer_variant_child_count(
     quote!(match element { #(#arms)* _ => 0 })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render explorer variant child from frozen inputs without changing canonical generation order.
 pub(super) fn render_explorer_variant_child(
     facade: &Ident,
     explorer: &ExplorerVariantPlan,

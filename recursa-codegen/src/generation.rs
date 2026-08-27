@@ -1,4 +1,11 @@
-//! Source-aware generation for authored Node shapes.
+//! Source-aware generation from an analyzed grammar to one published logical output.
+//!
+//! [`generate`] is the only public coordinator. It joins immutable semantic decisions with
+//! authored source structure, validates the resulting emission plan, renders every logical
+//! file, stages optional debug output, and atomically selects the completed generation. No
+//! loader or partially written payload becomes observable before publication succeeds.
+
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -77,6 +84,7 @@ use visit::*;
 
 /// One complete published logical output.
 pub struct Generation {
+    /// Warnings retained after the publication barrier succeeds.
     report: BuildReport,
 }
 
@@ -87,6 +95,7 @@ impl Generation {
     }
 }
 
+/// Production Cargo-instruction sink used during source analysis and invalidation tracking.
 struct StdoutCargo;
 
 impl CargoOutput for StdoutCargo {
@@ -146,12 +155,14 @@ pub fn generate(root: impl AsRef<Path>) -> Result<Generation, GenerateError> {
     })
 }
 
+/// Registers the optional debug destination as a Cargo build input.
 fn emit_debug_directory_invalidation(cargo: &mut impl CargoOutput) {
     cargo.emit(format!(
         "cargo::rerun-if-env-changed={DEBUG_DIRECTORY_ENVIRONMENT}"
     ));
 }
 
+/// Converts an emission invariant into a stable-coded diagnostic at the selected root.
 fn failure(selected_root: &Path, detail: &str) -> GenerateError {
     internal_generate_error(DiagnosticStage::Emission, detail, selected_root)
 }

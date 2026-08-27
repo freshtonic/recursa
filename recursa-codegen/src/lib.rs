@@ -7,9 +7,11 @@
 
 /// Source-independent semantic fact computation and validation.
 mod analysis;
+/// Stable generated-build and loader diagnostic contracts.
 mod build_diagnostic;
 /// Frozen parser decisions derived from semantic facts.
 mod decision_plan;
+/// Typed source-independent semantic-analysis diagnostics.
 mod diagnostic;
 /// Deterministic authored-module discovery and invalidation inputs.
 mod discovery;

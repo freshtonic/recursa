@@ -11,31 +11,37 @@ pub(super) const PRIVATE_PROTOCOL: u32 = 1;
 pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v3";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Generator/facade compatibility handshake embedded into structural loaders.
 pub(super) struct PrivateAbiPlan {
+    /// Exact Recursa release expected by generated output.
     pub(super) release: String,
+    /// Private generation-protocol revision expected by generated output.
     pub(super) protocol: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// One facade capability combination accepted by generated structural loaders.
 pub(super) struct FacadeCapability {
+    /// Diagrams associated with this value.
     pub(super) diagrams: bool,
+    /// Explorer associated with this value.
     pub(super) explorer: bool,
+    /// Arbitrary associated with this value.
     pub(super) arbitrary: bool,
+    /// Serde associated with this value.
     pub(super) serde: bool,
 }
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Hashes the parse plans in their canonical Debug field and source order.
 pub(super) fn parse_plan_identity(nodes: &[NodeParsePlan]) -> u64 {
     stable_hash(format!("{nodes:?}").as_bytes())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Hashes one capability plan without erasing Debug field or variant order.
 pub(super) fn plan_family_identity(value: &impl std::fmt::Debug) -> u64 {
     stable_hash(format!("{value:?}").as_bytes())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Returns the compatibility handshake that will be embedded in generated output.
 pub(super) fn emitted_private_abi_plan() -> PrivateAbiPlan {
     PrivateAbiPlan {
         release: env!("CARGO_PKG_VERSION").to_owned(),
@@ -43,7 +49,7 @@ pub(super) fn emitted_private_abi_plan() -> PrivateAbiPlan {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Reconstructs the generator-owned compatibility handshake for validation.
 pub(super) fn authoritative_private_abi_plan() -> PrivateAbiPlan {
     // This contract belongs to the facade/codegen release, independently of
     // the mutable emission plan which later renders the handshake.
@@ -53,7 +59,7 @@ pub(super) fn authoritative_private_abi_plan() -> PrivateAbiPlan {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Enumerates accepted facade combinations in deterministic boolean-product order.
 pub(super) fn authoritative_configured_trait_identity(
     lowered: &crate::materialization::LoweredGrammar,
     resolved: &crate::resolution::ResolvedSourceGrammar,
@@ -101,7 +107,7 @@ pub(super) fn authoritative_configured_trait_identity(
     stable_hash(canonical.as_bytes())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds configured trait plan identity from frozen inputs without changing canonical generation order.
 pub(super) fn configured_trait_plan_identity(
     nodes: &[NodeParsePlan],
     tokens: &[TokenParsePlan],
@@ -124,7 +130,7 @@ pub(super) fn configured_trait_plan_identity(
     stable_hash(canonical.as_bytes())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds accepted capabilities from frozen inputs without changing canonical generation order.
 pub(super) fn accepted_capabilities(
     requested_arbitrary: bool,
     requested_serde: bool,
@@ -152,7 +158,7 @@ pub(super) fn accepted_capabilities(
     accepted
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds emitted capability plan from frozen inputs without changing canonical generation order.
 pub(super) fn emitted_capability_plan(
     nodes: &[NodeParsePlan],
     tokens: &[TokenParsePlan],
@@ -166,7 +172,7 @@ pub(super) fn emitted_capability_plan(
     capability_plan_from_recipes(recipes.copied(), diagrams, explorer)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative capability plan from frozen inputs without changing canonical generation order.
 pub(super) fn authoritative_capability_plan(
     lowered: &crate::materialization::LoweredGrammar,
     diagrams: bool,
@@ -192,7 +198,7 @@ pub(super) fn authoritative_capability_plan(
     capability_plan_from_recipes(recipes, diagrams, explorer)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds capability plan from recipes from frozen inputs without changing canonical generation order.
 pub(super) fn capability_plan_from_recipes(
     recipes: impl Iterator<Item = ConfiguredTraitRecipe>,
     diagrams: bool,

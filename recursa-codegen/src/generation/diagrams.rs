@@ -7,24 +7,31 @@ use super::*;
 
 #[cfg(feature = "diagrams")]
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen diagram plan data owned by the diagrams boundary; declaration order remains deterministic.
 pub(super) struct DiagramPlan {
+    /// Grammar name associated with this value.
     pub(super) grammar_name: String,
+    /// Nodes associated with this value.
     pub(super) nodes: Vec<NodeDiagramPlan>,
+    /// Fixed tokens associated with this value.
     pub(super) fixed_tokens: Vec<(String, String)>,
 }
 
 #[cfg(feature = "diagrams")]
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen node diagram plan data owned by the diagrams boundary; declaration order remains deterministic.
 pub(super) struct NodeDiagramPlan {
+    /// Semantic key associated with this value.
     pub(super) semantic_key: String,
+    /// Ident associated with this value.
     pub(super) ident: String,
+    /// Public path associated with this value.
     pub(super) public_path: Option<String>,
+    /// Production associated with this value.
     pub(super) production: String,
 }
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds plan diagrams from frozen inputs without changing canonical generation order.
 pub(super) fn plan_diagrams(
     lowered: &crate::materialization::LoweredGrammar,
     resolved: &crate::resolution::ResolvedSourceGrammar,
@@ -109,7 +116,7 @@ pub(super) fn plan_diagrams(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds node is publicly linkable from frozen inputs without changing canonical generation order.
 pub(super) fn node_is_publicly_linkable(
     resolved: &crate::resolution::ResolvedSourceGrammar,
     node: &ResolvedNode,
@@ -129,7 +136,7 @@ pub(super) fn node_is_publicly_linkable(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds diagram production from frozen inputs without changing canonical generation order.
 pub(super) fn diagram_production(
     node_ident: &Ident,
     semantic_key: &str,
@@ -179,7 +186,7 @@ pub(super) fn diagram_production(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds diagram pratt production from frozen inputs without changing canonical generation order.
 pub(super) fn diagram_pratt_production(
     pratt: &PrattParsePlan,
     materialized: &[MaterializedPrattVariant],
@@ -225,7 +232,7 @@ pub(super) fn diagram_pratt_production(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds unique pratt nud from frozen inputs without changing canonical generation order.
 pub(super) fn unique_pratt_nud(
     pratt: &PrattParsePlan,
     source_index: usize,
@@ -244,7 +251,7 @@ pub(super) fn unique_pratt_nud(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds unique pratt led from frozen inputs without changing canonical generation order.
 pub(super) fn unique_pratt_led(
     pratt: &PrattParsePlan,
     source_index: usize,
@@ -263,7 +270,7 @@ pub(super) fn unique_pratt_led(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Validates validate diagram variant name from frozen inputs without changing canonical generation order.
 pub(super) fn validate_diagram_variant_name(
     variant: &VariantParsePlan,
     materialized_name: &str,
@@ -276,7 +283,7 @@ pub(super) fn validate_diagram_variant_name(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds diagram pratt lhs from frozen inputs without changing canonical generation order.
 pub(super) fn diagram_pratt_lhs(
     lhs: &ElementParsePlan,
     materialized: &MaterializedPrattLed,
@@ -299,7 +306,7 @@ pub(super) fn diagram_pratt_lhs(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds diagram pratt role from frozen inputs without changing canonical generation order.
 pub(super) fn diagram_pratt_role(position: PrattPosition) -> String {
     match position {
         PrattPosition::Atom => "atom".to_owned(),
@@ -310,7 +317,7 @@ pub(super) fn diagram_pratt_role(position: PrattPosition) -> String {
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds diagram sequence from frozen inputs without changing canonical generation order.
 pub(super) fn diagram_sequence(
     elements: &[ElementParsePlan],
     materialized: &[MaterializedElement],
@@ -365,7 +372,7 @@ pub(super) fn diagram_sequence(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds diagram attachment unit from frozen inputs without changing canonical generation order.
 pub(super) fn diagram_attachment_unit(
     terminal: &str,
     attachment: &MaterializedFixedAttachment,
@@ -396,7 +403,7 @@ pub(super) fn diagram_attachment_unit(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds diagram semantic element from frozen inputs without changing canonical generation order.
 pub(super) fn diagram_semantic_element(
     terminal: &str,
     separator: Option<&str>,
@@ -450,7 +457,7 @@ pub(super) fn diagram_semantic_element(
     }
 }
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render aggregate diagram document from frozen inputs without changing canonical generation order.
 pub(super) fn render_aggregate_diagram_document(plan: &DiagramPlan) -> String {
     let mut document = format!(
         "# Generated grammar diagram\n\nRECURSA_GRAMMAR_DIAGRAM\n\nGrammar `{}` is rendered from the frozen semantic Generation plan.\n\n",
@@ -475,7 +482,7 @@ pub(super) fn render_aggregate_diagram_document(plan: &DiagramPlan) -> String {
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node diagram document from frozen inputs without changing canonical generation order.
 pub(super) fn render_node_diagram_document(node: &NodeDiagramPlan) -> String {
     format!(
         "## Generated grammar diagram\n\nRECURSA_NODE_DIAGRAM: {}\n\n{}\n\nFixed tokens shown as quoted terminals are syntax-only. They shape parsing but do not add fields to the authored Node or retain matched text.\n",
@@ -485,7 +492,7 @@ pub(super) fn render_node_diagram_document(node: &NodeDiagramPlan) -> String {
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds diagram svg from frozen inputs without changing canonical generation order.
 pub(super) fn diagram_svg(production: &str, label: &str) -> String {
     let width = 40_usize
         .saturating_add(production.chars().count().saturating_mul(9))
@@ -499,7 +506,7 @@ pub(super) fn diagram_svg(production: &str, label: &str) -> String {
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds escape html from frozen inputs without changing canonical generation order.
 pub(super) fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")

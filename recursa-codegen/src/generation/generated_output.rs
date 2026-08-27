@@ -5,15 +5,22 @@
 
 use super::*;
 
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// One complete logical output ready for filesystem publication.
+///
+/// The root and Node files have already parsed as Rust, anchors align with Node order, and the
+/// selector names only this generation identity. This value contains no partially rendered state.
 pub(super) struct RenderedGeneration {
+    /// Root associated with this value.
     pub(super) root: String,
+    /// Nodes associated with this value.
     pub(super) nodes: Vec<(String, String)>,
+    /// Node anchors associated with this value.
     pub(super) node_anchors: Vec<String>,
+    /// Selector associated with this value.
     pub(super) selector: String,
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Validates and renders every logical file without performing filesystem publication.
 pub(super) fn render(plan: &EmissionPlan) -> Result<RenderedGeneration, String> {
     plan.validate()?;
     let root = render_root(plan).to_string();
@@ -51,7 +58,13 @@ pub(super) fn render(plan: &EmissionPlan) -> Result<RenderedGeneration, String> 
         selector,
     })
 }
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render root from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: assembles the structural root as one ordered protocol unit.
+/// Invariants: loader checks precede exports and logical file order does not affect generation identity.
+/// Phases: renders compatibility checks, grammar services, exports, diagrams, and extension loaders.
 pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
@@ -881,7 +894,13 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         }
     }
 }
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: assembles every capability for one source Node beside its structural loader.
+/// Invariants: source visibility, generic applications, and configured recipes remain mutually consistent.
+/// Phases: renders loader and views, parse applications, traits, diagrams, and Explorer adapters.
 pub(super) fn render_node(
     plan: &EmissionPlan,
     node: &NodeParsePlan,

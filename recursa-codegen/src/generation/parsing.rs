@@ -24,266 +24,399 @@ mod tests {
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen node parse plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct NodeParsePlan {
+    /// Node associated with this value.
     pub(super) node: NodeId,
+    /// Semantic key associated with this value.
     pub(super) semantic_key: String,
+    /// Module associated with this value.
     pub(super) module: ModuleId,
+    /// Ident associated with this value.
     pub(super) ident: Ident,
+    /// Visibility associated with this value.
     pub(super) visibility: Visibility,
+    /// Publicly materialized associated with this value.
     pub(super) publicly_materialized: bool,
+    /// Loader anchor associated with this value.
     pub(super) loader_anchor: String,
+    /// Generics associated with this value.
     pub(super) generics: Generics,
+    /// Input lifetime associated with this value.
     pub(super) input_lifetime: syn::Lifetime,
+    /// Body associated with this value.
     pub(super) body: NodeBodyPlan,
+    /// Parse applications associated with this value.
     pub(super) parse_applications: Vec<NodeApplicationParsePlan>,
+    /// Capture associated with this value.
     pub(super) capture: PlannedCapturePolicy,
+    /// Configured traits associated with this value.
     pub(super) configured_traits: Vec<ConfiguredTraitRecipe>,
+    /// Explorer visit configured associated with this value.
     pub(super) explorer_visit_configured: bool,
+    /// Pretty associated with this value.
     pub(super) pretty: PrettyHints,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen node application parse plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct NodeApplicationParsePlan {
+    /// Application associated with this value.
     pub(super) application: MaterializedApplicationId,
+    /// Node associated with this value.
     pub(super) node: NodeId,
+    /// Parse index associated with this value.
     pub(super) parse_index: usize,
+    /// Ty associated with this value.
     pub(super) ty: Type,
+    /// Static ty associated with this value.
     pub(super) static_ty: Type,
+    /// Body associated with this value.
     pub(super) body: NodeBodyPlan,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen node body plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) enum NodeBodyPlan {
+    /// The `Struct` case of this parsing contract.
     Struct {
+        /// Style associated with this value.
         style: ResolvedFieldStyle,
+        /// Elements associated with this value.
         elements: Vec<ElementParsePlan>,
     },
+    /// The `Enum` case of this parsing contract.
     Enum {
+        /// Variants associated with this value.
         variants: Vec<VariantParsePlan>,
+        /// Dispatch associated with this value.
         dispatch: PredictiveDispatchPlan,
     },
+    /// The `Pratt` case of this parsing contract.
     Pratt(Box<PrattParsePlan>),
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pratt parse plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct PrattParsePlan {
+    /// Expected nud count associated with this value.
     pub(super) expected_nud_count: usize,
+    /// Expected led count associated with this value.
     pub(super) expected_led_count: usize,
+    /// Nud associated with this value.
     pub(super) nud: Vec<PrattNudParsePlan>,
+    /// Led associated with this value.
     pub(super) led: Vec<PrattLedParsePlan>,
+    /// Nud dispatch associated with this value.
     pub(super) nud_dispatch: PredictiveDispatchPlan,
+    /// Led dispatch associated with this value.
     pub(super) led_dispatch: Option<PredictiveDispatchPlan>,
+    /// Nud failure associated with this value.
     pub(super) nud_failure: PlannedFollow,
+    /// Nud selection follow associated with this value.
     pub(super) nud_selection_follow: ExpectedSet,
+    /// Caller follow guard associated with this value.
     pub(super) caller_follow_guard: Option<Vec<PrattGuardBranchPlan>>,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pratt nud parse plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct PrattNudParsePlan {
+    /// Source index associated with this value.
     pub(super) source_index: usize,
+    /// Variant associated with this value.
     pub(super) variant: VariantParsePlan,
+    /// Position associated with this value.
     pub(super) position: PrattPosition,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pratt led parse plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct PrattLedParsePlan {
+    /// Source index associated with this value.
     pub(super) source_index: usize,
+    /// Variant associated with this value.
     pub(super) variant: VariantParsePlan,
+    /// Lhs associated with this value.
     pub(super) lhs: ElementParsePlan,
+    /// Position associated with this value.
     pub(super) position: PrattPosition,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pratt guard branch plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct PrattGuardBranchPlan {
+    /// Position associated with this value.
     pub(super) position: PrattPosition,
+    /// Expected associated with this value.
     pub(super) expected: ExpectedSet,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen variant parse plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct VariantParsePlan {
+    /// Resolved variant associated with this value.
     pub(super) resolved_variant: ResolvedVariantId,
+    /// Ident associated with this value.
     pub(super) ident: Ident,
+    /// Style associated with this value.
     pub(super) style: ResolvedFieldStyle,
+    /// Elements associated with this value.
     pub(super) elements: Vec<ElementParsePlan>,
+    /// Capture associated with this value.
     pub(super) capture: Option<PlannedCapturePolicy>,
+    /// Pretty associated with this value.
     pub(super) pretty: PrettyHints,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen predictive dispatch plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct PredictiveDispatchPlan {
+    /// Root associated with this value.
     pub(super) root: DispatchTrieNodePlan,
+    /// Frozen sequence count associated with this value.
     pub(super) frozen_sequence_count: usize,
+    /// Frozen node count associated with this value.
     pub(super) frozen_node_count: usize,
+    /// Frozen identity associated with this value.
     pub(super) frozen_identity: u64,
 }
 
 #[derive(Clone, Debug, Default)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen dispatch trie node plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct DispatchTrieNodePlan {
+    /// Target associated with this value.
     pub(super) target: Option<DispatchTargetPlan>,
+    /// Edges associated with this value.
     pub(super) edges: Vec<DispatchTrieEdgePlan>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen dispatch target plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct DispatchTargetPlan {
+    /// Variant associated with this value.
     pub(super) variant: usize,
+    /// On caller follow associated with this value.
     pub(super) on_caller_follow: bool,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen dispatch trie edge plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct DispatchTrieEdgePlan {
+    /// Position associated with this value.
     pub(super) position: DispatchPositionPlan,
+    /// Next associated with this value.
     pub(super) next: DispatchTrieNodePlan,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen dispatch position plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct DispatchPositionPlan {
+    /// Expected associated with this value.
     pub(super) expected: ExpectedSet,
+    /// Text predicate associated with this value.
     pub(super) text_predicate: Option<PlannedTextPredicate>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen planned text predicate data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) enum PlannedTextPredicate {
+    /// The `Any` case of this parsing contract.
     Any,
+    /// The `Exact` case of this parsing contract.
     Exact(String),
+    /// The `OneOf` case of this parsing contract.
     OneOf(Vec<String>),
+    /// The `NotIn` case of this parsing contract.
     NotIn(Vec<String>),
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen element parse plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct ElementParsePlan {
+    /// Explorer source associated with this value.
     pub(super) explorer_source: ExplorerElementSource,
+    /// Metadata name associated with this value.
     pub(super) metadata_name: String,
+    /// Kind associated with this value.
     pub(super) kind: ElementParseKind,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen fixed attachment parse plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct FixedAttachmentParsePlan {
+    /// Before associated with this value.
     pub(super) before: Vec<AttachedFixedParsePlan>,
+    /// Semantic associated with this value.
     pub(super) semantic: Box<PlannedContainer>,
+    /// After associated with this value.
     pub(super) after: Vec<AttachedFixedParsePlan>,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen attached fixed parse plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct AttachedFixedParsePlan {
+    /// Expected associated with this value.
     pub(super) expected: ExpectedSet,
+    /// Capture associated with this value.
     pub(super) capture: PlannedCapturePolicy,
+    /// Spelling associated with this value.
     pub(super) spelling: String,
+    /// Spacing associated with this value.
     pub(super) spacing: PrettySpacing,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen element parse kind data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) enum ElementParseKind {
+    /// The `Fixed` case of this parsing contract.
     Fixed {
         #[cfg_attr(not(feature = "explorer"), allow(dead_code))]
+        /// Kind associated with this value.
         kind: u16,
+        /// Expected associated with this value.
         expected: ExpectedSet,
+        /// Capture associated with this value.
         capture: PlannedCapturePolicy,
+        /// Spelling associated with this value.
         spelling: String,
+        /// Spacing associated with this value.
         spacing: PrettySpacing,
+        /// Accessor associated with this value.
         accessor: Ident,
     },
+    /// The `Semantic` case of this parsing contract.
     Semantic {
+        /// Field associated with this value.
         field: FieldPlan,
+        /// Terminal associated with this value.
         terminal: Box<Type>,
+        /// Terminal node associated with this value.
         terminal_node: Option<NodeId>,
+        /// Terminal application associated with this value.
         terminal_application: Option<MaterializedApplicationId>,
+        /// Explorer terminal associated with this value.
         explorer_terminal: ExplorerTerminalPlan,
+        /// Wrappers associated with this value.
         wrappers: Vec<FieldWrapper>,
+        /// Container associated with this value.
         container: Box<PlannedContainer>,
+        /// Capture associated with this value.
         capture: PlannedCapturePolicy,
+        /// Child capture associated with this value.
         child_capture: PlannedCapturePolicy,
+        /// Pratt min bp associated with this value.
         pratt_min_bp: Option<u8>,
+        /// Separator associated with this value.
         separator: Option<String>,
+        /// Attachment associated with this value.
         attachment: Option<Box<FixedAttachmentParsePlan>>,
+        /// Opaque provenance associated with this value.
         opaque_provenance: bool,
+        /// Repetition break associated with this value.
         repetition_break: PlannedRepetitionBreak,
+        /// Pretty associated with this value.
         pretty: PrettyHints,
     },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen planned repetition break data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) enum PlannedRepetitionBreak {
+    /// The `Soft` case of this parsing contract.
     Soft,
+    /// The `TopLevelStatement` case of this parsing contract.
     TopLevelStatement(MaterializedApplicationId),
+    /// The `TopLevelStatementFamily` case of this parsing contract.
     TopLevelStatementFamily(NodeId),
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen field plan data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct FieldPlan {
+    /// Ident associated with this value.
     pub(super) ident: Option<Ident>,
+    /// Index associated with this value.
     pub(super) index: usize,
+    /// Accessor associated with this value.
     pub(super) accessor: Option<Ident>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen field wrapper data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) enum FieldWrapper {
+    /// The `Boxed` case of this parsing contract.
     Boxed,
+    /// The `Optional` case of this parsing contract.
     Optional,
+    /// The `ZeroOrMore` case of this parsing contract.
     ZeroOrMore,
+    /// The `OneOrMore` case of this parsing contract.
     OneOrMore,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen planned container data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) enum PlannedContainer {
+    /// The `Direct` case of this parsing contract.
     Direct {
+        /// Child follow associated with this value.
         child_follow: PlannedFollow,
+        /// Required failure associated with this value.
         required_failure: PlannedFollow,
     },
+    /// The `Optional` case of this parsing contract.
     Optional {
+        /// Selector associated with this value.
         selector: ExpectedSet,
+        /// Child follow associated with this value.
         child_follow: PlannedFollow,
     },
+    /// The `Repeated` case of this parsing contract.
     Repeated {
+        /// Operation associated with this value.
         operation: ContainerOperation,
+        /// Element selector associated with this value.
         element_selector: ExpectedSet,
+        /// Separator selector associated with this value.
         separator_selector: Option<ExpectedSet>,
+        /// Optional trailing associated with this value.
         optional_trailing: bool,
+        /// Stop associated with this value.
         stop: PlannedFollow,
+        /// Child follow associated with this value.
         child_follow: PlannedFollow,
+        /// Minimum failure associated with this value.
         minimum_failure: Option<Box<PlannedFollow>>,
+        /// Continuation failure associated with this value.
         continuation_failure: Box<PlannedFollow>,
+        /// After separator failure associated with this value.
         after_separator_failure: Option<Box<PlannedFollow>>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen planned follow data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) enum PlannedFollow {
+    /// The `Caller` case of this parsing contract.
     Caller,
+    /// The `Static` case of this parsing contract.
     Static(ExpectedSet),
+    /// The `StaticAndCaller` case of this parsing contract.
     StaticAndCaller(ExpectedSet),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen expected set data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct ExpectedSet {
+    /// Words associated with this value.
     pub(super) words: Vec<u64>,
+    /// Atoms associated with this value.
     pub(super) atoms: Vec<u32>,
 }
 
 impl ExpectedSet {
+    /// Constructs the empty result.
     pub(super) fn empty(kind_count: usize) -> Self {
         Self {
             words: vec![0; kind_count.div_ceil(64)],
@@ -291,6 +424,7 @@ impl ExpectedSet {
         }
     }
 
+    /// Constructs the from kinds result.
     pub(super) fn from_kinds(kinds: &KindSet, kind_count: usize) -> Self {
         let mut words = kinds.words().to_vec();
         words.resize(kind_count.div_ceil(64), 0);
@@ -300,6 +434,7 @@ impl ExpectedSet {
         }
     }
 
+    /// Constructs the from positions result.
     pub(super) fn from_positions(
         positions: &[FirstPosition],
         grammar: &crate::GrammarDescription,
@@ -326,6 +461,7 @@ impl ExpectedSet {
         Ok(value)
     }
 
+    /// Returns the union assign value.
     pub(super) fn union_assign(&mut self, other: &Self) {
         for (left, right) in self.words.iter_mut().zip(&other.words) {
             *left |= *right;
@@ -334,12 +470,14 @@ impl ExpectedSet {
         self.atoms.sort_unstable();
         self.atoms.dedup();
     }
+    /// Reports whether empty.
     pub(super) fn is_empty(&self) -> bool {
         self.words.iter().all(|word| *word == 0) && self.atoms.is_empty()
     }
 }
 
 impl PrattParsePlan {
+    /// Returns the validate value.
     pub(super) fn validate(&self) -> Result<(), String> {
         if self.nud.len() != self.expected_nud_count || self.nud.is_empty() {
             return Err("the frozen Pratt plan lacks its complete nud dispatch family".to_owned());
@@ -417,15 +555,20 @@ impl PrattParsePlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen planned capture policy data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) enum PlannedCapturePolicy {
+    /// The `Inherited` case of this parsing contract.
     Inherited,
+    /// The `Off` case of this parsing contract.
     Off,
+    /// The `Optional` case of this parsing contract.
     Optional,
+    /// The `Mandatory` case of this parsing contract.
     Mandatory,
 }
 
 impl PlannedCapturePolicy {
+    /// Produces the deterministic name.
     pub(super) const fn canonical_name(self) -> &'static str {
         match self {
             Self::Inherited => "inherited",
@@ -435,6 +578,7 @@ impl PlannedCapturePolicy {
         }
     }
 
+    /// Returns the render value.
     pub(super) fn render(self, facade: &Ident) -> proc_macro2::TokenStream {
         match self {
             Self::Inherited => quote!(context.capture_policy()),
@@ -455,7 +599,7 @@ impl From<CaptureMode> for PlannedCapturePolicy {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds planned dispatch position from frozen inputs without changing canonical generation order.
 pub(super) fn planned_dispatch_position(
     position: &FirstPosition,
     grammar: &crate::GrammarDescription,
@@ -482,7 +626,7 @@ pub(super) fn planned_dispatch_position(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds plan predictive dispatch node from frozen inputs without changing canonical generation order.
 pub(super) fn plan_predictive_dispatch_node(
     frozen: &crate::DispatchTrieNode,
     variants: &[(crate::DeclId, usize)],
@@ -523,12 +667,12 @@ pub(super) fn plan_predictive_dispatch_node(
     Ok(DispatchTrieNodePlan { target, edges })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds predictive dispatch identity from frozen inputs without changing canonical generation order.
 pub(super) fn predictive_dispatch_identity(root: &DispatchTrieNodePlan) -> u64 {
     stable_hash(format!("{root:?}").as_bytes())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Validates validate predictive dispatch from frozen inputs without changing canonical generation order.
 pub(super) fn validate_predictive_dispatch(
     dispatch: &PredictiveDispatchPlan,
     variants: usize,
@@ -569,7 +713,13 @@ pub(super) fn validate_predictive_dispatch(
     Ok(count)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds plan node from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: joins one materialized Node application to frozen analysis decisions and authored capture facts.
+/// Invariants: no FIRST, FOLLOW, dispatch, or Pratt decision is rediscovered during generation.
+/// Phases: resolves source shape, plans applications and body, attaches traits, then validates names.
 pub(super) fn plan_node(
     node: &ResolvedNode,
     application: &MaterializedNodeApplication,
@@ -819,7 +969,13 @@ pub(super) fn plan_node(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds structural body from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: keeps structural loader shape correlated with source declarations and normalized identities.
+/// Invariants: each loader key and location refers to the selected module inclusion.
+/// Phases: projects declaration metadata, body shape, applications, and configured recipes.
 pub(super) fn structural_body(
     node: &ResolvedNode,
     source_node: &SourceNode,
@@ -954,7 +1110,7 @@ pub(super) fn structural_body(
     Ok(body)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds empty declaration dispatch from frozen inputs without changing canonical generation order.
 pub(super) fn empty_declaration_dispatch() -> PredictiveDispatchPlan {
     let root = DispatchTrieNodePlan::default();
     PredictiveDispatchPlan {
@@ -965,7 +1121,13 @@ pub(super) fn empty_declaration_dispatch() -> PredictiveDispatchPlan {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds declaration elements from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: freezes declaration-local loader and visibility facts before render.
+/// Invariants: selected-root anchors and semantic keys remain source-relative and deterministic.
+/// Phases: resolves inclusion, derives loader anchors, then records generic and visibility facts.
 pub(super) fn declaration_elements(
     node: &ResolvedNode,
     variant: Option<(
@@ -1134,7 +1296,7 @@ pub(super) fn declaration_elements(
         .collect()
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds declaration fixed attachment from frozen inputs without changing canonical generation order.
 pub(super) fn declaration_fixed_attachment(
     attachment: &crate::source_model::FixedTokenAttachment,
     lowered: &crate::materialization::LoweredGrammar,
@@ -1172,7 +1334,7 @@ pub(super) fn declaration_fixed_attachment(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds declaration explorer terminal from frozen inputs without changing canonical generation order.
 pub(super) fn declaration_explorer_terminal(
     lowered: &crate::materialization::LoweredGrammar,
     node: NodeId,
@@ -1209,7 +1371,7 @@ pub(super) fn declaration_explorer_terminal(
         .ok_or_else(|| "an authored explorer field lacks a materialized terminal".to_owned())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds declaration container operation from frozen inputs without changing canonical generation order.
 pub(super) fn declaration_container_operation(wrappers: &[FieldWrapper]) -> ContainerOperation {
     let repetition = wrappers
         .iter()
@@ -1236,7 +1398,7 @@ pub(super) fn declaration_container_operation(wrappers: &[FieldWrapper]) -> Cont
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds declaration container from frozen inputs without changing canonical generation order.
 pub(super) fn declaration_container(
     operation: ContainerOperation,
     has_separator: bool,
@@ -1269,21 +1431,26 @@ pub(super) fn declaration_container(
 }
 
 #[derive(Clone)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen authored projection data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct AuthoredProjection {
+    /// Terminal associated with this value.
     pub(super) terminal: Type,
+    /// Terminal node associated with this value.
     pub(super) terminal_node: Option<NodeId>,
+    /// Wrappers associated with this value.
     pub(super) wrappers: Vec<FieldWrapper>,
 }
 
 #[derive(Clone, Default)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen authored bindings data owned by the parsing boundary; declaration order remains deterministic.
 pub(super) struct AuthoredBindings {
+    /// Types associated with this value.
     pub(super) types: BTreeMap<GenericParameterId, ResolvedType>,
+    /// Lifetimes associated with this value.
     pub(super) lifetimes: BTreeMap<String, syn::Lifetime>,
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authored type depends on node generics from frozen inputs without changing canonical generation order.
 pub(super) fn authored_type_depends_on_node_generics(
     ty: &ResolvedType,
     node: &ResolvedNode,
@@ -1325,7 +1492,7 @@ pub(super) fn authored_type_depends_on_node_generics(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authored projection from frozen inputs without changing canonical generation order.
 pub(super) fn authored_projection(
     ty: &ResolvedType,
     resolved: &ResolvedSourceGrammar,
@@ -1338,7 +1505,13 @@ pub(super) fn authored_projection(
     )
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authored projection with from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: projects one materialized body back into authored grammar-element order.
+/// Invariants: fixed tokens and semantic fields retain exact source correlations.
+/// Phases: indexes lowering correlations, walks authored elements, then validates complete coverage.
 pub(super) fn authored_projection_with(
     ty: &ResolvedType,
     resolved: &ResolvedSourceGrammar,
@@ -1505,7 +1678,7 @@ pub(super) fn authored_projection_with(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authored open type from frozen inputs without changing canonical generation order.
 pub(super) fn authored_open_type(
     ty: &ResolvedType,
     resolved: &ResolvedSourceGrammar,
@@ -1521,7 +1694,7 @@ pub(super) fn authored_open_type(
     ))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authored node type from frozen inputs without changing canonical generation order.
 pub(super) fn authored_node_type(
     node_id: NodeId,
     use_site: crate::resolution::SemanticUseId,
@@ -1581,7 +1754,7 @@ pub(super) fn authored_node_type(
     Ok(Type::Path(syn::TypePath { qself: None, path }))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds for each element from frozen inputs without changing canonical generation order.
 pub(super) fn for_each_element(body: &NodeBodyPlan, visit: &mut impl FnMut(&ElementParsePlan)) {
     match body {
         NodeBodyPlan::Struct { elements, .. } => elements.iter().for_each(visit),
@@ -1601,7 +1774,7 @@ pub(super) fn for_each_element(body: &NodeBodyPlan, visit: &mut impl FnMut(&Elem
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds disambiguate fixed accessors from frozen inputs without changing canonical generation order.
 pub(super) fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<(), String> {
     let mut counts = BTreeMap::<String, usize>::new();
     for_each_element(body, &mut |element| {
@@ -1689,7 +1862,13 @@ pub(super) fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<()
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds plan pratt node from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: constructs the executable Pratt plan from frozen nud, led, binding-power, and failure products.
+/// Invariants: led recursion is the only recursive path and every branch consumes authoritative analysis.
+/// Phases: plans nud alternatives, led variants, operands and failures, then validates coverage.
 pub(super) fn plan_pratt_node(
     node: &ResolvedNode,
     application: &MaterializedNodeApplication,
@@ -1969,7 +2148,7 @@ pub(super) fn plan_pratt_node(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds plan joined dispatch from frozen inputs without changing canonical generation order.
 pub(super) fn plan_joined_dispatch(
     dispatch: &crate::DispatchPlan,
     variants: &[(crate::DeclId, usize)],
@@ -1997,7 +2176,7 @@ pub(super) fn plan_joined_dispatch(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Validates validate pratt position from frozen inputs without changing canonical generation order.
 pub(super) fn validate_pratt_position(
     position: Option<PrattPosition>,
     variant: &MaterializedPrattNud,
@@ -2013,7 +2192,7 @@ pub(super) fn validate_pratt_position(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Validates validate pratt led position from frozen inputs without changing canonical generation order.
 pub(super) fn validate_pratt_led_position(
     position: Option<PrattPosition>,
     variant: &MaterializedPrattLed,
@@ -2029,7 +2208,7 @@ pub(super) fn validate_pratt_led_position(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds plan pratt lhs from frozen inputs without changing canonical generation order.
 pub(super) fn plan_pratt_lhs(
     node: &ResolvedNode,
     resolved_variant: &crate::resolution::ResolvedNodeVariant,
@@ -2096,7 +2275,13 @@ pub(super) fn plan_pratt_lhs(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds plan elements from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: plans a source-ordered element sequence as one capture and provenance unit.
+/// Invariants: container wrappers, attachments, FOLLOW recipes, and cursor widths remain aligned.
+/// Phases: correlates sites, plans semantic/fixed elements, attaches separators, then computes layout.
 pub(super) fn plan_elements(
     node: &ResolvedNode,
     variant: Option<&MaterializedVariant>,
@@ -2354,7 +2539,7 @@ pub(super) fn plan_elements(
         .collect()
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds parse site targets from frozen inputs without changing canonical generation order.
 pub(super) fn parse_site_targets(
     grammar: &crate::GrammarDescription,
     site: SiteId,
@@ -2373,7 +2558,7 @@ pub(super) fn parse_site_targets(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds plan fixed attachment from frozen inputs without changing canonical generation order.
 pub(super) fn plan_fixed_attachment(
     field: &crate::resolution::ResolvedNodeField,
     attachment: &MaterializedFixedAttachment,
@@ -2457,7 +2642,7 @@ pub(super) fn plan_fixed_attachment(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds planned pratt extenders from frozen inputs without changing canonical generation order.
 pub(super) fn planned_pratt_extenders(
     decisions: &crate::DecisionProducts,
     owner: crate::TypeId,
@@ -2484,7 +2669,7 @@ pub(super) fn planned_pratt_extenders(
     ExpectedSet::from_positions(&first, grammar, kind_count)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds terminal node capture from frozen inputs without changing canonical generation order.
 pub(super) fn terminal_node_capture(
     ty: &ClosedType,
     lowered: &crate::materialization::LoweredGrammar,
@@ -2509,7 +2694,7 @@ pub(super) fn terminal_node_capture(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds diagram terminal name from frozen inputs without changing canonical generation order.
 pub(super) fn diagram_terminal_name(
     ty: &ClosedType,
     lowered: &crate::materialization::LoweredGrammar,
@@ -2536,7 +2721,7 @@ pub(super) fn diagram_terminal_name(
 }
 
 #[cfg(feature = "diagrams")]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds diagram separator spelling from frozen inputs without changing canonical generation order.
 pub(super) fn diagram_separator_spelling(
     separator: Option<&crate::source_model::Separator>,
     lowered: &crate::materialization::LoweredGrammar,
@@ -2559,7 +2744,7 @@ pub(super) fn diagram_separator_spelling(
     Ok(Some(fixed.spelling.clone()))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds fixed element name from frozen inputs without changing canonical generation order.
 pub(super) fn fixed_element_name(
     node: &ResolvedNode,
     token_use: &crate::source_model::TokenUse,
@@ -2579,7 +2764,7 @@ pub(super) fn fixed_element_name(
         })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds fixed element field from frozen inputs without changing canonical generation order.
 pub(super) fn fixed_element_field<'node>(
     node: &'node ResolvedNode,
     token_use: &crate::source_model::TokenUse,
@@ -2592,7 +2777,7 @@ pub(super) fn fixed_element_field<'node>(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds field wrappers from frozen inputs without changing canonical generation order.
 pub(super) fn field_wrappers(ty: &ClosedType) -> Result<Vec<FieldWrapper>, String> {
     fn walk(ty: &ClosedType, output: &mut Vec<FieldWrapper>) {
         match ty {
@@ -2620,7 +2805,7 @@ pub(super) fn field_wrappers(ty: &ClosedType) -> Result<Vec<FieldWrapper>, Strin
     Ok(wrappers)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds explorer terminal from frozen inputs without changing canonical generation order.
 pub(super) fn explorer_terminal(ty: &ClosedType) -> Result<ExplorerTerminalPlan, String> {
     match ty {
         ClosedType::Node(node) => Ok(ExplorerTerminalPlan::Node(node.application)),
@@ -2632,7 +2817,7 @@ pub(super) fn explorer_terminal(ty: &ClosedType) -> Result<ExplorerTerminalPlan,
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Validates validate container wrappers from frozen inputs without changing canonical generation order.
 pub(super) fn validate_container_wrappers(
     operation: ContainerOperation,
     wrappers: &[FieldWrapper],
@@ -2670,7 +2855,7 @@ pub(super) fn validate_container_wrappers(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds planned container from frozen inputs without changing canonical generation order.
 pub(super) fn planned_container(
     machine: &crate::ContainerMachine,
     decisions: &crate::DecisionProducts,
@@ -2759,7 +2944,7 @@ pub(super) fn planned_container(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds planned failure edge from frozen inputs without changing canonical generation order.
 pub(super) fn planned_failure_edge(
     decisions: &crate::DecisionProducts,
     site: SiteId,
@@ -2780,7 +2965,7 @@ pub(super) fn planned_failure_edge(
     planned_expected_recipe(edge.expected(), grammar, kind_count)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds planned expected recipe from frozen inputs without changing canonical generation order.
 pub(super) fn planned_expected_recipe(
     expected: &ExpectedRecipe,
     grammar: &crate::GrammarDescription,
@@ -2802,7 +2987,7 @@ pub(super) fn planned_expected_recipe(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds terminal type from frozen inputs without changing canonical generation order.
 pub(super) fn terminal_type(
     closed: &ClosedType,
     lowered: &crate::materialization::LoweredGrammar,
@@ -2844,7 +3029,7 @@ pub(super) fn terminal_type(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds closed terminal application from frozen inputs without changing canonical generation order.
 pub(super) fn closed_terminal_application(
     closed: &ClosedType,
 ) -> Option<MaterializedApplicationId> {
@@ -2858,7 +3043,7 @@ pub(super) fn closed_terminal_application(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds materialized application type from frozen inputs without changing canonical generation order.
 pub(super) fn materialized_application_type(
     application: &MaterializedNodeApplication,
     lifetimes: &[syn::Lifetime],
@@ -2926,7 +3111,7 @@ pub(super) fn materialized_application_type(
     Ok(Type::Path(syn::TypePath { qself: None, path }))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds closed type from frozen inputs without changing canonical generation order.
 pub(super) fn closed_type(
     closed: &ClosedType,
     lowered: &crate::materialization::LoweredGrammar,
@@ -2956,7 +3141,7 @@ pub(super) fn closed_type(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds planned follow from frozen inputs without changing canonical generation order.
 pub(super) fn planned_follow(
     recipe: &FollowRecipe,
     grammar: &crate::GrammarDescription,
@@ -2973,7 +3158,7 @@ pub(super) fn planned_follow(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds follow with static from frozen inputs without changing canonical generation order.
 pub(super) fn follow_with_static(
     follow: &PlannedFollow,
     additional: &ExpectedSet,
@@ -2993,7 +3178,7 @@ pub(super) fn follow_with_static(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node parse body from frozen inputs without changing canonical generation order.
 pub(super) fn render_node_parse_body(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -3020,7 +3205,13 @@ pub(super) fn render_node_parse_body(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render predictive dispatch from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: emits the validated decision trie without rebuilding lookahead semantics.
+/// Invariants: edge order, text predicates, and failure expectations match the frozen plan.
+/// Phases: renders lookahead acquisition, trie branching, selected variant, and failure path.
 pub(super) fn render_predictive_dispatch(
     plan: &EmissionPlan,
     node_index: usize,
@@ -3123,7 +3314,7 @@ pub(super) fn render_predictive_dispatch(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render dispatch position match from frozen inputs without changing canonical generation order.
 pub(super) fn render_dispatch_position_match(
     plan: &EmissionPlan,
     expected: &Ident,
@@ -3164,7 +3355,7 @@ pub(super) fn render_dispatch_position_match(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render predictive selection from frozen inputs without changing canonical generation order.
 pub(super) fn render_predictive_selection(
     plan: &EmissionPlan,
     node_index: usize,
@@ -3224,7 +3415,13 @@ pub(super) fn render_predictive_selection(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pratt parse from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: emits Pratt control flow from the complete immutable Pratt plan.
+/// Invariants: binding powers, FOLLOW handoff, and typed lhs replacement preserve the analyzed grammar.
+/// Phases: parses nud, loops over eligible led branches, then returns the accumulated lhs.
 pub(super) fn render_pratt_parse(
     plan: &EmissionPlan,
     node_index: usize,
@@ -3374,7 +3571,7 @@ pub(super) fn render_pratt_parse(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pratt led lbp from frozen inputs without changing canonical generation order.
 pub(super) fn pratt_led_lbp(position: PrattPosition) -> u8 {
     match position {
         PrattPosition::Infix { lbp, .. } => lbp,
@@ -3385,7 +3582,13 @@ pub(super) fn pratt_led_lbp(position: PrattPosition) -> u8 {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pratt led parse from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: renders one led branch with its authoritative attachment and operand thresholds.
+/// Invariants: lhs consumption and recursive operand binding power match the selected variant.
+/// Phases: binds lhs, parses attachments and operands, constructs the variant, then advances provenance.
 pub(super) fn render_pratt_led_parse(
     plan: &EmissionPlan,
     node_index: usize,
@@ -3490,7 +3693,7 @@ pub(super) fn render_pratt_led_parse(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render sequence parse from frozen inputs without changing canonical generation order.
 pub(super) fn render_sequence_parse(
     plan: &EmissionPlan,
     node_index: usize,
@@ -3583,7 +3786,13 @@ pub(super) fn render_sequence_parse(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render semantic parse from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: renders a semantic grammar element and its declared container operations together.
+/// Invariants: caller FOLLOW is threaded only where the frozen recipe requires it.
+/// Phases: selects terminal parse entry, applies wrappers, captures provenance, then reports the value.
 pub(super) fn render_semantic_parse(
     plan: &EmissionPlan,
     node_index: usize,
@@ -3757,7 +3966,13 @@ pub(super) fn render_semantic_parse(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render attachment child from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: renders fixed attachments adjacent to their owning semantic occurrence.
+/// Invariants: attachment order, optional presence, and span accounting match the parse plan.
+/// Phases: matches fixed tokens, records provenance, then returns the child expression.
 pub(super) fn render_attachment_child(
     plan: &EmissionPlan,
     node_index: usize,
@@ -3880,7 +4095,13 @@ pub(super) fn render_attachment_child(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render repeated parse from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: renders repeated parsing as one loop because separator and FOLLOW state are interdependent.
+/// Invariants: minimum cardinality, separator policy, and caller FOLLOW remain explicit.
+/// Phases: parses the first item when required, loops over separators/items, then builds the declared container.
 pub(super) fn render_repeated_parse(
     plan: &EmissionPlan,
     node_index: usize,
@@ -4097,7 +4318,7 @@ pub(super) fn render_repeated_parse(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render follow value from frozen inputs without changing canonical generation order.
 pub(super) fn render_follow_value(
     plan: &EmissionPlan,
     name: &Ident,
@@ -4132,7 +4353,7 @@ pub(super) fn render_follow_value(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render construction from frozen inputs without changing canonical generation order.
 pub(super) fn render_construction(
     variant: Option<&Ident>,
     style: ResolvedFieldStyle,
@@ -4160,7 +4381,7 @@ pub(super) fn render_construction(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render wrapped value from frozen inputs without changing canonical generation order.
 pub(super) fn render_wrapped_value(
     value: proc_macro2::TokenStream,
     wrappers: &[FieldWrapper],
@@ -4177,7 +4398,7 @@ pub(super) fn render_wrapped_value(
         })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render absent value from frozen inputs without changing canonical generation order.
 pub(super) fn render_absent_value(wrappers: &[FieldWrapper]) -> proc_macro2::TokenStream {
     let optional = wrappers
         .iter()
@@ -4195,7 +4416,7 @@ pub(super) fn render_absent_value(wrappers: &[FieldWrapper]) -> proc_macro2::Tok
         })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render wrapped type from frozen inputs without changing canonical generation order.
 pub(super) fn render_wrapped_type(
     facade: &Ident,
     terminal: &Type,
@@ -4212,7 +4433,7 @@ pub(super) fn render_wrapped_type(
         })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render terminal reference from frozen inputs without changing canonical generation order.
 pub(super) fn render_terminal_reference(
     value: proc_macro2::TokenStream,
     wrappers: &[FieldWrapper],
@@ -4236,7 +4457,7 @@ pub(super) fn render_terminal_reference(
         })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render optional view reference from frozen inputs without changing canonical generation order.
 pub(super) fn render_optional_view_reference(
     value: proc_macro2::TokenStream,
     wrappers: &[FieldWrapper],
@@ -4270,7 +4491,7 @@ pub(super) fn render_optional_view_reference(
     reference
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds field access from frozen inputs without changing canonical generation order.
 pub(super) fn field_access(
     base: proc_macro2::TokenStream,
     ident: Option<&Ident>,
@@ -4285,7 +4506,7 @@ pub(super) fn field_access(
     )
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds field binding pattern from frozen inputs without changing canonical generation order.
 pub(super) fn field_binding_pattern(
     node: &Ident,
     variant: &Ident,
@@ -4307,7 +4528,7 @@ pub(super) fn field_binding_pattern(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds variant pattern from frozen inputs without changing canonical generation order.
 pub(super) fn variant_pattern(
     node: &Ident,
     variant: &Ident,
@@ -4320,7 +4541,7 @@ pub(super) fn variant_pattern(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render expected static from frozen inputs without changing canonical generation order.
 pub(super) fn render_expected_static(
     name: &Ident,
     expected: &ExpectedSet,
@@ -4342,7 +4563,7 @@ pub(super) fn render_expected_static(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds metadata static from frozen inputs without changing canonical generation order.
 pub(super) fn metadata_static(node: usize, variant: Option<usize>) -> Ident {
     variant.map_or_else(
         || format_ident!("__RECURSA_ELEMENTS_{node}"),
@@ -4350,11 +4571,11 @@ pub(super) fn metadata_static(node: usize, variant: Option<usize>) -> Ident {
     )
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds expected static from frozen inputs without changing canonical generation order.
 pub(super) fn expected_static(node: usize, element: usize, role: &str) -> Ident {
     format_ident!("__RECURSA_{}_{}_{}", role.to_uppercase(), node, element)
 }
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node parse application from frozen inputs without changing canonical generation order.
 pub(super) fn render_node_parse_application(
     plan: &EmissionPlan,
     node: &NodeParsePlan,

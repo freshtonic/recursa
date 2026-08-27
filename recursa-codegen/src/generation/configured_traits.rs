@@ -15,7 +15,7 @@ mod tests {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node configured traits from frozen inputs without changing canonical generation order.
 pub(super) fn render_node_configured_traits(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -68,7 +68,7 @@ pub(super) fn render_node_configured_traits(
     quote!(#(#implementations)*)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds trait impl parts from frozen inputs without changing canonical generation order.
 pub(super) fn trait_impl_parts(
     facade: &Ident,
     node: &NodeParsePlan,
@@ -93,7 +93,7 @@ pub(super) fn trait_impl_parts(
     )
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty impl parts from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_impl_parts(
     facade: &Ident,
     node: &NodeParsePlan,
@@ -140,7 +140,7 @@ pub(super) fn pretty_impl_parts(
     )
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds type depends on node type parameters from frozen inputs without changing canonical generation order.
 pub(super) fn type_depends_on_node_type_parameters(ty: &Type, node: &NodeParsePlan) -> bool {
     let candidates = node
         .generics
@@ -151,8 +151,11 @@ pub(super) fn type_depends_on_node_type_parameters(ty: &Type, node: &NodeParsePl
         return false;
     }
 
+    /// Detects references to the Node's declared type parameters.
     struct DependencyVisitor<'a> {
+        /// Candidate generic parameter names.
         candidates: &'a BTreeSet<String>,
+        /// Whether a candidate has been observed.
         depends: bool,
     }
 
@@ -177,7 +180,7 @@ pub(super) fn type_depends_on_node_type_parameters(ty: &Type, node: &NodeParsePl
     visitor.depends
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds attachment pretty terminal from frozen inputs without changing canonical generation order.
 pub(super) fn attachment_pretty_terminal(
     node: &NodeParsePlan,
     element: &ElementParsePlan,
@@ -193,7 +196,7 @@ pub(super) fn attachment_pretty_terminal(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node standard trait from frozen inputs without changing canonical generation order.
 pub(super) fn render_node_standard_trait(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -275,7 +278,7 @@ pub(super) fn render_node_standard_trait(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds semantic fields from frozen inputs without changing canonical generation order.
 pub(super) fn semantic_fields(elements: &[ElementParsePlan]) -> Vec<&FieldPlan> {
     elements
         .iter()
@@ -286,7 +289,7 @@ pub(super) fn semantic_fields(elements: &[ElementParsePlan]) -> Vec<&FieldPlan> 
         .collect()
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds trait variants from frozen inputs without changing canonical generation order.
 pub(super) fn trait_variants(body: &NodeBodyPlan) -> Vec<VariantParsePlan> {
     match body {
         NodeBodyPlan::Enum { variants, .. } => variants.clone(),
@@ -308,7 +311,7 @@ pub(super) fn trait_variants(body: &NodeBodyPlan) -> Vec<VariantParsePlan> {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render debug body from frozen inputs without changing canonical generation order.
 pub(super) fn render_debug_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
     let node_name = node.ident.unraw().to_string();
     match &node.body {
@@ -368,7 +371,7 @@ pub(super) fn render_debug_body(node: &NodeParsePlan) -> proc_macro2::TokenStrea
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds variant bound pattern from frozen inputs without changing canonical generation order.
 pub(super) fn variant_bound_pattern(
     node: &Ident,
     variant: &VariantParsePlan,
@@ -405,7 +408,7 @@ pub(super) fn variant_bound_pattern(
     (pattern, bindings)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render clone body from frozen inputs without changing canonical generation order.
 pub(super) fn render_clone_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
     match &node.body {
         NodeBodyPlan::Struct { style, elements } => {
@@ -453,7 +456,7 @@ pub(super) fn render_clone_body(node: &NodeParsePlan) -> proc_macro2::TokenStrea
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render partial eq body from frozen inputs without changing canonical generation order.
 pub(super) fn render_partial_eq_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
     match &node.body {
         NodeBodyPlan::Struct { elements, .. } => {
@@ -481,7 +484,7 @@ pub(super) fn render_partial_eq_body(node: &NodeParsePlan) -> proc_macro2::Token
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render order body from frozen inputs without changing canonical generation order.
 pub(super) fn render_order_body(node: &NodeParsePlan, partial: bool) -> proc_macro2::TokenStream {
     let compare_fields = |left: Vec<proc_macro2::TokenStream>,
                           right: Vec<proc_macro2::TokenStream>| {
@@ -564,7 +567,7 @@ pub(super) fn render_order_body(node: &NodeParsePlan, partial: bool) -> proc_mac
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render hash body from frozen inputs without changing canonical generation order.
 pub(super) fn render_hash_body(node: &NodeParsePlan) -> proc_macro2::TokenStream {
     match &node.body {
         NodeBodyPlan::Struct { elements, .. } => {
@@ -588,7 +591,7 @@ pub(super) fn render_hash_body(node: &NodeParsePlan) -> proc_macro2::TokenStream
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node arbitrary from frozen inputs without changing canonical generation order.
 pub(super) fn render_node_arbitrary(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -667,7 +670,13 @@ pub(super) fn render_node_arbitrary(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node serde from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: emits Serde as one recipe because bounds, helper shapes, and borrowed input must agree.
+/// Invariants: authored generics and source-borrowing lifetimes are preserved without widening the public API.
+/// Phases: derives helper bounds, renders serialization, then renders validated deserialization.
 pub(super) fn render_node_serde(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -830,7 +839,7 @@ pub(super) fn render_node_serde(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds add serde bounds from frozen inputs without changing canonical generation order.
 pub(super) fn add_serde_bounds(
     facade: &Ident,
     node: &NodeParsePlan,
@@ -848,7 +857,7 @@ pub(super) fn add_serde_bounds(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds serde generic dependencies from frozen inputs without changing canonical generation order.
 pub(super) fn serde_generic_dependencies(node: &NodeParsePlan) -> Vec<Type> {
     let candidates = node
         .generics
@@ -856,8 +865,11 @@ pub(super) fn serde_generic_dependencies(node: &NodeParsePlan) -> Vec<Type> {
         .map(|parameter| parameter.ident.unraw().to_string())
         .collect::<BTreeSet<_>>();
     let mut dependencies = BTreeSet::new();
+    /// Collects declared generic parameters reached by a Serde field type.
     struct DependencyVisitor<'a> {
+        /// Candidate generic parameter names.
         candidates: &'a BTreeSet<String>,
+        /// Canonical set of referenced generic parameter names.
         dependencies: &'a mut BTreeSet<String>,
     }
     impl<'ast> syn::visit::Visit<'ast> for DependencyVisitor<'_> {
@@ -896,7 +908,7 @@ pub(super) fn serde_generic_dependencies(node: &NodeParsePlan) -> Vec<Type> {
         .collect()
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds semantic field types from frozen inputs without changing canonical generation order.
 pub(super) fn semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<Type> {
     let elements = match &node.body {
         NodeBodyPlan::Struct { elements, .. } => elements.clone(),
@@ -919,7 +931,7 @@ pub(super) fn semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<
         .collect()
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds is recursive terminal from frozen inputs without changing canonical generation order.
 pub(super) fn is_recursive_terminal(node: &NodeParsePlan, terminal: &Type) -> bool {
     let Type::Path(terminal) = terminal else {
         return false;

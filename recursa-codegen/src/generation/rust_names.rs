@@ -22,7 +22,7 @@ mod tests {
     focused_case!(fixed_accessor_names_remain_valid_for_numeric_spellings);
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds generic arguments from frozen inputs without changing canonical generation order.
 pub(super) fn generic_arguments(generics: &Generics) -> Vec<proc_macro2::TokenStream> {
     generics
         .params
@@ -44,14 +44,14 @@ pub(super) fn generic_arguments(generics: &Generics) -> Vec<proc_macro2::TokenSt
         .collect()
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds emitted ident from frozen inputs without changing canonical generation order.
 pub(super) fn emitted_ident(name: &str) -> Result<Ident, String> {
     syn::parse_str::<Ident>(name)
         .or_else(|_| syn::parse_str::<Ident>(&format!("r#{name}")))
         .map_err(|error| format!("cannot emit Rust identifier `{name}`: {error}"))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds emitted crate path from frozen inputs without changing canonical generation order.
 pub(super) fn emitted_crate_path(segments: &[String]) -> Result<syn::Path, String> {
     let mut path: syn::Path = syn::parse_quote!(crate);
     for segment in segments {
@@ -61,7 +61,7 @@ pub(super) fn emitted_crate_path(segments: &[String]) -> Result<syn::Path, Strin
     Ok(path)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds sibling ident from frozen inputs without changing canonical generation order.
 pub(super) fn sibling_ident(ident: &Ident, suffix: &str) -> Ident {
     Ident::new(
         &format!("{}{suffix}", ident.unraw()),
@@ -69,7 +69,7 @@ pub(super) fn sibling_ident(ident: &Ident, suffix: &str) -> Ident {
     )
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds snake case from frozen inputs without changing canonical generation order.
 pub(super) fn snake_case(value: &str) -> String {
     if value
         .chars()
@@ -117,7 +117,7 @@ pub(super) fn snake_case(value: &str) -> String {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds source line column from frozen inputs without changing canonical generation order.
 pub(super) fn source_line_column(source: &str, byte_offset: u32) -> Result<(usize, usize), String> {
     let prefix = source
         .get(..byte_offset as usize)
@@ -132,7 +132,7 @@ pub(super) fn source_line_column(source: &str, byte_offset: u32) -> Result<(usiz
     Ok((line, column))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds normalized source identity from frozen inputs without changing canonical generation order.
 pub(super) fn normalized_source_identity(path: &Path) -> Result<String, String> {
     let mut segments = Vec::new();
     for component in path.components() {
@@ -154,7 +154,7 @@ pub(super) fn normalized_source_identity(path: &Path) -> Result<String, String> 
     Ok(segments.join("/"))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds declaration loader anchor from frozen inputs without changing canonical generation order.
 pub(super) fn declaration_loader_anchor(
     file: &str,
     line: usize,
@@ -165,7 +165,7 @@ pub(super) fn declaration_loader_anchor(
     format!("{:016x}", loader_anchor_hash(input.as_bytes()))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds loader anchor hash from frozen inputs without changing canonical generation order.
 pub(super) fn loader_anchor_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in bytes {
@@ -175,7 +175,7 @@ pub(super) fn loader_anchor_hash(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds stable hash from frozen inputs without changing canonical generation order.
 pub(super) fn stable_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf_29ce_4842_2325_u64;
     for byte in bytes {
