@@ -7,10 +7,63 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <main>
-    <h1>Recursa Explorer</h1>
-    <p>The local Explorer server is ready. The interactive interface lands in a later release.</p>
+  <header class="app-header">
+    <div><p class="eyebrow">Local grammar workspace</p><h1>Recursa Explorer</h1></div>
+    <p id="status" class="status" role="status" aria-live="polite">Connecting…</p>
+  </header>
+  <main class="workspace">
+    <section class="card source-card" aria-labelledby="source-heading">
+      <div class="card-heading">
+        <div><p class="eyebrow">Input</p><h2 id="source-heading">Source</h2></div>
+        <button id="parse-now" type="button">Parse now</button>
+      </div>
+      <div class="source-editor">
+        <pre id="source-overlay" aria-hidden="true"></pre>
+        <textarea id="source" aria-label="Grammar source" spellcheck="false" autocomplete="off"></textarea>
+      </div>
+      <p id="source-context" class="source-context" hidden>The synthetic sample has no source; the editor is retained only as your draft.</p>
+      <ol id="diagnostics" class="diagnostics" aria-label="Diagnostics"></ol>
+    </section>
+    <section class="card tree-card" aria-labelledby="tree-heading">
+      <div class="card-heading">
+        <div><p class="eyebrow">Parsed structure</p><h2 id="tree-heading">AST</h2></div>
+        <span id="provenance" class="badge" hidden></span>
+      </div>
+      <p id="tree-empty" class="empty">Enter valid source to inspect its tree.</p>
+      <div id="tree" class="tree" role="tree" aria-label="Explorer AST" hidden></div>
+    </section>
+    <aside class="inspector" aria-label="Explorer tools">
+      <section class="card" aria-labelledby="grammar-heading">
+        <p class="eyebrow">Static contract</p><h2 id="grammar-heading">Grammar</h2>
+        <div id="schema"></div>
+      </section>
+      <section id="pretty-panel" class="card" aria-labelledby="pretty-heading" hidden>
+        <div class="card-heading">
+          <div><p class="eyebrow">Capability</p><h2 id="pretty-heading">Pretty</h2></div>
+          <button id="pretty-run" type="button">Render</button>
+        </div>
+        <div class="settings-row">
+          <label>Width <input id="pretty-width" type="number" min="1" max="1000" value="80"></label>
+          <label>Indent <input id="pretty-indent" type="number" min="0" max="32" value="2"></label>
+        </div>
+        <pre id="pretty-output" class="pretty-output" tabindex="0" aria-label="Pretty output"></pre>
+        <button id="pretty-apply" type="button" disabled>Apply to source</button>
+      </section>
+      <section id="sample-panel" class="card" aria-labelledby="sample-heading" hidden>
+        <div class="card-heading">
+          <div><p class="eyebrow">Capability</p><h2 id="sample-heading">Sample</h2></div>
+          <button id="sample-run" type="button">Generate</button>
+        </div>
+        <label for="sample-seed">Hex seed</label>
+        <input id="sample-seed" class="seed" value="07111d2f43596d83" inputmode="text" spellcheck="false">
+        <p id="sample-error" class="field-error" role="alert"></p>
+      </section>
+    </aside>
   </main>
-  <script src="/app.js" defer></script>
+  <footer>
+    <span>Private matching-version protocol · loopback only</span>
+    <button id="shutdown" class="quiet" type="button">Stop Explorer</button>
+  </footer>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

@@ -111,6 +111,26 @@ cargo run -p recursa-example-pratt-expressions -- '-a! + 2 * 3 ^ 4'
 - [Pratt expressions](examples/pratt-expressions) covers atoms, grouping, and
   prefix, postfix, and infix operators with precedence and associativity.
 
+### Local Explorer
+
+Enable the `explorer` feature for both the facade and generator, add
+`recursa-explorer` to a small development binary, and launch the generated root
+adapter:
+
+```rust,ignore
+fn main() -> Result<(), recursa_explorer::RunError> {
+    recursa_explorer::run(grammar::Value::explorer())
+}
+```
+
+The bundled, dependency-free browser workspace edits and highlights source,
+shows strict diagnostics or a lazy recursive AST, links the deepest source span
+in both directions, inspects schema/tokens, and exposes Pretty and deterministic
+sampling only when configured. See the
+[`recursa-explorer` walkthrough](recursa-explorer/README.md#visual-walkthrough).
+It runs on an OS-assigned loopback port through a private matching-version
+protocol; it is not a remote playground.
+
 ## Capabilities
 
 The `recursa` facade has no default features. Optional features are:
@@ -126,9 +146,9 @@ Build-time `diagrams` and `explorer` generation also require the corresponding
 `recursa-codegen` feature. Configured generated capabilities must match the
 facade features used to compile the grammar.
 
-The Explorer adapter contracts exist today behind `recursa`'s `explorer`
-feature. The `recursa-explorer` package is reserved for the local launcher and
-browser UI; it does not provide those yet.
+The Explorer adapter contracts live behind `recursa`'s `explorer` feature. The
+supported `recursa-explorer` package serves the bundled local browser UI linked
+to those adapters.
 
 ## Workspace packages
 
@@ -139,7 +159,7 @@ browser UI; it does not provide those yet.
 | [`recursa-core`](recursa-core) | Grammar-erased runtime, parsed provenance, traversal, and Pretty support |
 | [`recursa-macros`](recursa-macros) | Matching-version structural loaders re-exported by the facade |
 | [`recursa-test`](recursa-test) | Reserved package; currently no public test harness |
-| [`recursa-explorer`](recursa-explorer) | Reserved package for the future local Explorer application |
+| [`recursa-explorer`](recursa-explorer) | Supported loopback launcher and bundled interactive Explorer UI |
 | [`recursa-example-json`](examples/json) | Compiled and runnable JSON example |
 | [`recursa-example-pratt-expressions`](examples/pratt-expressions) | Compiled and runnable Pratt-expression example |
 

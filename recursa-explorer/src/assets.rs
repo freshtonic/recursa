@@ -1,4 +1,4 @@
-//! Compile-time-owned placeholder assets served without filesystem access.
+//! Compile-time-owned Explorer application assets served without filesystem access.
 
 /// One immutable bundled response body and its media type.
 pub(super) struct Asset {
@@ -8,7 +8,7 @@ pub(super) struct Asset {
     pub(super) body: &'static [u8],
 }
 
-/// Resolves the small placeholder asset set by exact request path.
+/// Resolves the complete dependency-free application by exact request path.
 pub(super) fn get(path: &str) -> Option<Asset> {
     match path {
         "/" | "/index.html" => Some(Asset {
@@ -22,6 +22,26 @@ pub(super) fn get(path: &str) -> Option<Asset> {
         "/app.js" => Some(Asset {
             content_type: "text/javascript; charset=utf-8",
             body: include_bytes!("../assets/app.js"),
+        }),
+        "/api.js" => Some(Asset {
+            content_type: "text/javascript; charset=utf-8",
+            body: include_bytes!("../assets/api.js"),
+        }),
+        "/offsets.js" => Some(Asset {
+            content_type: "text/javascript; charset=utf-8",
+            body: include_bytes!("../assets/offsets.js"),
+        }),
+        "/model.js" => Some(Asset {
+            content_type: "text/javascript; charset=utf-8",
+            body: include_bytes!("../assets/model.js"),
+        }),
+        "/tree.js" => Some(Asset {
+            content_type: "text/javascript; charset=utf-8",
+            body: include_bytes!("../assets/tree.js"),
+        }),
+        "/views.js" => Some(Asset {
+            content_type: "text/javascript; charset=utf-8",
+            body: include_bytes!("../assets/views.js"),
         }),
         _ => None,
     }
