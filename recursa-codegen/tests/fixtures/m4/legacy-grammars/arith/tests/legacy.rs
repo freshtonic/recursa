@@ -99,6 +99,7 @@ fn prefix_minus_binds_tighter_than_mul() {
 
 #[test]
 fn rhs_can_have_prefix_minus() {
+    assert_eq!(shape(&parsed("1 * -2")), "mul(int:1,neg(int:2))");
     assert_eq!(shape(&parsed("1 + -2")), "add(int:1,neg(int:2))");
 }
 
