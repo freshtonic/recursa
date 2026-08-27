@@ -5,7 +5,7 @@
 
 use super::*;
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Validates validate accessor names from frozen inputs without changing canonical generation order.
 pub(super) fn validate_accessor_names(
     node: &ResolvedNode,
     body: &NodeBodyPlan,
@@ -59,7 +59,7 @@ pub(super) fn validate_accessor_names(
     Ok(())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render metadata from frozen inputs without changing canonical generation order.
 pub(super) fn render_metadata(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -108,7 +108,7 @@ pub(super) fn render_metadata(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render metadata entry from frozen inputs without changing canonical generation order.
 pub(super) fn render_metadata_entry(
     facade: &Ident,
     element: &ElementParsePlan,
@@ -121,7 +121,7 @@ pub(super) fn render_metadata_entry(
     quote!(#facade::__private::element_metadata(Some(#name), #role))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render span elements from frozen inputs without changing canonical generation order.
 pub(super) fn render_span_elements(
     node: &NodeParsePlan,
     node_index: usize,
@@ -161,7 +161,7 @@ pub(super) fn render_span_elements(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render accessors from frozen inputs without changing canonical generation order.
 pub(super) fn render_accessors(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -233,7 +233,13 @@ pub(super) fn render_accessors(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render accessor from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: renders authored and structural accessors from the same occurrence layout.
+/// Invariants: accessor names are prevalidated and every span cursor matches its source-order grammar element.
+/// Phases: binds the active shape, emits semantic accessors, then emits fixed-token spans.
 pub(super) fn render_accessor(
     facade: &Ident,
     self_type: &Type,
@@ -384,7 +390,13 @@ pub(super) fn render_accessor(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render repeated accessor from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: handles repeated occurrences centrally because wrappers and provenance advance together.
+/// Invariants: iteration order and optional/non-empty container semantics match the parse plan.
+/// Phases: unwraps containers, maps semantic values to occurrence cursors, then restores the declared wrapper.
 pub(super) fn render_repeated_accessor(
     facade: &Ident,
     accessor: &Ident,
@@ -493,7 +505,7 @@ pub(super) fn render_repeated_accessor(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds fixed accessor ident from frozen inputs without changing canonical generation order.
 pub(super) fn fixed_accessor_ident(metadata_name: &str) -> Result<Ident, String> {
     let direct = format!("{metadata_name}_span");
     emitted_ident(&direct).or_else(|_| emitted_ident(&format!("element_{direct}")))

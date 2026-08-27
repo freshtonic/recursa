@@ -1,3 +1,12 @@
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! Stable structured diagnostics produced during generation and structural loading.
+//!
+//! Diagnostic codes determine their owning stage, default severity, location rule, evidence
+//! schema, and remedy schema. [`BuildReport`] validates those contracts, deduplicates findings
+//! by semantic identity, and publishes them in deterministic source order. An error-bearing
+//! report is the publication barrier represented by [`GenerateError`].
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::ops::Range;
@@ -7,16 +16,24 @@ use crate::Severity;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
+/// Pipeline phase that owns a Recursa diagnostic.
 pub enum DiagnosticStage {
+    /// Selected-root and module discovery.
     Discovery,
+    /// Grammar-semantic name resolution.
     Resolution,
+    /// Source-model lowering and materialization.
     Lowering,
+    /// Source-independent semantic analysis.
     Analysis,
+    /// Emission-plan validation or generated-code rendering.
     Emission,
+    /// Post-publication structural loader verification.
     Loading,
 }
 
 impl DiagnosticStage {
+    /// Produces the deterministic name.
     const fn canonical_name(self) -> &'static str {
         match self {
             Self::Discovery => "discovery",
@@ -30,37 +47,58 @@ impl DiagnosticStage {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// DiagnosticCodeSpec value exchanged within the build diagnostic boundary.
 pub(crate) struct DiagnosticCodeSpec {
+    /// Code associated with this value.
     pub(crate) code: RecursaDiagnosticCode,
+    /// Stage associated with this value.
     pub(crate) stage: DiagnosticStage,
+    /// Severity associated with this value.
     pub(crate) severity: Severity,
+    /// Primary location associated with this value.
     pub(crate) primary_location: PrimaryLocationRule,
+    /// Evidence associated with this value.
     pub(crate) evidence: DiagnosticEvidenceSchema,
+    /// Remedy associated with this value.
     pub(crate) remedy: DiagnosticRemedySchema,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Enumerates the supported PrimaryLocationRule cases.
 pub(crate) enum PrimaryLocationRule {
+    /// The `FirstRelatedOrGlobal` case of this build diagnostic contract.
     FirstRelatedOrGlobal,
+    /// The `SelectedRootFallback` case of this build diagnostic contract.
     SelectedRootFallback,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Enumerates the supported DiagnosticEvidenceSchema cases.
 pub(crate) enum DiagnosticEvidenceSchema {
+    /// The `SourceFacts` case of this build diagnostic contract.
     SourceFacts,
+    /// The `LexicalFacts` case of this build diagnostic contract.
     LexicalFacts(LexicalEvidenceClass),
+    /// The `AnalysisWitness` case of this build diagnostic contract.
     AnalysisWitness,
+    /// The `InternalInvariant` case of this build diagnostic contract.
     InternalInvariant,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Enumerates the supported DiagnosticRemedySchema cases.
 pub(crate) enum DiagnosticRemedySchema {
+    /// The `CorrectAuthoredInput` case of this build diagnostic contract.
     CorrectAuthoredInput,
+    /// The `ResolveLexicalPolicy` case of this build diagnostic contract.
     ResolveLexicalPolicy(LexicalEvidenceClass),
+    /// The `ResolveAnalysisConflict` case of this build diagnostic contract.
     ResolveAnalysisConflict,
+    /// The `ReportInternalFailure` case of this build diagnostic contract.
     ReportInternalFailure,
 }
 
+/// Returns the primary location rule value.
 const fn primary_location_rule(code: &str) -> PrimaryLocationRule {
     if code.as_bytes()[3] == b'8' || code.as_bytes()[3] == b'9' {
         PrimaryLocationRule::SelectedRootFallback
@@ -69,6 +107,7 @@ const fn primary_location_rule(code: &str) -> PrimaryLocationRule {
     }
 }
 
+/// Returns the evidence schema value.
 const fn evidence_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticEvidenceSchema {
     match diagnostic_number(code) {
         3001 => DiagnosticEvidenceSchema::LexicalFacts(LexicalEvidenceClass::KeywordMatchingPolicy),
@@ -88,6 +127,7 @@ const fn evidence_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticEvide
     }
 }
 
+/// Returns the remedy schema value.
 const fn remedy_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticRemedySchema {
     match diagnostic_number(code) {
         3001 => DiagnosticRemedySchema::ResolveLexicalPolicy(
@@ -109,6 +149,7 @@ const fn remedy_schema(code: &str, _stage: DiagnosticStage) -> DiagnosticRemedyS
     }
 }
 
+/// Returns the diagnostic number value.
 const fn diagnostic_number(code: &str) -> u16 {
     let bytes = code.as_bytes();
     ((bytes[3] - b'0') as u16) * 1000
@@ -117,6 +158,7 @@ const fn diagnostic_number(code: &str) -> u16 {
         + (bytes[6] - b'0') as u16
 }
 
+/// Defines diagnostic spec entries in canonical order.
 macro_rules! diagnostic_spec {
     ($code:literal, $stage:ident, $severity:ident) => {
         DiagnosticCodeSpec {
@@ -130,6 +172,7 @@ macro_rules! diagnostic_spec {
     };
 }
 
+/// Canonical DIAGNOSTIC CODE REGISTRY value for this boundary.
 static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA0001", Analysis, Error),
     diagnostic_spec!("RCA0002", Analysis, Error),
@@ -217,10 +260,12 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA9105", Emission, Error),
 ];
 
+/// Performs the diagnostic code registry phase of this boundary.
 pub(crate) fn diagnostic_code_registry() -> &'static [DiagnosticCodeSpec] {
     DIAGNOSTIC_CODE_REGISTRY
 }
 
+/// Performs the diagnostic code spec phase of this boundary.
 pub(crate) fn diagnostic_code_spec(code: RecursaDiagnosticCode) -> &'static DiagnosticCodeSpec {
     diagnostic_code_registry()
         .iter()
@@ -229,32 +274,43 @@ pub(crate) fn diagnostic_code_spec(code: RecursaDiagnosticCode) -> &'static Diag
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// Stable externally rendered identifier for one diagnostic contract.
 pub struct RecursaDiagnosticCode(&'static str);
 
 impl RecursaDiagnosticCode {
+    /// Constructs a value after enforcing this boundary's invariants.
     pub(crate) const fn new(code: &'static str) -> Self {
         Self(code)
     }
 
+    /// Returns the stable `RCA` code spelling.
     pub const fn as_str(self) -> &'static str {
         self.0
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Manifest-relative diagnostic location with an optional half-open UTF-8 byte range.
 pub struct DiagnosticLocation {
+    /// Path associated with this value.
     path: PathBuf,
+    /// Range associated with this value.
     range: Option<Range<u32>>,
+    /// Line columns associated with this value.
     line_columns: Option<(LineColumn, LineColumn)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One-based source line and Unicode-scalar column used only for canonical rendering.
 pub struct LineColumn {
+    /// One-based line number.
     pub line: u32,
+    /// One-based Unicode-scalar column number.
     pub column: u32,
 }
 
 impl DiagnosticLocation {
+    /// Constructs the new result.
     pub(crate) fn new(
         path: PathBuf,
         range: Option<Range<u32>>,
@@ -271,6 +327,7 @@ impl DiagnosticLocation {
         })
     }
 
+    /// Returns this value with source text attached.
     pub(crate) fn with_source_text(
         mut self,
         source: &str,
@@ -287,26 +344,34 @@ impl DiagnosticLocation {
         Ok(self)
     }
 
+    /// Returns the normalized manifest-relative source path.
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
 
+    /// Returns the optional half-open UTF-8 byte range.
     pub const fn range(&self) -> Option<&Range<u32>> {
         self.range.as_ref()
     }
 
+    /// Returns derived one-based endpoints when source text was available.
     pub const fn line_columns(&self) -> Option<(LineColumn, LineColumn)> {
         self.line_columns
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Enumerates the supported DiagnosticLocationInvariant cases.
 pub(crate) enum DiagnosticLocationInvariant {
+    /// The `NonManifestRelativePath` case of this build diagnostic contract.
     NonManifestRelativePath,
+    /// The `ReversedRange` case of this build diagnostic contract.
     ReversedRange,
+    /// The `InvalidUtf8Boundary` case of this build diagnostic contract.
     InvalidUtf8Boundary,
 }
 
+/// Performs the manifest relative path phase of this boundary.
 fn manifest_relative_path(path: &Path) -> Option<PathBuf> {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -319,6 +384,7 @@ fn manifest_relative_path(path: &Path) -> Option<PathBuf> {
     (!normalized.as_os_str().is_empty()).then_some(normalized)
 }
 
+/// Performs the line column phase of this boundary.
 fn line_column(source: &str, byte: u32) -> Option<LineColumn> {
     let byte = usize::try_from(byte).ok()?;
     if byte > source.len() || !source.is_char_boundary(byte) {
@@ -333,12 +399,16 @@ fn line_column(source: &str, byte: u32) -> Option<LineColumn> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A primary or secondary diagnostic message with an optional source location.
 pub struct RecursaDiagnosticLabel {
+    /// Location associated with this value.
     location: Option<DiagnosticLocation>,
+    /// Message associated with this value.
     message: String,
 }
 
 impl RecursaDiagnosticLabel {
+    /// Constructs the located result.
     pub fn located(location: DiagnosticLocation, message: impl Into<String>) -> Self {
         Self {
             location: Some(location),
@@ -346,6 +416,7 @@ impl RecursaDiagnosticLabel {
         }
     }
 
+    /// Constructs the unlocated result.
     pub fn unlocated(message: impl Into<String>) -> Self {
         Self {
             location: None,
@@ -353,10 +424,12 @@ impl RecursaDiagnosticLabel {
         }
     }
 
+    /// Returns the location value.
     pub const fn location(&self) -> Option<&DiagnosticLocation> {
         self.location.as_ref()
     }
 
+    /// Returns the message value.
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -364,50 +437,82 @@ impl RecursaDiagnosticLabel {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
+/// Structured facts that explain why a Recursa diagnostic was produced.
 pub enum DiagnosticEvidence {
+    /// The `Subject` case of this build diagnostic contract.
     Subject(String),
+    /// The `SourcePaths` case of this build diagnostic contract.
     SourcePaths(Vec<PathBuf>),
+    /// The `SourceFacts` case of this build diagnostic contract.
     SourceFacts(Vec<DiagnosticFact>),
+    /// The `InternalInvariant` case of this build diagnostic contract.
     InternalInvariant {
+        /// Producer associated with this value.
         producer: String,
+        /// Detail associated with this value.
         detail: String,
     },
+    /// The `SemanticWitness` case of this build diagnostic contract.
     SemanticWitness {
+        /// Subject associated with this value.
         subject: String,
+        /// Witness associated with this value.
         witness: Vec<String>,
     },
+    /// The `Lexical` case of this build diagnostic contract.
     Lexical {
+        /// Condition associated with this value.
         condition: LexicalEvidenceClass,
+        /// Facts associated with this value.
         facts: Vec<DiagnosticFact>,
+        /// Witness associated with this value.
         witness: Option<String>,
     },
+    /// The `Analysis` case of this build diagnostic contract.
     Analysis {
+        /// Overlap associated with this value.
         overlap: Vec<String>,
+        /// Witness associated with this value.
         witness: Vec<String>,
+        /// Cycle associated with this value.
         cycle: Vec<String>,
+        /// Configured lookahead associated with this value.
         configured_lookahead: Option<usize>,
+        /// Sufficient lookahead associated with this value.
         sufficient_lookahead: Option<usize>,
+        /// End of alternative associated with this value.
         end_of_alternative: bool,
     },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Enumerates the supported LexicalEvidenceClass cases.
 pub enum LexicalEvidenceClass {
+    /// The `KeywordMatchingPolicy` case of this build diagnostic contract.
     KeywordMatchingPolicy,
+    /// The `FixedTokenClassification` case of this build diagnostic contract.
     FixedTokenClassification,
+    /// The `ConflictingDefinitionMetadata` case of this build diagnostic contract.
     ConflictingDefinitionMetadata,
+    /// The `InvalidPattern` case of this build diagnostic contract.
     InvalidPattern,
+    /// The `PatternOverlap` case of this build diagnostic contract.
     PatternOverlap,
+    /// The `PriorityTie` case of this build diagnostic contract.
     PriorityTie,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// DiagnosticFact value exchanged within the build diagnostic boundary.
 pub struct DiagnosticFact {
+    /// Name associated with this value.
     pub name: String,
+    /// Value associated with this value.
     pub value: String,
 }
 
 impl DiagnosticEvidence {
+    /// Produces the deterministic text.
     pub(crate) fn canonical_text(&self) -> String {
         match self {
             Self::Subject(subject) => subject.clone(),
@@ -464,58 +569,97 @@ impl DiagnosticEvidence {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
+/// Structured corrective action associated with a diagnostic contract.
 pub enum DiagnosticRemedy {
+    /// The `CorrectSource` case of this build diagnostic contract.
     CorrectSource,
+    /// The `CorrectReference` case of this build diagnostic contract.
     CorrectReference,
+    /// The `BreakRecursion` case of this build diagnostic contract.
     BreakRecursion {
+        /// Cycle associated with this value.
         cycle: Vec<String>,
     },
+    /// The `DisambiguateAlternatives` case of this build diagnostic contract.
     DisambiguateAlternatives {
+        /// Left associated with this value.
         left: String,
+        /// Right associated with this value.
         right: String,
     },
+    /// The `RestructureSharedPrefix` case of this build diagnostic contract.
     RestructureSharedPrefix {
+        /// Left associated with this value.
         left: String,
+        /// Right associated with this value.
         right: String,
     },
+    /// The `DisambiguatePrattVariants` case of this build diagnostic contract.
     DisambiguatePrattVariants {
+        /// Pratt associated with this value.
         pratt: String,
+        /// Left associated with this value.
         left: String,
+        /// Right associated with this value.
         right: String,
     },
+    /// The `RestructurePrattSharedPrefix` case of this build diagnostic contract.
     RestructurePrattSharedPrefix {
+        /// Pratt associated with this value.
         pratt: String,
+        /// Left associated with this value.
         left: String,
+        /// Right associated with this value.
         right: String,
     },
+    /// The `SelectSupportedConfiguration` case of this build diagnostic contract.
     SelectSupportedConfiguration,
+    /// The `AssignDistinctPriority` case of this build diagnostic contract.
     AssignDistinctPriority,
+    /// The `ReportInternalFailure` case of this build diagnostic contract.
     ReportInternalFailure,
+    /// The `RaiseMaxLookahead` case of this build diagnostic contract.
     RaiseMaxLookahead {
+        /// Configured associated with this value.
         configured: usize,
+        /// Sufficient associated with this value.
         sufficient: usize,
     },
+    /// The `MakeSiteRequired` case of this build diagnostic contract.
     MakeSiteRequired {
+        /// Site associated with this value.
         site: String,
     },
+    /// The `ReviewNullableFollow` case of this build diagnostic contract.
     ReviewNullableFollow {
+        /// Site associated with this value.
         site: String,
     },
+    /// The `ReviewPrattFollow` case of this build diagnostic contract.
     ReviewPrattFollow {
+        /// Site associated with this value.
         site: String,
+        /// Min bp associated with this value.
         min_bp: u8,
     },
+    /// The `UseMechanicalFixedTokenClass` case of this build diagnostic contract.
     UseMechanicalFixedTokenClass {
+        /// Class associated with this value.
         class: String,
     },
+    /// The `MakeDefinitionMetadataEquivalent` case of this build diagnostic contract.
     MakeDefinitionMetadataEquivalent {
+        /// Identity associated with this value.
         identity: String,
     },
+    /// The `UseSupportedNonEmptyPattern` case of this build diagnostic contract.
     UseSupportedNonEmptyPattern,
+    /// The `MakePatternsDisjoint` case of this build diagnostic contract.
     MakePatternsDisjoint,
 }
 
 impl DiagnosticRemedy {
+    /// Produces the deterministic text.
     pub(crate) fn canonical_text(&self) -> String {
         match self {
             Self::CorrectSource => "correct the authored grammar source".to_owned(),
@@ -577,17 +721,29 @@ impl DiagnosticRemedy {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// One stable-coded structured finding produced by generation or a structural loader.
 pub struct RecursaDiagnostic {
+    /// Stage associated with this value.
     stage: DiagnosticStage,
+    /// Code associated with this value.
     code: RecursaDiagnosticCode,
+    /// Severity associated with this value.
     severity: Severity,
+    /// Summary associated with this value.
     summary: String,
+    /// Primary associated with this value.
     primary: RecursaDiagnosticLabel,
+    /// Secondary associated with this value.
     secondary: Vec<RecursaDiagnosticLabel>,
+    /// Evidence associated with this value.
     evidence: DiagnosticEvidence,
+    /// Remedies associated with this value.
     remedies: Vec<DiagnosticRemedy>,
+    /// Notes associated with this value.
     notes: Vec<String>,
+    /// Source order associated with this value.
     source_order: Option<u64>,
+    /// Origin key associated with this value.
     origin_key: String,
 }
 
@@ -618,6 +774,7 @@ impl RecursaDiagnostic {
         }
     }
 
+    /// Constructs the with primary result.
     pub(crate) fn with_primary(
         stage: DiagnosticStage,
         code: RecursaDiagnosticCode,
@@ -642,11 +799,13 @@ impl RecursaDiagnostic {
         }
     }
 
+    /// Returns this value with secondary attached.
     pub(crate) fn with_secondary(mut self, secondary: Vec<RecursaDiagnosticLabel>) -> Self {
         self.secondary = secondary;
         self
     }
 
+    /// Returns this value with remedies attached.
     pub(crate) fn with_remedies(mut self, remedies: Vec<DiagnosticRemedy>) -> Self {
         self.remedies = remedies;
         self
@@ -658,48 +817,59 @@ impl RecursaDiagnostic {
         self
     }
 
+    /// Returns this value with order attached.
     pub(crate) fn with_order(mut self, source_order: u64, origin_key: impl Into<String>) -> Self {
         self.source_order = Some(source_order);
         self.origin_key = origin_key.into();
         self
     }
 
+    /// Returns the stage value.
     pub const fn stage(&self) -> DiagnosticStage {
         self.stage
     }
 
+    /// Returns the code value.
     pub const fn code(&self) -> RecursaDiagnosticCode {
         self.code
     }
 
+    /// Returns the severity value.
     pub const fn severity(&self) -> Severity {
         self.severity
     }
 
+    /// Returns the summary value.
     pub fn summary(&self) -> &str {
         &self.summary
     }
 
+    /// Returns the primary value.
     pub const fn primary(&self) -> &RecursaDiagnosticLabel {
         &self.primary
     }
 
+    /// Returns the secondary value.
     pub fn secondary(&self) -> &[RecursaDiagnosticLabel] {
         &self.secondary
     }
 
+    /// Returns the evidence value.
     pub const fn evidence(&self) -> &DiagnosticEvidence {
         &self.evidence
     }
 
+    /// Returns the remedies value.
     pub fn remedies(&self) -> &[DiagnosticRemedy] {
         &self.remedies
     }
 
+    /// Returns the notes value.
     pub fn notes(&self) -> &[String] {
         &self.notes
     }
 
+    /// Returns the sort key value.
     fn sort_key(&self) -> DiagnosticSortKey<'_> {
         let (location_class, path, range) = match self.primary.location() {
             Some(location) if location.range.is_some() => (
@@ -726,6 +896,7 @@ impl RecursaDiagnostic {
         }
     }
 
+    /// Returns the identity value.
     fn identity(&self) -> DiagnosticIdentity {
         let (path, range, line_columns) =
             self.primary
@@ -753,6 +924,7 @@ impl RecursaDiagnostic {
         }
     }
 
+    /// Returns the display key value.
     fn display_key(&self) -> DiagnosticDisplayKey {
         DiagnosticDisplayKey {
             summary: self.summary.clone(),
@@ -763,6 +935,7 @@ impl RecursaDiagnostic {
         }
     }
 
+    /// Returns the contract violation value.
     fn contract_violation(&self) -> Option<String> {
         let spec = diagnostic_code_spec(self.code);
         if self.stage != spec.stage || self.severity != spec.severity {
@@ -808,6 +981,7 @@ impl RecursaDiagnostic {
         None
     }
 
+    /// Returns the internal contract failure value.
     fn internal_contract_failure(self, detail: String) -> Self {
         let (stage, code) = match self.stage {
             DiagnosticStage::Discovery => (self.stage, RecursaDiagnosticCode::new("RCA9101")),
@@ -839,6 +1013,7 @@ impl RecursaDiagnostic {
     }
 }
 
+/// Performs the remedy matches schema phase of this boundary.
 fn remedy_matches_schema(schema: DiagnosticRemedySchema, remedy: &DiagnosticRemedy) -> bool {
     match schema {
         DiagnosticRemedySchema::ReportInternalFailure => {
@@ -877,38 +1052,63 @@ fn remedy_matches_schema(schema: DiagnosticRemedySchema, remedy: &DiagnosticReme
 }
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
+/// DiagnosticSortKey value exchanged within the build diagnostic boundary.
 struct DiagnosticSortKey<'a> {
+    /// Stage associated with this value.
     stage: DiagnosticStage,
+    /// Source order associated with this value.
     source_order: u64,
+    /// Location class associated with this value.
     location_class: u8,
+    /// Path associated with this value.
     path: Option<&'a std::path::Path>,
+    /// Range associated with this value.
     range: Option<(u32, u32)>,
+    /// Severity associated with this value.
     severity: Severity,
+    /// Code associated with this value.
     code: RecursaDiagnosticCode,
+    /// Origin key associated with this value.
     origin_key: &'a str,
+    /// Evidence associated with this value.
     evidence: &'a DiagnosticEvidence,
 }
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
+/// DiagnosticIdentity value exchanged within the build diagnostic boundary.
 struct DiagnosticIdentity {
+    /// Stage associated with this value.
     stage: DiagnosticStage,
+    /// Code associated with this value.
     code: RecursaDiagnosticCode,
+    /// Origin key associated with this value.
     origin_key: String,
+    /// Path associated with this value.
     path: Option<PathBuf>,
+    /// Range associated with this value.
     range: Option<(u32, u32)>,
+    /// Line columns associated with this value.
     line_columns: Option<((u32, u32), (u32, u32))>,
+    /// Evidence associated with this value.
     evidence: DiagnosticEvidence,
 }
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
+/// DiagnosticDisplayKey value exchanged within the build diagnostic boundary.
 struct DiagnosticDisplayKey {
+    /// Summary associated with this value.
     summary: String,
+    /// Primary message associated with this value.
     primary_message: String,
+    /// Secondary associated with this value.
     secondary: Vec<DiagnosticLabelDisplayKey>,
+    /// Remedies associated with this value.
     remedies: Vec<DiagnosticRemedy>,
+    /// Notes associated with this value.
     notes: Vec<String>,
 }
 
+/// Names the DiagnosticLabelDisplayKey representation used by this boundary.
 type DiagnosticLabelDisplayKey = (
     Option<PathBuf>,
     Option<(u32, u32)>,
@@ -916,6 +1116,7 @@ type DiagnosticLabelDisplayKey = (
     String,
 );
 
+/// Performs the label display key phase of this boundary.
 fn label_display_key(label: &RecursaDiagnosticLabel) -> DiagnosticLabelDisplayKey {
     let (path, range, line_columns) = label.location().map_or((None, None, None), |location| {
         (
@@ -933,11 +1134,18 @@ fn label_display_key(label: &RecursaDiagnosticLabel) -> DiagnosticLabelDisplayKe
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Deterministic, contract-validated collection of generation diagnostics.
+///
+/// Construction replaces malformed diagnostics with internal-invariant findings, deduplicates
+/// equivalent origins, and sorts the survivors canonically. Generation may publish output only
+/// when this report contains no errors; warnings remain attached to the successful generation.
 pub struct BuildReport {
+    /// Diagnostics associated with this value.
     diagnostics: Vec<RecursaDiagnostic>,
 }
 
 impl BuildReport {
+    /// Constructs the new result.
     pub(crate) fn new(mut diagnostics: Vec<RecursaDiagnostic>) -> Self {
         diagnostics = diagnostics
             .into_iter()
@@ -965,22 +1173,26 @@ impl BuildReport {
         Self { diagnostics }
     }
 
+    /// Returns all findings in canonical presentation order.
     pub fn diagnostics(&self) -> &[RecursaDiagnostic] {
         &self.diagnostics
     }
 
+    /// Iterates findings that prevent generation publication.
     pub fn errors(&self) -> impl Iterator<Item = &RecursaDiagnostic> {
         self.diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.severity == Severity::Error)
     }
 
+    /// Iterates non-blocking findings retained on a successful generation.
     pub fn warnings(&self) -> impl Iterator<Item = &RecursaDiagnostic> {
         self.diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.severity == Severity::Warning)
     }
 
+    /// Renders the stable multiline plain-text diagnostic representation.
     pub fn canonical_rendering(&self) -> String {
         let mut rendered = String::new();
         for diagnostic in &self.diagnostics {
@@ -1052,19 +1264,24 @@ impl BuildReport {
     }
 }
 
+/// Failed generation represented by its complete deterministic [`BuildReport`].
 pub struct GenerateError {
+    /// Report associated with this value.
     report: BuildReport,
 }
 
 impl GenerateError {
+    /// Constructs a value after enforcing this boundary's invariants.
     pub(crate) const fn new(report: BuildReport) -> Self {
         Self { report }
     }
 
+    /// Returns the report that prevented publication.
     pub const fn report(&self) -> &BuildReport {
         &self.report
     }
 
+    /// Returns the report's diagnostics in canonical order.
     pub fn diagnostics(&self) -> &[RecursaDiagnostic] {
         self.report.diagnostics()
     }

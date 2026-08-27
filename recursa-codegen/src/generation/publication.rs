@@ -26,7 +26,7 @@ mod tests {
 /// Loader file that atomically selects one complete generated payload.
 pub(super) const SELECTED_GENERATION: &str = "recursa-selected.rs";
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Publishes one complete rendered generation and atomically selects it for loaders.
 pub(super) fn publish(
     out_dir: &Path,
     identity: &str,
@@ -36,15 +36,23 @@ pub(super) fn publish(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Observable checkpoints used to verify rollback at each publication barrier.
 pub(super) enum PublicationCheckpoint {
+    /// The `BeforeStaging` case of this publication contract.
     BeforeStaging,
+    /// The `DuringStaging` case of this publication contract.
     DuringStaging,
+    /// The `BeforeSelection` case of this publication contract.
     BeforeSelection,
+    /// The `DuringSelection` case of this publication contract.
     DuringSelection,
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Stages and publishes a generation while exposing deterministic failure checkpoints.
+///
+/// Existing complete generations are immutable and reusable. New payloads remain under a
+/// private staging name until every root, Node, and loader-map file exists; any failure removes
+/// staging and leaves no selector that can load partial output.
 pub(super) fn publish_with_checkpoint(
     out_dir: &Path,
     identity: &str,
@@ -88,7 +96,7 @@ pub(super) fn publish_with_checkpoint(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Writes every logical file into staging and crosses the publication barrier with one rename.
 pub(super) fn stage_and_publish(
     staging: &Path,
     published: &Path,
@@ -115,7 +123,7 @@ pub(super) fn stage_and_publish(
     Ok(())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Atomically replaces the structural-loader selector after its target is fully published.
 pub(super) fn select_generation(
     out_dir: &Path,
     rendered: &RenderedGeneration,
@@ -146,7 +154,7 @@ pub(super) fn select_generation(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Removes the previous selector, poisoning it on removal failure to prevent stale loading.
 pub(super) fn invalidate_selection(out_dir: &Path) -> Result<(), String> {
     let selected = out_dir.join(SELECTED_GENERATION);
     match fs::remove_file(&selected) {
@@ -174,7 +182,7 @@ pub(super) fn invalidate_selection(out_dir: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds selected generation from frozen inputs without changing canonical generation order.
 pub(super) fn selected_generation(out_dir: &Path) -> Option<String> {
     let selector = fs::read_to_string(out_dir.join(SELECTED_GENERATION)).ok()?;
     selector
@@ -184,7 +192,7 @@ pub(super) fn selected_generation(out_dir: &Path) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds staging nonce from frozen inputs without changing canonical generation order.
 pub(super) fn staging_nonce() -> Result<u128, String> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

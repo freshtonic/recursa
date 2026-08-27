@@ -27,166 +27,233 @@ mod tests {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty emission plan data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) struct PrettyEmissionPlan {
+    /// Tokens associated with this value.
     pub(super) tokens: Vec<Option<PrettyTokenBehavior>>,
+    /// Nodes associated with this value.
     pub(super) nodes: Vec<Option<PrettyNodeBehavior>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty token behavior data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) enum PrettyTokenBehavior {
+    /// The `MatchedOrStoredText` case of this pretty contract.
     MatchedOrStoredText,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty node behavior data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) struct PrettyNodeBehavior {
+    /// Node associated with this value.
     pub(super) node: NodeId,
+    /// Applications associated with this value.
     pub(super) applications: Vec<MaterializedApplicationId>,
+    /// Pretty associated with this value.
     pub(super) pretty: PrettyHints,
+    /// Variant pretty associated with this value.
     pub(super) variant_pretty: Vec<PrettyHints>,
+    /// Variant layouts associated with this value.
     pub(super) variant_layouts: Vec<PrettySequenceLayout>,
+    /// Variants associated with this value.
     pub(super) variants: Vec<Vec<PrettyElementBehavior>>,
+    /// Pratt associated with this value.
     pub(super) pratt: Option<PrettyPrattBehavior>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty pratt behavior data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) struct PrettyPrattBehavior {
+    /// Grouping associated with this value.
     pub(super) grouping: Option<PrettyPrattGrouping>,
+    /// Variants associated with this value.
     pub(super) variants: Vec<PrettyPrattVariantBehavior>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty pratt grouping data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) struct PrettyPrattGrouping {
+    /// Before associated with this value.
     pub(super) before: Vec<PrettyAttachedFixedBehavior>,
+    /// After associated with this value.
     pub(super) after: Vec<PrettyAttachedFixedBehavior>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty pratt variant behavior data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) struct PrettyPrattVariantBehavior {
+    /// Parenthesization associated with this value.
     pub(super) parenthesization: PrettyPrattParenthesization,
+    /// Operands associated with this value.
     pub(super) operands: Vec<PrettyPrattOperandBehavior>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty pratt parenthesization data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) struct PrettyPrattParenthesization {
+    /// Entry lbp associated with this value.
     pub(super) entry_lbp: Option<u16>,
+    /// Exit rbp associated with this value.
     pub(super) exit_rbp: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty pratt operand behavior data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) enum PrettyPrattOperandBehavior {
+    /// The `Ordinary` case of this pretty contract.
     Ordinary,
+    /// The `Recursive` case of this pretty contract.
     Recursive {
+        /// Owner associated with this value.
         owner: NodeId,
+        /// Applications associated with this value.
         applications: Vec<MaterializedApplicationId>,
+        /// Minimum associated with this value.
         minimum: PrettyPrattMinimum,
+        /// Next associated with this value.
         next: PrettyPrattNext,
     },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty pratt minimum data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) enum PrettyPrattMinimum {
+    /// The `Zero` case of this pretty contract.
     Zero,
+    /// The `Inner` case of this pretty contract.
     Inner,
+    /// The `Binding` case of this pretty contract.
     Binding(u16),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty pratt next data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) enum PrettyPrattNext {
+    /// The `None` case of this pretty contract.
     None,
+    /// The `Inner` case of this pretty contract.
     Inner,
+    /// The `Binding` case of this pretty contract.
     Binding(u16),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty sequence layout data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) enum PrettySequenceLayout {
+    /// The `Linear` case of this pretty contract.
     Linear,
+    /// The `Delimited` case of this pretty contract.
     Delimited,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty element behavior data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) enum PrettyElementBehavior {
+    /// The `Fixed` case of this pretty contract.
     Fixed {
+        /// Spelling associated with this value.
         spelling: String,
+        /// Spacing associated with this value.
         spacing: PrettySpacing,
+        /// Rendering associated with this value.
         rendering: PrettyFixedRendering,
+        /// Soft break before associated with this value.
         soft_break_before: bool,
+        /// Soft break after associated with this value.
         soft_break_after: bool,
     },
+    /// The `Semantic` case of this pretty contract.
     Semantic {
+        /// Repetition associated with this value.
         repetition: Option<PrettyRepetitionBehavior>,
+        /// Attachment associated with this value.
         attachment: Option<PrettyAttachmentBehavior>,
+        /// Provenance associated with this value.
         provenance: PrettyProvenanceBehavior,
+        /// Pretty associated with this value.
         pretty: PrettyHints,
+        /// Presence associated with this value.
         presence: PrettyPresence,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty repetition behavior data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) struct PrettyRepetitionBehavior {
+    /// Separator associated with this value.
     pub(super) separator: Option<String>,
+    /// Trailing separator associated with this value.
     pub(super) trailing_separator: bool,
+    /// Hard break associated with this value.
     pub(super) hard_break: bool,
+    /// Leading separator associated with this value.
     pub(super) leading_separator: bool,
+    /// Space before separator associated with this value.
     pub(super) space_before_separator: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty presence data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) enum PrettyPresence {
+    /// The `Always` case of this pretty contract.
     Always,
+    /// The `Optional` case of this pretty contract.
     Optional,
+    /// The `NonEmpty` case of this pretty contract.
     NonEmpty,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty provenance behavior data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) enum PrettyProvenanceBehavior {
+    /// The `Structured` case of this pretty contract.
     Structured,
+    /// The `Opaque` case of this pretty contract.
     Opaque,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty attachment behavior data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) struct PrettyAttachmentBehavior {
+    /// Layout associated with this value.
     pub(super) layout: PrettySequenceLayout,
+    /// Before associated with this value.
     pub(super) before: Vec<PrettyAttachedFixedBehavior>,
+    /// After associated with this value.
     pub(super) after: Vec<PrettyAttachedFixedBehavior>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty attached fixed behavior data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) struct PrettyAttachedFixedBehavior {
+    /// Spelling associated with this value.
     pub(super) spelling: String,
+    /// Spacing associated with this value.
     pub(super) spacing: PrettySpacing,
+    /// Rendering associated with this value.
     pub(super) rendering: PrettyFixedRendering,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen pretty fixed rendering data owned by the pretty boundary; declaration order remains deterministic.
 pub(super) enum PrettyFixedRendering {
+    /// The `TightSequence` case of this pretty contract.
     TightSequence,
+    /// The `Before` case of this pretty contract.
     Before,
+    /// The `After` case of this pretty contract.
     After,
+    /// The `Around` case of this pretty contract.
     Around,
+    /// The `Opening` case of this pretty contract.
     Opening,
+    /// The `Word` case of this pretty contract.
     Word,
+    /// The `Punctuation` case of this pretty contract.
     Punctuation,
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds emitted pretty plan from frozen inputs without changing canonical generation order.
 pub(super) fn emitted_pretty_plan(
     nodes: &[NodeParsePlan],
     tokens: &[TokenParsePlan],
@@ -212,7 +279,7 @@ pub(super) fn emitted_pretty_plan(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds emitted pretty node behavior from frozen inputs without changing canonical generation order.
 pub(super) fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBehavior {
     let variant_pretty = match &node.body {
         NodeBodyPlan::Struct { .. } => vec![PrettyHints::default()],
@@ -265,7 +332,7 @@ pub(super) fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBe
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds emitted pretty pratt behavior from frozen inputs without changing canonical generation order.
 pub(super) fn emitted_pretty_pratt_behavior(
     node: &NodeParsePlan,
     pratt: &PrattParsePlan,
@@ -316,7 +383,7 @@ pub(super) fn emitted_pretty_pratt_behavior(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty pratt parenthesization from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_pratt_parenthesization(
     position: PrattPosition,
 ) -> PrettyPrattParenthesization {
@@ -332,7 +399,7 @@ pub(super) fn pretty_pratt_parenthesization(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty recursive operand from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_recursive_operand(
     owner: NodeId,
     applications: &[MaterializedApplicationId],
@@ -366,7 +433,7 @@ pub(super) fn pretty_recursive_operand(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds apply pretty pratt fixed layout from frozen inputs without changing canonical generation order.
 pub(super) fn apply_pretty_pratt_fixed_layout(
     position: PrattPosition,
     elements: &[ElementParsePlan],
@@ -403,7 +470,7 @@ pub(super) fn apply_pretty_pratt_fixed_layout(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty pratt grouping from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_pratt_grouping(
     owner: NodeId,
     declaration_variants: &[VariantParsePlan],
@@ -450,7 +517,7 @@ pub(super) fn pretty_pratt_grouping(
         })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds emitted pretty elements from frozen inputs without changing canonical generation order.
 pub(super) fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<PrettyElementBehavior> {
     elements
         .iter()
@@ -521,7 +588,7 @@ pub(super) fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<Pret
         .collect()
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty repetition behavior from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_repetition_behavior(
     repeated: bool,
     separator: Option<String>,
@@ -540,7 +607,7 @@ pub(super) fn pretty_repetition_behavior(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty fixed rendering from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_fixed_rendering(
     spelling: &str,
     spacing: PrettySpacing,
@@ -556,7 +623,7 @@ pub(super) fn pretty_fixed_rendering(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty sequence layout from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_sequence_layout(elements: &[PrettyElementBehavior]) -> PrettySequenceLayout {
     let delimited = elements.first().and_then(|first| {
         let PrettyElementBehavior::Fixed { spelling, .. } = first else {
@@ -575,7 +642,7 @@ pub(super) fn pretty_sequence_layout(elements: &[PrettyElementBehavior]) -> Pret
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty attachment layout from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_attachment_layout(
     before: &[PrettyAttachedFixedBehavior],
     after: &[PrettyAttachedFixedBehavior],
@@ -591,7 +658,7 @@ pub(super) fn pretty_attachment_layout(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty presence from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_presence(wrappers: &[FieldWrapper]) -> PrettyPresence {
     if wrappers
         .iter()
@@ -608,7 +675,7 @@ pub(super) fn pretty_presence(wrappers: &[FieldWrapper]) -> PrettyPresence {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative pretty plan from frozen inputs without changing canonical generation order.
 pub(super) fn authoritative_pretty_plan(
     lowered: &crate::materialization::LoweredGrammar,
     resolved: &crate::resolution::ResolvedSourceGrammar,
@@ -668,7 +735,7 @@ pub(super) fn authoritative_pretty_plan(
     Ok(pretty_family_identity(&plan).map(|_| plan))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative pretty node behavior from frozen inputs without changing canonical generation order.
 pub(super) fn authoritative_pretty_node_behavior(
     lowered: &crate::materialization::LoweredGrammar,
     resolved_node: &ResolvedNode,
@@ -735,7 +802,7 @@ pub(super) fn authoritative_pretty_node_behavior(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative pretty pratt behavior from frozen inputs without changing canonical generation order.
 pub(super) fn authoritative_pretty_pratt_behavior(
     lowered: &crate::materialization::LoweredGrammar,
     resolved_node: &ResolvedNode,
@@ -796,7 +863,7 @@ pub(super) fn authoritative_pretty_pratt_behavior(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds apply authoritative pretty pratt fixed layout from frozen inputs without changing canonical generation order.
 pub(super) fn apply_authoritative_pretty_pratt_fixed_layout(
     position: PrattPosition,
     elements: &[GrammarElement],
@@ -833,7 +900,7 @@ pub(super) fn apply_authoritative_pretty_pratt_fixed_layout(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative pretty pratt grouping from frozen inputs without changing canonical generation order.
 pub(super) fn authoritative_pretty_pratt_grouping(
     resolved_node: &ResolvedNode,
     source_variants: &[crate::source_model::SourcePrattVariant],
@@ -912,7 +979,7 @@ pub(super) fn authoritative_pretty_pratt_grouping(
     Ok(None)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative pretty elements from frozen inputs without changing canonical generation order.
 pub(super) fn authoritative_pretty_elements(
     lowered: &crate::materialization::LoweredGrammar,
     resolved_node: &ResolvedNode,
@@ -1002,7 +1069,7 @@ pub(super) fn authoritative_pretty_elements(
         .collect()
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative pretty separator from frozen inputs without changing canonical generation order.
 pub(super) fn authoritative_pretty_separator(
     lowered: &crate::materialization::LoweredGrammar,
     separator: Option<&crate::source_model::Separator>,
@@ -1022,7 +1089,7 @@ pub(super) fn authoritative_pretty_separator(
     )))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds authoritative pretty attachment from frozen inputs without changing canonical generation order.
 pub(super) fn authoritative_pretty_attachment(
     lowered: &crate::materialization::LoweredGrammar,
     attachment: &crate::source_model::FixedTokenAttachment,
@@ -1057,13 +1124,19 @@ pub(super) fn authoritative_pretty_attachment(
         after,
     })
 }
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty family identity from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_family_identity(plan: &PrettyEmissionPlan) -> Option<u64> {
     (plan.tokens.iter().any(Option::is_some) || plan.nodes.iter().any(Option::is_some))
         .then(|| plan_family_identity(plan))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pratt node pretty from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: keeps Pratt parenthesization beside typed Pretty behavior.
+/// Invariants: rendered precedence and associativity mirror the parse plan without consulting runtime grammar metadata.
+/// Phases: selects active variant, renders operands and attachments, then applies grouping.
 pub(super) fn render_pratt_node_pretty(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -1255,7 +1328,7 @@ pub(super) fn render_pratt_node_pretty(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty pratt minimum from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_pratt_minimum(minimum: PrettyPrattMinimum) -> proc_macro2::TokenStream {
     match minimum {
         PrettyPrattMinimum::Zero => quote!(0u16),
@@ -1264,7 +1337,7 @@ pub(super) fn render_pretty_pratt_minimum(minimum: PrettyPrattMinimum) -> proc_m
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty pratt next from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_pratt_next(next: PrettyPrattNext) -> proc_macro2::TokenStream {
     match next {
         PrettyPrattNext::None => quote!(None),
@@ -1273,7 +1346,7 @@ pub(super) fn render_pretty_pratt_next(next: PrettyPrattNext) -> proc_macro2::To
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds terminal path ident from frozen inputs without changing canonical generation order.
 pub(super) fn terminal_path_ident(terminal: &Type) -> Option<&Ident> {
     let Type::Path(path) = terminal else {
         return None;
@@ -1281,7 +1354,13 @@ pub(super) fn terminal_path_ident(terminal: &Type) -> Option<&Ident> {
     path.path.segments.last().map(|segment| &segment.ident)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render node pretty from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: renders one Node from its frozen Pretty behavior and source-order shape.
+/// Invariants: every spacing, break, separator, and provenance decision participates in family identity.
+/// Phases: binds the active shape, renders its element sequence, then writes through PrettyContext.
 pub(super) fn render_node_pretty(
     plan: &EmissionPlan,
     node: &NodeParsePlan,
@@ -1479,7 +1558,7 @@ pub(super) fn render_node_pretty(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty semantic from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_semantic(
     facade: &Ident,
     index: usize,
@@ -1518,7 +1597,7 @@ pub(super) fn render_pretty_semantic(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty hints from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_hints(
     hints: &PrettyHints,
     body: proc_macro2::TokenStream,
@@ -1548,7 +1627,7 @@ pub(super) fn render_pretty_hints(
     quote!(#before #body #after)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty presence from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_presence(
     hints: &PrettyHints,
     presence: PrettyPresence,
@@ -1583,7 +1662,7 @@ pub(super) fn render_pretty_presence(
     unreachable!("frozen Pretty presence has no matching storage wrapper")
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty provenance child method from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_provenance_child_method(provenance: PrettyProvenanceBehavior) -> Ident {
     match provenance {
         PrettyProvenanceBehavior::Structured => format_ident!("with_child"),
@@ -1591,7 +1670,7 @@ pub(super) fn pretty_provenance_child_method(provenance: PrettyProvenanceBehavio
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty fixed from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_fixed(
     plan: &EmissionPlan,
     index: usize,
@@ -1601,7 +1680,7 @@ pub(super) fn render_pretty_fixed(
     render_pretty_fixed_with_method(plan, index, spelling, rendering)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty fixed with method from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_fixed_with_method(
     plan: &EmissionPlan,
     index: usize,
@@ -1618,7 +1697,7 @@ pub(super) fn render_pretty_fixed_with_method(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty synthetic fixed from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_synthetic_fixed(
     plan: &EmissionPlan,
     spelling: &str,
@@ -1629,7 +1708,7 @@ pub(super) fn render_pretty_synthetic_fixed(
     quote!(context.without_provenance(|context| context.#method(#fallback))?;)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty fixed method from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_fixed_method(rendering: PrettyFixedRendering) -> syn::Ident {
     match rendering {
         PrettyFixedRendering::TightSequence => format_ident!("tight_sequence_token"),
@@ -1642,12 +1721,12 @@ pub(super) fn pretty_fixed_method(rendering: PrettyFixedRendering) -> syn::Ident
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds pretty fixed fallback from frozen inputs without changing canonical generation order.
 pub(super) fn pretty_fixed_fallback(_plan: &EmissionPlan, spelling: &str) -> String {
     spelling.to_owned()
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty sequence from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_sequence(
     layout: PrettySequenceLayout,
     rendered: &[proc_macro2::TokenStream],
@@ -1672,7 +1751,7 @@ pub(super) fn render_pretty_sequence(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty attached fixed from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_attached_fixed(
     index: usize,
     fixed: &PrettyAttachedFixedBehavior,
@@ -1687,7 +1766,7 @@ pub(super) fn render_pretty_attached_fixed(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty attachment unit from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_attachment_unit(
     attachment: &PrettyAttachmentBehavior,
     provenance: PrettyProvenanceBehavior,
@@ -1736,7 +1815,7 @@ pub(super) fn render_pretty_attachment_unit(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render pretty attached semantic from frozen inputs without changing canonical generation order.
 pub(super) fn render_pretty_attached_semantic(
     facade: &Ident,
     element_index: usize,
@@ -1829,7 +1908,7 @@ pub(super) fn render_pretty_attached_semantic(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds delimiter close from frozen inputs without changing canonical generation order.
 pub(super) fn delimiter_close(open: &str) -> Option<&'static str> {
     match open {
         "(" => Some(")"),

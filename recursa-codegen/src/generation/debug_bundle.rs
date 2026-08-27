@@ -30,25 +30,34 @@ mod tests {
 pub(super) const DEBUG_DIRECTORY_ENVIRONMENT: &str = "RECURSA_DEBUG_DIR";
 /// Stable index header and private directory name used by debug bundles.
 pub(super) const DEBUG_BUNDLE_FORMAT: &str = "recursa-generated-code-debug-v1";
+/// Canonical DEBUG BUNDLE OWNERSHIP MARKER value for this boundary.
 const DEBUG_BUNDLE_OWNERSHIP_MARKER: &str = ".recursa-debug-bundle";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen debug logical file data owned by the debug bundle boundary; declaration order remains deterministic.
 pub(super) struct DebugLogicalFile {
+    /// Str associated with this value.
     role: &'static str,
+    /// Logical name associated with this value.
     logical_name: String,
+    /// Private name associated with this value.
     private_name: String,
+    /// Contents associated with this value.
     contents: String,
 }
 
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen staged debug bundle data owned by the debug bundle boundary; declaration order remains deterministic.
 pub(super) struct StagedDebugBundle {
+    /// Staging associated with this value.
     pub(super) staging: Option<PathBuf>,
+    /// Published associated with this value.
     pub(super) published: PathBuf,
+    /// Replacement associated with this value.
     pub(super) replacement: Option<PathBuf>,
 }
 
 impl StagedDebugBundle {
+    /// Returns the commit value.
     pub(super) fn commit(mut self) -> Result<(), String> {
         let Some(staging) = self.staging.as_ref() else {
             return Ok(());
@@ -90,7 +99,7 @@ impl Drop for StagedDebugBundle {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds publish generation and debug from frozen inputs without changing canonical generation order.
 pub(super) fn publish_generation_and_debug(
     out_dir: &Path,
     identity: &str,
@@ -109,7 +118,7 @@ pub(super) fn publish_generation_and_debug(
     Ok(())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds stage debug bundle from frozen inputs without changing canonical generation order.
 pub(super) fn stage_debug_bundle(
     directory: &Path,
     plan: &EmissionPlan,
@@ -170,7 +179,7 @@ pub(super) fn stage_debug_bundle(
     })
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds ensure owned debug bundle from frozen inputs without changing canonical generation order.
 pub(super) fn ensure_owned_debug_bundle(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("cannot inspect the existing debug bundle: {error}"))?;
@@ -192,7 +201,7 @@ pub(super) fn ensure_owned_debug_bundle(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds ensure plain directory from frozen inputs without changing canonical generation order.
 pub(super) fn ensure_plain_directory(path: &Path, role: &str) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -214,7 +223,7 @@ pub(super) fn ensure_plain_directory(path: &Path, role: &str) -> Result<(), Stri
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds remove debug staging from frozen inputs without changing canonical generation order.
 pub(super) fn remove_debug_staging(staging: &Path) -> std::io::Result<()> {
     match fs::symlink_metadata(staging) {
         Ok(metadata) if metadata.file_type().is_symlink() => fs::remove_file(staging),
@@ -225,7 +234,7 @@ pub(super) fn remove_debug_staging(staging: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds write debug file from frozen inputs without changing canonical generation order.
 pub(super) fn write_debug_file(path: &Path, contents: &[u8]) -> Result<(), String> {
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -237,7 +246,7 @@ pub(super) fn write_debug_file(path: &Path, contents: &[u8]) -> Result<(), Strin
         .map_err(|error| format!("cannot write debug bundle file: {error}"))
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render debug logical files from frozen inputs without changing canonical generation order.
 pub(super) fn render_debug_logical_files(
     plan: &EmissionPlan,
     rendered: &RenderedGeneration,
@@ -270,7 +279,13 @@ pub(super) fn render_debug_logical_files(
     Ok(files)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render debug capability fragments from frozen inputs without changing canonical generation order.
+///
+/// # Long-function contract
+///
+/// Rationale: assembles the optional debug view without making it authoritative generation output.
+/// Invariants: entries are deterministic, complete for enabled capabilities, and identity-neutral.
+/// Phases: collects capability fragments, formats Rust, then assigns stable logical names.
 pub(super) fn render_debug_capability_fragments(
     plan: &EmissionPlan,
 ) -> Result<Vec<(String, String)>, String> {
@@ -390,7 +405,7 @@ pub(super) fn render_debug_capability_fragments(
     Ok(fragments)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render facade capability fragment from frozen inputs without changing canonical generation order.
 pub(super) fn render_facade_capability_fragment(
     plan: &EmissionPlan,
     capability: FacadeCapability,
@@ -418,7 +433,7 @@ pub(super) fn render_facade_capability_fragment(
     }
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds format debug rust from frozen inputs without changing canonical generation order.
 pub(super) fn format_debug_rust(role: &str, source: &str) -> Result<String, String> {
     let syntax = syn::parse_file(source)
         .map_err(|error| format!("the logical generated {role} is invalid Rust: {error}"))?;
@@ -428,7 +443,7 @@ pub(super) fn format_debug_rust(role: &str, source: &str) -> Result<String, Stri
     Ok(formatted)
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Renders render debug index from frozen inputs without changing canonical generation order.
 pub(super) fn render_debug_index(identity: &str, files: &[DebugLogicalFile]) -> String {
     let mut index = format!("{DEBUG_BUNDLE_FORMAT}\ngeneration\t{identity}\n");
     for file in files {

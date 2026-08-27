@@ -6,64 +6,105 @@
 use super::*;
 
 #[derive(Clone)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Immutable source-aware plan consumed by generated-code rendering.
+///
+/// Field order is part of the Debug-derived generation identity. Construction joins authored
+/// structure and correlations to already-frozen semantic decisions; validation must succeed
+/// before rendering, debug staging, or publication begins.
 pub(super) struct EmissionPlan {
+    /// Identity associated with this value.
     pub(super) identity: String,
+    /// Facade associated with this value.
     pub(super) facade: Ident,
+    /// Module anchor associated with this value.
     pub(super) module_anchor: syn::Path,
+    /// Grammar name associated with this value.
     pub(super) grammar_name: String,
+    /// Text equivalence associated with this value.
     pub(super) text_equivalence: TextEquivalence,
+    /// Pretty max width associated with this value.
     pub(super) pretty_max_width: usize,
+    /// Pretty indent associated with this value.
     pub(super) pretty_indent: usize,
+    /// Kind count associated with this value.
     pub(super) kind_count: usize,
+    /// Lexical error kind associated with this value.
     pub(super) lexical_error_kind: u16,
+    /// Kind variants associated with this value.
     pub(super) kind_variants: Vec<Ident>,
+    /// Kind static texts associated with this value.
     pub(super) kind_static_texts: Vec<Option<String>>,
+    /// Kind names associated with this value.
     pub(super) kind_names: Vec<String>,
+    /// Atom names associated with this value.
     pub(super) atom_names: Vec<String>,
+    /// Nodes associated with this value.
     pub(super) nodes: Vec<NodeParsePlan>,
+    /// Tokens associated with this value.
     pub(super) tokens: Vec<TokenParsePlan>,
+    /// Token bindings associated with this value.
     pub(super) token_bindings: Vec<TokenBindingPlan>,
+    /// Lexical rules associated with this value.
     pub(super) lexical_rules: Vec<LexRulePlan>,
+    /// Word classifiers associated with this value.
     pub(super) word_classifiers: Vec<WordClassifierPlan>,
+    /// Word candidate kinds associated with this value.
     pub(super) word_candidate_kinds: Vec<u16>,
+    /// Post lex associated with this value.
     pub(super) post_lex: Option<syn::Path>,
+    /// Root configured traits associated with this value.
     pub(super) root_configured_traits: Vec<ConfiguredTraitRecipe>,
+    /// Private abi associated with this value.
     pub(super) private_abi: PrivateAbiPlan,
+    /// Capabilities associated with this value.
     pub(super) capabilities: Vec<FacadeCapability>,
+    /// Pretty associated with this value.
     pub(super) pretty: PrettyEmissionPlan,
     #[cfg(feature = "diagrams")]
+    /// Diagrams associated with this value.
     pub(super) diagrams: Option<DiagramPlan>,
+    /// Explorer associated with this value.
     pub(super) explorer: Option<ExtensionEmissionPlan>,
+    /// Instrumentation associated with this value.
     pub(super) instrumentation: EmissionInstrumentation,
+    /// Plan families associated with this value.
     pub(super) plan_families: EmissionPlanFamilies,
 }
 
 #[derive(Clone, Debug)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Frozen identities for capability-owned subplans independently checked before rendering.
 pub(super) struct EmissionPlanFamilies {
+    /// Configured traits associated with this value.
     pub(super) configured_traits: u64,
+    /// Private abi associated with this value.
     pub(super) private_abi: u64,
+    /// Capabilities associated with this value.
     pub(super) capabilities: u64,
+    /// Pretty associated with this value.
     pub(super) pretty: Option<u64>,
+    /// Parse associated with this value.
     pub(super) parse: u64,
+    /// Diagrams associated with this value.
     pub(super) diagrams: Option<u64>,
+    /// Explorer associated with this value.
     pub(super) explorer: Option<u64>,
 }
 
 #[derive(Clone, Default)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Counters proving plan construction consumed the complete frozen semantic decision product.
 pub(super) struct EmissionInstrumentation {
+    /// Frozen dispatch nodes consumed associated with this value.
     pub(super) frozen_dispatch_nodes_consumed: usize,
 }
 
 #[derive(Default)]
-/// Capability-owned private plan data retained in deterministic field and variant order.
+/// Counters proving rendering consumed exactly the plan structure validated earlier.
 pub(super) struct RenderInstrumentation {
+    /// Frozen dispatch nodes rendered associated with this value.
     pub(super) frozen_dispatch_nodes_rendered: usize,
 }
 
-/// Capability-owned plan or rendering step. Kept ordered where splitting would obscure shared binding scopes or alter deterministic plan, protocol, or generated-byte order.
+/// Builds publicly reachable from frozen inputs without changing canonical generation order.
 pub(super) fn publicly_reachable(
     tree: &crate::discovery::DiscoveredModuleTree,
     module: ModuleId,
@@ -88,6 +129,13 @@ pub(super) fn publicly_reachable(
 }
 
 impl EmissionPlan {
+    /// Constructs the join result.
+    ///
+    /// # Long-function contract
+    ///
+    /// Rationale: keeps the analyzed grammar and all capability plans in one immutable generation snapshot.
+    /// Invariants: source order, Debug field order, and family-identity inputs remain canonical.
+    /// Phases: joins source facts, constructs capability plans, computes identities, then validates.
     pub(super) fn join(
         analyzed: &crate::source_analysis::AnalyzedGrammar,
         cfg: &CargoCfgSnapshot,
@@ -660,6 +708,13 @@ impl EmissionPlan {
         Ok(plan)
     }
 
+    /// Returns the validate value.
+    ///
+    /// # Long-function contract
+    ///
+    /// Rationale: checks the complete cross-capability contract before any bytes or files become observable.
+    /// Invariants: semantic decisions are consumed rather than recomputed and every family identity matches its frozen plan.
+    /// Phases: validates ABI and capabilities, plan families, names, then feature-selected payloads.
     pub(super) fn validate(&self) -> Result<(), String> {
         if self.identity.is_empty() || self.nodes.is_empty() {
             return Err("the Emission plan lacks a Generation identity or Nodes".to_owned());
@@ -815,6 +870,7 @@ impl EmissionPlan {
         Ok(())
     }
 
+    /// Returns the validate plan families value.
     fn validate_plan_families(&self) -> Result<(), String> {
         if self.plan_families.configured_traits
             != configured_trait_plan_identity(&self.nodes, &self.tokens)
