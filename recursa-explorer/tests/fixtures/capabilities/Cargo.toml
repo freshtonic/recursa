@@ -1,0 +1,17 @@
+[package]
+name = "recursa-explorer-capabilities-fixture"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+build = "build.rs"
+
+[features]
+default = ["explorer"]
+explorer = ["recursa/explorer", "recursa-codegen/explorer"]
+
+[dependencies]
+recursa = { path = "../../../../recursa", features = ["arbitrary", "diagrams"] }
+
+[build-dependencies]
+recursa-codegen = { path = "../../../../recursa-codegen", features = ["diagrams"] }
