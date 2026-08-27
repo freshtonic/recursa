@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const FIXTURE: &str = "tests/fixtures/m4/lexing";
+const FIXTURE: &str = "tests/fixtures/generation/lexing";
 
 #[test]
 fn a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text() {

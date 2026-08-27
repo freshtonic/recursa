@@ -1,6 +1,6 @@
 #![allow(
     dead_code,
-    reason = "private M3 materialization seam is consumed by final source lowering"
+    reason = "private source analysis materialization seam is consumed by final source lowering"
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -502,7 +502,7 @@ impl Materializer {
     fn lexical_plan(&self) -> &LexicalPlan {
         self.lexical_plan
             .as_ref()
-            .expect("M2 projection runs only after successful lexical planning")
+            .expect("semantic analysis projection runs only after successful lexical planning")
     }
 
     fn resolved(&self) -> &ResolvedSourceGrammar {
@@ -557,7 +557,7 @@ impl Materializer {
                 lowered: None,
             };
         }
-        let (grammar, lowering_map) = self.project_m2();
+        let (grammar, lowering_map) = self.project_normalized_grammar();
         MaterializationReport {
             lexical_diagnostics: Vec::new(),
             diagnostics: Vec::new(),
@@ -565,7 +565,7 @@ impl Materializer {
                 source_modeled: self.source_modeled,
                 lexical_plan: self
                     .lexical_plan
-                    .expect("successful lexical planning precedes M2 projection"),
+                    .expect("successful lexical planning precedes semantic analysis projection"),
                 applications: self.applications,
                 grammar,
                 lowering_map,
@@ -1795,7 +1795,7 @@ impl Materializer {
         })
     }
 
-    fn project_m2(&self) -> (GrammarDescription, LoweringMap) {
+    fn project_normalized_grammar(&self) -> (GrammarDescription, LoweringMap) {
         let mut grammar = GrammarDescription::new(
             self.resolved()
                 .build_inputs
@@ -1833,7 +1833,7 @@ impl Materializer {
             let kind = grammar.push_kind(KindDescription::new(&name, declaration));
             assert_eq!(
                 kind, kind_plan.id,
-                "M2 KindId must equal the lexical KindId"
+                "semantic analysis KindId must equal the lexical KindId"
             );
             let atom = grammar.push_atom(AtomDescription::new(
                 &name,
@@ -1900,7 +1900,7 @@ impl Materializer {
                 lowered: TypeId::new(
                     (terminal_type_count + application.id.index())
                         .try_into()
-                        .expect("M2 type ID overflow"),
+                        .expect("normalized type ID overflow"),
                 ),
             })
             .collect::<Vec<_>>();
@@ -1919,7 +1919,7 @@ impl Materializer {
             let owner = TypeId::new(
                 (terminal_type_count + application.id.index())
                     .try_into()
-                    .expect("M2 type ID overflow"),
+                    .expect("normalized type ID overflow"),
             );
             let shape = match &application.body {
                 MaterializedNodeBody::Struct(elements)
@@ -2195,7 +2195,7 @@ impl Materializer {
                 let id = TypeId::new(
                     (terminal_type_count + self.applications.len() + units.len())
                         .try_into()
-                        .expect("M2 attachment type ID overflow"),
+                        .expect("semantic analysis attachment type ID overflow"),
                 );
                 units.push(AttachmentUnitProjection {
                     id,
@@ -2291,7 +2291,7 @@ impl Materializer {
             Terminal::Node(application) => TypeId::new(
                 (terminal_type_count + application.index())
                     .try_into()
-                    .expect("M2 type ID overflow"),
+                    .expect("normalized type ID overflow"),
             ),
             Terminal::ContentToken(token) => content_types[&token],
         };
@@ -2370,7 +2370,7 @@ impl Materializer {
                         Terminal::Node(application) => TypeId::new(
                             (terminal_type_count + application.index())
                                 .try_into()
-                                .expect("M2 type ID overflow"),
+                                .expect("normalized type ID overflow"),
                         ),
                         Terminal::ContentToken(token) => content_types[&token],
                     };
@@ -2733,7 +2733,10 @@ struct Root<'input> {
                     && diagnostic.message.contains("closed Pretty boundary")
             })
             .expect("the unsafe concrete attachment boundary is diagnosed");
-        assert_eq!(crate::m3::materialization_code(diagnostic.kind), "RCA3211");
+        assert_eq!(
+            crate::source_analysis::materialization_code(diagnostic.kind),
+            "RCA3211"
+        );
         assert!(!unsafe_report.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == MaterializationDiagnosticKind::InapplicablePrettyHint
                 && diagnostic.message.contains("closed Pretty boundary")
@@ -2885,11 +2888,14 @@ struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
         code: &str,
     ) {
         assert_eq!(diagnostic.kind, kind);
-        assert_eq!(crate::m3::materialization_code(diagnostic.kind), code);
+        assert_eq!(
+            crate::source_analysis::materialization_code(diagnostic.kind),
+            code
+        );
     }
 
     #[test]
-    fn contextual_keyword_targets_are_concrete_m2_kind_sets_before_analysis() {
+    fn contextual_keyword_targets_are_concrete_kind_sets_before_semantic_analysis() {
         let report = materialize(resolve(
             r#"
 recursa::grammar! {
@@ -2932,7 +2938,7 @@ struct Projection {
             assert_eq!(
                 target_kind_set(&lowered.grammar, correlation.lowered),
                 target.accepted_kinds(),
-                "{} must reach M2 as its exact base-plus-admissions set",
+                "{} must reach semantic analysis as its exact base-plus-admissions set",
                 target.name,
             );
             assert_eq!(
@@ -2997,7 +3003,7 @@ struct Root {
                     .content_targets
                     .iter()
                     .find(|correlation| correlation.semantic == target.semantic)
-                    .expect("every parser target reaches M2")
+                    .expect("every parser target reaches semantic analysis")
                     .lowered
                     .index()
             })
@@ -3194,7 +3200,7 @@ struct Root<'input> {
     }
 
     #[test]
-    fn preserves_box_placement_and_exact_supported_cardinalities_in_m2() {
+    fn preserves_box_placement_and_exact_supported_cardinalities_in_normalized_grammar() {
         let resolved = resolve(
             r#"
 recursa::grammar! { module = crate::shapes }
@@ -3240,7 +3246,7 @@ struct Root {
     }
 
     #[test]
-    fn rejects_open_unsupported_cyclic_and_invalid_closed_types_before_m2() {
+    fn rejects_open_unsupported_cyclic_and_invalid_closed_types_before_semantic_analysis() {
         let invalid_containers = materialize(resolve(
             r#"
 recursa::grammar! { module = crate::invalid }
@@ -3263,11 +3269,9 @@ recursa::grammar! { module = crate::invalid }
                 .collect::<Vec<_>>(),
             [MaterializationDiagnosticKind::InvalidContainer; 5],
         );
-        assert!(
-            invalid_containers.diagnostics.iter().all(|diagnostic| {
-                crate::m3::materialization_code(diagnostic.kind) == "RCA3206"
-            })
-        );
+        assert!(invalid_containers.diagnostics.iter().all(|diagnostic| {
+            crate::source_analysis::materialization_code(diagnostic.kind) == "RCA3206"
+        }));
 
         let unsupported = materialize(resolve(
             r#"
@@ -3300,7 +3304,7 @@ recursa::grammar! { module = crate::invalid }
             unsupported
                 .diagnostics
                 .iter()
-                .map(|diagnostic| crate::m3::materialization_code(diagnostic.kind))
+                .map(|diagnostic| crate::source_analysis::materialization_code(diagnostic.kind))
                 .collect::<Vec<_>>(),
             ["RCA3202", "RCA3204", "RCA3204", "RCA3203"],
         );
@@ -3382,7 +3386,7 @@ recursa::grammar! { module = crate::invalid }
     }
 
     #[test]
-    fn arithmetic_generic_application_reaches_a_successful_m2_analysis() {
+    fn arithmetic_generic_application_reaches_successful_semantic_analysis() {
         let resolved = resolve(
             r#"
 recursa::grammar! {
@@ -3558,7 +3562,7 @@ enum Choice {
     }
 
     #[test]
-    fn all_atom_pratt_remains_pratt_in_m2() {
+    fn all_atom_pratt_remains_pratt_in_normalized_grammar() {
         let report = materialize(resolve(
             r#"
 recursa::grammar! { module = crate::atoms }
@@ -3754,8 +3758,16 @@ enum Expr {
                 .count(),
             2,
         );
-        assert_eq!(variants[2].sites.len(), 2, "lhs is not an M2 parse site");
-        assert_eq!(variants[3].sites.len(), 1, "lhs is not an M2 parse site");
+        assert_eq!(
+            variants[2].sites.len(),
+            2,
+            "lhs is not a normalized parse site"
+        );
+        assert_eq!(
+            variants[3].sites.len(),
+            1,
+            "lhs is not a normalized parse site"
+        );
     }
 
     #[test]
@@ -3787,7 +3799,10 @@ enum Expr {{ {invalid_variant} }}
                     diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
                 })
                 .unwrap();
-            assert_eq!(crate::m3::materialization_code(diagnostic.kind), "RCA3209");
+            assert_eq!(
+                crate::source_analysis::materialization_code(diagnostic.kind),
+                "RCA3209"
+            );
         }
     }
 
@@ -3954,7 +3969,7 @@ enum Expr {
     }
 
     #[test]
-    fn projects_field_attachments_as_private_m2_sequence_units() {
+    fn projects_field_attachments_as_private_normalized_sequence_units() {
         let report = materialize(resolve(
             r#"
 recursa::grammar! { module = crate::attached }
@@ -4023,11 +4038,12 @@ struct Root {
             "{:?}",
             analysis.diagnostics
         );
-        let projection =
-            crate::m3_projection::canonical_semantic_projection(&crate::m3::AnalyzedGrammar {
+        let projection = crate::semantic_projection::canonical_semantic_projection(
+            &crate::source_analysis::AnalyzedGrammar {
                 lowered: lowered.clone(),
                 analysis: analysis.clone(),
-            });
+            },
+        );
         assert!(
             !projection.contains("__recursa_attachment"),
             "private attachment units do not become semantic/debug identities",
@@ -4081,11 +4097,9 @@ struct Root {
             "{:?}",
             analysis.diagnostics
         );
-        let projection =
-            crate::m3_projection::canonical_semantic_projection(&crate::m3::AnalyzedGrammar {
-                lowered,
-                analysis,
-            });
+        let projection = crate::semantic_projection::canonical_semantic_projection(
+            &crate::source_analysis::AnalyzedGrammar { lowered, analysis },
+        );
         assert!(projection.contains("type named::__recursa_attachment = sequence("));
         assert!(projection.contains("target=named::__recursa_attachment"));
         assert!(projection.contains("facts named::__recursa_attachment "));
@@ -4119,11 +4133,9 @@ struct Root {
             "{:?}",
             analysis.diagnostics
         );
-        let projection =
-            crate::m3_projection::canonical_semantic_projection(&crate::m3::AnalyzedGrammar {
-                lowered,
-                analysis,
-            });
+        let projection = crate::semantic_projection::canonical_semantic_projection(
+            &crate::source_analysis::AnalyzedGrammar { lowered, analysis },
+        );
         for ordinal in 0..9 {
             assert!(
                 projection.contains(&format!("ordinals::Root::element{ordinal}")),

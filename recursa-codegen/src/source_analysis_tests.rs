@@ -6,22 +6,23 @@ pub(crate) mod tests {
 
     struct CargoFile(std::fs::File);
 
-    impl crate::m3::CargoOutput for CargoFile {
+    impl crate::source_analysis::CargoOutput for CargoFile {
         fn emit(&mut self, instruction: String) {
             writeln!(self.0, "{instruction}").expect("write Cargo build-script directive");
         }
     }
 
     fn fixture(source: &str) -> tempfile::TempDir {
-        let package = tempfile::tempdir().expect("temporary M3 fixture");
-        std::fs::write(package.path().join("grammar.rs"), source).expect("write M3 fixture");
+        let package = tempfile::tempdir().expect("temporary source-analysis fixture");
+        std::fs::write(package.path().join("grammar.rs"), source)
+            .expect("write source-analysis fixture");
         package
     }
 
     fn assert_projection(name: &str) {
-        let actual = crate::m3_projection_tests::projection(name);
-        let path = crate::m3_projection_tests::crate_root()
-            .join("tests/fixtures/m3/projections")
+        let actual = crate::semantic_projection_tests::projection(name);
+        let path = crate::semantic_projection_tests::crate_root()
+            .join("tests/fixtures/source-analysis/projections")
             .join(format!("{name}.semantic"));
         let expected = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
@@ -31,8 +32,11 @@ pub(crate) mod tests {
     #[test]
     fn global_discovery_user_errors_keep_authored_codes_without_fabricated_locations() {
         let not_a_directory = tempfile::NamedTempFile::new().expect("manifest path fixture");
-        let invalid_manifest = crate::m3::analyze_source_tree(
-            crate::m3::M3Input::rust_2024(not_a_directory.path(), "grammar.rs"),
+        let invalid_manifest = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(
+                not_a_directory.path(),
+                "grammar.rs",
+            ),
             &mut Vec::new(),
         )
         .expect_err("a file cannot be used as the Cargo manifest directory");
@@ -47,8 +51,8 @@ pub(crate) mod tests {
 
         let package = fixture("recursa::grammar! { module = crate }");
         let absolute_root = package.path().join("grammar.rs");
-        let absolute_path = crate::m3::analyze_source_tree(
-            crate::m3::M3Input::new(
+        let absolute_path = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::new(
                 package.path(),
                 &absolute_root,
                 crate::lowering::RustEdition::Rust2024,
@@ -66,8 +70,8 @@ pub(crate) mod tests {
                 .is_none()
         );
 
-        let package_escape = crate::m3::analyze_source_tree(
-            crate::m3::M3Input::rust_2024(package.path(), "../outside.rs"),
+        let package_escape = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "../outside.rs"),
             &mut Vec::new(),
         )
         .expect_err("the selected root cannot escape the Cargo package");
@@ -95,11 +99,11 @@ struct Root {
 "#,
         );
         let mut cargo = Vec::new();
-        let error = crate::m3::analyze_source_tree(
-            crate::m3::M3Input::rust_2024(package.path(), "grammar.rs"),
+        let error = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut cargo,
         )
-        .expect_err("two unresolved references must stop before lowering and M2");
+        .expect_err("two unresolved references must stop before lowering and semantic analysis");
 
         assert_eq!(error.diagnostics().len(), 2);
         assert!(
@@ -128,11 +132,11 @@ struct Root {
 }
 "#,
         );
-        let error = crate::m3::analyze_source_tree(
-            crate::m3::M3Input::rust_2024(package.path(), "grammar.rs"),
+        let error = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
-        .expect_err("independent source-model failures must stop before materialization and M2");
+        .expect_err("independent source-model failures must stop before materialization and semantic analysis");
         assert_eq!(error.diagnostics().len(), 2);
         assert!(
             error
@@ -162,8 +166,8 @@ struct Root {
 }
 "#,
         );
-        let error = crate::m3::analyze_source_tree(
-            crate::m3::M3Input::rust_2024(package.path(), "grammar.rs"),
+        let error = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect_err("lexical and structural materialization failures share Lowering");
@@ -195,11 +199,11 @@ struct Root { missing: Missing }
 "#,
         );
         let mut cargo = Vec::new();
-        let error = crate::m3::analyze_source_tree(
-            crate::m3::M3Input::rust_2024(package.path(), "grammar.rs"),
+        let error = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut cargo,
         )
-        .expect_err("unresolved reference must fail M3");
+        .expect_err("unresolved reference must fail source analysis");
 
         assert_eq!(cargo, ["cargo::rerun-if-changed=grammar.rs"]);
         let rendered = error.to_string();
@@ -239,8 +243,8 @@ struct Root {
                 .expect("open Cargo output capture for writing"),
         );
 
-        let success = crate::m3::analyze_source_tree(
-            crate::m3::M3Input::rust_2024(package.path(), "grammar.rs"),
+        let success = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut cargo,
         )
         .expect("a nullable FOLLOW warning must coexist with analysis output");
@@ -290,8 +294,11 @@ struct Root { #[lex(pattern = r"\bword")] word: Word }
         for (source, selected_root) in cases {
             let package = fixture(source);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crate::m3::analyze_source_tree(
-                    crate::m3::M3Input::rust_2024(package.path(), selected_root),
+                crate::source_analysis::analyze_source_tree(
+                    crate::source_analysis::SourceAnalysisInput::rust_2024(
+                        package.path(),
+                        selected_root,
+                    ),
                     &mut Vec::new(),
                 )
             }));
@@ -302,7 +309,7 @@ struct Root { #[lex(pattern = r"\bword")] word: Word }
     }
 
     #[test]
-    fn m2_conflict_remedies_keep_typed_semantic_operands_without_ids() {
+    fn semantic_analysis_conflict_remedies_keep_typed_semantic_operands_without_ids() {
         let mut grammar = crate::GrammarDescription::new(
             "remedy-adaptation",
             0,
@@ -330,7 +337,7 @@ struct Root { #[lex(pattern = r"\bword")] word: Word }
             crate::ContainerShape::Direct,
         ));
 
-        let shared = crate::m3::adapt_conflict_remedy(
+        let shared = crate::source_analysis::adapt_conflict_remedy(
             &crate::ConflictRemedy::RestructureSharedPrefix { left, right },
             &grammar,
         );
@@ -339,7 +346,7 @@ struct Root { #[lex(pattern = r"\bword")] word: Word }
             crate::DiagnosticRemedy::RestructureSharedPrefix { left, right }
                 if left == "Expr::Left" && right == "Expr::Right"
         ));
-        let pratt = crate::m3::adapt_conflict_remedy(
+        let pratt = crate::source_analysis::adapt_conflict_remedy(
             &crate::ConflictRemedy::RestructurePrattSharedPrefix {
                 pratt: expr,
                 left,
@@ -355,7 +362,7 @@ struct Root { #[lex(pattern = r"\bword")] word: Word }
                 right,
             } if pratt == "Expr" && left == "Expr::Left" && right == "Expr::Right"
         ));
-        let nullable = crate::m3::adapt_conflict_remedy(
+        let nullable = crate::source_analysis::adapt_conflict_remedy(
             &crate::ConflictRemedy::ReviewNullableFollow { site },
             &grammar,
         );
@@ -398,38 +405,39 @@ struct Root { #[lex(pattern = r"\bword")] word: Word }
 
     #[test]
     fn projection_candidate_command_never_updates_reviewed_expectations() {
-        let root = crate::m3_projection_tests::crate_root()
+        let root = crate::semantic_projection_tests::crate_root()
             .parent()
             .expect("recursa-codegen has a workspace parent")
             .to_owned();
         let script =
-            std::fs::read_to_string(root.join("scripts/update-m3-projection-candidates.sh"))
+            std::fs::read_to_string(root.join("scripts/update-semantic-projection-candidates.sh"))
                 .expect("read candidate command");
         let writer =
-            std::fs::read_to_string(root.join("recursa-codegen/src/m3_projection_tests.rs"))
+            std::fs::read_to_string(root.join("recursa-codegen/src/semantic_projection_tests.rs"))
                 .expect("read candidate writer");
 
-        assert!(script.contains("target/m3-projection-candidates"));
+        assert!(script.contains("target/semantic-projection-candidates"));
         assert!(script.contains("--ignored --exact --nocapture"));
-        assert!(writer.contains("target/m3-projection-candidates.staging"));
+        assert!(writer.contains("target/semantic-projection-candidates.staging"));
         assert!(!writer.contains("std::fs::write(expected"));
         assert!(!writer.contains("std::fs::rename(&staging, &expected"));
     }
 
     #[test]
-    fn m3_stays_private_and_m4_owns_the_generation_publication_surface() {
-        let root = crate::m3_projection_tests::crate_root();
+    fn source_analysis_stays_private_and_generation_owns_the_publication_surface() {
+        let root = crate::semantic_projection_tests::crate_root();
         let lib = std::fs::read_to_string(root.join("src/lib.rs")).expect("read public seam");
-        let m3 = std::fs::read_to_string(root.join("src/m3.rs")).expect("read M3 implementation");
+        let source_analysis = std::fs::read_to_string(root.join("src/source_analysis.rs"))
+            .expect("read source-analysis implementation");
         let generation = std::fs::read_to_string(root.join("src/generation_compound.rs"))
-            .expect("read M4 generation implementation");
+            .expect("read generation implementation");
 
-        assert!(!lib.contains("pub mod m3"));
+        assert!(!lib.contains("pub mod source_analysis"));
         assert!(lib.contains("mod generation_compound;"));
         assert!(lib.contains("pub use generation_compound::{Generation, generate};"));
-        assert!(!m3.contains("OUT_DIR"));
-        assert!(!m3.contains("RECURSA_GENERATION"));
-        assert!(!m3.contains("fs::rename"));
+        assert!(!source_analysis.contains("OUT_DIR"));
+        assert!(!source_analysis.contains("RECURSA_GENERATION"));
+        assert!(!source_analysis.contains("fs::rename"));
         assert!(generation.contains("pub fn generate"));
         assert!(generation.contains("OUT_DIR"));
         assert!(!generation.contains("rustc-env=RECURSA_GENERATION"));

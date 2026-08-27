@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const FIXTURE: &str = "tests/fixtures/m4/generic-applications";
+const FIXTURE: &str = "tests/fixtures/generation/generic-applications";
 
 #[test]
 fn a_generic_node_can_be_parsed_through_multiple_closed_applications() {

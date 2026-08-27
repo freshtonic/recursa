@@ -1,6 +1,6 @@
 #![allow(
     dead_code,
-    reason = "private M3 source-model seam is consumed by later pipeline tickets"
+    reason = "private source analysis source-model seam is consumed by later pipeline tickets"
 )]
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -4510,7 +4510,10 @@ struct Root;
             .iter()
             .find(|diagnostic| diagnostic.kind == kind)
             .unwrap_or_else(|| panic!("missing {kind:?} in {:?}", report.diagnostics));
-        assert_eq!(crate::m3::source_model_code(diagnostic.kind), code);
+        assert_eq!(
+            crate::source_analysis::source_model_code(diagnostic.kind),
+            code
+        );
     }
 
     #[test]
@@ -5260,7 +5263,7 @@ struct Leaf;
     }
 
     #[test]
-    fn rejects_every_invalid_positional_attachment_before_m2() {
+    fn rejects_every_invalid_positional_attachment_before_semantic_analysis() {
         let cases = [
             (
                 r#"
@@ -5370,7 +5373,7 @@ struct Root { #[sep] values: Vec<Leaf> }
                 report.diagnostics,
             );
             assert_code(&report, expected, code);
-            emitted_codes.push(crate::m3::source_model_code(expected));
+            emitted_codes.push(crate::source_analysis::source_model_code(expected));
         }
 
         assert_eq!(
@@ -6365,7 +6368,7 @@ struct Root<'input> {
     }
 
     #[test]
-    fn invalid_pretty_spacing_is_reported_during_m3() {
+    fn invalid_pretty_spacing_is_reported_during_source_analysis() {
         let report = model(
             r#"
 recursa::grammar! { module = crate, derives(Pretty) }

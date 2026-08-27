@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const FIXTURE: &str = "tests/fixtures/m4/legacy-grammars";
+const FIXTURE: &str = "tests/fixtures/generation/legacy-grammars";
 
 #[test]
 fn all_six_frozen_legacy_grammar_suites_pass() {

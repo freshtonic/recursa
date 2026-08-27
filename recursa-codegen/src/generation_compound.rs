@@ -1,4 +1,4 @@
-//! M4 source-aware generation for authored Node shapes.
+//! Source-aware generation for authored Node shapes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -21,7 +21,6 @@ use crate::decision_plan::{
 };
 use crate::lexical::{KeywordRecognition, LexicalMatcher, LexicalPriority, TokenKindIdentity};
 use crate::lowering::{ModuleId, NodeId, TokenDefinitionId, TokenUseId};
-use crate::m3::{CargoOutput, M3Input, analyze_source_tree, internal_generate_error};
 use crate::materialization::{
     ClosedType, MaterializedApplicationId, MaterializedElement, MaterializedFixedAttachment,
     MaterializedNodeApplication, MaterializedNodeBody, MaterializedPrattLed,
@@ -33,6 +32,9 @@ use crate::resolution::{
     ResolvedGenericArgument, ResolvedNode, ResolvedNodeBody, ResolvedSourceGrammar, ResolvedType,
     ResolvedTypeKind, ResolvedVariantId, SemanticOwner, SemanticTarget,
 };
+use crate::source_analysis::{
+    CargoOutput, SourceAnalysisInput, analyze_source_tree, internal_generate_error,
+};
 use crate::source_model::{
     ConfiguredTraitRecipe, GrammarElement, Node as SourceNode, NodeBody as SourceNodeBody,
     PrettyBreak, PrettyGroup, PrettyHints, PrettySeparatorPosition, PrettySpacing,
@@ -42,7 +44,7 @@ use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, span_range};
 use crate::{AtomExpression, FirstPosition, KindSet, SiteId, TextEquivalence, TextPredicate};
 
 const PRIVATE_PROTOCOL: u32 = 1;
-const EMITTER_IDENTITY: &str = "recursa-m4-compound-v3";
+const EMITTER_IDENTITY: &str = "recursa-generation-compound-v3";
 const SELECTED_GENERATION: &str = "recursa-selected.rs";
 const DEBUG_DIRECTORY_ENVIRONMENT: &str = "RECURSA_DEBUG_DIR";
 const DEBUG_BUNDLE_FORMAT: &str = "recursa-generated-code-debug-v1";
@@ -82,7 +84,7 @@ pub fn generate(root: impl AsRef<Path>) -> Result<Generation, GenerateError> {
     let debug_directory = env::var_os(DEBUG_DIRECTORY_ENVIRONMENT).map(PathBuf::from);
     let cfg = CargoCfgSnapshot::from_cargo_environment(env::vars_os());
     let success = analyze_source_tree(
-        M3Input::new(
+        SourceAnalysisInput::new(
             &manifest_dir,
             root.as_ref(),
             crate::lowering::RustEdition::Rust2024,
@@ -1094,14 +1096,15 @@ fn publicly_reachable(
 }
 
 impl EmissionPlan {
-    fn join(analyzed: &crate::m3::AnalyzedGrammar, cfg: &CargoCfgSnapshot) -> Result<Self, String> {
+    fn join(
+        analyzed: &crate::source_analysis::AnalyzedGrammar,
+        cfg: &CargoCfgSnapshot,
+    ) -> Result<Self, String> {
         let lowered = &analyzed.lowered;
         let resolved = lowered.source_modeled.resolved();
-        let output = analyzed
-            .analysis
-            .output
-            .as_ref()
-            .ok_or_else(|| "successful M3 output lacks M2 decisions".to_owned())?;
+        let output = analyzed.analysis.output.as_ref().ok_or_else(|| {
+            "successful source analysis output lacks semantic analysis decisions".to_owned()
+        })?;
         let decisions = output.decisions();
         let module_anchor = emitted_crate_path(&resolved.build_inputs.module_anchor.segments)?;
         let facade = emitted_ident(&resolved.build_inputs.facade.ident)?;
@@ -1161,12 +1164,14 @@ impl EmissionPlan {
                 .content_targets
                 .iter()
                 .find(|correlation| correlation.semantic == content.id)
-                .ok_or_else(|| format!("content token `{}` lacks an M2 type", content.ident))?
+                .ok_or_else(|| {
+                    format!("content token `{}` lacks a normalized type", content.ident)
+                })?
                 .lowered;
             let TypeShape::Token { atom, .. } = &lowered.grammar.types[content_type.index()].shape
             else {
                 return Err(format!(
-                    "content token `{}` did not lower to an M2 token type",
+                    "content token `{}` did not lower to a normalized token type",
                     content.ident
                 ));
             };
@@ -1365,7 +1370,7 @@ impl EmissionPlan {
             })
             .sum::<usize>();
         let frozen_parse_identity = parse_plan_identity(&nodes);
-        // M3 has already decided whether each fixed token remains a standalone
+        // source analysis has already decided whether each fixed token remains a standalone
         // rule or is recognized through one or more proven carriers. Preserve
         // that decision here instead of reconstructing fixed rules from source.
         let mut lexical_rules: Vec<LexRulePlan> = Vec::new();
@@ -1810,7 +1815,10 @@ impl EmissionPlan {
         if self.instrumentation.frozen_dispatch_nodes_consumed != frozen_nodes
             || self.plan_families.parse != parse_plan_identity(&self.nodes)
         {
-            return Err("the emitted predictive plan diverges from frozen M2 decisions".to_owned());
+            return Err(
+                "the emitted predictive plan diverges from frozen semantic analysis decisions"
+                    .to_owned(),
+            );
         }
         Ok(())
     }
@@ -4436,7 +4444,7 @@ fn plan_node(
         .applications
         .iter()
         .find(|correlation| correlation.application == application.id)
-        .ok_or_else(|| format!("Node `{}` lacks an M2 type correlation", node.ident))?
+        .ok_or_else(|| format!("Node `{}` lacks a normalized type correlation", node.ident))?
         .lowered;
     let source = &lowered.source_modeled.resolved().tree.files[node.source.index()];
     let physical_source = normalized_source_identity(&source.path)?;
@@ -4528,7 +4536,9 @@ fn plan_node(
                         correlation.application == application.id
                             && correlation.variant == variant.resolved_variant
                     })
-                    .ok_or_else(|| "materialized enum variant lacks M2 correlation".to_owned())?;
+                    .ok_or_else(|| {
+                        "materialized enum variant lacks lowering correlation".to_owned()
+                    })?;
                 let branch = dispatch
                     .branches()
                     .iter()
@@ -4639,7 +4649,7 @@ fn plan_node(
         )?)),
         _ => {
             return Err(format!(
-                "Node `{}` source shape and frozen M2 shape disagree",
+                "Node `{}` source shape and frozen semantic analysis shape disagree",
                 node.ident
             ));
         }
@@ -5584,7 +5594,7 @@ fn plan_pratt_node(
                 correlation.application == application.id
                     && correlation.variant == common.resolved_variant
             })
-            .ok_or_else(|| "materialized Pratt variant lacks M2 correlation".to_owned())?;
+            .ok_or_else(|| "materialized Pratt variant lacks lowering correlation".to_owned())?;
         let semantic = semantic_variants
             .iter()
             .find(|variant| variant.declaration == correlation.lowered)
@@ -5936,7 +5946,7 @@ fn plan_elements(
 ) -> Result<Vec<ElementParsePlan>, String> {
     if elements.len() != sites.len() {
         return Err(format!(
-            "Node `{}` has mismatched source elements and M2 parse sites",
+            "Node `{}` has mismatched source elements and normalized parse sites",
             node.ident
         ));
     }
@@ -6213,9 +6223,11 @@ fn plan_fixed_attachment(
         .attachments
         .iter()
         .find(|correlation| correlation.outer == outer_site)
-        .ok_or_else(|| "a fixed attachment lacks its typed M2 correlation".to_owned())?;
+        .ok_or_else(|| "a fixed attachment lacks its typed lowering correlation".to_owned())?;
     if correlation.sites.len() != attachment.before.len() + 1 + attachment.after.len() {
-        return Err("a fixed attachment has mismatched source and M2 unit elements".to_owned());
+        return Err(
+            "a fixed attachment has mismatched source and normalized unit elements".to_owned(),
+        );
     }
     let capture = field
         .capture
@@ -14042,7 +14054,7 @@ mod tests {
     }
 
     #[test]
-    fn emission_failures_use_the_registered_m4_code_and_preserve_detail() {
+    fn emission_failures_use_the_registered_generation_code_and_preserve_detail() {
         let error = failure(
             Path::new("src/grammar.rs"),
             "the frozen emission plan is incomplete",
@@ -14126,7 +14138,7 @@ struct B;
         .expect("write predictive plan fixture");
         let cfg = CargoCfgSnapshot::default();
         let success = analyze_source_tree(
-            M3Input::rust_2024(package.path(), "grammar.rs"),
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect("analyze predictive plan fixture");
@@ -14160,12 +14172,14 @@ struct B;
     }
 
     fn joined_pratt_fixture() -> (tempfile::TempDir, EmissionPlan) {
-        joined_pratt_fixture_from(include_str!("../tests/fixtures/m4/pratt/src/grammar.rs"))
+        joined_pratt_fixture_from(include_str!(
+            "../tests/fixtures/generation/pratt/src/grammar.rs"
+        ))
     }
 
     #[cfg(feature = "diagrams")]
     fn joined_pratt_diagram_fixture() -> (tempfile::TempDir, EmissionPlan) {
-        let source = include_str!("../tests/fixtures/m4/pratt/src/grammar.rs").replacen(
+        let source = include_str!("../tests/fixtures/generation/pratt/src/grammar.rs").replacen(
             "module = crate::grammar,",
             "module = crate::grammar,\n    diagrams,",
             1,
@@ -14177,7 +14191,7 @@ struct B;
         let package = tempfile::tempdir().expect("temporary Pratt plan fixture");
         fs::write(package.path().join("grammar.rs"), source).expect("write Pratt plan fixture");
         let success = analyze_source_tree(
-            M3Input::rust_2024(package.path(), "grammar.rs"),
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect("analyze Pratt plan fixture");
@@ -14537,11 +14551,11 @@ struct B;
         let package = tempfile::tempdir().expect("temporary Pretty authority fixture");
         fs::write(
             package.path().join("grammar.rs"),
-            include_str!("../tests/fixtures/m4/pratt/src/grammar.rs"),
+            include_str!("../tests/fixtures/generation/pratt/src/grammar.rs"),
         )
         .expect("write Pretty authority fixture");
         let success = analyze_source_tree(
-            M3Input::rust_2024(package.path(), "grammar.rs"),
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect("analyze Pretty authority fixture");
@@ -14640,7 +14654,7 @@ struct B;
         )
         .expect("write typed Pratt Pretty fixture");
         let success = analyze_source_tree(
-            M3Input::rust_2024(package.path(), "grammar.rs"),
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect("analyze typed Pratt Pretty fixture");
@@ -14827,7 +14841,7 @@ struct B;
     #[test]
     fn recursive_concrete_pretty_impls_do_not_publish_cyclic_child_bounds() {
         let package = tempfile::tempdir().expect("temporary recursive Pretty fixture");
-        let source = include_str!("../tests/fixtures/m3/json/grammar.rs").replacen(
+        let source = include_str!("../tests/fixtures/source-analysis/json/grammar.rs").replacen(
             "recursa::grammar! {",
             "recursa::grammar! {\n    derives(Pretty),",
             1,
@@ -14835,7 +14849,7 @@ struct B;
         fs::write(package.path().join("grammar.rs"), source)
             .expect("write recursive Pretty fixture");
         let success = analyze_source_tree(
-            M3Input::rust_2024(package.path(), "grammar.rs"),
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect("analyze recursive Pretty fixture");
@@ -14860,13 +14874,13 @@ struct B;
 
     #[test]
     fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
-        let source = include_str!("../tests/fixtures/m4/repetitions/src/grammar.rs.in")
+        let source = include_str!("../tests/fixtures/generation/repetitions/src/grammar.rs.in")
             .replace("__RECURSA_SPANS_MODE__", "off");
         let package = tempfile::tempdir().expect("temporary Pretty hint authority fixture");
         fs::write(package.path().join("grammar.rs"), source)
             .expect("write Pretty hint authority fixture");
         let success = analyze_source_tree(
-            M3Input::rust_2024(package.path(), "grammar.rs"),
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect("analyze Pretty hint authority fixture");
@@ -15079,7 +15093,7 @@ struct B;
         )
         .expect("write word-separator authority fixture");
         let success = analyze_source_tree(
-            M3Input::rust_2024(package.path(), "grammar.rs"),
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect("analyze word-separator authority fixture");
@@ -15192,7 +15206,7 @@ struct B;
         )
         .expect("write generic top-level fixture");
         let success = analyze_source_tree(
-            M3Input::rust_2024(package.path(), "grammar.rs"),
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect("analyze generic top-level fixture");
@@ -15429,7 +15443,7 @@ struct Root {
         )
         .unwrap();
         let success = analyze_source_tree(
-            M3Input::rust_2024(package.path(), "grammar.rs"),
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect("warnings retain analyzable output");

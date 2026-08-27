@@ -1,6 +1,6 @@
 #![allow(
     dead_code,
-    reason = "private M3 seam is consumed by later source-discovery and generation tickets"
+    reason = "private source analysis seam is consumed by later source-discovery and generation tickets"
 )]
 
 use std::collections::BTreeSet;
@@ -131,7 +131,7 @@ impl AnalyzedGrammar {
         for (index, ty) in grammar.types.iter().enumerate() {
             let first = output
                 .first(TypeId::new(index.try_into().expect("type index overflow")))
-                .expect("M2 returns FIRST facts for every type");
+                .expect("semantic analysis returns FIRST facts for every type");
             let kinds = first
                 .kinds()
                 .iter()
@@ -348,7 +348,7 @@ pub(crate) struct LoweringMap {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SourceFileCorrelation {
     pub(crate) source: SourceId,
-    pub(crate) m2_source: SourceId,
+    pub(crate) lowered: SourceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -474,18 +474,16 @@ impl LoweringMap {
             |entry| entry.source.index(),
         )?;
         validate_total(
-            "M2 location",
+            "semantic analysis location",
             grammar.locations.len(),
             &self.locations,
             |entry| entry.lowered.index(),
         )?;
 
         validate_targets(
-            "M2 source",
+            "semantic analysis source",
             grammar.source_count as usize,
-            self.source_files
-                .iter()
-                .map(|entry| entry.m2_source.index()),
+            self.source_files.iter().map(|entry| entry.lowered.index()),
         )?;
         validate_unique_targets(
             "Node type",
@@ -504,7 +502,7 @@ impl LoweringMap {
             .chain(self.token_definitions.iter().map(|entry| entry.ty.index()))
             .collect::<BTreeSet<_>>();
         if all_type_origins != (0..grammar.types.len()).collect() {
-            return Err("M2 type origins are not total and one-to-one".to_owned());
+            return Err("normalized type origins are not total and one-to-one".to_owned());
         }
         validate_targets(
             "element site",
@@ -526,14 +524,16 @@ impl LoweringMap {
                 .map(|entry| entry.atom.index()),
         )?;
         validate_targets(
-            "M2 declaration",
+            "semantic analysis declaration",
             grammar.declarations.len(),
             self.declarations.iter().map(|entry| entry.lowered.index()),
         )?;
 
         for correlation in &self.source_files {
-            if correlation.source != correlation.m2_source {
-                return Err("M2 SourceId does not correspond to its source file".to_owned());
+            if correlation.source != correlation.lowered {
+                return Err(
+                    "semantic analysis SourceId does not correspond to its source file".to_owned(),
+                );
             }
         }
         if source.grammar.module.index() >= source.modules.len()
@@ -544,7 +544,9 @@ impl LoweringMap {
         if grammar.text_equivalence != source.grammar.text_equivalence
             || grammar.max_lookahead != source.grammar.max_lookahead
         {
-            return Err("M2 grammar configuration differs from its source origin".to_owned());
+            return Err(
+                "semantic analysis grammar configuration differs from its source origin".to_owned(),
+            );
         }
         if grammar.name != "crate"
             || !path_is(
@@ -552,7 +554,9 @@ impl LoweringMap {
                 &["crate"],
             )
         {
-            return Err("M2 grammar anchor differs from its source origin".to_owned());
+            return Err(
+                "semantic analysis grammar anchor differs from its source origin".to_owned(),
+            );
         }
         for module in &source.modules {
             if module.file.index() >= source.files.len()
@@ -593,11 +597,11 @@ impl LoweringMap {
                 .nodes
                 .iter()
                 .find(|entry| entry.source == node.id)
-                .ok_or_else(|| "Node has no M2 type origin".to_owned())?;
+                .ok_or_else(|| "Node has no normalized type origin".to_owned())?;
             let description = &grammar.types[correlation.lowered.index()];
             let declaration = lowered_declaration(self, node.declaration)?;
             let TypeShape::Sequence { sites } = &description.shape else {
-                return Err("source Node does not map to an M2 sequence type".to_owned());
+                return Err("source Node does not map to a normalized sequence type".to_owned());
             };
             let expected_sites = node
                 .elements
@@ -607,7 +611,7 @@ impl LoweringMap {
                         .iter()
                         .find(|entry| entry.source == *element)
                         .map(|entry| entry.lowered)
-                        .ok_or_else(|| "Node element has no M2 site origin".to_owned())
+                        .ok_or_else(|| "Node element has no normalized site origin".to_owned())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             if node.ident != description.name
@@ -628,7 +632,7 @@ impl LoweringMap {
                 .token_definitions
                 .iter()
                 .find(|entry| entry.source == token.id)
-                .ok_or_else(|| "token definition has no M2 origin".to_owned())?;
+                .ok_or_else(|| "token definition has no semantic analysis origin".to_owned())?;
             let declaration = lowered_declaration(self, token.declaration)?;
             let kind = &grammar.kinds[correlation.kind.index()];
             let atom = &grammar.atoms[correlation.atom.index()];
@@ -671,13 +675,13 @@ impl LoweringMap {
                 .elements
                 .iter()
                 .find(|entry| entry.source == element.id)
-                .ok_or_else(|| "grammar element has no M2 site origin".to_owned())?;
+                .ok_or_else(|| "grammar element has no normalized site origin".to_owned())?;
             let site = &grammar.sites[correlation.lowered.index()];
             let owner = self
                 .nodes
                 .iter()
                 .find(|entry| entry.source == element.node)
-                .ok_or_else(|| "element owner has no M2 type origin".to_owned())?
+                .ok_or_else(|| "element owner has no normalized type origin".to_owned())?
                 .lowered;
             let token_use = &source.token_uses[element.token_use.index()];
             if token_use.definition.index() >= source.token_definitions.len() {
@@ -687,7 +691,7 @@ impl LoweringMap {
                 .token_definitions
                 .iter()
                 .find(|entry| entry.source == token_use.definition)
-                .ok_or_else(|| "element token has no M2 type origin".to_owned())?;
+                .ok_or_else(|| "element token has no normalized type origin".to_owned())?;
             let target_definition = &source.token_definitions[token_use.definition.index()];
             if token_type_ident(&element.ty).map_err(|message| {
                 format!("stored grammar-element type is not a valid token reference: {message}")
@@ -740,10 +744,14 @@ impl LoweringMap {
                 .locations
                 .iter()
                 .find(|entry| entry.source == declaration.location)
-                .ok_or_else(|| "source declaration location has no M2 origin".to_owned())?
+                .ok_or_else(|| {
+                    "source declaration location has no semantic analysis origin".to_owned()
+                })?
                 .lowered;
             if grammar.declarations[lowered.index()].location != location {
-                return Err("M2 declaration differs from its source origin".to_owned());
+                return Err(
+                    "semantic analysis declaration differs from its source origin".to_owned(),
+                );
             }
         }
 
@@ -761,13 +769,13 @@ impl LoweringMap {
                 .token_uses
                 .iter()
                 .find(|entry| entry.source == token_use.id)
-                .ok_or_else(|| "token use has no M2 site origin".to_owned())?
+                .ok_or_else(|| "token use has no normalized site origin".to_owned())?
                 .lowered;
             let element_site = self
                 .elements
                 .iter()
                 .find(|entry| entry.source == token_use.element)
-                .ok_or_else(|| "token-use element has no M2 site origin".to_owned())?
+                .ok_or_else(|| "token-use element has no normalized site origin".to_owned())?
                 .lowered;
             if use_site != element_site {
                 return Err("token use and containing element map to different sites".to_owned());
@@ -791,10 +799,10 @@ impl LoweringMap {
             let source_location = source
                 .locations
                 .get(correlation.source.index())
-                .ok_or_else(|| "M2 location has no source origin".to_owned())?;
+                .ok_or_else(|| "semantic analysis location has no source origin".to_owned())?;
             let lowered = &grammar.locations[correlation.lowered.index()];
             if lowered.source != source_location.source || lowered.range != source_location.range {
-                return Err("M2 location differs from its source origin".to_owned());
+                return Err("semantic analysis location differs from its source origin".to_owned());
             }
         }
         Ok(())
@@ -810,7 +818,7 @@ fn lowered_declaration(
         .iter()
         .find(|entry| entry.source == source)
         .map(|entry| entry.lowered)
-        .ok_or_else(|| "source declaration has no M2 origin".to_owned())
+        .ok_or_else(|| "source declaration has no semantic analysis origin".to_owned())
 }
 
 fn validate_total<T>(
@@ -1188,20 +1196,27 @@ fn lower_semantics(
         .try_into()
         .expect("source count overflow");
 
-    let token_m2_location = grammar.push_location(source_m2_location(source, token.location));
-    let node_m2_location = grammar.push_location(source_m2_location(source, node.location));
-    let element_m2_location = grammar.push_location(source_m2_location(source, element.location));
-    let token_declaration =
-        grammar.push_declaration(Declaration::new(token.ident.to_string(), token_m2_location));
-    let node_declaration =
-        grammar.push_declaration(Declaration::new(node.ident.to_string(), node_m2_location));
+    let token_lowered_location =
+        grammar.push_location(source_lowered_location(source, token.location));
+    let node_lowered_location =
+        grammar.push_location(source_lowered_location(source, node.location));
+    let element_lowered_location =
+        grammar.push_location(source_lowered_location(source, element.location));
+    let token_declaration = grammar.push_declaration(Declaration::new(
+        token.ident.to_string(),
+        token_lowered_location,
+    ));
+    let node_declaration = grammar.push_declaration(Declaration::new(
+        node.ident.to_string(),
+        node_lowered_location,
+    ));
     let element_name = element
         .ident
         .as_ref()
         .map_or_else(|| "<unnamed>".to_owned(), ToString::to_string);
     let element_declaration = grammar.push_declaration(Declaration::new(
         format!("{}::{element_name}", node.ident),
-        element_m2_location,
+        element_lowered_location,
     ));
     let kind = grammar.push_kind(KindDescription::new(
         token.ident.to_string(),
@@ -1240,7 +1255,7 @@ fn lower_semantics(
     let map = LoweringMap {
         source_files: vec![SourceFileCorrelation {
             source: SourceId::new(0),
-            m2_source: SourceId::new(0),
+            lowered: SourceId::new(0),
         }],
         nodes: vec![NodeTypeCorrelation {
             source: node.id,
@@ -1277,22 +1292,22 @@ fn lower_semantics(
         locations: vec![
             LocationCorrelation {
                 source: token.location,
-                lowered: token_m2_location,
+                lowered: token_lowered_location,
             },
             LocationCorrelation {
                 source: node.location,
-                lowered: node_m2_location,
+                lowered: node_lowered_location,
             },
             LocationCorrelation {
                 source: element.location,
-                lowered: element_m2_location,
+                lowered: element_lowered_location,
             },
         ],
     };
     (grammar, map)
 }
 
-fn source_m2_location(source: &SourceModel, id: SourceLocationId) -> Location {
+fn source_lowered_location(source: &SourceModel, id: SourceLocationId) -> Location {
     let location = source.location(id);
     Location::new(location.source, location.range.clone())
 }
@@ -1484,7 +1499,7 @@ struct Root<'input> {
         lowered
             .lowering_map
             .validate(&lowered.source_model, &lowered.grammar)
-            .expect("all source/M2 correlations are total and bidirectional");
+            .expect("all source/lowering correlations are total and bidirectional");
         assert_eq!(lowered.grammar.text_equivalence, TextEquivalence::Sensitive);
         assert_eq!(lowered.grammar.max_lookahead, 1);
         assert_eq!(lowered.grammar.kinds.len(), 1);
@@ -1503,7 +1518,11 @@ struct Root<'input> {
             ContainerShape::Direct,
         );
         assert!(analyzed.analysis.diagnostics.is_empty());
-        let output = analyzed.analysis.output.as_ref().expect("M2 facts");
+        let output = analyzed
+            .analysis
+            .output
+            .as_ref()
+            .expect("semantic analysis facts");
         assert!(
             output
                 .follow(crate::TypeId::new(1))
@@ -1523,7 +1542,7 @@ struct Root<'input> {
             .analyzed
             .expect("valid grammar")
             .canonical_semantic_projection()
-            .expect("analyzed grammar has M2 output");
+            .expect("analyzed grammar has semantic analysis output");
         assert_eq!(
             projection,
             concat!(
@@ -1669,7 +1688,7 @@ struct Root<'input> {
     }
 
     #[test]
-    fn m2_failure_does_not_construct_an_analyzed_grammar() {
+    fn semantic_analysis_failure_does_not_construct_an_analyzed_grammar() {
         let invalid_analysis = VALID_SOURCE.replace("max_lookahead = 1", "max_lookahead = 0");
         let report = analyze_single_file(SingleFileInput {
             manifest_relative_path: Path::new("src/invalid-analysis.rs"),

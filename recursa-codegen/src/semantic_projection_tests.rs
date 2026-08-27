@@ -15,21 +15,23 @@ fn workspace_root() -> PathBuf {
 
 pub(crate) fn projection(name: &str) -> String {
     let success = analyzed(name);
-    crate::m3_projection::canonical_fixture_projection(name, &success.analyzed)
+    crate::semantic_projection::canonical_fixture_projection(name, &success.analyzed)
 }
 
-fn analyzed(name: &str) -> crate::m3::M3Success {
-    let fixture = crate_root().join("tests/fixtures/m3").join(name);
-    crate::m3::analyze_source_tree(
-        crate::m3::M3Input::rust_2024(&fixture, "grammar.rs"),
+fn analyzed(name: &str) -> crate::source_analysis::SourceAnalysisSuccess {
+    let fixture = crate_root()
+        .join("tests/fixtures/source-analysis")
+        .join(name);
+    crate::source_analysis::analyze_source_tree(
+        crate::source_analysis::SourceAnalysisInput::rust_2024(&fixture, "grammar.rs"),
         &mut Vec::new(),
     )
-    .unwrap_or_else(|error| panic!("fixture {name} failed M3:\n{error}"))
+    .unwrap_or_else(|error| panic!("fixture {name} failed source analysis:\n{error}"))
 }
 
 #[test]
 fn six_rust_2024_fixtures_match_location_and_id_free_semantic_projections() {
-    let expected = crate_root().join("tests/fixtures/m3/projections");
+    let expected = crate_root().join("tests/fixtures/source-analysis/projections");
     for name in FIXTURES {
         let actual = projection(name);
         let path = expected.join(format!("{name}.semantic"));
@@ -48,7 +50,8 @@ fn projection_exposes_parse_site_swaps_and_pratt_lhs_correlation_loss() {
     use crate::materialization::MaterializedFieldLowering;
 
     let mut success = analyzed("arith");
-    let original = crate::m3_projection::canonical_fixture_projection("arith", &success.analyzed);
+    let original =
+        crate::semantic_projection::canonical_fixture_projection("arith", &success.analyzed);
     let distinct_parse_sites = success
         .analyzed
         .lowered
@@ -75,7 +78,8 @@ fn projection_exposes_parse_site_swaps_and_pratt_lhs_correlation_loss() {
         MaterializedFieldLowering::ParseSite(right);
     success.analyzed.lowered.lowering_map.fields[right_index].lowered =
         MaterializedFieldLowering::ParseSite(left);
-    let swapped = crate::m3_projection::canonical_fixture_projection("arith", &success.analyzed);
+    let swapped =
+        crate::semantic_projection::canonical_fixture_projection("arith", &success.analyzed);
     assert_ne!(swapped, original, "same-typed field swaps must be visible");
 
     let mut success = analyzed("arith");
@@ -91,7 +95,7 @@ fn projection_exposes_parse_site_swaps_and_pratt_lhs_correlation_loss() {
             )
         });
     let missing_lhs =
-        crate::m3_projection::canonical_fixture_projection("arith", &success.analyzed);
+        crate::semantic_projection::canonical_fixture_projection("arith", &success.analyzed);
     assert_ne!(
         missing_lhs, original,
         "Pratt lhs correlation loss must be visible"
@@ -100,10 +104,10 @@ fn projection_exposes_parse_site_swaps_and_pratt_lhs_correlation_loss() {
 
 #[test]
 #[ignore = "candidate-only maintainer command; never updates committed expectations"]
-fn write_m3_projection_candidates() {
+fn write_semantic_projection_candidates() {
     let root = workspace_root();
-    let candidate = root.join("target/m3-projection-candidates");
-    let staging = root.join("target/m3-projection-candidates.staging");
+    let candidate = root.join("target/semantic-projection-candidates");
+    let staging = root.join("target/semantic-projection-candidates.staging");
     if staging.exists() {
         std::fs::remove_dir_all(&staging).expect("remove stale candidate staging directory");
     }

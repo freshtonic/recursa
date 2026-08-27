@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const FIXTURE: &str = "tests/fixtures/m4/repetitions";
+const FIXTURE: &str = "tests/fixtures/generation/repetitions";
 
 #[test]
 fn a_downstream_crate_honors_capture_off() {

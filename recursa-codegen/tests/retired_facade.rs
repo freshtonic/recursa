@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const FIXTURE: &str = "tests/fixtures/m4/one-node";
+const FIXTURE: &str = "tests/fixtures/generation/one-node";
 
 struct CompileFailProbe {
     contract: &'static str,

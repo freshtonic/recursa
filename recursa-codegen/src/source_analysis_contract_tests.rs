@@ -7,8 +7,9 @@ use crate::{
 };
 
 fn write_fixture(source: &str) -> tempfile::TempDir {
-    let package = tempfile::tempdir().expect("temporary M3 fixture");
-    std::fs::write(package.path().join("grammar.rs"), source).expect("write M3 fixture");
+    let package = tempfile::tempdir().expect("temporary source-analysis fixture");
+    std::fs::write(package.path().join("grammar.rs"), source)
+        .expect("write source-analysis fixture");
     package
 }
 
@@ -59,7 +60,7 @@ macro_rules! phase_producer_evidence {
     ($code:literal, $module:literal, $test:literal) => {
         ProducerEvidence {
             codes: &[$code],
-            producer_source: "src/m3.rs",
+            producer_source: "src/source_analysis.rs",
             test_source: concat!("src/", $module, ".rs"),
             test_name: $test,
             command: concat!(
@@ -336,42 +337,42 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
             "RCA3101", "RCA3102", "RCA3103", "RCA3104", "RCA3105", "RCA3106", "RCA3112", "RCA3113",
             "RCA3114", "RCA3115",
         ],
-        producer_source: "src/m3.rs",
+        producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
-        test_name: "rejects_every_invalid_positional_attachment_before_m2",
-        command: "cargo test -p recursa-codegen source_model::tests::rejects_every_invalid_positional_attachment_before_m2 --locked",
+        test_name: "rejects_every_invalid_positional_attachment_before_semantic_analysis",
+        command: "cargo test -p recursa-codegen source_model::tests::rejects_every_invalid_positional_attachment_before_semantic_analysis --locked",
     },
     ProducerEvidence {
         codes: &["RCA3107", "RCA3108", "RCA3109", "RCA3116"],
-        producer_source: "src/m3.rs",
+        producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
         test_name: "rejects_unsupported_trait_recipes_delta_overlap_and_ordinary_derive_ownership",
         command: "cargo test -p recursa-codegen source_model::tests::rejects_unsupported_trait_recipes_delta_overlap_and_ordinary_derive_ownership --locked",
     },
     ProducerEvidence {
         codes: &["RCA3110", "RCA3111"],
-        producer_source: "src/m3.rs",
+        producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
         test_name: "rejects_content_display_and_misplacement_before_lexical_planning",
         command: "cargo test -p recursa-codegen source_model::tests::rejects_content_display_and_misplacement_before_lexical_planning --locked",
     },
     ProducerEvidence {
         codes: &["RCA3117"],
-        producer_source: "src/m3.rs",
+        producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
         test_name: "multiple_post_lex_hooks_are_rejected_instead_of_using_source_order",
         command: "cargo test -p recursa-codegen source_model::tests::multiple_post_lex_hooks_are_rejected_instead_of_using_source_order --locked",
     },
     ProducerEvidence {
         codes: &["RCA3118", "RCA3210"],
-        producer_source: "src/m3.rs",
+        producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
         test_name: "pretty_hints_reject_unknown_duplicate_and_inapplicable_settings",
         command: "cargo test -p recursa-codegen source_model::tests::pretty_hints_reject_unknown_duplicate_and_inapplicable_settings --locked",
     },
     ProducerEvidence {
         codes: &["RCA3211"],
-        producer_source: "src/m3.rs",
+        producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",
         test_name: "pretty_hints_reject_missing_pretty_trait_empty_groups_and_tight_breaks",
         command: "cargo test -p recursa-codegen source_model::tests::pretty_hints_reject_missing_pretty_trait_empty_groups_and_tight_breaks --locked",
@@ -380,14 +381,14 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         codes: &[
             "RCA3202", "RCA3203", "RCA3204", "RCA3205", "RCA3206", "RCA3207", "RCA3208",
         ],
-        producer_source: "src/m3.rs",
+        producer_source: "src/source_analysis.rs",
         test_source: "src/materialization.rs",
-        test_name: "rejects_open_unsupported_cyclic_and_invalid_closed_types_before_m2",
-        command: "cargo test -p recursa-codegen materialization::tests::rejects_open_unsupported_cyclic_and_invalid_closed_types_before_m2 --locked",
+        test_name: "rejects_open_unsupported_cyclic_and_invalid_closed_types_before_semantic_analysis",
+        command: "cargo test -p recursa-codegen materialization::tests::rejects_open_unsupported_cyclic_and_invalid_closed_types_before_semantic_analysis --locked",
     },
     ProducerEvidence {
         codes: &["RCA3209"],
-        producer_source: "src/m3.rs",
+        producer_source: "src/source_analysis.rs",
         test_source: "src/materialization.rs",
         test_name: "rejects_missing_unboxed_and_foreign_pratt_lhs_fields",
         command: "cargo test -p recursa-codegen materialization::tests::rejects_missing_unboxed_and_foreign_pratt_lhs_fields --locked",
@@ -395,16 +396,16 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
     ProducerEvidence {
         codes: &["RCA9101", "RCA9102", "RCA9103", "RCA9104"],
         producer_source: "src/build_diagnostic.rs",
-        test_source: "src/m3_contract_tests.rs",
+        test_source: "src/source_analysis_contract_tests.rs",
         test_name: "typed_registry_contracts_fail_closed_and_cargo_warnings_are_single_directives",
-        command: "cargo test -p recursa-codegen m3_contract_tests::typed_registry_contracts_fail_closed_and_cargo_warnings_are_single_directives --locked",
+        command: "cargo test -p recursa-codegen source_analysis_contract_tests::typed_registry_contracts_fail_closed_and_cargo_warnings_are_single_directives --locked",
     },
     ProducerEvidence {
         codes: &["RCA9105"],
-        producer_source: "src/m3.rs",
+        producer_source: "src/source_analysis.rs",
         test_source: "src/generation_compound.rs",
-        test_name: "emission_failures_use_the_registered_m4_code_and_preserve_detail",
-        command: "cargo test -p recursa-codegen generation_compound::tests::emission_failures_use_the_registered_m4_code_and_preserve_detail --locked",
+        test_name: "emission_failures_use_the_registered_generation_code_and_preserve_detail",
+        command: "cargo test -p recursa-codegen generation_compound::tests::emission_failures_use_the_registered_generation_code_and_preserve_detail --locked",
     },
 ];
 
@@ -525,7 +526,7 @@ fn producer_test_command(source: &str, test: &str) -> String {
     if source.starts_with("tests/") {
         format!("cargo test -p recursa-codegen --test {stem} {test} --locked")
     } else {
-        let path = if stem == "m3_contract_tests" {
+        let path = if stem == "source_analysis_contract_tests" {
             format!("{stem}::{test}")
         } else {
             format!("{stem}::tests::{test}")
@@ -706,7 +707,7 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
 }
 
 #[test]
-fn full_m3_pipeline_emits_invalidation_and_stops_at_the_earliest_failing_stage() {
+fn full_source_analysis_pipeline_emits_invalidation_and_stops_at_the_earliest_failing_stage() {
     let package = write_fixture(
         r#"
 recursa::grammar! { module = crate }
@@ -719,8 +720,8 @@ struct Root {
 "#,
     );
     let mut cargo = Vec::new();
-    let error = crate::m3::analyze_source_tree(
-        crate::m3::M3Input::rust_2024(package.path(), "grammar.rs"),
+    let error = crate::source_analysis::analyze_source_tree(
+        crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
         &mut cargo,
     )
     .expect_err("unresolved source cannot produce an analyzed grammar");
@@ -781,7 +782,7 @@ fn diagnostics_use_unicode_scalar_coordinates_semantic_dedup_and_lossless_cargo_
     assert!(report.canonical_rendering().contains("grammar.rs:1:2..1:3"));
 
     let mut cargo = Vec::new();
-    crate::m3::emit_warnings(&report, &mut cargo);
+    crate::source_analysis::emit_warnings(&report, &mut cargo);
     assert_eq!(cargo.len(), 2);
     assert!(cargo[0].contains("evidence: overlapping grammar paths: IDENT"));
     assert!(cargo[0].contains("remedy: make nullable grammar site Root::optional required"));
@@ -918,7 +919,7 @@ fn diagnostic_locations_cannot_represent_package_escape_reversed_or_non_utf8_ran
         Err(crate::build_diagnostic::DiagnosticLocationInvariant::InvalidUtf8Boundary)
     );
 
-    let internal = crate::m3::checked_location(
+    let internal = crate::source_analysis::checked_location(
         DiagnosticStage::Resolution,
         std::path::Path::new("../outside.rs"),
         Some(0..1),
@@ -994,7 +995,7 @@ fn typed_registry_contracts_fail_closed_and_cargo_warnings_are_single_directives
         "summary\r\ncontinued",
     );
     let mut cargo = Vec::new();
-    crate::m3::emit_warnings(&BuildReport::new(vec![warning]), &mut cargo);
+    crate::source_analysis::emit_warnings(&BuildReport::new(vec![warning]), &mut cargo);
     assert_eq!(cargo.len(), 1);
     assert!(cargo[0].starts_with("cargo::warning="));
     assert!(!cargo[0].contains('\r'));
@@ -1017,8 +1018,8 @@ fn repeated_physical_inclusions_keep_distinct_permutation_stable_logical_origins
             ),
         )
         .expect("write repeated-module root");
-        let error = crate::m3::analyze_source_tree(
-            crate::m3::M3Input::rust_2024(package.path(), "grammar.rs"),
+        let error = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
             &mut Vec::new(),
         )
         .expect_err("each logical inclusion contains its own unresolved reference");

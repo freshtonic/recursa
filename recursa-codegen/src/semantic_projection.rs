@@ -1,17 +1,17 @@
 #![allow(
     dead_code,
-    reason = "private M3 semantic projections are consumed by acceptance fixtures and M4"
+    reason = "private source analysis semantic projections are consumed by acceptance fixtures and generation"
 )]
 
 use std::fmt::Write as _;
 
 use crate::decision_plan::{ExpectedRecipe, FollowRecipe};
 use crate::ir::ContainerCardinality;
-use crate::m3::AnalyzedGrammar;
 use crate::materialization::{
     AttachmentUnitCorrelation, LoweredGrammar, MaterializedFieldLowering,
 };
 use crate::resolution::ResolvedNodeBody;
+use crate::source_analysis::AnalyzedGrammar;
 use crate::source_model::TokenDefinitionKind;
 use crate::{FirstPosition, GrammarDescription, KindSet, PrattPosition, SiteId, TypeShape};
 
@@ -22,7 +22,7 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
         .analysis
         .output
         .as_ref()
-        .expect("an AnalyzedGrammar contains successful M2 output");
+        .expect("an AnalyzedGrammar contains successful semantic analysis output");
     let mut rendered = String::from("recursa-semantic-projection-v1\n");
     let build = &lowered.source_modeled.resolved().build_inputs;
     writeln!(

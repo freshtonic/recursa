@@ -83,7 +83,7 @@ impl std::error::Error for LexBumpError {}
 
 /// Executes a small generated lexical rule table.
 ///
-/// M4's complete lexer emitter may replace this private implementation without
+/// Generation's complete lexer emitter may replace this private implementation without
 /// changing grammar APIs.
 #[doc(hidden)]
 pub fn lex<'input>(

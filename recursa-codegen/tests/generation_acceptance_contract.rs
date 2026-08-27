@@ -9,8 +9,8 @@ struct Row<'a> {
 }
 
 #[test]
-fn m4_matrix_distinguishes_executable_green_evidence_from_pending_dependencies() {
-    let document = fs::read_to_string(matrix_path()).expect("read M4 acceptance contract");
+fn generation_matrix_distinguishes_executable_green_evidence_from_pending_dependencies() {
+    let document = fs::read_to_string(matrix_path()).expect("read generation acceptance contract");
     let rows = matrix_rows(&document);
 
     assert_eq!(rows.len(), 16);
@@ -84,13 +84,13 @@ fn m4_matrix_distinguishes_executable_green_evidence_from_pending_dependencies()
     );
     assert_eq!(
         rows["M4-FULL-FUNCTIONAL-MATRIX"].evidence,
-        "`cargo test -p recursa-codegen --test m4_functional_matrix --locked`",
+        "`cargo test -p recursa-codegen --test generation_functional_matrix --locked`",
     );
 }
 
 #[test]
-fn m4_matrix_links_the_machine_readable_inventory_and_ledger() {
-    let document = fs::read_to_string(matrix_path()).expect("read M4 acceptance contract");
+fn generation_matrix_links_the_machine_readable_inventory_and_ledger() {
+    let document = fs::read_to_string(matrix_path()).expect("read generation acceptance contract");
     for relative in ["legacy-identities.tsv", "legacy-case-ledger.tsv"] {
         assert!(document.contains(relative));
         assert!(
@@ -108,7 +108,7 @@ fn matrix_rows(document: &str) -> BTreeMap<&str, Row<'_>> {
             .split('|')
             .map(str::trim)
             .collect::<Vec<_>>();
-        assert_eq!(columns.len(), 5, "malformed M4 matrix row: {line}");
+        assert_eq!(columns.len(), 5, "malformed generation matrix row: {line}");
         let previous = rows.insert(
             columns[0],
             Row {
@@ -125,5 +125,5 @@ fn matrix_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("recursa-codegen belongs to the workspace")
-        .join("docs/acceptance/m4.md")
+        .join("docs/acceptance/generation.md")
 }

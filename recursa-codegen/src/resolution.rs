@@ -1,6 +1,6 @@
 #![allow(
     dead_code,
-    reason = "private M3 resolution seam is consumed by later lowering tickets"
+    reason = "private source analysis resolution seam is consumed by later lowering tickets"
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -2914,7 +2914,7 @@ mod tests {
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
-    use crate::m3::{M3Input, analyze_source_tree};
+    use crate::source_analysis::{SourceAnalysisInput, analyze_source_tree};
     use crate::source_syntax::CargoCfgSnapshot;
 
     fn write(package: &Path, relative: &str, source: &str) {
@@ -2947,11 +2947,11 @@ mod tests {
         resolve_with_cfg(package, source, &CargoCfgSnapshot::default())
     }
 
-    fn assert_m3_codes(package: &TempDir, source: &str, expected: &[&str]) {
+    fn assert_source_analysis_codes(package: &TempDir, source: &str, expected: &[&str]) {
         write(package.path(), "grammar/root.rs", source);
         let mut cargo = Vec::new();
         let error = analyze_source_tree(
-            M3Input::new(
+            SourceAnalysisInput::new(
                 package.path(),
                 Path::new("grammar/root.rs"),
                 RustEdition::Rust2024,
@@ -2972,12 +2972,12 @@ mod tests {
 
     #[test]
     fn rca1015_reports_a_missing_grammar_configuration() {
-        assert_m3_codes(&TempDir::new().unwrap(), "struct Root;", &["RCA1015"]);
+        assert_source_analysis_codes(&TempDir::new().unwrap(), "struct Root;", &["RCA1015"]);
     }
 
     #[test]
     fn rca1016_reports_multiple_active_grammar_configurations() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             concat!(
                 "recursa::grammar! { module = crate }\n",
@@ -2989,7 +2989,7 @@ mod tests {
 
     #[test]
     fn rca1017_reports_an_invalid_grammar_configuration() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             "recursa::grammar! { module = self::sql }",
             &["RCA1017"],
@@ -2998,7 +2998,7 @@ mod tests {
 
     #[test]
     fn rca2002_reports_invalid_item_configuration() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             concat!(
                 "recursa::grammar! { module = crate }\n",
@@ -3010,7 +3010,7 @@ mod tests {
 
     #[test]
     fn rca2003_reports_duplicate_type_namespace_declarations() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             concat!(
                 "recursa::grammar! { module = crate }\n",
@@ -3023,7 +3023,7 @@ mod tests {
 
     #[test]
     fn rca2004_reports_a_duplicate_explicit_import() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3040,7 +3040,7 @@ mod consumer {
 
     #[test]
     fn rca2005_reports_an_import_collision() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3056,7 +3056,7 @@ mod consumer {
 
     #[test]
     fn rca2006_reports_an_ambiguous_import_used_by_a_node() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3074,7 +3074,7 @@ mod consumer {
 
     #[test]
     fn rca2007_reports_an_inaccessible_reexport() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3089,7 +3089,7 @@ mod parent {
 
     #[test]
     fn rca2008_reports_a_content_token_binding_collision() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3104,7 +3104,7 @@ recursa::grammar! { module = crate::sql }
 
     #[test]
     fn rca2009_reports_an_inaccessible_content_token_binding() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3122,7 +3122,7 @@ mod consumer {
 
     #[test]
     fn rca2010_reports_a_visibility_outside_the_selected_tree() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3135,7 +3135,7 @@ pub(in crate::outside) struct Root { this: Self }
 
     #[test]
     fn rca2011_reports_an_unsupported_local_declaration() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3148,7 +3148,7 @@ struct Vec;
 
     #[test]
     fn rca2012_reports_an_unresolved_grammar_semantic_reference() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3160,7 +3160,7 @@ recursa::grammar! { module = crate::sql }
 
     #[test]
     fn rca2013_reports_an_inaccessible_local_declaration() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3175,7 +3175,7 @@ mod right {
 
     #[test]
     fn rca2014_reports_a_reference_above_the_selected_root_anchor() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3187,7 +3187,7 @@ recursa::grammar! { module = crate::sql }
 
     #[test]
     fn rca2015_reports_a_crate_path_outside_the_selected_root_anchor() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3199,7 +3199,7 @@ recursa::grammar! { module = crate::sql }
 
     #[test]
     fn rca2016_reports_an_external_path() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }
@@ -3211,7 +3211,7 @@ recursa::grammar! { module = crate::sql }
 
     #[test]
     fn rca2017_reports_a_leading_external_path() {
-        assert_m3_codes(
+        assert_source_analysis_codes(
             &TempDir::new().unwrap(),
             r#"
 recursa::grammar! { module = crate::sql }

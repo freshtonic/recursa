@@ -1,6 +1,6 @@
 #![allow(
     dead_code,
-    reason = "private M3 source-configuration seam is consumed by later pipeline tickets"
+    reason = "private source analysis source-configuration seam is consumed by later pipeline tickets"
 )]
 
 use std::collections::{BTreeMap, BTreeSet};

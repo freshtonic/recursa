@@ -1,8 +1,8 @@
 //! Grammar analysis and Rust-source generation.
 //!
-//! M2 analyzes normalized [`GrammarDescription`] values. The private M3
+//! Semantic analysis interprets normalized [`GrammarDescription`] values. The private source-analysis
 //! pipeline discovers and analyzes Rust grammar sources, and [`generate`]
-//! joins that analyzed output into an M4 emission plan before atomically
+//! joins that analyzed output into a generation emission plan before atomically
 //! publishing one complete generated [`Generation`].
 
 mod analysis;
@@ -16,20 +16,20 @@ mod ir;
 mod kind_set;
 mod lexical;
 mod lowering;
-mod m3;
-mod m3_projection;
 mod materialization;
 mod provenance;
 mod resolution;
+mod semantic_projection;
+mod source_analysis;
 mod source_model;
 mod source_syntax;
 
 #[cfg(test)]
-mod m3_contract_tests;
+mod semantic_projection_tests;
 #[cfg(test)]
-mod m3_pipeline;
+mod source_analysis_contract_tests;
 #[cfg(test)]
-mod m3_projection_tests;
+mod source_analysis_tests;
 
 pub use analysis::{
     AnalysisOutput, AnalysisReport, ExtenderFacts, FirstFacts, FirstPosition, FirstSequence,

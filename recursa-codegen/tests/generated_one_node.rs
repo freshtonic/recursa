@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-const FIXTURE: &str = "tests/fixtures/m4/one-node";
+const FIXTURE: &str = "tests/fixtures/generation/one-node";
 
 #[test]
 fn a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade() {
