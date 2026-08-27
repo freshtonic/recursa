@@ -50,6 +50,8 @@ enum PrettyEvent {
     RepetitionBreak {
         separator: Option<String>,
         leading: bool,
+        hard: bool,
+        space_before_separator: bool,
     },
     HardBreak,
     BeginGroup,
@@ -106,20 +108,29 @@ impl PrettySink {
                 PrettyEvent::HardBreak => {
                     newline(&mut output, &mut column, indent, self.config.indent);
                 }
-                PrettyEvent::RepetitionBreak { separator, leading } => {
-                    let broken = match groups.last().copied() {
-                        Some(GroupMode::Consistent(broken)) => broken,
-                        Some(GroupMode::Inconsistent) => {
-                            column
-                                .saturating_add(1)
-                                .saturating_add(
-                                    separator.as_ref().map_or(0, |text| text.chars().count()),
-                                )
-                                .saturating_add(flat_width_to_next_break(&self.events, index + 1))
-                                > self.config.max_width
-                        }
-                        None => false,
-                    };
+                PrettyEvent::RepetitionBreak {
+                    separator,
+                    leading,
+                    hard,
+                    space_before_separator,
+                } => {
+                    let broken = *hard
+                        || match groups.last().copied() {
+                            Some(GroupMode::Consistent(broken)) => broken,
+                            Some(GroupMode::Inconsistent) => {
+                                column
+                                    .saturating_add(1)
+                                    .saturating_add(
+                                        separator.as_ref().map_or(0, |text| text.chars().count()),
+                                    )
+                                    .saturating_add(flat_width_to_next_break(
+                                        &self.events,
+                                        index + 1,
+                                    ))
+                                    > self.config.max_width
+                            }
+                            None => false,
+                        };
                     if broken {
                         if !leading && let Some(separator) = separator {
                             output.push_str(separator);
@@ -132,6 +143,10 @@ impl PrettySink {
                             column = column_after(column, separator).saturating_add(1);
                         }
                     } else {
+                        if *space_before_separator {
+                            output.push(' ');
+                            column = column.saturating_add(1);
+                        }
                         if let Some(separator) = separator {
                             output.push_str(separator);
                             column = column_after(column, separator);
@@ -184,7 +199,12 @@ fn flat_width(events: &[PrettyEvent], start: usize) -> Option<usize> {
                 width = width.saturating_add(text.chars().count());
             }
             PrettyEvent::HardBreak => return None,
-            PrettyEvent::RepetitionBreak { separator, .. } => {
+            PrettyEvent::RepetitionBreak {
+                separator, hard, ..
+            } => {
+                if *hard {
+                    return None;
+                }
                 width = width
                     .saturating_add(separator.as_ref().map_or(0, |text| text.chars().count()) + 1);
             }
@@ -213,7 +233,12 @@ fn flat_width_to_next_break(events: &[PrettyEvent], start: usize) -> usize {
             PrettyEvent::SoftBreak(text) => {
                 width = width.saturating_add(text.chars().count());
             }
-            PrettyEvent::RepetitionBreak { separator, .. } => {
+            PrettyEvent::RepetitionBreak {
+                separator, hard, ..
+            } => {
+                if *hard {
+                    break;
+                }
                 width = width
                     .saturating_add(separator.as_ref().map_or(0, |text| text.chars().count()) + 1);
             }
@@ -238,6 +263,21 @@ pub struct PrettyContext {
     provenance: Option<PrettyProvenance>,
     caller_configured: bool,
     repetition: Option<RepetitionLayout>,
+    layout_checkpoints: Vec<PrettyLayoutCheckpoint>,
+    explicit_group_depth: usize,
+}
+
+#[derive(Clone)]
+struct PrettyLayoutCheckpoint {
+    present: bool,
+    event_len: usize,
+    needs_separator: bool,
+    separator_supplied: bool,
+    previous_auto_punctuation: bool,
+    requested_space_after: bool,
+    has_emitted_token: bool,
+    repetition: Option<RepetitionLayout>,
+    explicit_group_depth: usize,
 }
 
 #[derive(Clone)]
@@ -246,6 +286,7 @@ struct RepetitionLayout {
     trailing: bool,
     hard_break: bool,
     leading_separator: bool,
+    space_before_separator: bool,
 }
 
 impl Default for PrettyContext {
@@ -260,6 +301,8 @@ impl Default for PrettyContext {
             provenance: None,
             caller_configured: false,
             repetition: None,
+            layout_checkpoints: Vec::new(),
+            explicit_group_depth: 0,
         }
     }
 }
@@ -280,6 +323,8 @@ impl PrettyContext {
             provenance: None,
             caller_configured: true,
             repetition: None,
+            layout_checkpoints: Vec::new(),
+            explicit_group_depth: 0,
         }
     }
 
@@ -465,6 +510,20 @@ impl PrettyContext {
     /// Emits one consistent fit-or-break group.
     pub fn group<R>(&mut self, render: impl FnOnce(&mut Self) -> R) -> R {
         self.sink.events.push(PrettyEvent::BeginGroup);
+        self.explicit_group_depth = self.explicit_group_depth.saturating_add(1);
+        let result = render(self);
+        self.explicit_group_depth = self.explicit_group_depth.saturating_sub(1);
+        self.sink.events.push(PrettyEvent::EndGroup);
+        result
+    }
+
+    /// Applies the default Node group without hiding a surrounding local group.
+    #[doc(hidden)]
+    pub fn baseline_group<R>(&mut self, render: impl FnOnce(&mut Self) -> R) -> R {
+        if self.explicit_group_depth > 0 {
+            return render(self);
+        }
+        self.sink.events.push(PrettyEvent::BeginGroup);
         let result = render(self);
         self.sink.events.push(PrettyEvent::EndGroup);
         result
@@ -474,7 +533,9 @@ impl PrettyContext {
     #[doc(hidden)]
     pub fn inconsistent_group<R>(&mut self, render: impl FnOnce(&mut Self) -> R) -> R {
         self.sink.events.push(PrettyEvent::BeginInconsistentGroup);
+        self.explicit_group_depth = self.explicit_group_depth.saturating_add(1);
         let result = render(self);
+        self.explicit_group_depth = self.explicit_group_depth.saturating_sub(1);
         self.sink.events.push(PrettyEvent::EndGroup);
         result
     }
@@ -482,15 +543,18 @@ impl PrettyContext {
     #[doc(hidden)]
     pub fn begin_consistent_group(&mut self) {
         self.sink.events.push(PrettyEvent::BeginGroup);
+        self.explicit_group_depth = self.explicit_group_depth.saturating_add(1);
     }
 
     #[doc(hidden)]
     pub fn begin_inconsistent_group(&mut self) {
         self.sink.events.push(PrettyEvent::BeginInconsistentGroup);
+        self.explicit_group_depth = self.explicit_group_depth.saturating_add(1);
     }
 
     #[doc(hidden)]
     pub fn end_group(&mut self) {
+        self.explicit_group_depth = self.explicit_group_depth.saturating_sub(1);
         self.sink.events.push(PrettyEvent::EndGroup);
     }
 
@@ -502,6 +566,42 @@ impl PrettyContext {
     #[doc(hidden)]
     pub fn end_indent(&mut self) {
         self.sink.events.push(PrettyEvent::Dedent);
+    }
+
+    /// Starts one attachment layout that may be discarded as a unit.
+    #[doc(hidden)]
+    pub fn begin_present_layout(&mut self, present: bool) {
+        self.layout_checkpoints.push(PrettyLayoutCheckpoint {
+            present,
+            event_len: self.sink.events.len(),
+            needs_separator: self.needs_separator,
+            separator_supplied: self.separator_supplied,
+            previous_auto_punctuation: self.previous_auto_punctuation,
+            requested_space_after: self.requested_space_after,
+            has_emitted_token: self.has_emitted_token,
+            repetition: self.repetition.clone(),
+            explicit_group_depth: self.explicit_group_depth,
+        });
+    }
+
+    /// Ends one attachment layout, restoring the prior sink state when absent.
+    #[doc(hidden)]
+    pub fn end_present_layout(&mut self) {
+        let checkpoint = self
+            .layout_checkpoints
+            .pop()
+            .expect("generated Pretty layout checkpoints are balanced");
+        if checkpoint.present {
+            return;
+        }
+        self.sink.events.truncate(checkpoint.event_len);
+        self.needs_separator = checkpoint.needs_separator;
+        self.separator_supplied = checkpoint.separator_supplied;
+        self.previous_auto_punctuation = checkpoint.previous_auto_punctuation;
+        self.requested_space_after = checkpoint.requested_space_after;
+        self.has_emitted_token = checkpoint.has_emitted_token;
+        self.repetition = checkpoint.repetition;
+        self.explicit_group_depth = checkpoint.explicit_group_depth;
     }
 
     /// Emits a document region one configured indentation level deeper.
@@ -526,6 +626,7 @@ impl PrettyContext {
             trailing,
             hard_break,
             leading_separator: false,
+            space_before_separator: false,
         });
         let result = render(self);
         self.repetition = previous;
@@ -539,6 +640,7 @@ impl PrettyContext {
         trailing: bool,
         hard_break: bool,
         leading_separator: bool,
+        space_before_separator: bool,
         render: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let previous = self.repetition.replace(RepetitionLayout {
@@ -546,6 +648,7 @@ impl PrettyContext {
             trailing,
             hard_break,
             leading_separator,
+            space_before_separator,
         });
         let result = render(self);
         self.repetition = previous;
@@ -564,18 +667,13 @@ impl PrettyContext {
                 && (index + 1 < length || layout.trailing)
             {
                 if index + 1 < length {
-                    if layout.hard_break {
-                        if let Some(separator) = &layout.separator {
-                            self.tight_token(separator)?;
-                        }
-                        self.hard_break()?;
-                    } else {
-                        self.sink.events.push(PrettyEvent::RepetitionBreak {
-                            separator: layout.separator.clone(),
-                            leading: layout.leading_separator,
-                        });
-                        self.separator_supplied = true;
-                    }
+                    self.sink.events.push(PrettyEvent::RepetitionBreak {
+                        separator: layout.separator.clone(),
+                        leading: layout.leading_separator,
+                        hard: layout.hard_break,
+                        space_before_separator: layout.space_before_separator,
+                    });
+                    self.separator_supplied = true;
                 } else if let Some(separator) = &layout.separator {
                     self.tight_token(separator)?;
                 }

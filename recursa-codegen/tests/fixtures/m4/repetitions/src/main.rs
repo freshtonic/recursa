@@ -193,47 +193,150 @@ fn assert_capture_configuration(mode: CaptureMode) {
     );
 
     let mixed = parse_spanned!(grammar::MixedMany, "mixed off,on,off,on");
-    assert_eq!(mixed.render(), "mixed off, on, off, on");
+    assert_eq!(mixed.render(), "MIXED OFF, on, OFF, on");
     let values = mixed.root().values();
     assert_eq!(values.len(), 4);
     assert_eq!(values.get(0).unwrap().span(), None);
 
     let program = parse_spanned!(grammar::MixedProgram, "off;on;off");
-    assert_eq!(program.render(), "off;\non;\noff");
+    assert_eq!(program.render(), "OFF\n; on\n; OFF");
+
+    let words = parse_spanned!(grammar::WordSeparated<'_>, "alpha or beta");
+    assert_eq!(words.render(), "alpha OR beta");
 
     let choices = parse_spanned!(grammar::OrdinaryChoices, "off on off");
-    assert_eq!(choices.render(), "off on off");
+    assert_eq!(choices.render(), "OFF on OFF");
 
     let duplicates = parse_spanned!(grammar::DuplicateList, "on on on");
-    assert_eq!(duplicates.render(), "on on on");
+    assert_eq!(
+        duplicates.render(),
+        if mode == CaptureMode::Off {
+            "ON ON ON"
+        } else {
+            "on on on"
+        }
+    );
 
     let leading = parse_spanned!(grammar::LeadingPretty<'_>, "marks alpha,beta");
-    assert_eq!(leading.render(), "marks alpha, beta,");
+    let marks = if mode == CaptureMode::Off { "MARKS" } else { "marks" };
+    assert_eq!(leading.render(), format!("{marks} alpha, beta,"));
     assert_eq!(
         leading.render_with(recursa::PrettyConfig::new(12, 2)),
-        "marks alpha\n, beta,"
+        format!("{marks} alpha\n, beta,")
     );
 
     let trailing = parse_spanned!(grammar::TrailingPretty<'_>, "marks alpha,beta,");
-    assert_eq!(trailing.render(), "marks alpha, beta");
+    assert_eq!(trailing.render(), format!("{marks} alpha, beta"));
     assert_eq!(
         trailing.render_with(recursa::PrettyConfig::new(12, 2)),
-        "marks alpha,\nbeta"
+        format!("{marks} alpha,\nbeta")
     );
 
-    let attachment = parse_spanned!(grammar::AttachmentPretty<'_>, ". :boxed alpha.? .");
-    assert_eq!(attachment.render(), ".\n:boxed alpha.?\n.");
+    let attachment = parse_spanned!(grammar::AttachmentPretty<'_>, ". <:boxed alpha.?> .");
+    let boxed = if mode == CaptureMode::Off { "BOXED" } else { "boxed" };
+    assert_eq!(attachment.render(), format!(".\n<:{boxed} alpha.?>\n."));
+    assert_eq!(
+        grammar::HintAttachedOptional {
+            before: grammar::Marker,
+            value: None,
+            after: grammar::Marker,
+        }
+        .render(),
+        ". ."
+    );
+    let attached_optional =
+        parse_spanned!(grammar::HintAttachedOptional<'_>, ". <:boxed alpha.?> .");
+    assert_eq!(
+        attached_optional.render(),
+        format!(".\n<:{boxed} alpha.?>\n.")
+    );
+    assert_eq!(
+        grammar::HintAttachedMany {
+            before: grammar::Marker,
+            values: Vec::new(),
+            after: grammar::Marker,
+        }
+        .render(),
+        ". ."
+    );
+    let attached_many = parse_spanned!(
+        grammar::HintAttachedMany<'_>,
+        ". <:many alpha.?> <:many beta.?> ."
+    );
+    let many_keyword = if mode == CaptureMode::Off { "MANY" } else { "many" };
+    assert_eq!(
+        attached_many.render(),
+        format!(".\n<:{many_keyword} alpha.?><:{many_keyword} beta.?>\n.")
+    );
+    assert_eq!(
+        grammar::AttachedMaybeMany {
+            before: grammar::Marker,
+            values: None,
+            after: grammar::Marker,
+        }
+        .render(),
+        ". ."
+    );
+    let attached_maybe_many = parse_spanned!(
+        grammar::AttachedMaybeMany<'_>,
+        ". <:maybe alpha.?> <:maybe beta.?> ."
+    );
+    let maybe_keyword = if mode == CaptureMode::Off { "MAYBE" } else { "maybe" };
+    assert_eq!(
+        attached_maybe_many.render(),
+        format!(".\n<:{maybe_keyword} alpha.?><:{maybe_keyword} beta.?>\n.")
+    );
 
     let node_group = parse_spanned!(grammar::NodeGroupPretty<'_>, "nodehint alpha beta");
     assert_eq!(
         node_group.render_with(recursa::PrettyConfig::new(14, 2)),
-        "nodehint alpha\nbeta"
+        format!(
+            "{} alpha\nbeta",
+            if mode == CaptureMode::Off { "NODEHINT" } else { "nodehint" }
+        )
     );
     let variant_group =
         parse_spanned!(grammar::VariantGroupPretty<'_>, "enumhint alpha beta");
     assert_eq!(
         variant_group.render_with(recursa::PrettyConfig::new(14, 2)),
-        "enumhint alpha\nbeta"
+        format!(
+            "{} alpha\nbeta",
+            if mode == CaptureMode::Off { "ENUMHINT" } else { "enumhint" }
+        )
+    );
+    let consistent = parse_spanned!(
+        grammar::ConsistentIndentPretty<'_>,
+        "consistent aaaaa bbbbb ccccc"
+    );
+    let consistent_keyword = if mode == CaptureMode::Off {
+        "CONSISTENT"
+    } else {
+        "consistent"
+    };
+    assert_eq!(
+        consistent.render_with(recursa::PrettyConfig::new(25, 2)),
+        format!("{consistent_keyword}\n  aaaaa\n  bbbbb\n  ccccc")
+    );
+    let inconsistent = parse_spanned!(
+        grammar::InconsistentIndentPretty<'_>,
+        "inconsistent aaaaa bbbbb ccccc"
+    );
+    let inconsistent_keyword = if mode == CaptureMode::Off {
+        "INCONSISTENT"
+    } else {
+        "inconsistent"
+    };
+    assert_eq!(
+        inconsistent.render_with(recursa::PrettyConfig::new(25, 2)),
+        format!("{inconsistent_keyword} aaaaa bbbbb\n  ccccc")
+    );
+    let generic_alias = parse_spanned!(
+        grammar::GenericAliasOutput<'_>,
+        "alpha beta gamma"
+    );
+    assert_eq!(
+        generic_alias.render_with(recursa::PrettyConfig::new(10, 2)),
+        "alpha beta\ngamma"
     );
     assert_eq!(
         values.get(1).unwrap().span(),

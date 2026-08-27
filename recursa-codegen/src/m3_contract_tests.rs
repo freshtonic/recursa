@@ -363,6 +363,20 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::multiple_post_lex_hooks_are_rejected_instead_of_using_source_order --locked",
     },
     ProducerEvidence {
+        codes: &["RCA3118", "RCA3210"],
+        producer_source: "src/m3.rs",
+        test_source: "src/source_model.rs",
+        test_name: "pretty_hints_reject_unknown_duplicate_and_inapplicable_settings",
+        command: "cargo test -p recursa-codegen source_model::tests::pretty_hints_reject_unknown_duplicate_and_inapplicable_settings --locked",
+    },
+    ProducerEvidence {
+        codes: &["RCA3211"],
+        producer_source: "src/m3.rs",
+        test_source: "src/source_model.rs",
+        test_name: "pretty_hints_reject_missing_pretty_trait_empty_groups_and_tight_breaks",
+        command: "cargo test -p recursa-codegen source_model::tests::pretty_hints_reject_missing_pretty_trait_empty_groups_and_tight_breaks --locked",
+    },
+    ProducerEvidence {
         codes: &[
             "RCA3202", "RCA3203", "RCA3204", "RCA3205", "RCA3206", "RCA3207", "RCA3208",
         ],
