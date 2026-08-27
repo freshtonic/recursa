@@ -6,7 +6,15 @@ use recursa::explorer::{
 };
 use recursa::{PrettyConfig, Span};
 use serde::Deserialize;
+use serde::de::Error as _;
 use serde_json::{Value, json};
+
+/// Smallest Pretty line width accepted by the private protocol and UI.
+pub(super) const MIN_PRETTY_WIDTH: usize = 1;
+/// Largest Pretty line width accepted by the private protocol and UI.
+pub(super) const MAX_PRETTY_WIDTH: usize = 1_000;
+/// Largest indentation step accepted by the private protocol and UI.
+pub(super) const MAX_PRETTY_INDENT: usize = 32;
 
 /// Source-bearing request shared by lex and parse operations.
 #[derive(Deserialize)]
@@ -22,11 +30,11 @@ pub(super) struct SourceRequest {
 pub(super) struct PrettyRequest {
     /// Complete source parsed before rendering.
     pub(super) source: String,
-    /// Preferred rendered width, defaulting to the runtime contract.
-    #[serde(default = "default_width")]
+    /// Preferred rendered width in the closed range `1..=1000`.
+    #[serde(default = "default_width", deserialize_with = "deserialize_width")]
     pub(super) max_width: usize,
-    /// Spaces per indentation level, defaulting to the runtime contract.
-    #[serde(default = "default_indent")]
+    /// Spaces per indentation level in the closed range `0..=32`.
+    #[serde(default = "default_indent", deserialize_with = "deserialize_indent")]
     pub(super) indent: usize,
 }
 
@@ -46,6 +54,37 @@ fn default_width() -> usize {
 /// Returns the default Pretty indentation without duplicating it in deserialization metadata.
 fn default_indent() -> usize {
     PrettyConfig::default().indent()
+}
+
+/// Deserializes a bounded Pretty width before rendering can allocate output.
+fn deserialize_width<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let width = usize::deserialize(deserializer)?;
+    (MIN_PRETTY_WIDTH..=MAX_PRETTY_WIDTH)
+        .contains(&width)
+        .then_some(width)
+        .ok_or_else(|| {
+            D::Error::custom(format_args!(
+                "max_width must be between {MIN_PRETTY_WIDTH} and {MAX_PRETTY_WIDTH}"
+            ))
+        })
+}
+
+/// Deserializes a bounded indentation step before rendering can allocate output.
+fn deserialize_indent<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let indent = usize::deserialize(deserializer)?;
+    (indent <= MAX_PRETTY_INDENT)
+        .then_some(indent)
+        .ok_or_else(|| {
+            D::Error::custom(format_args!(
+                "indent must be between 0 and {MAX_PRETTY_INDENT}"
+            ))
+        })
 }
 
 /// Projects the adapter's complete static schema and optional capabilities.
@@ -225,4 +264,51 @@ fn element_json(element: Element<'_>) -> Value {
 /// Converts the runtime's checked byte range into the private wire shape.
 fn span_json(span: Span) -> Value {
     json!({ "start": span.start(), "end": span.end() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pretty_request_layout_bounds_are_closed_and_validated_during_deserialization() {
+        let ui = include_str!("../assets/index.html");
+        assert!(
+            ui.contains(r#"id="pretty-width" type="number" min="1" max="1000""#),
+            "protocol width bounds must match the bundled UI"
+        );
+        assert!(
+            ui.contains(r#"id="pretty-indent" type="number" min="0" max="32""#),
+            "protocol indentation bounds must match the bundled UI"
+        );
+
+        for (max_width, indent) in [(MIN_PRETTY_WIDTH, 0), (MAX_PRETTY_WIDTH, MAX_PRETTY_INDENT)] {
+            let source =
+                format!(r#"{{"source":"ready","max_width":{max_width},"indent":{indent}}}"#);
+            let request: PrettyRequest =
+                serde_json::from_str(&source).expect("boundary Pretty configuration is accepted");
+            assert_eq!(request.max_width, max_width);
+            assert_eq!(request.indent, indent);
+        }
+
+        for (source, message) in [
+            (
+                r#"{"source":"ready","max_width":0,"indent":2}"#,
+                "max_width must be between 1 and 1000",
+            ),
+            (
+                r#"{"source":"ready","max_width":1001,"indent":2}"#,
+                "max_width must be between 1 and 1000",
+            ),
+            (
+                r#"{"source":"ready","max_width":80,"indent":33}"#,
+                "indent must be between 0 and 32",
+            ),
+        ] {
+            let Err(error) = serde_json::from_str::<PrettyRequest>(source) else {
+                panic!("out-of-range Pretty configuration is rejected");
+            };
+            assert!(error.to_string().contains(message), "{error}");
+        }
+    }
 }

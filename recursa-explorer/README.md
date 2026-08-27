@@ -80,11 +80,12 @@ The browser uses an intentionally private, matching-version same-origin JSON
 protocol to read schema, lex, parse, Pretty, and deterministic sample
 projections. Strict parse failure returns diagnostics and no partial tree. The
 server rejects nonlocal clients, unexpected Host or Origin headers, oversized
-bodies, unsupported methods and media types, and sends a restrictive content
-security policy. It is not a public remote service or stable transport
-protocol. The crate is publishable because the launcher and bundled UI are
-supported; publication does not make its private loopback protocol a
-compatibility contract.
+bodies, Pretty widths outside `1..=1000`, indentation steps outside `0..=32`,
+unsupported methods and media types, and sends a restrictive content security
+policy. It is not a public remote service or stable transport protocol. The
+crate is publishable because the launcher and bundled UI are supported;
+publication does not make its private loopback protocol a compatibility
+contract.
 
 Recursa uses Rust edition 2024 and requires Rust 1.88 or newer. See the
 [workspace package map](https://github.com/freshtonic/recursa#workspace-packages).

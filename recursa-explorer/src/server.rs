@@ -421,6 +421,30 @@ mod tests {
         );
         assert!(too_large.starts_with("HTTP/1.1 413"), "{too_large}");
 
+        for (body, message) in [
+            (
+                r#"{"source":"null","max_width":0,"indent":2}"#,
+                "max_width must be between 1 and 1000",
+            ),
+            (
+                r#"{"source":"null","max_width":1001,"indent":2}"#,
+                "max_width must be between 1 and 1000",
+            ),
+            (
+                r#"{"source":"null","max_width":80,"indent":33}"#,
+                "indent must be between 0 and 32",
+            ),
+        ] {
+            let response = request(&authority, "POST", "/api/pretty", Some(body), Some(&origin));
+            assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+            assert!(response.contains(r#""code":"json""#), "{response}");
+            assert!(response.contains(message), "{response}");
+            assert!(
+                !response.contains(r#""status":"unsupported""#),
+                "{response}"
+            );
+        }
+
         shutdown(&authority);
         handle.join().unwrap().unwrap();
     }
@@ -544,6 +568,15 @@ mod tests {
         assert!(pretty.contains(r#""status":"ok""#), "{pretty}");
         assert!(pretty.contains(r#""rendered":"ready""#), "{pretty}");
         assert!(pretty.contains(r#""sourceMap":[{"#), "{pretty}");
+
+        for body in [
+            r#"{"source":"ready","max_width":1,"indent":0}"#,
+            r#"{"source":"ready","max_width":1000,"indent":32}"#,
+        ] {
+            let boundary = request(&authority, "POST", "/api/pretty", Some(body), Some(&origin));
+            assert!(boundary.starts_with("HTTP/1.1 200"), "{boundary}");
+            assert!(boundary.contains(r#""status":"ok""#), "{boundary}");
+        }
 
         let first = request(
             &authority,
