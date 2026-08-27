@@ -1,10 +1,11 @@
 //! Stable syntax-aware policy for authored, documentation-hidden Rust API.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use syn::ext::IdentExt as _;
 use syn::punctuated::Punctuated;
-use syn::{Attribute, Expr, Item, Lit, Meta, Token, Visibility};
+use syn::{Attribute, Expr, Item, Lit, Meta, Token, UseTree, Visibility};
 
 const LIBRARY_ROOTS: &[&str] = &[
     "recursa/src/lib.rs",
@@ -23,63 +24,72 @@ struct MissingDocumentation {
 
 #[derive(Default)]
 struct Policy {
-    visited: BTreeSet<(PathBuf, bool)>,
-    hidden_types: BTreeSet<(PathBuf, String)>,
     missing: Vec<MissingDocumentation>,
 }
 
+#[derive(Default)]
+struct Inventory {
+    hidden_types: BTreeSet<Vec<String>>,
+    bindings: BTreeMap<Vec<String>, BTreeSet<Vec<String>>>,
+}
+
+struct CheckState<'inventory, 'visited> {
+    inventory: &'inventory Inventory,
+    visited: &'visited mut BTreeSet<(PathBuf, Vec<String>, bool)>,
+}
+
 impl Policy {
-    fn check_library(&mut self, path: &Path, inherited_hidden: bool) {
-        let source = std::fs::read_to_string(path).expect("read authored Rust library source");
-        let file = syn::parse_file(&source).expect("parse authored Rust library source");
-        self.check_file(path, &file, inherited_hidden);
+    fn check_crate(&mut self, path: &Path) {
+        let mut inventory = Inventory::default();
+        let mut visited = BTreeSet::new();
+        inventory_file(path, &[], false, &mut inventory, &mut visited);
+        visited.clear();
+        self.check_file(
+            path,
+            &[],
+            false,
+            &mut CheckState {
+                inventory: &inventory,
+                visited: &mut visited,
+            },
+        );
     }
 
-    fn check_file(&mut self, path: &Path, file: &syn::File, inherited_hidden: bool) {
+    fn check_file(
+        &mut self,
+        path: &Path,
+        module: &[String],
+        inherited_hidden: bool,
+        state: &mut CheckState<'_, '_>,
+    ) {
         let canonical = path.canonicalize().expect("canonical authored module path");
-        if !self.visited.insert((canonical, inherited_hidden)) {
+        if !state
+            .visited
+            .insert((canonical, module.to_vec(), inherited_hidden))
+        {
             return;
         }
-        self.collect_hidden_types(path, &file.items, inherited_hidden);
+        let source = std::fs::read_to_string(path).expect("read authored Rust library source");
+        let file = syn::parse_file(&source).expect("parse authored Rust library source");
         let module_dir = module_directory(path);
-        self.check_items(path, &module_dir, &file.items, inherited_hidden);
-    }
-
-    fn collect_hidden_types(&mut self, source: &Path, items: &[Item], inherited_hidden: bool) {
-        for item in items {
-            if definitely_test_only(item_attrs(item)) {
-                continue;
-            }
-            let hidden = inherited_hidden || doc_hidden(item_attrs(item));
-            match item {
-                Item::Struct(item) if hidden => {
-                    self.hidden_types
-                        .insert((source.to_owned(), item.ident.to_string()));
-                }
-                Item::Enum(item) if hidden => {
-                    self.hidden_types
-                        .insert((source.to_owned(), item.ident.to_string()));
-                }
-                Item::Union(item) if hidden => {
-                    self.hidden_types
-                        .insert((source.to_owned(), item.ident.to_string()));
-                }
-                Item::Mod(item) => {
-                    if let Some((_, items)) = &item.content {
-                        self.collect_hidden_types(source, items, hidden);
-                    }
-                }
-                _ => {}
-            }
-        }
+        self.check_items(
+            path,
+            &module_dir,
+            module,
+            &file.items,
+            inherited_hidden,
+            state,
+        );
     }
 
     fn check_items(
         &mut self,
         source: &Path,
         module_dir: &Path,
+        module_path: &[String],
         items: &[Item],
         inherited_hidden: bool,
+        state: &mut CheckState<'_, '_>,
     ) {
         for item in items {
             let attrs = item_attrs(item);
@@ -93,10 +103,20 @@ impl Policy {
             }
             match item {
                 Item::Mod(module) => {
+                    let mut child_module = module_path.to_vec();
+                    child_module.push(module.ident.unraw().to_string());
                     if let Some((_, items)) = &module.content {
-                        self.check_items(source, module_dir, items, hidden);
+                        let child_module_dir = module_dir.join(module.ident.unraw().to_string());
+                        self.check_items(
+                            source,
+                            &child_module_dir,
+                            &child_module,
+                            items,
+                            hidden,
+                            state,
+                        );
                     } else if let Some(path) = resolve_module(source, module_dir, module) {
-                        self.check_library(&path, hidden);
+                        self.check_file(&path, &child_module, hidden, state);
                     }
                 }
                 Item::Struct(item) if hidden && public => {
@@ -155,7 +175,7 @@ impl Policy {
                 }
                 Item::Impl(item) => {
                     let hidden_impl =
-                        hidden || impl_targets_hidden_type(source, item, &self.hidden_types);
+                        hidden || impl_targets_hidden_type(module_path, item, state.inventory);
                     if hidden_impl {
                         for child in &item.items {
                             let attrs = impl_item_attrs(child);
@@ -182,10 +202,215 @@ impl Policy {
 
 fn check_source(source: &str) -> Vec<MissingDocumentation> {
     let file = syn::parse_file(source).expect("parse policy fixture");
+    let mut inventory = Inventory::default();
+    inventory_source_items(&[], &file.items, false, &mut inventory);
     let mut policy = Policy::default();
-    policy.collect_hidden_types(Path::new("fixture.rs"), &file.items, false);
-    policy.check_items(Path::new("fixture.rs"), Path::new("."), &file.items, false);
+    policy.check_items(
+        Path::new("fixture.rs"),
+        Path::new("."),
+        &[],
+        &file.items,
+        false,
+        &mut CheckState {
+            inventory: &inventory,
+            visited: &mut BTreeSet::new(),
+        },
+    );
     policy.missing
+}
+
+fn inventory_source_items(
+    module: &[String],
+    items: &[Item],
+    inherited_hidden: bool,
+    inventory: &mut Inventory,
+) {
+    inventory_items(module, items, inherited_hidden, inventory);
+    for item in items {
+        let Item::Mod(child) = item else { continue };
+        if definitely_test_only(&child.attrs) {
+            continue;
+        }
+        let Some((_, items)) = &child.content else {
+            continue;
+        };
+        let mut child_module = module.to_vec();
+        child_module.push(child.ident.unraw().to_string());
+        inventory_source_items(
+            &child_module,
+            items,
+            inherited_hidden || doc_hidden(&child.attrs),
+            inventory,
+        );
+    }
+}
+
+fn inventory_file(
+    path: &Path,
+    module: &[String],
+    inherited_hidden: bool,
+    inventory: &mut Inventory,
+    visited: &mut BTreeSet<(PathBuf, Vec<String>, bool)>,
+) {
+    let canonical = path.canonicalize().expect("canonical authored module path");
+    if !visited.insert((canonical, module.to_vec(), inherited_hidden)) {
+        return;
+    }
+    let source = std::fs::read_to_string(path).expect("read authored Rust library source");
+    let file = syn::parse_file(&source).expect("parse authored Rust library source");
+    inventory_items(module, &file.items, inherited_hidden, inventory);
+    let module_dir = module_directory(path);
+    for item in &file.items {
+        let Item::Mod(child) = item else { continue };
+        if definitely_test_only(&child.attrs) {
+            continue;
+        }
+        let hidden = inherited_hidden || doc_hidden(&child.attrs);
+        let mut child_module = module.to_vec();
+        let child_name = child.ident.unraw().to_string();
+        child_module.push(child_name.clone());
+        if let Some((_, items)) = &child.content {
+            let child_module_dir = module_dir.join(child_name);
+            inventory_inline_modules(
+                path,
+                &child_module_dir,
+                &child_module,
+                items,
+                hidden,
+                inventory,
+                visited,
+            );
+        } else if let Some(path) = resolve_module(path, &module_dir, child) {
+            inventory_file(&path, &child_module, hidden, inventory, visited);
+        }
+    }
+}
+
+fn inventory_inline_modules(
+    source: &Path,
+    module_dir: &Path,
+    module: &[String],
+    items: &[Item],
+    inherited_hidden: bool,
+    inventory: &mut Inventory,
+    visited: &mut BTreeSet<(PathBuf, Vec<String>, bool)>,
+) {
+    inventory_items(module, items, inherited_hidden, inventory);
+    for item in items {
+        let Item::Mod(child) = item else { continue };
+        if definitely_test_only(&child.attrs) {
+            continue;
+        }
+        let hidden = inherited_hidden || doc_hidden(&child.attrs);
+        let mut child_module = module.to_vec();
+        let child_name = child.ident.unraw().to_string();
+        child_module.push(child_name.clone());
+        if let Some((_, items)) = &child.content {
+            let child_module_dir = module_dir.join(child_name);
+            inventory_inline_modules(
+                source,
+                &child_module_dir,
+                &child_module,
+                items,
+                hidden,
+                inventory,
+                visited,
+            );
+        } else if let Some(path) = resolve_module(source, module_dir, child) {
+            inventory_file(&path, &child_module, hidden, inventory, visited);
+        }
+    }
+}
+
+fn inventory_items(
+    module: &[String],
+    items: &[Item],
+    inherited_hidden: bool,
+    inventory: &mut Inventory,
+) {
+    for item in items {
+        let attrs = item_attrs(item);
+        if definitely_test_only(attrs) {
+            continue;
+        }
+        let hidden = inherited_hidden || doc_hidden(attrs);
+        let ident = match item {
+            Item::Struct(item) if hidden => Some(&item.ident),
+            Item::Enum(item) if hidden => Some(&item.ident),
+            Item::Union(item) if hidden => Some(&item.ident),
+            _ => None,
+        };
+        if let Some(ident) = ident {
+            let mut identity = module.to_vec();
+            identity.push(ident.unraw().to_string());
+            inventory.hidden_types.insert(identity);
+        }
+        if let Item::Use(item) = item {
+            collect_use_bindings(module, &item.tree, &[], inventory);
+        }
+    }
+}
+
+fn collect_use_bindings(
+    module: &[String],
+    tree: &UseTree,
+    prefix: &[String],
+    inventory: &mut Inventory,
+) {
+    match tree {
+        UseTree::Path(path) => {
+            let mut target = prefix.to_vec();
+            target.push(path.ident.unraw().to_string());
+            collect_use_bindings(module, &path.tree, &target, inventory);
+        }
+        UseTree::Name(name) => {
+            let name = name.ident.unraw().to_string();
+            if name == "self" {
+                if let Some(local) = prefix.last() {
+                    insert_use_binding(module, local, prefix, inventory);
+                }
+                return;
+            }
+            let mut target = prefix.to_vec();
+            target.push(name.clone());
+            insert_use_binding(module, &name, &target, inventory);
+        }
+        UseTree::Rename(rename) => {
+            let mut target = prefix.to_vec();
+            if rename.ident != "self" {
+                target.push(rename.ident.unraw().to_string());
+            }
+            insert_use_binding(
+                module,
+                &rename.rename.unraw().to_string(),
+                &target,
+                inventory,
+            );
+        }
+        UseTree::Group(group) => {
+            for tree in &group.items {
+                collect_use_bindings(module, tree, prefix, inventory);
+            }
+        }
+        UseTree::Glob(_) => {}
+    }
+}
+
+fn insert_use_binding(
+    module: &[String],
+    local: &str,
+    target: &[String],
+    inventory: &mut Inventory,
+) {
+    let mut binding = module.to_vec();
+    binding.push(local.to_owned());
+    if let Some(target) = normalize_segments(module, target) {
+        inventory
+            .bindings
+            .entry(binding)
+            .or_default()
+            .insert(target);
+    }
 }
 
 fn doc_hidden(attrs: &[Attribute]) -> bool {
@@ -356,16 +581,77 @@ fn item_name(item: &Item) -> String {
 }
 
 fn impl_targets_hidden_type(
-    source: &Path,
+    module: &[String],
     item: &syn::ItemImpl,
-    hidden_types: &BTreeSet<(PathBuf, String)>,
+    inventory: &Inventory,
 ) -> bool {
     let syn::Type::Path(path) = item.self_ty.as_ref() else {
         return false;
     };
-    path.path.segments.last().is_some_and(|segment| {
-        hidden_types.contains(&(source.to_owned(), segment.ident.to_string()))
-    })
+    if path.qself.is_some() || path.path.leading_colon.is_some() {
+        return false;
+    }
+    let segments = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.unraw().to_string())
+        .collect::<Vec<_>>();
+    let Some(identity) = normalize_segments(module, &segments) else {
+        return false;
+    };
+    let mut pending = vec![identity];
+    let mut seen = BTreeSet::new();
+    while let Some(identity) = pending.pop() {
+        if !seen.insert(identity.clone()) {
+            continue;
+        }
+        if inventory.hidden_types.contains(&identity) {
+            return true;
+        }
+        let binding_length = inventory
+            .bindings
+            .keys()
+            .filter(|binding| identity.starts_with(binding.as_slice()))
+            .map(Vec::len)
+            .max();
+        let Some(binding_length) = binding_length else {
+            continue;
+        };
+        for (binding, targets) in inventory.bindings.iter().filter(|(binding, _)| {
+            binding.len() == binding_length && identity.starts_with(binding.as_slice())
+        }) {
+            for target in targets {
+                let mut resolved = target.clone();
+                resolved.extend_from_slice(&identity[binding.len()..]);
+                pending.push(resolved);
+            }
+        }
+    }
+    false
+}
+
+fn normalize_segments(module: &[String], segments: &[String]) -> Option<Vec<String>> {
+    let (mut resolved, index) = match segments.first().map(String::as_str) {
+        Some("crate") => (Vec::new(), 1),
+        Some("self") => (module.to_vec(), 1),
+        Some("super") => {
+            let mut resolved = module.to_vec();
+            let mut index = 0;
+            while segments
+                .get(index)
+                .is_some_and(|segment| segment == "super")
+            {
+                resolved.pop()?;
+                index += 1;
+            }
+            (resolved, index)
+        }
+        Some(_) => (module.to_vec(), 0),
+        None => return None,
+    };
+    resolved.extend_from_slice(&segments[index..]);
+    Some(resolved)
 }
 
 fn impl_item_public(item: &syn::ImplItem) -> bool {
@@ -422,7 +708,7 @@ fn authored_library_graph_has_no_undocumented_hidden_abi() {
         .expect("workspace root");
     let mut policy = Policy::default();
     for root in LIBRARY_ROOTS {
-        policy.check_library(&workspace.join(root), false);
+        policy.check_crate(&workspace.join(root));
     }
     assert!(
         policy.missing.is_empty(),
@@ -479,6 +765,84 @@ fn hidden_descendants_require_their_own_documentation() {
             .map(|item| item.item.as_str())
             .collect::<Vec<_>>(),
         ["Message", "payload", "decode"],
+    );
+}
+
+#[test]
+fn cross_file_hidden_impls_resolve_qualified_reexports_without_name_collisions() {
+    let package = tempfile::tempdir().expect("temporary documentation-policy crate");
+    std::fs::write(
+        package.path().join("lib.rs"),
+        "mod hidden; mod api; mod sibling; mod ordinary;",
+    )
+    .expect("write fixture crate root");
+    std::fs::write(
+        package.path().join("hidden.rs"),
+        r#"
+        /// Matching-version wire type.
+        #[doc(hidden)]
+        pub struct Wire;
+        "#,
+    )
+    .expect("write hidden type module");
+    std::fs::write(
+        package.path().join("api.rs"),
+        r#"
+        #[cfg(feature = "hidden-protocol")]
+        pub use crate::hidden::Wire as ProtocolWire;
+        #[cfg(not(feature = "hidden-protocol"))]
+        pub use crate::ordinary::Wire as ProtocolWire;
+        "#,
+    )
+    .expect("write re-export module");
+    std::fs::write(
+        package.path().join("ordinary.rs"),
+        r#"
+        pub struct Wire;
+        impl Wire {
+            pub fn same_name_but_not_hidden() {}
+        }
+        "#,
+    )
+    .expect("write same-name ordinary type module");
+    let sibling = package.path().join("sibling.rs");
+    std::fs::write(
+        &sibling,
+        r#"
+        impl crate::api::ProtocolWire {
+            pub fn undocumented_cross_file_method() {}
+        }
+        "#,
+    )
+    .expect("write undocumented sibling impl");
+
+    let mut policy = Policy::default();
+    policy.check_crate(&package.path().join("lib.rs"));
+    assert_eq!(
+        policy
+            .missing
+            .iter()
+            .map(|item| item.item.as_str())
+            .collect::<Vec<_>>(),
+        ["undocumented_cross_file_method"],
+    );
+
+    std::fs::write(
+        sibling,
+        r#"
+        impl crate::api::ProtocolWire {
+            /// Decodes the matching-version wire representation.
+            pub fn documented_cross_file_method() {}
+        }
+        "#,
+    )
+    .expect("write documented sibling impl");
+    let mut policy = Policy::default();
+    policy.check_crate(&package.path().join("lib.rs"));
+    assert!(
+        policy.missing.is_empty(),
+        "documented hidden impl and unrelated same-name type must pass: {:#?}",
+        policy.missing,
     );
 }
 
