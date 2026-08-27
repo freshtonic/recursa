@@ -2716,6 +2716,26 @@ struct Root<'input> {
             safe_report.diagnostics
         );
         assert!(safe_report.lowered.is_some());
+
+        let fixed_report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { COLON => ":", spacing = tight, DOUBLE_COLON => "::" } }
+
+#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
+#[derive(recursa::Node)]
+struct Attached<T> {
+    #[tok(COLON, this)]
+    value: T,
+}
+#[derive(recursa::Node)] struct Root { value: Attached<Colon> }
+"#,
+        ));
+        assert!(fixed_report.lowered.is_none());
+        assert!(fixed_report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == MaterializationDiagnosticKind::InapplicablePrettyHint
+                && diagnostic.message.contains("closed Pretty boundary")
+        }));
     }
 
     fn assert_code(
