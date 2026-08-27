@@ -64,7 +64,7 @@ pub(crate) struct DiagnosticCodeSpec {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Enumerates the supported PrimaryLocationRule cases.
+/// Selects the authored range—or root fallback—that receives a diagnostic's primary label.
 pub(crate) enum PrimaryLocationRule {
     /// Uses the first related range, falling back to a global diagnostic.
     FirstRelatedOrGlobal,
@@ -73,7 +73,7 @@ pub(crate) enum PrimaryLocationRule {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Enumerates the supported DiagnosticEvidenceSchema cases.
+/// Constrains the structured proof an emitter must attach for a registered diagnostic code.
 pub(crate) enum DiagnosticEvidenceSchema {
     /// Requires evidence derived directly from authored source.
     SourceFacts,
@@ -86,7 +86,7 @@ pub(crate) enum DiagnosticEvidenceSchema {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Enumerates the supported DiagnosticRemedySchema cases.
+/// Constrains the corrective-action family permitted for a registered diagnostic code.
 pub(crate) enum DiagnosticRemedySchema {
     /// Remedy must identify an authored source correction.
     CorrectAuthoredInput,
@@ -361,7 +361,7 @@ impl DiagnosticLocation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Enumerates the supported DiagnosticLocationInvariant cases.
+/// Identifies which source-location invariant prevented construction of a trustworthy span.
 pub(crate) enum DiagnosticLocationInvariant {
     /// Path cannot be represented relative to the selected manifest.
     NonManifestRelativePath,
@@ -486,7 +486,7 @@ pub enum DiagnosticEvidence {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// Enumerates the supported LexicalEvidenceClass cases.
+/// Classifies lexical evidence so diagnostics and remedies describe the same policy failure.
 pub enum LexicalEvidenceClass {
     /// Keyword and word-token matching policies conflict.
     KeywordMatchingPolicy,
