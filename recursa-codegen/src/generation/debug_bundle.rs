@@ -372,6 +372,16 @@ pub(super) fn render_debug_capability_fragments(
                 quote!(#[doc = #documentation] mod node_diagram {}).to_string(),
             ));
         }
+        for token in &diagrams.tokens {
+            let documentation = syn::LitStr::new(
+                &render_token_diagram_document(token),
+                proc_macro2::Span::call_site(),
+            );
+            fragments.push((
+                format!("diagrams:token:{}", token.semantic_key),
+                quote!(#[doc = #documentation] mod token_diagram {}).to_string(),
+            ));
+        }
     }
     #[cfg(feature = "explorer")]
     if let Some(explorer) = &plan.explorer {

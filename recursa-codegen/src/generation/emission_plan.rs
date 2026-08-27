@@ -527,13 +527,33 @@ impl EmissionPlan {
         let authoritative_diagrams = resolved
             .build_inputs
             .diagrams
-            .then(|| plan_diagrams(lowered, resolved, &nodes, &kind_names, &kind_static_texts))
+            .then(|| {
+                plan_diagrams(
+                    lowered,
+                    resolved,
+                    &nodes,
+                    &tokens,
+                    &token_bindings,
+                    &kind_names,
+                    &kind_static_texts,
+                )
+            })
             .transpose()?;
         #[cfg(feature = "diagrams")]
         let diagrams = resolved
             .build_inputs
             .diagrams
-            .then(|| plan_diagrams(lowered, resolved, &nodes, &kind_names, &kind_static_texts))
+            .then(|| {
+                plan_diagrams(
+                    lowered,
+                    resolved,
+                    &nodes,
+                    &tokens,
+                    &token_bindings,
+                    &kind_names,
+                    &kind_static_texts,
+                )
+            })
             .transpose()?;
         #[cfg(feature = "diagrams")]
         let diagram_enabled = diagrams.is_some();
@@ -729,12 +749,12 @@ impl EmissionPlan {
             return Err("the generated lexical plan has no rules".to_owned());
         }
         #[cfg(feature = "diagrams")]
-        if self
-            .diagrams
-            .as_ref()
-            .is_some_and(|diagrams| diagrams.nodes.len() != self.nodes.len())
-        {
-            return Err("the diagram plan does not cover every frozen Node".to_owned());
+        if self.diagrams.as_ref().is_some_and(|diagrams| {
+            diagrams.nodes.len() != self.nodes.len() || diagrams.tokens.len() != self.tokens.len()
+        }) {
+            return Err(
+                "the diagram plan does not cover every frozen Node and content token".to_owned(),
+            );
         }
         self.validate_plan_families()?;
         let mut frozen_nodes = 0;

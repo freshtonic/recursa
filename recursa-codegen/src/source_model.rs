@@ -591,6 +591,8 @@ pub(crate) struct ContentTokenDefinition {
     pub(crate) semantic: ContentTokenId,
     /// The pattern.
     pub(crate) pattern: String,
+    /// The authored diagram label, when it differs from the regex fallback.
+    pub(crate) diagram_label: Option<String>,
     /// The callback.
     pub(crate) callback: Option<syn::Path>,
     /// The priority.
@@ -2522,6 +2524,7 @@ impl SourceModelBuilder<'_> {
                     semantic,
                     definition.name,
                     definition.pattern,
+                    None,
                     definition.callback,
                     None,
                     Vec::new(),
@@ -4111,10 +4114,35 @@ impl TokenCatalog {
             site: definition_site.clone(),
             definitions: authored_definitions,
         };
+        let diagram_label = syntax.diagram.map(|label| label.value());
+        if let Some(conflict) = self.definitions.iter().find(|definition| {
+            matches!(
+                &definition.kind,
+                TokenDefinitionKind::Content(content)
+                    if content.semantic == semantic
+                        && content.pattern == syntax.pattern.value()
+                        && content.callback == syntax.callback
+                        && content.priority == syntax.priority
+                        && content.admission_set == admission_set
+                        && content.diagram_label != diagram_label
+            )
+        }) {
+            let mut sites = conflict.definition_sites.clone();
+            sites.push(definition_site);
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidContentToken,
+                sites,
+                message: format!(
+                    "conflicting content token diagram labels for `{name}`; use one label at every declaration"
+                ),
+            });
+            return;
+        }
         self.define_content(
             semantic,
             name,
             syntax.pattern.value(),
+            diagram_label,
             syntax.callback,
             syntax.priority,
             admission_set,
@@ -4131,6 +4159,7 @@ impl TokenCatalog {
         semantic: ContentTokenId,
         name: String,
         pattern: String,
+        diagram_label: Option<String>,
         callback: Option<syn::Path>,
         priority: Option<u32>,
         admission_set: Vec<TokenDefinitionId>,
@@ -4145,6 +4174,7 @@ impl TokenCatalog {
                     TokenDefinitionKind::Content(content)
                         if content.semantic == semantic
                             && content.pattern == pattern
+                            && content.diagram_label == diagram_label
                             && content.callback == callback
                             && content.priority == priority
                             && content.admission_set == admission_set
@@ -4172,6 +4202,7 @@ impl TokenCatalog {
             kind: TokenDefinitionKind::Content(ContentTokenDefinition {
                 semantic,
                 pattern,
+                diagram_label,
                 callback,
                 priority,
                 admission_set,
@@ -4526,6 +4557,8 @@ impl Parse for SeparatorSyntax {
 struct LexSyntax {
     /// The pattern.
     pattern: LitStr,
+    /// The human-readable content-token label used by diagrams.
+    diagram: Option<LitStr>,
     /// The callback.
     callback: Option<syn::Path>,
     /// The priority.
@@ -4539,6 +4572,7 @@ struct LexSyntax {
 impl Parse for LexSyntax {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut pattern = None;
+        let mut diagram = None;
         let mut callback = None;
         let mut priority = None;
         let mut admissions = None;
@@ -4549,6 +4583,11 @@ impl Parse for LexSyntax {
                 input.parse::<Token![=]>()?;
                 if pattern.replace(input.parse()?).is_some() {
                     return Err(syn::Error::new(key.span(), "duplicate lex pattern"));
+                }
+            } else if key == "diagram" {
+                input.parse::<Token![=]>()?;
+                if diagram.replace(input.parse()?).is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate diagram label"));
                 }
             } else if key == "callback" {
                 input.parse::<Token![=]>()?;
@@ -4587,6 +4626,7 @@ impl Parse for LexSyntax {
         }
         Ok(Self {
             pattern: pattern.ok_or_else(|| input.error("#[lex] requires pattern = r\"...\""))?,
+            diagram,
             callback,
             priority,
             admissions: admissions.unwrap_or_default(),
@@ -4836,10 +4876,10 @@ mod tests {
 
     use super::{
         CentralTokensSyntax, ConfiguredTraitOwnership, ConfiguredTraitRecipe, ContentTextStorage,
-        DeclaredRepetition, GrammarElement, GrammarElementKind, NodeBody, NodeShape, PrettySpacing,
-        SourceModelDiagnosticKind, SourceModelInput, SourcePrattPosition, TokenDefinitionKind,
-        TokenUseRole, fixed_then_pattern_intersects_pattern, lower_source_model,
-        pattern_then_fixed_intersects_pattern,
+        DeclaredRepetition, GrammarElement, GrammarElementKind, LexSyntax, NodeBody, NodeShape,
+        PrettySpacing, SourceModelDiagnosticKind, SourceModelInput, SourcePrattPosition,
+        TokenDefinitionKind, TokenUseRole, fixed_then_pattern_intersects_pattern,
+        lower_source_model, pattern_then_fixed_intersects_pattern,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
@@ -5233,11 +5273,70 @@ struct Root {
             })
             .expect("content token definition");
         assert_eq!(content.pattern, "[A-Za-z_][A-Za-z0-9_]*");
+        assert_eq!(content.diagram_label, None);
         assert_eq!(content.text, ContentTextStorage::BorrowedOrOwnedMatchedText);
         assert_eq!(content.configured_traits.effective.len(), 1);
         assert_eq!(
             content.configured_traits.effective[0].recipe,
             ConfiguredTraitRecipe::Clone,
+        );
+    }
+
+    #[test]
+    fn content_diagram_labels_are_authored_once_and_conflicts_are_rejected() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+struct Root {
+    #[lex(pattern = r"[0-9]+", diagram = "integer")]
+    value: Number,
+}
+"#,
+        );
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let modeled = completed(report);
+        let content = modeled
+            .token_definitions
+            .iter()
+            .find_map(|definition| match &definition.kind {
+                TokenDefinitionKind::Content(content) => Some(content),
+                _ => None,
+            })
+            .expect("content token definition");
+        assert_eq!(content.diagram_label.as_deref(), Some("integer"));
+
+        let duplicate = match syn::parse_str::<LexSyntax>(
+            r#"pattern = r"[0-9]+", diagram = "integer", diagram = "number""#,
+        ) {
+            Ok(_) => panic!("a declaration has one deterministic label"),
+            Err(error) => error,
+        };
+        assert_eq!(duplicate.to_string(), "duplicate diagram label");
+
+        let conflict = model(
+            r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+struct First {
+    #[lex(pattern = r"[0-9]+", diagram = "integer")]
+    value: Number,
+}
+#[derive(recursa::Node)]
+struct Second {
+    #[lex(pattern = r"[0-9]+", diagram = "number")]
+    value: Number,
+}
+"#,
+        );
+        assert!(conflict.source_modeled.is_none());
+        assert!(
+            conflict
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("conflicting content token")),
+            "{:?}",
+            conflict.diagnostics
         );
     }
 

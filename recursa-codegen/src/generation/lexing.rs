@@ -514,8 +514,22 @@ pub(super) fn render_token_binding(
         "A content-bearing token. Parsed values retain their exact matched input text; synthesized values own their text. Fixed tokens are syntax-only grammar elements: they shape parsing but store no value and have no generated token type.",
         proc_macro2::Span::call_site(),
     );
+    #[cfg(feature = "diagrams")]
+    let token_diagram_documentation = plan.diagrams.as_ref().map(|diagrams| {
+        syn::LitStr::new(
+            &render_token_diagram_document(&diagrams.tokens[binding.token]),
+            proc_macro2::Span::call_site(),
+        )
+    });
+    #[cfg(feature = "diagrams")]
+    let token_diagram_attribute = token_diagram_documentation
+        .as_ref()
+        .map(|documentation| quote!(#[doc = #documentation]));
+    #[cfg(not(feature = "diagrams"))]
+    let token_diagram_attribute = proc_macro2::TokenStream::new();
     quote! {
         #[doc = #token_documentation]
+        #token_diagram_attribute
         #visibility type #ident<'input> =
             #module_anchor::__recursa_content_tokens::#canonical<'input>;
         #[doc = "A provenance-aware view of this generated content-bearing token."]
