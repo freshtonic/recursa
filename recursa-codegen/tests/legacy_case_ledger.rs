@@ -3,6 +3,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const FROZEN_REVISION: &str = "b410d2f123cd7510a8a40e9e5b971936a2fd8463";
+const DIRECT_EXECUTION_TARGETS: [&str; 5] = [
+    "--lib",
+    "analysis_parity",
+    "analysis_diagnostics",
+    "analysis_conflicts",
+    "analysis_pratt_conflicts",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Identity<'a> {
@@ -77,6 +84,9 @@ fn every_successor_reference_is_an_executable_test_or_a_named_typed_gate() {
     let workspace = workspace_root();
     let mut parsed_test_files = BTreeMap::<PathBuf, BTreeSet<String>>::new();
     let mut pending_identities = BTreeSet::new();
+    let mut fixture_test_rows = 0;
+    let mut direct_test_rows = 0;
+    let mut direct_execution_targets = BTreeSet::new();
 
     for (legacy_id, evidence) in ledger {
         match evidence.kind {
@@ -87,6 +97,21 @@ fn every_successor_reference_is_an_executable_test_or_a_named_typed_gate() {
                     .unwrap_or_else(|| panic!("invalid test evidence for {legacy_id}"));
                 assert!(!relative.is_empty() && !function.is_empty());
                 let path = workspace.join(relative);
+                if relative.starts_with("recursa-codegen/tests/fixtures/m4/legacy-grammars/") {
+                    fixture_test_rows += 1;
+                } else {
+                    direct_test_rows += 1;
+                    let target = direct_execution_target(relative).unwrap_or_else(|| {
+                        panic!(
+                            "{legacy_id} is direct test evidence outside the selected execution targets: {relative}"
+                        )
+                    });
+                    assert!(
+                        DIRECT_EXECUTION_TARGETS.contains(&target),
+                        "{legacy_id} requires unselected direct test target {target}",
+                    );
+                    direct_execution_targets.insert(target);
+                }
                 let functions = parsed_test_files
                     .entry(path.clone())
                     .or_insert_with(|| test_functions(&path));
@@ -124,6 +149,13 @@ fn every_successor_reference_is_an_executable_test_or_a_named_typed_gate() {
     assert!(
         pending_identities.is_empty(),
         "every legacy identity must resolve to Green executable evidence",
+    );
+    assert_eq!(fixture_test_rows, 81);
+    assert_eq!(direct_test_rows, 37);
+    assert_eq!(
+        direct_execution_targets,
+        BTreeSet::from(DIRECT_EXECUTION_TARGETS),
+        "the M4-LEDGER command must select every target containing direct successor evidence",
     );
 }
 
@@ -218,6 +250,20 @@ fn test_functions(path: &Path) -> BTreeSet<String> {
     let mut functions = BTreeSet::new();
     collect_test_functions(&file.items, &mut functions);
     functions
+}
+
+fn direct_execution_target(relative: &str) -> Option<&str> {
+    if relative
+        .strip_prefix("recursa-codegen/src/")
+        .and_then(|path| path.strip_suffix(".rs"))
+        .is_some_and(|path| !path.contains('/'))
+    {
+        return Some("--lib");
+    }
+    relative
+        .strip_prefix("recursa-codegen/tests/")
+        .and_then(|path| path.strip_suffix(".rs"))
+        .filter(|path| !path.contains('/'))
 }
 
 fn collect_test_functions(items: &[syn::Item], functions: &mut BTreeSet<String>) {
