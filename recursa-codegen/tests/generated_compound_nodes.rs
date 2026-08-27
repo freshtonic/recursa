@@ -826,6 +826,58 @@ fn main() {
 }
 
 #[test]
+fn source_owned_visit_root_reserves_its_explorer_entry_method() {
+    let package = scaffold_fixture();
+    configure_explorer(&package, true, true);
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::grammar,
+    derives(Visit),
+}
+
+recursa::tokens! { keywords { ONLY => "only" } }
+
+#[derive(recursa::Node)]
+#[node(omit(Visit))]
+#[tok(ONLY)]
+pub struct Only;
+
+impl recursa::Visit for Only {
+    type Events = __RecursaVisitEvents<'static>;
+
+    fn visit<V>(
+        &self,
+        visitor: &mut V,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<V::Error>>
+    where
+        V: recursa::TotalVisitor<Self::Events>,
+    {
+        match visitor.total_enter(__RecursaVisitEvent::__RecursaTarget_4_Only(self)) {
+            std::ops::ControlFlow::Continue(())
+            | std::ops::ControlFlow::Break(recursa::VisitBreak::SkipChildren) => {}
+            other => return other,
+        }
+        visitor.total_exit(__RecursaVisitEvent::__RecursaTarget_4_Only(self))
+    }
+}
+
+impl Only { pub fn explorer() {} }
+"#,
+    )
+    .expect("write source-owned Visit explorer collision");
+
+    let output = run_fixture_unlocked(&package);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "explorer collision must fail");
+    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("generated explorer entry method `Only::explorer` collides"),
+        "stderr:\n{stderr}",
+    );
+}
+
+#[test]
 fn omitted_visit_without_a_source_impl_is_an_ordinary_rust_trait_error() {
     let package = scaffold_fixture();
     configure_explorer(&package, true, true);
@@ -988,6 +1040,42 @@ fn an_explorer_value_name_collision_is_a_deterministic_generation_error() {
         ),
         "stderr:\n{stderr}"
     );
+}
+
+#[test]
+fn an_authored_legacy_explorer_parse_name_is_legal() {
+    let package = scaffold_fixture();
+    configure_explorer(&package, true, true);
+    let grammar = package.path().join("src/grammar.rs");
+    let mut source = fs::read_to_string(&grammar).expect("read compound grammar");
+    source.push_str("\nfn __recursa_explorer_parse_0() {}\n");
+    fs::write(&grammar, source).expect("insert the retired explorer parse name");
+
+    let output = run_fixture(&package);
+    assert!(
+        output.status.success(),
+        "retired explorer parse symbols are not reserved\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn an_explorer_aggregate_schema_collision_is_diagnosed_before_emission() {
+    let package = scaffold_fixture();
+    configure_explorer(&package, true, true);
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read compound grammar");
+    fs::write(
+        &grammar,
+        source.replace(
+            "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+            "static __RECURSA_EXPLORER_NODE_SCHEMAS: () = ();\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+        ),
+    )
+    .expect("insert aggregate explorer schema collision");
+
+    assert_explorer_collision(run_fixture(&package), "__RECURSA_EXPLORER_NODE_SCHEMAS");
 }
 
 #[test]
