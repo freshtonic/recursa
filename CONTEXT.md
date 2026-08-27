@@ -61,8 +61,16 @@ The typed construction path for an alternative lexer. It accepts grammar-local t
 _Avoid_: Raw token-record constructor
 
 **Lowered grammar**:
-The immutable M3 aggregate that keeps a normalized grammar together with its authoring-source context and their correlations.
+The immutable aggregate that keeps a normalized grammar together with its authoring-source context and their correlations.
 _Avoid_: Emission model, enriched grammar description
+
+**Source analysis**:
+The interpretation of an authored Rust module tree into a source model and lowered grammar, including grammar-semantic resolution and source correlations.
+_Avoid_: M3, source parsing
+
+**Semantic analysis**:
+The source-independent computation of nullable, FIRST, FOLLOW, dispatch, conflict, Pratt, and provenance facts over a normalized grammar.
+_Avoid_: Source analysis, Generation
 
 **Source model**:
 The grammar-relevant structure and locations of the selected Rust source tree retained alongside the normalized grammar.
@@ -101,7 +109,7 @@ A source name or path whose target changes the normalized grammar and therefore 
 _Avoid_: Every Rust path, opaque emitted path
 
 **Semantic type catalog**:
-The closed set of supported container and Recursa type identities outside the selected tree that M3 may recognize and expose through exact imports, re-exports, and aliases.
+The closed set of supported container and Recursa type identities outside the selected tree that source analysis may recognize and expose through exact imports, re-exports, and aliases.
 _Avoid_: External crate namespace, external glob contents
 
 **Facade mapping**:
@@ -129,7 +137,7 @@ The retained path from one grammar-semantic use site through the chosen imports,
 _Avoid_: Diagnostic search log, terminal name string
 
 **Opaque Rust fragment**:
-Parsed Rust syntax retained for faithful emission but not target-resolved by M3 because its target does not change the normalized grammar, including callback, hook, derive, and configured trait paths.
+Parsed Rust syntax retained for faithful emission but not target-resolved by source analysis because its target does not change the normalized grammar, including callback, hook, derive, and configured trait paths.
 _Avoid_: Grammar-semantic reference, unparsed text
 
 **Module inclusion**:
@@ -153,7 +161,7 @@ The private identity of canonical lowered content under a particular emitter and
 _Avoid_: Persistent entity ID, output filename
 
 **Analyzed grammar**:
-A successfully lowered grammar paired with M2's source-independent semantic analysis output.
+A successfully lowered grammar paired with source-independent semantic analysis output.
 _Avoid_: Emission plan, analysis report
 
 **Emission plan**:
@@ -173,7 +181,7 @@ The source-aware closed set of documented public bindings a generation introduce
 _Avoid_: Generated prelude, hidden loader surface
 
 **Parse plan**:
-The immutable executable plan for parsing one materialized grammar type, formed by joining M2's source-independent decisions with source construction and capture facts. M4 renders it without rediscovering grammar semantics.
+The immutable executable plan for parsing one materialized grammar type, formed by joining source-independent semantic decisions with source construction and capture facts. Generation renders it without rediscovering grammar semantics.
 _Avoid_: Generated parse body, analysis facts
 
 **Parse capability**:
@@ -191,6 +199,10 @@ _Avoid_: AST wrapper, span block
 **Explorer adapter**:
 The optional grammar-erased capability for parsing or sampling one source-visible Node family and exposing its result for explorer consumers.
 _Avoid_: Dynamic tree adapter, explorer UI
+
+**Explorer UI**:
+The interactive local application that consumes explorer adapters and explorer documents to inspect grammars, parsed trees, spans, diagnostics, samples, and rendered output.
+_Avoid_: Explorer adapter, explorer backend
 
 **Explorer document**:
 A read-only explorer representation of one parsed or generated root and its occurrence provenance, bounded by the lifetime of the input from which it was produced.
@@ -211,6 +223,14 @@ _Avoid_: Public registry, UI model
 **Explorer capability**:
 The generated root-level availability of a callable configured Pretty or Arbitrary operation through an explorer adapter.
 _Avoid_: Runtime trait reflection, feature flag
+
+**Railroad diagram**:
+A Rustdoc-embedded SVG that renders a Node's grammar structure or a content-bearing regex token through compositional railroad geometry.
+_Avoid_: Syntax box, generated production string
+
+**Diagram label**:
+An optional author-facing name used as the terminal text for a content-bearing regex token's railroad diagram. Without one, the declared regex is used.
+_Avoid_: Regex expansion, display override
 
 **Pretty context**:
 The facade-owned rendering context that combines grammar configuration with optional parsed provenance for structured Pretty emission.
@@ -256,8 +276,8 @@ _Avoid_: Pre-logged error, partial generation
 A set of derivative loader failures caused by one root-wide generation or protocol failure. The root diagnostic represents the failure and suppresses those dependent reports.
 _Avoid_: Independent Node-body failure, repeated root error
 
-**Milestone acceptance contract**:
-The normative set of observable gates that must pass before M3 or M4 is complete, with each gate traced to its fixture, evidence procedure, expected result, and originating decision.
+**Acceptance contract**:
+The normative set of observable gates that must pass before a capability is complete, with each gate traced to its fixture, evidence procedure, expected result, and originating decision.
 _Avoid_: Exit prose, implementation plan
 
 **Legacy-case ledger**:
@@ -265,7 +285,7 @@ The 167-entry traceability inventory that maps every Recursa spike test case to 
 _Avoid_: New test count, copied test suite
 
 **Semantic projection**:
-The canonical source-independent representation used to compare accepted grammar meaning and behavior across the spike and the M3–M4 pipeline while excluding provenance, spans, build-local identities, and physical output layout.
+The canonical source-independent representation used to compare accepted grammar meaning and behavior across implementations while excluding provenance, spans, build-local identities, and physical output layout.
 _Avoid_: Structural equality, generated-source snapshot
 
 **Publication barrier**:
