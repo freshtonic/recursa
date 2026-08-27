@@ -838,6 +838,106 @@ pub(super) fn explorer_output_omits_only_redundant_lifetimes() {
     );
 }
 
+#[cfg(feature = "explorer")]
+fn compound_fixture_join_error(source: String) -> String {
+    let package = tempfile::tempdir().expect("temporary compound plan fixture");
+    fs::write(package.path().join("grammar.rs"), source).expect("write compound plan fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("collision fixture reaches emission planning");
+    match EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default()) {
+        Ok(_) => panic!("the authored name must collide with generated output"),
+        Err(detail) => detail,
+    }
+}
+
+#[cfg(feature = "explorer")]
+fn compound_fixture_source() -> String {
+    include_str!("../../tests/fixtures/generation/compound-nodes/src/grammar.rs").to_owned()
+}
+
+#[cfg(feature = "explorer")]
+pub(super) fn view_collisions_are_rejected_at_the_emission_plan_seam() {
+    let imported = compound_fixture_source().replace(
+        "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+        "mod authored { pub struct RecordView; }\nuse authored::RecordView;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+    );
+    let detail = compound_fixture_join_error(imported);
+    assert!(
+        detail.contains("generated concrete view `RecordView` collides"),
+        "{detail}"
+    );
+
+    let token_binding = compound_fixture_source().replace(
+        "pub text: CountText<'input>",
+        "pub text: RecordView<'input>",
+    );
+    let detail = compound_fixture_join_error(token_binding);
+    assert!(
+        detail.contains("generated concrete view `RecordView` collides"),
+        "{detail}"
+    );
+}
+
+#[cfg(feature = "explorer")]
+pub(super) fn explorer_value_collisions_are_rejected_at_the_emission_plan_seam() {
+    for (source, name) in [
+        (
+            format!("{}\nfn __recursa_explorer_parse_0() {{}}\n", compound_fixture_source()),
+            "__recursa_explorer_parse_0",
+        ),
+        (
+            compound_fixture_source().replace(
+                "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+                "static __RECURSA_EXPLORER_NODE_SCHEMAS: () = ();\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+            ),
+            "__RECURSA_EXPLORER_NODE_SCHEMAS",
+        ),
+        (
+            format!(
+                "{}\nmod collision {{ pub fn value() {{}} }}\nuse collision::value as __RECURSA_EXPLORER_SCHEMA_0;\n",
+                compound_fixture_source()
+            ),
+            "__RECURSA_EXPLORER_SCHEMA_0",
+        ),
+        (
+            compound_fixture_source().replace(
+                "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+                "struct __RECURSA_EXPLORER_SCHEMA_0;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
+            ),
+            "__RECURSA_EXPLORER_SCHEMA_0",
+        ),
+    ] {
+        let detail = compound_fixture_join_error(source);
+        assert!(detail.contains(&format!("generated explorer item `{name}` collides")), "{detail}");
+    }
+}
+
+#[cfg(feature = "explorer")]
+pub(super) fn explorer_method_collisions_are_rejected_at_the_emission_plan_seam() {
+    let root = format!(
+        "{}\nimpl<'input> Record<'input> {{ pub fn explorer() {{}} }}\n",
+        compound_fixture_source()
+    );
+    let detail = compound_fixture_join_error(root);
+    assert!(
+        detail.contains("generated explorer entry method `Record::explorer` collides"),
+        "{detail}"
+    );
+
+    let descendant = compound_fixture_source().replace(
+        "    pub struct Duplicate;\n}\n\npub mod public_right",
+        "    pub struct Duplicate;\n\n    impl<'input> super::Record<'input> { pub fn explorer() {} }\n}\n\npub mod public_right",
+    );
+    let detail = compound_fixture_join_error(descendant);
+    assert!(
+        detail.contains("generated explorer entry method `Record::explorer` collides"),
+        "{detail}"
+    );
+}
+
 pub(super) fn authored_pretty_authority_rejects_emitted_declaration_corruption() {
     let package = tempfile::tempdir().expect("temporary Pretty authority fixture");
     fs::write(

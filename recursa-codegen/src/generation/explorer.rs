@@ -21,6 +21,18 @@ mod tests {
     fn explorer_output_omits_only_redundant_lifetimes() {
         test_support::explorer_output_omits_only_redundant_lifetimes();
     }
+    #[test]
+    fn view_collisions_are_rejected_at_the_emission_plan_seam() {
+        test_support::view_collisions_are_rejected_at_the_emission_plan_seam();
+    }
+    #[test]
+    fn explorer_value_collisions_are_rejected_at_the_emission_plan_seam() {
+        test_support::explorer_value_collisions_are_rejected_at_the_emission_plan_seam();
+    }
+    #[test]
+    fn explorer_method_collisions_are_rejected_at_the_emission_plan_seam() {
+        test_support::explorer_method_collisions_are_rejected_at_the_emission_plan_seam();
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
