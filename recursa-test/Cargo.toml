@@ -16,3 +16,6 @@ include = ["src/**", "README.md", "LICENSE"]
 publish = false
 
 [dependencies]
+
+[dev-dependencies]
+syn = { version = "2", features = ["full", "parsing"] }

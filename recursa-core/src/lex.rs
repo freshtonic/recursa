@@ -79,7 +79,10 @@ pub enum LexAction {
     /// Emit the rule's configured token kind.
     Emit,
     /// Emit a different grammar-local token kind.
-    EmitAs(TokenKind),
+    EmitAs(
+        /// Replacement grammar-local token kind.
+        TokenKind,
+    ),
     /// Consume the match without producing a record.
     Skip,
     /// Emit the distinguished lexical-error kind.

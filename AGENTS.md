@@ -11,3 +11,8 @@ The default five-label triage vocabulary is used. See `docs/agents/triage-labels
 ### Domain docs
 
 This repository uses a single-context layout. See `docs/agents/domain.md`.
+
+### Documentation gates
+
+Authored library APIs, private implementation items, and documentation-hidden protocol items are
+covered by the canonical documentation gate. See `docs/agents/documentation.md`.

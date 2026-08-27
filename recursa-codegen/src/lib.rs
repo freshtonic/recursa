@@ -16,9 +16,11 @@ mod diagnostic;
 /// Deterministic authored-module discovery and invalidation inputs.
 mod discovery;
 mod generation;
+/// Compact typed identities used throughout normalized grammar products.
 mod ids;
 /// Normalized, source-independent grammar representation.
 mod ir;
+/// Width-checked symbolic token-kind sets.
 mod kind_set;
 /// Grammar-wide lexical planning and carrier proofs.
 mod lexical;
@@ -26,6 +28,7 @@ mod lexical;
 mod lowering;
 /// Closed generic application and container materialization.
 mod materialization;
+/// Canonical proof provenance for semantic facts and diagnostics.
 mod provenance;
 /// Anchored resolution of grammar-semantic references.
 mod resolution;

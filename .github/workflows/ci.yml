@@ -45,3 +45,30 @@ jobs:
         run: cargo fmt --all --check
       - name: Lint workspace
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Documentation - lint authored libraries
+        run: >-
+          cargo clippy
+          -p recursa
+          -p recursa-core
+          -p recursa-codegen
+          -p recursa-macros
+          -p recursa-test
+          -p recursa-explorer
+          --lib --all-features --locked --
+          -D warnings
+          -D missing-docs
+          -D clippy::missing-docs-in-private-items
+      - name: Documentation - verify hidden ABI policy
+        run: cargo test -p recursa-test --test documentation_policy --locked
+      - name: Documentation - build private-item Rustdoc
+        env:
+          RUSTDOCFLAGS: --document-private-items -D rustdoc::broken_intra_doc_links
+        run: >-
+          cargo doc
+          -p recursa
+          -p recursa-core
+          -p recursa-codegen
+          -p recursa-macros
+          -p recursa-test
+          -p recursa-explorer
+          --all-features --no-deps --locked
