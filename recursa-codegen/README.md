@@ -36,8 +36,11 @@ the generation protocol remain generator-owned implementation details.
 
 No features are enabled by default.
 
-- `diagrams` generates railroad diagrams for Rustdoc when requested by the
-  grammar.
+- `diagrams` uses `railroad` to generate semantic railroad diagrams in aggregate
+  grammar Rustdoc and on each generated Node and content-token type. Request it
+  with `diagrams` in `recursa::grammar!`; content tokens may use
+  `#[lex(pattern = r"...", diagram = "human label")]`, otherwise the regex is
+  the deterministic label. Fixed-token terminals are syntax-only.
 - `explorer` generates grammar-erased Explorer adapters for eligible roots.
 
 Enable the matching capability on the `recursa` facade when a generated grammar

@@ -231,20 +231,31 @@ fn assert_application_qualified_diagrams(package: &TempDir) {
             path.ends_with("grammar_docs/index.html") && source.contains("RECURSA_GRAMMAR_DIAGRAM")
         })
         .expect("aggregate generic application diagram");
-    for production in [
-        "grammar::Wrap&lt;grammar::Name&gt; =&gt; Wrap ::= grammar::Name",
-        "grammar::Wrap&lt;Vec&lt;grammar::Name&gt;&gt; =&gt; Wrap ::= Vec&lt;grammar::Name&gt;",
-        "grammar::Atom&lt;grammar::Integer&gt; =&gt; Atom ::= grammar::Integer",
-        "grammar::Atom&lt;grammar::Name&gt; =&gt; Atom ::= grammar::Name",
-        "grammar::Chain&lt;grammar::Integer&gt; =&gt; Chain ::= \"{\" grammar::Integer Option&lt;grammar::Chain&lt;grammar::Integer&gt;&gt; \"}\"",
-        "grammar::Chain&lt;grammar::Name&gt; =&gt; Chain ::= \"{\" grammar::Name Option&lt;grammar::Chain&lt;grammar::Name&gt;&gt; \"}\"",
+    for application in [
+        "grammar::Wrap&lt;grammar::Name&gt;",
+        "grammar::Wrap&lt;Vec&lt;grammar::Name&gt;&gt;",
+        "grammar::Atom&lt;grammar::Integer&gt;",
+        "grammar::Atom&lt;grammar::Name&gt;",
+        "grammar::Chain&lt;grammar::Integer&gt;",
+        "grammar::Chain&lt;grammar::Name&gt;",
     ] {
         assert!(
-            aggregate.1.contains(production),
-            "missing application-qualified production `{production}`:\n{}",
+            aggregate.1.contains(application),
+            "missing application-qualified railroad branch `{application}`:\n{}",
             aggregate.1,
         );
     }
+    assert!(aggregate.1.contains("class=\"choice\""));
+    assert!(aggregate.1.contains("class=\"optional\""));
+    assert!(aggregate.1.contains("class=\"repeat\""));
+    assert!(
+        aggregate
+            .1
+            .contains("role=\"img\" aria-labelledby=\"recursa-diagram-")
+    );
+    assert!(aggregate.1.contains("href=\"../struct.Name.html\""));
+    assert!(aggregate.1.contains("id=\"content-tokens\""));
+    assert!(aggregate.1.contains("A-Za-z0-9_"));
 }
 
 fn scaffold_fixture() -> TempDir {

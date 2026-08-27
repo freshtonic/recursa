@@ -116,6 +116,16 @@ pub(super) fn debug_bundle_includes_every_enabled_diagram_and_explorer_capabilit
             node.semantic_key
         );
     }
+    for diagram in &plan.diagrams.as_ref().expect("diagram plan").tokens {
+        assert!(
+            index.contains(&format!(
+                "capability\tdiagrams:token:{}\t",
+                diagram.semantic_key
+            )),
+            "missing content-token diagram body for {}\n{index}",
+            diagram.semantic_key
+        );
+    }
     assert!(index.contains("capability\texplorer:static-schema\t"));
     assert!(index.contains("capability\texplorer:lexer\t"));
     for token in &plan.tokens {
@@ -360,6 +370,63 @@ fn joined_pratt_diagram_fixture() -> (tempfile::TempDir, EmissionPlan) {
     joined_pratt_fixture_from(&source)
 }
 
+#[cfg(feature = "diagrams")]
+pub(super) fn semantic_diagrams_cover_pratt_nodes_content_tokens_and_local_docs() {
+    let (_package, plan) = joined_pratt_diagram_fixture();
+    let diagrams = plan.diagrams.as_ref().expect("diagram plan");
+    assert_eq!(diagrams.nodes.len(), plan.nodes.len());
+    assert_eq!(diagrams.tokens.len(), plan.tokens.len());
+    assert_eq!(diagrams.tokens.len(), 2);
+    assert!(
+        diagrams
+            .tokens
+            .iter()
+            .all(|token| token.label == token.pattern)
+    );
+    let expression = diagrams
+        .nodes
+        .iter()
+        .find(|node| node.ident == "Expr")
+        .expect("Pratt diagram");
+    let topology = format!("{:?}", expression.production);
+    assert!(topology.contains("Choice"));
+    assert!(topology.contains("prefix bp=35 Neg"));
+    assert!(topology.contains("infix lbp=10 rbp=11 Add"));
+    assert!(topology.contains("postfix bp=40 Factorial"));
+    let aggregate = render_aggregate_diagram_document(diagrams);
+    assert!(aggregate.contains("## Content tokens"));
+    for binding in &plan.token_bindings {
+        let rendered = render_token_binding(&plan, binding).to_string();
+        assert!(rendered.contains("RECURSA_TOKEN_DIAGRAM"));
+    }
+}
+
+#[cfg(feature = "diagrams")]
+pub(super) fn semantic_diagrams_preserve_generic_applications_and_repetition_topology() {
+    let (_package, plan) = joined_pratt_fixture_from(include_str!(
+        "../../tests/fixtures/generation/generic-applications/src/grammar.rs"
+    ));
+    let diagrams = plan.diagrams.as_ref().expect("diagram plan");
+    let wrap = diagrams
+        .nodes
+        .iter()
+        .find(|node| node.ident == "Wrap")
+        .expect("generic Wrap diagram");
+    assert!(matches!(wrap.production, DiagramNode::Choice(_)));
+    let separator = diagrams
+        .nodes
+        .iter()
+        .find(|node| node.ident == "Separated")
+        .expect("separated repetition diagram");
+    let topology = format!("{:?}", separator.production);
+    assert!(topology.contains("Repeat"));
+    assert!(topology.contains("Terminal(\"and\")"));
+    assert!(
+        topology.contains("Optional"),
+        "Vec is zero-or-more: {topology}"
+    );
+}
+
 fn joined_pratt_fixture_from(source: &str) -> (tempfile::TempDir, EmissionPlan) {
     let package = tempfile::tempdir().expect("temporary Pratt plan fixture");
     fs::write(package.path().join("grammar.rs"), source).expect("write Pratt plan fixture");
@@ -540,8 +607,7 @@ pub(super) fn corrupted_real_plan_family_content_fails_before_publication() {
             .as_mut()
             .expect("diagram request creates emitted content")
             .nodes[0]
-            .production
-            .push_str(" corrupt");
+            .production = DiagramNode::Comment("corrupt".to_owned());
         assert_plan_family_is_unselectable(package.path(), &diagram, "diagram");
     }
     #[cfg(not(feature = "diagrams"))]
