@@ -1685,17 +1685,26 @@ fn strongly_connected_components(edges: &[Vec<FirstCornerEdge>]) -> Vec<Vec<Type
 
 /// Computes the strongly connected indices.
 fn strongly_connected_indices(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    /// Mutable depth-first state for Tarjan's strongly connected component algorithm.
     struct Tarjan<'a> {
+        /// Canonically ordered outgoing edges for every vertex.
         edges: &'a [Vec<usize>],
+        /// Next depth-first discovery index.
         next_index: usize,
+        /// Discovery index assigned to each visited vertex.
         indices: Vec<Option<usize>>,
+        /// Lowest reachable discovery index for each vertex.
         lowlinks: Vec<usize>,
+        /// Active depth-first vertices awaiting component assignment.
         stack: Vec<usize>,
+        /// Whether each vertex remains on the active stack.
         on_stack: Vec<bool>,
+        /// Completed strongly connected components in discovery order.
         components: Vec<Vec<usize>>,
     }
 
     impl Tarjan<'_> {
+        /// Visits one vertex, propagates its lowlink, and closes a component at each root.
         fn connect(&mut self, vertex: usize) {
             let index = self.next_index;
             self.next_index += 1;

@@ -1,3 +1,7 @@
+//! Canonical proof chains explaining derived semantic facts.
+
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
 use std::collections::BTreeMap;
 
 use crate::{
@@ -5,72 +9,123 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// One typed derivation step in a canonical semantic proof chain.
 pub enum ProvenanceStep {
+    /// A token kind follows directly from an authored atom declaration.
     DirectDeclaration {
+        /// Atom whose derived membership is explained.
         atom: AtomId,
+        /// Token kind established by the declaration.
         kind: KindId,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
+    /// An atom contributes through category membership.
     CategoryMembership {
+        /// Category through which membership propagates.
         category: AtomId,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
+    /// An atom contributes through token-class membership.
     ClassMembership {
+        /// Token class through which membership propagates.
         class: AtomId,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
+    /// A parsing target admits a reclaimable token kind.
     TargetAdmission {
+        /// Target receiving or supplying the propagated fact.
         target: AtomId,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
+    /// A grammar-semantic reference propagates facts from its target.
     Reference {
+        /// Grammar type whose fact is being derived.
         owner: TypeId,
+        /// Target receiving or supplying the propagated fact.
         target: TypeId,
+        /// Grammar position at which propagation occurs.
         site: SiteId,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
+    /// FIRST propagates through a referenced grammar type.
     FirstPropagation {
+        /// Grammar type receiving the derived fact.
         type_id: TypeId,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
+    /// A nullable prefix exposes the following grammar site.
     NullablePrefix {
+        /// Grammar type whose fact is being derived.
         owner: TypeId,
+        /// Grammar position at which propagation occurs.
         site: SiteId,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
+    /// A Pratt led variant contributes an active extender.
     PrattExtender {
+        /// Pratt grammar type owning the variant.
         pratt: TypeId,
+        /// Authored Pratt declaration.
         pratt_declaration: DeclId,
+        /// Authored led-variant declaration.
         variant: DeclId,
+        /// Pratt role and binding-power position.
         position: PrattPosition,
     },
+    /// An exact-text predicate refines a token-kind fact.
     TextPredicate {
+        /// Exact-text predicate refining the token kind.
         predicate: TextPredicateId,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
+    /// A parser entry contributes end-of-input to FOLLOW.
     EntryEof {
+        /// Grammar type receiving the derived fact.
         type_id: TypeId,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
+    /// A grammar suffix contributes its FIRST set to FOLLOW.
     FollowSuffix {
+        /// Grammar type whose fact is being derived.
         owner: TypeId,
+        /// Grammar position at which propagation occurs.
         site: SiteId,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
+    /// FOLLOW propagates from an owner into a nullable target site.
     FollowPropagation {
+        /// Grammar type whose fact is being derived.
         owner: TypeId,
+        /// Target receiving or supplying the propagated fact.
         target: TypeId,
+        /// Grammar position at which propagation occurs.
         site: Option<SiteId>,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
+    /// A repetition contributes its continuation back to the repeated item.
     RepeatContinuation {
+        /// Grammar type whose fact is being derived.
         owner: TypeId,
+        /// Grammar position at which propagation occurs.
         site: SiteId,
+        /// Authored declaration supporting this derivation.
         declaration: DeclId,
     },
 }
 
 impl ProvenanceStep {
+    /// Returns the authored declaration that determines source-order ranking.
     pub const fn declaration(&self) -> DeclId {
         match self {
             Self::DirectDeclaration { declaration, .. }
@@ -94,30 +149,44 @@ impl ProvenanceStep {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Canonical preference rank used when multiple proofs establish one fact.
 pub struct ProofRank {
+    /// Number of derivation steps from a direct fact.
     pub hops: u32,
+    /// Source order of the determining declaration.
     pub source_order: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Interned node in a semantic derivation chain.
 pub struct ProofNode {
+    /// Earlier derivation step, absent for a direct fact.
     pub parent: Option<ProofId>,
+    /// Typed derivation represented by this node.
     pub step: ProvenanceStep,
+    /// Canonical preference rank for witness selection.
     pub rank: ProofRank,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Interned arena of canonical semantic proof chains.
 pub struct ProofArena {
+    /// Proof nodes indexed by [`ProofId`].
     nodes: Vec<ProofNode>,
+    /// Existing identities keyed by parent and typed derivation step.
     interned: BTreeMap<(Option<ProofId>, ProvenanceStep), ProofId>,
+    /// Stable source order indexed by authored declaration identity.
     source_order_by_declaration: Vec<u32>,
 }
 
+/// Old-to-new identities produced while compacting reachable proofs.
 pub(crate) struct ProofRemap {
+    /// Optional compacted identity indexed by the old proof identity.
     by_old_id: Vec<Option<ProofId>>,
 }
 
 impl ProofRemap {
+    /// Returns the compacted identity of a proof known to be reachable.
     pub(crate) fn get(&self, old: ProofId) -> ProofId {
         self.by_old_id
             .get(old.index())
@@ -128,6 +197,7 @@ impl ProofRemap {
 }
 
 impl ProofArena {
+    /// Creates an empty arena using the supplied declaration source order.
     pub(crate) fn with_source_order(source_order_by_declaration: Vec<u32>) -> Self {
         Self {
             nodes: Vec::new(),
@@ -136,14 +206,17 @@ impl ProofArena {
         }
     }
 
+    /// Returns interned nodes in identity order.
     pub fn nodes(&self) -> &[ProofNode] {
         &self.nodes
     }
 
+    /// Resolves a proof identity when it belongs to this arena.
     pub fn get(&self, proof: ProofId) -> Option<&ProofNode> {
         self.nodes.get(proof.index())
     }
 
+    /// Iterates a proof from its selected witness back to its direct origin.
     pub fn chain(&self, proof: ProofId) -> ProofChain<'_> {
         ProofChain {
             arena: self,
@@ -151,6 +224,7 @@ impl ProofArena {
         }
     }
 
+    /// Interns one derivation step and assigns its canonical witness rank.
     pub(crate) fn intern(&mut self, parent: Option<ProofId>, step: ProvenanceStep) -> ProofId {
         let key = (parent, step.clone());
         if let Some(id) = self.interned.get(&key) {
@@ -177,6 +251,7 @@ impl ProofArena {
         id
     }
 
+    /// Compares proofs by rank, derivation step, then parent chain.
     pub(crate) fn compare(&self, left: ProofId, right: ProofId) -> std::cmp::Ordering {
         let left_node = self.get(left).expect("valid proof ID");
         let right_node = self.get(right).expect("valid proof ID");
@@ -187,6 +262,7 @@ impl ProofArena {
             .then_with(|| self.compare_parents(left_node.parent, right_node.parent))
     }
 
+    /// Compacts the arena to proofs reachable from `roots`, preserving canonical rank.
     pub(crate) fn retain_reachable(
         &mut self,
         roots: impl IntoIterator<Item = ProofId>,
@@ -231,6 +307,7 @@ impl ProofArena {
         remap
     }
 
+    /// Orders optional parent chains, placing a direct origin first.
     fn compare_parents(&self, left: Option<ProofId>, right: Option<ProofId>) -> std::cmp::Ordering {
         match (left, right) {
             (Some(left), Some(right)) => self.compare(left, right),
@@ -241,8 +318,11 @@ impl ProofArena {
     }
 }
 
+/// Iterator from a selected proof node toward its direct origin.
 pub struct ProofChain<'a> {
+    /// Arena that owns every yielded node.
     arena: &'a ProofArena,
+    /// Next proof identity toward the origin.
     next: Option<ProofId>,
 }
 
@@ -258,12 +338,16 @@ impl<'a> Iterator for ProofChain<'a> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Symbolic token-kind set paired with one canonical proof per member.
 pub struct ProvenancedKindSet {
+    /// Proven token-kind membership.
     kinds: KindSet,
+    /// Canonical proof indexed by grammar-local token kind.
     proof_by_kind: Vec<Option<ProofId>>,
 }
 
 impl ProvenancedKindSet {
+    /// Creates an empty provenanced set for one grammar width.
     pub(crate) fn empty(kind_count: usize) -> Self {
         Self {
             kinds: KindSet::empty(kind_count),
@@ -271,24 +355,29 @@ impl ProvenancedKindSet {
         }
     }
 
+    /// Returns the proven symbolic membership.
     pub fn kinds(&self) -> &KindSet {
         &self.kinds
     }
 
+    /// Returns the selected canonical proof for `kind`.
     pub fn proof(&self, kind: KindId) -> Option<ProofId> {
         self.proof_by_kind.get(kind.index()).copied().flatten()
     }
 
+    /// Iterates the proof roots needed to retain this set's evidence.
     pub(crate) fn proof_roots(&self) -> impl Iterator<Item = ProofId> + '_ {
         self.proof_by_kind.iter().filter_map(|proof| *proof)
     }
 
+    /// Applies an arena-compaction identity remap to every proof.
     pub(crate) fn remap_proofs(&mut self, remap: &ProofRemap) {
         for proof in self.proof_by_kind.iter_mut().flatten() {
             *proof = remap.get(*proof);
         }
     }
 
+    /// Inserts membership and retains the canonically preferred proof.
     pub(crate) fn insert(&mut self, kind: KindId, proof: ProofId, arena: &ProofArena) {
         self.kinds
             .insert(kind)
@@ -300,6 +389,7 @@ impl ProvenancedKindSet {
         debug_assert_eq!(self.kinds.contains(kind), slot.is_some());
     }
 
+    /// Merges another equally wide set using canonical proof preference.
     pub(crate) fn merge(&mut self, other: &Self, arena: &ProofArena) {
         debug_assert_eq!(self.kinds.kind_count(), other.kinds.kind_count());
         for kind in other.kinds.iter() {

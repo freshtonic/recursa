@@ -846,9 +846,15 @@ pub struct ElementSchemaData {
 /// Generated representation of an element's semantic target.
 pub enum ElementTargetData {
     /// Target is another materialized Node application.
-    Node(&'static NodeSchemaData),
+    Node(
+        /// Static schema for the materialized Node application.
+        &'static NodeSchemaData,
+    ),
     /// Target is a content-bearing token type.
-    ContentToken(&'static TokenSchemaData),
+    ContentToken(
+        /// Static schema for the content-bearing token type.
+        &'static TokenSchemaData,
+    ),
 }
 
 #[doc(hidden)]
