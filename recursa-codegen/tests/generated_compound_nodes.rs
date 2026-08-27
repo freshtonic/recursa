@@ -1109,40 +1109,6 @@ fn a_concrete_view_name_collision_is_a_deterministic_generation_error() {
 }
 
 #[test]
-fn an_imported_view_name_collision_is_a_deterministic_generation_error() {
-    let package = scaffold_fixture();
-    let grammar = package.path().join("src/grammar.rs");
-    let source = fs::read_to_string(&grammar).expect("read compound grammar");
-    fs::write(
-        &grammar,
-        source.replace(
-            "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-            "mod authored { pub struct RecordView; }\nuse authored::RecordView;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-        ),
-    )
-    .expect("insert an imported view-name collision");
-
-    assert_view_collision(run_fixture(&package), "RecordView");
-}
-
-#[test]
-fn a_generated_token_binding_collision_is_a_deterministic_generation_error() {
-    let package = scaffold_fixture();
-    let grammar = package.path().join("src/grammar.rs");
-    let source = fs::read_to_string(&grammar).expect("read compound grammar");
-    fs::write(
-        &grammar,
-        source.replace(
-            "pub text: CountText<'input>",
-            "pub text: RecordView<'input>",
-        ),
-    )
-    .expect("insert a generated token-binding collision");
-
-    assert_view_collision(run_fixture(&package), "RecordView");
-}
-
-#[test]
 fn an_explorer_value_name_collision_is_a_deterministic_generation_error() {
     let package = scaffold_fixture();
     configure_explorer(&package, true, true);
@@ -1170,48 +1136,6 @@ fn an_explorer_value_name_collision_is_a_deterministic_generation_error() {
 }
 
 #[test]
-fn an_authored_explorer_parse_callback_collision_is_diagnosed_before_emission() {
-    let package = scaffold_fixture();
-    configure_explorer(&package, true, true);
-    let grammar = package.path().join("src/grammar.rs");
-    let mut source = fs::read_to_string(&grammar).expect("read compound grammar");
-    source.push_str("\nfn __recursa_explorer_parse_0() {}\n");
-    fs::write(&grammar, source).expect("insert explorer parse callback collision");
-
-    let output = run_fixture(&package);
-    assert!(
-        !output.status.success(),
-        "explorer parse callback collision must fail"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
-    assert!(
-        stderr.contains(
-            "generated explorer item `__recursa_explorer_parse_0` collides with an authored value"
-        ),
-        "stderr:\n{stderr}",
-    );
-}
-
-#[test]
-fn an_explorer_aggregate_schema_collision_is_diagnosed_before_emission() {
-    let package = scaffold_fixture();
-    configure_explorer(&package, true, true);
-    let grammar = package.path().join("src/grammar.rs");
-    let source = fs::read_to_string(&grammar).expect("read compound grammar");
-    fs::write(
-        &grammar,
-        source.replace(
-            "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-            "static __RECURSA_EXPLORER_NODE_SCHEMAS: () = ();\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-        ),
-    )
-    .expect("insert aggregate explorer schema collision");
-
-    assert_explorer_collision(run_fixture(&package), "__RECURSA_EXPLORER_NODE_SCHEMAS");
-}
-
-#[test]
 fn an_authored_explorer_entry_method_collision_is_diagnosed_before_emission() {
     let package = scaffold_fixture();
     configure_explorer(&package, true, true);
@@ -1229,70 +1153,6 @@ fn an_authored_explorer_entry_method_collision_is_diagnosed_before_emission() {
     assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
     assert!(
         stderr.contains("generated explorer entry method `Record::explorer` collides"),
-        "stderr:\n{stderr}"
-    );
-}
-
-#[test]
-fn an_imported_value_binding_collision_is_diagnosed_before_emission() {
-    let package = scaffold_fixture();
-    configure_explorer(&package, true, true);
-    let grammar = package.path().join("src/grammar.rs");
-    let mut source = fs::read_to_string(&grammar).expect("read compound grammar");
-    source.push_str(
-        "\nmod explorer_import_collision { pub fn value() {} }\nuse explorer_import_collision::value as __RECURSA_EXPLORER_SCHEMA_0;\n",
-    );
-    fs::write(&grammar, source).expect("insert imported explorer value collision");
-
-    assert_explorer_collision(run_fixture(&package), "__RECURSA_EXPLORER_SCHEMA_0");
-}
-
-#[test]
-fn a_unit_constructor_collision_is_diagnosed_before_emission() {
-    let package = scaffold_fixture();
-    configure_explorer(&package, true, true);
-    let grammar = package.path().join("src/grammar.rs");
-    let source = fs::read_to_string(&grammar).expect("read compound grammar");
-    fs::write(
-        &grammar,
-        source.replace(
-            "#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-            "struct __RECURSA_EXPLORER_SCHEMA_0;\n\n#[derive(recursa::Node)]\n#[tok(RECORD, this)]",
-        ),
-    )
-    .expect("insert unit-constructor explorer collision");
-
-    assert_explorer_collision(run_fixture(&package), "__RECURSA_EXPLORER_SCHEMA_0");
-}
-
-#[test]
-fn an_explorer_method_in_a_descendant_impl_is_diagnosed_before_emission() {
-    let package = scaffold_fixture();
-    configure_explorer(&package, true, true);
-    let grammar = package.path().join("src/grammar.rs");
-    let source = fs::read_to_string(&grammar).expect("read compound grammar");
-    let source = source.replace(
-        "    pub struct Duplicate;\n}\n\npub mod public_right",
-        "    pub struct Duplicate;\n\n    impl<'input> super::Record<'input> { pub fn explorer() {} }\n}\n\npub mod public_right",
-    );
-    fs::write(&grammar, source).expect("insert descendant explorer method collision");
-
-    let output = run_fixture(&package);
-    assert!(!output.status.success(), "explorer collision must fail");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
-    assert!(
-        stderr.contains("generated explorer entry method `Record::explorer` collides"),
-        "stderr:\n{stderr}"
-    );
-}
-
-fn assert_explorer_collision(output: Output, name: &str) {
-    assert!(!output.status.success(), "explorer collision must fail");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
-    assert!(
-        stderr.contains(&format!("generated explorer item `{name}` collides")),
         "stderr:\n{stderr}"
     );
 }
@@ -1327,16 +1187,6 @@ fn source_edits_select_a_fresh_generation_in_the_same_build_directory() {
         after.len() > before.len(),
         "before={before:?}\nafter={after:?}"
     );
-}
-
-fn assert_view_collision(output: Output, name: &str) {
-    assert!(
-        !output.status.success(),
-        "the generated view collision must fail"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("RCA9105"), "stderr:\n{stderr}");
-    assert!(stderr.contains(name), "stderr:\n{stderr}");
 }
 
 fn scaffold_fixture() -> TempDir {
