@@ -13,7 +13,7 @@ mod decision_plan;
 mod diagnostic;
 /// Deterministic authored-module discovery and invalidation inputs.
 mod discovery;
-mod generation_compound;
+mod generation;
 mod ids;
 /// Normalized, source-independent grammar representation.
 mod ir;
@@ -62,7 +62,7 @@ pub use diagnostic::{
     ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic, DiagnosticCode, DiagnosticLabel,
     LookaheadWitnessPosition, Remedy, Severity, SharedPrefixEvidence,
 };
-pub use generation_compound::{Generation, generate};
+pub use generation::{Generation, generate};
 pub use ids::{
     AtomId, DeclId, KindId, LocationId, ProofId, SiteId, SourceId, TextPredicateId, TypeId,
 };

@@ -1,0 +1,1662 @@
+use super::*;
+
+pub(super) fn debug_directory_environment_is_always_tracked_by_cargo() {
+    let mut cargo = Vec::new();
+    emit_debug_directory_invalidation(&mut cargo);
+    assert_eq!(cargo, ["cargo::rerun-if-env-changed=RECURSA_DEBUG_DIR"]);
+}
+
+pub(super) fn debug_bundle_is_deterministic_formatted_complete_and_identity_neutral() {
+    let (_package, plan) = joined_pratt_fixture();
+    let rendered = render(&plan).unwrap();
+    let identity = plan.identity.clone();
+    let authoritative_root = rendered.root.clone();
+    let authoritative_nodes = rendered.nodes.clone();
+    let destination = tempfile::tempdir().unwrap();
+    fs::write(destination.path().join("owned-by-caller"), "preserve me").unwrap();
+
+    let staged = stage_debug_bundle(destination.path(), &plan, &rendered).unwrap();
+    let published = staged.published.clone();
+    assert!(!published.exists(), "a staged bundle is not yet observable");
+    staged.commit().unwrap();
+
+    assert_eq!(plan.identity, identity);
+    assert_eq!(rendered.root, authoritative_root);
+    assert_eq!(rendered.nodes, authoritative_nodes);
+    assert_eq!(
+        fs::read_to_string(destination.path().join("owned-by-caller")).unwrap(),
+        "preserve me"
+    );
+    let index = fs::read_to_string(published.join("index")).unwrap();
+    assert!(index.starts_with(DEBUG_BUNDLE_FORMAT));
+    assert_eq!(
+        index
+            .lines()
+            .filter(|line| line.starts_with("root\t"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        index
+            .lines()
+            .filter(|line| line.starts_with("node\t"))
+            .count(),
+        plan.nodes.len()
+    );
+    assert!(
+        index
+            .lines()
+            .any(|line| line.starts_with("capability\tconfigured:")),
+        "configured capability bodies are indexed"
+    );
+    for line in index.lines().skip(2) {
+        let [_, _, private_name] = line.split('\t').collect::<Vec<_>>()[..] else {
+            panic!("debug index row is malformed: {line}");
+        };
+        let source = fs::read_to_string(published.join(private_name)).unwrap();
+        let syntax = syn::parse_file(&source).expect("every logical view is parseable Rust");
+        assert_eq!(
+            prettyplease::unparse(&syntax),
+            source,
+            "every logical view is stable under the formatter"
+        );
+    }
+
+    fs::write(published.join("root.rs"), "human notes, not Rust").unwrap();
+    fs::write(published.join("index"), "human index edit").unwrap();
+    fs::write(
+        published.join("extra-notes.txt"),
+        "keep out of generated view",
+    )
+    .unwrap();
+    let repeated = stage_debug_bundle(destination.path(), &plan, &rendered).unwrap();
+    assert!(repeated.staging.is_some());
+    assert!(repeated.replacement.is_some());
+    repeated.commit().unwrap();
+    assert_eq!(fs::read_to_string(published.join("index")).unwrap(), index);
+    assert!(!published.join("extra-notes.txt").exists());
+    assert_eq!(plan.identity, identity);
+    let regenerated_root = fs::read_to_string(published.join("root.rs")).unwrap();
+    syn::parse_file(&regenerated_root).expect("human edits are replaced, not loaded");
+}
+
+pub(super) fn arbitrary_identity_collision_is_preserved_and_rejected_without_replacement() {
+    let (_package, plan) = joined_pratt_fixture();
+    let rendered = render(&plan).unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let collision = destination
+        .path()
+        .join(format!(".{DEBUG_BUNDLE_FORMAT}"))
+        .join(&plan.identity);
+    fs::create_dir_all(&collision).unwrap();
+    fs::write(collision.join("caller-data"), "do not remove").unwrap();
+
+    let error = match stage_debug_bundle(destination.path(), &plan, &rendered) {
+        Ok(_) => panic!("an unowned identity collision must not be replaced"),
+        Err(error) => error,
+    };
+    assert!(error.contains("not owned by Recursa"), "{error}");
+    assert_eq!(
+        fs::read_to_string(collision.join("caller-data")).unwrap(),
+        "do not remove"
+    );
+}
+
+#[cfg(all(feature = "diagrams", feature = "explorer"))]
+pub(super) fn debug_bundle_includes_every_enabled_diagram_and_explorer_capability_body() {
+    let (_package, plan) = joined_pratt_diagram_fixture();
+    let rendered = render(&plan).unwrap();
+    let files = render_debug_logical_files(&plan, &rendered).unwrap();
+    let index = render_debug_index(&plan.identity, &files);
+    assert!(index.contains("capability\tdiagrams:aggregate\t"));
+    for node in &plan.nodes {
+        assert!(
+            index.contains(&format!("capability\tdiagrams:{}\t", node.semantic_key)),
+            "missing diagram body for {}\n{index}",
+            node.semantic_key
+        );
+    }
+    assert!(index.contains("capability\texplorer:static-schema\t"));
+    assert!(index.contains("capability\texplorer:lexer\t"));
+    for token in &plan.tokens {
+        assert!(
+            index.contains(&format!(
+                "capability\texplorer:token:{}\t",
+                token.kind_variant
+            )),
+            "missing explorer token body for {}\n{index}",
+            token.kind_variant
+        );
+    }
+    for node in &plan.nodes {
+        for application in &node.parse_applications {
+            assert!(
+                index.contains(&format!(
+                    "capability\texplorer:node:{}:application-{}\t",
+                    node.semantic_key,
+                    application.application.index()
+                )),
+                "missing explorer application body for {} application {}\n{index}",
+                node.semantic_key,
+                application.application.index()
+            );
+        }
+    }
+}
+
+pub(super) fn failed_debug_commit_is_cleaned_and_makes_the_generation_unselectable() {
+    let (_package, plan) = joined_pratt_fixture();
+    let rendered = render(&plan).unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let staged = stage_debug_bundle(destination.path(), &plan, &rendered).unwrap();
+    let staging = staged.staging.clone().unwrap();
+    fs::create_dir(&staged.published).unwrap();
+    fs::write(staged.published.join("caller-data"), "do not remove").unwrap();
+    let output = tempfile::tempdir().unwrap();
+
+    let detail =
+        publish_generation_and_debug(output.path(), &plan.identity, &rendered, Some(staged))
+            .unwrap_err();
+    assert!(detail.contains("debug bundle"), "{detail}");
+    assert_eq!(selected_generation(output.path()), None);
+    assert!(!staging.exists());
+    assert_eq!(
+        fs::read_to_string(
+            destination
+                .path()
+                .join(format!(".{DEBUG_BUNDLE_FORMAT}"))
+                .join(&plan.identity)
+                .join("caller-data")
+        )
+        .unwrap(),
+        "do not remove"
+    );
+    let error = failure(Path::new("grammar.rs"), &detail);
+    let [diagnostic] = error.report().diagnostics() else {
+        panic!("one debug emission failure is required");
+    };
+    assert_eq!(diagnostic.code().as_str(), "RCA9105");
+}
+
+#[cfg(unix)]
+pub(super) fn debug_destination_and_bundle_entries_reject_symlinks_without_following_them() {
+    use std::os::unix::fs::symlink;
+
+    let (_package, plan) = joined_pratt_fixture();
+    let rendered = render(&plan).unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let target = parent.path().join("target");
+    fs::create_dir(&target).unwrap();
+    let destination = parent.path().join("debug-link");
+    symlink(&target, &destination).unwrap();
+    let error = match stage_debug_bundle(&destination, &plan, &rendered) {
+        Ok(_) => panic!("a symlink destination must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.contains("symbolic link"), "{error}");
+    assert!(fs::read_dir(target).unwrap().next().is_none());
+}
+
+pub(super) fn nested_visit_variant_uses_the_path_relative_to_the_grammar_module() {
+    assert_eq!(
+        visit_variant_name("grammar", "grammar::public_left::Duplicate"),
+        "__RecursaTarget_11_public_left_9_Duplicate"
+    );
+}
+
+pub(super) fn root_visit_variants_are_encoded_away_from_reserved_and_nested_names() {
+    assert_eq!(
+        visit_variant_name("grammar", "grammar::Opaque"),
+        "__RecursaTarget_6_Opaque"
+    );
+    assert_ne!(
+        visit_variant_name(
+            "grammar",
+            "grammar::__RecursaTarget_11_public_left_9_Duplicate"
+        ),
+        visit_variant_name("grammar", "grammar::public_left::Duplicate")
+    );
+}
+
+pub(super) fn snake_case_produces_stable_generated_element_names() {
+    assert_eq!(snake_case("RECORD"), "record");
+    assert_eq!(snake_case("LabelColon"), "label_colon");
+    assert_eq!(snake_case(":"), "element");
+}
+
+pub(super) fn synthetic_fixed_spelling_uppercases_only_ascii_insensitive_keywords() {
+    assert_eq!(
+        fixed_pretty_spelling("record", TextEquivalence::AsciiInsensitive),
+        "RECORD"
+    );
+    assert_eq!(
+        fixed_pretty_spelling(":", TextEquivalence::AsciiInsensitive),
+        ":"
+    );
+    assert_eq!(
+        fixed_pretty_spelling("record", TextEquivalence::Sensitive),
+        "record"
+    );
+}
+
+pub(super) fn fixed_accessor_names_remain_valid_for_numeric_spellings() {
+    assert_eq!(
+        super::fixed_accessor_ident("123").unwrap().to_string(),
+        "element_123_span"
+    );
+}
+
+pub(super) fn predictive_compilation_rejects_missing_and_conflicting_frozen_products() {
+    let position = DispatchPositionPlan {
+        expected: ExpectedSet {
+            words: vec![1],
+            atoms: vec![0],
+        },
+        text_predicate: None,
+    };
+    let root = DispatchTrieNodePlan {
+        target: None,
+        edges: vec![DispatchTrieEdgePlan {
+            position,
+            next: DispatchTrieNodePlan {
+                target: Some(DispatchTargetPlan {
+                    variant: 0,
+                    on_caller_follow: false,
+                }),
+                edges: Vec::new(),
+            },
+        }],
+    };
+    let mut dispatch = PredictiveDispatchPlan {
+        frozen_identity: predictive_dispatch_identity(&root),
+        root,
+        frozen_sequence_count: 1,
+        frozen_node_count: 2,
+    };
+    assert_eq!(validate_predictive_dispatch(&dispatch, 1).unwrap(), 2);
+    dispatch.root.edges[0].next.target.as_mut().unwrap().variant = 1;
+    assert_eq!(
+        validate_predictive_dispatch(&dispatch, 1).unwrap_err(),
+        "frozen predictive dispatch references an unknown variant",
+    );
+
+    dispatch.root.edges[0].next.target.as_mut().unwrap().variant = 0;
+    dispatch.root.edges[0].position.text_predicate =
+        Some(PlannedTextPredicate::Exact("corrupt".to_owned()));
+    assert_eq!(
+        validate_predictive_dispatch(&dispatch, 1).unwrap_err(),
+        "the joined predictive plan diverges from its frozen identity",
+    );
+}
+
+pub(super) fn corrupted_joined_dispatch_fails_before_publication_with_rca9105() {
+    let package = tempfile::tempdir().expect("temporary predictive plan fixture");
+    fs::write(
+        package.path().join("grammar.rs"),
+        r#"
+recursa::grammar! { module = crate, max_lookahead = 1 }
+
+#[derive(recursa::Node)]
+enum Root { A(A), B(B) }
+
+#[derive(recursa::Node)]
+#[tok("a")]
+struct A;
+
+#[derive(recursa::Node)]
+#[tok("b")]
+struct B;
+"#,
+    )
+    .expect("write predictive plan fixture");
+    let cfg = CargoCfgSnapshot::default();
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze predictive plan fixture");
+    let mut plan = EmissionPlan::join(&success.analyzed, &cfg)
+        .expect("join a complete predictive Emission plan");
+    assert!(plan.instrumentation.frozen_dispatch_nodes_consumed > 0);
+    render(&plan).expect("the renderer consumes every frozen trie node");
+
+    let dispatch = plan
+        .nodes
+        .iter_mut()
+        .flat_map(|node| &mut node.parse_applications)
+        .find_map(|application| match &mut application.body {
+            NodeBodyPlan::Enum { dispatch, .. } => Some(dispatch),
+            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Pratt(_) => None,
+        })
+        .expect("fixture contains one predictive dispatch");
+    dispatch.root.edges[0].position.text_predicate =
+        Some(PlannedTextPredicate::Exact("corrupt".to_owned()));
+
+    let detail = match render(&plan) {
+        Err(detail) => detail,
+        Ok(_) => panic!("corrupt joined plans cannot reach publication"),
+    };
+    let error = failure(Path::new("grammar.rs"), &detail);
+    let [diagnostic] = error.report().diagnostics() else {
+        panic!("one pre-publication invariant diagnostic is required");
+    };
+    assert_eq!(diagnostic.code().as_str(), "RCA9105");
+    assert!(!package.path().join(SELECTED_GENERATION).exists());
+}
+
+fn joined_pratt_fixture() -> (tempfile::TempDir, EmissionPlan) {
+    joined_pratt_fixture_from(include_str!(
+        "../../tests/fixtures/generation/pratt/src/grammar.rs"
+    ))
+}
+
+#[cfg(feature = "diagrams")]
+fn joined_pratt_diagram_fixture() -> (tempfile::TempDir, EmissionPlan) {
+    let source = include_str!("../../tests/fixtures/generation/pratt/src/grammar.rs").replacen(
+        "module = crate::grammar,",
+        "module = crate::grammar,\n    diagrams,",
+        1,
+    );
+    joined_pratt_fixture_from(&source)
+}
+
+fn joined_pratt_fixture_from(source: &str) -> (tempfile::TempDir, EmissionPlan) {
+    let package = tempfile::tempdir().expect("temporary Pratt plan fixture");
+    fs::write(package.path().join("grammar.rs"), source).expect("write Pratt plan fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze Pratt plan fixture");
+    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join a complete Pratt Emission plan");
+    render(&plan).expect("a complete Pratt plan renders");
+    (package, plan)
+}
+
+fn assert_corrupt_pratt_plan_is_unselectable(package: &Path, plan: &EmissionPlan) {
+    let detail = match render(plan) {
+        Err(detail) => detail,
+        Ok(_) => panic!("corrupt Pratt plans cannot reach publication"),
+    };
+    let error = failure(Path::new("grammar.rs"), &detail);
+    let [diagnostic] = error.report().diagnostics() else {
+        panic!("one pre-publication invariant diagnostic is required");
+    };
+    assert_eq!(diagnostic.code().as_str(), "RCA9105");
+    assert_eq!(diagnostic.stage(), DiagnosticStage::Emission);
+    assert!(!package.join(SELECTED_GENERATION).exists());
+}
+
+pub(super) fn corrupted_pratt_branch_follow_and_failure_identities_fail_before_publication() {
+    let (package, mut missing_plan) = joined_pratt_fixture();
+    let pratt = missing_plan
+        .nodes
+        .iter_mut()
+        .flat_map(|node| &mut node.parse_applications)
+        .find_map(|application| match &mut application.body {
+            NodeBodyPlan::Pratt(pratt) => Some(pratt),
+            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
+        })
+        .expect("fixture contains a Pratt plan");
+    pratt.nud.clear();
+    assert_corrupt_pratt_plan_is_unselectable(package.path(), &missing_plan);
+
+    let (package, mut branch_plan) = joined_pratt_fixture();
+    let pratt = branch_plan
+        .nodes
+        .iter_mut()
+        .flat_map(|node| &mut node.parse_applications)
+        .find_map(|application| match &mut application.body {
+            NodeBodyPlan::Pratt(pratt) => Some(pratt),
+            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
+        })
+        .expect("fixture contains a Pratt plan");
+    let variant_count = pratt.nud.len();
+    let mut pending = vec![&mut pratt.nud_dispatch.root];
+    let target = loop {
+        let node = pending.pop().expect("nud dispatch contains a terminal");
+        if let Some(target) = &mut node.target {
+            break target;
+        }
+        pending.extend(node.edges.iter_mut().map(|edge| &mut edge.next));
+    };
+    target.variant = (target.variant + 1) % variant_count;
+    assert_corrupt_pratt_plan_is_unselectable(package.path(), &branch_plan);
+
+    let (package, mut follow_plan) = joined_pratt_fixture();
+    let pratt = follow_plan
+        .nodes
+        .iter_mut()
+        .flat_map(|node| &mut node.parse_applications)
+        .find_map(|application| match &mut application.body {
+            NodeBodyPlan::Pratt(pratt) => Some(pratt),
+            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
+        })
+        .expect("fixture contains a Pratt plan");
+    let follow = pratt
+        .led
+        .iter_mut()
+        .flat_map(|branch| &mut branch.variant.elements)
+        .find_map(|element| match &mut element.kind {
+            ElementParseKind::Semantic {
+                container,
+                pratt_min_bp: Some(_),
+                ..
+            } => match container.as_mut() {
+                PlannedContainer::Direct { child_follow, .. } => Some(child_follow),
+                PlannedContainer::Optional { .. } | PlannedContainer::Repeated { .. } => None,
+            },
+            ElementParseKind::Fixed { .. } | ElementParseKind::Semantic { .. } => None,
+        })
+        .expect("fixture contains a recursive Pratt operand FOLLOW");
+    *follow = PlannedFollow::Caller;
+    assert_corrupt_pratt_plan_is_unselectable(package.path(), &follow_plan);
+
+    let (package, mut failure_plan) = joined_pratt_fixture();
+    let pratt = failure_plan
+        .nodes
+        .iter_mut()
+        .flat_map(|node| &mut node.parse_applications)
+        .find_map(|application| match &mut application.body {
+            NodeBodyPlan::Pratt(pratt) => Some(pratt),
+            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
+        })
+        .expect("fixture contains a Pratt plan");
+    pratt.nud_failure = PlannedFollow::Caller;
+    assert_corrupt_pratt_plan_is_unselectable(package.path(), &failure_plan);
+}
+
+pub(super) fn corrupted_real_plan_family_content_fails_before_publication() {
+    let (package, mut traits) = joined_pratt_fixture();
+    traits.nodes[0]
+        .configured_traits
+        .pop()
+        .expect("the trait fixture configures recipes");
+    assert_plan_family_is_unselectable(package.path(), &traits, "configured-trait");
+
+    let (package, mut private_abi) = joined_pratt_fixture();
+    private_abi.private_abi.protocol += 1;
+    assert_plan_family_is_unselectable(package.path(), &private_abi, "private ABI");
+
+    let (package, mut capabilities) = joined_pratt_fixture();
+    capabilities
+        .capabilities
+        .pop()
+        .expect("the fixture accepts at least one exact facade capability");
+    assert_plan_family_is_unselectable(package.path(), &capabilities, "capability");
+
+    let (package, mut pretty) = joined_pratt_fixture();
+    let element = pretty
+        .pretty
+        .nodes
+        .iter_mut()
+        .flatten()
+        .flat_map(|node| &mut node.variants)
+        .flat_map(|variant| variant.iter_mut())
+        .next()
+        .expect("the trait fixture contains Pretty behavior");
+    match element {
+        PrettyElementBehavior::Fixed { spelling, .. } => spelling.push_str("-corrupt"),
+        PrettyElementBehavior::Semantic { repetition, .. } => {
+            *repetition = Some(PrettyRepetitionBehavior {
+                separator: None,
+                trailing_separator: false,
+                hard_break: false,
+                leading_separator: false,
+                space_before_separator: false,
+            });
+        }
+    }
+    assert_plan_family_is_unselectable(package.path(), &pretty, "Pretty");
+
+    let (package, mut attachment) = joined_pratt_fixture();
+    let fixed = attachment
+        .pretty
+        .nodes
+        .iter_mut()
+        .flatten()
+        .flat_map(|node| &mut node.variants)
+        .flat_map(|variant| variant.iter_mut())
+        .find_map(|element| match element {
+            PrettyElementBehavior::Semantic {
+                attachment: Some(attachment),
+                ..
+            } => attachment.before.first_mut(),
+            PrettyElementBehavior::Fixed { .. }
+            | PrettyElementBehavior::Semantic {
+                attachment: None, ..
+            } => None,
+        })
+        .expect("the Pratt fixture contains a fixed attachment");
+    fixed.spelling.push_str("-corrupt");
+    assert_plan_family_is_unselectable(package.path(), &attachment, "Pretty");
+
+    #[cfg(feature = "diagrams")]
+    {
+        let (package, mut diagram) = joined_pratt_diagram_fixture();
+        diagram
+            .diagrams
+            .as_mut()
+            .expect("diagram request creates emitted content")
+            .nodes[0]
+            .production
+            .push_str(" corrupt");
+        assert_plan_family_is_unselectable(package.path(), &diagram, "diagram");
+    }
+    #[cfg(not(feature = "diagrams"))]
+    {
+        let (_, plan) = joined_pratt_fixture();
+        assert_eq!(plan.plan_families.diagrams, None);
+    }
+
+    #[cfg(feature = "explorer")]
+    {
+        let (package, mut explorer) = joined_pratt_fixture();
+        explorer
+            .explorer
+            .as_mut()
+            .expect("Visit fixture has an explorer plan")
+            .roots
+            .first_mut()
+            .expect("Visit fixture has an explorer root")
+            .capabilities
+            .pretty ^= true;
+        assert_plan_family_is_unselectable(package.path(), &explorer, "explorer");
+
+        let (package, mut explorer_artifact) = joined_pratt_fixture();
+        explorer_artifact
+            .explorer
+            .as_mut()
+            .expect("Visit fixture has an extension emission plan")
+            .artifacts
+            .push(ExtensionArtifactPlan {
+                logical_name: "grammar-index".to_owned(),
+                content: "corrupt explorer artifact".to_owned(),
+            });
+        assert_plan_family_is_unselectable(package.path(), &explorer_artifact, "explorer");
+
+        let (package, mut explorer_schema) = joined_pratt_fixture();
+        explorer_schema
+            .explorer
+            .as_mut()
+            .expect("Visit fixture has an explorer plan")
+            .nodes
+            .first_mut()
+            .expect("Visit fixture has an explorer Node schema")
+            .body = ExplorerNodeBodyPlan::Struct(ExplorerVariantPlan {
+            variant: None,
+            name: None,
+            qualified_name: None,
+            elements: Vec::new(),
+        });
+        assert_plan_family_is_unselectable(package.path(), &explorer_schema, "explorer");
+    }
+}
+
+#[cfg(feature = "explorer")]
+pub(super) fn explorer_plan_freezes_the_complete_typed_static_schema() {
+    let (_, plan) = joined_pratt_fixture();
+    let explorer = plan
+        .explorer
+        .as_ref()
+        .expect("Visit fixture has an explorer plan");
+
+    assert_eq!(explorer.grammar.name, plan.grammar_name);
+    assert_eq!(explorer.tokens.len(), plan.kind_count - 1);
+    assert!(explorer.tokens.iter().any(|token| {
+        token.canonical_text.as_deref() == Some("+")
+            && token.kind == ExplorerTokenKindPlan::Fixed
+            && token.highlight == ExplorerHighlightClassPlan::Punctuation
+    }));
+    assert!(explorer.tokens.iter().any(|token| {
+        token.canonical_text.is_none()
+            && token.kind == ExplorerTokenKindPlan::Content
+            && token.highlight == ExplorerHighlightClassPlan::Content
+    }));
+
+    let node = explorer
+        .nodes
+        .iter()
+        .find(|node| matches!(node.body, ExplorerNodeBodyPlan::Pratt(_)))
+        .expect("Pratt application has a Node descriptor");
+    assert!(
+        explorer
+            .roots
+            .iter()
+            .any(|root| root.application == node.application)
+    );
+    assert!(node.qualified_name.ends_with(&format!("::{}", node.name)));
+    let variants = match &node.body {
+        ExplorerNodeBodyPlan::Pratt(variants) => variants,
+        ExplorerNodeBodyPlan::Struct(_) | ExplorerNodeBodyPlan::Enum(_) => {
+            panic!("Pratt root keeps its complete variant table")
+        }
+    };
+    assert!(variants.iter().all(|variant| {
+        variant
+            .qualified_name
+            .as_ref()
+            .is_some_and(|qualified| qualified.starts_with(&node.qualified_name))
+    }));
+    assert!(
+        variants
+            .iter()
+            .flat_map(|variant| &variant.elements)
+            .any(|element| matches!(element.target, Some(ExplorerElementTargetPlan::Node(_))))
+    );
+    let all_variants = explorer.nodes.iter().flat_map(|node| match &node.body {
+        ExplorerNodeBodyPlan::Struct(variant) => std::slice::from_ref(variant),
+        ExplorerNodeBodyPlan::Enum(variants) | ExplorerNodeBodyPlan::Pratt(variants) => {
+            variants.as_slice()
+        }
+    });
+    assert!(
+        all_variants
+            .clone()
+            .flat_map(|variant| &variant.elements)
+            .any(|element| matches!(
+                element.target,
+                Some(ExplorerElementTargetPlan::ContentToken(_))
+            ))
+    );
+    assert!(
+        all_variants
+            .flat_map(|variant| &variant.elements)
+            .any(|element| element.target.is_none() && element.token_kind.is_some())
+    );
+}
+
+#[cfg(feature = "explorer")]
+pub(super) fn explorer_rendering_consumes_its_frozen_schema_plan() {
+    let (_, mut plan) = joined_pratt_fixture();
+    let explorer = plan
+        .explorer
+        .as_mut()
+        .expect("Visit fixture has an explorer plan");
+    explorer.nodes[0].name = "FrozenExplorerSchema".to_owned();
+    let element = explorer
+        .nodes
+        .iter_mut()
+        .flat_map(|node| match &mut node.body {
+            ExplorerNodeBodyPlan::Struct(variant) => std::slice::from_mut(variant),
+            ExplorerNodeBodyPlan::Enum(variants) | ExplorerNodeBodyPlan::Pratt(variants) => {
+                variants.as_mut_slice()
+            }
+        })
+        .flat_map(|variant| &mut variant.elements)
+        .find(|element| matches!(element.display, ExplorerDisplayPlan::Fixed(_)))
+        .expect("fixture contains fixed explorer syntax");
+    element.name = "frozen_element".to_owned();
+    element.cardinality = ExplorerCardinalityPlan::OptionalOneOrMore;
+    explorer
+        .tokens
+        .iter_mut()
+        .find(|token| token.canonical_text.is_some())
+        .expect("fixture contains a fixed Token descriptor")
+        .canonical_text = Some("FROZEN_DISPLAY".to_owned());
+    plan.plan_families.explorer = Some(plan_family_identity(explorer));
+
+    let rendered = render(&plan).expect("self-consistent frozen explorer plan renders");
+    let generated = std::iter::once(rendered.root.as_str())
+        .chain(rendered.nodes.iter().map(|(_, source)| source.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for frozen in [
+        "FrozenExplorerSchema",
+        "frozen_element",
+        "OptionalOneOrMore",
+        "FROZEN_DISPLAY",
+    ] {
+        assert!(
+            generated.contains(frozen),
+            "rendered explorer content must consume frozen decision {frozen}"
+        );
+    }
+}
+
+pub(super) fn authored_pretty_authority_rejects_emitted_declaration_corruption() {
+    let package = tempfile::tempdir().expect("temporary Pretty authority fixture");
+    fs::write(
+        package.path().join("grammar.rs"),
+        include_str!("../../tests/fixtures/generation/pratt/src/grammar.rs"),
+    )
+    .expect("write Pretty authority fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze Pretty authority fixture");
+    let lowered = &success.analyzed.lowered;
+    let authority = authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
+        .expect("derive Pretty authority from source");
+    let mut plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join a complete Pretty plan");
+    let element = plan
+        .nodes
+        .iter_mut()
+        .flat_map(|node| match &mut node.body {
+            NodeBodyPlan::Struct { elements, .. } => elements.iter_mut().collect::<Vec<_>>(),
+            NodeBodyPlan::Enum { variants, .. } => variants
+                .iter_mut()
+                .flat_map(|variant| variant.elements.iter_mut())
+                .collect(),
+            NodeBodyPlan::Pratt(pratt) => pratt
+                .nud
+                .iter_mut()
+                .flat_map(|branch| branch.variant.elements.iter_mut())
+                .chain(
+                    pratt
+                        .led
+                        .iter_mut()
+                        .flat_map(|branch| branch.variant.elements.iter_mut()),
+                )
+                .collect(),
+        })
+        .find(|element| matches!(element.kind, ElementParseKind::Semantic { .. }))
+        .expect("Pretty fixture contains a semantic declaration element");
+    let ElementParseKind::Semantic {
+        opaque_provenance, ..
+    } = &mut element.kind
+    else {
+        unreachable!("selected a semantic element")
+    };
+    *opaque_provenance = !*opaque_provenance;
+    plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens);
+
+    let authority_after_corruption =
+        authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
+            .expect("source authority remains derivable");
+    assert_eq!(authority, authority_after_corruption);
+    assert_ne!(Some(plan.pretty.clone()), authority);
+    assert!(
+        plan.validate()
+            .expect_err("corrupt emitted Pretty plan must diverge")
+            .contains("Pretty plan family")
+    );
+}
+
+pub(super) fn pretty_pratt_recursion_uses_typed_node_identity_not_the_final_path_segment() {
+    let package = tempfile::tempdir().expect("temporary typed Pratt Pretty fixture");
+    fs::write(
+        package.path().join("grammar.rs"),
+        r#"
+                recursa::grammar! {
+                    module = crate::grammar,
+                    derives(Pretty),
+                    keyword_matching = sensitive,
+                    max_lookahead = 1,
+                }
+                recursa::tokens! {
+                    ignore = r"[ \t\n\r]+",
+                    punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" }
+                }
+                pub mod foreign {
+                    #[derive(recursa::Node)]
+                    pub struct Expr<'input> {
+                        #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+                        pub value: ForeignExprText<'input>,
+                    }
+                }
+                #[derive(recursa::Node)]
+                pub struct Number<'input> {
+                    #[lex(pattern = r"[0-9]+")]
+                    pub value: NumberText<'input>,
+                }
+                #[derive(recursa::Node)]
+                #[pratt]
+                pub enum Expr<'input, T> {
+                    Foreign(foreign::Expr<'input>),
+                    Generic(T),
+                    Group(#[tok(OPEN, this, CLOSE)] Box<Self>),
+                    #[parse(infix, lbp = 10, rbp = 11)]
+                    #[tok(PLUS)]
+                    Add(Box<Self>, Box<Self>),
+                }
+                #[derive(recursa::Node)]
+                pub struct Root<'input> {
+                    pub expression: Expr<'input, Number<'input>>,
+                }
+            "#,
+    )
+    .expect("write typed Pratt Pretty fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze typed Pratt Pretty fixture");
+    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join typed Pratt Pretty fixture");
+    let index = plan
+        .nodes
+        .iter()
+        .position(|node| node.semantic_key == "grammar::Expr")
+        .expect("fixture has the owning Pratt Expr");
+    let behavior = plan.pretty.nodes[index]
+        .as_ref()
+        .expect("owning Expr has Pretty behavior");
+    let pratt = behavior
+        .pratt
+        .as_ref()
+        .expect("Expr has typed Pratt behavior");
+
+    assert_eq!(
+        pratt.variants[0].operands,
+        vec![PrettyPrattOperandBehavior::Ordinary],
+        "foreign::Expr must not become recursive merely because its final ident matches",
+    );
+    assert_eq!(
+        pratt.variants[1].operands,
+        vec![PrettyPrattOperandBehavior::Ordinary]
+    );
+    assert!(matches!(
+        pratt.variants[2].operands.as_slice(),
+        [PrettyPrattOperandBehavior::Recursive { owner, applications, .. }]
+            if *owner == behavior.node && applications == &behavior.applications
+    ));
+    assert!(matches!(
+        pratt.variants[3].operands.as_slice(),
+        [
+            PrettyPrattOperandBehavior::Recursive { .. },
+            PrettyPrattOperandBehavior::Recursive { .. }
+        ]
+    ));
+    assert!(
+        pratt.grouping.is_some(),
+        "typed Self atom supplies grouping"
+    );
+}
+
+pub(super) fn every_typed_pretty_pratt_decision_is_part_of_family_authority() {
+    let (package, plan) = joined_pratt_fixture();
+
+    fn behavior(plan: &mut EmissionPlan) -> &mut PrettyNodeBehavior {
+        let index = plan
+            .nodes
+            .iter()
+            .position(|node| node.ident == "Expr")
+            .expect("fixture has Expr");
+        plan.pretty.nodes[index].as_mut().expect("Expr has Pretty")
+    }
+    fn pratt(plan: &mut EmissionPlan) -> &mut PrettyPrattBehavior {
+        behavior(plan).pratt.as_mut().expect("Expr is Pratt")
+    }
+    fn reject(package: &Path, mut plan: EmissionPlan, corrupt: impl FnOnce(&mut EmissionPlan)) {
+        corrupt(&mut plan);
+        assert_plan_family_is_unselectable(package, &plan, "Pretty");
+    }
+
+    reject(package.path(), plan.clone(), |plan| {
+        behavior(plan).node = NodeId::next(999);
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        behavior(plan).applications.clear();
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        let grouping = pratt(plan).grouping.as_mut().expect("grouping");
+        assert_eq!(grouping.before.len(), 2);
+        grouping.before[1].spelling.push('!');
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        let grouping = pratt(plan).grouping.as_mut().expect("grouping");
+        assert_eq!(grouping.after.len(), 2);
+        grouping.after.remove(0);
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        pratt(plan).grouping.as_mut().expect("grouping").after[1].rendering =
+            PrettyFixedRendering::Punctuation;
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        pratt(plan).variants[0].parenthesization.entry_lbp = Some(1);
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        pratt(plan).variants[0].parenthesization.exit_rbp = 1;
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        let recursive = pratt(plan)
+            .variants
+            .iter_mut()
+            .flat_map(|variant| &mut variant.operands)
+            .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
+            .expect("recursive operand");
+        let PrettyPrattOperandBehavior::Recursive { owner, .. } = recursive else {
+            unreachable!()
+        };
+        *owner = NodeId::next(999);
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        let recursive = pratt(plan)
+            .variants
+            .iter_mut()
+            .flat_map(|variant| &mut variant.operands)
+            .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
+            .expect("recursive operand");
+        let PrettyPrattOperandBehavior::Recursive { applications, .. } = recursive else {
+            unreachable!()
+        };
+        applications.clear();
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        let recursive = pratt(plan)
+            .variants
+            .iter_mut()
+            .flat_map(|variant| &mut variant.operands)
+            .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
+            .expect("recursive operand");
+        let PrettyPrattOperandBehavior::Recursive { minimum, .. } = recursive else {
+            unreachable!()
+        };
+        *minimum = PrettyPrattMinimum::Binding(255);
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        let recursive = pratt(plan)
+            .variants
+            .iter_mut()
+            .flat_map(|variant| &mut variant.operands)
+            .find(|operand| matches!(operand, PrettyPrattOperandBehavior::Recursive { .. }))
+            .expect("recursive operand");
+        let PrettyPrattOperandBehavior::Recursive { next, .. } = recursive else {
+            unreachable!()
+        };
+        *next = PrettyPrattNext::Binding(255);
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        let fixed = behavior(plan)
+            .variants
+            .iter_mut()
+            .flatten()
+            .find(|element| matches!(element, PrettyElementBehavior::Fixed { .. }))
+            .expect("fixed Pretty element");
+        let PrettyElementBehavior::Fixed {
+            soft_break_before, ..
+        } = fixed
+        else {
+            unreachable!()
+        };
+        *soft_break_before = !*soft_break_before;
+    });
+    reject(package.path(), plan.clone(), |plan| {
+        let fixed = behavior(plan)
+            .variants
+            .iter_mut()
+            .flatten()
+            .find(|element| matches!(element, PrettyElementBehavior::Fixed { .. }))
+            .expect("fixed Pretty element");
+        let PrettyElementBehavior::Fixed {
+            soft_break_after, ..
+        } = fixed
+        else {
+            unreachable!()
+        };
+        *soft_break_after = !*soft_break_after;
+    });
+    reject(package.path(), plan, |plan| {
+        let semantic = behavior(plan)
+            .variants
+            .iter_mut()
+            .flatten()
+            .find(|element| matches!(element, PrettyElementBehavior::Semantic { .. }))
+            .expect("semantic Pretty element");
+        let PrettyElementBehavior::Semantic { provenance, .. } = semantic else {
+            unreachable!()
+        };
+        *provenance = PrettyProvenanceBehavior::Opaque;
+    });
+}
+
+pub(super) fn recursive_concrete_pretty_impls_do_not_publish_cyclic_child_bounds() {
+    let package = tempfile::tempdir().expect("temporary recursive Pretty fixture");
+    let source = include_str!("../../tests/fixtures/source-analysis/json/grammar.rs").replacen(
+        "recursa::grammar! {",
+        "recursa::grammar! {\n    derives(Pretty),",
+        1,
+    );
+    fs::write(package.path().join("grammar.rs"), source).expect("write recursive Pretty fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze recursive Pretty fixture");
+    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join recursive Pretty fixture");
+    let rendered = render(&plan).expect("render recursive Pretty fixture");
+    let nodes = rendered
+        .nodes
+        .iter()
+        .map(|(_, node)| node.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(nodes.contains("recursa :: Pretty for Value"));
+    for concrete in ["Value", "Object", "Member", "Array"] {
+        assert!(
+            !nodes.contains(&format!("recursa :: Pretty for {concrete} where")),
+            "concrete {concrete} Pretty impl must not carry child bounds",
+        );
+    }
+}
+
+pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
+    let source = include_str!("../../tests/fixtures/generation/repetitions/src/grammar.rs.in")
+        .replace("__RECURSA_SPANS_MODE__", "off");
+    let package = tempfile::tempdir().expect("temporary Pretty hint authority fixture");
+    fs::write(package.path().join("grammar.rs"), source)
+        .expect("write Pretty hint authority fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze Pretty hint authority fixture");
+    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join a complete Pretty hint plan");
+
+    fn pretty_node<'a>(plan: &'a mut EmissionPlan, ident: &str) -> &'a mut PrettyNodeBehavior {
+        let index = plan
+            .nodes
+            .iter()
+            .position(|node| node.ident == ident)
+            .unwrap_or_else(|| panic!("fixture contains {ident}"));
+        plan.pretty.nodes[index]
+            .as_mut()
+            .unwrap_or_else(|| panic!("{ident} has Pretty behavior"))
+    }
+    fn semantic(node: &mut PrettyNodeBehavior) -> &mut PrettyElementBehavior {
+        node.variants
+            .iter_mut()
+            .flatten()
+            .find_map(|element| match element {
+                PrettyElementBehavior::Semantic { .. } => Some(element),
+                PrettyElementBehavior::Fixed { .. } => None,
+            })
+            .expect("selected fixture node has a semantic field")
+    }
+    fn repetition_behavior(node: &mut PrettyNodeBehavior) -> &mut PrettyRepetitionBehavior {
+        let PrettyElementBehavior::Semantic {
+            repetition: Some(repetition),
+            ..
+        } = semantic(node)
+        else {
+            panic!("selected fixture node has a repeated semantic field")
+        };
+        repetition
+    }
+
+    let mut node_hint = plan.clone();
+    assert!(!pretty_node(&mut node_hint, "NodeGroupPretty").pretty.indent);
+    pretty_node(&mut node_hint, "NodeGroupPretty").pretty.indent = true;
+    assert_plan_family_is_unselectable(package.path(), &node_hint, "Pretty");
+
+    let mut variant_hint = plan.clone();
+    pretty_node(&mut variant_hint, "VariantGroupPretty").variant_pretty[0].indent = true;
+    assert_plan_family_is_unselectable(package.path(), &variant_hint, "Pretty");
+
+    let mut field_hint = plan.clone();
+    let PrettyElementBehavior::Semantic { pretty, .. } =
+        semantic(pretty_node(&mut field_hint, "AttachmentPretty"))
+    else {
+        unreachable!("semantic helper returns semantic behavior")
+    };
+    pretty.trailing_separator = Some(PrettyTrailingSeparator::Never);
+    assert_plan_family_is_unselectable(package.path(), &field_hint, "Pretty");
+
+    let mut separator_policy = plan.clone();
+    let PrettyElementBehavior::Semantic { pretty, .. } =
+        semantic(pretty_node(&mut separator_policy, "LeadingPretty"))
+    else {
+        unreachable!("semantic helper returns semantic behavior")
+    };
+    pretty.separator = Some(PrettySeparatorPosition::Trailing);
+    assert_plan_family_is_unselectable(package.path(), &separator_policy, "Pretty");
+
+    let mut inconsistent_group = plan.clone();
+    pretty_node(&mut inconsistent_group, "InconsistentIndentPretty")
+        .pretty
+        .group = Some(PrettyGroup::Consistent);
+    assert_plan_family_is_unselectable(package.path(), &inconsistent_group, "Pretty");
+
+    let mut sequence_layout = plan.clone();
+    pretty_node(&mut sequence_layout, "NodeGroupPretty").variant_layouts[0] =
+        PrettySequenceLayout::Delimited;
+    assert_plan_family_is_unselectable(package.path(), &sequence_layout, "Pretty");
+
+    let mut fixed_rendering = plan.clone();
+    let rendering = pretty_node(&mut fixed_rendering, "NodeGroupPretty")
+        .variants
+        .iter_mut()
+        .flatten()
+        .find_map(|element| match element {
+            PrettyElementBehavior::Fixed { rendering, .. } => Some(rendering),
+            PrettyElementBehavior::Semantic { .. } => None,
+        })
+        .expect("fixture has ordinary fixed syntax");
+    assert_eq!(*rendering, PrettyFixedRendering::Word);
+    *rendering = PrettyFixedRendering::Punctuation;
+    assert_plan_family_is_unselectable(package.path(), &fixed_rendering, "Pretty");
+
+    let mut attachment_layout = plan.clone();
+    let PrettyElementBehavior::Semantic {
+        attachment: Some(attachment),
+        ..
+    } = semantic(pretty_node(&mut attachment_layout, "AttachedOptional"))
+    else {
+        panic!("fixture has an attached field")
+    };
+    assert_eq!(attachment.layout, PrettySequenceLayout::Delimited);
+    attachment.layout = PrettySequenceLayout::Linear;
+    assert_plan_family_is_unselectable(package.path(), &attachment_layout, "Pretty");
+
+    let mut attached_fixed_rendering = plan.clone();
+    let PrettyElementBehavior::Semantic {
+        attachment: Some(attachment),
+        ..
+    } = semantic(pretty_node(
+        &mut attached_fixed_rendering,
+        "AttachedOptional",
+    ))
+    else {
+        panic!("fixture has an attached field")
+    };
+    let rendering = &mut attachment.before[0].rendering;
+    assert_eq!(*rendering, PrettyFixedRendering::Opening);
+    *rendering = PrettyFixedRendering::Punctuation;
+    assert_plan_family_is_unselectable(package.path(), &attached_fixed_rendering, "Pretty");
+
+    let mut separator_spelling = plan.clone();
+    repetition_behavior(pretty_node(&mut separator_spelling, "LeadingPretty"))
+        .separator
+        .as_mut()
+        .expect("fixture has a separator")
+        .push_str("-corrupt");
+    assert_plan_family_is_unselectable(package.path(), &separator_spelling, "Pretty");
+
+    let mut trailing_separator = plan.clone();
+    let repetition = repetition_behavior(pretty_node(&mut trailing_separator, "LeadingPretty"));
+    assert!(repetition.trailing_separator);
+    repetition.trailing_separator = false;
+    assert_plan_family_is_unselectable(package.path(), &trailing_separator, "Pretty");
+
+    let mut leading_separator = plan.clone();
+    let repetition = repetition_behavior(pretty_node(&mut leading_separator, "LeadingPretty"));
+    assert!(repetition.leading_separator);
+    repetition.leading_separator = false;
+    assert_plan_family_is_unselectable(package.path(), &leading_separator, "Pretty");
+
+    let mut word_separator_spacing = plan.clone();
+    let repetition = repetition_behavior(pretty_node(&mut word_separator_spacing, "WordSeparated"));
+    assert!(repetition.space_before_separator);
+    repetition.space_before_separator = false;
+    assert_plan_family_is_unselectable(package.path(), &word_separator_spacing, "Pretty");
+
+    let mut top_level_break = plan.clone();
+    let repetition = repetition_behavior(pretty_node(&mut top_level_break, "MixedProgram"));
+    assert!(repetition.hard_break);
+    repetition.hard_break = false;
+    assert_plan_family_is_unselectable(package.path(), &top_level_break, "Pretty");
+
+    let mut attachment_presence = plan;
+    let presence = pretty_node(&mut attachment_presence, "HintAttachedOptional")
+        .variants
+        .iter_mut()
+        .flatten()
+        .find_map(|element| match element {
+            PrettyElementBehavior::Semantic {
+                attachment: Some(_),
+                presence,
+                ..
+            } => Some(presence),
+            PrettyElementBehavior::Fixed { .. }
+            | PrettyElementBehavior::Semantic {
+                attachment: None, ..
+            } => None,
+        })
+        .expect("fixture has a conditionally present attachment unit");
+    assert_eq!(*presence, PrettyPresence::Optional);
+    *presence = PrettyPresence::Always;
+    assert_plan_family_is_unselectable(package.path(), &attachment_presence, "Pretty");
+}
+
+pub(super) fn ascii_insensitive_word_separators_share_canonical_pretty_family_authority() {
+    let package = tempfile::tempdir().expect("temporary word-separator authority fixture");
+    fs::write(
+        package.path().join("grammar.rs"),
+        r#"
+                recursa::grammar! {
+                    module = crate::grammar,
+                    derives(Pretty),
+                    keyword_matching = ascii_insensitive,
+                    max_lookahead = 1,
+                }
+
+                recursa::tokens! {
+                    ignore = r"[ \t\n\r]+",
+                    keywords { AND => "and" }
+                    punctuation { LBRACKET => "[", RBRACKET => "]" }
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Name<'input> {
+                    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+                    pub value: NameText<'input>,
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Separated<T> {
+                    #[tok(LBRACKET, this, RBRACKET)]
+                    #[sep(AND)]
+                    pub values: Vec<T>,
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Root<'input> {
+                    pub value: Separated<Name<'input>>,
+                }
+            "#,
+    )
+    .expect("write word-separator authority fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze word-separator authority fixture");
+    let lowered = &success.analyzed.lowered;
+    let authority = authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
+        .expect("derive word-separator Pretty authority from source");
+    let mut plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("canonical word separator joins one Pretty family");
+    assert_eq!(Some(plan.pretty.clone()), authority);
+    let application_separator = plan
+        .nodes
+        .iter()
+        .flat_map(|node| &node.parse_applications)
+        .flat_map(|application| match &application.body {
+            NodeBodyPlan::Struct { elements, .. } => elements.iter().collect::<Vec<_>>(),
+            NodeBodyPlan::Enum { variants, .. } => variants
+                .iter()
+                .flat_map(|variant| variant.elements.iter())
+                .collect(),
+            NodeBodyPlan::Pratt(_) => Vec::new(),
+        })
+        .find_map(|element| match &element.kind {
+            ElementParseKind::Semantic {
+                separator: Some(separator),
+                attachment: Some(_),
+                ..
+            } => Some(separator),
+            ElementParseKind::Fixed { .. } | ElementParseKind::Semantic { .. } => None,
+        })
+        .expect("fixture materializes an attached word-separated application");
+    assert_eq!(application_separator, "AND");
+
+    let separator = plan
+        .nodes
+        .iter_mut()
+        .flat_map(|node| match &mut node.body {
+            NodeBodyPlan::Struct { elements, .. } => elements.iter_mut().collect::<Vec<_>>(),
+            NodeBodyPlan::Enum { variants, .. } => variants
+                .iter_mut()
+                .flat_map(|variant| variant.elements.iter_mut())
+                .collect(),
+            NodeBodyPlan::Pratt(_) => Vec::new(),
+        })
+        .find_map(|element| match &mut element.kind {
+            ElementParseKind::Semantic {
+                separator: Some(separator),
+                attachment: Some(_),
+                ..
+            } => Some(separator),
+            ElementParseKind::Fixed { .. } | ElementParseKind::Semantic { .. } => None,
+        })
+        .expect("fixture contains an attached word-separated repetition");
+    assert_eq!(separator, "AND");
+    *separator = "and".to_owned();
+    plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens);
+
+    assert_ne!(Some(plan.pretty.clone()), authority);
+    assert!(
+        plan.validate()
+            .expect_err("raw word separator must diverge from Pretty authority")
+            .contains("Pretty plan family")
+    );
+}
+
+pub(super) fn generic_top_level_breaks_keep_typed_family_and_closed_application_authority() {
+    let package = tempfile::tempdir().expect("temporary generic top-level fixture");
+    fs::write(
+        package.path().join("grammar.rs"),
+        r#"
+                recursa::grammar! {
+                    module = crate::grammar,
+                    derives(Pretty),
+                    keyword_matching = sensitive,
+                    max_lookahead = 1,
+                }
+
+                recursa::tokens! {
+                    ignore = r"[ \t\n\r]+",
+                    punctuation { SEMICOLON => ";" }
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Name<'input> {
+                    #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
+                    pub value: NameText<'input>,
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Integer<'input> {
+                    #[lex(pattern = r"[0-9]+")]
+                    pub value: IntegerText<'input>,
+                }
+
+                #[derive(recursa::Node)]
+                pub enum Statement<T> { Value(T) }
+
+                #[derive(recursa::Node)]
+                pub struct Program<T> {
+                    #[sep(SEMICOLON)]
+                    pub statements: Vec<Statement<T>>,
+                }
+
+                #[derive(recursa::Node)]
+                pub struct Root<'input> {
+                    pub names: Program<Name<'input>>,
+                    pub integers: Program<Integer<'input>>,
+                }
+            "#,
+    )
+    .expect("write generic top-level fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze generic top-level fixture");
+    let lowered = &success.analyzed.lowered;
+    let authority = authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
+        .expect("derive generic top-level Pretty authority");
+    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join generic top-level applications");
+    assert_eq!(Some(plan.pretty.clone()), authority);
+
+    let program = plan
+        .nodes
+        .iter()
+        .find(|node| node.ident == "Program")
+        .expect("Program declaration plan");
+    let NodeBodyPlan::Struct { elements, .. } = &program.body else {
+        panic!("Program is a struct declaration")
+    };
+    let ElementParseKind::Semantic {
+        repetition_break: PlannedRepetitionBreak::TopLevelStatementFamily(statement_family),
+        terminal_application: None,
+        ..
+    } = &elements[0].kind
+    else {
+        panic!("generic Program declaration keeps an application-independent enum-family break")
+    };
+
+    let closed_breaks = program
+        .parse_applications
+        .iter()
+        .map(|application| {
+            let NodeBodyPlan::Struct { elements, .. } = &application.body else {
+                panic!("Program application is a struct")
+            };
+            let ElementParseKind::Semantic {
+                terminal_application: Some(terminal_application),
+                repetition_break: PlannedRepetitionBreak::TopLevelStatement(break_application),
+                ..
+            } = &elements[0].kind
+            else {
+                panic!("closed Program application keeps an exact enum-application break")
+            };
+            assert_eq!(terminal_application, break_application);
+            (*terminal_application, application.application)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(closed_breaks.len(), 2);
+    assert_ne!(closed_breaks[0].0, closed_breaks[1].0);
+    assert!(plan.nodes.iter().any(|node| {
+        node.parse_applications.iter().any(|application| {
+            application.node == *statement_family
+                && matches!(application.body, NodeBodyPlan::Enum { .. })
+        })
+    }));
+    plan.validate()
+        .expect("typed generic break family validates");
+}
+
+fn assert_plan_family_is_unselectable(package: &Path, plan: &EmissionPlan, family: &str) {
+    let detail = match render(plan) {
+        Err(detail) => detail,
+        Ok(_) => panic!("a corrupted family cannot render"),
+    };
+    assert!(detail.contains(family), "detail={detail}");
+    let error = failure(Path::new("grammar.rs"), &detail);
+    let [diagnostic] = error.report().diagnostics() else {
+        panic!("one pre-publication invariant diagnostic is required");
+    };
+    assert_eq!(diagnostic.code().as_str(), "RCA9105");
+    assert!(!package.join(SELECTED_GENERATION).exists());
+}
+
+pub(super) fn incomplete_staging_is_unselectable() {
+    let output = tempfile::tempdir().unwrap();
+    let staging = output.path().join("staging");
+    let published = output.path().join("published");
+    fs::create_dir(&staging).unwrap();
+    let rendered = RenderedGeneration {
+        root: "fn root() {}".to_owned(),
+        nodes: vec![("node-0.rs".to_owned(), "fn node() {}".to_owned())],
+        node_anchors: vec!["anchor-0".to_owned()],
+        selector: "fn selected() {}".to_owned(),
+    };
+    assert_eq!(
+        stage_and_publish(&staging, &published, &rendered, || {
+            Err("injected staging interruption".to_owned())
+        })
+        .unwrap_err(),
+        "injected staging interruption",
+    );
+    assert!(!published.exists());
+    assert!(staging.join("root.rs").is_file());
+    assert!(!staging.join("node-0.rs").exists());
+}
+
+fn publication_fixture(identity: &str) -> RenderedGeneration {
+    RenderedGeneration {
+        root: format!("// {identity} root"),
+        nodes: vec![("node-0.rs".to_owned(), format!("// {identity} node"))],
+        node_anchors: vec!["anchor-0".to_owned()],
+        selector: format!(
+            "// recursa-generation:{identity}\ninclude!(concat!(env!(\"OUT_DIR\"), \"/recursa-generations/{identity}/root.rs\"));\n"
+        ),
+    }
+}
+
+pub(super) fn every_failed_publication_checkpoint_invalidates_stale_selection_and_recovers() {
+    for checkpoint in [
+        PublicationCheckpoint::BeforeStaging,
+        PublicationCheckpoint::DuringStaging,
+        PublicationCheckpoint::BeforeSelection,
+        PublicationCheckpoint::DuringSelection,
+    ] {
+        let output = tempfile::tempdir().unwrap();
+        let old = publication_fixture("g_old");
+        publish_with_checkpoint(output.path(), "g_old", &old, |_| Ok(())).unwrap();
+        assert_eq!(selected_generation(output.path()).as_deref(), Some("g_old"));
+
+        invalidate_selection(output.path()).unwrap();
+        let next = publication_fixture("g_next");
+        let error = publish_with_checkpoint(output.path(), "g_next", &next, |point| {
+            if point == checkpoint {
+                Err(format!("injected {point:?} fault"))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error, format!("injected {checkpoint:?} fault"));
+        assert_eq!(selected_generation(output.path()), None);
+
+        publish_with_checkpoint(output.path(), "g_next", &next, |_| Ok(())).unwrap();
+        assert_eq!(
+            selected_generation(output.path()).as_deref(),
+            Some("g_next")
+        );
+        assert!(
+            output
+                .path()
+                .join("recursa-generations/g_next/root.rs")
+                .is_file()
+        );
+        assert!(
+            output
+                .path()
+                .join("recursa-generations/g_next/node-0.rs")
+                .is_file()
+        );
+    }
+}
+
+#[cfg(unix)]
+pub(super) fn filesystem_invalidation_failure_poisons_stale_selection_and_recovers() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let output = tempfile::tempdir().unwrap();
+    let old = publication_fixture("g_old");
+    publish_with_checkpoint(output.path(), "g_old", &old, |_| Ok(())).unwrap();
+    assert_eq!(selected_generation(output.path()).as_deref(), Some("g_old"));
+
+    let original_permissions = fs::metadata(output.path()).unwrap().permissions();
+    let mut non_writable = original_permissions.clone();
+    non_writable.set_mode(0o555);
+    fs::set_permissions(output.path(), non_writable).unwrap();
+    let error = invalidate_selection(output.path()).unwrap_err();
+    fs::set_permissions(output.path(), original_permissions).unwrap();
+
+    assert!(error.contains("cannot invalidate"), "{error}");
+    assert_eq!(selected_generation(output.path()), None);
+    let poisoned = fs::read_to_string(output.path().join(SELECTED_GENERATION)).unwrap();
+    assert!(poisoned.contains("compile_error!"));
+    assert!(!poisoned.contains("recursa-generation:g_old"));
+
+    invalidate_selection(output.path()).unwrap();
+    let next = publication_fixture("g_next");
+    publish_with_checkpoint(output.path(), "g_next", &next, |_| Ok(())).unwrap();
+    assert_eq!(
+        selected_generation(output.path()).as_deref(),
+        Some("g_next")
+    );
+}
+
+pub(super) fn filesystem_rename_failures_leave_no_loadable_or_staged_generation() {
+    let output = tempfile::tempdir().unwrap();
+    let rendered = publication_fixture("g_next");
+    let published = output.path().join("recursa-generations/g_next");
+    let error = publish_with_checkpoint(output.path(), "g_next", &rendered, |checkpoint| {
+        if checkpoint == PublicationCheckpoint::DuringStaging {
+            fs::create_dir_all(&published).unwrap();
+            fs::write(published.join("block"), "external collision").unwrap();
+        }
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(error.contains("publication barrier"), "{error}");
+    assert_eq!(selected_generation(output.path()), None);
+    assert_no_transaction_staging(output.path());
+
+    fs::remove_dir_all(&published).unwrap();
+    fs::create_dir(output.path().join(SELECTED_GENERATION)).unwrap();
+    let error =
+        publish_with_checkpoint(output.path(), "g_next", &rendered, |_| Ok(())).unwrap_err();
+    assert!(error.contains("atomically select"), "{error}");
+    assert_eq!(selected_generation(output.path()), None);
+    assert_no_transaction_staging(output.path());
+}
+
+pub(super) fn warnings_publish_one_complete_generation_and_remain_on_the_result() {
+    let package = tempfile::tempdir().unwrap();
+    fs::write(
+        package.path().join("grammar.rs"),
+        r#"
+recursa::grammar! { module = crate, max_lookahead = 1 }
+recursa::tokens! { keywords { SELECT => "SELECT" } }
+
+#[derive(recursa::Node)]
+#[tok(SELECT)]
+struct Select;
+
+#[derive(recursa::Node)]
+struct Inner { maybe: Option<Select> }
+
+#[derive(recursa::Node)]
+struct Root {
+    #[sep(SELECT)]
+    items: Vec<Inner>,
+}
+"#,
+    )
+    .unwrap();
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("warnings retain analyzable output");
+    assert!(success.build_report.warnings().next().is_some());
+    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default()).unwrap();
+    let rendered = render(&plan).unwrap();
+    let output = tempfile::tempdir().unwrap();
+    publish(output.path(), &plan.identity, &rendered).unwrap();
+
+    let generation = Generation {
+        report: success.build_report,
+    };
+    assert!(generation.report().warnings().next().is_some());
+    assert_eq!(
+        selected_generation(output.path()).as_deref(),
+        Some(plan.identity.as_str())
+    );
+    let published = output
+        .path()
+        .join("recursa-generations")
+        .join(&plan.identity);
+    assert!(published.join("root.rs").is_file());
+    assert!(published.join("loader-map").is_file());
+    assert_eq!(
+        fs::read_dir(published)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("node-"))
+            .count(),
+        rendered.nodes.len()
+    );
+}
+
+fn assert_no_transaction_staging(out_dir: &Path) {
+    let mut pending = vec![out_dir.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let name = path.file_name().unwrap().to_string_lossy();
+                assert!(!name.starts_with(".recursa-selector-"), "{path:?}");
+            }
+        }
+    }
+    let generations = out_dir.join("recursa-generations");
+    if let Ok(entries) = fs::read_dir(generations) {
+        for entry in entries {
+            let path = entry.unwrap().path();
+            assert!(
+                !path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".staging-"),
+                "{path:?}"
+            );
+        }
+    }
+}

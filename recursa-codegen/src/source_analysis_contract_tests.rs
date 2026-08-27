@@ -403,9 +403,9 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
     ProducerEvidence {
         codes: &["RCA9105"],
         producer_source: "src/source_analysis.rs",
-        test_source: "src/generation_compound.rs",
+        test_source: "src/generation/tests.rs",
         test_name: "emission_failures_use_the_registered_generation_code_and_preserve_detail",
-        command: "cargo test -p recursa-codegen generation_compound::tests::emission_failures_use_the_registered_generation_code_and_preserve_detail --locked",
+        command: "cargo test -p recursa-codegen generation::tests::emission_failures_use_the_registered_generation_code_and_preserve_detail --locked",
     },
 ];
 
@@ -526,7 +526,9 @@ fn producer_test_command(source: &str, test: &str) -> String {
     if source.starts_with("tests/") {
         format!("cargo test -p recursa-codegen --test {stem} {test} --locked")
     } else {
-        let path = if stem == "source_analysis_contract_tests" {
+        let path = if source == "src/generation/tests.rs" {
+            format!("generation::tests::{test}")
+        } else if stem == "source_analysis_contract_tests" {
             format!("{stem}::{test}")
         } else {
             format!("{stem}::tests::{test}")
