@@ -171,5 +171,53 @@ fn main() {
         grammar::WordText::with_kind(grammar::TokenKind::COLON, "invalid").is_err()
     );
 
+    let admission_membership = [
+        (grammar::TokenKind::SELECT, true, true, false),
+        (grammar::TokenKind::NULL, true, false, false),
+        (grammar::TokenKind::TRUE, true, false, false),
+        (grammar::TokenKind::FALSE, true, false, false),
+        (grammar::TokenKind::CALLBACK_KEYWORD, true, true, false),
+        (grammar::TokenKind::WINDOW, true, true, true),
+        (grammar::TokenKind::OTHER, true, true, false),
+        (grammar::TokenKind::ROWS, false, true, false),
+        (grammar::TokenKind::RANGE, false, true, false),
+        (grammar::TokenKind::GROUPS, false, true, false),
+    ];
+    for (kind, window, variable, bare) in admission_membership {
+        assert_eq!(grammar::WindowName::with_kind(kind, "value").is_ok(), window);
+        assert_eq!(
+            grammar::VariableName::with_kind(kind, "value").is_ok(),
+            variable
+        );
+        assert_eq!(grammar::BareName::with_kind(kind, "value").is_ok(), bare);
+    }
+
+    for (source, admitted) in [("WiNdOw", true), ("rows", false)] {
+        let lexed = grammar::lex(source);
+        let mut input = lexed.input();
+        let parsed = grammar::WindowOrRows::parse(&mut input)
+            .expect("admission membership participates in generated dispatch");
+        assert_eq!(
+            matches!(parsed.root().value(), grammar::WindowOrRows::Window(_)),
+            admitted
+        );
+        assert!(input.is_eof());
+    }
+
+    for (source, window) in [
+        ("select null true false window", true),
+        ("select null true false other", false),
+    ] {
+        let lexed = grammar::lex(source);
+        let mut input = lexed.input();
+        let parsed = grammar::FiveTokenChoice::parse(&mut input)
+            .expect("the fixture's configured FIRST(5) dispatch parses");
+        assert_eq!(
+            matches!(parsed.root().value(), grammar::FiveTokenChoice::Window),
+            window
+        );
+        assert!(input.is_eof());
+    }
+
     println!("lexing-ok");
 }

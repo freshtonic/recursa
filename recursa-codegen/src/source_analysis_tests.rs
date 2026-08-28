@@ -276,6 +276,43 @@ struct Root {
     }
 
     #[test]
+    fn duplicate_admission_warning_crosses_the_full_analysis_boundary() {
+        let package = fixture(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    categories { UNRESERVED }
+    keywords { WINDOW => "window" in UNRESERVED }
+    admissions { Names = UNRESERVED + { WINDOW } }
+}
+#[derive(recursa::Node)]
+struct Root {
+    #[lex(pattern = r"[A-Za-z]+", admits(Names))]
+    name: Name,
+}
+"#,
+        );
+        let mut cargo = Vec::new();
+
+        let success = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut cargo,
+        )
+        .expect("duplicate union membership is advisory");
+
+        let warnings = success.build_report.warnings().collect::<Vec<_>>();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code().as_str(), "RCA3119");
+        assert_eq!(
+            cargo
+                .iter()
+                .filter(|directive| directive.contains("cargo::warning=[RCA3119]"))
+                .count(),
+            1,
+        );
+    }
+
+    #[test]
     fn malformed_full_pipeline_inputs_return_diagnostics_without_panicking() {
         let cases = [
             ("{{", "grammar.rs"),

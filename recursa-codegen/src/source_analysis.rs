@@ -673,6 +673,12 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::ConfiguredOrdinaryDeriveConflict => "RCA3116",
         SourceModelDiagnosticKind::MultiplePostLexHooks => "RCA3117",
         SourceModelDiagnosticKind::InvalidPrettyHint => "RCA3118",
+        SourceModelDiagnosticKind::DuplicateAdmissionMembership => "RCA3119",
+        SourceModelDiagnosticKind::InvalidAdmissionReference => "RCA3120",
+        SourceModelDiagnosticKind::AdmissionCycle => "RCA3121",
+        SourceModelDiagnosticKind::InvalidKeywordCategory => "RCA3122",
+        SourceModelDiagnosticKind::ContradictoryAdmissionMetadata => "RCA3123",
+        SourceModelDiagnosticKind::IneffectiveAdmissionSubtraction => "RCA3124",
         SourceModelDiagnosticKind::InapplicablePrettyHint => "RCA3210",
         SourceModelDiagnosticKind::UnsafePrettyHint => "RCA3211",
     }

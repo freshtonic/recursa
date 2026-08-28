@@ -3530,6 +3530,71 @@ struct Fixed;
     }
 
     #[test]
+    fn named_admission_membership_and_emission_are_stable_under_declaration_permutations() {
+        let first = plan(
+            r#"
+recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
+recursa::tokens! {
+    categories { UNRESERVED, RESERVED }
+    keywords {
+        WINDOW => "window" in UNRESERVED,
+        OTHER => "other" in UNRESERVED,
+        ROWS => "rows" in RESERVED,
+    }
+    admissions {
+        UnreservedNames = UNRESERVED,
+        ColId = UnreservedNames + RESERVED,
+        WindowRefName = ColId - { ROWS },
+    }
+}
+#[derive(recursa::Node)]
+struct Root {
+    #[lex(pattern = r"[A-Za-z_]+", admits(WindowRefName))]
+    name: WindowName,
+}
+"#,
+        )
+        .plan
+        .unwrap();
+        let second = plan(
+            r#"
+recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
+recursa::tokens! {
+    admissions {
+        WindowRefName = ColId - { ROWS },
+        ColId = UnreservedNames + RESERVED,
+        UnreservedNames = UNRESERVED,
+    }
+    keywords {
+        ROWS => "rows" in RESERVED,
+        OTHER => "other" in UNRESERVED,
+        WINDOW => "window" in UNRESERVED,
+    }
+    categories { RESERVED, UNRESERVED }
+}
+#[derive(recursa::Node)]
+struct Root {
+    #[lex(pattern = r"[A-Za-z_]+", admits(WindowRefName))]
+    name: WindowName,
+}
+"#,
+        )
+        .plan
+        .unwrap();
+
+        assert_eq!(
+            first.canonical_lexical_projection(),
+            second.canonical_lexical_projection(),
+        );
+        let base = super::kind_label(
+            &first.token_kinds[first.parser_targets[0].base_kind.index()].identity,
+        );
+        assert!(first.canonical_lexical_projection().contains(&format!(
+            "target WindowName base={base} accepts=[{base},fixed:OTHER,fixed:WINDOW]"
+        )));
+    }
+
+    #[test]
     fn lexical_rule_projection_ignores_source_ordered_kind_ids() {
         let first = plan(
             r#"
