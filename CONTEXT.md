@@ -24,6 +24,14 @@ _Avoid_: Display override, normalized input
 A regex-backed token definition proven able to recognize a word-shaped fixed token in place of its standalone lexical rule without changing the resulting token kind or span. Carrier status is derived, not declared.
 _Avoid_: Identifier marker, keyword token type
 
+**Closed lexical matcher**:
+A centrally declared, generator-owned source scanner selected from the fixed vocabulary of same-delimiter regions, nested regions, next-scalar exclusion, operator runs, and physical-line regions. Its configuration is data in the token grammar; authored callbacks do not define its scanning algorithm.
+_Avoid_: Custom lexer callback, inline scanner
+
+**Lexical final extent**:
+The complete byte range proposed by a lexical matcher after applying its closed scanning rules. Arbitration compares final extent before fixed-token status and explicit priority, independently of declaration order.
+_Avoid_: Starter regex length, declaration precedence
+
 **Reclaimable keyword**:
 A word-shaped fixed token whose concrete token kind is admitted as content by a target at selected grammar positions.
 _Avoid_: Soft keyword, context-sensitive keyword
@@ -62,6 +70,7 @@ _Avoid_: Token vector, unbound lex result
 
 **Lexer callback context**:
 The Recursa-owned narrow interface available to advanced lexer callbacks for inspecting and extending the current match. It does not expose the underlying lexer backend.
+During closed-matcher migration, callback starters must remain disjoint from other lexical rules so arbitration never speculatively executes authored callback code.
 _Avoid_: Raw Logos lexer, lexer backend handle
 
 **Post-lex editor**:

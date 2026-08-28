@@ -423,6 +423,7 @@ impl EmissionPlan {
             };
             let planned = LexRulePlan {
                 pattern,
+                closed_matcher: rule.closed_matcher.clone(),
                 kind: rule
                     .kind
                     .index()
@@ -440,7 +441,9 @@ impl EmissionPlan {
                 },
             };
             if !lexical_rules.iter().any(|existing| {
-                existing.pattern == planned.pattern && existing.kind == planned.kind
+                existing.pattern == planned.pattern
+                    && existing.closed_matcher == planned.closed_matcher
+                    && existing.kind == planned.kind
             }) {
                 lexical_rules.push(planned);
             }
@@ -454,11 +457,15 @@ impl EmissionPlan {
             };
             lexical_rules.push(LexRulePlan {
                 pattern,
+                closed_matcher: rule.closed_matcher.clone(),
                 kind: 0,
                 skip: true,
                 callback: None,
                 fixed: false,
-                priority: 0,
+                priority: match rule.priority {
+                    LexicalPriority::Fixed => 0,
+                    LexicalPriority::Pattern { authored } => authored.unwrap_or(0),
+                },
             });
         }
         let keyword_classifiers =
@@ -647,8 +654,9 @@ impl EmissionPlan {
         }
         for rule in &lexical_rules {
             canonical.push_str(&format!(
-                ";rule={:?}:{}:{}:{}:{}:{}",
+                ";rule={:?}:{:?}:{}:{}:{}:{}:{}",
                 rule.pattern,
+                rule.closed_matcher,
                 rule.kind,
                 rule.skip,
                 rule.callback
@@ -747,6 +755,17 @@ impl EmissionPlan {
         }
         if self.lexical_rules.is_empty() {
             return Err("the generated lexical plan has no rules".to_owned());
+        }
+        if self.lexical_rules.iter().any(|rule| {
+            rule.closed_matcher
+                .as_ref()
+                .is_some_and(|matcher| matcher.starter_pattern() != rule.pattern)
+                || (rule.closed_matcher.is_some() && rule.callback.is_some())
+        }) {
+            return Err(
+                "the generated closed-matcher plan diverges from its validated starter or owns a callback"
+                    .to_owned(),
+            );
         }
         #[cfg(feature = "diagrams")]
         if self.diagrams.as_ref().is_some_and(|diagrams| {

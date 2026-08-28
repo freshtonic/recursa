@@ -125,6 +125,10 @@ pub(crate) struct SourceModel {
 pub(crate) struct NonTokenLexerRecord {
     /// Preserves the authored lexical pattern for validation and generation.
     pub(crate) pattern: String,
+    /// Preserves the closed matcher executed after the pattern recognizes its starter.
+    pub(crate) closed_matcher: Option<ClosedMatcher>,
+    /// Preserves authored lexical priority for deterministic matcher ordering.
+    pub(crate) priority: Option<u32>,
     /// Supplies the outcome used to correlate authored source with normalized grammar.
     pub(crate) outcome: NonTokenLexerOutcome,
     /// Locates the authored construct represented by this source-model value.
@@ -136,6 +140,66 @@ pub(crate) struct NonTokenLexerRecord {
 pub(crate) enum NonTokenLexerOutcome {
     /// Identifies the non emitting authored-source form.
     NonEmitting,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Closed source-scanning mechanisms accepted by the central token grammar.
+pub(crate) enum ClosedMatcher {
+    /// Closes a region with the exact bytes recognized by its opening pattern.
+    SameDelimiter {
+        /// Regex pattern that recognizes the complete opening delimiter.
+        opener: String,
+    },
+    /// Tracks checked nesting between two fixed delimiters.
+    Nested {
+        /// Nonempty fixed opening delimiter.
+        opener: String,
+        /// Nonempty fixed closing delimiter.
+        closer: String,
+    },
+    /// Rejects a pattern match when the immediately following scalar matches an exclusion.
+    NextExclusion {
+        /// Regex pattern that recognizes the candidate content.
+        pattern: String,
+        /// Regex pattern that recognizes one excluded following scalar.
+        excluded: String,
+    },
+    /// Recognizes a maximal run with configurable fences and trailing preservation.
+    OperatorRun {
+        /// Unique ASCII characters admitted to the run.
+        characters: String,
+        /// Nonempty byte strings that stop a run before their occurrence.
+        fences: Vec<String>,
+        /// Run characters stripped from the end when no qualifier occurs earlier.
+        trailing: String,
+        /// Characters whose presence preserves configured trailing characters.
+        qualifying: String,
+    },
+    /// Extends a matched prefix through one exact physical line ending or end of input.
+    PhysicalLine {
+        /// Regex pattern recognizing the region's nonempty prefix.
+        prefix: String,
+    },
+}
+
+impl ClosedMatcher {
+    /// Returns the regular-language starter used for overlap analysis and arbitration planning.
+    pub(crate) fn starter_pattern(&self) -> String {
+        match self {
+            Self::SameDelimiter { opener } => opener.clone(),
+            Self::Nested { opener, .. } => regex_syntax::escape(opener),
+            Self::NextExclusion { pattern, .. } => pattern.clone(),
+            Self::OperatorRun { characters, .. } => {
+                let alternatives = characters
+                    .chars()
+                    .map(|character| regex_syntax::escape(&character.to_string()))
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!("(?:{alternatives})+")
+            }
+            Self::PhysicalLine { prefix } => prefix.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -626,6 +690,8 @@ pub(crate) struct ContentTokenDefinition {
     pub(crate) semantic: ContentTokenId,
     /// Preserves the authored lexical pattern for validation and generation.
     pub(crate) pattern: String,
+    /// Preserves the closed matcher used to extend or reject the starter pattern.
+    pub(crate) closed_matcher: Option<ClosedMatcher>,
     /// Supplies the authored diagram label, when it differs from the regex fallback used to correlate authored source with normalized grammar.
     pub(crate) diagram_label: Option<String>,
     /// Preserves the opaque authored callback path for generation.
@@ -647,6 +713,8 @@ pub(crate) struct ContentTokenDefinition {
 pub(crate) struct LexicalBaseTokenDefinition {
     /// Preserves the authored lexical pattern for validation and generation.
     pub(crate) pattern: String,
+    /// Preserves the closed matcher used to extend or reject the starter pattern.
+    pub(crate) closed_matcher: Option<ClosedMatcher>,
     /// Preserves the opaque authored callback path for generation.
     pub(crate) callback: Option<syn::Path>,
     /// Preserves authored lexical priority for deterministic matcher ordering.
@@ -2594,9 +2662,10 @@ impl SourceModelBuilder<'_> {
                     semantic,
                     definition.name,
                     definition.pattern,
+                    definition.closed_matcher,
                     None,
                     definition.callback,
-                    None,
+                    definition.priority,
                     Vec::new(),
                     AuthoredAdmissions {
                         site: definition.site.clone(),
@@ -3087,8 +3156,12 @@ struct CentralContentDefinition {
     name: String,
     /// Preserves the authored lexical pattern for validation and generation.
     pattern: String,
+    /// Preserves the optional closed matcher declared at the central token seam.
+    closed_matcher: Option<ClosedMatcher>,
     /// Preserves the opaque authored callback path for generation.
     callback: Option<syn::Path>,
+    /// Preserves explicit arbitration priority on a closed matcher.
+    priority: Option<u32>,
     /// Locates the authored construct represented by this source-model value.
     site: SourceSite,
 }
@@ -3838,7 +3911,26 @@ impl TokenCatalog {
                 semantic,
                 name,
                 pattern: content.pattern.value(),
+                closed_matcher: None,
                 callback: content.callback,
+                priority: None,
+                site: source_site(resolved, origin, span_range(content.name.span())),
+            });
+        }
+        for content in syntax.matchers {
+            let name = content.name.unraw().to_string();
+            let semantic = resolved
+                .content_tokens
+                .iter()
+                .find_map(|token| (token.ident == name).then_some(token.id));
+            let pattern = content.matcher.matcher.starter_pattern();
+            self.central_content.push(CentralContentDefinition {
+                semantic,
+                name,
+                pattern,
+                closed_matcher: Some(content.matcher.matcher),
+                callback: None,
+                priority: content.matcher.priority,
                 site: source_site(resolved, origin, span_range(content.name.span())),
             });
         }
@@ -3849,10 +3941,23 @@ impl TokenCatalog {
                     .into_iter()
                     .map(|record| NonTokenLexerRecord {
                         pattern: record.pattern.value(),
+                        closed_matcher: None,
+                        priority: None,
                         outcome: record.outcome,
                         site: source_site(resolved, origin, span_range(record.pattern.span())),
                     }),
             );
+        self.lexer_records
+            .extend(syntax.ignored_matchers.into_iter().map(|record| {
+                let pattern = record.matcher.matcher.starter_pattern();
+                NonTokenLexerRecord {
+                    pattern,
+                    closed_matcher: Some(record.matcher.matcher),
+                    priority: record.matcher.priority,
+                    outcome: NonTokenLexerOutcome::NonEmitting,
+                    site: source_site(resolved, origin, span_range(record.name.span())),
+                }
+            }));
     }
 
     /// Interns a fixed-token definition or diagnoses incompatible duplicate spellings.
@@ -4707,8 +4812,9 @@ impl TokenCatalog {
                     &existing.kind,
                     TokenDefinitionKind::LexicalBase(base)
                         if base.pattern == definition.pattern
+                            && base.closed_matcher == definition.closed_matcher
                             && base.callback == definition.callback
-                            && base.priority.is_none()
+                            && base.priority == definition.priority
                 )
         }) {
             existing.definition_sites.push(definition.site);
@@ -4720,8 +4826,9 @@ impl TokenCatalog {
             name: definition.name,
             kind: TokenDefinitionKind::LexicalBase(LexicalBaseTokenDefinition {
                 pattern: definition.pattern,
+                closed_matcher: definition.closed_matcher,
                 callback: definition.callback,
-                priority: None,
+                priority: definition.priority,
             }),
             definition_sites: vec![definition.site],
         });
@@ -4796,6 +4903,50 @@ impl TokenCatalog {
             return;
         };
 
+        if syntax.matcher {
+            if syntax.diagram.is_some()
+                || syntax.callback.is_some()
+                || syntax.priority.is_some()
+                || !syntax.admissions.is_empty()
+            {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidContentToken,
+                    sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+                    message: "#[lex(matcher)] takes no field-local matcher options; configure the matcher centrally"
+                        .to_owned(),
+                });
+                return;
+            }
+            let bound = self
+                .content_by_name
+                .get(&name)
+                .into_iter()
+                .flatten()
+                .copied()
+                .any(|definition| {
+                    matches!(
+                        &self.definitions[definition.index()].kind,
+                        TokenDefinitionKind::Content(content)
+                            if content.semantic == semantic && content.closed_matcher.is_some()
+                    )
+                });
+            if !bound {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidContentToken,
+                    sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+                    message: format!(
+                        "#[lex(matcher)] for `{name}` requires a matching central `matchers` declaration"
+                    ),
+                });
+            }
+            return;
+        }
+
+        let pattern = syntax
+            .pattern
+            .as_ref()
+            .expect("a non-matcher lex declaration has a pattern");
+
         let mut authored_definitions = Vec::new();
         for reference in syntax.admissions {
             let site = source_site(resolved, origin, span_range(reference.span()));
@@ -4834,7 +4985,7 @@ impl TokenCatalog {
                 &definition.kind,
                 TokenDefinitionKind::Content(content)
                     if content.semantic == semantic
-                        && content.pattern == syntax.pattern.value()
+                        && content.pattern == pattern.value()
                         && content.callback == syntax.callback
                         && content.priority == syntax.priority
                         && content.admission_set == admission_set
@@ -4855,7 +5006,8 @@ impl TokenCatalog {
         self.define_content(
             semantic,
             name,
-            syntax.pattern.value(),
+            pattern.value(),
+            None,
             diagram_label,
             syntax.callback,
             syntax.priority,
@@ -4873,6 +5025,7 @@ impl TokenCatalog {
         semantic: ContentTokenId,
         name: String,
         pattern: String,
+        closed_matcher: Option<ClosedMatcher>,
         diagram_label: Option<String>,
         callback: Option<syn::Path>,
         priority: Option<u32>,
@@ -4886,12 +5039,13 @@ impl TokenCatalog {
                 matches!(
                     &self.definitions[id.index()].kind,
                     TokenDefinitionKind::Content(content)
-                        if content.semantic == semantic
-                            && content.pattern == pattern
-                            && content.diagram_label == diagram_label
-                            && content.callback == callback
-                            && content.priority == priority
-                            && content.admission_set == admission_set
+                    if content.semantic == semantic
+                        && content.pattern == pattern
+                        && content.closed_matcher == closed_matcher
+                        && content.diagram_label == diagram_label
+                        && content.callback == callback
+                        && content.priority == priority
+                        && content.admission_set == admission_set
                 )
             })
         });
@@ -4916,6 +5070,7 @@ impl TokenCatalog {
             kind: TokenDefinitionKind::Content(ContentTokenDefinition {
                 semantic,
                 pattern,
+                closed_matcher,
                 diagram_label,
                 callback,
                 priority,
@@ -4939,8 +5094,12 @@ struct CentralTokensSyntax {
     fixed: Vec<CentralFixedSyntax>,
     /// Supplies the content used to correlate authored source with normalized grammar.
     content: Vec<CentralContentSyntax>,
+    /// Supplies named emitting closed matchers.
+    matchers: Vec<CentralMatcherSyntax>,
     /// Supplies the non token lexer records used to correlate authored source with normalized grammar.
     non_token_lexer_records: Vec<CentralNonTokenLexerRecordSyntax>,
+    /// Supplies named ignored closed matchers.
+    ignored_matchers: Vec<CentralIgnoredMatcherSyntax>,
     /// Supplies the post lex used to correlate authored source with normalized grammar.
     post_lex: Vec<syn::Path>,
     /// Supplies declared keyword category names.
@@ -4957,6 +5116,14 @@ struct CentralNonTokenLexerRecordSyntax {
     pattern: LitStr,
     /// Supplies the outcome used to correlate authored source with normalized grammar.
     outcome: NonTokenLexerOutcome,
+}
+
+/// Carries one named ignored closed matcher before source locations are retained.
+struct CentralIgnoredMatcherSyntax {
+    /// Preserves the authored name used in diagnostics and later trivia classification.
+    name: syn::Ident,
+    /// Preserves the closed matcher and its source literals.
+    matcher: ClosedMatcherSyntax,
 }
 
 /// Carries the central fixed syntax retained from authored source structure.
@@ -4983,6 +5150,277 @@ struct CentralContentSyntax {
     pattern: LitStr,
     /// Preserves the opaque authored callback path for generation.
     callback: Option<syn::Path>,
+}
+
+/// Carries one named emitting closed matcher before source locations are retained.
+struct CentralMatcherSyntax {
+    /// Preserves the nominal generated content-token name.
+    name: syn::Ident,
+    /// Preserves the closed matcher and its source literals.
+    matcher: ClosedMatcherSyntax,
+}
+
+/// Parsed closed matcher together with its common arbitration metadata.
+struct ClosedMatcherSyntax {
+    /// Validated closed matcher configuration.
+    matcher: ClosedMatcher,
+    /// Explicit priority applied after final extent and fixed-spelling precedence.
+    priority: Option<u32>,
+}
+
+/// One named argument supplied to a closed matcher constructor.
+struct ClosedMatcherArgument {
+    /// Argument name.
+    name: syn::Ident,
+    /// Literal or literal-array value.
+    value: syn::Expr,
+}
+
+impl Parse for ClosedMatcherArgument {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let name = syn::Ident::parse_any(input)?;
+        input.parse::<Token![=]>()?;
+        Ok(Self {
+            name,
+            value: input.parse()?,
+        })
+    }
+}
+
+impl Parse for ClosedMatcherSyntax {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let family = syn::Ident::parse_any(input)?;
+        let body;
+        syn::parenthesized!(body in input);
+        let parsed =
+            syn::punctuated::Punctuated::<ClosedMatcherArgument, Token![,]>::parse_terminated(
+                &body,
+            )?;
+        let mut arguments = BTreeMap::<String, (Span, syn::Expr)>::new();
+        for argument in parsed {
+            let name = argument.name.unraw().to_string();
+            if arguments
+                .insert(name.clone(), (argument.name.span(), argument.value))
+                .is_some()
+            {
+                return Err(syn::Error::new(
+                    argument.name.span(),
+                    format!("duplicate `{name}` closed-matcher argument"),
+                ));
+            }
+        }
+        let priority = take_matcher_u32(&mut arguments, "priority")?;
+        let matcher = match family.to_string().as_str() {
+            "same_delimiter" => ClosedMatcher::SameDelimiter {
+                opener: take_matcher_string(&mut arguments, "opener")?,
+            },
+            "nested" => {
+                let opener = take_matcher_string(&mut arguments, "opener")?;
+                let closer = take_matcher_string(&mut arguments, "closer")?;
+                if opener.is_empty() || closer.is_empty() || opener == closer {
+                    return Err(syn::Error::new(
+                        family.span(),
+                        "nested matcher delimiters must be nonempty and distinct",
+                    ));
+                }
+                ClosedMatcher::Nested { opener, closer }
+            }
+            "next_exclusion" => {
+                let pattern = take_matcher_string(&mut arguments, "pattern")?;
+                let excluded = take_matcher_string(&mut arguments, "excluded")?;
+                if !matches_one_complete_scalar(&excluded) {
+                    return Err(syn::Error::new(
+                        family.span(),
+                        "next-exclusion predicate must compile and match at least one complete, nonempty scalar",
+                    ));
+                }
+                ClosedMatcher::NextExclusion { pattern, excluded }
+            }
+            "operator_run" => {
+                let characters = take_matcher_string(&mut arguments, "characters")?;
+                let fences = take_matcher_strings(&mut arguments, "fences")?;
+                let trailing = take_matcher_string(&mut arguments, "trailing")?;
+                let qualifying = take_matcher_string(&mut arguments, "qualifying")?;
+                validate_operator_run(&family, &characters, &fences, &trailing, &qualifying)?;
+                ClosedMatcher::OperatorRun {
+                    characters,
+                    fences,
+                    trailing,
+                    qualifying,
+                }
+            }
+            "physical_line" => ClosedMatcher::PhysicalLine {
+                prefix: take_matcher_string(&mut arguments, "prefix")?,
+            },
+            _ => {
+                return Err(syn::Error::new(
+                    family.span(),
+                    format!("unsupported closed matcher `{family}`"),
+                ));
+            }
+        };
+        if let Some((name, (span, _))) = arguments.into_iter().next() {
+            return Err(syn::Error::new(
+                span,
+                format!("unsupported `{name}` closed-matcher argument"),
+            ));
+        }
+        Ok(Self { matcher, priority })
+    }
+}
+
+/// Proves that a next-exclusion predicate is runtime-compilable and can consume one whole scalar.
+fn matches_one_complete_scalar(pattern: &str) -> bool {
+    if regex_automata::meta::Regex::new(pattern).is_err() {
+        return false;
+    }
+    let Ok(dfa) = dense::DFA::new(pattern) else {
+        return false;
+    };
+    let input = Input::new(b"").anchored(Anchored::Yes);
+    let Ok(start) = dfa.start_state_forward(&input) else {
+        return false;
+    };
+    if dfa_accepts_state(&dfa, start) {
+        return false;
+    }
+    (0..=char::MAX as u32)
+        .filter_map(char::from_u32)
+        .any(|character| {
+            let mut encoded = [0; 4];
+            let mut state = start;
+            for &byte in character.encode_utf8(&mut encoded).as_bytes() {
+                state = dfa.next_state(state, byte);
+                if dfa.is_dead_state(state) || dfa.is_quit_state(state) {
+                    return false;
+                }
+            }
+            dfa_accepts_state(&dfa, state)
+        })
+}
+
+/// Removes one required string argument from a closed matcher constructor.
+fn take_matcher_string(
+    arguments: &mut BTreeMap<String, (Span, syn::Expr)>,
+    name: &str,
+) -> syn::Result<String> {
+    let Some((span, value)) = arguments.remove(name) else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            format!("closed matcher requires `{name} = \"...\"`"),
+        ));
+    };
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(value),
+        ..
+    }) = value
+    else {
+        return Err(syn::Error::new(
+            span,
+            format!("closed matcher `{name}` must be a string literal"),
+        ));
+    };
+    Ok(value.value())
+}
+
+/// Removes one optional unsigned integer argument from a closed matcher constructor.
+fn take_matcher_u32(
+    arguments: &mut BTreeMap<String, (Span, syn::Expr)>,
+    name: &str,
+) -> syn::Result<Option<u32>> {
+    let Some((span, value)) = arguments.remove(name) else {
+        return Ok(None);
+    };
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Int(value),
+        ..
+    }) = value
+    else {
+        return Err(syn::Error::new(
+            span,
+            format!("closed matcher `{name}` must be an unsigned integer literal"),
+        ));
+    };
+    value.base10_parse().map(Some)
+}
+
+/// Removes one required string-array argument from a closed matcher constructor.
+fn take_matcher_strings(
+    arguments: &mut BTreeMap<String, (Span, syn::Expr)>,
+    name: &str,
+) -> syn::Result<Vec<String>> {
+    let Some((span, value)) = arguments.remove(name) else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            format!("closed matcher requires `{name} = [\"...\"]`"),
+        ));
+    };
+    let syn::Expr::Array(array) = value else {
+        return Err(syn::Error::new(
+            span,
+            format!("closed matcher `{name}` must be an array of string literals"),
+        ));
+    };
+    array
+        .elems
+        .into_iter()
+        .map(|element| match element {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(value),
+                ..
+            }) => Ok(value.value()),
+            other => Err(syn::Error::new(
+                other.span(),
+                format!("closed matcher `{name}` accepts only string literals"),
+            )),
+        })
+        .collect()
+}
+
+/// Validates the generic language constraints of an operator-run matcher.
+fn validate_operator_run(
+    family: &syn::Ident,
+    characters: &str,
+    fences: &[String],
+    trailing: &str,
+    qualifying: &str,
+) -> syn::Result<()> {
+    let unique_ascii = |value: &str| {
+        value.is_ascii() && value.bytes().collect::<BTreeSet<_>>().len() == value.len()
+    };
+    if characters.is_empty() || !unique_ascii(characters) {
+        return Err(syn::Error::new(
+            family.span(),
+            "operator-run characters must be a nonempty set of unique ASCII bytes",
+        ));
+    }
+    if !unique_ascii(trailing)
+        || !unique_ascii(qualifying)
+        || !trailing
+            .bytes()
+            .all(|byte| characters.as_bytes().contains(&byte))
+        || !qualifying
+            .bytes()
+            .all(|byte| characters.as_bytes().contains(&byte))
+    {
+        return Err(syn::Error::new(
+            family.span(),
+            "operator-run trailing and qualifying sets must contain unique admitted ASCII bytes",
+        ));
+    }
+    if fences.iter().any(|fence| {
+        fence.is_empty()
+            || !fence.is_ascii()
+            || !fence
+                .bytes()
+                .all(|byte| characters.as_bytes().contains(&byte))
+    }) {
+        return Err(syn::Error::new(
+            family.span(),
+            "operator-run fences must be nonempty admitted ASCII byte strings",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -5063,7 +5501,9 @@ impl Parse for CentralTokensSyntax {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut fixed = Vec::new();
         let mut content = Vec::new();
+        let mut matchers = Vec::new();
         let mut non_token_lexer_records = Vec::new();
+        let mut ignored_matchers = Vec::new();
         let mut post_lex = Vec::new();
         let mut categories = Vec::new();
         let mut flags = Vec::new();
@@ -5129,6 +5569,22 @@ impl Parse for CentralTokensSyntax {
                             return Err(body.error("expected `,` after admission declaration"));
                         }
                     }
+                } else if section == "matchers" || section == "ignore" {
+                    while !body.is_empty() {
+                        let name = syn::Ident::parse_any(&body)?;
+                        body.parse::<Token![=>]>()?;
+                        let matcher = body.parse()?;
+                        if section == "matchers" {
+                            matchers.push(CentralMatcherSyntax { name, matcher });
+                        } else {
+                            ignored_matchers.push(CentralIgnoredMatcherSyntax { name, matcher });
+                        }
+                        if body.peek(Token![,]) {
+                            body.parse::<Token![,]>()?;
+                        } else if !body.is_empty() {
+                            return Err(body.error("expected `,` after closed matcher"));
+                        }
+                    }
                 } else if section == "literals" || section == "lexer_tokens" {
                     while !body.is_empty() {
                         let name = syn::Ident::parse_any(&body)?;
@@ -5168,7 +5624,9 @@ impl Parse for CentralTokensSyntax {
         Ok(Self {
             fixed,
             content,
+            matchers,
             non_token_lexer_records,
+            ignored_matchers,
             post_lex,
             categories,
             flags,
@@ -5446,7 +5904,9 @@ impl Parse for SeparatorSyntax {
 /// Carries the lex syntax retained from authored source structure.
 struct LexSyntax {
     /// Preserves the authored lexical pattern for validation and generation.
-    pattern: LitStr,
+    pattern: Option<LitStr>,
+    /// Binds the field to a centrally declared closed matcher.
+    matcher: bool,
     /// Human-readable content-token label preserved for generated diagrams.
     diagram: Option<LitStr>,
     /// Preserves the opaque authored callback path for generation.
@@ -5462,6 +5922,7 @@ struct LexSyntax {
 impl Parse for LexSyntax {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut pattern = None;
+        let mut matcher = false;
         let mut diagram = None;
         let mut callback = None;
         let mut priority = None;
@@ -5474,6 +5935,11 @@ impl Parse for LexSyntax {
                 if pattern.replace(input.parse()?).is_some() {
                     return Err(syn::Error::new(key.span(), "duplicate lex pattern"));
                 }
+            } else if key == "matcher" {
+                if matcher {
+                    return Err(syn::Error::new(key.span(), "duplicate lex matcher marker"));
+                }
+                matcher = true;
             } else if key == "diagram" {
                 input.parse::<Token![=]>()?;
                 if diagram.replace(input.parse()?).is_some() {
@@ -5514,8 +5980,14 @@ impl Parse for LexSyntax {
                 input.parse::<Token![,]>()?;
             }
         }
+        if pattern.is_some() == matcher {
+            return Err(
+                input.error("#[lex] requires exactly one of `pattern = r\"...\"` or `matcher`")
+            );
+        }
         Ok(Self {
-            pattern: pattern.ok_or_else(|| input.error("#[lex] requires pattern = r\"...\""))?,
+            pattern,
+            matcher,
             diagram,
             callback,
             priority,
@@ -5765,11 +6237,12 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        CentralTokensSyntax, ConfiguredTraitOwnership, ConfiguredTraitRecipe, ContentTextStorage,
-        DeclaredRepetition, GrammarElement, GrammarElementKind, LexSyntax, NodeBody, NodeShape,
-        PrettySpacing, SourceModelDiagnosticKind, SourceModelInput, SourcePrattPosition,
-        TokenDefinitionKind, TokenUseRole, fixed_then_pattern_intersects_pattern,
-        lower_source_model, pattern_then_fixed_intersects_pattern,
+        CentralTokensSyntax, ClosedMatcherSyntax, ConfiguredTraitOwnership, ConfiguredTraitRecipe,
+        ContentTextStorage, DeclaredRepetition, GrammarElement, GrammarElementKind, LexSyntax,
+        NodeBody, NodeShape, PrettySpacing, SourceModelDiagnosticKind, SourceModelInput,
+        SourcePrattPosition, TokenDefinitionKind, TokenUseRole,
+        fixed_then_pattern_intersects_pattern, lower_source_model,
+        pattern_then_fixed_intersects_pattern,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
@@ -5777,6 +6250,31 @@ mod tests {
         ResolutionInput, ResolvedFieldStyle, ResolvedNodeBody, resolve_local_semantics,
     };
     use crate::source_syntax::CargoCfgSnapshot;
+
+    #[test]
+    fn next_exclusion_requires_a_runtime_compilable_nonempty_whole_scalar_predicate() {
+        for valid in [
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Z]")"#,
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"\p{Greek}")"#,
+        ] {
+            syn::parse_str::<ClosedMatcherSyntax>(valid)
+                .unwrap_or_else(|error| panic!("valid predicate was rejected: {valid}: {error}"));
+        }
+        for invalid in [
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"")"#,
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"a*")"#,
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"ab")"#,
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"(")"#,
+        ] {
+            let error = syn::parse_str::<ClosedMatcherSyntax>(invalid)
+                .err()
+                .expect("invalid next-exclusion predicate must be rejected");
+            assert!(
+                error.to_string().contains("complete, nonempty scalar"),
+                "{invalid}: {error}"
+            );
+        }
+    }
 
     fn model_with_cfg(source: &str, cfg: &CargoCfgSnapshot) -> super::SourceModelReport {
         let package = TempDir::new().unwrap();

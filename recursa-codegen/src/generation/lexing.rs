@@ -49,6 +49,8 @@ pub(super) struct TokenBindingPlan {
 pub(super) struct LexRulePlan {
     /// Backend-independent lexical pattern.
     pub(super) pattern: String,
+    /// Closed scanning mechanism extending or rejecting the starter pattern.
+    pub(super) closed_matcher: Option<ClosedMatcher>,
     /// Numeric token kind produced by a successful match.
     pub(super) kind: u16,
     /// Whether matching text is consumed without a token record.

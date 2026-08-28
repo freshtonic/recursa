@@ -99,6 +99,15 @@ pub fn parse(source: &str) -> Result<grammar::Value<'_>, ParseFailure> {
 }
 ```
 
+Languages with source-backed regions can use the closed matcher vocabulary in
+`tokens!`: same-delimiter and nested regions, next-scalar exclusions,
+configurable operator runs, and physical-line regions. Emitting declarations
+live in `matchers { ... }` and bind through `#[lex(matcher)]`; the same forms in
+`ignore { ... }` are non-emitting. Final match extent, exact fixed-token status,
+and explicit priority determine arbitration, never declaration order. See the
+[facade grammar guide](recursa/README.md) for the declaration forms and lexical
+error contract.
+
 Run both compiled examples from a checkout:
 
 ```console

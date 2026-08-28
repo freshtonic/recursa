@@ -257,6 +257,13 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA3211", Lowering, Error),
     diagnostic_spec!("RCA3207", Lowering, Error),
     diagnostic_spec!("RCA3208", Lowering, Error),
+    // Generated/runtime lexical failures. These codes are emitted by matching-version
+    // generated output rather than the build report, but share the append-only registry.
+    diagnostic_spec!("RCA4000", Emission, Error),
+    diagnostic_spec!("RCA4001", Emission, Error),
+    diagnostic_spec!("RCA4002", Emission, Error),
+    diagnostic_spec!("RCA4003", Emission, Error),
+    diagnostic_spec!("RCA4004", Emission, Error),
     // M3-owned internal failures. RCA9001-RCA9005 retain their distinct M4
     // loader/protocol meanings from #40 and have no M3 producers.
     diagnostic_spec!("RCA9101", Discovery, Error),
