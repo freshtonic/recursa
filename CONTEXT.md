@@ -68,17 +68,8 @@ _Avoid_: Token ID, public discriminant
 The source-borrowing, grammar-bound output of generated lexing. It owns payload-free token records and creates parser input without requiring the caller to supply grammar metadata.
 _Avoid_: Token vector, unbound lex result
 
-**Lexer callback context**:
-The Recursa-owned narrow interface available to advanced lexer callbacks for inspecting and extending the current match. It does not expose the underlying lexer backend.
-During closed-matcher migration, a callback starter must remain disjoint from finalizing closed matchers so arbitration never speculatively executes authored callback code. Legacy callback arbitration against regular-expression and fixed rules remains available through the expand-contract window.
-_Avoid_: Raw Logos lexer, lexer backend handle
-
-**Post-lex editor**:
-A grammar-aware view used by a post-lex hook to inspect records and perform validated reclassification, replacement, splitting, or contiguous removal. It never exposes the underlying token vector for arbitrary mutation.
-_Avoid_: Mutable lexing result, mutable token vector
-
 **Lex builder**:
-The typed construction path for an alternative lexer. It accepts grammar-local token kinds and validated source spans, then runs the grammar's shared finalization and post-lex hook exactly once.
+The typed construction path for an alternative lexer. It accepts grammar-local token kinds and validated source spans, then runs grammar-owned fixed-word classification and lexical-error normalization.
 Its records must be source-bounded UTF-8, ordered, and non-overlapping; unrecorded source gaps are preserved without rescanning. Classified trivia records and observable trivia-gap behavior are introduced by #93.
 _Avoid_: Raw token-record constructor
 
@@ -159,7 +150,7 @@ The retained path from one grammar-semantic use site through the chosen imports,
 _Avoid_: Diagnostic search log, terminal name string
 
 **Opaque Rust fragment**:
-Parsed Rust syntax retained for faithful emission but not target-resolved by source analysis because its target does not change the normalized grammar, including callback, hook, derive, and configured trait paths.
+Parsed Rust syntax retained for faithful emission but not target-resolved by source analysis because its target does not change the normalized grammar, including derive and configured trait paths.
 _Avoid_: Grammar-semantic reference, unparsed text
 
 **Module inclusion**:

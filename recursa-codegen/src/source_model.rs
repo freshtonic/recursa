@@ -116,8 +116,6 @@ pub(crate) struct SourceModel {
     pub(crate) lexer_records: Vec<NonTokenLexerRecord>,
     /// Located references to token definitions from grammar positions.
     pub(crate) token_uses: Vec<TokenUse>,
-    /// Optional opaque post-lex hook path preserved for generation.
-    pub(crate) post_lex: Option<syn::Path>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -694,8 +692,6 @@ pub(crate) struct ContentTokenDefinition {
     pub(crate) closed_matcher: Option<ClosedMatcher>,
     /// Supplies the authored diagram label, when it differs from the regex fallback used to correlate authored source with normalized grammar.
     pub(crate) diagram_label: Option<String>,
-    /// Preserves the opaque authored callback path for generation.
-    pub(crate) callback: Option<syn::Path>,
     /// Preserves authored lexical priority for deterministic matcher ordering.
     pub(crate) priority: Option<u32>,
     /// Supplies the admission set used to correlate authored source with normalized grammar.
@@ -715,8 +711,6 @@ pub(crate) struct LexicalBaseTokenDefinition {
     pub(crate) pattern: String,
     /// Preserves the closed matcher used to extend or reject the starter pattern.
     pub(crate) closed_matcher: Option<ClosedMatcher>,
-    /// Preserves the opaque authored callback path for generation.
-    pub(crate) callback: Option<syn::Path>,
     /// Preserves authored lexical priority for deterministic matcher ordering.
     pub(crate) priority: Option<u32>,
 }
@@ -846,8 +840,6 @@ pub(crate) enum SourceModelDiagnosticKind {
     InvalidPrattTokenPlacement,
     /// Identifies the configured ordinary derive conflict authored-source form.
     ConfiguredOrdinaryDeriveConflict,
-    /// Identifies the multiple post lex hooks authored-source form.
-    MultiplePostLexHooks,
     /// Identifies duplicate membership introduced by an admission union.
     DuplicateAdmissionMembership,
     /// Identifies an unresolved or ambiguous admission-expression name.
@@ -860,6 +852,14 @@ pub(crate) enum SourceModelDiagnosticKind {
     ContradictoryAdmissionMetadata,
     /// Identifies a subtraction whose right-hand side has no current members.
     IneffectiveAdmissionSubtraction,
+    /// Identifies an obsolete field-local authored lexer callback.
+    ObsoleteFieldLexCallback,
+    /// Identifies an obsolete central authored lexer callback.
+    ObsoleteCentralLexCallback,
+    /// Identifies an obsolete authored post-lex hook.
+    ObsoletePostLexHook,
+    /// Identifies an obsolete authored parser postcondition.
+    ObsoleteParserPostcondition,
 }
 
 impl SourceModelDiagnosticKind {
@@ -891,13 +891,6 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         input.resolved.configuration.syntax.text_equivalence,
         &mut diagnostics,
     );
-    if tokens.post_lex_sites.len() > 1 {
-        diagnostics.push(SourceModelDiagnostic {
-            kind: SourceModelDiagnosticKind::MultiplePostLexHooks,
-            sites: tokens.post_lex_sites.clone(),
-            message: "a grammar accepts exactly one post_lex hook declaration".to_owned(),
-        });
-    }
     let mut builder = SourceModelBuilder {
         resolved: input.resolved,
         cfg: input.cfg,
@@ -2664,7 +2657,6 @@ impl SourceModelBuilder<'_> {
                     definition.pattern,
                     definition.closed_matcher,
                     None,
-                    definition.callback,
                     definition.priority,
                     Vec::new(),
                     AuthoredAdmissions {
@@ -2695,7 +2687,6 @@ impl SourceModelBuilder<'_> {
                     token_definitions: self.tokens.definitions,
                     lexer_records: self.tokens.lexer_records,
                     token_uses: self.tokens.uses,
-                    post_lex: self.tokens.post_lex,
                 },
             });
         SourceModelReport {
@@ -2765,6 +2756,12 @@ impl SourceModelBuilder<'_> {
                 source: node.source,
             };
             let configured = &node.metas;
+            reject_obsolete_parser_postconditions(
+                &self.resolved,
+                origin,
+                configured,
+                &mut self.diagnostics,
+            );
             let body = match &node.body {
                 ResolvedNodeBody::Struct { style } => {
                     reject_pratt_marker(
@@ -2839,6 +2836,12 @@ impl SourceModelBuilder<'_> {
                             resolved_variants
                                 .iter()
                                 .map(|variant| {
+                                    reject_obsolete_parser_postconditions(
+                                        &self.resolved,
+                                        origin,
+                                        &variant.metas,
+                                        &mut self.diagnostics,
+                                    );
                                     reject_pratt_marker(
                                         &self.resolved,
                                         origin,
@@ -2888,6 +2891,12 @@ impl SourceModelBuilder<'_> {
                             resolved_variants
                                 .iter()
                                 .map(|variant| {
+                                    reject_obsolete_parser_postconditions(
+                                        &self.resolved,
+                                        origin,
+                                        &variant.metas,
+                                        &mut self.diagnostics,
+                                    );
                                     reject_pratt_marker(
                                         &self.resolved,
                                         origin,
@@ -2960,6 +2969,12 @@ impl SourceModelBuilder<'_> {
             let field = &resolved_field.syntax;
             let field_configured = &resolved_field.metas;
             let site = self.site(origin, span_range(field.span()));
+            reject_obsolete_parser_postconditions(
+                &self.resolved,
+                origin,
+                field_configured,
+                &mut self.diagnostics,
+            );
             reject_pratt_marker(
                 &self.resolved,
                 origin,
@@ -3134,10 +3149,6 @@ struct TokenCatalog {
     lexer_records: Vec<NonTokenLexerRecord>,
     /// Supplies the uses used to correlate authored source with normalized grammar.
     uses: Vec<TokenUse>,
-    /// Supplies the post lex used to correlate authored source with normalized grammar.
-    post_lex: Option<syn::Path>,
-    /// Supplies the post lex sites used to correlate authored source with normalized grammar.
-    post_lex_sites: Vec<SourceSite>,
     /// Indexes declared keyword categories and their authored sites.
     categories: BTreeMap<String, Vec<SourceSite>>,
     /// Indexes declared keyword flags and their authored sites.
@@ -3158,8 +3169,6 @@ struct CentralContentDefinition {
     pattern: String,
     /// Preserves the optional closed matcher declared at the central token seam.
     closed_matcher: Option<ClosedMatcher>,
-    /// Preserves the opaque authored callback path for generation.
-    callback: Option<syn::Path>,
     /// Preserves explicit arbitration priority on a closed matcher.
     priority: Option<u32>,
     /// Locates the authored construct represented by this source-model value.
@@ -3771,7 +3780,9 @@ impl TokenCatalog {
                         .is_some_and(|segment| segment.ident == "tokens")
                 {
                     match syn::parse2::<CentralTokensSyntax>(item_macro.mac.tokens.clone()) {
-                        Ok(syntax) => self.collect_central_definitions(resolved, origin, syntax),
+                        Ok(syntax) => {
+                            self.collect_central_definitions(resolved, origin, syntax, diagnostics)
+                        }
                         Err(error) => diagnostics.push(SourceModelDiagnostic {
                             kind: SourceModelDiagnosticKind::InvalidConfiguration,
                             sites: vec![source_site(resolved, origin, span_range(error.span()))],
@@ -3845,13 +3856,15 @@ impl TokenCatalog {
         resolved: &ResolvedSourceGrammar,
         origin: SourceOrigin,
         syntax: CentralTokensSyntax,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
-        for post_lex in &syntax.post_lex {
-            self.post_lex_sites
-                .push(source_site(resolved, origin, span_range(post_lex.span())));
-            if self.post_lex.is_none() {
-                self.post_lex = Some(post_lex.clone());
-            }
+        for post_lex in syntax.obsolete_post_lex {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::ObsoletePostLexHook,
+                sites: vec![source_site(resolved, origin, span_range(post_lex.span()))],
+                message: "authored `post_lex = path` hooks are unsupported; express tokenization declaratively"
+                    .to_owned(),
+            });
         }
         for fixed in syntax.fixed {
             let declaration_site = source_site(resolved, origin, span_range(fixed.name.span()));
@@ -3902,6 +3915,15 @@ impl TokenCatalog {
                 .map(|admission| pending_admission(resolved, origin, admission)),
         );
         for content in syntax.content {
+            if let Some(callback) = content.obsolete_callback {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::ObsoleteCentralLexCallback,
+                    sites: vec![source_site(resolved, origin, span_range(callback.span()))],
+                    message: "authored central `with path` lexer callbacks are unsupported; use a closed matcher"
+                        .to_owned(),
+                });
+                continue;
+            }
             let name = content.name.unraw().to_string();
             let semantic = resolved
                 .content_tokens
@@ -3912,7 +3934,6 @@ impl TokenCatalog {
                 name,
                 pattern: content.pattern.value(),
                 closed_matcher: None,
-                callback: content.callback,
                 priority: None,
                 site: source_site(resolved, origin, span_range(content.name.span())),
             });
@@ -3929,7 +3950,6 @@ impl TokenCatalog {
                 name,
                 pattern,
                 closed_matcher: Some(content.matcher.matcher),
-                callback: None,
                 priority: content.matcher.priority,
                 site: source_site(resolved, origin, span_range(content.name.span())),
             });
@@ -4745,6 +4765,47 @@ fn reject_pratt_roles_off_pratt(
     }
 }
 
+/// Rejects retired parser predicates at their authored attachment site.
+fn reject_obsolete_parser_postconditions(
+    resolved: &ResolvedSourceGrammar,
+    origin: SourceOrigin,
+    metas: &[Meta],
+    diagnostics: &mut Vec<SourceModelDiagnostic>,
+) {
+    for list in metas.iter().filter_map(|meta| {
+        let Meta::List(list) = meta else { return None };
+        let is_parser_attribute = list.path.is_ident("parse")
+            || list
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "parser");
+        is_parser_attribute.then_some(list)
+    }) {
+        let Ok(options) = syn::punctuated::Punctuated::<Meta, Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())
+        else {
+            continue;
+        };
+        let Some(postcondition) = options
+            .iter()
+            .find(|option| option.path().is_ident("postcondition"))
+        else {
+            continue;
+        };
+        diagnostics.push(SourceModelDiagnostic {
+            kind: SourceModelDiagnosticKind::ObsoleteParserPostcondition,
+            sites: vec![source_site(
+                resolved,
+                origin,
+                span_range(postcondition.span()),
+            )],
+            message: "authored parser postconditions are unsupported; use a named admission"
+                .to_owned(),
+        });
+    }
+}
+
 /// Reports whether an attribute names a prefix, infix, or postfix Pratt role.
 fn is_pratt_role_meta(meta: &Meta) -> bool {
     let Meta::List(list) = meta else {
@@ -4813,7 +4874,6 @@ impl TokenCatalog {
                     TokenDefinitionKind::LexicalBase(base)
                         if base.pattern == definition.pattern
                             && base.closed_matcher == definition.closed_matcher
-                            && base.callback == definition.callback
                             && base.priority == definition.priority
                 )
         }) {
@@ -4827,7 +4887,6 @@ impl TokenCatalog {
             kind: TokenDefinitionKind::LexicalBase(LexicalBaseTokenDefinition {
                 pattern: definition.pattern,
                 closed_matcher: definition.closed_matcher,
-                callback: definition.callback,
                 priority: definition.priority,
             }),
             definition_sites: vec![definition.site],
@@ -4885,6 +4944,16 @@ impl TokenCatalog {
                 return;
             }
         };
+        if let Some(callback) = syntax.obsolete_callback {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::ObsoleteFieldLexCallback,
+                sites: vec![source_site(resolved, origin, span_range(callback.span()))],
+                message:
+                    "authored `#[lex(..., callback = path)]` is unsupported; use a closed matcher"
+                        .to_owned(),
+            });
+            return;
+        }
         if let Some(display) = syntax.display {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::ContentDisplayOverride,
@@ -4905,7 +4974,6 @@ impl TokenCatalog {
 
         if syntax.matcher {
             if syntax.diagram.is_some()
-                || syntax.callback.is_some()
                 || syntax.priority.is_some()
                 || !syntax.admissions.is_empty()
             {
@@ -4986,7 +5054,6 @@ impl TokenCatalog {
                 TokenDefinitionKind::Content(content)
                     if content.semantic == semantic
                         && content.pattern == pattern.value()
-                        && content.callback == syntax.callback
                         && content.priority == syntax.priority
                         && content.admission_set == admission_set
                         && content.diagram_label != diagram_label
@@ -5009,7 +5076,6 @@ impl TokenCatalog {
             pattern.value(),
             None,
             diagram_label,
-            syntax.callback,
             syntax.priority,
             admission_set,
             authored,
@@ -5027,7 +5093,6 @@ impl TokenCatalog {
         pattern: String,
         closed_matcher: Option<ClosedMatcher>,
         diagram_label: Option<String>,
-        callback: Option<syn::Path>,
         priority: Option<u32>,
         admission_set: Vec<TokenDefinitionId>,
         authored: AuthoredAdmissions,
@@ -5043,7 +5108,6 @@ impl TokenCatalog {
                         && content.pattern == pattern
                         && content.closed_matcher == closed_matcher
                         && content.diagram_label == diagram_label
-                        && content.callback == callback
                         && content.priority == priority
                         && content.admission_set == admission_set
                 )
@@ -5072,7 +5136,6 @@ impl TokenCatalog {
                 pattern,
                 closed_matcher,
                 diagram_label,
-                callback,
                 priority,
                 admission_set,
                 authored_admissions: vec![authored],
@@ -5100,8 +5163,8 @@ struct CentralTokensSyntax {
     non_token_lexer_records: Vec<CentralNonTokenLexerRecordSyntax>,
     /// Supplies named ignored closed matchers.
     ignored_matchers: Vec<CentralIgnoredMatcherSyntax>,
-    /// Supplies the post lex used to correlate authored source with normalized grammar.
-    post_lex: Vec<syn::Path>,
+    /// Retains obsolete post-lex paths only long enough to diagnose their source sites.
+    obsolete_post_lex: Vec<syn::Path>,
     /// Supplies declared keyword category names.
     categories: Vec<syn::Ident>,
     /// Supplies declared orthogonal keyword flag names.
@@ -5148,8 +5211,8 @@ struct CentralContentSyntax {
     name: syn::Ident,
     /// Preserves the authored lexical pattern for validation and generation.
     pattern: LitStr,
-    /// Preserves the opaque authored callback path for generation.
-    callback: Option<syn::Path>,
+    /// Retains an obsolete callback path only long enough to diagnose its source site.
+    obsolete_callback: Option<syn::Path>,
 }
 
 /// Carries one named emitting closed matcher before source locations are retained.
@@ -5504,7 +5567,7 @@ impl Parse for CentralTokensSyntax {
         let mut matchers = Vec::new();
         let mut non_token_lexer_records = Vec::new();
         let mut ignored_matchers = Vec::new();
-        let mut post_lex = Vec::new();
+        let mut obsolete_post_lex = Vec::new();
         let mut categories = Vec::new();
         let mut flags = Vec::new();
         let mut admissions = Vec::new();
@@ -5518,7 +5581,7 @@ impl Parse for CentralTokensSyntax {
                         outcome: NonTokenLexerOutcome::NonEmitting,
                     });
                 } else if section == "post_lex" {
-                    post_lex.push(input.parse()?);
+                    obsolete_post_lex.push(input.parse()?);
                 } else {
                     input.parse::<syn::Expr>()?;
                 }
@@ -5590,7 +5653,7 @@ impl Parse for CentralTokensSyntax {
                         let name = syn::Ident::parse_any(&body)?;
                         body.parse::<Token![=>]>()?;
                         let pattern = body.parse()?;
-                        let callback = if body.peek(syn::Ident) {
+                        let obsolete_callback = if body.peek(syn::Ident) {
                             let marker = syn::Ident::parse_any(&body)?;
                             if marker != "with" {
                                 return Err(syn::Error::new(
@@ -5605,7 +5668,7 @@ impl Parse for CentralTokensSyntax {
                         content.push(CentralContentSyntax {
                             name,
                             pattern,
-                            callback,
+                            obsolete_callback,
                         });
                         if body.peek(Token![,]) {
                             body.parse::<Token![,]>()?;
@@ -5627,7 +5690,7 @@ impl Parse for CentralTokensSyntax {
             matchers,
             non_token_lexer_records,
             ignored_matchers,
-            post_lex,
+            obsolete_post_lex,
             categories,
             flags,
             admissions,
@@ -5909,8 +5972,8 @@ struct LexSyntax {
     matcher: bool,
     /// Human-readable content-token label preserved for generated diagrams.
     diagram: Option<LitStr>,
-    /// Preserves the opaque authored callback path for generation.
-    callback: Option<syn::Path>,
+    /// Retains an obsolete callback path only long enough to diagnose its source site.
+    obsolete_callback: Option<syn::Path>,
     /// Preserves authored lexical priority for deterministic matcher ordering.
     priority: Option<u32>,
     /// Supplies the admissions used to correlate authored source with normalized grammar.
@@ -5924,7 +5987,7 @@ impl Parse for LexSyntax {
         let mut pattern = None;
         let mut matcher = false;
         let mut diagram = None;
-        let mut callback = None;
+        let mut obsolete_callback = None;
         let mut priority = None;
         let mut admissions = None;
         let mut display = None;
@@ -5947,7 +6010,7 @@ impl Parse for LexSyntax {
                 }
             } else if key == "callback" {
                 input.parse::<Token![=]>()?;
-                if callback.replace(input.parse()?).is_some() {
+                if obsolete_callback.replace(input.parse()?).is_some() {
                     return Err(syn::Error::new(key.span(), "duplicate lex callback"));
                 }
             } else if key == "priority" {
@@ -5989,7 +6052,7 @@ impl Parse for LexSyntax {
             pattern,
             matcher,
             diagram,
-            callback,
+            obsolete_callback,
             priority,
             admissions: admissions.unwrap_or_default(),
             display,
@@ -6309,63 +6372,6 @@ mod tests {
 
     fn model(source: &str) -> super::SourceModelReport {
         model_with_cfg(source, &CargoCfgSnapshot::default())
-    }
-
-    #[test]
-    fn multiple_post_lex_hooks_are_rejected_instead_of_using_source_order() {
-        let report = model(
-            r#"
-recursa::grammar! { module = crate }
-recursa::tokens! { post_lex = crate::first }
-recursa::tokens! { post_lex = crate::second }
-
-#[derive(recursa::Node)]
-struct Root<'input> {
-    #[lex(pattern = r"[a-z]+")]
-    value: Word<'input>,
-}
-"#,
-        );
-        assert_code(
-            &report,
-            SourceModelDiagnosticKind::MultiplePostLexHooks,
-            "RCA3117",
-        );
-        let diagnostic = report
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.kind == SourceModelDiagnosticKind::MultiplePostLexHooks)
-            .expect("a singular grammar hook cannot be selected by source order");
-        assert_eq!(diagnostic.sites.len(), 2);
-        assert!(report.source_modeled.is_none());
-    }
-
-    #[test]
-    fn duplicate_post_lex_hooks_in_one_tokens_block_preserve_both_sites() {
-        let report = model(
-            r#"
-recursa::grammar! { module = crate }
-recursa::tokens! {
-    post_lex = crate::first,
-    post_lex = crate::second,
-}
-
-#[derive(recursa::Node)]
-struct Root;
-"#,
-        );
-        assert_code(
-            &report,
-            SourceModelDiagnosticKind::MultiplePostLexHooks,
-            "RCA3117",
-        );
-        let diagnostic = report
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.kind == SourceModelDiagnosticKind::MultiplePostLexHooks)
-            .expect("both hook declarations produce one grammar-level diagnostic");
-        assert_eq!(diagnostic.sites.len(), 2);
-        assert!(report.source_modeled.is_none());
     }
 
     fn completed(report: super::SourceModelReport) -> super::SourceModel {
@@ -8247,13 +8253,13 @@ struct Lexeme<'input> {
     }
 
     #[test]
-    fn pretty_spacing_checks_crossing_prefixes_from_callback_lexical_rules() {
+    fn pretty_spacing_checks_crossing_prefixes_from_central_lexical_rules() {
         let report = model(
             r#"
 recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { SUFFIX => "+c" }
-    lexer_tokens { MERGED => r"a\+" with crate::extend_merged }
+    lexer_tokens { MERGED => r"a\+" }
 }
 #[derive(recursa::Node)]
 struct Prefix<'input> { #[lex(pattern = "a")] value: PrefixText<'input> }

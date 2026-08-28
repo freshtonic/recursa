@@ -70,8 +70,8 @@ subtractions that remove nothing; duplicate union membership is a warning.
 `#[lex(..., admits(WindowRefName))]` applies the compiled canonical membership
 to that generated content-token type.
 
-Closed lexical mechanisms live beside the token grammar rather than inside
-callbacks. Declare an emitting matcher in `matchers`, bind its same-named token
+Closed lexical mechanisms live beside the token grammar. Declare an emitting
+matcher in `matchers`, bind its same-named token
 type with `#[lex(matcher)]`, or declare the same matcher vocabulary in `ignore`
 for non-emitting input:
 
@@ -105,10 +105,10 @@ includes its LF, CRLF, or CR ending, or reaches EOF. Unterminated delimited and
 nested regions produce opener-anchored lexical errors over the complete
 opener-to-EOF range; generated `LexError::code`, `diagnostic_code`, and `anchor`
 preserve their stable diagnostic identity.
-Legacy callback arbitration against regular-expression and fixed rules remains available during
-migration. A callback that overlaps a finalizing closed matcher is rejected during source analysis
-because its final extent cannot be known without speculatively executing authored code; migrate
-that overlap to the closed vocabulary.
+
+Authored lexer callbacks, post-lex hooks, and parser postconditions are not
+supported. Source analysis reports their retired syntax with targeted stable
+diagnostics; use closed matchers and named admissions instead.
 
 An alternative lexer can construct the same public result through `LexBuilder`. Each supplied
 token or error record must use an exact grammar-local kind and a source-bounded UTF-8 span, in

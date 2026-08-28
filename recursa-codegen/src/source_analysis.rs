@@ -671,7 +671,6 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::InvalidTokenPlacement => "RCA3114",
         SourceModelDiagnosticKind::InvalidPrattTokenPlacement => "RCA3115",
         SourceModelDiagnosticKind::ConfiguredOrdinaryDeriveConflict => "RCA3116",
-        SourceModelDiagnosticKind::MultiplePostLexHooks => "RCA3117",
         SourceModelDiagnosticKind::InvalidPrettyHint => "RCA3118",
         SourceModelDiagnosticKind::DuplicateAdmissionMembership => "RCA3119",
         SourceModelDiagnosticKind::InvalidAdmissionReference => "RCA3120",
@@ -679,6 +678,10 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::InvalidKeywordCategory => "RCA3122",
         SourceModelDiagnosticKind::ContradictoryAdmissionMetadata => "RCA3123",
         SourceModelDiagnosticKind::IneffectiveAdmissionSubtraction => "RCA3124",
+        SourceModelDiagnosticKind::ObsoleteFieldLexCallback => "RCA3125",
+        SourceModelDiagnosticKind::ObsoleteCentralLexCallback => "RCA3126",
+        SourceModelDiagnosticKind::ObsoletePostLexHook => "RCA3117",
+        SourceModelDiagnosticKind::ObsoleteParserPostcondition => "RCA3128",
         SourceModelDiagnosticKind::InapplicablePrettyHint => "RCA3210",
         SourceModelDiagnosticKind::UnsafePrettyHint => "RCA3211",
     }
@@ -851,7 +854,6 @@ fn render_lexical_metadata(metadata: &LexicalDefinitionMetadata) -> String {
         LexicalDefinitionMetadata::Content {
             pattern,
             closed_matcher,
-            callback,
             authored_priority,
             admitted_fixed_tokens,
         } => {
@@ -859,10 +861,7 @@ fn render_lexical_metadata(metadata: &LexicalDefinitionMetadata) -> String {
                 .as_ref()
                 .map_or_else(String::new, |matcher| format!(":closed={matcher:?}"));
             format!(
-                "content:{pattern:?}{closed}:callback={}:priority={authored_priority:?}:admits={}",
-                callback
-                    .as_ref()
-                    .map_or_else(|| "-".to_owned(), crate::source_syntax::path_text),
+                "content:{pattern:?}{closed}:priority={authored_priority:?}:admits={}",
                 admitted_fixed_tokens.join("|"),
             )
         }

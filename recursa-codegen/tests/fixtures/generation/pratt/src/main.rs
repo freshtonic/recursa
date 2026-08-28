@@ -270,8 +270,8 @@ fn main() {
             "fixed:BEGIN",
             "fixed:-",
             "fixed:[",
-            "content:\"[0-9]+\":callback=-:priority=None",
-            "content:\"[A-Za-z_][A-Za-z0-9_]*\":callback=-:priority=None",
+            "content:\"[0-9]+\":priority=None",
+            "content:\"[A-Za-z_][A-Za-z0-9_]*\":priority=None",
         ]
     );
 
@@ -295,8 +295,8 @@ fn main() {
             "fixed:BEGIN",
             "fixed:-",
             "fixed:[",
-            "content:\"[0-9]+\":callback=-:priority=None",
-            "content:\"[A-Za-z_][A-Za-z0-9_]*\":callback=-:priority=None",
+            "content:\"[0-9]+\":priority=None",
+            "content:\"[A-Za-z_][A-Za-z0-9_]*\":priority=None",
         ]
     );
 

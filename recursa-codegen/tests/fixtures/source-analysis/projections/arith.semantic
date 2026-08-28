@@ -6,26 +6,26 @@ grammar edition=Rust2024 anchor=arith max_lookahead=1 equivalence=Sensitive
 [lexical]
 equivalence Sensitive
 selection LongestPrefixThenFixedThenAuthoredPatternPriority
-kind content:"[0-9]+":callback=-:priority=None
-kind content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None
+kind content:"[0-9]+":priority=None
+kind content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None
 kind fixed:(
 kind fixed:)
 kind fixed:*
 kind fixed:+
 kind fixed:-
 kind fixed:/
-base content:"[0-9]+":callback=-:priority=None pattern="[0-9]+" targets=[IntLit] priority=0
-base content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None pattern="[a-zA-Z_][a-zA-Z0-9_]*" targets=[Ident] priority=0
-target Ident base=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None accepts=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
-target IntLit base=content:"[0-9]+":callback=-:priority=None accepts=[content:"[0-9]+":callback=-:priority=None]
+base content:"[0-9]+":priority=None pattern="[0-9]+" targets=[IntLit] priority=0
+base content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None pattern="[a-zA-Z_][a-zA-Z0-9_]*" targets=[Ident] priority=0
+target Ident base=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None accepts=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+target IntLit base=content:"[0-9]+":priority=None accepts=[content:"[0-9]+":priority=None]
 rule Fixed("(") kind=fixed:( priority=Fixed
 rule Fixed(")") kind=fixed:) priority=Fixed
 rule Fixed("*") kind=fixed:* priority=Fixed
 rule Fixed("+") kind=fixed:+ priority=Fixed
 rule Fixed("-") kind=fixed:- priority=Fixed
 rule Fixed("/") kind=fixed:/ priority=Fixed
-rule Regex("[0-9]+") kind=content:"[0-9]+":callback=-:priority=None priority=Pattern { authored: None }
-rule Regex("[a-zA-Z_][a-zA-Z0-9_]*") kind=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None priority=Pattern { authored: None }
+rule Regex("[0-9]+") kind=content:"[0-9]+":priority=None priority=Pattern { authored: None }
+rule Regex("[a-zA-Z_][a-zA-Z0-9_]*") kind=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None priority=Pattern { authored: None }
 non-token Regex("[ \\t\\n\\r]+") outcome=NonEmitting
 
 [source-token-definitions]
@@ -72,24 +72,24 @@ field arith::Atom<arith::IntAtom>::value -> parse-site(arith::Atom<arith::IntAto
 field arith::Atom<arith::IdentAtom>::value -> parse-site(arith::Atom<arith::IdentAtom>::element0)
 
 [analysis]
-facts Ident first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow
-facts IntLit first=[content:"[0-9]+":callback=-:priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[0-9]+":callback=-:priority=None -> caller-follow
-facts arith::Atom<arith::IdentAtom> first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow
-facts arith::Atom<arith::IntAtom> first=[content:"[0-9]+":callback=-:priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[0-9]+":callback=-:priority=None -> caller-follow
-facts arith::Expr first=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] nullable=false extenders=[fixed:*,fixed:+,fixed:-,fixed:/] follow=[fixed:),EOF] first^k=fixed:- | fixed:( | content:"[0-9]+":callback=-:priority=None -> caller-follow | content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow
-facts arith::IdentAtom first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow
-facts arith::IntAtom first=[content:"[0-9]+":callback=-:priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[0-9]+":callback=-:priority=None -> caller-follow
-facts fixed:( first=[fixed:(] nullable=false extenders=[-] follow=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] first^k=fixed:( -> caller-follow
+facts Ident first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
+facts IntLit first=[content:"[0-9]+":priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[0-9]+":priority=None -> caller-follow
+facts arith::Atom<arith::IdentAtom> first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
+facts arith::Atom<arith::IntAtom> first=[content:"[0-9]+":priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[0-9]+":priority=None -> caller-follow
+facts arith::Expr first=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] nullable=false extenders=[fixed:*,fixed:+,fixed:-,fixed:/] follow=[fixed:),EOF] first^k=fixed:- | fixed:( | content:"[0-9]+":priority=None -> caller-follow | content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
+facts arith::IdentAtom first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
+facts arith::IntAtom first=[content:"[0-9]+":priority=None] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=content:"[0-9]+":priority=None -> caller-follow
+facts fixed:( first=[fixed:(] nullable=false extenders=[-] follow=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] first^k=fixed:( -> caller-follow
 facts fixed:) first=[fixed:)] nullable=false extenders=[-] follow=[fixed:),EOF] first^k=fixed:) -> caller-follow
-facts fixed:* first=[fixed:*] nullable=false extenders=[-] follow=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] first^k=fixed:* -> caller-follow
-facts fixed:+ first=[fixed:+] nullable=false extenders=[-] follow=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] first^k=fixed:+ -> caller-follow
-facts fixed:- first=[fixed:-] nullable=false extenders=[-] follow=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] first^k=fixed:- -> caller-follow
-facts fixed:/ first=[fixed:/] nullable=false extenders=[-] follow=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] first^k=fixed:/ -> caller-follow
+facts fixed:* first=[fixed:*] nullable=false extenders=[-] follow=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] first^k=fixed:* -> caller-follow
+facts fixed:+ first=[fixed:+] nullable=false extenders=[-] follow=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] first^k=fixed:+ -> caller-follow
+facts fixed:- first=[fixed:-] nullable=false extenders=[-] follow=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] first^k=fixed:- -> caller-follow
+facts fixed:/ first=[fixed:/] nullable=false extenders=[-] follow=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] first^k=fixed:/ -> caller-follow
 
 [decisions]
 dispatch arith::Expr pratt-nud depth=1 caller-fallback=-
-  arith::Expr::Ident Atom: content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None <caller-follow>
-  arith::Expr::IntLit Atom: content:"[0-9]+":callback=-:priority=None <caller-follow>
+  arith::Expr::Ident Atom: content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None <caller-follow>
+  arith::Expr::IntLit Atom: content:"[0-9]+":priority=None <caller-follow>
   arith::Expr::Neg Prefix { bp: 30 }: fixed:-
   arith::Expr::Paren Atom: fixed:(
 dispatch arith::Expr pratt-led depth=1 caller-fallback=-
@@ -101,79 +101,79 @@ follow arith::IntAtom::element0 caller
 follow arith::IdentAtom::element0 caller
 follow arith::Expr::IntLit::element0 caller
 follow arith::Expr::Ident::element0 caller
-follow arith::Expr::Paren::element0 static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow arith::Expr::Paren::element0 static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 follow arith::Expr::Paren::element1 static[fixed:)]
 follow arith::Expr::Paren::element2 caller
-follow arith::Expr::Neg::element0 static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow arith::Expr::Neg::element0 static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 follow arith::Expr::Neg::element1 caller
-follow arith::Expr::Add::element0 static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow arith::Expr::Add::element0 static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 follow arith::Expr::Add::element1 caller
-follow arith::Expr::Sub::element0 static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow arith::Expr::Sub::element0 static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 follow arith::Expr::Sub::element1 caller
-follow arith::Expr::Mul::element0 static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow arith::Expr::Mul::element0 static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 follow arith::Expr::Mul::element1 caller
-follow arith::Expr::Div::element0 static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow arith::Expr::Div::element0 static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 follow arith::Expr::Div::element1 caller
 follow arith::Atom<arith::IntAtom>::element0 caller
 follow arith::Atom<arith::IdentAtom>::element0 caller
-container arith::IntAtom::element0 Direct element=[content:"[0-9]+":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[0-9]+":callback=-:priority=None]--> Done
-container arith::IdentAtom::element0 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
-container arith::Expr::IntLit::element0 Direct element=[content:"[0-9]+":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[0-9]+":callback=-:priority=None]--> Done
-container arith::Expr::Ident::element0 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
-container arith::Expr::Paren::element0 Direct element=[fixed:(] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+container arith::IntAtom::element0 Direct element=[content:"[0-9]+":priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[0-9]+":priority=None]--> Done
+container arith::IdentAtom::element0 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]--> Done
+container arith::Expr::IntLit::element0 Direct element=[content:"[0-9]+":priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[0-9]+":priority=None]--> Done
+container arith::Expr::Ident::element0 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]--> Done
+container arith::Expr::Paren::element0 Direct element=[fixed:(] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:(]--> Done
-container arith::Expr::Paren::element1 Direct element=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=static[fixed:)]
-  transition Start --ParseElement/static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]--> Done
+container arith::Expr::Paren::element1 Direct element=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=static[fixed:)]
+  transition Start --ParseElement/static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]--> Done
 container arith::Expr::Paren::element2 Direct element=[fixed:)] separator=- separator-first=[] trailing=false stop=caller
   transition Start --ParseElement/static[fixed:)]--> Done
-container arith::Expr::Neg::element0 Direct element=[fixed:-] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+container arith::Expr::Neg::element0 Direct element=[fixed:-] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:-]--> Done
-container arith::Expr::Neg::element1 Direct element=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]--> Done
-container arith::Expr::Add::element0 Direct element=[fixed:+] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+container arith::Expr::Neg::element1 Direct element=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]--> Done
+container arith::Expr::Add::element0 Direct element=[fixed:+] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:+]--> Done
-container arith::Expr::Add::element1 Direct element=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]--> Done
-container arith::Expr::Sub::element0 Direct element=[fixed:-] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+container arith::Expr::Add::element1 Direct element=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]--> Done
+container arith::Expr::Sub::element0 Direct element=[fixed:-] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:-]--> Done
-container arith::Expr::Sub::element1 Direct element=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]--> Done
-container arith::Expr::Mul::element0 Direct element=[fixed:*] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+container arith::Expr::Sub::element1 Direct element=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]--> Done
+container arith::Expr::Mul::element0 Direct element=[fixed:*] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:*]--> Done
-container arith::Expr::Mul::element1 Direct element=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]--> Done
-container arith::Expr::Div::element0 Direct element=[fixed:/] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+container arith::Expr::Mul::element1 Direct element=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]--> Done
+container arith::Expr::Div::element0 Direct element=[fixed:/] separator=- separator-first=[] trailing=false stop=static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:/]--> Done
-container arith::Expr::Div::element1 Direct element=[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]--> Done
-container arith::Atom<arith::IntAtom>::element0 Direct element=[content:"[0-9]+":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[0-9]+":callback=-:priority=None]--> Done
-container arith::Atom<arith::IdentAtom>::element0 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container arith::Expr::Div::element1 Direct element=[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]--> Done
+container arith::Atom<arith::IntAtom>::element0 Direct element=[content:"[0-9]+":priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[0-9]+":priority=None]--> Done
+container arith::Atom<arith::IdentAtom>::element0 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]--> Done
 
 [failures]
-failure arith::IntAtom arith::IntAtom::element0 RequiredSite expected=static[content:"[0-9]+":callback=-:priority=None]
-failure arith::IdentAtom arith::IdentAtom::element0 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
-failure arith::Expr - PrattNudDispatch expected=static[fixed:-|fixed:(|content:"[0-9]+":callback=-:priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure arith::IntAtom arith::IntAtom::element0 RequiredSite expected=static[content:"[0-9]+":priority=None]
+failure arith::IdentAtom arith::IdentAtom::element0 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+failure arith::Expr - PrattNudDispatch expected=static[fixed:-|fixed:(|content:"[0-9]+":priority=None|content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 failure arith::Expr - PrattCallerFollowGuard expected=pratt-extenders[arith::Expr::Add:Infix { lbp: 10, rbp: 11 },arith::Expr::Div:Infix { lbp: 20, rbp: 21 },arith::Expr::Mul:Infix { lbp: 20, rbp: 21 },arith::Expr::Sub:Infix { lbp: 10, rbp: 11 }]
-failure arith::Expr arith::Expr::IntLit::element0 RequiredSite expected=static[content:"[0-9]+":callback=-:priority=None]
-failure arith::Expr arith::Expr::Ident::element0 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure arith::Expr arith::Expr::IntLit::element0 RequiredSite expected=static[content:"[0-9]+":priority=None]
+failure arith::Expr arith::Expr::Ident::element0 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 failure arith::Expr arith::Expr::Paren::element0 RequiredSite expected=static[fixed:(]
-failure arith::Expr arith::Expr::Paren::element1 RequiredSite expected=static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]
+failure arith::Expr arith::Expr::Paren::element1 RequiredSite expected=static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]
 failure arith::Expr arith::Expr::Paren::element2 RequiredSite expected=static[fixed:)]
 failure arith::Expr arith::Expr::Neg::element0 RequiredSite expected=static[fixed:-]
-failure arith::Expr arith::Expr::Neg::element1 RequiredSite expected=static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]
+failure arith::Expr arith::Expr::Neg::element1 RequiredSite expected=static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]
 failure arith::Expr arith::Expr::Add::element0 RequiredSite expected=static[fixed:+]
-failure arith::Expr arith::Expr::Add::element1 RequiredSite expected=static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]
+failure arith::Expr arith::Expr::Add::element1 RequiredSite expected=static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]
 failure arith::Expr arith::Expr::Sub::element0 RequiredSite expected=static[fixed:-]
-failure arith::Expr arith::Expr::Sub::element1 RequiredSite expected=static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]
+failure arith::Expr arith::Expr::Sub::element1 RequiredSite expected=static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]
 failure arith::Expr arith::Expr::Mul::element0 RequiredSite expected=static[fixed:*]
-failure arith::Expr arith::Expr::Mul::element1 RequiredSite expected=static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]
+failure arith::Expr arith::Expr::Mul::element1 RequiredSite expected=static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]
 failure arith::Expr arith::Expr::Div::element0 RequiredSite expected=static[fixed:/]
-failure arith::Expr arith::Expr::Div::element1 RequiredSite expected=static[content:"[0-9]+":callback=-:priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:(,fixed:-]
-failure arith::Atom<arith::IntAtom> arith::Atom<arith::IntAtom>::element0 RequiredSite expected=static[content:"[0-9]+":callback=-:priority=None]
-failure arith::Atom<arith::IdentAtom> arith::Atom<arith::IdentAtom>::element0 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure arith::Expr arith::Expr::Div::element1 RequiredSite expected=static[content:"[0-9]+":priority=None,content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:(,fixed:-]
+failure arith::Atom<arith::IntAtom> arith::Atom<arith::IntAtom>::element0 RequiredSite expected=static[content:"[0-9]+":priority=None]
+failure arith::Atom<arith::IdentAtom> arith::Atom<arith::IdentAtom>::element0 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]

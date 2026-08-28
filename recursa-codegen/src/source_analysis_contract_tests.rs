@@ -392,11 +392,11 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::rejects_content_display_and_misplacement_before_lexical_planning --locked",
     },
     ProducerEvidence {
-        codes: &["RCA3117"],
+        codes: &["RCA3117", "RCA3125", "RCA3126", "RCA3128"],
         producer_source: "src/source_analysis.rs",
-        test_source: "src/source_model.rs",
-        test_name: "multiple_post_lex_hooks_are_rejected_instead_of_using_source_order",
-        command: "cargo test -p recursa-codegen source_model::tests::multiple_post_lex_hooks_are_rejected_instead_of_using_source_order --locked",
+        test_source: "tests/obsolete_authored_hooks.rs",
+        test_name: "every_obsolete_authored_hook_form_has_a_targeted_build_report_diagnostic",
+        command: "cargo test -p recursa-codegen --test obsolete_authored_hooks every_obsolete_authored_hook_form_has_a_targeted_build_report_diagnostic --locked",
     },
     ProducerEvidence {
         codes: &["RCA3118", "RCA3210"],
@@ -936,34 +936,6 @@ struct Root;
         "a shorter fixed spelling must not suppress the closed-matcher tie: {:?}",
         error.diagnostics()
     );
-
-    let opaque_callback = write_fixture(
-        r#"
-recursa::grammar! { module = crate }
-
-recursa::tokens! {
-    matchers {
-        ClosedLine => physical_line(prefix = r"~.", priority = 2),
-    }
-}
-
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"~", callback = crate::scan, priority = 1)]
-    callback: Callback,
-}
-"#,
-    );
-    let error = crate::source_analysis::analyze_source_tree(
-        crate::source_analysis::SourceAnalysisInput::rust_2024(
-            opaque_callback.path(),
-            "grammar.rs",
-        ),
-        &mut Vec::new(),
-    )
-    .expect_err("an opaque callback must not be run speculatively to discover its final extent");
-    assert_eq!(error.diagnostics().len(), 1, "{:?}", error.diagnostics());
-    assert_eq!(error.diagnostics()[0].code().as_str(), "RCA3005");
 }
 
 #[test]

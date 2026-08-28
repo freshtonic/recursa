@@ -252,16 +252,12 @@ pub(crate) fn kind_label(identity: &TokenKindIdentity) -> String {
     match identity {
         TokenKindIdentity::Fixed(spelling) => format!("fixed:{spelling}"),
         TokenKindIdentity::ContentBase(base) => {
-            let callback = base
-                .callback
-                .as_ref()
-                .map_or_else(|| "-".to_owned(), crate::source_syntax::path_text);
             let closed = base
                 .closed_matcher
                 .as_ref()
                 .map_or_else(String::new, |matcher| format!(":closed={matcher:?}"));
             format!(
-                "content:{:?}{closed}:callback={callback}:priority={:?}",
+                "content:{:?}{closed}:priority={:?}",
                 base.pattern, base.priority,
             )
         }
@@ -293,8 +289,6 @@ pub(crate) struct ContentBaseIdentity {
     pub(crate) pattern: String,
     /// Preserves the closed scanning mechanism, when centrally declared.
     pub(crate) closed_matcher: Option<ClosedMatcher>,
-    /// Opaque callback invoked for a match, if authored.
-    pub(crate) callback: Option<syn::Path>,
     /// Controls deterministic selection among competing lexical matchers.
     pub(crate) priority: Option<u32>,
 }
@@ -310,8 +304,6 @@ pub(crate) struct ContentBasePlan {
     pub(crate) pattern: String,
     /// Preserves the closed scanning mechanism, when centrally declared.
     pub(crate) closed_matcher: Option<ClosedMatcher>,
-    /// Opaque callback invoked for a match, if authored.
-    pub(crate) callback: Option<syn::Path>,
     /// Preserves an explicitly authored pattern priority, when present.
     pub(crate) authored_priority: Option<u32>,
 }
@@ -349,8 +341,6 @@ enum PatternFinalExtent {
     Exact,
     /// A closed scanner computes the final extent after its starter matches.
     Closed,
-    /// Authored callback code may extend the starter and cannot be run speculatively.
-    OpaqueCallback,
 }
 
 /// Equivalent non-emitting lexer records merged for planning.
@@ -416,8 +406,8 @@ enum CarrierCandidate {
     Emitting {
         /// Index of the corresponding content-base group.
         group: usize,
-        /// Whether an opaque callback prevents a complete symbolic proof.
-        opaque: bool,
+        /// Whether a closed matcher prevents the starter from proving final recognition.
+        starter_not_final: bool,
         /// Controls deterministic selection among competing lexical matchers.
         priority: u32,
     },
@@ -889,8 +879,6 @@ pub(crate) enum LexicalDefinitionMetadata {
         pattern: String,
         /// Preserves the closed scanning mechanism, when centrally declared.
         closed_matcher: Option<ClosedMatcher>,
-        /// Supplies the callback used to validate or execute the lexical plan.
-        callback: Option<syn::Path>,
         /// Preserves an explicitly authored pattern priority, when present.
         authored_priority: Option<u32>,
         /// Supplies the admitted fixed tokens used to validate or execute the lexical plan.
@@ -918,8 +906,6 @@ pub(crate) enum LexicalPatternOutcome {
     EmitsTokenKind,
     /// Selects the non emitting lexical alternative.
     NonEmitting,
-    /// Selects the opaque callback lexical alternative.
-    OpaqueCallback,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1231,7 +1217,6 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
                             &ContentBaseIdentity {
                                 pattern: base.pattern.clone(),
                                 closed_matcher: base.closed_matcher.clone(),
-                                callback: base.callback.clone(),
                                 priority: base.priority,
                             },
                         ),
@@ -1259,7 +1244,6 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
                 target_names,
                 pattern: group.identity.pattern.clone(),
                 closed_matcher: group.identity.closed_matcher.clone(),
-                callback: group.identity.callback.clone(),
                 authored_priority: group.identity.priority,
             }
         })
@@ -1516,7 +1500,6 @@ fn definition_conflict_diagnostics(
                         LexicalDefinitionMetadata::Content {
                             pattern: content.pattern.clone(),
                             closed_matcher: content.closed_matcher.clone(),
-                            callback: content.callback.clone(),
                             authored_priority: content.priority,
                             admitted_fixed_tokens,
                         }
@@ -1524,7 +1507,6 @@ fn definition_conflict_diagnostics(
                     TokenDefinitionKind::LexicalBase(base) => LexicalDefinitionMetadata::Content {
                         pattern: base.pattern.clone(),
                         closed_matcher: base.closed_matcher.clone(),
-                        callback: base.callback.clone(),
                         authored_priority: base.priority,
                         admitted_fixed_tokens: Vec::new(),
                     },
@@ -1566,7 +1548,6 @@ fn definition_metadata_key(metadata: &LexicalDefinitionMetadata) -> String {
         LexicalDefinitionMetadata::Content {
             pattern,
             closed_matcher,
-            callback,
             authored_priority,
             admitted_fixed_tokens,
         } => {
@@ -1574,10 +1555,7 @@ fn definition_metadata_key(metadata: &LexicalDefinitionMetadata) -> String {
                 .as_ref()
                 .map_or_else(String::new, |matcher| format!(":closed={matcher:?}"));
             format!(
-                "content:{pattern:?}{closed}:callback={}:priority={authored_priority:?}:admits={admitted_fixed_tokens:?}",
-                callback
-                    .as_ref()
-                    .map_or_else(|| "-".to_owned(), crate::source_syntax::path_text),
+                "content:{pattern:?}{closed}:priority={authored_priority:?}:admits={admitted_fixed_tokens:?}",
             )
         }
     }
@@ -1590,7 +1568,6 @@ fn content_base_identity(
     ContentBaseIdentity {
         pattern: content.pattern.clone(),
         closed_matcher: content.closed_matcher.clone(),
-        callback: content.callback.clone(),
         priority: content.priority,
     }
 }
@@ -1621,20 +1598,11 @@ fn content_base_groups(source: &SourceModel) -> Vec<ContentBaseGroup<'_>> {
             &left.identity.pattern,
             &left.identity.closed_matcher,
             left.identity.priority,
-            left.identity
-                .callback
-                .as_ref()
-                .map(crate::source_syntax::path_text),
         )
             .cmp(&(
                 &right.identity.pattern,
                 &right.identity.closed_matcher,
                 right.identity.priority,
-                right
-                    .identity
-                    .callback
-                    .as_ref()
-                    .map(crate::source_syntax::path_text),
             ))
     });
     grouped
@@ -1650,7 +1618,6 @@ fn content_base_identity_for_definition(
         TokenDefinitionKind::LexicalBase(base) => Some(ContentBaseIdentity {
             pattern: base.pattern.clone(),
             closed_matcher: base.closed_matcher.clone(),
-            callback: base.callback.clone(),
             priority: base.priority,
         }),
     }
@@ -1722,16 +1689,8 @@ fn lexical_diagnostics(
                     .collect(),
                 authored_priority: group.identity.priority,
                 priority_authorable: group.priority_authorable(),
-                final_extent: if group.identity.callback.is_some() {
-                    PatternFinalExtent::OpaqueCallback
-                } else {
-                    closed_pattern_final_extent(group.identity.closed_matcher.as_ref())
-                },
-                outcome: if group.identity.callback.is_some() {
-                    LexicalPatternOutcome::OpaqueCallback
-                } else {
-                    LexicalPatternOutcome::EmitsTokenKind
-                },
+                final_extent: closed_pattern_final_extent(group.identity.closed_matcher.as_ref()),
+                outcome: LexicalPatternOutcome::EmitsTokenKind,
                 sites: group.sites(),
             }),
             Err(reason) => diagnostics.push(LexicalDiagnostic {
@@ -1778,10 +1737,9 @@ fn lexical_diagnostics(
             .map(|&index| contenders[index].authored_priority.unwrap_or(0))
             .max()
             .expect("an ambiguity has contenders");
-        let (code, evidence) = if ambiguity.requires_disjoint_patterns
-            || indices
-                .iter()
-                .any(|&index| contenders[index].authored_priority.is_none())
+        let (code, evidence) = if indices
+            .iter()
+            .any(|&index| contenders[index].authored_priority.is_none())
         {
             (
                 LexicalDiagnosticCode::Rca3005,
@@ -1801,10 +1759,9 @@ fn lexical_diagnostics(
             )
         };
         let mut remedies = Vec::new();
-        if !ambiguity.requires_disjoint_patterns
-            && indices
-                .iter()
-                .any(|&index| contenders[index].priority_authorable)
+        if indices
+            .iter()
+            .any(|&index| contenders[index].priority_authorable)
         {
             remedies.push(LexicalRemedy::AssignDistinctPriority {
                 contenders: evidence_contenders.clone(),
@@ -1876,8 +1833,6 @@ struct PatternAmbiguity {
     indices: Vec<usize>,
     /// Shortest known source prefix on which the contenders are simultaneously applicable.
     witness: String,
-    /// Whether an opaque callback makes authored priorities insufficient to select safely.
-    requires_disjoint_patterns: bool,
 }
 
 /// Derives the pattern ambiguities under the grammar keyword and lexical-selection policies.
@@ -1958,31 +1913,18 @@ fn pattern_ambiguities(
     }
     let mut ambiguities = ambiguities
         .into_iter()
-        .map(|(indices, witness)| PatternAmbiguity {
-            requires_disjoint_patterns: indices
-                .iter()
-                .any(|&index| contenders[index].final_extent == PatternFinalExtent::OpaqueCallback)
-                && indices
-                    .iter()
-                    .any(|&index| contenders[index].final_extent == PatternFinalExtent::Closed),
-            indices,
-            witness,
-        })
+        .map(|(indices, witness)| PatternAmbiguity { indices, witness })
         .collect::<Vec<_>>();
 
     for left in 0..contenders.len() {
         for right in left + 1..contenders.len() {
             let left_extent = contenders[left].final_extent;
             let right_extent = contenders[right].final_extent;
-            let opaque = left_extent == PatternFinalExtent::OpaqueCallback
-                || right_extent == PatternFinalExtent::OpaqueCallback;
             let finalizing = left_extent == PatternFinalExtent::Closed
                 || right_extent == PatternFinalExtent::Closed;
-            let opaque_finalizing = opaque && finalizing;
-            if !opaque_finalizing
-                && (!finalizing
-                    || contenders[left].authored_priority.unwrap_or(0)
-                        != contenders[right].authored_priority.unwrap_or(0))
+            if !finalizing
+                || contenders[left].authored_priority.unwrap_or(0)
+                    != contenders[right].authored_priority.unwrap_or(0)
             {
                 continue;
             }
@@ -1999,21 +1941,11 @@ fn pattern_ambiguities(
             ambiguities.push(PatternAmbiguity {
                 indices: vec![left, right],
                 witness,
-                requires_disjoint_patterns: opaque_finalizing,
             });
         }
     }
     ambiguities.sort_by(|left, right| {
-        (
-            &left.indices,
-            &left.witness,
-            left.requires_disjoint_patterns,
-        )
-            .cmp(&(
-                &right.indices,
-                &right.witness,
-                right.requires_disjoint_patterns,
-            ))
+        (&left.indices, &left.witness).cmp(&(&right.indices, &right.witness))
     });
     ambiguities
 }
@@ -2128,8 +2060,7 @@ impl CarrierProver {
             .enumerate()
             .map(|(group, definition)| CarrierCandidate::Emitting {
                 group,
-                opaque: definition.identity.callback.is_some()
-                    || definition.identity.closed_matcher.is_some(),
+                starter_not_final: definition.identity.closed_matcher.is_some(),
                 priority: definition.identity.priority.unwrap_or(0),
             })
             .collect::<Vec<_>>();
@@ -2207,7 +2138,7 @@ impl CarrierProver {
                 match candidate {
                     CarrierCandidate::Emitting {
                         group,
-                        opaque: false,
+                        starter_not_final: false,
                         ..
                     } => {
                         if winning_group.is_some_and(|winner| winner != *group) {
@@ -2215,7 +2146,10 @@ impl CarrierProver {
                         }
                         winning_group = Some(*group);
                     }
-                    CarrierCandidate::Emitting { opaque: true, .. }
+                    CarrierCandidate::Emitting {
+                        starter_not_final: true,
+                        ..
+                    }
                     | CarrierCandidate::NonEmitting { .. } => return None,
                 }
             }
@@ -2310,7 +2244,6 @@ mod tests {
         super::TokenKindIdentity::ContentBase(super::ContentBaseIdentity {
             pattern: pattern.to_owned(),
             closed_matcher: None,
-            callback: None,
             priority: None,
         })
     }
@@ -2635,71 +2568,6 @@ struct Root {
             plan.rules
                 .iter()
                 .any(|rule| { rule.matcher == super::LexicalMatcher::Fixed("IF".to_owned()) })
-        );
-    }
-
-    #[test]
-    fn opaque_callback_silently_keeps_the_standalone_keyword_rule() {
-        let source = source_model(
-            r#"
-recursa::grammar! {
-    module = crate,
-    keyword_matching = ascii_insensitive,
-}
-
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z]+", callback = crate::scan_word)]
-    word: Word,
-}
-"#,
-        );
-
-        let report = plan_lexical(&source);
-
-        assert!(report.diagnostics.is_empty());
-        let plan = report.plan.unwrap();
-        assert_eq!(
-            plan.keywords[0].recognition,
-            super::KeywordRecognition::Standalone
-        );
-        assert!(
-            plan.rules
-                .iter()
-                .any(|rule| { rule.matcher == super::LexicalMatcher::Fixed("IF".to_owned()) })
-        );
-    }
-
-    #[test]
-    fn central_only_opaque_callback_participates_in_carrier_proof_without_a_target_view() {
-        let report = plan(
-            r#"
-recursa::grammar! {
-    module = crate,
-    keyword_matching = ascii_insensitive,
-}
-
-recursa::tokens! {
-    lexer_tokens {
-        OpaqueWord => r"[A-Za-z]+" with crate::scan_word,
-    }
-}
-
-#[derive(recursa::Node)]
-#[tok("IF")]
-struct Root;
-"#,
-        );
-
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let plan = report.plan.unwrap();
-        assert_eq!(plan.content_bases.len(), 1);
-        assert!(plan.content_bases[0].target_names.is_empty());
-        assert_eq!(plan.parser_targets.len(), 0);
-        assert_eq!(
-            plan.keywords[0].recognition,
-            super::KeywordRecognition::Standalone
         );
     }
 
@@ -3191,8 +3059,8 @@ recursa::grammar! { module = crate }
 
 recursa::tokens! {
     literals {
-        Broad => r"[A-Z]+" with crate::scan_broad,
-        Narrow => r"[A-F]+" with crate::scan_narrow,
+        Broad => r"[A-Z]+",
+        Narrow => r"[A-F]+",
     }
 }
 
@@ -3268,71 +3136,6 @@ struct Root;
                 ..
             }]
         ));
-    }
-
-    #[test]
-    fn legacy_callback_overlap_preserves_priority_selection_against_regular_patterns() {
-        let callback_wins_source = source_model(
-            r#"
-recursa::grammar! {
-    module = crate,
-    keyword_matching = ascii_insensitive,
-}
-
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z]+", priority = 1)]
-    safe: Safe,
-    #[lex(pattern = r"[A-Za-z]+", callback = crate::scan_word, priority = 2)]
-    callback: Callback,
-}
-"#,
-        );
-        let callback_wins = plan_lexical(&callback_wins_source);
-        assert!(callback_wins.diagnostics.is_empty());
-        assert_eq!(
-            callback_wins.plan.unwrap().keywords[0].recognition,
-            super::KeywordRecognition::Standalone,
-        );
-
-        let safe_wins_source = source_model(
-            r#"
-recursa::grammar! {
-    module = crate,
-    keyword_matching = ascii_insensitive,
-}
-
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z]+", priority = 1)]
-    safe: Safe,
-    #[lex(pattern = r"[A-Za-z]+", callback = crate::scan_word, priority = 0)]
-    callback: Callback,
-}
-"#,
-        );
-        let safe_wins = plan_lexical(&safe_wins_source);
-        assert!(safe_wins.diagnostics.is_empty());
-        let plan = safe_wins.plan.unwrap();
-        let super::KeywordRecognition::CombinedCarriers {
-            carrier,
-            additional_carriers,
-        } = &plan.keywords[0].recognition
-        else {
-            panic!("the higher-priority callback-free carrier should prove the keyword")
-        };
-        assert!(additional_carriers.is_empty());
-        assert_eq!(
-            plan.token_kinds[carrier.index()].identity,
-            super::TokenKindIdentity::ContentBase(super::ContentBaseIdentity {
-                pattern: r"[A-Za-z]+".to_owned(),
-                callback: None,
-                closed_matcher: None,
-                priority: Some(1),
-            }),
-        );
     }
 
     #[test]
@@ -3896,8 +3699,8 @@ recursa::grammar! { module = crate }
 
 recursa::tokens! {
     literals {
-        A => r"a" with crate::cb_a,
-        B => r"b" with crate::cb_b,
+        A => r"a",
+        B => r"b",
     }
 }
 
@@ -3916,8 +3719,8 @@ recursa::grammar! { module = crate }
 
 recursa::tokens! {
     literals {
-        B => r"b" with crate::cb_b,
-        A => r"a" with crate::cb_a,
+        B => r"b",
+        A => r"a",
     }
 }
 
@@ -3973,38 +3776,6 @@ struct Root {
             super::TokenKindIdentity::ContentBase(_)
         ));
         assert_eq!(first_identity, second_identity);
-    }
-
-    #[test]
-    fn inline_callback_and_priority_reach_the_lexical_plan_as_typed_facts() {
-        let source = source_model(
-            r#"
-recursa::grammar! { module = crate }
-
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(
-        pattern = r"[A-Za-z_]+",
-        callback = crate::scan_word,
-        priority = 17,
-    )]
-    value: Word,
-}
-"#,
-        );
-
-        let content = source
-            .source_model()
-            .token_definitions
-            .iter()
-            .find_map(|definition| match &definition.kind {
-                crate::source_model::TokenDefinitionKind::Content(content) => Some(content),
-                crate::source_model::TokenDefinitionKind::Fixed(_)
-                | crate::source_model::TokenDefinitionKind::LexicalBase(_) => None,
-            })
-            .unwrap();
-        assert_eq!(content.callback, Some(syn::parse_quote!(crate::scan_word)));
-        assert_eq!(content.priority, Some(17));
     }
 
     #[test]
@@ -4109,42 +3880,6 @@ struct Root;
                 class: super::FixedTokenClass::Keyword,
             }]
         );
-    }
-
-    #[test]
-    fn central_and_inline_callback_definitions_produce_equivalent_typed_source_facts() {
-        let source = source_model(
-            r#"
-recursa::grammar! { module = crate }
-
-recursa::tokens! {
-    literals {
-        Word => r"[A-Za-z_]+" with crate::scan_word,
-    }
-}
-
-#[derive(recursa::Node)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z_]+", callback = crate::scan_word)]
-    value: Word,
-}
-"#,
-        );
-        let definitions = source
-            .source_model()
-            .token_definitions
-            .iter()
-            .filter(|definition| definition.name == "Word")
-            .collect::<Vec<_>>();
-
-        assert_eq!(definitions.len(), 1);
-        assert_eq!(definitions[0].definition_sites.len(), 2);
-        let crate::source_model::TokenDefinitionKind::Content(content) = &definitions[0].kind
-        else {
-            panic!("Word must remain a content-token target")
-        };
-        assert_eq!(content.callback, Some(syn::parse_quote!(crate::scan_word)));
-        assert!(plan_lexical(&source).diagnostics.is_empty());
     }
 
     #[test]

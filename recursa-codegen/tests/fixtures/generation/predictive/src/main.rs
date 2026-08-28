@@ -52,7 +52,7 @@ fn main() {
     assert_eq!(error.span(), recursa::Span::new(14, 22).unwrap());
     assert_eq!(
         error.found(),
-        Some("content:\"[a-zA-Z_][a-zA-Z0-9_]*\":callback=-:priority=None")
+        Some("content:\"[a-zA-Z_][a-zA-Z0-9_]*\":priority=None")
     );
     assert_eq!(input.cursor(), 0, "failed nullable dispatch is transactional");
 
@@ -65,7 +65,7 @@ fn main() {
     assert_eq!(error.span(), recursa::Span::new(7, 14).unwrap());
     assert_eq!(
         error.found(),
-        Some("content:\"[a-zA-Z_][a-zA-Z0-9_]*\":callback=-:priority=None")
+        Some("content:\"[a-zA-Z_][a-zA-Z0-9_]*\":priority=None")
     );
     assert_eq!(
         error.expected().collect::<Vec<_>>(),

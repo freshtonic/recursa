@@ -8,8 +8,8 @@
 //!
 //! Resolution models the supported Rust module, import, re-export, alias, and
 //! visibility rules from the selected-root anchor. It traces only references
-//! that change grammar meaning; callback, derive, and hook paths remain opaque
-//! Rust fragments for faithful generation.
+//! that change grammar meaning; derive paths remain opaque Rust fragments for
+//! faithful generation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;

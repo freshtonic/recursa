@@ -146,7 +146,7 @@ Implement one versioned logical generated root in uncommitted `OUT_DIR`:
   declaration-local keyed loader. Preserve private nested types and sibling
   duplicate names with fully qualified build-local keys.
 - Emit the deterministic registry, token machinery (`TokenKind`, `lex()`,
-  `post_lex`, literals/targets, keyword merge), `GrammarInfo`, field-aware
+  closed matchers, literals/targets, keyword merge), `GrammarInfo`, field-aware
   `Parse` bodies, dispatchers, configured trait plans, Pretty defaults,
   diagrams, and explicit public exports.
 - Keep filenames, internal shards, hidden names, numeric indices, and the
@@ -207,7 +207,7 @@ runtime parse errors** (same subjective-bar check-in as M5).
 - Restructure `ast/**` + `tokens.rs` under one selected grammar root, add
   `Node` membership, and add the explicit build generation entry;
   `soft_keywords` → categories/flags/targets; the five hand-written
-  `Parse` impls → `targets` entries; `pg_lex` → `post_lex` hook.
+  `Parse` impls → named admissions; `pg_lex` → closed matcher declarations.
 - Delete `src/generated/`, the `__firstset` prelude, xtask codegen
   targets, and the CI drift gate.
 - The port lands **on** M6: recovering entry points wired, depth guard
