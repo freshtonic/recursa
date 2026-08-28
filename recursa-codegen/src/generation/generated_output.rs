@@ -553,17 +553,19 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         /// Stable mechanism-specific classification of a lexical failure.
         ///
         /// This grammar-local type deliberately repeats the matching-version core protocol rather
-        /// than exposing the private core enum as part of a generated grammar's public API.
+        /// than exposing the private core enum as part of a generated grammar's public API. Future
+        /// lexical mechanisms may add classifications without making downstream matches exhaustive.
+        #[non_exhaustive]
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub enum LexErrorCode {
             /// No lexical rule accepted the current source scalar.
             Unrecognized,
+            /// A generated matcher violated a checked internal invariant.
+            MatcherInvariant,
             /// A same-delimiter region reached EOF without its matching closer.
             UnterminatedSameDelimiter,
             /// A nested region reached EOF with nonzero nesting depth.
             UnterminatedNested,
-            /// Nested depth exceeded its checked internal representation.
-            NestedDepthOverflow,
             /// A token candidate was immediately followed by an excluded scalar.
             ExcludedFollowingCharacter,
         }
@@ -573,9 +575,9 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             pub const fn as_str(self) -> &'static str {
                 match self {
                     Self::Unrecognized => "RCA4000",
+                    Self::MatcherInvariant => "RCA4000",
                     Self::UnterminatedSameDelimiter => "RCA4001",
                     Self::UnterminatedNested => "RCA4002",
-                    Self::NestedDepthOverflow => "RCA4003",
                     Self::ExcludedFollowingCharacter => "RCA4004",
                 }
             }
@@ -619,11 +621,11 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                     Some(#facade::__private::LexDiagnosticCode::UnterminatedNested) => {
                         LexErrorCode::UnterminatedNested
                     }
-                    Some(#facade::__private::LexDiagnosticCode::NestedDepthOverflow) => {
-                        LexErrorCode::NestedDepthOverflow
-                    }
                     Some(#facade::__private::LexDiagnosticCode::ExcludedFollowingCharacter) => {
                         LexErrorCode::ExcludedFollowingCharacter
+                    }
+                    Some(#facade::__private::LexDiagnosticCode::MatcherInvariant) => {
+                        LexErrorCode::MatcherInvariant
                     }
                     Some(#facade::__private::LexDiagnosticCode::Unrecognized) | None => {
                         LexErrorCode::Unrecognized

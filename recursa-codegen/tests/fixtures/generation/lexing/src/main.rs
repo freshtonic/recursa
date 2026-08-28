@@ -3,6 +3,16 @@ use recursa_generated_lexing::grammar;
 
 fn assert_token_kind_value<T: Copy + Eq + std::hash::Hash + std::fmt::Debug>() {}
 
+fn downstream_error_code(code: grammar::LexErrorCode) -> &'static str {
+    match code {
+        grammar::LexErrorCode::Unrecognized | grammar::LexErrorCode::MatcherInvariant => "RCA4000",
+        grammar::LexErrorCode::UnterminatedSameDelimiter => "RCA4001",
+        grammar::LexErrorCode::UnterminatedNested => "RCA4002",
+        grammar::LexErrorCode::ExcludedFollowingCharacter => "RCA4004",
+        _ => "future lexical error",
+    }
+}
+
 fn main() {
     assert_token_kind_value::<grammar::TokenKind>();
 
@@ -29,11 +39,8 @@ fn main() {
     assert_eq!(errors[0].span(), recursa::Span::new(13, 14).unwrap());
     assert_eq!(errors[0].text(), "@");
     assert_eq!(errors[0].code(), "RCA4000");
+    assert_eq!(downstream_error_code(errors[0].diagnostic_code()), "RCA4000");
     assert_eq!(errors[0].anchor(), recursa::Span::new(13, 14).unwrap());
-    assert_eq!(
-        grammar::LexErrorCode::NestedDepthOverflow.as_str(),
-        "RCA4003"
-    );
 
     let alternative_source = String::from("sElEcT");
     grammar::reset_post_lex_calls();
@@ -445,5 +452,5 @@ fn main() {
         assert!(input.is_eof());
     }
 
-    println!("lexing-ok RCA4000 RCA4001 RCA4002 RCA4003 RCA4004");
+    println!("lexing-ok RCA4000 RCA4001 RCA4002 RCA4004");
 }

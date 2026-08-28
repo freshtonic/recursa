@@ -19,7 +19,7 @@ fn a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
-        "lexing-ok RCA4000 RCA4001 RCA4002 RCA4003 RCA4004"
+        "lexing-ok RCA4000 RCA4001 RCA4002 RCA4004"
     );
 }
 

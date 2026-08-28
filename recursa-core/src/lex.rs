@@ -78,8 +78,8 @@ pub enum LexDiagnosticCode {
     UnterminatedSameDelimiter,
     /// A nested region reached end of input with nonzero depth.
     UnterminatedNested,
-    /// Nested depth exceeded its checked integer representation.
-    NestedDepthOverflow,
+    /// A checked matcher invariant failed before a supported lexical result could be formed.
+    MatcherInvariant,
     /// A token candidate was followed immediately by an excluded scalar.
     ExcludedFollowingCharacter,
 }
@@ -89,9 +89,9 @@ impl LexDiagnosticCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Unrecognized => "RCA4000",
+            Self::MatcherInvariant => "RCA4000",
             Self::UnterminatedSameDelimiter => "RCA4001",
             Self::UnterminatedNested => "RCA4002",
-            Self::NestedDepthOverflow => "RCA4003",
             Self::ExcludedFollowingCharacter => "RCA4004",
         }
     }
@@ -252,11 +252,11 @@ impl CompiledLexMatcher {
                         }
                     } else if suffix.starts_with(opener) {
                         cursor += opener.len();
-                        let Ok(incremented) = increment_nested_depth(depth) else {
+                        let Some(incremented) = increment_nested_depth(depth) else {
                             return Some(LexMatch {
                                 end: remaining.len(),
                                 diagnostic: Some(RelativeLexDiagnostic {
-                                    code: LexDiagnosticCode::NestedDepthOverflow,
+                                    code: LexDiagnosticCode::MatcherInvariant,
                                     anchor_start: 0,
                                     anchor_end: opener.len(),
                                 }),
@@ -363,11 +363,9 @@ impl CompiledLexMatcher {
     }
 }
 
-/// Advances the source-domain nesting counter or reports its stable overflow mechanism.
-fn increment_nested_depth(depth: u32) -> Result<u32, LexDiagnosticCode> {
-    depth
-        .checked_add(1)
-        .ok_or(LexDiagnosticCode::NestedDepthOverflow)
+/// Advances the source-domain nesting counter without allowing an impossible wraparound.
+fn increment_nested_depth(depth: u32) -> Option<u32> {
+    depth.checked_add(1)
 }
 
 /// Backend-independent state exposed to one generated lexer-callback shim.
@@ -548,19 +546,4 @@ pub fn lex<'input>(
         offset = end;
     }
     LexResult::new(source, records)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{LexDiagnosticCode, increment_nested_depth};
-
-    #[test]
-    fn checked_nested_depth_transition_produces_rca4003_at_the_span_domain_bound() {
-        // A public generated fixture cannot allocate enough source to cross this u32 bound
-        // before Span rejects its source size, so this test owns only the checked invariant.
-        let failure = increment_nested_depth(u32::MAX)
-            .expect_err("the source-domain nesting counter must not wrap");
-        assert_eq!(failure, LexDiagnosticCode::NestedDepthOverflow);
-        assert_eq!(failure.as_str(), "RCA4003");
-    }
 }
