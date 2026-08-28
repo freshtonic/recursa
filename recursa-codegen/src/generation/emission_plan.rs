@@ -611,8 +611,8 @@ impl EmissionPlan {
         };
 
         let mut canonical = format!(
-            "{EMITTER_IDENTITY};release={};protocol={PRIVATE_PROTOCOL};facade={facade};anchor={};kinds={kind_count};edition={:?};cfg={:?};",
-            env!("CARGO_PKG_VERSION"),
+            "{};facade={facade};anchor={};kinds={kind_count};edition={:?};cfg={:?};",
+            generation_protocol_identity(),
             resolved.build_inputs.module_anchor.segments.join("::"),
             resolved.build_inputs.discovery.edition,
             resolved.build_inputs.discovery.cfg_snapshot,
