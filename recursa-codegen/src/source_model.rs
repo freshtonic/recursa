@@ -819,7 +819,10 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
     let trait_planner = TraitPlanner::from_grammar(&input.resolved, &mut diagnostics);
     let mut tokens = TokenCatalog::default();
     tokens.collect_fixed_definitions(&input.resolved, input.cfg, &mut diagnostics);
-    tokens.compile_named_admissions(&mut diagnostics);
+    tokens.compile_named_admissions(
+        input.resolved.configuration.syntax.text_equivalence,
+        &mut diagnostics,
+    );
     if tokens.post_lex_sites.len() > 1 {
         diagnostics.push(SourceModelDiagnostic {
             kind: SourceModelDiagnosticKind::MultiplePostLexHooks,
@@ -931,6 +934,18 @@ fn is_word_shaped(spelling: &str) -> bool {
         .next()
         .is_some_and(unicode_ident::is_xid_start)
         && spelling.chars().all(unicode_ident::is_xid_continue)
+}
+
+/// Canonicalizes a fixed spelling under the grammar's token-kind equivalence policy.
+pub(crate) fn canonical_fixed_spelling(
+    spelling: &str,
+    equivalence: crate::TextEquivalence,
+) -> String {
+    if is_word_shaped(spelling) && equivalence == crate::TextEquivalence::AsciiInsensitive {
+        spelling.to_ascii_uppercase()
+    } else {
+        spelling.to_owned()
+    }
 }
 
 /// Derives the fixed lexical pattern from the retained source model and its correlations.
@@ -3138,6 +3153,8 @@ struct AdmissionCompiler<'catalog, 'diagnostics> {
     definitions: &'catalog [TokenDefinition],
     /// Resolves explicit fixed-token names.
     fixed_by_name: &'catalog BTreeMap<String, TokenDefinitionId>,
+    /// Maps equivalent fixed definitions to the representative used by canonical admission sets.
+    canonical_fixed_ids: &'catalog BTreeMap<TokenDefinitionId, TokenDefinitionId>,
     /// Supplies canonical category membership derived from keyword metadata.
     category_members: &'catalog BTreeMap<String, BTreeSet<TokenDefinitionId>>,
     /// Supplies canonical flag membership derived from keyword metadata.
@@ -3175,6 +3192,7 @@ impl<'catalog, 'diagnostics> AdmissionCompiler<'catalog, 'diagnostics> {
     fn new(
         definitions: &'catalog [TokenDefinition],
         fixed_by_name: &'catalog BTreeMap<String, TokenDefinitionId>,
+        canonical_fixed_ids: &'catalog BTreeMap<TokenDefinitionId, TokenDefinitionId>,
         category_members: &'catalog BTreeMap<String, BTreeSet<TokenDefinitionId>>,
         flag_members: &'catalog BTreeMap<String, BTreeSet<TokenDefinitionId>>,
         declarations: Vec<PendingAdmissionDefinition>,
@@ -3202,6 +3220,7 @@ impl<'catalog, 'diagnostics> AdmissionCompiler<'catalog, 'diagnostics> {
         Self {
             definitions,
             fixed_by_name,
+            canonical_fixed_ids,
             category_members,
             flag_members,
             declarations,
@@ -3329,13 +3348,13 @@ impl<'catalog, 'diagnostics> AdmissionCompiler<'catalog, 'diagnostics> {
             return Some(
                 self.definitions
                     .iter()
-                    .filter_map(|definition| {
+                    .filter(|definition| {
                         matches!(
                             &definition.kind,
                             TokenDefinitionKind::Fixed(fixed) if is_word_shaped(&fixed.spelling)
                         )
-                        .then_some(definition.id)
                     })
+                    .map(|definition| self.canonical_fixed_ids[&definition.id])
                     .collect(),
             );
         }
@@ -3381,7 +3400,7 @@ impl<'catalog, 'diagnostics> AdmissionCompiler<'catalog, 'diagnostics> {
         let TokenDefinitionKind::Fixed(fixed) = &self.definitions[definition.index()].kind else {
             return None;
         };
-        is_word_shaped(&fixed.spelling).then_some(definition)
+        is_word_shaped(&fixed.spelling).then(|| self.canonical_fixed_ids[&definition])
     }
 
     /// Emits one cycle finding with all declarations participating in the active loop.
@@ -3426,12 +3445,19 @@ impl<'catalog, 'diagnostics> AdmissionCompiler<'catalog, 'diagnostics> {
 
 impl TokenCatalog {
     /// Validates keyword metadata and compiles named admission expressions to canonical sets.
-    fn compile_named_admissions(&mut self, diagnostics: &mut Vec<SourceModelDiagnostic>) {
-        let (category_members, flag_members) = self.keyword_metadata_sets(diagnostics);
+    fn compile_named_admissions(
+        &mut self,
+        equivalence: crate::TextEquivalence,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) {
+        let canonical_fixed_ids = self.canonical_fixed_ids(equivalence);
+        let (category_members, flag_members) =
+            self.keyword_metadata_sets(&canonical_fixed_ids, diagnostics);
         let pending = std::mem::take(&mut self.pending_admissions);
         let mut compiler = AdmissionCompiler::new(
             &self.definitions,
             &self.fixed_by_name,
+            &canonical_fixed_ids,
             &category_members,
             &flag_members,
             pending,
@@ -3440,9 +3466,47 @@ impl TokenCatalog {
         self.named_admissions = compiler.compile();
     }
 
-    /// Validates each keyword's one-category and zero-or-more-flags contract.
+    /// Selects one deterministic source-model definition for each emitted fixed-token kind.
+    fn canonical_fixed_ids(
+        &self,
+        equivalence: crate::TextEquivalence,
+    ) -> BTreeMap<TokenDefinitionId, TokenDefinitionId> {
+        let mut groups = BTreeMap::<String, Vec<&TokenDefinition>>::new();
+        for definition in &self.definitions {
+            let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+                continue;
+            };
+            groups
+                .entry(canonical_fixed_spelling(&fixed.spelling, equivalence))
+                .or_default()
+                .push(definition);
+        }
+
+        let mut canonical = BTreeMap::new();
+        for definitions in groups.values() {
+            let representative = definitions
+                .iter()
+                .min_by_key(|definition| (&definition.name, definition.id))
+                .expect("a fixed-spelling group is nonempty")
+                .id;
+            canonical.extend(
+                definitions
+                    .iter()
+                    .map(|definition| (definition.id, representative)),
+            );
+        }
+        canonical
+    }
+
+    /// Validates keyword metadata and materializes its category and flag indexes.
+    ///
+    /// Validation and materialization remain one phase so an invalid definition never contributes
+    /// partial membership to a named admission. The phase first rejects category/flag namespace
+    /// collisions and creates empty indexes, then validates and normalizes every metadata-bearing
+    /// fixed token before inserting its category and flag membership.
     fn keyword_metadata_sets(
         &self,
+        canonical_fixed_ids: &BTreeMap<TokenDefinitionId, TokenDefinitionId>,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) -> (
         BTreeMap<String, BTreeSet<TokenDefinitionId>>,
@@ -3473,29 +3537,48 @@ impl TokenCatalog {
             .map(|name| (name, BTreeSet::new()))
             .collect::<BTreeMap<_, _>>();
 
+        let mut canonical_definitions = BTreeMap::<TokenDefinitionId, Vec<&TokenDefinition>>::new();
         for definition in &self.definitions {
-            let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+            let Some(canonical) = canonical_fixed_ids.get(&definition.id).copied() else {
                 continue;
             };
-            if fixed.keyword_metadata.is_empty()
-                || fixed
-                    .keyword_metadata
-                    .iter()
-                    .all(|metadata| metadata.category.is_none() && metadata.flags.is_empty())
-            {
+            canonical_definitions
+                .entry(canonical)
+                .or_default()
+                .push(definition);
+        }
+
+        for (canonical, definitions) in canonical_definitions {
+            let metadata = definitions
+                .iter()
+                .filter_map(|definition| match &definition.kind {
+                    TokenDefinitionKind::Fixed(fixed) => Some(&fixed.keyword_metadata),
+                    TokenDefinitionKind::Content(_) | TokenDefinitionKind::LexicalBase(_) => None,
+                })
+                .flatten()
+                .filter(|metadata| metadata.category.is_some() || !metadata.flags.is_empty())
+                .collect::<Vec<_>>();
+            if metadata.is_empty() {
                 continue;
             }
+            let mut names = definitions
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect::<Vec<_>>();
+            names.sort_unstable();
+            names.dedup();
+            let display_name = names.join("/");
 
             let mut normalized = Vec::new();
             let mut valid = true;
-            for metadata in &fixed.keyword_metadata {
+            for metadata in &metadata {
                 if metadata.authored_class != AuthoredFixedTokenClass::Keyword {
                     diagnostics.push(SourceModelDiagnostic {
                         kind: SourceModelDiagnosticKind::InvalidKeywordCategory,
                         sites: vec![metadata.site.clone()],
                         message: format!(
                             "punctuation `{}` cannot carry keyword category or flag metadata",
-                            definition.name
+                            display_name
                         ),
                     });
                     valid = false;
@@ -3507,7 +3590,7 @@ impl TokenCatalog {
                         sites: vec![metadata.site.clone()],
                         message: format!(
                             "keyword `{}` metadata requires exactly one category",
-                            definition.name
+                            display_name
                         ),
                     });
                     valid = false;
@@ -3519,7 +3602,7 @@ impl TokenCatalog {
                         sites: vec![category.site.clone()],
                         message: format!(
                             "keyword `{}` uses unknown category `{}`",
-                            definition.name, category.name
+                            display_name, category.name
                         ),
                     });
                     valid = false;
@@ -3532,7 +3615,7 @@ impl TokenCatalog {
                             sites: vec![flag.site.clone()],
                             message: format!(
                                 "keyword `{}` uses unknown flag `{}`",
-                                definition.name, flag.name
+                                display_name, flag.name
                             ),
                         });
                         valid = false;
@@ -3543,7 +3626,7 @@ impl TokenCatalog {
                             sites: vec![flag.site.clone()],
                             message: format!(
                                 "keyword `{}` repeats flag `{}`",
-                                definition.name, flag.name
+                                display_name, flag.name
                             ),
                         });
                         valid = false;
@@ -3559,14 +3642,13 @@ impl TokenCatalog {
             if normalized.len() > 1 {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::ContradictoryAdmissionMetadata,
-                    sites: fixed
-                        .keyword_metadata
+                    sites: metadata
                         .iter()
                         .map(|metadata| metadata.site.clone())
                         .collect(),
                     message: format!(
                         "keyword `{}` has contradictory category or flag metadata",
-                        definition.name
+                        display_name
                     ),
                 });
                 valid = false;
@@ -3580,12 +3662,12 @@ impl TokenCatalog {
             category_members
                 .get_mut(&category)
                 .expect("validated category exists")
-                .insert(definition.id);
+                .insert(canonical);
             for flag in flags {
                 flag_members
                     .get_mut(&flag)
                     .expect("validated flag exists")
-                    .insert(definition.id);
+                    .insert(canonical);
             }
         }
         (category_members, flag_members)
@@ -6683,6 +6765,119 @@ struct Root {
             .severity,
             crate::Severity::Warning,
         );
+    }
+
+    #[test]
+    fn ascii_equivalent_admission_membership_uses_canonical_token_kinds() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
+recursa::tokens! {
+    categories { NAME }
+    keywords {
+        LOWER => "word" in NAME,
+        UPPER => "WORD" in NAME,
+    }
+    admissions {
+        Union = LOWER + UPPER,
+        Difference = LOWER - UPPER,
+    }
+}
+#[derive(recursa::Node)]
+struct Root {
+    #[lex(pattern = "word", admits(Union))]
+    union: UnionName,
+    #[lex(pattern = "word", admits(Difference))]
+    difference: DifferenceName,
+}
+"#,
+        );
+
+        assert!(report.source_modeled.is_some(), "{:?}", report.diagnostics);
+        assert_eq!(
+            report
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.kind == SourceModelDiagnosticKind::DuplicateAdmissionMembership
+                })
+                .count(),
+            1,
+        );
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::IneffectiveAdmissionSubtraction
+        }));
+        let model = completed(report);
+        let membership = model
+            .token_definitions
+            .iter()
+            .filter_map(|definition| match &definition.kind {
+                TokenDefinitionKind::Content(content) => {
+                    Some((definition.name.as_str(), content.admission_set.len()))
+                }
+                TokenDefinitionKind::Fixed(_) | TokenDefinitionKind::LexicalBase(_) => None,
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(membership["UnionName"], 1);
+        assert_eq!(membership["DifferenceName"], 0);
+    }
+
+    #[test]
+    fn ascii_equivalent_keywords_reject_contradictory_categories() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, keyword_matching = ascii_insensitive }
+recursa::tokens! {
+    categories { FIRST, SECOND }
+    keywords {
+        LOWER => "word" in FIRST,
+        UPPER => "WORD" in SECOND,
+    }
+}
+#[derive(recursa::Node)] struct Root;
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::ContradictoryAdmissionMetadata,
+            "RCA3123",
+        );
+    }
+
+    #[test]
+    fn exact_admission_membership_keeps_ascii_case_distinct() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, keyword_matching = exact }
+recursa::tokens! {
+    categories { NAME }
+    keywords {
+        LOWER => "word" in NAME,
+        UPPER => "WORD" in NAME,
+    }
+    admissions { Both = LOWER + UPPER }
+}
+#[derive(recursa::Node)]
+struct Root {
+    #[lex(pattern = "word", admits(Both))]
+    name: Name,
+}
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let model = completed(report);
+        let membership = model
+            .token_definitions
+            .iter()
+            .find_map(|definition| match &definition.kind {
+                TokenDefinitionKind::Content(content) => Some(content.admission_set.len()),
+                TokenDefinitionKind::Fixed(_) | TokenDefinitionKind::LexicalBase(_) => None,
+            })
+            .unwrap();
+        assert_eq!(membership, 2);
     }
 
     #[test]

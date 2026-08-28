@@ -20,6 +20,7 @@ use regex_automata::{Anchored, Input, MatchKind};
 
 use crate::source_model::{
     AuthoredFixedTokenClass, SourceModel, SourceModeledGrammar, SourceSite, TokenDefinitionKind,
+    canonical_fixed_spelling,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1852,15 +1853,6 @@ fn source_site_key(
     site: &SourceSite,
 ) -> crate::source_model::SourceOrderKey {
     source.source_order_key(site)
-}
-
-/// Renders fixed spelling in canonical order.
-fn canonical_fixed_spelling(spelling: &str, equivalence: TextEquivalence) -> String {
-    if is_word_shaped(spelling) && equivalence == TextEquivalence::AsciiInsensitive {
-        spelling.to_ascii_uppercase()
-    } else {
-        spelling.to_owned()
-    }
 }
 
 impl CarrierProver {

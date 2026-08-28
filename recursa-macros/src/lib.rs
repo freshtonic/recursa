@@ -243,11 +243,17 @@ fn valid_node_file(name: &str) -> bool {
     })
 }
 
-/// Structural placeholder for token declarations consumed by the analyzer.
+/// Declares the grammar's tokens for build-time analysis and generation.
 ///
-/// The analyzer owns keyword category and flag metadata, named admission
-/// expressions, lexical definitions, and validation; this macro intentionally
-/// emits no runtime declarations itself.
+/// The declaration may define keyword categories and orthogonal flags, attach one category and
+/// zero or more flags to each metadata-bearing keyword, and compose named admission sets from
+/// those names with `+` and `-`. A lexical target selects a named set with
+/// `#[lex(..., admits(Name))]`; its generated type then accepts exactly that canonical fixed-token
+/// membership in addition to its content kind. Legacy fixed-token names remain valid inside
+/// `admits(...)` while consumers migrate.
+///
+/// The analyzer validates the declaration and owns all generated bindings. This procedural macro
+/// intentionally emits no runtime items itself.
 #[proc_macro]
 pub fn tokens(_input: TokenStream) -> TokenStream {
     TokenStream::new()

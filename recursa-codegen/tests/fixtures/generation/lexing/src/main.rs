@@ -204,6 +204,33 @@ fn main() {
         assert!(input.is_eof());
     }
 
+    for (source, admitted) in [("rows", true), ("null", false)] {
+        let lexed = grammar::lex(source);
+        let mut input = lexed.input();
+        let parsed = grammar::VariableOrNull::parse(&mut input)
+            .expect("all-word subtraction participates in generated dispatch");
+        assert_eq!(
+            matches!(
+                parsed.root().value(),
+                grammar::VariableOrNull::Variable(_)
+            ),
+            admitted
+        );
+        assert!(input.is_eof());
+    }
+
+    for (source, admitted) in [("window", true), ("other", false)] {
+        let lexed = grammar::lex(source);
+        let mut input = lexed.input();
+        let parsed = grammar::BareOrOther::parse(&mut input)
+            .expect("flag-derived membership participates in generated dispatch");
+        assert_eq!(
+            matches!(parsed.root().value(), grammar::BareOrOther::Bare(_)),
+            admitted
+        );
+        assert!(input.is_eof());
+    }
+
     for (source, window) in [
         ("select null true false window", true),
         ("select null true false other", false),
