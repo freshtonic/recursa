@@ -334,6 +334,194 @@ fn apply_generated_lint_boundary(
     }
     Ok(rendered)
 }
+
+/// Generated root fragments that exist only when a grammar retains classified trivia.
+struct TriviaRootFragments {
+    /// Initial sidecar state for the alternative-lexer builder.
+    state_initial: proc_macro2::TokenStream,
+    /// Alternative-lexer method that appends one classified trivia record.
+    builder_append_method: Option<proc_macro2::TokenStream>,
+    /// Public grammar-local trivia kinds and immutable gap views.
+    public_api: Option<proc_macro2::TokenStream>,
+    /// Lex-result method exposing the retained source gaps.
+    lex_result_method: Option<proc_macro2::TokenStream>,
+    /// Public trivia names re-exported from the private lexical module.
+    public_exports: Option<proc_macro2::TokenStream>,
+}
+
+/// Renders the complete opt-in trivia surface as one cohesive root-generation phase.
+fn render_trivia_root_fragments(plan: &EmissionPlan, facade: &syn::Ident) -> TriviaRootFragments {
+    let retained_trivia = !plan.trivia_kinds.is_empty();
+    let trivia_kind_variants = &plan.trivia_kinds;
+    let trivia_kind_match_arms = trivia_kind_variants
+        .iter()
+        .enumerate()
+        .map(|(index, variant)| {
+            let index = index as u16;
+            quote!(#index => TriviaKind::#variant,)
+        });
+    let state_initial = if retained_trivia {
+        quote!(Some(Vec::new()))
+    } else {
+        quote!(None)
+    };
+    let builder_append_method = retained_trivia.then(|| {
+        quote! {
+            /// Appends one explicitly classified trivia range without rescanning source gaps.
+            pub fn append_trivia(
+                &mut self,
+                kind: TriviaKind,
+                span: #facade::Span,
+            ) -> Result<&mut Self, LexBuildError> {
+                self.validate_next(span)?;
+                self.trivia
+                    .as_mut()
+                    .expect("this generated grammar retains trivia")
+                    .push(#facade::__private::TriviaRecord {
+                        kind: __recursa_raw_trivia_kind(kind),
+                        span,
+                    });
+                self.previous = Some(span);
+                Ok(self)
+            }
+        }
+    });
+    let public_api = retained_trivia.then(|| {
+        quote! {
+            /// One grammar-local classified trivia kind.
+            #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+            pub enum TriviaKind {
+                #(#trivia_kind_variants,)*
+            }
+
+            fn __recursa_raw_trivia_kind(kind: TriviaKind) -> u16 {
+                match kind {
+                    #(TriviaKind::#trivia_kind_variants => {
+                        TriviaKind::#trivia_kind_variants as u16
+                    },)*
+                }
+            }
+
+            fn __recursa_typed_trivia_kind(kind: u16) -> TriviaKind {
+                match kind {
+                    #(#trivia_kind_match_arms)*
+                    _ => unreachable!("generated trivia records use a planned kind"),
+                }
+            }
+
+            /// Immutable beginning, inter-record, and end source gaps.
+            pub struct TriviaGaps<'view> {
+                pub(crate) inner: #facade::__private::SourceGaps<'view>,
+            }
+
+            impl<'view> Iterator for TriviaGaps<'view> {
+                type Item = TriviaGap<'view>;
+
+                fn next(&mut self) -> Option<Self::Item> {
+                    self.inner.next().map(|inner| TriviaGap { inner })
+                }
+
+                fn size_hint(&self) -> (usize, Option<usize>) {
+                    self.inner.size_hint()
+                }
+            }
+
+            impl ExactSizeIterator for TriviaGaps<'_> {}
+            impl ::core::iter::FusedIterator for TriviaGaps<'_> {}
+
+            /// One exact source gap with its ordered classified trivia.
+            #[derive(Clone, Copy)]
+            pub struct TriviaGap<'view> {
+                inner: #facade::__private::SourceGap<'view>,
+            }
+
+            impl<'view> TriviaGap<'view> {
+                /// Returns the checked exact gap extent.
+                pub fn span(self) -> #facade::Span {
+                    self.inner.span()
+                }
+
+                /// Returns the exact gap source text, including explicitly unrecorded bytes.
+                pub fn text(self) -> &'view str {
+                    self.inner.text()
+                }
+
+                /// Iterates explicitly classified trivia in source order.
+                pub fn trivia(self) -> Trivia<'view> {
+                    Trivia { inner: self.inner.trivia() }
+                }
+            }
+
+            /// Exact-size iterator over classified trivia in one gap.
+            pub struct Trivia<'view> {
+                inner: #facade::__private::TriviaRecords<'view>,
+            }
+
+            impl<'view> Iterator for Trivia<'view> {
+                type Item = TriviaRecord<'view>;
+
+                fn next(&mut self) -> Option<Self::Item> {
+                    self.inner.next().map(|inner| TriviaRecord { inner })
+                }
+
+                fn size_hint(&self) -> (usize, Option<usize>) {
+                    self.inner.size_hint()
+                }
+            }
+
+            impl ExactSizeIterator for Trivia<'_> {}
+            impl ::core::iter::FusedIterator for Trivia<'_> {}
+
+            /// One immutable classified trivia occurrence.
+            #[derive(Clone, Copy)]
+            pub struct TriviaRecord<'view> {
+                inner: #facade::__private::TriviaRecordView<'view>,
+            }
+
+            impl<'view> TriviaRecord<'view> {
+                /// Returns the generated grammar-local classification.
+                pub fn kind(self) -> TriviaKind {
+                    __recursa_typed_trivia_kind(self.inner.raw_kind())
+                }
+
+                /// Returns the checked exact trivia extent.
+                pub fn span(self) -> #facade::Span {
+                    self.inner.span()
+                }
+
+                /// Returns exact matched trivia text.
+                pub fn text(self) -> &'view str {
+                    self.inner.text()
+                }
+            }
+        }
+    });
+    let lex_result_method = retained_trivia.then(|| {
+        quote! {
+            /// Iterates immutable beginning, inter-record, and end source gaps.
+            pub fn trivia_gaps(&self) -> TriviaGaps<'_> {
+                TriviaGaps {
+                    inner: #facade::__private::lex_source_gaps(&self.inner)
+                        .expect("this generated grammar retains trivia"),
+                }
+            }
+        }
+    });
+    let public_exports = retained_trivia.then(|| {
+        quote! {
+            Trivia, TriviaGap, TriviaGaps, TriviaKind, TriviaRecord,
+        }
+    });
+
+    TriviaRootFragments {
+        state_initial,
+        builder_append_method,
+        public_api,
+        lex_result_method,
+        public_exports,
+    }
+}
+
 /// Renders the structural root, preserving protocol sections and exports in their planned order.
 ///
 /// # Long-function contract
@@ -440,6 +628,13 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         });
     let kinds = plan.lexical_rules.iter().map(|rule| rule.kind);
     let skips = plan.lexical_rules.iter().map(|rule| rule.skip);
+    let trivia_kinds = plan
+        .lexical_rules
+        .iter()
+        .map(|rule| match rule.trivia_kind {
+            Some(kind) => quote!(Some(#kind)),
+            None => quote!(None),
+        });
     let fixed = plan.lexical_rules.iter().map(|rule| rule.fixed);
     let priorities = plan.lexical_rules.iter().map(|rule| rule.priority);
     let empty_words = vec![0_u64; kind_count.div_ceil(64)];
@@ -456,6 +651,13 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         .map(|(index, token)| render_token(plan, token, index));
     let content_token_pretty_helper = render_content_token_pretty_helper(plan);
     let content_token_optional_trait_helpers = render_content_token_optional_trait_helpers(plan);
+    let TriviaRootFragments {
+        state_initial: trivia_state_initial,
+        builder_append_method: builder_append_trivia,
+        public_api: trivia_api,
+        lex_result_method: lex_result_trivia_gaps,
+        public_exports: trivia_exports,
+    } = render_trivia_root_fragments(plan, facade);
     let visit_events = render_visit_events(plan);
     let explorer_schema = plan
         .explorer
@@ -571,6 +773,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                         matcher: #matchers,
                         kind: #kinds,
                         skip: #skips,
+                        trivia_kind: #trivia_kinds,
                         fixed: #fixed,
                         priority: #priorities,
                     }
@@ -596,6 +799,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         fn __recursa_finalize<'input>(
             source: &'input str,
             mut records: Vec<#facade::__private::TokenRecord>,
+            trivia: Option<Vec<#facade::__private::TriviaRecord>>,
         ) -> #facade::__private::LexResult<'input> {
             for record in &mut records {
                 __recursa_classify(source, record);
@@ -612,8 +816,10 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                     record.diagnostic = None;
                 }
             }
-            #facade::__private::LexResult::new(source, records)
+            #facade::__private::LexResult::new(source, records, trivia)
         }
+
+        #trivia_api
 
         /// Read-only metadata for this generated grammar.
         pub struct GrammarInfo {
@@ -856,6 +1062,8 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         pub struct LexBuilder<'input> {
             source: &'input str,
             records: Vec<#facade::__private::TokenRecord>,
+            trivia: Option<Vec<#facade::__private::TriviaRecord>>,
+            previous: Option<#facade::Span>,
         }
 
         impl<'input> LexBuilder<'input> {
@@ -863,7 +1071,21 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 Self {
                     source,
                     records: Vec::new(),
+                    trivia: #trivia_state_initial,
+                    previous: None,
                 }
+            }
+
+            fn validate_next(&self, span: #facade::Span) -> Result<(), LexBuildError> {
+                if self.source.get(span.range()).is_none() {
+                    return Err(LexBuildError::InvalidSpan { span });
+                }
+                if let Some(previous) = self.previous {
+                    if span.start() < previous.end() {
+                        return Err(LexBuildError::OutOfOrder { previous, span });
+                    }
+                }
+                Ok(())
             }
 
             pub fn append(
@@ -871,25 +1093,21 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 kind: TokenKind,
                 span: #facade::Span,
             ) -> Result<&mut Self, LexBuildError> {
-                if self.source.get(span.range()).is_none() {
-                    return Err(LexBuildError::InvalidSpan { span });
-                }
-                if let Some(previous) = self.records.last().map(|record| record.span) {
-                    if span.start() < previous.end() {
-                        return Err(LexBuildError::OutOfOrder { previous, span });
-                    }
-                }
+                self.validate_next(span)?;
                 self.records.push(#facade::__private::TokenRecord {
                     kind: __recursa_raw_kind(kind),
                     span,
                     diagnostic: None,
                 });
+                self.previous = Some(span);
                 Ok(self)
             }
 
+            #builder_append_trivia
+
             pub fn finish(self) -> LexResult<'input> {
                 LexResult {
-                    inner: __recursa_finalize(self.source, self.records),
+                    inner: __recursa_finalize(self.source, self.records, self.trivia),
                 }
             }
         }
@@ -915,6 +1133,8 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 }
             }
 
+            #lex_result_trivia_gaps
+
             pub fn source(&self) -> &'input str {
                 #facade::__private::lex_source(&self.inner)
             }
@@ -939,14 +1159,15 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 #lexical_error_kind,
             );
             let records = #facade::__private::lex_records(&scanned).to_vec();
-            LexResult { inner: __recursa_finalize(source, records) }
+            let trivia = #facade::__private::lex_trivia(&scanned).map(<[_]>::to_vec);
+            LexResult { inner: __recursa_finalize(source, records, trivia) }
         }
 
         }
 
         pub use __recursa_lexical::{
             GrammarInfo, LexBuildError, LexBuilder, LexError, LexErrorCode, LexErrors, LexResult,
-            Token, Tokens, grammar_info, lex,
+            Token, Tokens, #trivia_exports grammar_info, lex,
         };
 
         #[doc(hidden)]
@@ -1025,6 +1246,17 @@ pub(super) fn render_node(
     let metadata = render_metadata(plan, node, node_index);
     let accessors = render_accessors(plan, node);
     let span_elements = render_span_elements(node, node_index);
+    let trivia_gaps = (!plan.trivia_kinds.is_empty()).then(|| {
+        quote! {
+            /// Iterates immutable source gaps retained by the complete parsed document.
+            pub fn trivia_gaps(self) -> #module_anchor::TriviaGaps<'view> {
+                #module_anchor::TriviaGaps {
+                    inner: self.cursor.source_gaps()
+                        .expect("this generated grammar retains trivia"),
+                }
+            }
+        }
+    });
     let parse_implementations = node
         .parse_applications
         .iter()
@@ -1099,6 +1331,8 @@ pub(super) fn render_node(
             pub fn span_elements(self) -> #facade::Elements<'view> {
                 #span_elements
             }
+
+            #trivia_gaps
 
             #accessors
         }

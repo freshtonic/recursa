@@ -22,7 +22,7 @@ mod span;
 mod visitor;
 
 pub(crate) use grammar::{ExpectedAtomId, FollowSet, GrammarInfo, TokenKind};
-pub(crate) use input::{Input, LexResult, TokenRecord};
+pub(crate) use input::Input;
 pub use output::{HasSpan, Vec1};
 pub use parse::{ParseError, ParseErrorKind};
 pub use parsed::{
@@ -59,7 +59,10 @@ pub mod __private {
         token_schema as explorer_token_schema, variant_schema as explorer_variant_schema,
     };
     pub use crate::grammar::{ExpectedAtomId, FollowSet, FollowSetError, GrammarInfo, TokenKind};
-    pub use crate::input::{Input, LexResult, TokenRecord};
+    pub use crate::input::{
+        Input, LexResult, SourceGap, SourceGaps, TokenRecord, TriviaRecord, TriviaRecordView,
+        TriviaRecords,
+    };
     pub use crate::lex::{LexDiagnostic, LexDiagnosticCode, LexMatcher, LexRule, lex};
     pub use crate::output::span_seal::Sealed as HasSpanSealed;
     pub use crate::parsed::{
@@ -122,7 +125,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        8,
+        9,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -163,6 +166,16 @@ pub mod __private {
     pub fn lex_records<'lexed>(lexed: &'lexed LexResult<'_>) -> &'lexed [TokenRecord] {
         lexed.records()
     }
+
+    /// Returns classified trivia records when the grammar opted into retention.
+    pub fn lex_trivia<'lexed>(lexed: &'lexed LexResult<'_>) -> Option<&'lexed [TriviaRecord]> {
+        lexed.trivia()
+    }
+
+    /// Returns immutable source gaps when the grammar opted into classified trivia.
+    pub fn lex_source_gaps<'lexed>(lexed: &'lexed LexResult<'_>) -> Option<SourceGaps<'lexed>> {
+        lexed.source_gaps()
+    }
 }
 
 #[cfg(test)]
@@ -183,7 +196,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            8,
+            9,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }
