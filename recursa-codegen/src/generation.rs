@@ -32,7 +32,7 @@ use crate::materialization::{
     ClosedType, MaterializedApplicationId, MaterializedElement, MaterializedFixedAttachment,
     MaterializedNodeApplication, MaterializedNodeBody, MaterializedPrattLed,
     MaterializedPrattLedPosition, MaterializedPrattNud, MaterializedPrattNudPosition,
-    MaterializedPrattVariant, MaterializedVariant,
+    MaterializedPrattVariant, MaterializedSemanticFieldProjection, MaterializedVariant,
 };
 use crate::resolution::{
     CatalogType, ContentTokenId, GenericParameterId, ResolvedFieldId, ResolvedFieldStyle,

@@ -60,6 +60,14 @@ _Avoid_: Fixed token, token wrapper
 A semantic unit node whose existence records that fixed syntax occurred, without retaining the token text itself.
 _Avoid_: Optional keyword token, token flag
 
+**Fixed-token presence**:
+An authored boolean field whose value records whether one atomic optional fixed-token sequence occurred. It is a semantic field projection, not a public marker node.
+_Avoid_: Presence node, optional keyword token
+
+**Erased optional fixed-token group**:
+A non-empty atomic fixed-token sequence accepted by positional syntax and retained only in provenance, not in the authored AST value.
+_Avoid_: Optional semantic field, public marker node
+
 **Token kind**:
 A grammar-local named classification of a lexical match. Generated APIs expose typed token kinds; numeric runtime identifiers are private implementation details.
 _Avoid_: Token ID, public discriminant
@@ -102,7 +110,7 @@ The private compatibility contract shared by one Recursa release's generator, st
 _Avoid_: Public ABI, generated-file format
 
 **Grammar element**:
-A source-ordered component of a Node or variant after positional token syntax is lowered: either one fixed-token use or one semantic field.
+A source-ordered component of a Node or variant after positional token syntax is lowered: one fixed-token use, one erased optional fixed-token group, or one semantic field. Fixed-token presence is a semantic field form.
 _Avoid_: Runtime repetition occurrence, separator occurrence
 
 **Token definition**:

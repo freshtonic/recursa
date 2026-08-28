@@ -135,7 +135,178 @@ fn visit_borrowed_record(source: &str) -> usize {
 
 fn main() {
     fn assert_arbitrary<T: for<'arbitrary> recursa::Arbitrary<'arbitrary>>() {}
+    fn assert_serde<T>()
+    where
+        T: recursa::__private::serde::Serialize,
+        T: for<'deserialize> recursa::__private::serde::Deserialize<'deserialize>,
+    {
+    }
+    fn assert_visit<T: recursa::Visit + recursa::VisitMut>() {}
     assert_arbitrary::<grammar::Record<'static>>();
+    assert_arbitrary::<grammar::RequiredThenPresence<'static>>();
+    assert_serde::<grammar::RequiredThenPresence<'static>>();
+    assert_visit::<grammar::RequiredThenPresence<'static>>();
+
+    let label = || grammar::Label {
+        text: grammar::LabelText::new("alpha"),
+    };
+    let synthetic_present = grammar::RequiredThenPresence {
+        concurrently: true,
+        label: label(),
+    };
+    assert_eq!(synthetic_present.render(), "INDEX CONCURRENTLY alpha");
+    let synthetic_present_rendered = synthetic_present.render();
+    let reparsed = parse_spanned!(
+        grammar::RequiredThenPresence<'_>,
+        synthetic_present_rendered.as_str()
+    );
+    assert!(reparsed.root().concurrently());
+    let synthetic_absent = grammar::RequiredThenPresence {
+        concurrently: false,
+        label: label(),
+    };
+    assert_eq!(synthetic_absent.render(), "INDEX alpha");
+    let synthetic_fillers = grammar::OptionalFillers { label: label() };
+    assert_eq!(synthetic_fillers.render(), "alpha");
+
+    let present = parse_spanned!(
+        grammar::RequiredThenPresence<'_>,
+        "index concurrently alpha"
+    );
+    assert!(present.root().value().concurrently);
+    assert!(present.root().concurrently());
+    assert_eq!(
+        present.root().span_elements().get(1).unwrap().span(),
+        Some(recursa::Span::new(6, 18).unwrap())
+    );
+    assert_eq!(present.render(), "index concurrently alpha");
+    let absent = parse_spanned!(grammar::RequiredThenPresence<'_>, "index alpha");
+    assert!(!absent.root().value().concurrently);
+    assert!(!absent.root().concurrently());
+    assert_eq!(absent.root().span_elements().get(1).unwrap().span(), None);
+    assert_eq!(absent.render(), "index alpha");
+
+    let wrapped = parse_spanned!(
+        grammar::WrappedPresence<'_>,
+        "create unlogged materialized view alpha"
+    );
+    assert!(wrapped.root().value().unlogged);
+    assert_eq!(wrapped.render(), "create unlogged materialized view alpha");
+    let wrapped_absent = parse_spanned!(
+        grammar::WrappedPresence<'_>,
+        "create materialized view alpha"
+    );
+    assert!(!wrapped_absent.root().value().unlogged);
+    assert_eq!(wrapped_absent.render(), "create materialized view alpha");
+
+    let suffixed = parse_spanned!(grammar::SuffixedPresence<'_>, "is not json alpha");
+    assert!(suffixed.root().value().not);
+    assert_eq!(suffixed.render(), "is not json alpha");
+    let suffixed_absent = parse_spanned!(grammar::SuffixedPresence<'_>, "is json alpha");
+    assert!(!suffixed_absent.root().value().not);
+    assert_eq!(suffixed_absent.render(), "is json alpha");
+
+    let atomic = parse_spanned!(grammar::AtomicPresence<'_>, "or replace alpha");
+    assert!(atomic.root().value().replace);
+    assert_eq!(atomic.render(), "or replace alpha");
+    let shared_prefix = parse_spanned!(grammar::AtomicPresence<'_>, "or alpha");
+    assert!(!shared_prefix.root().value().replace);
+    assert_eq!(shared_prefix.render(), "or alpha");
+
+    let punctuation = parse_spanned!(grammar::PunctuationPresence<'_>, "!alpha");
+    assert!(punctuation.root().value().bang);
+    assert_eq!(punctuation.render(), "!alpha");
+    let punctuation_absent = parse_spanned!(grammar::PunctuationPresence<'_>, "alpha");
+    assert!(!punctuation_absent.root().value().bang);
+    assert_eq!(punctuation_absent.render(), "alpha");
+
+    let enum_present = parse_spanned!(grammar::EnumPresence<'_>, "not alpha");
+    assert!(matches!(
+        enum_present.root().value(),
+        grammar::EnumPresence::Value { not: true, .. }
+    ));
+    assert_eq!(enum_present.render(), "not alpha");
+    let enum_absent = parse_spanned!(grammar::EnumPresence<'_>, "alpha");
+    assert!(matches!(
+        enum_absent.root().value(),
+        grammar::EnumPresence::Value { not: false, .. }
+    ));
+    assert_eq!(enum_absent.render(), "alpha");
+
+    let fillers = parse_spanned!(grammar::OptionalFillers<'_>, "record alpha pair");
+    assert_eq!(
+        fillers.root().optional_record_span(),
+        Some(recursa::Span::new(0, 6).unwrap())
+    );
+    assert_eq!(
+        fillers.root().optional_pair_span(),
+        Some(recursa::Span::new(13, 17).unwrap())
+    );
+    assert_eq!(fillers.render(), "record alpha pair");
+    let no_fillers = parse_spanned!(grammar::OptionalFillers<'_>, "alpha");
+    assert_eq!(no_fillers.root().optional_record_span(), None);
+    assert_eq!(no_fillers.root().optional_pair_span(), None);
+    assert_eq!(no_fillers.render(), "alpha");
+
+    let attached = parse_spanned!(
+        grammar::AttachedOptionalFillers<'_>,
+        "create unlogged alpha view materialized"
+    );
+    assert_eq!(attached.render(), "create unlogged alpha view materialized");
+    let attached_absent = parse_spanned!(
+        grammar::AttachedOptionalFillers<'_>,
+        "create alpha materialized"
+    );
+    assert_eq!(attached_absent.render(), "create alpha materialized");
+
+    let atomic_filler = parse_spanned!(
+        grammar::AtomicOptionalAttachment<'_>,
+        "or replace or alpha"
+    );
+    assert_eq!(atomic_filler.render(), "or replace or alpha");
+    let partial_filler =
+        parse_spanned!(grammar::AtomicOptionalAttachment<'_>, "or alpha");
+    assert_eq!(partial_filler.render(), "or alpha");
+
+    let nested_with = parse_spanned!(grammar::NestedWith<'_>, "alpha with pair beta");
+    assert!(nested_with.root().value().options.is_some());
+    assert_eq!(nested_with.render(), "alpha with pair beta");
+    let nested_without = parse_spanned!(grammar::NestedWith<'_>, "alpha");
+    assert!(nested_without.root().value().options.is_none());
+    assert_eq!(nested_without.render(), "alpha");
+
+    let presence_fillers = parse_spanned!(
+        grammar::PresenceWithFillers<'_>,
+        "create or unlogged view materialized alpha"
+    );
+    assert!(presence_fillers.root().value().unlogged);
+    assert_eq!(
+        presence_fillers.render(),
+        "create or unlogged view materialized alpha"
+    );
+    let presence_without_fillers = parse_spanned!(
+        grammar::PresenceWithFillers<'_>,
+        "create materialized alpha"
+    );
+    assert!(!presence_without_fillers.root().value().unlogged);
+    assert_eq!(presence_without_fillers.render(), "create materialized alpha");
+
+    let complete_prefix = parse_spanned!(
+        grammar::OptionalPrefixPrediction<'_>,
+        "or replace alpha"
+    );
+    assert!(matches!(
+        complete_prefix.root().value(),
+        grammar::OptionalPrefixPrediction::WithReplace { .. }
+    ));
+    assert_eq!(complete_prefix.render(), "or replace alpha");
+    let partial_prefix =
+        parse_spanned!(grammar::OptionalPrefixPrediction<'_>, "or alpha");
+    assert!(matches!(
+        partial_prefix.root().value(),
+        grammar::OptionalPrefixPrediction::Or { .. }
+    ));
+    assert_eq!(partial_prefix.render(), "or alpha");
 
     let record = parse_spanned!(grammar::Record<'_>, "ReCoRd:alpha 42");
     let _: grammar::RecordView<'_, '_> = record.root();

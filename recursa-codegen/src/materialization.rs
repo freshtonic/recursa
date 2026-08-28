@@ -20,16 +20,17 @@ use syn::GenericParam;
 use crate::lexical::{
     LexicalDiagnostic, LexicalPlan, TokenDefinitionKindCorrelation, kind_label, plan_lexical,
 };
-use crate::lowering::{NodeId, TokenUseId};
+use crate::lowering::{ElementId as GrammarElementId, NodeId, TokenUseId};
 use crate::resolution::{
     CatalogType, ContentTokenId, GenericParameterId, ResolutionTraceId, ResolvedFieldId,
     ResolvedGenericArgument, ResolvedNode, ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind,
     ResolvedVariantId, SemanticOwner, SemanticTarget, SemanticUseId, TypeAliasId,
 };
 use crate::source_model::{
-    ConfiguredTraitRecipe, DeclaredRepetition, GrammarElement, MaterializedPrettyBoundary,
-    NodeBody, Separator, SourceModel, SourceModeledGrammar, SourcePrattPosition,
-    SourcePrattVariant, materialized_pretty_boundary_changes_lexing,
+    AttachedFixedSyntax, ConfiguredTraitRecipe, DeclaredRepetition, GrammarElement,
+    MaterializedPrettyBoundary, NodeBody, SemanticFieldProjection, Separator, SourceModel,
+    SourceModeledGrammar, SourcePrattPosition, SourcePrattVariant,
+    materialized_pretty_boundary_changes_lexing,
 };
 use crate::{
     AtomDescription, AtomExpression, ContainerShape, DeclId, Declaration, GrammarDescription,
@@ -100,6 +101,10 @@ pub(crate) struct LoweringMap {
     pub(crate) fields: Vec<MaterializedFieldCorrelation>,
     /// Repetition attachment units correlated with their normalized sites.
     pub(crate) attachments: Vec<AttachmentUnitCorrelation>,
+    /// Boolean fixed-token presence units correlated with their normalized sites.
+    pub(crate) presences: Vec<FixedPresenceCorrelation>,
+    /// Erased optional fixed-token groups correlated with their normalized sequences.
+    pub(crate) optional_fixed_groups: Vec<OptionalFixedGroupCorrelation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -173,6 +178,44 @@ pub(crate) struct AttachmentUnitCorrelation {
     pub(crate) semantic_index: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Correlates one authored boolean presence field with its internal normalized sequences.
+pub(crate) struct FixedPresenceCorrelation {
+    /// Supplies the application containing the authored field.
+    pub(crate) application: MaterializedApplicationId,
+    /// Supplies the authored boolean field.
+    pub(crate) field: ResolvedFieldId,
+    /// Supplies the outer site in the containing Node sequence.
+    pub(crate) outer: SiteId,
+    /// Whether the outer site itself is the optional presence selector.
+    pub(crate) outer_is_optional: bool,
+    /// Supplies the normalized envelope sequence type.
+    pub(crate) envelope: TypeId,
+    /// Supplies required-before, optional-presence, and required-after sites.
+    pub(crate) envelope_sites: Vec<SiteId>,
+    /// Supplies the index of the optional presence site in the envelope.
+    pub(crate) presence_index: usize,
+    /// Supplies the normalized fixed-only sequence type selected atomically.
+    pub(crate) sequence: TypeId,
+    /// Supplies the fixed-token sites in the atomic sequence.
+    pub(crate) sequence_sites: Vec<SiteId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Correlates one erased optional fixed-token group with its normalized sequence.
+pub(crate) struct OptionalFixedGroupCorrelation {
+    /// Supplies the application containing the authored group.
+    pub(crate) application: MaterializedApplicationId,
+    /// Supplies the source element identity.
+    pub(crate) element: GrammarElementId,
+    /// Supplies the optional outer site in the containing sequence.
+    pub(crate) outer: SiteId,
+    /// Supplies the normalized fixed-only sequence type.
+    pub(crate) sequence: TypeId,
+    /// Supplies the fixed-token sites in the atomic sequence.
+    pub(crate) sequence_sites: Vec<SiteId>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Carries the variant alternative correlation while expanding resolved grammar type applications.
 pub(crate) struct VariantAlternativeCorrelation {
@@ -214,24 +257,56 @@ pub(crate) enum MaterializedNodeBody {
     Pratt(Vec<MaterializedPrattVariant>),
 }
 
+/// Borrows one source-ordered materialized element group with its Pratt operand threshold.
+struct MaterializedElementGroup<'a> {
+    /// Elements belonging to one struct, enum variant, or Pratt branch.
+    elements: &'a [MaterializedElement],
+    /// Minimum binding power applied to recursive operands in this group.
+    recursive_min_bp: u8,
+}
+
 impl MaterializedNodeBody {
+    /// Returns every source-ordered element group through one shared body traversal.
+    fn element_groups(&self) -> Vec<MaterializedElementGroup<'_>> {
+        match self {
+            Self::Struct(elements) | Self::Presence(elements) => vec![MaterializedElementGroup {
+                elements,
+                recursive_min_bp: 0,
+            }],
+            Self::Enum(variants) => variants
+                .iter()
+                .map(|variant| MaterializedElementGroup {
+                    elements: &variant.elements,
+                    recursive_min_bp: 0,
+                })
+                .collect(),
+            Self::Pratt(variants) => variants
+                .iter()
+                .map(|variant| match variant {
+                    MaterializedPrattVariant::Nud(nud) => MaterializedElementGroup {
+                        elements: &nud.body,
+                        recursive_min_bp: match nud.position {
+                            MaterializedPrattNudPosition::Atom => 0,
+                            MaterializedPrattNudPosition::Prefix { bp } => bp,
+                        },
+                    },
+                    MaterializedPrattVariant::Led(led) => MaterializedElementGroup {
+                        elements: &led.tail,
+                        recursive_min_bp: match led.position {
+                            MaterializedPrattLedPosition::Infix { rbp, .. } => rbp,
+                            MaterializedPrattLedPosition::Postfix { .. } => 0,
+                        },
+                    },
+                })
+                .collect(),
+        }
+    }
+
     /// Derives the parsed elements while materializing grammar applications and container shapes.
     fn parsed_elements(&self) -> impl Iterator<Item = &MaterializedElement> {
-        let mut elements = Vec::new();
-        match self {
-            Self::Struct(direct) | Self::Presence(direct) => elements.extend(direct),
-            Self::Enum(variants) => {
-                elements.extend(variants.iter().flat_map(|variant| &variant.elements));
-            }
-            Self::Pratt(variants) => {
-                elements.extend(
-                    variants
-                        .iter()
-                        .flat_map(MaterializedPrattVariant::parsed_elements),
-                );
-            }
-        }
-        elements.into_iter()
+        self.element_groups()
+            .into_iter()
+            .flat_map(|group| group.elements.iter())
     }
 
     /// Derives the fields while materializing grammar applications and container shapes.
@@ -297,14 +372,6 @@ impl MaterializedPrattVariant {
         match self {
             Self::Nud(variant) => &variant.common,
             Self::Led(variant) => &variant.common,
-        }
-    }
-
-    /// Derives the parsed elements while materializing grammar applications and container shapes.
-    fn parsed_elements(&self) -> std::slice::Iter<'_, MaterializedElement> {
-        match self {
-            Self::Nud(variant) => variant.body.iter(),
-            Self::Led(variant) => variant.tail.iter(),
         }
     }
 }
@@ -398,24 +465,48 @@ pub(crate) enum MaterializedElement {
         /// Supplies the token use needed to materialize a concrete grammar application.
         token_use: TokenUseId,
     },
+    /// Selects one erased atomic optional fixed-token sequence.
+    OptionalFixedTokenGroup {
+        /// Supplies the source element identity retained for correlation.
+        element: GrammarElementId,
+        /// Supplies the fixed sequence selected atomically.
+        tokens: Vec<TokenUseId>,
+        /// Locates the authored optional group.
+        site: crate::source_model::SourceSite,
+    },
     /// Selects the semantic field materialization alternative.
     SemanticField {
         /// Supplies the field needed to materialize a concrete grammar application.
         field: ResolvedFieldId,
-        /// Supplies the ty needed to materialize a concrete grammar application.
-        ty: ClosedType,
-        /// Supplies the trace needed to materialize a concrete grammar application.
-        trace: MaterializationTrace,
+        /// Selects direct semantic parsing or a boolean fixed-presence projection.
+        projection: MaterializedSemanticFieldProjection,
         /// Supplies the attachment needed to materialize a concrete grammar application.
         attachment: Option<MaterializedFixedAttachment>,
-        /// Supplies the separator needed to materialize a concrete grammar application.
-        separator: Option<Separator>,
         /// Supplies the pretty needed to materialize a concrete grammar application.
         pretty: crate::source_model::PrettyHints,
-        /// Supplies the attachment before needed to materialize a concrete grammar application.
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Classifies how one materialized semantic field obtains its public value.
+pub(crate) enum MaterializedSemanticFieldProjection {
+    /// Parses the field's closed semantic type directly.
+    Direct {
+        /// Supplies the closed field type.
+        ty: ClosedType,
+        /// Supplies the type-resolution trace.
+        trace: MaterializationTrace,
+        /// Supplies repetition-separator metadata.
+        separator: Option<Separator>,
+        /// Counts standalone fixed syntax before the semantic element.
         attachment_before: usize,
-        /// Supplies the attachment after needed to materialize a concrete grammar application.
+        /// Counts standalone fixed syntax after the semantic element.
         attachment_after: usize,
+    },
+    /// Projects one atomic optional fixed-token sequence to an authored boolean.
+    FixedPresence {
+        /// Supplies the fixed sequence selected atomically.
+        tokens: Vec<TokenUseId>,
     },
 }
 
@@ -423,9 +514,56 @@ pub(crate) enum MaterializedElement {
 /// Carries the materialized fixed attachment while expanding resolved grammar type applications.
 pub(crate) struct MaterializedFixedAttachment {
     /// Supplies the before needed to materialize a concrete grammar application.
-    pub(crate) before: Vec<TokenUseId>,
+    pub(crate) before: Vec<MaterializedAttachedFixedSyntax>,
     /// Supplies the after needed to materialize a concrete grammar application.
-    pub(crate) after: Vec<TokenUseId>,
+    pub(crate) after: Vec<MaterializedAttachedFixedSyntax>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Classifies required and erased-optional syntax in a materialized attachment.
+pub(crate) enum MaterializedAttachedFixedSyntax {
+    /// Selects one required fixed token.
+    Required(TokenUseId),
+    /// Selects one erased atomic optional fixed sequence.
+    Optional {
+        /// Supplies the source-ordered fixed sequence.
+        tokens: Vec<TokenUseId>,
+        /// Locates the authored optional group.
+        site: crate::source_model::SourceSite,
+    },
+}
+
+impl MaterializedAttachedFixedSyntax {
+    /// Returns the first token use in this source-ordered syntax entry.
+    fn first(&self) -> TokenUseId {
+        match self {
+            Self::Required(token) => *token,
+            Self::Optional { tokens, .. } => tokens[0],
+        }
+    }
+
+    /// Returns the last token use in this source-ordered syntax entry.
+    fn last(&self) -> TokenUseId {
+        match self {
+            Self::Required(token) => *token,
+            Self::Optional { tokens, .. } => *tokens.last().expect("optional groups are non-empty"),
+        }
+    }
+}
+
+/// Projects one source attachment entry into its application-independent materialized form.
+fn materialize_attached_fixed(syntax: &AttachedFixedSyntax) -> MaterializedAttachedFixedSyntax {
+    match syntax {
+        AttachedFixedSyntax::Required(token) => {
+            MaterializedAttachedFixedSyntax::Required(token.token_use)
+        }
+        AttachedFixedSyntax::Optional { tokens, site } => {
+            MaterializedAttachedFixedSyntax::Optional {
+                tokens: tokens.iter().map(|token| token.token_use).collect(),
+                site: site.clone(),
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -452,9 +590,13 @@ impl<'a> MaterializedFieldView<'a> {
         match element {
             MaterializedElement::SemanticField {
                 field,
-                ty,
-                trace,
-                separator,
+                projection:
+                    MaterializedSemanticFieldProjection::Direct {
+                        ty,
+                        trace,
+                        separator,
+                        ..
+                    },
                 ..
             } => Some(Self::Parsed {
                 field: *field,
@@ -462,7 +604,12 @@ impl<'a> MaterializedFieldView<'a> {
                 trace,
                 separator: separator.as_ref(),
             }),
-            MaterializedElement::FixedToken { .. } => None,
+            MaterializedElement::FixedToken { .. }
+            | MaterializedElement::OptionalFixedTokenGroup { .. }
+            | MaterializedElement::SemanticField {
+                projection: MaterializedSemanticFieldProjection::FixedPresence { .. },
+                ..
+            } => None,
         }
     }
 }
@@ -475,9 +622,15 @@ impl MaterializedNodeApplication {
 
     /// Derives the parsed fields while materializing grammar applications and container shapes.
     pub(crate) fn parsed_fields(&self) -> impl Iterator<Item = &MaterializedElement> {
-        self.body
-            .parsed_elements()
-            .filter(|element| matches!(element, MaterializedElement::SemanticField { .. }))
+        self.body.parsed_elements().filter(|element| {
+            matches!(
+                element,
+                MaterializedElement::SemanticField {
+                    projection: MaterializedSemanticFieldProjection::Direct { .. },
+                    ..
+                }
+            )
+        })
     }
 }
 
@@ -601,6 +754,88 @@ struct AttachmentUnitProjection {
     attachment: MaterializedFixedAttachment,
     /// Supplies the recursive min bp needed to materialize a concrete grammar application.
     recursive_min_bp: u8,
+}
+
+#[derive(Clone)]
+/// Carries one boolean presence field into its two internal normalized sequences.
+struct FixedPresenceProjection {
+    /// Supplies the fixed-only sequence type identity.
+    sequence: TypeId,
+    /// Supplies the required envelope type identity.
+    envelope: TypeId,
+    /// Supplies the containing materialized application.
+    application: MaterializedApplicationId,
+    /// Supplies the authored boolean field.
+    field: ResolvedFieldId,
+    /// Supplies the fixed sequence selected atomically.
+    tokens: Vec<TokenUseId>,
+    /// Supplies ordinary required syntax surrounding the optional sequence.
+    attachment: Option<MaterializedFixedAttachment>,
+}
+
+#[derive(Clone)]
+/// Carries one erased optional fixed-token group into an internal normalized sequence.
+struct OptionalFixedGroupProjection {
+    /// Supplies the fixed-only sequence type identity.
+    sequence: TypeId,
+    /// Supplies the containing materialized application.
+    application: MaterializedApplicationId,
+    /// Supplies the standalone source element identity, when this group is not attached.
+    element: Option<GrammarElementId>,
+    /// Supplies the unique first token use used to identify attached groups.
+    key: TokenUseId,
+    /// Supplies the fixed sequence selected atomically.
+    tokens: Vec<TokenUseId>,
+    /// Locates the authored optional group.
+    site: crate::source_model::SourceSite,
+}
+
+/// Dense lexical-terminal products that seed normalized grammar projection.
+struct NormalizedTerminalProjection {
+    /// Grammar containing every lexical terminal in stable kind order.
+    grammar: GrammarDescription,
+    /// Fixed token type by runtime kind.
+    fixed_types: BTreeMap<crate::KindId, TypeId>,
+    /// Content-target type by semantic identity.
+    content_types: BTreeMap<ContentTokenId, TypeId>,
+    /// Boundary after lexical terminal types.
+    terminal_type_count: usize,
+}
+
+/// Reserved normalized identities for applications and private projection sequences.
+struct NormalizedProjectionReservations {
+    /// Boolean presence projection units in stable application order.
+    presences: Vec<FixedPresenceProjection>,
+    /// Erased optional fixed-token units in stable application order.
+    optional_fixed: Vec<OptionalFixedGroupProjection>,
+    /// Attached field units in stable application order.
+    attachments: Vec<AttachmentUnitProjection>,
+    /// Presence field target types and whether the outer site is optional.
+    presence_types: BTreeMap<(MaterializedApplicationId, ResolvedFieldId), (TypeId, bool)>,
+    /// Erased optional-group target types keyed by application and first token.
+    optional_fixed_types: BTreeMap<(MaterializedApplicationId, TokenUseId), TypeId>,
+    /// Attachment target types keyed by application and field.
+    attachment_types: BTreeMap<(MaterializedApplicationId, ResolvedFieldId), TypeId>,
+    /// Public application-to-type correlations.
+    applications: Vec<ApplicationTypeCorrelation>,
+}
+
+/// Correlations produced while projecting authored application bodies.
+struct AuthoredBodyProjection {
+    /// Materialized field-to-site correlations.
+    fields: Vec<MaterializedFieldCorrelation>,
+    /// Resolved variant-to-alternative correlations.
+    variants: Vec<VariantAlternativeCorrelation>,
+}
+
+/// Correlations produced while publishing private normalized projection types.
+struct PrivateProjectionCorrelations {
+    /// Attachment projection correlations.
+    attachments: Vec<AttachmentUnitCorrelation>,
+    /// Boolean fixed-presence correlations.
+    presences: Vec<FixedPresenceCorrelation>,
+    /// Erased optional-group correlations.
+    optional_fixed: Vec<OptionalFixedGroupCorrelation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -911,35 +1146,66 @@ impl Materializer {
     fn element_pretty_boundary_site(element: &MaterializedElement) -> PrettyBoundarySite {
         match element {
             MaterializedElement::FixedToken { token_use } => PrettyBoundarySite::Fixed(*token_use),
+            MaterializedElement::OptionalFixedTokenGroup { tokens, .. } => {
+                PrettyBoundarySite::Fixed(tokens[0])
+            }
             MaterializedElement::SemanticField { field, .. } => PrettyBoundarySite::Field(*field),
         }
     }
 
     /// Derives the attachment changes pretty lexing while materializing grammar applications and container shapes.
     fn attachment_changes_pretty_lexing(&self, element: &MaterializedElement) -> bool {
-        let MaterializedElement::SemanticField {
-            ty,
-            attachment: Some(attachment),
-            ..
-        } = element
-        else {
-            return false;
+        let (mut summaries, optional_sequences) = match element {
+            MaterializedElement::OptionalFixedTokenGroup { tokens, .. } => {
+                return self.fixed_sequence_changes_pretty_lexing(tokens);
+            }
+            MaterializedElement::SemanticField {
+                projection,
+                attachment,
+                ..
+            } => {
+                let mut summaries = attachment
+                    .as_ref()
+                    .map_or(&[][..], |attachment| attachment.before.as_slice())
+                    .iter()
+                    .map(|syntax| self.attached_pretty_boundaries(syntax))
+                    .collect::<Vec<_>>();
+                summaries.push(
+                    self.semantic_projection_pretty_boundaries(projection, &mut BTreeSet::new()),
+                );
+                summaries.extend(
+                    attachment
+                        .as_ref()
+                        .map_or(&[][..], |attachment| attachment.after.as_slice())
+                        .iter()
+                        .map(|syntax| self.attached_pretty_boundaries(syntax)),
+                );
+                let optional_sequences = attachment
+                    .iter()
+                    .flat_map(|attachment| attachment.before.iter().chain(&attachment.after))
+                    .filter_map(|syntax| match syntax {
+                        MaterializedAttachedFixedSyntax::Required(_) => None,
+                        MaterializedAttachedFixedSyntax::Optional { tokens, .. } => Some(tokens),
+                    })
+                    .chain(match projection {
+                        MaterializedSemanticFieldProjection::Direct { .. } => None,
+                        MaterializedSemanticFieldProjection::FixedPresence { tokens } => {
+                            Some(tokens)
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                (summaries, optional_sequences)
+            }
+            MaterializedElement::FixedToken { .. } => return false,
         };
-        let mut summaries = attachment
-            .before
-            .iter()
-            .map(|token_use| self.fixed_pretty_boundaries(*token_use))
-            .collect::<Vec<_>>();
-        summaries
-            .push(self.closed_pretty_boundaries(attachment_terminal(ty), &mut BTreeSet::new()));
-        summaries.extend(
-            attachment
-                .after
-                .iter()
-                .map(|token_use| self.fixed_pretty_boundaries(*token_use)),
-        );
+        if optional_sequences
+            .into_iter()
+            .any(|tokens| self.fixed_sequence_changes_pretty_lexing(tokens))
+        {
+            return true;
+        }
         let mut trailing = Vec::new();
-        for summary in summaries {
+        for summary in summaries.drain(..) {
             if self.pretty_boundary_pairs_change_lexing(&trailing, &summary.first) {
                 return true;
             }
@@ -981,19 +1247,108 @@ impl Materializer {
             MaterializedElement::FixedToken { token_use } => {
                 self.fixed_pretty_boundaries(*token_use)
             }
-            MaterializedElement::SemanticField { ty, attachment, .. } => {
-                let mut summary = self.closed_pretty_boundaries(ty, active);
-                if let Some(attachment) = attachment {
-                    if let Some(first) = attachment.before.first() {
-                        summary.first = self.fixed_pretty_boundaries(*first).first;
-                    }
-                    if let Some(last) = attachment.after.last() {
-                        summary.last = self.fixed_pretty_boundaries(*last).last;
-                    }
-                }
-                summary
+            MaterializedElement::OptionalFixedTokenGroup { tokens, .. } => {
+                self.optional_fixed_pretty_boundaries(tokens)
+            }
+            MaterializedElement::SemanticField {
+                projection,
+                attachment,
+                ..
+            } => {
+                let semantic = self.semantic_projection_pretty_boundaries(projection, active);
+                let Some(attachment) = attachment else {
+                    return semantic;
+                };
+                let summaries = attachment
+                    .before
+                    .iter()
+                    .map(|syntax| self.attached_pretty_boundaries(syntax))
+                    .chain(std::iter::once(semantic))
+                    .chain(
+                        attachment
+                            .after
+                            .iter()
+                            .map(|syntax| self.attached_pretty_boundaries(syntax)),
+                    )
+                    .collect::<Vec<_>>();
+                Self::pretty_sequence_summary(&summaries)
             }
         }
+    }
+
+    /// Summarizes the concrete syntax that produces one semantic field value.
+    fn semantic_projection_pretty_boundaries(
+        &self,
+        projection: &MaterializedSemanticFieldProjection,
+        active: &mut BTreeSet<MaterializedApplicationId>,
+    ) -> PrettyBoundarySummary {
+        match projection {
+            MaterializedSemanticFieldProjection::Direct { ty, .. } => {
+                self.closed_pretty_boundaries(attachment_terminal(ty), active)
+            }
+            MaterializedSemanticFieldProjection::FixedPresence { tokens } => {
+                self.optional_fixed_pretty_boundaries(tokens)
+            }
+        }
+    }
+
+    /// Summarizes one required or erased-optional attachment entry.
+    fn attached_pretty_boundaries(
+        &self,
+        syntax: &MaterializedAttachedFixedSyntax,
+    ) -> PrettyBoundarySummary {
+        match syntax {
+            MaterializedAttachedFixedSyntax::Required(token) => {
+                self.fixed_pretty_boundaries(*token)
+            }
+            MaterializedAttachedFixedSyntax::Optional { tokens, .. } => {
+                self.optional_fixed_pretty_boundaries(tokens)
+            }
+        }
+    }
+
+    /// Summarizes one non-empty atomic optional fixed sequence.
+    fn optional_fixed_pretty_boundaries(&self, tokens: &[TokenUseId]) -> PrettyBoundarySummary {
+        PrettyBoundarySummary {
+            first: self.fixed_pretty_boundaries(tokens[0]).first,
+            last: self
+                .fixed_pretty_boundaries(*tokens.last().expect("optional groups are non-empty"))
+                .last,
+            nullable: true,
+        }
+    }
+
+    /// Summarizes a source-ordered sequence while preserving nullable boundary alternatives.
+    fn pretty_sequence_summary(summaries: &[PrettyBoundarySummary]) -> PrettyBoundarySummary {
+        let mut first = Vec::new();
+        for summary in summaries {
+            first.extend(summary.first.clone());
+            if !summary.nullable {
+                break;
+            }
+        }
+        let mut last = Vec::new();
+        for summary in summaries.iter().rev() {
+            last.extend(summary.last.clone());
+            if !summary.nullable {
+                break;
+            }
+        }
+        PrettyBoundarySummary {
+            first,
+            last,
+            nullable: summaries.iter().all(|summary| summary.nullable),
+        }
+    }
+
+    /// Reports whether canonical Pretty spacing would retokenize one fixed sequence.
+    fn fixed_sequence_changes_pretty_lexing(&self, tokens: &[TokenUseId]) -> bool {
+        tokens.windows(2).any(|pair| {
+            self.pretty_boundary_pairs_change_lexing(
+                &self.fixed_pretty_boundaries(pair[0]).last,
+                &self.fixed_pretty_boundaries(pair[1]).first,
+            )
+        })
     }
 
     /// Derives the fixed pretty boundaries while materializing grammar applications and container shapes.
@@ -1461,7 +1816,14 @@ impl Materializer {
             return None;
         };
         let Some(index) = elements.iter().position(|element| {
-            matches!(element, MaterializedElement::SemanticField { field, .. } if *field == lhs_field)
+            matches!(
+                element,
+                MaterializedElement::SemanticField {
+                    field,
+                    projection: MaterializedSemanticFieldProjection::Direct { .. },
+                    ..
+                } if *field == lhs_field
+            )
         }) else {
             self.push_diagnostic(
                 variant_source,
@@ -1487,13 +1849,16 @@ impl Materializer {
         }
         let MaterializedElement::SemanticField {
             field,
-            ty,
-            trace,
+            projection:
+                MaterializedSemanticFieldProjection::Direct {
+                    ty,
+                    trace,
+                    separator,
+                    attachment_before,
+                    attachment_after,
+                },
             attachment,
-            separator,
             pretty,
-            attachment_before,
-            attachment_after,
         } = elements.remove(index)
         else {
             unreachable!("the selected Pratt lhs element is semantic")
@@ -1512,13 +1877,30 @@ impl Materializer {
             );
             return None;
         }
+        if attachment.as_ref().is_some_and(|attachment| {
+            attachment
+                .after
+                .iter()
+                .any(|syntax| matches!(syntax, MaterializedAttachedFixedSyntax::Optional { .. }))
+        }) {
+            let resolved_field = self.resolved_field(lhs_field).clone();
+            self.push_diagnostic(
+                resolved_field.ty.source,
+                Some(resolved_field.range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                "optional fixed syntax cannot be attached to the implicit Pratt lhs".to_owned(),
+            );
+            return None;
+        }
         if let Some(attachment) = attachment {
             elements.splice(
                 index..index,
-                attachment
-                    .after
-                    .into_iter()
-                    .map(|token_use| MaterializedElement::FixedToken { token_use }),
+                attachment.after.into_iter().map(|syntax| {
+                    let MaterializedAttachedFixedSyntax::Required(token_use) = syntax else {
+                        unreachable!("optional Pratt lhs syntax was rejected")
+                    };
+                    MaterializedElement::FixedToken { token_use }
+                }),
             );
         }
         if !exact_pratt_self_parts(&ty, &trace, separator.as_ref(), current_application) {
@@ -1564,8 +1946,16 @@ impl Materializer {
                         token_use: *token_use,
                     });
                 }
+                GrammarElement::OptionalFixedTokenGroup { id, tokens, site } => {
+                    materialized.push(MaterializedElement::OptionalFixedTokenGroup {
+                        element: *id,
+                        tokens: tokens.iter().map(|token| token.token_use).collect(),
+                        site: site.clone(),
+                    });
+                }
                 GrammarElement::SemanticField {
                     resolved_field,
+                    projection,
                     attachment,
                     separator,
                     pretty,
@@ -1574,6 +1964,35 @@ impl Materializer {
                     ..
                 } => {
                     let field = self.resolved_field(*resolved_field).clone();
+                    let attachment =
+                        attachment
+                            .as_ref()
+                            .map(|attachment| MaterializedFixedAttachment {
+                                before: attachment
+                                    .before
+                                    .iter()
+                                    .map(materialize_attached_fixed)
+                                    .collect(),
+                                after: attachment
+                                    .after
+                                    .iter()
+                                    .map(materialize_attached_fixed)
+                                    .collect(),
+                            });
+                    let SemanticFieldProjection::Direct = projection else {
+                        let SemanticFieldProjection::FixedPresence { tokens } = projection else {
+                            unreachable!()
+                        };
+                        materialized.push(MaterializedElement::SemanticField {
+                            field: field.id,
+                            projection: MaterializedSemanticFieldProjection::FixedPresence {
+                                tokens: tokens.iter().map(|token| token.token_use).collect(),
+                            },
+                            attachment,
+                            pretty: pretty.clone(),
+                        });
+                        continue;
+                    };
                     let Some(evaluated) = self.evaluate_type(
                         &field.ty,
                         Some(current_application.clone()),
@@ -1638,28 +2057,17 @@ impl Materializer {
                     }
                     materialized.push(MaterializedElement::SemanticField {
                         field: field.id,
-                        ty: evaluated.closed,
-                        trace: MaterializationTrace {
-                            steps: evaluated.trace,
+                        projection: MaterializedSemanticFieldProjection::Direct {
+                            ty: evaluated.closed,
+                            trace: MaterializationTrace {
+                                steps: evaluated.trace,
+                            },
+                            separator: separator.clone(),
+                            attachment_before: *attachment_before,
+                            attachment_after: *attachment_after,
                         },
-                        attachment: attachment.as_ref().map(|attachment| {
-                            MaterializedFixedAttachment {
-                                before: attachment
-                                    .before
-                                    .iter()
-                                    .map(|fixed| fixed.token_use)
-                                    .collect(),
-                                after: attachment
-                                    .after
-                                    .iter()
-                                    .map(|fixed| fixed.token_use)
-                                    .collect(),
-                            }
-                        }),
-                        separator: separator.clone(),
+                        attachment,
                         pretty: pretty.clone(),
-                        attachment_before: *attachment_before,
-                        attachment_after: *attachment_after,
                     });
                 }
             }
@@ -1806,7 +2214,8 @@ impl Materializer {
                     ),
                 }
             }
-            ResolvedTypeKind::Reference(_)
+            ResolvedTypeKind::FixedTokenPresence
+            | ResolvedTypeKind::Reference(_)
             | ResolvedTypeKind::Tuple(_)
             | ResolvedTypeKind::Unsupported => {
                 self.push_diagnostic(
@@ -2053,9 +2462,8 @@ impl Materializer {
         })
     }
 
-    /// Builds normalized types, sites, declarations, and correlations from closed applications.
-    fn project_normalized_grammar(&self) -> (GrammarDescription, LoweringMap) {
-        // Allocate all dense identities first, then populate shapes and correlations without order-dependent backpatching.
+    /// Projects lexical kinds and parser targets before any generated application types.
+    fn project_normalized_terminals(&self) -> NormalizedTerminalProjection {
         let mut grammar = GrammarDescription::new(
             self.resolved()
                 .build_inputs
@@ -2146,11 +2554,53 @@ impl Materializer {
             content_types.insert(target.semantic, ty);
         }
         let terminal_type_count = grammar.types.len();
-        let attachment_units = self.attachment_unit_projections(terminal_type_count);
-        let attachment_types = attachment_units
+        NormalizedTerminalProjection {
+            grammar,
+            fixed_types,
+            content_types,
+            terminal_type_count,
+        }
+    }
+
+    /// Reserves dense identities for public applications and private projection sequences.
+    fn reserve_normalized_projection_types(
+        &self,
+        terminal_type_count: usize,
+    ) -> NormalizedProjectionReservations {
+        let presences = self.fixed_presence_projections(terminal_type_count);
+        let presence_types = presences
+            .iter()
+            .map(|unit| {
+                let has_required_envelope = unit.attachment.as_ref().is_some_and(|attachment| {
+                    !attachment.before.is_empty() || !attachment.after.is_empty()
+                });
+                (
+                    (unit.application, unit.field),
+                    if has_required_envelope {
+                        (unit.envelope, false)
+                    } else {
+                        (unit.sequence, true)
+                    },
+                )
+            })
+            .collect();
+        let optional_fixed = self.optional_fixed_group_projections(
+            terminal_type_count + self.applications.len() + presences.len() * 2,
+        );
+        let optional_fixed_types = optional_fixed
+            .iter()
+            .map(|unit| ((unit.application, unit.key), unit.sequence))
+            .collect();
+        let attachments = self.attachment_unit_projections(
+            terminal_type_count
+                + self.applications.len()
+                + presences.len() * 2
+                + optional_fixed.len(),
+        );
+        let attachment_types = attachments
             .iter()
             .map(|unit| ((unit.application, unit.field), unit.id))
-            .collect::<BTreeMap<_, _>>();
+            .collect();
         let applications = self
             .applications
             .iter()
@@ -2163,9 +2613,37 @@ impl Materializer {
                         .expect("normalized type ID overflow"),
                 ),
             })
-            .collect::<Vec<_>>();
-        let mut field_correlations = Vec::new();
-        let mut variant_correlations = Vec::new();
+            .collect();
+        NormalizedProjectionReservations {
+            presences,
+            optional_fixed,
+            attachments,
+            presence_types,
+            optional_fixed_types,
+            attachment_types,
+            applications,
+        }
+    }
+
+    /// Projects authored application bodies after every target identity has been reserved.
+    ///
+    /// # Long-function contract
+    ///
+    /// Rationale: struct, enum, and Pratt shapes share one dense application namespace and one
+    /// field-correlation stream. Invariants: each application is published at its reserved type
+    /// identity, and every variant/field correlation is recorded while its parse site is created.
+    /// Phases: reserves application declarations, projects each structural/enum/Pratt body, then
+    /// publishes the completed application type at its preallocated identity.
+    fn project_normalized_application_bodies(
+        &self,
+        grammar: &mut GrammarDescription,
+        terminal_type_count: usize,
+        fixed_types: &BTreeMap<crate::KindId, TypeId>,
+        content_types: &BTreeMap<ContentTokenId, TypeId>,
+        reservations: &NormalizedProjectionReservations,
+    ) -> AuthoredBodyProjection {
+        let mut fields = Vec::new();
+        let mut variants = Vec::new();
         let mut declarations = Vec::new();
         for application in &self.applications {
             let node = &self.resolved().nodes[application.node.index()];
@@ -2185,20 +2663,22 @@ impl Materializer {
                 MaterializedNodeBody::Struct(elements)
                 | MaterializedNodeBody::Presence(elements) => TypeShape::Sequence {
                     sites: self.project_elements(
-                        &mut grammar,
+                        grammar,
                         application,
                         owner,
                         elements,
                         terminal_type_count,
-                        &fixed_types,
-                        &content_types,
-                        &attachment_types,
-                        &mut field_correlations,
+                        fixed_types,
+                        content_types,
+                        &reservations.presence_types,
+                        &reservations.optional_fixed_types,
+                        &reservations.attachment_types,
+                        &mut fields,
                         0,
                     ),
                 },
-                MaterializedNodeBody::Enum(variants) => TypeShape::Enum {
-                    alternatives: variants
+                MaterializedNodeBody::Enum(materialized_variants) => TypeShape::Enum {
+                    alternatives: materialized_variants
                         .iter()
                         .map(|variant| {
                             let source_variant = self
@@ -2221,7 +2701,7 @@ impl Materializer {
                                 format!("{}::{}", application.display_name, variant.name),
                                 location,
                             ));
-                            variant_correlations.push(VariantAlternativeCorrelation {
+                            variants.push(VariantAlternativeCorrelation {
                                 application: application.id,
                                 variant: variant.resolved_variant,
                                 lowered: declaration,
@@ -2229,23 +2709,25 @@ impl Materializer {
                             crate::Alternative {
                                 declaration,
                                 sites: self.project_elements(
-                                    &mut grammar,
+                                    grammar,
                                     application,
                                     owner,
                                     &variant.elements,
                                     terminal_type_count,
-                                    &fixed_types,
-                                    &content_types,
-                                    &attachment_types,
-                                    &mut field_correlations,
+                                    fixed_types,
+                                    content_types,
+                                    &reservations.presence_types,
+                                    &reservations.optional_fixed_types,
+                                    &reservations.attachment_types,
+                                    &mut fields,
                                     0,
                                 ),
                             }
                         })
                         .collect(),
                 },
-                MaterializedNodeBody::Pratt(variants) => TypeShape::Pratt {
-                    variants: variants
+                MaterializedNodeBody::Pratt(materialized_variants) => TypeShape::Pratt {
+                    variants: materialized_variants
                         .iter()
                         .map(|variant| {
                             let common = variant.common();
@@ -2270,7 +2752,7 @@ impl Materializer {
                                 format!("{}::{}", application.display_name, common.name),
                                 location,
                             ));
-                            variant_correlations.push(VariantAlternativeCorrelation {
+                            variants.push(VariantAlternativeCorrelation {
                                 application: application.id,
                                 variant: common.resolved_variant,
                                 lowered: declaration,
@@ -2289,21 +2771,23 @@ impl Materializer {
                                         declaration,
                                         position,
                                         sites: self.project_elements(
-                                            &mut grammar,
+                                            grammar,
                                             application,
                                             owner,
                                             &nud.body,
                                             terminal_type_count,
-                                            &fixed_types,
-                                            &content_types,
-                                            &attachment_types,
-                                            &mut field_correlations,
+                                            fixed_types,
+                                            content_types,
+                                            &reservations.presence_types,
+                                            &reservations.optional_fixed_types,
+                                            &reservations.attachment_types,
+                                            &mut fields,
                                             min_bp,
                                         ),
                                     }
                                 }
                                 MaterializedPrattVariant::Led(led) => {
-                                    field_correlations.push(MaterializedFieldCorrelation {
+                                    fields.push(MaterializedFieldCorrelation {
                                         application: application.id,
                                         field: led.lhs.field,
                                         lowered: MaterializedFieldLowering::PrattLhs {
@@ -2323,15 +2807,17 @@ impl Materializer {
                                         declaration,
                                         position,
                                         sites: self.project_elements(
-                                            &mut grammar,
+                                            grammar,
                                             application,
                                             owner,
                                             &led.tail,
                                             terminal_type_count,
-                                            &fixed_types,
-                                            &content_types,
-                                            &attachment_types,
-                                            &mut field_correlations,
+                                            fixed_types,
+                                            content_types,
+                                            &reservations.presence_types,
+                                            &reservations.optional_fixed_types,
+                                            &reservations.attachment_types,
+                                            &mut fields,
                                             min_bp,
                                         ),
                                     }
@@ -2351,14 +2837,150 @@ impl Materializer {
             );
             grammar.entry_types.push(owner);
         }
-        for unit in &attachment_units {
+        AuthoredBodyProjection { fields, variants }
+    }
+
+    /// Publishes private presence, erased-optional, and attachment sequence types.
+    ///
+    /// # Long-function contract
+    ///
+    /// Rationale: private sequences are allocated after public applications but their outer sites
+    /// were created with those applications. Invariants: every reserved identity is published in
+    /// dense order and correlated back to exactly one already-projected authored field or element.
+    /// Phases: publishes presence sequence/envelope pairs, publishes erased optional sequences,
+    /// publishes attachment units, then derives their authored-site correlations.
+    fn project_normalized_private_sequences(
+        &self,
+        grammar: &mut GrammarDescription,
+        terminal_type_count: usize,
+        fixed_types: &BTreeMap<crate::KindId, TypeId>,
+        content_types: &BTreeMap<ContentTokenId, TypeId>,
+        reservations: &NormalizedProjectionReservations,
+        fields: &[MaterializedFieldCorrelation],
+    ) -> PrivateProjectionCorrelations {
+        let presences = reservations
+            .presences
+            .iter()
+            .map(|unit| {
+                assert_eq!(grammar.types.len(), unit.sequence.index());
+                let (sequence_sites, envelope_sites, presence_index) = self.project_fixed_presence(
+                    grammar,
+                    unit,
+                    fixed_types,
+                    &reservations.optional_fixed_types,
+                );
+                let application = &self.applications[unit.application.index()];
+                let field = self.resolved_field(unit.field);
+                let location =
+                    grammar.push_location(Location::new(field.ty.source, field.range.clone()));
+                let sequence_declaration = grammar.push_declaration(Declaration::new(
+                    format!("{}::__recursa_presence_sequence", application.display_name),
+                    location,
+                ));
+                assert_eq!(
+                    grammar.push_type(TypeDescription::new(
+                        format!("{}::__recursa_presence_sequence", application.display_name),
+                        sequence_declaration,
+                        TypeShape::Sequence {
+                            sites: sequence_sites.clone(),
+                        },
+                    )),
+                    unit.sequence,
+                );
+                let envelope_declaration = grammar.push_declaration(Declaration::new(
+                    format!("{}::__recursa_presence_envelope", application.display_name),
+                    location,
+                ));
+                assert_eq!(grammar.types.len(), unit.envelope.index());
+                assert_eq!(
+                    grammar.push_type(TypeDescription::new(
+                        format!("{}::__recursa_presence_envelope", application.display_name),
+                        envelope_declaration,
+                        TypeShape::Sequence {
+                            sites: envelope_sites.clone(),
+                        },
+                    )),
+                    unit.envelope,
+                );
+                let outer = fields
+                    .iter()
+                    .find_map(|correlation| {
+                        (correlation.application == unit.application
+                            && correlation.field == unit.field)
+                            .then_some(correlation.lowered)
+                    })
+                    .and_then(|lowering| match lowering {
+                        MaterializedFieldLowering::ParseSite(site) => Some(site),
+                        MaterializedFieldLowering::PrattLhs { .. } => None,
+                    })
+                    .expect("a fixed presence has one correlated authored field site");
+                FixedPresenceCorrelation {
+                    application: unit.application,
+                    field: unit.field,
+                    outer,
+                    outer_is_optional: !unit.attachment.as_ref().is_some_and(|attachment| {
+                        !attachment.before.is_empty() || !attachment.after.is_empty()
+                    }),
+                    envelope: unit.envelope,
+                    envelope_sites,
+                    presence_index,
+                    sequence: unit.sequence,
+                    sequence_sites,
+                }
+            })
+            .collect();
+        let optional_fixed = reservations
+            .optional_fixed
+            .iter()
+            .filter_map(|unit| {
+                assert_eq!(grammar.types.len(), unit.sequence.index());
+                let application = &self.applications[unit.application.index()];
+                let sequence_sites = self.project_optional_fixed_group(grammar, unit, fixed_types);
+                let location =
+                    grammar.push_location(Location::new(unit.site.source, unit.site.range.clone()));
+                let declaration = grammar.push_declaration(Declaration::new(
+                    format!("{}::__recursa_optional_fixed", application.display_name),
+                    location,
+                ));
+                assert_eq!(
+                    grammar.push_type(TypeDescription::new(
+                        format!("{}::__recursa_optional_fixed", application.display_name),
+                        declaration,
+                        TypeShape::Sequence {
+                            sites: sequence_sites.clone(),
+                        },
+                    )),
+                    unit.sequence,
+                );
+                let element = unit.element?;
+                let outer = grammar
+                    .sites
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, site)| {
+                        (site.target == unit.sequence
+                            && matches!(site.container, ContainerShape::Optional(_)))
+                        .then(|| SiteId::new(index as u32))
+                    })
+                    .expect("an optional fixed group has one normalized outer site");
+                Some(OptionalFixedGroupCorrelation {
+                    application: unit.application,
+                    element,
+                    outer,
+                    sequence: unit.sequence,
+                    sequence_sites,
+                })
+            })
+            .collect();
+        for unit in &reservations.attachments {
             assert_eq!(grammar.types.len(), unit.id.index());
             let sites = self.project_attachment_unit(
-                &mut grammar,
+                grammar,
                 unit,
                 terminal_type_count,
-                &fixed_types,
-                &content_types,
+                fixed_types,
+                content_types,
+                &reservations.optional_fixed_types,
             );
             let application = &self.applications[unit.application.index()];
             let field = self.resolved_field(unit.field);
@@ -2377,10 +2999,11 @@ impl Materializer {
                 unit.id,
             );
         }
-        let attachment_correlations = attachment_units
+        let attachments = reservations
+            .attachments
             .iter()
             .map(|unit| {
-                let outer = field_correlations
+                let outer = fields
                     .iter()
                     .find_map(|correlation| {
                         (correlation.application == unit.application
@@ -2405,6 +3028,55 @@ impl Materializer {
                 }
             })
             .collect();
+        PrivateProjectionCorrelations {
+            attachments,
+            presences,
+            optional_fixed,
+        }
+    }
+
+    /// Builds normalized types, sites, declarations, and correlations from closed applications.
+    ///
+    /// # Long-function contract
+    ///
+    /// Rationale: dense normalized identities and their lowering-map correlations must be allocated
+    /// and published together so no phase observes a partially backpatched grammar.
+    /// Invariants: lexical terminals precede applications and private projection types; every
+    /// source identity has one validated normalized correlation before the aggregate is returned.
+    /// Phases: projects lexical terminals, reserves application and private projection identities,
+    /// projects authored bodies, materializes private presence/optional/attachment types, validates
+    /// dense ordering, then publishes the complete lowering map.
+    fn project_normalized_grammar(&self) -> (GrammarDescription, LoweringMap) {
+        let NormalizedTerminalProjection {
+            mut grammar,
+            fixed_types,
+            content_types,
+            terminal_type_count,
+        } = self.project_normalized_terminals();
+        let reservations = self.reserve_normalized_projection_types(terminal_type_count);
+        let AuthoredBodyProjection {
+            fields: projected_fields,
+            variants: projected_variants,
+        } = self.project_normalized_application_bodies(
+            &mut grammar,
+            terminal_type_count,
+            &fixed_types,
+            &content_types,
+            &reservations,
+        );
+        let variant_correlations = projected_variants;
+        let PrivateProjectionCorrelations {
+            attachments: attachment_correlations,
+            presences: presence_correlations,
+            optional_fixed: optional_fixed_correlations,
+        } = self.project_normalized_private_sequences(
+            &mut grammar,
+            terminal_type_count,
+            &fixed_types,
+            &content_types,
+            &reservations,
+            &projected_fields,
+        );
         (
             grammar,
             LoweringMap {
@@ -2426,18 +3098,116 @@ impl Materializer {
                         lowered: *lowered,
                     })
                     .collect(),
-                applications,
+                applications: reservations.applications,
                 variants: variant_correlations,
-                fields: field_correlations,
+                fields: projected_fields,
                 attachments: attachment_correlations,
+                presences: presence_correlations,
+                optional_fixed_groups: optional_fixed_correlations,
             },
         )
+    }
+
+    /// Derives boolean fixed-token presence projections in authored application order.
+    fn fixed_presence_projections(
+        &self,
+        terminal_type_count: usize,
+    ) -> Vec<FixedPresenceProjection> {
+        let mut units = Vec::new();
+        let mut collect = |application: &MaterializedNodeApplication,
+                           elements: &[MaterializedElement]| {
+            for element in elements {
+                let MaterializedElement::SemanticField {
+                    field,
+                    attachment,
+                    projection: MaterializedSemanticFieldProjection::FixedPresence { tokens },
+                    ..
+                } = element
+                else {
+                    continue;
+                };
+                let base = terminal_type_count + self.applications.len() + units.len() * 2;
+                units.push(FixedPresenceProjection {
+                    sequence: TypeId::new(
+                        base.try_into()
+                            .expect("fixed presence sequence type ID overflow"),
+                    ),
+                    envelope: TypeId::new(
+                        (base + 1)
+                            .try_into()
+                            .expect("fixed presence envelope type ID overflow"),
+                    ),
+                    application: application.id,
+                    field: *field,
+                    tokens: tokens.clone(),
+                    attachment: attachment.clone(),
+                });
+            }
+        };
+        for application in &self.applications {
+            for group in application.body.element_groups() {
+                collect(application, group.elements);
+            }
+        }
+        units
+    }
+
+    /// Derives erased optional fixed-group projections in authored application order.
+    fn optional_fixed_group_projections(
+        &self,
+        synthetic_type_start: usize,
+    ) -> Vec<OptionalFixedGroupProjection> {
+        let mut units = Vec::new();
+        let mut collect = |application: &MaterializedNodeApplication,
+                           elements: &[MaterializedElement]| {
+            for element in elements {
+                let mut push_group = |element, tokens: &Vec<TokenUseId>, site| {
+                    units.push(OptionalFixedGroupProjection {
+                        sequence: TypeId::new(
+                            (synthetic_type_start + units.len())
+                                .try_into()
+                                .expect("optional fixed-group type ID overflow"),
+                        ),
+                        application: application.id,
+                        element,
+                        key: tokens[0],
+                        tokens: tokens.clone(),
+                        site,
+                    });
+                };
+                match element {
+                    MaterializedElement::OptionalFixedTokenGroup {
+                        element,
+                        tokens,
+                        site,
+                    } => push_group(Some(*element), tokens, site.clone()),
+                    MaterializedElement::SemanticField { attachment, .. } => {
+                        if let Some(attachment) = attachment {
+                            for syntax in attachment.before.iter().chain(&attachment.after) {
+                                if let MaterializedAttachedFixedSyntax::Optional { tokens, site } =
+                                    syntax
+                                {
+                                    push_group(None, tokens, site.clone());
+                                }
+                            }
+                        }
+                    }
+                    MaterializedElement::FixedToken { .. } => {}
+                }
+            }
+        };
+        for application in &self.applications {
+            for group in application.body.element_groups() {
+                collect(application, group.elements);
+            }
+        }
+        units
     }
 
     /// Derives the attachment unit projections while materializing grammar applications and container shapes.
     fn attachment_unit_projections(
         &self,
-        terminal_type_count: usize,
+        synthetic_type_start: usize,
     ) -> Vec<AttachmentUnitProjection> {
         let mut units = Vec::new();
         let mut collect = |application: &MaterializedNodeApplication,
@@ -2446,7 +3216,7 @@ impl Materializer {
             for element in elements {
                 let MaterializedElement::SemanticField {
                     field,
-                    ty,
+                    projection: MaterializedSemanticFieldProjection::Direct { ty, .. },
                     attachment: Some(attachment),
                     ..
                 } = element
@@ -2454,7 +3224,7 @@ impl Materializer {
                     continue;
                 };
                 let id = TypeId::new(
-                    (terminal_type_count + self.applications.len() + units.len())
+                    (synthetic_type_start + units.len())
                         .try_into()
                         .expect("semantic analysis attachment type ID overflow"),
                 );
@@ -2469,34 +3239,8 @@ impl Materializer {
             }
         };
         for application in &self.applications {
-            match &application.body {
-                MaterializedNodeBody::Struct(elements)
-                | MaterializedNodeBody::Presence(elements) => collect(application, elements, 0),
-                MaterializedNodeBody::Enum(variants) => {
-                    for variant in variants {
-                        collect(application, &variant.elements, 0);
-                    }
-                }
-                MaterializedNodeBody::Pratt(variants) => {
-                    for variant in variants {
-                        match variant {
-                            MaterializedPrattVariant::Nud(nud) => {
-                                let min_bp = match nud.position {
-                                    MaterializedPrattNudPosition::Atom => 0,
-                                    MaterializedPrattNudPosition::Prefix { bp } => bp,
-                                };
-                                collect(application, &nud.body, min_bp);
-                            }
-                            MaterializedPrattVariant::Led(led) => {
-                                let min_bp = match led.position {
-                                    MaterializedPrattLedPosition::Infix { rbp, .. } => rbp,
-                                    MaterializedPrattLedPosition::Postfix { .. } => 0,
-                                };
-                                collect(application, &led.tail, min_bp);
-                            }
-                        }
-                    }
-                }
+            for group in application.body.element_groups() {
+                collect(application, group.elements, group.recursive_min_bp);
             }
         }
         units
@@ -2510,33 +3254,22 @@ impl Materializer {
         terminal_type_count: usize,
         fixed_types: &BTreeMap<crate::KindId, TypeId>,
         content_types: &BTreeMap<ContentTokenId, TypeId>,
+        optional_fixed_types: &BTreeMap<(MaterializedApplicationId, TokenUseId), TypeId>,
     ) -> Vec<SiteId> {
         let application = &self.applications[unit.application.index()];
         let mut sites = Vec::new();
-        let push_fixed =
-            |grammar: &mut GrammarDescription, sites: &mut Vec<SiteId>, token_use: TokenUseId| {
-                let token_use = &self.source_model().token_uses[token_use.index()];
-                let location = grammar.push_location(Location::new(
-                    token_use.site.source,
-                    token_use.site.range.clone(),
-                ));
-                let declaration = grammar.push_declaration(Declaration::new(
-                    format!(
-                        "{}::__recursa_attachment_element{}",
-                        application.display_name,
-                        sites.len()
-                    ),
-                    location,
-                ));
-                sites.push(grammar.push_site(ParseSite::new(
-                    unit.id,
-                    fixed_types[&self.kind_for_definition(token_use.definition)],
-                    declaration,
-                    ContainerShape::Direct,
-                )));
-            };
-        for token_use in &unit.attachment.before {
-            push_fixed(grammar, &mut sites, *token_use);
+        for syntax in &unit.attachment.before {
+            let index = sites.len();
+            sites.push(self.project_attached_fixed_syntax(
+                grammar,
+                unit.id,
+                application,
+                syntax,
+                fixed_types,
+                optional_fixed_types,
+                "attachment",
+                index,
+            ));
         }
         let field = self.resolved_field(unit.field);
         let location = grammar.push_location(Location::new(field.ty.source, field.range.clone()));
@@ -2562,10 +3295,186 @@ impl Materializer {
             semantic = semantic.with_min_bp(unit.recursive_min_bp);
         }
         sites.push(grammar.push_site(semantic));
-        for token_use in &unit.attachment.after {
-            push_fixed(grammar, &mut sites, *token_use);
+        for syntax in &unit.attachment.after {
+            let index = sites.len();
+            sites.push(self.project_attached_fixed_syntax(
+                grammar,
+                unit.id,
+                application,
+                syntax,
+                fixed_types,
+                optional_fixed_types,
+                "attachment",
+                index,
+            ));
         }
         sites
+    }
+
+    /// Projects one required or erased-optional attachment entry into one normalized site.
+    #[allow(clippy::too_many_arguments)]
+    fn project_attached_fixed_syntax(
+        &self,
+        grammar: &mut GrammarDescription,
+        owner: TypeId,
+        application: &MaterializedNodeApplication,
+        syntax: &MaterializedAttachedFixedSyntax,
+        fixed_types: &BTreeMap<crate::KindId, TypeId>,
+        optional_fixed_types: &BTreeMap<(MaterializedApplicationId, TokenUseId), TypeId>,
+        role: &str,
+        index: usize,
+    ) -> SiteId {
+        let (target, container, site) = match syntax {
+            MaterializedAttachedFixedSyntax::Required(token_use) => {
+                let token_use = &self.source_model().token_uses[token_use.index()];
+                (
+                    fixed_types[&self.kind_for_definition(token_use.definition)],
+                    ContainerShape::Direct,
+                    &token_use.site,
+                )
+            }
+            MaterializedAttachedFixedSyntax::Optional { tokens, site } => (
+                optional_fixed_types[&(application.id, tokens[0])],
+                ContainerShape::optional(ContainerShape::Direct),
+                site,
+            ),
+        };
+        let location = grammar.push_location(Location::new(site.source, site.range.clone()));
+        let declaration = grammar.push_declaration(Declaration::new(
+            format!(
+                "{}::__recursa_{role}_element{index}",
+                application.display_name
+            ),
+            location,
+        ));
+        grammar.push_site(ParseSite::new(owner, target, declaration, container))
+    }
+
+    /// Projects one authored boolean presence into a fixed-only optional sequence inside a required envelope.
+    fn project_fixed_presence(
+        &self,
+        grammar: &mut GrammarDescription,
+        unit: &FixedPresenceProjection,
+        fixed_types: &BTreeMap<crate::KindId, TypeId>,
+        optional_fixed_types: &BTreeMap<(MaterializedApplicationId, TokenUseId), TypeId>,
+    ) -> (Vec<SiteId>, Vec<SiteId>, usize) {
+        let application = &self.applications[unit.application.index()];
+        let push_fixed = |grammar: &mut GrammarDescription,
+                          owner: TypeId,
+                          sites: &mut Vec<SiteId>,
+                          token_use: TokenUseId,
+                          role: &str| {
+            let token_use = &self.source_model().token_uses[token_use.index()];
+            let location = grammar.push_location(Location::new(
+                token_use.site.source,
+                token_use.site.range.clone(),
+            ));
+            let declaration = grammar.push_declaration(Declaration::new(
+                format!(
+                    "{}::__recursa_presence_{role}_element{}",
+                    application.display_name,
+                    sites.len()
+                ),
+                location,
+            ));
+            sites.push(grammar.push_site(ParseSite::new(
+                owner,
+                fixed_types[&self.kind_for_definition(token_use.definition)],
+                declaration,
+                ContainerShape::Direct,
+            )));
+        };
+
+        let mut sequence_sites = Vec::new();
+        for token in &unit.tokens {
+            push_fixed(
+                grammar,
+                unit.sequence,
+                &mut sequence_sites,
+                *token,
+                "sequence",
+            );
+        }
+
+        let mut envelope_sites = Vec::new();
+        if let Some(attachment) = &unit.attachment {
+            for syntax in &attachment.before {
+                let index = envelope_sites.len();
+                envelope_sites.push(self.project_attached_fixed_syntax(
+                    grammar,
+                    unit.envelope,
+                    application,
+                    syntax,
+                    fixed_types,
+                    optional_fixed_types,
+                    "presence_envelope",
+                    index,
+                ));
+            }
+        }
+        let presence_index = envelope_sites.len();
+        let field = self.resolved_field(unit.field);
+        let location = grammar.push_location(Location::new(field.ty.source, field.range.clone()));
+        let declaration = grammar.push_declaration(Declaration::new(
+            format!("{}::__recursa_presence_optional", application.display_name),
+            location,
+        ));
+        envelope_sites.push(grammar.push_site(ParseSite::new(
+            unit.envelope,
+            unit.sequence,
+            declaration,
+            ContainerShape::optional(ContainerShape::Direct),
+        )));
+        if let Some(attachment) = &unit.attachment {
+            for syntax in &attachment.after {
+                let index = envelope_sites.len();
+                envelope_sites.push(self.project_attached_fixed_syntax(
+                    grammar,
+                    unit.envelope,
+                    application,
+                    syntax,
+                    fixed_types,
+                    optional_fixed_types,
+                    "presence_envelope",
+                    index,
+                ));
+            }
+        }
+        (sequence_sites, envelope_sites, presence_index)
+    }
+
+    /// Projects one erased optional fixed group into its fixed-only sequence.
+    fn project_optional_fixed_group(
+        &self,
+        grammar: &mut GrammarDescription,
+        unit: &OptionalFixedGroupProjection,
+        fixed_types: &BTreeMap<crate::KindId, TypeId>,
+    ) -> Vec<SiteId> {
+        let application = &self.applications[unit.application.index()];
+        unit.tokens
+            .iter()
+            .enumerate()
+            .map(|(index, token_use)| {
+                let token_use = &self.source_model().token_uses[token_use.index()];
+                let location = grammar.push_location(Location::new(
+                    token_use.site.source,
+                    token_use.site.range.clone(),
+                ));
+                let declaration = grammar.push_declaration(Declaration::new(
+                    format!(
+                        "{}::__recursa_optional_fixed_element{index}",
+                        application.display_name,
+                    ),
+                    location,
+                ));
+                grammar.push_site(ParseSite::new(
+                    unit.sequence,
+                    fixed_types[&self.kind_for_definition(token_use.definition)],
+                    declaration,
+                    ContainerShape::Direct,
+                ))
+            })
+            .collect()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2579,6 +3488,8 @@ impl Materializer {
         terminal_type_count: usize,
         fixed_types: &BTreeMap<crate::KindId, TypeId>,
         content_types: &BTreeMap<ContentTokenId, TypeId>,
+        presence_types: &BTreeMap<(MaterializedApplicationId, ResolvedFieldId), (TypeId, bool)>,
+        optional_fixed_types: &BTreeMap<(MaterializedApplicationId, TokenUseId), TypeId>,
         attachment_types: &BTreeMap<(MaterializedApplicationId, ResolvedFieldId), TypeId>,
         field_correlations: &mut Vec<MaterializedFieldCorrelation>,
         recursive_min_bp: u8,
@@ -2604,11 +3515,56 @@ impl Materializer {
                         ContainerShape::Direct,
                     ))
                 }
+                MaterializedElement::OptionalFixedTokenGroup { tokens, site, .. } => {
+                    let location =
+                        grammar.push_location(Location::new(site.source, site.range.clone()));
+                    let declaration = grammar.push_declaration(Declaration::new(
+                        format!("{}::element{index}", application.display_name),
+                        location,
+                    ));
+                    grammar.push_site(ParseSite::new(
+                        owner,
+                        optional_fixed_types[&(application.id, tokens[0])],
+                        declaration,
+                        ContainerShape::optional(ContainerShape::Direct),
+                    ))
+                }
                 MaterializedElement::SemanticField {
                     field,
-                    ty,
+                    projection: MaterializedSemanticFieldProjection::FixedPresence { .. },
+                    ..
+                } => {
+                    let resolved_field = self.resolved_field(*field);
+                    let location = grammar.push_location(Location::new(
+                        resolved_field.ty.source,
+                        resolved_field.range.clone(),
+                    ));
+                    let declaration = grammar.push_declaration(Declaration::new(
+                        format!("{}::element{index}", application.display_name),
+                        location,
+                    ));
+                    let (target, optional) = presence_types[&(application.id, *field)];
+                    let site = grammar.push_site(ParseSite::new(
+                        owner,
+                        target,
+                        declaration,
+                        if optional {
+                            ContainerShape::optional(ContainerShape::Direct)
+                        } else {
+                            ContainerShape::Direct
+                        },
+                    ));
+                    field_correlations.push(MaterializedFieldCorrelation {
+                        application: application.id,
+                        field: *field,
+                        lowered: MaterializedFieldLowering::ParseSite(site),
+                    });
+                    site
+                }
+                MaterializedElement::SemanticField {
+                    field,
+                    projection: MaterializedSemanticFieldProjection::Direct { ty, separator, .. },
                     attachment,
-                    separator,
                     ..
                 } => {
                     let resolved_field = self.resolved_field(*field);
@@ -2796,9 +3752,13 @@ fn exact_pratt_self_operand(
     current_application: &MaterializedNodeUse,
 ) -> bool {
     let MaterializedElement::SemanticField {
-        ty,
-        trace,
-        separator,
+        projection:
+            MaterializedSemanticFieldProjection::Direct {
+                ty,
+                trace,
+                separator,
+                ..
+            },
         ..
     } = element
     else {
@@ -2904,7 +3864,8 @@ mod tests {
         ClosedType, MaterializationDiagnosticKind, MaterializationTraceStep, MaterializedElement,
         MaterializedFieldLowering, MaterializedFieldView, MaterializedNodeApplication,
         MaterializedNodeBody, MaterializedPrattLed, MaterializedPrattLedPosition,
-        MaterializedPrattNud, MaterializedPrattNudPosition, MaterializedPrattVariant, materialize,
+        MaterializedPrattNud, MaterializedPrattNudPosition, MaterializedPrattVariant,
+        MaterializedSemanticFieldProjection, materialize,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
@@ -3302,8 +4263,18 @@ struct Root {
         application
             .parsed_fields()
             .map(|element| match element {
-                MaterializedElement::SemanticField { ty, trace, .. } => (ty, trace),
-                MaterializedElement::FixedToken { .. } => unreachable!("filtered semantic field"),
+                MaterializedElement::SemanticField {
+                    projection: MaterializedSemanticFieldProjection::Direct { ty, trace, .. },
+                    ..
+                } => (ty, trace),
+                MaterializedElement::FixedToken { .. }
+                | MaterializedElement::OptionalFixedTokenGroup { .. }
+                | MaterializedElement::SemanticField {
+                    projection: MaterializedSemanticFieldProjection::FixedPresence { .. },
+                    ..
+                } => {
+                    unreachable!("filtered semantic field")
+                }
             })
             .collect()
     }
@@ -4485,7 +5456,11 @@ struct Root { #[sep(",", trailing)] values: NonEmpty<Leaf> }
             .visit_separators(&mut |separator| separators.push(separator));
         assert_eq!(separators.len(), 1);
         let MaterializedElement::SemanticField {
-            separator: Some(separator),
+            projection:
+                MaterializedSemanticFieldProjection::Direct {
+                    separator: Some(separator),
+                    ..
+                },
             ..
         } = root.parsed_fields().next().unwrap()
         else {

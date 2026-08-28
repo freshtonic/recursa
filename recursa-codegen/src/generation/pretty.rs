@@ -162,8 +162,34 @@ pub(super) enum PrettyElementBehavior {
         /// Whether the layout may break immediately after the token.
         soft_break_after: bool,
     },
-    /// Emits a stored value with container and provenance behavior.
+    /// Emits one erased fixed group only when parsed provenance records it as present.
+    OptionalFixedTokenGroup {
+        /// Optional fixed syntax in source order.
+        tokens: Vec<PrettyAttachedFixedBehavior>,
+    },
+    /// Emits one stored field value through its selected projection.
     Semantic {
+        /// Selects direct value rendering or fixed-presence rendering.
+        projection: PrettySemanticProjection,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Classifies how Pretty renders one authored semantic field value.
+pub(super) enum PrettySemanticProjection {
+    /// Emits required syntax around an optional fixed sequence controlled by a boolean field.
+    FixedPresence {
+        /// Fixed syntax before the optional sequence.
+        before: Vec<PrettyAttachedSyntaxBehavior>,
+        /// Optional fixed syntax emitted when the field is true.
+        sequence: Vec<PrettyAttachedFixedBehavior>,
+        /// Fixed syntax after the optional sequence.
+        after: Vec<PrettyAttachedSyntaxBehavior>,
+        /// Field-local grouping and break hints.
+        pretty: PrettyHints,
+    },
+    /// Emits a stored value with container and provenance behavior.
+    Direct {
         /// Separator and line-breaking behavior for repeated values.
         repetition: Option<PrettyRepetitionBehavior>,
         /// Fixed syntax attached to the semantic value.
@@ -175,6 +201,17 @@ pub(super) enum PrettyElementBehavior {
         /// Always, optional, or non-empty emission condition.
         presence: PrettyPresence,
     },
+}
+
+/// Returns the generated-node family directly parsed by a semantic element.
+fn semantic_terminal_node(element: &ElementParsePlan) -> Option<NodeId> {
+    let ElementParseKind::Semantic { projection, .. } = &element.kind else {
+        return None;
+    };
+    match projection.as_ref() {
+        SemanticParseProjection::Direct { terminal_node, .. } => *terminal_node,
+        SemanticParseProjection::FixedPresence { .. } => None,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -218,9 +255,31 @@ pub(super) struct PrettyAttachmentBehavior {
     /// Sequence grouping shared by attached fixed syntax and its value.
     pub(super) layout: PrettySequenceLayout,
     /// Fixed syntax attached before the semantic value.
-    pub(super) before: Vec<PrettyAttachedFixedBehavior>,
+    pub(super) before: Vec<PrettyAttachedSyntaxBehavior>,
     /// Fixed syntax attached after the semantic value.
-    pub(super) after: Vec<PrettyAttachedFixedBehavior>,
+    pub(super) after: Vec<PrettyAttachedSyntaxBehavior>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Classifies required and erased-optional fixed syntax in Pretty attachments.
+pub(super) enum PrettyAttachedSyntaxBehavior {
+    /// Emits one required fixed token.
+    Required(PrettyAttachedFixedBehavior),
+    /// Emits one fixed sequence only when its parsed occurrence has a source span.
+    Optional(Vec<PrettyAttachedFixedBehavior>),
+}
+
+/// Extracts required-only syntax for delimiter grouping behavior.
+fn required_pretty_syntax(
+    syntax: &[PrettyAttachedSyntaxBehavior],
+) -> Option<Vec<PrettyAttachedFixedBehavior>> {
+    syntax
+        .iter()
+        .map(|syntax| match syntax {
+            PrettyAttachedSyntaxBehavior::Required(fixed) => Some(fixed.clone()),
+            PrettyAttachedSyntaxBehavior::Optional(_) => None,
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -359,7 +418,11 @@ pub(super) fn emitted_pretty_pratt_behavior(
                 .elements
                 .iter()
                 .filter_map(|element| {
-                    let ElementParseKind::Semantic { terminal_node, .. } = &element.kind else {
+                    let ElementParseKind::Semantic { projection, .. } = &element.kind else {
+                        return None;
+                    };
+                    let SemanticParseProjection::Direct { terminal_node, .. } = projection.as_ref()
+                    else {
                         return None;
                     };
                     let current = semantic_index;
@@ -486,18 +549,41 @@ pub(super) fn pretty_pratt_grouping(
                 return None;
             }
             match (variant.elements.as_slice(), behavior.as_slice()) {
-                ([element], [PrettyElementBehavior::Semantic { attachment: Some(attachment), .. }])
-                    if matches!(&element.kind, ElementParseKind::Semantic { terminal_node: Some(node), .. } if *node == owner) =>
-                {
-                    Some(PrettyPrattGrouping {
-                        before: attachment.before.clone(),
-                        after: attachment.after.clone(),
-                    })
-                }
-                ([open, semantic, close], [PrettyElementBehavior::Fixed { spelling: open_spelling, spacing: open_spacing, rendering: open_rendering, .. }, PrettyElementBehavior::Semantic { .. }, PrettyElementBehavior::Fixed { spelling: close_spelling, spacing: close_spacing, rendering: close_rendering, .. }])
-                    if matches!(&semantic.kind, ElementParseKind::Semantic { terminal_node: Some(node), .. } if *node == owner)
-                        && matches!(open.kind, ElementParseKind::Fixed { .. })
-                        && matches!(close.kind, ElementParseKind::Fixed { .. }) =>
+                (
+                    [element],
+                    [
+                        PrettyElementBehavior::Semantic {
+                            projection:
+                                PrettySemanticProjection::Direct {
+                                    attachment: Some(attachment),
+                                    ..
+                                },
+                        },
+                    ],
+                ) if semantic_terminal_node(element) == Some(owner) => Some(PrettyPrattGrouping {
+                    before: required_pretty_syntax(&attachment.before)?,
+                    after: required_pretty_syntax(&attachment.after)?,
+                }),
+                (
+                    [open, semantic, close],
+                    [
+                        PrettyElementBehavior::Fixed {
+                            spelling: open_spelling,
+                            spacing: open_spacing,
+                            rendering: open_rendering,
+                            ..
+                        },
+                        PrettyElementBehavior::Semantic { .. },
+                        PrettyElementBehavior::Fixed {
+                            spelling: close_spelling,
+                            spacing: close_spacing,
+                            rendering: close_rendering,
+                            ..
+                        },
+                    ],
+                ) if semantic_terminal_node(semantic) == Some(owner)
+                    && matches!(open.kind, ElementParseKind::Fixed { .. })
+                    && matches!(close.kind, ElementParseKind::Fixed { .. }) =>
                 {
                     Some(PrettyPrattGrouping {
                         before: vec![PrettyAttachedFixedBehavior {
@@ -531,61 +617,113 @@ pub(super) fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<Pret
                 soft_break_before: false,
                 soft_break_after: false,
             },
-            ElementParseKind::Semantic {
-                container,
-                wrappers,
-                attachment,
-                separator,
-                opaque_provenance,
-                repetition_break,
-                pretty,
-                ..
-            } => PrettyElementBehavior::Semantic {
-                repetition: pretty_repetition_behavior(
-                    matches!(container.as_ref(), PlannedContainer::Repeated { .. }),
-                    separator.clone(),
-                    matches!(
-                        repetition_break,
-                        PlannedRepetitionBreak::TopLevelStatement(_)
-                            | PlannedRepetitionBreak::TopLevelStatementFamily(_)
-                    ),
-                    pretty,
-                ),
-                attachment: attachment.as_ref().map(|attachment| {
-                    let before = attachment
-                        .before
-                        .iter()
-                        .map(|fixed| PrettyAttachedFixedBehavior {
-                            spelling: fixed.spelling.clone(),
-                            spacing: fixed.spacing,
-                            rendering: pretty_fixed_rendering(&fixed.spelling, fixed.spacing),
-                        })
-                        .collect::<Vec<_>>();
-                    let after = attachment
-                        .after
-                        .iter()
-                        .map(|fixed| PrettyAttachedFixedBehavior {
-                            spelling: fixed.spelling.clone(),
-                            spacing: fixed.spacing,
-                            rendering: pretty_fixed_rendering(&fixed.spelling, fixed.spacing),
-                        })
-                        .collect::<Vec<_>>();
-                    PrettyAttachmentBehavior {
-                        layout: pretty_attachment_layout(&before, &after),
+            ElementParseKind::OptionalFixedTokenGroup { tokens, .. } => {
+                PrettyElementBehavior::OptionalFixedTokenGroup {
+                    tokens: pretty_presence_tokens(tokens),
+                }
+            }
+            ElementParseKind::Semantic { projection, .. } => PrettyElementBehavior::Semantic {
+                projection: match projection.as_ref() {
+                    SemanticParseProjection::FixedPresence {
                         before,
+                        sequence,
                         after,
-                    }
-                }),
-                provenance: if *opaque_provenance {
-                    PrettyProvenanceBehavior::Opaque
-                } else {
-                    PrettyProvenanceBehavior::Structured
+                        pretty,
+                    } => PrettySemanticProjection::FixedPresence {
+                        before: pretty_attachment_syntax(before),
+                        sequence: pretty_presence_tokens(sequence),
+                        after: pretty_attachment_syntax(after),
+                        pretty: pretty.clone(),
+                    },
+                    SemanticParseProjection::Direct {
+                        container,
+                        wrappers,
+                        attachment,
+                        separator,
+                        opaque_provenance,
+                        repetition_break,
+                        pretty,
+                        ..
+                    } => PrettySemanticProjection::Direct {
+                        repetition: pretty_repetition_behavior(
+                            matches!(container.as_ref(), PlannedContainer::Repeated { .. }),
+                            separator.clone(),
+                            matches!(
+                                repetition_break,
+                                PlannedRepetitionBreak::TopLevelStatement(_)
+                                    | PlannedRepetitionBreak::TopLevelStatementFamily(_)
+                            ),
+                            pretty,
+                        ),
+                        attachment: attachment.as_ref().map(|attachment| {
+                            let before = attachment
+                                .before
+                                .iter()
+                                .map(pretty_attachment_part)
+                                .collect::<Vec<_>>();
+                            let after = attachment
+                                .after
+                                .iter()
+                                .map(pretty_attachment_part)
+                                .collect::<Vec<_>>();
+                            PrettyAttachmentBehavior {
+                                layout: pretty_attachment_layout(&before, &after),
+                                before,
+                                after,
+                            }
+                        }),
+                        provenance: if *opaque_provenance {
+                            PrettyProvenanceBehavior::Opaque
+                        } else {
+                            PrettyProvenanceBehavior::Structured
+                        },
+                        pretty: pretty.clone(),
+                        presence: pretty_presence(wrappers),
+                    },
                 },
-                pretty: pretty.clone(),
-                presence: pretty_presence(wrappers),
             },
         })
         .collect()
+}
+
+/// Converts parsed fixed-token plans into their canonical Pretty behavior.
+fn pretty_presence_tokens(tokens: &[AttachedFixedParsePlan]) -> Vec<PrettyAttachedFixedBehavior> {
+    tokens
+        .iter()
+        .map(|fixed| PrettyAttachedFixedBehavior {
+            spelling: fixed.spelling.clone(),
+            spacing: fixed.spacing,
+            rendering: pretty_fixed_rendering(&fixed.spelling, fixed.spacing),
+        })
+        .collect()
+}
+
+/// Converts one parsed attachment entry into its Pretty behavior.
+fn pretty_attachment_part(syntax: &AttachedFixedSyntaxParsePlan) -> PrettyAttachedSyntaxBehavior {
+    match syntax {
+        AttachedFixedSyntaxParsePlan::Required(fixed) => {
+            PrettyAttachedSyntaxBehavior::Required(pretty_presence_token(fixed))
+        }
+        AttachedFixedSyntaxParsePlan::Optional(tokens) => {
+            PrettyAttachedSyntaxBehavior::Optional(pretty_presence_tokens(tokens))
+        }
+    }
+}
+
+/// Converts an attachment sequence into source-ordered Pretty behavior.
+fn pretty_attachment_syntax(
+    syntax: &[AttachedFixedSyntaxParsePlan],
+) -> Vec<PrettyAttachedSyntaxBehavior> {
+    syntax.iter().map(pretty_attachment_part).collect()
+}
+
+/// Converts one parsed fixed token into canonical Pretty behavior.
+fn pretty_presence_token(fixed: &AttachedFixedParsePlan) -> PrettyAttachedFixedBehavior {
+    PrettyAttachedFixedBehavior {
+        spelling: fixed.spelling.clone(),
+        spacing: fixed.spacing,
+        rendering: pretty_fixed_rendering(&fixed.spelling, fixed.spacing),
+    }
 }
 
 /// Derives separator placement and break policy for one repetition.
@@ -644,13 +782,20 @@ pub(super) fn pretty_sequence_layout(elements: &[PrettyElementBehavior]) -> Pret
 
 /// Chooses grouping for fixed syntax attached around a semantic value.
 pub(super) fn pretty_attachment_layout(
-    before: &[PrettyAttachedFixedBehavior],
-    after: &[PrettyAttachedFixedBehavior],
+    before: &[PrettyAttachedSyntaxBehavior],
+    after: &[PrettyAttachedSyntaxBehavior],
 ) -> PrettySequenceLayout {
     let delimited = before
         .first()
-        .and_then(|open| delimiter_close(&open.spelling))
-        .is_some_and(|close| after.last().is_some_and(|fixed| fixed.spelling == close));
+        .and_then(|open| match open {
+            PrettyAttachedSyntaxBehavior::Required(open) => delimiter_close(&open.spelling),
+            PrettyAttachedSyntaxBehavior::Optional(_) => None,
+        })
+        .is_some_and(|close| {
+            after.last().is_some_and(|fixed| {
+                matches!(fixed, PrettyAttachedSyntaxBehavior::Required(fixed) if fixed.spelling == close)
+            })
+        });
     if delimited {
         PrettySequenceLayout::Delimited
     } else {
@@ -913,7 +1058,12 @@ pub(super) fn authoritative_pretty_pratt_grouping(
             continue;
         }
         let is_recursive = |element: &GrammarElement| -> Result<bool, String> {
-            let GrammarElement::SemanticField { resolved_field, .. } = element else {
+            let GrammarElement::SemanticField {
+                resolved_field,
+                projection: crate::source_model::SemanticFieldProjection::Direct,
+                ..
+            } = element
+            else {
                 return Ok(false);
             };
             let field = resolved_node
@@ -928,14 +1078,21 @@ pub(super) fn authoritative_pretty_pratt_grouping(
                 [semantic],
                 [
                     PrettyElementBehavior::Semantic {
-                        attachment: Some(attachment),
-                        ..
+                        projection:
+                            PrettySemanticProjection::Direct {
+                                attachment: Some(attachment),
+                                ..
+                            },
                     },
                 ],
             ) if is_recursive(semantic)? => {
                 return Ok(Some(PrettyPrattGrouping {
-                    before: attachment.before.clone(),
-                    after: attachment.after.clone(),
+                    before: required_pretty_syntax(&attachment.before).ok_or_else(|| {
+                        "a Pratt grouping attachment cannot contain optional syntax".to_owned()
+                    })?,
+                    after: required_pretty_syntax(&attachment.after).ok_or_else(|| {
+                        "a Pratt grouping attachment cannot contain optional syntax".to_owned()
+                    })?,
                 }));
             }
             (
@@ -1006,8 +1163,78 @@ pub(super) fn authoritative_pretty_elements(
                     soft_break_after: false,
                 })
             }
+            GrammarElement::OptionalFixedTokenGroup { tokens, .. } => {
+                let tokens = tokens
+                    .iter()
+                    .map(|token| {
+                        let usage = &source.token_uses[token.token_use.index()];
+                        let definition = &source.token_definitions[usage.definition.index()];
+                        let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+                            return Err("an optional group token is not fixed syntax".to_owned());
+                        };
+                        let spelling = fixed_pretty_spelling(
+                            &fixed.spelling,
+                            lowered.grammar.text_equivalence,
+                        );
+                        Ok(PrettyAttachedFixedBehavior {
+                            rendering: pretty_fixed_rendering(&spelling, fixed.pretty_spacing),
+                            spelling,
+                            spacing: fixed.pretty_spacing,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(PrettyElementBehavior::OptionalFixedTokenGroup { tokens })
+            }
+            GrammarElement::SemanticField {
+                projection: crate::source_model::SemanticFieldProjection::FixedPresence { tokens },
+                attachment,
+                pretty,
+                ..
+            } => {
+                let fixed = |token: &crate::source_model::AttachedFixedToken| {
+                    let usage = &source.token_uses[token.token_use.index()];
+                    let definition = &source.token_definitions[usage.definition.index()];
+                    let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+                        return Err("an authored presence token is not fixed syntax".to_owned());
+                    };
+                    let spelling =
+                        fixed_pretty_spelling(&fixed.spelling, lowered.grammar.text_equivalence);
+                    Ok(PrettyAttachedFixedBehavior {
+                        rendering: pretty_fixed_rendering(&spelling, fixed.pretty_spacing),
+                        spelling,
+                        spacing: fixed.pretty_spacing,
+                    })
+                };
+                let syntax = |syntax: &crate::source_model::AttachedFixedSyntax| match syntax {
+                    crate::source_model::AttachedFixedSyntax::Required(token) => {
+                        fixed(token).map(PrettyAttachedSyntaxBehavior::Required)
+                    }
+                    crate::source_model::AttachedFixedSyntax::Optional { tokens, .. } => tokens
+                        .iter()
+                        .map(fixed)
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(PrettyAttachedSyntaxBehavior::Optional),
+                };
+                let before = attachment.as_ref().map_or_else(
+                    || Ok(Vec::new()),
+                    |attachment| attachment.before.iter().map(syntax).collect(),
+                )?;
+                let after = attachment.as_ref().map_or_else(
+                    || Ok(Vec::new()),
+                    |attachment| attachment.after.iter().map(syntax).collect(),
+                )?;
+                Ok(PrettyElementBehavior::Semantic {
+                    projection: PrettySemanticProjection::FixedPresence {
+                        before,
+                        sequence: tokens.iter().map(fixed).collect::<Result<_, _>>()?,
+                        after,
+                        pretty: pretty.clone(),
+                    },
+                })
+            }
             GrammarElement::SemanticField {
                 resolved_field,
+                projection: crate::source_model::SemanticFieldProjection::Direct,
                 attachment,
                 separator,
                 pretty,
@@ -1042,27 +1269,29 @@ pub(super) fn authoritative_pretty_elements(
                         )
                     });
                 Ok(PrettyElementBehavior::Semantic {
-                    repetition: pretty_repetition_behavior(
-                        repeated,
-                        separator_spelling,
-                        top_level_break,
-                        pretty,
-                    ),
-                    attachment: attachment
-                        .as_ref()
-                        .map(|attachment| authoritative_pretty_attachment(lowered, attachment))
-                        .transpose()?,
-                    provenance: if authored_type_depends_on_node_generics(
-                        &field.ty,
-                        resolved_node,
-                        resolved,
-                    ) {
-                        PrettyProvenanceBehavior::Opaque
-                    } else {
-                        PrettyProvenanceBehavior::Structured
+                    projection: PrettySemanticProjection::Direct {
+                        repetition: pretty_repetition_behavior(
+                            repeated,
+                            separator_spelling,
+                            top_level_break,
+                            pretty,
+                        ),
+                        attachment: attachment
+                            .as_ref()
+                            .map(|attachment| authoritative_pretty_attachment(lowered, attachment))
+                            .transpose()?,
+                        provenance: if authored_type_depends_on_node_generics(
+                            &field.ty,
+                            resolved_node,
+                            resolved,
+                        ) {
+                            PrettyProvenanceBehavior::Opaque
+                        } else {
+                            PrettyProvenanceBehavior::Structured
+                        },
+                        pretty: pretty.clone(),
+                        presence: pretty_presence(&projection.wrappers),
                     },
-                    pretty: pretty.clone(),
-                    presence: pretty_presence(&projection.wrappers),
                 })
             }
         })
@@ -1108,15 +1337,25 @@ pub(super) fn authoritative_pretty_attachment(
             spacing: fixed.pretty_spacing,
         })
     };
+    let syntax = |syntax: &crate::source_model::AttachedFixedSyntax| match syntax {
+        crate::source_model::AttachedFixedSyntax::Required(token) => {
+            fixed(token.token_use).map(PrettyAttachedSyntaxBehavior::Required)
+        }
+        crate::source_model::AttachedFixedSyntax::Optional { tokens, .. } => tokens
+            .iter()
+            .map(|token| fixed(token.token_use))
+            .collect::<Result<Vec<_>, _>>()
+            .map(PrettyAttachedSyntaxBehavior::Optional),
+    };
     let before = attachment
         .before
         .iter()
-        .map(|attached| fixed(attached.token_use))
+        .map(syntax)
         .collect::<Result<Vec<_>, _>>()?;
     let after = attachment
         .after
         .iter()
-        .map(|attached| fixed(attached.token_use))
+        .map(syntax)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(PrettyAttachmentBehavior {
         layout: pretty_attachment_layout(&before, &after),
@@ -1189,26 +1428,57 @@ pub(super) fn render_pratt_node_pretty(
                     quote!(#before #fixed #after)
                 }
                 (
+                    ElementParseKind::OptionalFixedTokenGroup { .. },
+                    PrettyElementBehavior::OptionalFixedTokenGroup { tokens },
+                ) => render_pretty_optional_fixed_group(index, tokens),
+                (
                     ElementParseKind::Semantic {
-                        wrappers,
-                        container,
+                        projection: parse_projection,
                         ..
                     },
                     PrettyElementBehavior::Semantic {
-                        attachment,
-                        pretty,
-                        presence,
-                        provenance,
-                        ..
+                        projection: pretty_projection,
                     },
-                ) => {
-                    assert!(
-                        matches!(container.as_ref(), PlannedContainer::Direct { .. })
-                            && wrappers
-                                .iter()
-                                .all(|wrapper| matches!(wrapper, FieldWrapper::Boxed)),
-                        "validated Pratt operands are direct and may only use Box storage wrappers",
-                    );
+                ) => match (parse_projection.as_ref(), pretty_projection) {
+                    (
+                        SemanticParseProjection::FixedPresence { .. },
+                        PrettySemanticProjection::FixedPresence {
+                            before,
+                            sequence,
+                            after,
+                            pretty,
+                        },
+                    ) => {
+                        let binding = &bindings[binding_index];
+                        binding_index += 1;
+                        render_pretty_fixed_token_presence(
+                            index,
+                            quote!(*#binding),
+                            before,
+                            sequence,
+                            after,
+                            pretty,
+                        )
+                    }
+                    (
+                        SemanticParseProjection::Direct {
+                            wrappers, container, ..
+                        },
+                        PrettySemanticProjection::Direct {
+                            attachment,
+                            pretty,
+                            presence,
+                            provenance,
+                            ..
+                        },
+                    ) => {
+                        assert!(
+                            matches!(container.as_ref(), PlannedContainer::Direct { .. })
+                                && wrappers
+                                    .iter()
+                                    .all(|wrapper| matches!(wrapper, FieldWrapper::Boxed)),
+                            "validated Pratt operands are direct and may only use Box storage wrappers",
+                        );
                     let binding = &bindings[binding_index];
                     binding_index += 1;
                     let operand = &pratt_variant.operands[semantic_index];
@@ -1251,9 +1521,13 @@ pub(super) fn render_pratt_node_pretty(
                         quote!(#binding),
                         rendered,
                     )
-                }
+                    }
+                    _ => unreachable!("validated Pretty Pratt semantic projection"),
+                },
                 (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Semantic { .. })
-                | (ElementParseKind::Semantic { .. }, PrettyElementBehavior::Fixed { .. }) => {
+                | (ElementParseKind::Semantic { .. }, PrettyElementBehavior::Fixed { .. })
+                | (ElementParseKind::OptionalFixedTokenGroup { .. }, _)
+                | (_, PrettyElementBehavior::OptionalFixedTokenGroup { .. }) => {
                     unreachable!("validated Pretty Pratt element behavior")
                 }
             })
@@ -1354,6 +1628,104 @@ pub(super) fn terminal_path_ident(terminal: &Type) -> Option<&Ident> {
     path.path.segments.last().map(|segment| &segment.ident)
 }
 
+/// Renders one non-Pratt element from its frozen value and formatting projections.
+fn render_non_pratt_pretty_element(
+    plan: &EmissionPlan,
+    index: usize,
+    element: &ElementParsePlan,
+    behavior: &PrettyElementBehavior,
+    semantic_value: Option<(proc_macro2::TokenStream, bool)>,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    match (&element.kind, behavior) {
+        (
+            ElementParseKind::Fixed { .. },
+            PrettyElementBehavior::Fixed {
+                spelling,
+                rendering,
+                ..
+            },
+        ) => render_pretty_fixed(plan, index, spelling, *rendering),
+        (
+            ElementParseKind::OptionalFixedTokenGroup { .. },
+            PrettyElementBehavior::OptionalFixedTokenGroup { tokens },
+        ) => render_pretty_optional_fixed_group(index, tokens),
+        (
+            ElementParseKind::Semantic {
+                projection: parse_projection,
+                ..
+            },
+            PrettyElementBehavior::Semantic {
+                projection: pretty_projection,
+            },
+        ) => {
+            let (value, borrowed) = semantic_value.expect("semantic Pretty element has a value");
+            match (parse_projection.as_ref(), pretty_projection) {
+                (
+                    SemanticParseProjection::FixedPresence { .. },
+                    PrettySemanticProjection::FixedPresence {
+                        before,
+                        sequence,
+                        after,
+                        pretty,
+                    },
+                ) => {
+                    let condition = if borrowed { quote!(*#value) } else { value };
+                    render_pretty_fixed_token_presence(
+                        index, condition, before, sequence, after, pretty,
+                    )
+                }
+                (
+                    SemanticParseProjection::Direct { wrappers, .. },
+                    PrettySemanticProjection::Direct {
+                        repetition,
+                        attachment,
+                        pretty,
+                        presence,
+                        provenance,
+                    },
+                ) => {
+                    let rendered = if let Some(attachment) = attachment {
+                        render_pretty_attached_semantic(
+                            facade,
+                            index,
+                            value.clone(),
+                            borrowed,
+                            wrappers,
+                            attachment,
+                            repetition.as_ref(),
+                            *presence,
+                            *provenance,
+                        )
+                    } else {
+                        let reference = if borrowed {
+                            value.clone()
+                        } else {
+                            quote!(&#value)
+                        };
+                        render_pretty_semantic(
+                            facade,
+                            index,
+                            reference,
+                            repetition.as_ref(),
+                            *provenance,
+                        )
+                    };
+                    let reference = if borrowed { value } else { quote!(&#value) };
+                    render_pretty_presence(pretty, *presence, wrappers, reference, rendered)
+                }
+                _ => unreachable!("validated non-Pratt Pretty semantic projection"),
+            }
+        }
+        (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Semantic { .. })
+        | (ElementParseKind::Semantic { .. }, PrettyElementBehavior::Fixed { .. })
+        | (ElementParseKind::OptionalFixedTokenGroup { .. }, _)
+        | (_, PrettyElementBehavior::OptionalFixedTokenGroup { .. }) => {
+            unreachable!("validated non-Pratt Pretty element behavior")
+        }
+    }
+}
+
 /// Renders structured Pretty and source-map behavior for a non-Pratt Node.
 ///
 /// # Long-function contract
@@ -1382,65 +1754,17 @@ pub(super) fn render_node_pretty(
             .iter()
             .zip(behavior)
             .enumerate()
-            .map(
-                |(index, (element, behavior))| match (&element.kind, behavior) {
-                    (
-                        ElementParseKind::Fixed { .. },
-                        PrettyElementBehavior::Fixed {
-                            spelling,
-                            rendering,
-                            ..
-                        },
-                    ) => render_pretty_fixed(plan, index, spelling, *rendering),
-                    (
-                        ElementParseKind::Semantic {
-                            field, wrappers, ..
-                        },
-                        PrettyElementBehavior::Semantic {
-                            repetition,
-                            attachment,
-                            pretty,
-                            presence,
-                            provenance,
-                            ..
-                        },
-                    ) => {
-                        let value = field_access(base.clone(), field.ident.as_ref(), field.index);
-                        let rendered = if let Some(attachment) = attachment {
-                            render_pretty_attached_semantic(
-                                facade,
-                                index,
-                                value.clone(),
-                                false,
-                                wrappers,
-                                attachment,
-                                repetition.as_ref(),
-                                *presence,
-                                *provenance,
-                            )
-                        } else {
-                            render_pretty_semantic(
-                                facade,
-                                index,
-                                quote!(&#value),
-                                repetition.as_ref(),
-                                *provenance,
-                            )
-                        };
-                        render_pretty_presence(
-                            pretty,
-                            *presence,
-                            wrappers,
-                            quote!(&#value),
-                            rendered,
-                        )
-                    }
-                    (ElementParseKind::Fixed { .. }, PrettyElementBehavior::Semantic { .. })
-                    | (ElementParseKind::Semantic { .. }, PrettyElementBehavior::Fixed { .. }) => {
-                        unreachable!("validated Pretty element behavior")
-                    }
-                },
-            )
+            .map(|(index, (element, behavior))| {
+                let value = match &element.kind {
+                    ElementParseKind::Semantic { field, .. } => Some((
+                        field_access(base.clone(), field.ident.as_ref(), field.index),
+                        false,
+                    )),
+                    ElementParseKind::Fixed { .. }
+                    | ElementParseKind::OptionalFixedTokenGroup { .. } => None,
+                };
+                render_non_pratt_pretty_element(plan, index, element, behavior, value)
+            })
             .collect::<Vec<_>>();
         render_pretty_sequence(layout, &rendered)
     };
@@ -1474,68 +1798,17 @@ pub(super) fn render_node_pretty(
                         .iter()
                         .zip(behavior)
                         .enumerate()
-                        .map(
-                            |(index, (element, behavior))| match (&element.kind, behavior) {
-                                (
-                                    ElementParseKind::Fixed { .. },
-                                    PrettyElementBehavior::Fixed {
-                                        spelling,
-                                        rendering,
-                                        ..
-                                    },
-                                ) => render_pretty_fixed(plan, index, spelling, *rendering),
-                                (
-                                    ElementParseKind::Semantic { wrappers, .. },
-                                    PrettyElementBehavior::Semantic {
-                                        repetition,
-                                        attachment,
-                                        pretty,
-                                        presence,
-                                        provenance,
-                                        ..
-                                    },
-                                ) => {
-                                    let binding = &bindings[binding_index];
-                                    binding_index += 1;
-                                    let rendered = if let Some(attachment) = attachment {
-                                        render_pretty_attached_semantic(
-                                            facade,
-                                            index,
-                                            quote!(#binding),
-                                            true,
-                                            wrappers,
-                                            attachment,
-                                            repetition.as_ref(),
-                                            *presence,
-                                            *provenance,
-                                        )
-                                    } else {
-                                        render_pretty_semantic(
-                                            facade,
-                                            index,
-                                            quote!(#binding),
-                                            repetition.as_ref(),
-                                            *provenance,
-                                        )
-                                    };
-                                    render_pretty_presence(
-                                        pretty,
-                                        *presence,
-                                        wrappers,
-                                        quote!(#binding),
-                                        rendered,
-                                    )
-                                }
-                                (
-                                    ElementParseKind::Fixed { .. },
-                                    PrettyElementBehavior::Semantic { .. },
-                                )
-                                | (
-                                    ElementParseKind::Semantic { .. },
-                                    PrettyElementBehavior::Fixed { .. },
-                                ) => unreachable!("validated Pretty element behavior"),
-                            },
-                        )
+                        .map(|(index, (element, behavior))| {
+                            let value = if matches!(element.kind, ElementParseKind::Semantic { .. })
+                            {
+                                let binding = &bindings[binding_index];
+                                binding_index += 1;
+                                Some((quote!(#binding), true))
+                            } else {
+                                None
+                            };
+                            render_non_pratt_pretty_element(plan, index, element, behavior, value)
+                        })
                         .collect::<Vec<_>>();
                     let rendered = render_pretty_sequence(*layout, &rendered);
                     let rendered = render_pretty_hints(variant_pretty, rendered);
@@ -1697,6 +1970,63 @@ pub(super) fn render_pretty_fixed_with_method(
     }
 }
 
+/// Renders a boolean-controlled fixed sequence inside its required attachment envelope.
+fn render_pretty_fixed_token_presence(
+    index: usize,
+    value: proc_macro2::TokenStream,
+    before: &[PrettyAttachedSyntaxBehavior],
+    sequence: &[PrettyAttachedFixedBehavior],
+    after: &[PrettyAttachedSyntaxBehavior],
+    pretty: &PrettyHints,
+) -> proc_macro2::TokenStream {
+    let before_tokens = before
+        .iter()
+        .enumerate()
+        .map(|(index, syntax)| render_pretty_attached_syntax(index, syntax));
+    let presence_index = before.len();
+    let sequence_tokens = sequence
+        .iter()
+        .enumerate()
+        .map(|(index, fixed)| render_pretty_attached_fixed(index, fixed));
+    let after_tokens = after
+        .iter()
+        .enumerate()
+        .map(|(offset, fixed)| render_pretty_attached_syntax(presence_index + 1 + offset, fixed));
+    let rendered = quote! {
+        context.with_child(#index, |context| {
+            #(#before_tokens)*
+            if #value {
+                context.with_child(#presence_index, |context| {
+                    #(#sequence_tokens)*
+                    Ok(())
+                })?;
+            }
+            #(#after_tokens)*
+            Ok(())
+        })?;
+    };
+    render_pretty_hints(pretty, rendered)
+}
+
+/// Renders one erased optional group only when parsed provenance records it.
+fn render_pretty_optional_fixed_group(
+    index: usize,
+    tokens: &[PrettyAttachedFixedBehavior],
+) -> proc_macro2::TokenStream {
+    let tokens = tokens
+        .iter()
+        .enumerate()
+        .map(|(index, fixed)| render_pretty_attached_fixed(index, fixed));
+    quote! {
+        context.with_child(#index, |context| {
+            if context.has_source_span() {
+                #(#tokens)*
+            }
+            Ok(())
+        })?;
+    }
+}
+
 /// Renders canonical fixed text for a synthetic document without source provenance.
 pub(super) fn render_pretty_synthetic_fixed(
     plan: &EmissionPlan,
@@ -1766,6 +2096,19 @@ pub(super) fn render_pretty_attached_fixed(
     }
 }
 
+/// Renders one required or erased-optional attachment entry.
+fn render_pretty_attached_syntax(
+    index: usize,
+    syntax: &PrettyAttachedSyntaxBehavior,
+) -> proc_macro2::TokenStream {
+    match syntax {
+        PrettyAttachedSyntaxBehavior::Required(fixed) => render_pretty_attached_fixed(index, fixed),
+        PrettyAttachedSyntaxBehavior::Optional(tokens) => {
+            render_pretty_optional_fixed_group(index, tokens)
+        }
+    }
+}
+
 /// Groups one semantic value with its attached fixed syntax.
 pub(super) fn render_pretty_attachment_unit(
     attachment: &PrettyAttachmentBehavior,
@@ -1776,7 +2119,7 @@ pub(super) fn render_pretty_attachment_unit(
         .before
         .iter()
         .enumerate()
-        .map(|(index, fixed)| render_pretty_attached_fixed(index, fixed))
+        .map(|(index, syntax)| render_pretty_attached_syntax(index, syntax))
         .collect::<Vec<_>>();
     let semantic_index = before.len();
     let child = pretty_provenance_child_method(provenance);
@@ -1787,7 +2130,7 @@ pub(super) fn render_pretty_attachment_unit(
         .after
         .iter()
         .enumerate()
-        .map(|(index, fixed)| render_pretty_attached_fixed(semantic_index + 1 + index, fixed))
+        .map(|(index, syntax)| render_pretty_attached_syntax(semantic_index + 1 + index, syntax))
         .collect::<Vec<_>>();
     if attachment.layout == PrettySequenceLayout::Delimited {
         let open = &before[0];

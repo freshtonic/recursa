@@ -70,6 +70,27 @@ subtractions that remove nothing; duplicate union membership is a warning.
 `#[lex(..., admits(WindowRefName))]` applies the compiled canonical membership
 to that generated content-token type.
 
+Use `optional(TOKENS...)` inside the sole `#[tok(...)]` sequence for fixed
+syntax that should be accepted but erased from the AST. Use a separate
+`#[presence(TOKENS...)]` on an unqualified `bool` field when the AST must retain
+whether the sequence occurred. Presence composes with the field's ordinary
+attachment, including required syntax around `this`:
+
+```rust,ignore
+#[derive(recursa::Node)]
+pub struct CreateMaterializedView<'input> {
+    #[tok(CREATE, this, MATERIALIZED, VIEW)]
+    #[presence(UNLOGGED)]
+    pub unlogged: bool,
+    pub name: Identifier<'input>,
+}
+```
+
+These optional sequences are non-empty, unnested, fixed-only, and selected
+atomically. A partial prefix consumes nothing. Pretty reuses parsed source
+syntax, emits a canonical presence sequence for a synthetic `true`, and omits
+both a synthetic `false` and synthetic erased optional groups.
+
 Closed lexical mechanisms live beside the token grammar. Declare an emitting
 matcher in `matchers`, bind its same-named token
 type with `#[lex(matcher)]`, or declare the same matcher vocabulary in `ignore`

@@ -357,11 +357,18 @@ fn visit_field_types(plan: &EmissionPlan, node: &NodeParsePlan) -> Vec<Type> {
     let mut fields = Vec::new();
     for_each_element(&node.body, &mut |element| {
         let ElementParseKind::Semantic {
+            projection: semantic,
+            ..
+        } = &element.kind
+        else {
+            return;
+        };
+        let SemanticParseProjection::Direct {
             terminal,
             terminal_node,
             wrappers,
             ..
-        } = &element.kind
+        } = semantic.as_ref()
         else {
             return;
         };
@@ -401,9 +408,13 @@ fn node_reaches(
     let mut dependencies = Vec::new();
     for_each_element(body, &mut |element| {
         if let ElementParseKind::Semantic {
-            terminal_node: Some(node),
+            projection: semantic,
             ..
         } = &element.kind
+            && let SemanticParseProjection::Direct {
+                terminal_node: Some(node),
+                ..
+            } = semantic.as_ref()
         {
             dependencies.push(*node);
         }
@@ -429,9 +440,12 @@ pub(super) fn render_visit_children(
     match &node.body {
         NodeBodyPlan::Struct { elements, .. } => {
             let fields = elements.iter().filter_map(|element| {
-                let ElementParseKind::Semantic { field, .. } = &element.kind else {
+                let ElementParseKind::Semantic { field, projection } = &element.kind else {
                     return None;
                 };
+                if !matches!(projection.as_ref(), SemanticParseProjection::Direct { .. }) {
+                    return None;
+                }
                 let access = field_access(quote!(self), field.ident.as_ref(), field.index);
                 Some(visit(if mutable {
                     quote!(&mut #access)
@@ -449,18 +463,22 @@ pub(super) fn render_visit_children(
                     .elements
                     .iter()
                     .filter_map(|element| match &element.kind {
-                        ElementParseKind::Semantic { field, .. } => Some(field),
-                        ElementParseKind::Fixed { .. } => None,
+                        ElementParseKind::Semantic { field, projection } => Some((
+                            field,
+                            matches!(projection.as_ref(), SemanticParseProjection::Direct { .. }),
+                        )),
+                        ElementParseKind::Fixed { .. }
+                        | ElementParseKind::OptionalFixedTokenGroup { .. } => None,
                     })
                     .collect::<Vec<_>>();
                 let bindings = semantic
                     .iter()
-                    .map(|field| format_ident!("__recursa_visit_field_{}", field.index))
+                    .map(|(field, _)| format_ident!("__recursa_visit_field_{}", field.index))
                     .collect::<Vec<_>>();
                 let variant_ident = &variant.ident;
                 let pattern = match variant.style {
                     ResolvedFieldStyle::Named => {
-                        let fields = semantic.iter().zip(&bindings).map(|(field, binding)| {
+                        let fields = semantic.iter().zip(&bindings).map(|((field, _), binding)| {
                             let ident = field
                                 .ident
                                 .as_ref()
@@ -472,18 +490,21 @@ pub(super) fn render_visit_children(
                     ResolvedFieldStyle::Unnamed => {
                         let field_count = semantic
                             .iter()
-                            .map(|field| field.index + 1)
+                            .map(|(field, _)| field.index + 1)
                             .max()
                             .unwrap_or(0);
                         let mut fields = (0..field_count).map(|_| quote!(_)).collect::<Vec<_>>();
-                        for (field, binding) in semantic.iter().zip(&bindings) {
+                        for ((field, _), binding) in semantic.iter().zip(&bindings) {
                             fields[field.index] = quote!(#binding);
                         }
                         quote!(#node_ident::#variant_ident(#(#fields),*))
                     }
                     ResolvedFieldStyle::Unit => quote!(#node_ident::#variant_ident),
                 };
-                let visits = bindings.into_iter().map(|binding| visit(quote!(#binding)));
+                let visits = semantic
+                    .iter()
+                    .zip(bindings)
+                    .filter_map(|((_, direct), binding)| direct.then(|| visit(quote!(#binding))));
                 quote!(#pattern => { #(#visits)* })
             });
             quote!(match self { #(#arms),* })
