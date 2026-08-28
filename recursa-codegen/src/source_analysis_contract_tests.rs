@@ -56,6 +56,56 @@ struct ProducerEvidence {
     command: &'static str,
 }
 
+/// Executable evidence for stable lexical failures in the matching-version runtime protocol.
+///
+/// These codes are not build diagnostics, so this ledger is deliberately separate from the build
+/// diagnostic registry and its producer ledger.
+struct RuntimeLexicalEvidence {
+    /// Identifies the runtime protocol failures exercised by this evidence row.
+    codes: &'static [&'static str],
+    /// Points to the runtime branch that creates each classified failure.
+    producer_source: &'static str,
+    /// Points to the function that executes and checks the producer outcome.
+    assertion_source: &'static str,
+    /// Selects that asserting function within its source file.
+    assertion_name: &'static str,
+    /// Distinguishes the downstream fixture entry point from an ordinary Rust test.
+    assertion_is_test: bool,
+    /// Points to the Cargo-visible test that runs the assertion source.
+    command_test_source: &'static str,
+    /// Selects the Cargo-visible test used by the executable command.
+    command_test_name: &'static str,
+    /// Records the exact focused command maintainers can rerun for this evidence.
+    command: &'static str,
+}
+
+/// Complete stable-code contract for failures produced while lexing user input.
+const RUNTIME_LEXICAL_CODES: &[&str] = &["RCA4000", "RCA4001", "RCA4002", "RCA4003", "RCA4004"];
+
+/// Maps every runtime lexical failure code to executable public or invariant evidence.
+const RUNTIME_LEXICAL_EVIDENCE: &[RuntimeLexicalEvidence] = &[
+    RuntimeLexicalEvidence {
+        codes: &["RCA4000", "RCA4001", "RCA4002", "RCA4004"],
+        producer_source: "../recursa-core/src/lex.rs",
+        assertion_source: "tests/fixtures/generation/lexing/src/main.rs",
+        assertion_name: "main",
+        assertion_is_test: false,
+        command_test_source: "tests/generated_lexing.rs",
+        command_test_name: "a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text",
+        command: "cargo test -p recursa-codegen --test generated_lexing a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text --locked",
+    },
+    RuntimeLexicalEvidence {
+        codes: &["RCA4003"],
+        producer_source: "../recursa-core/src/lex.rs",
+        assertion_source: "../recursa-core/src/lex.rs",
+        assertion_name: "checked_nested_depth_transition_produces_rca4003_at_the_span_domain_bound",
+        assertion_is_test: true,
+        command_test_source: "../recursa-core/src/lex.rs",
+        command_test_name: "checked_nested_depth_transition_produces_rca4003_at_the_span_domain_bound",
+        command: "cargo test -p recursa-core lex::tests::checked_nested_depth_transition_produces_rca4003_at_the_span_domain_bound --locked",
+    },
+];
+
 macro_rules! phase_producer_evidence {
     ($code:literal, $module:literal, $test:literal) => {
         ProducerEvidence {
@@ -392,20 +442,6 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::pretty_hints_reject_missing_pretty_trait_empty_groups_and_tight_breaks --locked",
     },
     ProducerEvidence {
-        codes: &["RCA4000", "RCA4001", "RCA4002", "RCA4004"],
-        producer_source: "../recursa-core/src/lex.rs",
-        test_source: "tests/generated_lexing.rs",
-        test_name: "a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text",
-        command: "cargo test -p recursa-codegen --test generated_lexing a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text --locked",
-    },
-    ProducerEvidence {
-        codes: &["RCA4003"],
-        producer_source: "../recursa-core/src/lex.rs",
-        test_source: "../recursa-core/src/lex.rs",
-        test_name: "checked_nested_depth_transition_produces_rca4003_at_the_span_domain_bound",
-        command: "cargo test -p recursa-core lex::tests::checked_nested_depth_transition_produces_rca4003_at_the_span_domain_bound --locked",
-    },
-    ProducerEvidence {
         codes: &[
             "RCA3202", "RCA3203", "RCA3204", "RCA3205", "RCA3206", "RCA3207", "RCA3208",
         ],
@@ -478,7 +514,65 @@ fn every_registered_code_has_real_producer_evidence() {
     );
 }
 
+#[test]
+fn runtime_lexical_codes_have_public_or_invariant_producer_evidence() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let expected = RUNTIME_LEXICAL_CODES
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut actual = std::collections::BTreeSet::new();
+
+    for evidence in RUNTIME_LEXICAL_EVIDENCE {
+        let producer = std::fs::read_to_string(manifest.join(evidence.producer_source)).unwrap();
+        let assertion_source =
+            std::fs::read_to_string(manifest.join(evidence.assertion_source)).unwrap();
+        let assertion_output = asserted_function_output(
+            &assertion_source,
+            evidence.assertion_name,
+            evidence.assertion_is_test,
+        );
+        let command_test_source =
+            std::fs::read_to_string(manifest.join(evidence.command_test_source)).unwrap();
+        let command_output = asserted_test_output(&command_test_source, evidence.command_test_name);
+        assert_eq!(
+            evidence.command,
+            producer_test_command(evidence.command_test_source, evidence.command_test_name),
+            "runtime evidence must provide an exact executable command",
+        );
+        for code in evidence.codes {
+            assert!(
+                producer.contains(code),
+                "{code} is absent from its cited runtime producer"
+            );
+            assert!(
+                assertion_output.contains(code),
+                "{} does not explicitly assert its claimed {code} output",
+                evidence.assertion_name,
+            );
+            assert!(
+                command_output.contains(code),
+                "{} does not assert the commanded producer's {code} output",
+                evidence.command_test_name,
+            );
+            assert!(
+                actual.insert(*code),
+                "duplicate runtime evidence for {code}"
+            );
+        }
+    }
+
+    assert_eq!(
+        actual, expected,
+        "runtime lexical evidence must cover its separate code contract exactly"
+    );
+}
+
 fn asserted_test_output(source: &str, name: &str) -> String {
+    asserted_function_output(source, name, true)
+}
+
+fn asserted_function_output(source: &str, name: &str, require_test: bool) -> String {
     struct AssertionVisitor {
         tokens: String,
     }
@@ -512,17 +606,19 @@ fn asserted_test_output(source: &str, name: &str) -> String {
         }
     }
 
-    fn find(items: &[syn::Item], name: &str) -> Option<String> {
+    fn find(items: &[syn::Item], name: &str, require_test: bool) -> Option<String> {
         for item in items {
             match item {
                 syn::Item::Fn(function) if function.sig.ident == name => {
-                    assert!(
-                        function
-                            .attrs
-                            .iter()
-                            .any(|attribute| attribute.path().is_ident("test")),
-                        "cited producer evidence {name} is not a test",
-                    );
+                    if require_test {
+                        assert!(
+                            function
+                                .attrs
+                                .iter()
+                                .any(|attribute| attribute.path().is_ident("test")),
+                            "cited producer evidence {name} is not a test",
+                        );
+                    }
                     let mut visitor = AssertionVisitor {
                         tokens: String::new(),
                     };
@@ -531,7 +627,7 @@ fn asserted_test_output(source: &str, name: &str) -> String {
                 }
                 syn::Item::Mod(module) => {
                     if let Some((_, items)) = &module.content
-                        && let Some(found) = find(items, name)
+                        && let Some(found) = find(items, name, require_test)
                     {
                         return Some(found);
                     }
@@ -543,7 +639,8 @@ fn asserted_test_output(source: &str, name: &str) -> String {
     }
 
     let file = syn::parse_file(source).expect("producer test source is valid Rust");
-    find(&file.items, name).unwrap_or_else(|| panic!("missing cited producer test {name}"))
+    find(&file.items, name, require_test)
+        .unwrap_or_else(|| panic!("missing cited producer function {name}"))
 }
 
 fn producer_test_command(source: &str, test: &str) -> String {
@@ -862,12 +959,16 @@ struct Root;
         r#"
 recursa::grammar! { module = crate }
 
+recursa::tokens! {
+    matchers {
+        ClosedLine => physical_line(prefix = r"~.", priority = 2),
+    }
+}
+
 #[derive(recursa::Node)]
 struct Root {
     #[lex(pattern = r"~", callback = crate::scan, priority = 1)]
     callback: Callback,
-    #[lex(pattern = r"~.", priority = 2)]
-    ordinary: Ordinary,
 }
 "#,
     );

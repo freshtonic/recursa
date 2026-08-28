@@ -105,9 +105,16 @@ includes its LF, CRLF, or CR ending, or reaches EOF. Unterminated delimited and
 nested regions produce opener-anchored lexical errors over the complete
 opener-to-EOF range; generated `LexError::code`, `diagnostic_code`, and `anchor`
 preserve their stable diagnostic identity.
-Legacy lexer callbacks continue to work when their starters are disjoint from every other rule.
-An overlapping callback is rejected during source analysis because its final extent cannot be
-known without speculatively executing authored code; migrate that overlap to a closed matcher.
+Legacy callback arbitration against regular-expression and fixed rules remains available during
+migration. A callback that overlaps a finalizing closed matcher is rejected during source analysis
+because its final extent cannot be known without speculatively executing authored code; migrate
+that overlap to the closed vocabulary.
+
+An alternative lexer can construct the same public result through `LexBuilder`. Each supplied
+token or error record must use an exact grammar-local kind and a source-bounded UTF-8 span, in
+source order and without overlap. Finalization preserves those spans and leaves gaps unrecorded;
+it does not rescan missing source regions. Classified trivia records and their observable gap
+behavior belong to the follow-up trivia contract in #93.
 
 This is an excerpt from the
 [compiled JSON grammar](https://github.com/freshtonic/recursa/blob/main/examples/json/src/grammar.rs).

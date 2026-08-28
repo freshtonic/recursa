@@ -60,6 +60,8 @@ recursa::tokens! {
 
 static POST_LEX_CALLS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+static CALLBACK_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 pub fn reset_post_lex_calls() {
     POST_LEX_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
@@ -67,6 +69,14 @@ pub fn reset_post_lex_calls() {
 
 pub fn post_lex_calls() -> usize {
     POST_LEX_CALLS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn reset_callback_calls() {
+    CALLBACK_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn callback_calls() -> usize {
+    CALLBACK_CALLS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 pub fn repair(editor: &mut LexEditor<'_>) {
@@ -168,6 +178,7 @@ pub fn repair(editor: &mut LexEditor<'_>) {
 }
 
 pub fn scan_word(context: &mut LexContext<'_>) -> LexAction {
+    CALLBACK_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     if let Some(character) = context.remainder().chars().next()
         && character.len_utf8() > 1
     {
@@ -242,14 +253,14 @@ pub enum FiveTokenChoice {
 
 #[derive(recursa::Node)]
 pub struct LowSelection<'input> {
-    #[lex(pattern = r"`", priority = 1)]
+    #[lex(pattern = r"~", priority = 1)]
     pub name: LowText<'input>,
 }
 
 #[derive(recursa::Node)]
 pub struct CallbackSelection<'input> {
     #[lex(
-        pattern = r"~",
+        pattern = r"[~kK]",
         callback = crate::grammar::scan_word,
         priority = 2
     )]

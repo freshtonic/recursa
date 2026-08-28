@@ -70,7 +70,7 @@ _Avoid_: Token vector, unbound lex result
 
 **Lexer callback context**:
 The Recursa-owned narrow interface available to advanced lexer callbacks for inspecting and extending the current match. It does not expose the underlying lexer backend.
-During closed-matcher migration, callback starters must remain disjoint from other lexical rules so arbitration never speculatively executes authored callback code.
+During closed-matcher migration, a callback starter must remain disjoint from finalizing closed matchers so arbitration never speculatively executes authored callback code. Legacy callback arbitration against regular-expression and fixed rules remains available through the expand-contract window.
 _Avoid_: Raw Logos lexer, lexer backend handle
 
 **Post-lex editor**:
@@ -79,6 +79,7 @@ _Avoid_: Mutable lexing result, mutable token vector
 
 **Lex builder**:
 The typed construction path for an alternative lexer. It accepts grammar-local token kinds and validated source spans, then runs the grammar's shared finalization and post-lex hook exactly once.
+Its records must be source-bounded UTF-8, ordered, and non-overlapping; unrecorded source gaps are preserved without rescanning. Classified trivia records and observable trivia-gap behavior are introduced by #93.
 _Avoid_: Raw token-record constructor
 
 **Lowered grammar**:
@@ -297,8 +298,8 @@ _Avoid_: Stack frame, display category
 The deterministic multiline plain-text representation of a structured Recursa diagnostic used for snapshots and generation failures.
 _Avoid_: Cargo warning, loader output, debug dump
 
-**Diagnostic code registry**:
-The append-only assignment of stable Recursa diagnostic codes to failure classes, stages, severities, locations, evidence, and remedies.
+**Build diagnostic code registry**:
+The append-only assignment of stable generation and loader diagnostic codes to failure classes, stages, severities, locations, evidence, and remedies. Runtime lexical codes use a separate matching-version contract because they classify failures over user input rather than build failures.
 _Avoid_: Message catalogue, enum ordering
 
 **Internal diagnostic**:

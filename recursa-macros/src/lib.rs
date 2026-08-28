@@ -266,9 +266,9 @@ fn valid_node_file(name: &str) -> bool {
 /// tie-breaker. Equal unresolved priorities are rejected during source analysis. Unterminated
 /// delimited and nested matches become generated lexical errors spanning their opener through EOF
 /// and expose stable mechanism-specific codes and opener anchors.
-/// Legacy callbacks remain available for disjoint migration rules; source analysis rejects a
-/// callback whose starter overlaps another rule because discovering its final extent would require
-/// speculatively executing authored code.
+/// Legacy callback arbitration against regular-expression and fixed rules remains available during
+/// migration. Source analysis rejects a callback whose starter overlaps a finalizing closed matcher
+/// because discovering both final extents would require speculatively executing authored code.
 ///
 /// The analyzer validates the declaration and owns all generated bindings. This procedural macro
 /// intentionally emits no runtime items itself.
