@@ -392,11 +392,11 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::rejects_content_display_and_misplacement_before_lexical_planning --locked",
     },
     ProducerEvidence {
-        codes: &["RCA3117", "RCA3125", "RCA3126", "RCA3128"],
+        codes: &["RCA3125", "RCA3126", "RCA3127", "RCA3128"],
         producer_source: "src/source_analysis.rs",
-        test_source: "tests/obsolete_authored_hooks.rs",
-        test_name: "every_obsolete_authored_hook_form_has_a_targeted_build_report_diagnostic",
-        command: "cargo test -p recursa-codegen --test obsolete_authored_hooks every_obsolete_authored_hook_form_has_a_targeted_build_report_diagnostic --locked",
+        test_source: "src/source_analysis_contract_tests.rs",
+        test_name: "obsolete_authored_hooks_fail_directly_at_the_source_analysis_seam",
+        command: "cargo test -p recursa-codegen source_analysis_contract_tests::obsolete_authored_hooks_fail_directly_at_the_source_analysis_seam --locked",
     },
     ProducerEvidence {
         codes: &["RCA3118", "RCA3210"],
@@ -463,6 +463,7 @@ fn every_registered_code_has_real_producer_evidence() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let expected = crate::build_diagnostic::diagnostic_code_registry()
         .iter()
+        .filter(|spec| spec.status == crate::build_diagnostic::DiagnosticCodeStatus::Active)
         .map(|spec| spec.code.as_str())
         .collect::<std::collections::BTreeSet<_>>();
     let mut actual = std::collections::BTreeSet::new();
@@ -701,6 +702,17 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
     codes.dedup();
 
     assert_eq!(codes.len(), original_len);
+    assert_eq!(
+        registry
+            .iter()
+            .filter(|spec| {
+                spec.status == crate::build_diagnostic::DiagnosticCodeStatus::Retired
+            })
+            .map(|spec| spec.code.as_str())
+            .collect::<Vec<_>>(),
+        ["RCA3117"],
+        "retired diagnostic assignments remain reserved and cannot be reused",
+    );
     assert!(
         registry.len() >= 70,
         "every current failure class is allocated"
@@ -746,6 +758,9 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
                 | crate::build_diagnostic::DiagnosticRemedySchema::ResolveAnalysisConflict
                 | crate::build_diagnostic::DiagnosticRemedySchema::ReportInternalFailure
         ));
+        if spec.status == crate::build_diagnostic::DiagnosticCodeStatus::Retired {
+            continue;
+        }
 
         let evidence = match spec.evidence {
             crate::build_diagnostic::DiagnosticEvidenceSchema::SourceFacts => {
@@ -815,6 +830,73 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
         );
     }
     assert!(codes.iter().all(|code| !code.starts_with("RCA900")));
+}
+
+#[test]
+fn obsolete_authored_hooks_fail_directly_at_the_source_analysis_seam() {
+    let package = write_fixture(
+        r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    post_lex = crate::repair,
+    lexer_tokens { Opaque => r"~[a-z]+" with crate::scan }
+}
+
+#[derive(recursa::Node)]
+#[parse(postcondition = crate::condition)]
+struct Root<'input> {
+    #[lex(pattern = r"[a-z]+", callback = crate::scan)]
+    word: Word<'input>,
+}
+
+#[derive(recursa::Node)]
+#[recursa::parser(postcondition = crate::condition)]
+struct Namespaced;
+"#,
+    );
+    let error = crate::source_analysis::analyze_source_tree(
+        crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect_err("obsolete authored hooks must stop at source-model lowering");
+    let mut actual = error
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| (diagnostic.code().as_str(), diagnostic.summary()))
+        .collect::<Vec<_>>();
+    actual.sort_unstable();
+
+    assert_eq!(
+        actual,
+        [
+            (
+                "RCA3125",
+                "authored `#[lex(..., callback = path)]` is unsupported; use a closed matcher",
+            ),
+            (
+                "RCA3126",
+                "authored central `with path` lexer callbacks are unsupported; use a closed matcher",
+            ),
+            (
+                "RCA3127",
+                "authored `post_lex = path` hooks are unsupported; express tokenization declaratively",
+            ),
+            (
+                "RCA3128",
+                "authored parser postconditions are unsupported; use a named admission",
+            ),
+            (
+                "RCA3128",
+                "authored parser postconditions are unsupported; use a named admission",
+            ),
+        ],
+    );
+    assert!(
+        error
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| diagnostic.stage() == DiagnosticStage::Lowering),
+    );
 }
 
 #[test]
