@@ -546,8 +546,43 @@ pub(crate) struct FixedTokenDefinition {
     pub(crate) spelling: String,
     /// Supplies the authored classifications used to correlate authored source with normalized grammar.
     pub(crate) authored_classifications: Vec<AuthoredFixedClassification>,
+    /// Preserves central keyword metadata declarations for order-independent validation.
+    keyword_metadata: Vec<AuthoredKeywordMetadata>,
     /// Supplies the pretty spacing used to correlate authored source with normalized grammar.
     pub(crate) pretty_spacing: PrettySpacing,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Carries one authored keyword category and flag assignment.
+struct AuthoredKeywordMetadata {
+    /// Identifies whether the metadata was attached in a keyword or punctuation section.
+    authored_class: AuthoredFixedTokenClass,
+    /// Names the keyword category, when the declaration uses the metadata form.
+    category: Option<AdmissionReference>,
+    /// Names the orthogonal keyword flags in authored order.
+    flags: Vec<AdmissionReference>,
+    /// Locates the keyword declaration that owns the metadata.
+    site: SourceSite,
+}
+
+#[derive(Default)]
+/// Bundles optional central metadata supplied while defining a fixed token.
+struct AuthoredFixedDetails {
+    /// Classifies the central section that declared the token.
+    authored_class: Option<AuthoredFixedTokenClass>,
+    /// Selects the authored Pretty boundary behavior.
+    pretty_spacing: PrettySpacing,
+    /// Retains keyword category and flag metadata when centrally declared.
+    keyword_metadata: Option<AuthoredKeywordMetadata>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Carries one located name used by keyword metadata or an admission expression.
+struct AdmissionReference {
+    /// Preserves the authored symbolic name.
+    name: String,
+    /// Locates the authored reference.
+    site: SourceSite,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -745,6 +780,25 @@ pub(crate) enum SourceModelDiagnosticKind {
     ConfiguredOrdinaryDeriveConflict,
     /// Identifies the multiple post lex hooks authored-source form.
     MultiplePostLexHooks,
+    /// Identifies duplicate membership introduced by an admission union.
+    DuplicateAdmissionMembership,
+    /// Identifies an unresolved or ambiguous admission-expression name.
+    InvalidAdmissionReference,
+    /// Identifies a cycle between named admission declarations.
+    AdmissionCycle,
+    /// Identifies a missing, unknown, or inapplicable keyword category.
+    InvalidKeywordCategory,
+    /// Identifies incompatible keyword or admission metadata declarations.
+    ContradictoryAdmissionMetadata,
+    /// Identifies a subtraction whose right-hand side has no current members.
+    IneffectiveAdmissionSubtraction,
+}
+
+impl SourceModelDiagnosticKind {
+    /// Reports whether this source-model finding prevents a coherent lowered model.
+    const fn is_error(self) -> bool {
+        !matches!(self, Self::DuplicateAdmissionMembership)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -765,6 +819,7 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
     let trait_planner = TraitPlanner::from_grammar(&input.resolved, &mut diagnostics);
     let mut tokens = TokenCatalog::default();
     tokens.collect_fixed_definitions(&input.resolved, input.cfg, &mut diagnostics);
+    tokens.compile_named_admissions(&mut diagnostics);
     if tokens.post_lex_sites.len() > 1 {
         diagnostics.push(SourceModelDiagnostic {
             kind: SourceModelDiagnosticKind::MultiplePostLexHooks,
@@ -2544,17 +2599,21 @@ impl SourceModelBuilder<'_> {
     /// Publishes the source model only when all authored-source diagnostics are non-blocking.
     fn finish(mut self) -> SourceModelReport {
         normalize_source_order(&mut self.nodes, &mut self.tokens);
-        let source_modeled = self.diagnostics.is_empty().then(|| SourceModeledGrammar {
-            resolved: self.resolved,
-            source_model: SourceModel {
-                grammar_trait_defaults: self.trait_planner.grammar_defaults,
-                nodes: self.nodes,
-                token_definitions: self.tokens.definitions,
-                lexer_records: self.tokens.lexer_records,
-                token_uses: self.tokens.uses,
-                post_lex: self.tokens.post_lex,
-            },
-        });
+        let source_modeled = self
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.kind.is_error())
+            .then(|| SourceModeledGrammar {
+                resolved: self.resolved,
+                source_model: SourceModel {
+                    grammar_trait_defaults: self.trait_planner.grammar_defaults,
+                    nodes: self.nodes,
+                    token_definitions: self.tokens.definitions,
+                    lexer_records: self.tokens.lexer_records,
+                    token_uses: self.tokens.uses,
+                    post_lex: self.tokens.post_lex,
+                },
+            });
         SourceModelReport {
             diagnostics: self.diagnostics,
             source_modeled,
@@ -2995,6 +3054,14 @@ struct TokenCatalog {
     post_lex: Option<syn::Path>,
     /// Supplies the post lex sites used to correlate authored source with normalized grammar.
     post_lex_sites: Vec<SourceSite>,
+    /// Indexes declared keyword categories and their authored sites.
+    categories: BTreeMap<String, Vec<SourceSite>>,
+    /// Indexes declared keyword flags and their authored sites.
+    flags: BTreeMap<String, Vec<SourceSite>>,
+    /// Preserves named admission declarations until their dependency graph is compiled.
+    pending_admissions: Vec<PendingAdmissionDefinition>,
+    /// Indexes canonical compiled admission membership by authored name.
+    named_admissions: BTreeMap<String, Vec<TokenDefinitionId>>,
 }
 
 /// Carries the central content definition retained from authored source structure.
@@ -3011,7 +3078,519 @@ struct CentralContentDefinition {
     site: SourceSite,
 }
 
+#[derive(Clone)]
+/// Carries one named admission declaration after source locations are retained.
+struct PendingAdmissionDefinition {
+    /// Preserves the authored admission name.
+    name: String,
+    /// Locates the admission declaration.
+    site: SourceSite,
+    /// Preserves the union-and-subtraction expression for graph evaluation.
+    expression: PendingAdmissionExpression,
+}
+
+#[derive(Clone)]
+/// Carries one admission expression as an initial operand followed by ordered operations.
+struct PendingAdmissionExpression {
+    /// Supplies the initial membership set.
+    initial: PendingAdmissionOperand,
+    /// Supplies left-associative union and subtraction operations.
+    operations: Vec<PendingAdmissionOperation>,
+}
+
+#[derive(Clone)]
+/// Classifies the operands accepted by admission expressions.
+enum PendingAdmissionOperand {
+    /// Resolves a keyword, category, flag, named admission, or the `keywords` universe.
+    Name(AdmissionReference),
+    /// Resolves an explicit set of fixed-token names.
+    Set {
+        /// Preserves each explicit member and its authored location.
+        members: Vec<AdmissionReference>,
+        /// Locates the complete set operand.
+        site: SourceSite,
+    },
+}
+
+#[derive(Clone, Copy)]
+/// Classifies one left-associative admission expression operation.
+enum AdmissionOperationKind {
+    /// Adds all right-hand membership.
+    Union,
+    /// Removes all right-hand membership.
+    Subtract,
+}
+
+#[derive(Clone)]
+/// Carries one located admission operation and its operand.
+struct PendingAdmissionOperation {
+    /// Selects union or subtraction behavior.
+    kind: AdmissionOperationKind,
+    /// Supplies the right-hand membership set.
+    operand: PendingAdmissionOperand,
+    /// Locates the operation for diagnostics.
+    site: SourceSite,
+}
+
+/// Evaluates the named admission dependency graph without depending on declaration order.
+struct AdmissionCompiler<'catalog, 'diagnostics> {
+    /// Supplies fixed token definitions that admission membership ultimately names.
+    definitions: &'catalog [TokenDefinition],
+    /// Resolves explicit fixed-token names.
+    fixed_by_name: &'catalog BTreeMap<String, TokenDefinitionId>,
+    /// Supplies canonical category membership derived from keyword metadata.
+    category_members: &'catalog BTreeMap<String, BTreeSet<TokenDefinitionId>>,
+    /// Supplies canonical flag membership derived from keyword metadata.
+    flag_members: &'catalog BTreeMap<String, BTreeSet<TokenDefinitionId>>,
+    /// Supplies unique named admission declarations.
+    declarations: Vec<PendingAdmissionDefinition>,
+    /// Resolves named admission references independently of source order.
+    declaration_by_name: BTreeMap<String, usize>,
+    /// Tracks unseen, active, and completed graph nodes.
+    states: Vec<AdmissionEvaluationState>,
+    /// Retains completed canonical membership or a failed evaluation.
+    evaluated: Vec<Option<BTreeSet<TokenDefinitionId>>>,
+    /// Tracks the active dependency path for cycle evidence.
+    stack: Vec<usize>,
+    /// Deduplicates cycles reached through more than one admission root.
+    reported_cycles: BTreeSet<Vec<String>>,
+    /// Receives structured source-model findings.
+    diagnostics: &'diagnostics mut Vec<SourceModelDiagnostic>,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+/// Classifies one admission declaration's graph-evaluation state.
+enum AdmissionEvaluationState {
+    /// The declaration has not been evaluated.
+    #[default]
+    Unseen,
+    /// The declaration is on the active dependency path.
+    Active,
+    /// The declaration has completed successfully or failed with a diagnostic.
+    Complete,
+}
+
+impl<'catalog, 'diagnostics> AdmissionCompiler<'catalog, 'diagnostics> {
+    /// Creates an admission compiler and diagnoses duplicate declaration names.
+    fn new(
+        definitions: &'catalog [TokenDefinition],
+        fixed_by_name: &'catalog BTreeMap<String, TokenDefinitionId>,
+        category_members: &'catalog BTreeMap<String, BTreeSet<TokenDefinitionId>>,
+        flag_members: &'catalog BTreeMap<String, BTreeSet<TokenDefinitionId>>,
+        declarations: Vec<PendingAdmissionDefinition>,
+        diagnostics: &'diagnostics mut Vec<SourceModelDiagnostic>,
+    ) -> Self {
+        let mut declaration_by_name = BTreeMap::<String, usize>::new();
+        for (index, declaration) in declarations.iter().enumerate() {
+            if let Some(previous) = declaration_by_name.get(&declaration.name).copied() {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::ContradictoryAdmissionMetadata,
+                    sites: vec![
+                        declarations[previous].site.clone(),
+                        declaration.site.clone(),
+                    ],
+                    message: format!(
+                        "admission `{}` has more than one declaration",
+                        declaration.name
+                    ),
+                });
+            } else {
+                declaration_by_name.insert(declaration.name.clone(), index);
+            }
+        }
+        let count = declarations.len();
+        Self {
+            definitions,
+            fixed_by_name,
+            category_members,
+            flag_members,
+            declarations,
+            declaration_by_name,
+            states: vec![AdmissionEvaluationState::Unseen; count],
+            evaluated: vec![None; count],
+            stack: Vec::new(),
+            reported_cycles: BTreeSet::new(),
+            diagnostics,
+        }
+    }
+
+    /// Compiles every uniquely named declaration to sorted token-definition membership.
+    fn compile(&mut self) -> BTreeMap<String, Vec<TokenDefinitionId>> {
+        let names = self.declaration_by_name.keys().cloned().collect::<Vec<_>>();
+        let mut compiled = BTreeMap::new();
+        for name in names {
+            let index = self.declaration_by_name[&name];
+            if let Some(members) = self.evaluate(index) {
+                compiled.insert(name, members.into_iter().collect());
+            }
+        }
+        compiled
+    }
+
+    /// Evaluates one declaration recursively while rejecting dependency cycles.
+    fn evaluate(&mut self, index: usize) -> Option<BTreeSet<TokenDefinitionId>> {
+        match self.states[index] {
+            AdmissionEvaluationState::Complete => return self.evaluated[index].clone(),
+            AdmissionEvaluationState::Active => {
+                self.report_cycle(index);
+                return None;
+            }
+            AdmissionEvaluationState::Unseen => {}
+        }
+        self.states[index] = AdmissionEvaluationState::Active;
+        self.stack.push(index);
+        let expression = self.declarations[index].expression.clone();
+        let mut result = self.resolve_operand(&expression.initial);
+        for operation in expression.operations {
+            let Some(current) = result.as_mut() else {
+                break;
+            };
+            let Some(operand) = self.resolve_operand(&operation.operand) else {
+                result = None;
+                break;
+            };
+            let overlap = current.intersection(&operand).copied().collect::<Vec<_>>();
+            match operation.kind {
+                AdmissionOperationKind::Union => {
+                    if !overlap.is_empty() {
+                        self.diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::DuplicateAdmissionMembership,
+                            sites: vec![operation.site],
+                            message: format!(
+                                "admission union repeats membership [{}]",
+                                self.member_names(&overlap).join(", ")
+                            ),
+                        });
+                    }
+                    current.extend(operand);
+                }
+                AdmissionOperationKind::Subtract => {
+                    if overlap.is_empty() {
+                        self.diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::IneffectiveAdmissionSubtraction,
+                            sites: vec![operation.site],
+                            message: "admission subtraction removes no current member".to_owned(),
+                        });
+                        result = None;
+                        break;
+                    }
+                    current.retain(|member| !operand.contains(member));
+                }
+            }
+        }
+        self.stack.pop();
+        self.states[index] = AdmissionEvaluationState::Complete;
+        self.evaluated[index] = result.clone();
+        result
+    }
+
+    /// Resolves one expression operand to fixed-token membership.
+    fn resolve_operand(
+        &mut self,
+        operand: &PendingAdmissionOperand,
+    ) -> Option<BTreeSet<TokenDefinitionId>> {
+        match operand {
+            PendingAdmissionOperand::Name(reference) => self.resolve_name(reference),
+            PendingAdmissionOperand::Set { members, site } => {
+                let mut resolved = BTreeSet::new();
+                let mut valid = true;
+                for member in members {
+                    let Some(definition) = self.word_fixed(&member.name) else {
+                        self.diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::InvalidAdmissionReference,
+                            sites: vec![member.site.clone()],
+                            message: format!(
+                                "admission set member `{}` is not a word-shaped fixed token",
+                                member.name
+                            ),
+                        });
+                        valid = false;
+                        continue;
+                    };
+                    if !resolved.insert(definition) {
+                        self.diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::DuplicateAdmissionMembership,
+                            sites: vec![site.clone(), member.site.clone()],
+                            message: format!("admission set repeats membership `{}`", member.name),
+                        });
+                    }
+                }
+                valid.then_some(resolved)
+            }
+        }
+    }
+
+    /// Resolves a symbolic operand and rejects unknown or cross-namespace-ambiguous names.
+    fn resolve_name(
+        &mut self,
+        reference: &AdmissionReference,
+    ) -> Option<BTreeSet<TokenDefinitionId>> {
+        if reference.name == "keywords" {
+            return Some(
+                self.definitions
+                    .iter()
+                    .filter_map(|definition| {
+                        matches!(
+                            &definition.kind,
+                            TokenDefinitionKind::Fixed(fixed) if is_word_shaped(&fixed.spelling)
+                        )
+                        .then_some(definition.id)
+                    })
+                    .collect(),
+            );
+        }
+
+        let fixed = self.word_fixed(&reference.name);
+        let category = self.category_members.get(&reference.name);
+        let flag = self.flag_members.get(&reference.name);
+        let admission = self.declaration_by_name.get(&reference.name).copied();
+        let matches = usize::from(fixed.is_some())
+            + usize::from(category.is_some())
+            + usize::from(flag.is_some())
+            + usize::from(admission.is_some());
+        if matches != 1 {
+            self.diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidAdmissionReference,
+                sites: vec![reference.site.clone()],
+                message: if matches == 0 {
+                    format!("admission expression name `{}` is unknown", reference.name)
+                } else {
+                    format!(
+                        "admission expression name `{}` is ambiguous across token metadata namespaces",
+                        reference.name
+                    )
+                },
+            });
+            return None;
+        }
+        if let Some(fixed) = fixed {
+            return Some([fixed].into_iter().collect());
+        }
+        if let Some(category) = category {
+            return Some(category.clone());
+        }
+        if let Some(flag) = flag {
+            return Some(flag.clone());
+        }
+        self.evaluate(admission.expect("exactly one namespace matched"))
+    }
+
+    /// Resolves only mechanically word-shaped fixed tokens.
+    fn word_fixed(&self, name: &str) -> Option<TokenDefinitionId> {
+        let definition = self.fixed_by_name.get(name).copied()?;
+        let TokenDefinitionKind::Fixed(fixed) = &self.definitions[definition.index()].kind else {
+            return None;
+        };
+        is_word_shaped(&fixed.spelling).then_some(definition)
+    }
+
+    /// Emits one cycle finding with all declarations participating in the active loop.
+    fn report_cycle(&mut self, repeated: usize) {
+        let start = self
+            .stack
+            .iter()
+            .position(|index| *index == repeated)
+            .expect("an active admission is on the evaluation stack");
+        let cycle = self.stack[start..].to_vec();
+        let mut key = cycle
+            .iter()
+            .map(|index| self.declarations[*index].name.clone())
+            .collect::<Vec<_>>();
+        key.sort();
+        key.dedup();
+        if !self.reported_cycles.insert(key.clone()) {
+            return;
+        }
+        let mut sites = cycle
+            .iter()
+            .map(|index| self.declarations[*index].site.clone())
+            .collect::<Vec<_>>();
+        sites.sort_by_key(canonical_source_order_key);
+        self.diagnostics.push(SourceModelDiagnostic {
+            kind: SourceModelDiagnosticKind::AdmissionCycle,
+            sites,
+            message: format!("admission declarations form a cycle [{}]", key.join(", ")),
+        });
+    }
+
+    /// Renders canonical fixed-token names for a membership diagnostic.
+    fn member_names(&self, members: &[TokenDefinitionId]) -> Vec<String> {
+        let mut names = members
+            .iter()
+            .map(|member| self.definitions[member.index()].name.clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+}
+
 impl TokenCatalog {
+    /// Validates keyword metadata and compiles named admission expressions to canonical sets.
+    fn compile_named_admissions(&mut self, diagnostics: &mut Vec<SourceModelDiagnostic>) {
+        let (category_members, flag_members) = self.keyword_metadata_sets(diagnostics);
+        let pending = std::mem::take(&mut self.pending_admissions);
+        let mut compiler = AdmissionCompiler::new(
+            &self.definitions,
+            &self.fixed_by_name,
+            &category_members,
+            &flag_members,
+            pending,
+            diagnostics,
+        );
+        self.named_admissions = compiler.compile();
+    }
+
+    /// Validates each keyword's one-category and zero-or-more-flags contract.
+    fn keyword_metadata_sets(
+        &self,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+    ) -> (
+        BTreeMap<String, BTreeSet<TokenDefinitionId>>,
+        BTreeMap<String, BTreeSet<TokenDefinitionId>>,
+    ) {
+        for (name, category_sites) in &self.categories {
+            if let Some(flag_sites) = self.flags.get(name) {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::ContradictoryAdmissionMetadata,
+                    sites: category_sites.iter().chain(flag_sites).cloned().collect(),
+                    message: format!(
+                        "keyword metadata name `{name}` cannot be both a category and a flag"
+                    ),
+                });
+            }
+        }
+
+        let mut category_members = self
+            .categories
+            .keys()
+            .cloned()
+            .map(|name| (name, BTreeSet::new()))
+            .collect::<BTreeMap<_, _>>();
+        let mut flag_members = self
+            .flags
+            .keys()
+            .cloned()
+            .map(|name| (name, BTreeSet::new()))
+            .collect::<BTreeMap<_, _>>();
+
+        for definition in &self.definitions {
+            let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+                continue;
+            };
+            if fixed.keyword_metadata.is_empty()
+                || fixed
+                    .keyword_metadata
+                    .iter()
+                    .all(|metadata| metadata.category.is_none() && metadata.flags.is_empty())
+            {
+                continue;
+            }
+
+            let mut normalized = Vec::new();
+            let mut valid = true;
+            for metadata in &fixed.keyword_metadata {
+                if metadata.authored_class != AuthoredFixedTokenClass::Keyword {
+                    diagnostics.push(SourceModelDiagnostic {
+                        kind: SourceModelDiagnosticKind::InvalidKeywordCategory,
+                        sites: vec![metadata.site.clone()],
+                        message: format!(
+                            "punctuation `{}` cannot carry keyword category or flag metadata",
+                            definition.name
+                        ),
+                    });
+                    valid = false;
+                    continue;
+                }
+                let Some(category) = &metadata.category else {
+                    diagnostics.push(SourceModelDiagnostic {
+                        kind: SourceModelDiagnosticKind::InvalidKeywordCategory,
+                        sites: vec![metadata.site.clone()],
+                        message: format!(
+                            "keyword `{}` metadata requires exactly one category",
+                            definition.name
+                        ),
+                    });
+                    valid = false;
+                    continue;
+                };
+                if !self.categories.contains_key(&category.name) {
+                    diagnostics.push(SourceModelDiagnostic {
+                        kind: SourceModelDiagnosticKind::InvalidKeywordCategory,
+                        sites: vec![category.site.clone()],
+                        message: format!(
+                            "keyword `{}` uses unknown category `{}`",
+                            definition.name, category.name
+                        ),
+                    });
+                    valid = false;
+                }
+                let mut flags = Vec::new();
+                for flag in &metadata.flags {
+                    if !self.flags.contains_key(&flag.name) {
+                        diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::ContradictoryAdmissionMetadata,
+                            sites: vec![flag.site.clone()],
+                            message: format!(
+                                "keyword `{}` uses unknown flag `{}`",
+                                definition.name, flag.name
+                            ),
+                        });
+                        valid = false;
+                    }
+                    if flags.contains(&flag.name) {
+                        diagnostics.push(SourceModelDiagnostic {
+                            kind: SourceModelDiagnosticKind::ContradictoryAdmissionMetadata,
+                            sites: vec![flag.site.clone()],
+                            message: format!(
+                                "keyword `{}` repeats flag `{}`",
+                                definition.name, flag.name
+                            ),
+                        });
+                        valid = false;
+                    } else {
+                        flags.push(flag.name.clone());
+                    }
+                }
+                flags.sort();
+                normalized.push((category.name.clone(), flags));
+            }
+            normalized.sort();
+            normalized.dedup();
+            if normalized.len() > 1 {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::ContradictoryAdmissionMetadata,
+                    sites: fixed
+                        .keyword_metadata
+                        .iter()
+                        .map(|metadata| metadata.site.clone())
+                        .collect(),
+                    message: format!(
+                        "keyword `{}` has contradictory category or flag metadata",
+                        definition.name
+                    ),
+                });
+                valid = false;
+            }
+            if !valid {
+                continue;
+            }
+            let Some((category, flags)) = normalized.into_iter().next() else {
+                continue;
+            };
+            category_members
+                .get_mut(&category)
+                .expect("validated category exists")
+                .insert(definition.id);
+            for flag in flags {
+                flag_members
+                    .get_mut(&flag)
+                    .expect("validated flag exists")
+                    .insert(definition.id);
+            }
+        }
+        (category_members, flag_members)
+    }
+
     /// Collects fixed-token definitions before recording their grammar positions.
     fn collect_fixed_definitions(
         &mut self,
@@ -3099,8 +3678,7 @@ impl TokenCatalog {
                     origin,
                     spelling.value(),
                     spelling,
-                    None,
-                    PrettySpacing::Auto,
+                    AuthoredFixedDetails::default(),
                 );
             }
         }
@@ -3121,15 +3699,53 @@ impl TokenCatalog {
             }
         }
         for fixed in syntax.fixed {
+            let declaration_site = source_site(resolved, origin, span_range(fixed.name.span()));
+            let keyword_metadata = AuthoredKeywordMetadata {
+                authored_class: fixed.authored_class,
+                category: fixed.category.map(|category| AdmissionReference {
+                    name: category.unraw().to_string(),
+                    site: source_site(resolved, origin, span_range(category.span())),
+                }),
+                flags: fixed
+                    .flags
+                    .into_iter()
+                    .map(|flag| AdmissionReference {
+                        name: flag.unraw().to_string(),
+                        site: source_site(resolved, origin, span_range(flag.span())),
+                    })
+                    .collect(),
+                site: declaration_site,
+            };
             self.define_fixed(
                 resolved,
                 origin,
                 fixed.name.unraw().to_string(),
                 fixed.spelling,
-                Some(fixed.authored_class),
-                fixed.pretty_spacing,
+                AuthoredFixedDetails {
+                    authored_class: Some(fixed.authored_class),
+                    pretty_spacing: fixed.pretty_spacing,
+                    keyword_metadata: Some(keyword_metadata),
+                },
             );
         }
+        for category in syntax.categories {
+            self.categories
+                .entry(category.unraw().to_string())
+                .or_default()
+                .push(source_site(resolved, origin, span_range(category.span())));
+        }
+        for flag in syntax.flags {
+            self.flags
+                .entry(flag.unraw().to_string())
+                .or_default()
+                .push(source_site(resolved, origin, span_range(flag.span())));
+        }
+        self.pending_admissions.extend(
+            syntax
+                .admissions
+                .into_iter()
+                .map(|admission| pending_admission(resolved, origin, admission)),
+        );
         for content in syntax.content {
             let name = content.name.unraw().to_string();
             let semantic = resolved
@@ -3164,9 +3780,13 @@ impl TokenCatalog {
         origin: SourceOrigin,
         name: String,
         spelling: LitStr,
-        authored_class: Option<AuthoredFixedTokenClass>,
-        pretty_spacing: PrettySpacing,
+        details: AuthoredFixedDetails,
     ) {
+        let AuthoredFixedDetails {
+            authored_class,
+            pretty_spacing,
+            keyword_metadata,
+        } = details;
         let site = source_site(resolved, origin, span_range(spelling.span()));
         let spelling = spelling.value();
         if let Some(id) = self.fixed_by_name.get(&name).copied() {
@@ -3180,6 +3800,9 @@ impl TokenCatalog {
                     existing
                         .authored_classifications
                         .push(AuthoredFixedClassification { class, site });
+                }
+                if let Some(metadata) = keyword_metadata {
+                    existing.keyword_metadata.push(metadata);
                 }
                 return;
             }
@@ -3199,6 +3822,7 @@ impl TokenCatalog {
                     })
                     .into_iter()
                     .collect(),
+                keyword_metadata: keyword_metadata.into_iter().collect(),
             }),
             definition_sites: vec![site],
         });
@@ -4094,16 +4718,24 @@ impl TokenCatalog {
         for reference in syntax.admissions {
             let site = source_site(resolved, origin, span_range(reference.span()));
             let fixed_name = reference.unraw().to_string();
-            let Some(definition) = self.fixed_definition(&fixed_name) else {
+            let definitions = if let Some(admission) = self.named_admissions.get(&fixed_name) {
+                admission.clone()
+            } else if let Some(definition) = self.fixed_definition(&fixed_name) {
+                vec![definition]
+            } else {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::UnresolvedFixedToken,
                     sites: vec![site],
-                    message: format!("fixed token `{fixed_name}` has no string definition"),
+                    message: format!(
+                        "fixed token or named admission `{fixed_name}` has no declaration"
+                    ),
                 });
                 continue;
             };
-            authored_definitions.push(definition);
-            self.record_use(definition, TokenUseRole::ContentAdmission, site);
+            for definition in definitions {
+                authored_definitions.push(definition);
+                self.record_use(definition, TokenUseRole::ContentAdmission, site.clone());
+            }
         }
 
         let definition_site = source_site(resolved, origin, span_range(meta.span()));
@@ -4229,6 +4861,12 @@ struct CentralTokensSyntax {
     non_token_lexer_records: Vec<CentralNonTokenLexerRecordSyntax>,
     /// Supplies the post lex used to correlate authored source with normalized grammar.
     post_lex: Vec<syn::Path>,
+    /// Supplies declared keyword category names.
+    categories: Vec<syn::Ident>,
+    /// Supplies declared orthogonal keyword flag names.
+    flags: Vec<syn::Ident>,
+    /// Supplies named admission expressions.
+    admissions: Vec<CentralAdmissionSyntax>,
 }
 
 /// Carries the central non token lexer record syntax retained from authored source structure.
@@ -4249,6 +4887,10 @@ struct CentralFixedSyntax {
     authored_class: AuthoredFixedTokenClass,
     /// Supplies the pretty spacing used to correlate authored source with normalized grammar.
     pretty_spacing: PrettySpacing,
+    /// Names the keyword's single category in the metadata form.
+    category: Option<syn::Ident>,
+    /// Names the keyword's orthogonal flags in authored order.
+    flags: Vec<syn::Ident>,
 }
 
 /// Carries the central content syntax retained from authored source structure.
@@ -4261,12 +4903,89 @@ struct CentralContentSyntax {
     callback: Option<syn::Path>,
 }
 
+#[derive(Clone)]
+/// Carries one named central admission declaration before source locations are retained.
+struct CentralAdmissionSyntax {
+    /// Preserves the authored admission name.
+    name: syn::Ident,
+    /// Preserves the authored set expression.
+    expression: AdmissionExpressionSyntax,
+}
+
+#[derive(Clone)]
+/// Carries one parsed admission expression.
+struct AdmissionExpressionSyntax {
+    /// Supplies the initial operand.
+    initial: AdmissionOperandSyntax,
+    /// Supplies its left-associative operations.
+    operations: Vec<AdmissionOperationSyntax>,
+}
+
+#[derive(Clone)]
+/// Classifies parsed admission operands.
+enum AdmissionOperandSyntax {
+    /// Names one fixed token, metadata set, named admission, or the keyword universe.
+    Name(syn::Ident),
+    /// Lists explicit fixed-token names and retains the braces' span.
+    Set(Vec<syn::Ident>, Span),
+}
+
+#[derive(Clone)]
+/// Carries one parsed admission operation.
+struct AdmissionOperationSyntax {
+    /// Selects union or subtraction behavior.
+    kind: AdmissionOperationKind,
+    /// Supplies the right-hand operand.
+    operand: AdmissionOperandSyntax,
+    /// Retains the operator span for diagnostics.
+    span: Span,
+}
+
+/// Retains source locations while converting one parsed admission declaration.
+fn pending_admission(
+    resolved: &ResolvedSourceGrammar,
+    origin: SourceOrigin,
+    syntax: CentralAdmissionSyntax,
+) -> PendingAdmissionDefinition {
+    let reference = |ident: syn::Ident| AdmissionReference {
+        name: ident.unraw().to_string(),
+        site: source_site(resolved, origin, span_range(ident.span())),
+    };
+    let operand = |operand: AdmissionOperandSyntax| match operand {
+        AdmissionOperandSyntax::Name(name) => PendingAdmissionOperand::Name(reference(name)),
+        AdmissionOperandSyntax::Set(members, span) => PendingAdmissionOperand::Set {
+            members: members.into_iter().map(reference).collect(),
+            site: source_site(resolved, origin, span_range(span)),
+        },
+    };
+    PendingAdmissionDefinition {
+        name: syntax.name.unraw().to_string(),
+        site: source_site(resolved, origin, span_range(syntax.name.span())),
+        expression: PendingAdmissionExpression {
+            initial: operand(syntax.expression.initial),
+            operations: syntax
+                .expression
+                .operations
+                .into_iter()
+                .map(|operation| PendingAdmissionOperation {
+                    kind: operation.kind,
+                    operand: operand(operation.operand),
+                    site: source_site(resolved, origin, span_range(operation.span)),
+                })
+                .collect(),
+        },
+    }
+}
+
 impl Parse for CentralTokensSyntax {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut fixed = Vec::new();
         let mut content = Vec::new();
         let mut non_token_lexer_records = Vec::new();
         let mut post_lex = Vec::new();
+        let mut categories = Vec::new();
+        let mut flags = Vec::new();
+        let mut admissions = Vec::new();
         while !input.is_empty() {
             let section = syn::Ident::parse_any(input)?;
             if input.peek(Token![=]) {
@@ -4294,13 +5013,39 @@ impl Parse for CentralTokensSyntax {
                         let name = syn::Ident::parse_any(&body)?;
                         body.parse::<Token![=>]>()?;
                         let spelling = body.parse()?;
+                        let (category, keyword_flags) = parse_keyword_metadata(&body)?;
                         let pretty_spacing = parse_fixed_pretty_spacing(&body, &spelling)?;
                         fixed.push(CentralFixedSyntax {
                             name,
                             spelling,
                             authored_class,
                             pretty_spacing,
+                            category,
+                            flags: keyword_flags,
                         });
+                    }
+                } else if section == "categories" || section == "flags" {
+                    let destination = if section == "categories" {
+                        &mut categories
+                    } else {
+                        &mut flags
+                    };
+                    destination.extend(
+                        syn::punctuated::Punctuated::<syn::Ident, Token![,]>::parse_terminated(
+                            &body,
+                        )?,
+                    );
+                } else if section == "admissions" {
+                    while !body.is_empty() {
+                        let name = syn::Ident::parse_any(&body)?;
+                        body.parse::<Token![=]>()?;
+                        let expression = body.parse()?;
+                        admissions.push(CentralAdmissionSyntax { name, expression });
+                        if body.peek(Token![,]) {
+                            body.parse::<Token![,]>()?;
+                        } else if !body.is_empty() {
+                            return Err(body.error("expected `,` after admission declaration"));
+                        }
                     }
                 } else if section == "literals" || section == "lexer_tokens" {
                     while !body.is_empty() {
@@ -4343,7 +5088,70 @@ impl Parse for CentralTokensSyntax {
             content,
             non_token_lexer_records,
             post_lex,
+            categories,
+            flags,
+            admissions,
         })
+    }
+}
+
+/// Parses the optional `in CATEGORY + flag` keyword metadata tail.
+fn parse_keyword_metadata(
+    input: ParseStream<'_>,
+) -> syn::Result<(Option<syn::Ident>, Vec<syn::Ident>)> {
+    let category = if input.peek(Token![in]) {
+        input.parse::<Token![in]>()?;
+        Some(syn::Ident::parse_any(input)?)
+    } else {
+        None
+    };
+    let mut flags = Vec::new();
+    while input.peek(Token![+]) {
+        input.parse::<Token![+]>()?;
+        flags.push(syn::Ident::parse_any(input)?);
+    }
+    Ok((category, flags))
+}
+
+impl Parse for AdmissionExpressionSyntax {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let initial = parse_admission_operand(input)?;
+        let mut operations = Vec::new();
+        while !input.is_empty() && !input.peek(Token![,]) {
+            let (kind, span) = if input.peek(Token![+]) {
+                let operator: Token![+] = input.parse()?;
+                (AdmissionOperationKind::Union, operator.span)
+            } else if input.peek(Token![-]) {
+                let operator: Token![-] = input.parse()?;
+                (AdmissionOperationKind::Subtract, operator.span)
+            } else {
+                return Err(input.error("admission expressions accept only `+` and `-` operations"));
+            };
+            operations.push(AdmissionOperationSyntax {
+                kind,
+                operand: parse_admission_operand(input)?,
+                span,
+            });
+        }
+        Ok(Self {
+            initial,
+            operations,
+        })
+    }
+}
+
+/// Parses one named or explicit-set admission operand.
+fn parse_admission_operand(input: ParseStream<'_>) -> syn::Result<AdmissionOperandSyntax> {
+    if input.peek(syn::token::Brace) {
+        let body;
+        let brace = syn::braced!(body in input);
+        let members =
+            syn::punctuated::Punctuated::<syn::Ident, Token![,]>::parse_terminated(&body)?
+                .into_iter()
+                .collect();
+        Ok(AdmissionOperandSyntax::Set(members, brace.span.join()))
+    } else {
+        Ok(AdmissionOperandSyntax::Name(syn::Ident::parse_any(input)?))
     }
 }
 
@@ -5770,6 +6578,185 @@ struct IfPresence;
         assert!(model.token_uses.iter().any(|token_use| {
             token_use.role == TokenUseRole::ContentAdmission && token_use.definition == admission
         }));
+    }
+
+    #[test]
+    fn named_admissions_compile_transitive_unions_and_subtractions_to_canonical_membership() {
+        let report = model(
+            r#"
+recursa::grammar! {
+    module = crate,
+    keyword_matching = ascii_insensitive,
+    max_lookahead = 5,
+}
+recursa::tokens! {
+    categories { UNRESERVED, RESERVED }
+    flags { bare_label }
+    keywords {
+        WINDOW => "window" in UNRESERVED + bare_label,
+        OTHER => "other" in UNRESERVED,
+        ROWS => "rows" in RESERVED,
+        RANGE => "range" in RESERVED,
+        GROUPS => "groups" in RESERVED,
+        NULL => "null" in RESERVED,
+        TRUE => "true" in RESERVED,
+        FALSE => "false" in RESERVED,
+    }
+    admissions {
+        UnreservedNames = UNRESERVED,
+        ColId = UnreservedNames + RESERVED,
+        WindowRefName = ColId - { ROWS, RANGE, GROUPS },
+        AllWordKinds = keywords,
+        PsqlVariableName = AllWordKinds - { NULL, TRUE, FALSE },
+        BareLabels = bare_label,
+    }
+}
+
+#[derive(recursa::Node)]
+struct Root {
+    #[lex(pattern = "word", admits(WindowRefName))]
+    window: WindowName,
+    #[lex(pattern = "word", admits(PsqlVariableName))]
+    variable: VariableName,
+    #[lex(pattern = "word", admits(BareLabels))]
+    bare: BareName,
+}
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let model = completed(report);
+        let admissions = model
+            .token_definitions
+            .iter()
+            .filter_map(|definition| match &definition.kind {
+                TokenDefinitionKind::Content(content) => Some((
+                    definition.name.as_str(),
+                    content
+                        .admission_set
+                        .iter()
+                        .map(|admission| model.token_definitions[admission.index()].name.as_str())
+                        .collect::<Vec<_>>(),
+                )),
+                TokenDefinitionKind::Fixed(_) | TokenDefinitionKind::LexicalBase(_) => None,
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            admissions["WindowName"],
+            ["WINDOW", "OTHER", "NULL", "TRUE", "FALSE"]
+        );
+        assert_eq!(
+            admissions["VariableName"],
+            ["WINDOW", "OTHER", "ROWS", "RANGE", "GROUPS"]
+        );
+        assert_eq!(admissions["BareName"], ["WINDOW"]);
+    }
+
+    #[test]
+    fn duplicate_admission_union_membership_warns_without_discarding_the_model() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    categories { UNRESERVED }
+    keywords { WINDOW => "window" in UNRESERVED }
+    admissions { Names = UNRESERVED + { WINDOW } }
+}
+#[derive(recursa::Node)]
+struct Root {
+    #[lex(pattern = "word", admits(Names))]
+    name: Name,
+}
+"#,
+        );
+
+        assert!(report.source_modeled.is_some());
+        assert_code(
+            &report,
+            SourceModelDiagnosticKind::DuplicateAdmissionMembership,
+            "RCA3119",
+        );
+        assert_eq!(
+            crate::build_diagnostic::diagnostic_code_spec(crate::RecursaDiagnosticCode::new(
+                "RCA3119"
+            ))
+            .severity,
+            crate::Severity::Warning,
+        );
+    }
+
+    #[test]
+    fn invalid_admission_graphs_and_keyword_metadata_have_structured_diagnostics() {
+        let cases = [
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { admissions { Names = Missing } }
+#[derive(recursa::Node)] struct Root;
+"#,
+                SourceModelDiagnosticKind::InvalidAdmissionReference,
+                "RCA3120",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { admissions { First = Second, Second = First } }
+#[derive(recursa::Node)] struct Root;
+"#,
+                SourceModelDiagnosticKind::AdmissionCycle,
+                "RCA3121",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    categories { KNOWN }
+    keywords { WINDOW => "window" in MISSING }
+}
+#[derive(recursa::Node)] struct Root;
+"#,
+                SourceModelDiagnosticKind::InvalidKeywordCategory,
+                "RCA3122",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    categories { FIRST, SECOND }
+    keywords {
+        WINDOW => "window" in FIRST,
+        WINDOW => "window" in SECOND,
+    }
+}
+#[derive(recursa::Node)] struct Root;
+"#,
+                SourceModelDiagnosticKind::ContradictoryAdmissionMetadata,
+                "RCA3123",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    categories { FIRST, SECOND }
+    keywords { WINDOW => "window" in FIRST, OTHER => "other" in SECOND }
+    admissions { Names = FIRST - SECOND }
+}
+#[derive(recursa::Node)] struct Root;
+"#,
+                SourceModelDiagnosticKind::IneffectiveAdmissionSubtraction,
+                "RCA3124",
+            ),
+        ];
+        assert_eq!(
+            cases.map(|(_, _, code)| code),
+            ["RCA3120", "RCA3121", "RCA3122", "RCA3123", "RCA3124"],
+        );
+
+        for (source, kind, code) in cases {
+            let report = model(source);
+            assert!(report.source_modeled.is_none(), "{kind:?} was non-blocking");
+            assert_code(&report, kind, code);
+        }
     }
 
     #[test]

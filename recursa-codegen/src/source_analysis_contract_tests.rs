@@ -371,6 +371,20 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::pretty_hints_reject_unknown_duplicate_and_inapplicable_settings --locked",
     },
     ProducerEvidence {
+        codes: &["RCA3119"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_analysis_tests.rs",
+        test_name: "duplicate_admission_warning_crosses_the_full_analysis_boundary",
+        command: "cargo test -p recursa-codegen source_analysis_tests::tests::duplicate_admission_warning_crosses_the_full_analysis_boundary --locked",
+    },
+    ProducerEvidence {
+        codes: &["RCA3120", "RCA3121", "RCA3122", "RCA3123", "RCA3124"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_model.rs",
+        test_name: "invalid_admission_graphs_and_keyword_metadata_have_structured_diagnostics",
+        command: "cargo test -p recursa-codegen source_model::tests::invalid_admission_graphs_and_keyword_metadata_have_structured_diagnostics --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA3211"],
         producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",

@@ -28,6 +28,18 @@ _Avoid_: Identifier marker, keyword token type
 A word-shaped fixed token whose concrete token kind is admitted as content by a target at selected grammar positions.
 _Avoid_: Soft keyword, context-sensitive keyword
 
+**Keyword category**:
+The single exclusive classification assigned to a metadata-bearing keyword and selectable as token admission membership.
+_Avoid_: Keyword group, reservation enum
+
+**Keyword flag**:
+An orthogonal marker assigned to zero or more metadata-bearing keywords and selectable as token admission membership.
+_Avoid_: Secondary category, keyword property callback
+
+**Token admission set**:
+A named canonical set of word-shaped fixed-token kinds compiled from category, flag, keyword, keyword-universe, and other admission membership through acyclic union and subtraction.
+_Avoid_: Soft-keyword predicate, runtime token filter
+
 **Text equivalence**:
 The normalized semantic relation used when comparing exact-text predicates: exact scalar spelling or ASCII-case-insensitive spelling, as selected by the keyword matching policy.
 _Avoid_: Regex matching mode, Unicode normalization

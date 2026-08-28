@@ -1,18 +1,34 @@
 recursa::grammar! {
     module = crate::grammar,
     keyword_matching = ascii_insensitive,
-    max_lookahead = 1,
+    max_lookahead = 5,
 }
 
 recursa::tokens! {
     ignore = r"[ \t\n\r]+|--[^\n]*",
     post_lex = crate::grammar::repair,
+    categories { UNRESERVED, RESERVED }
+    flags { bare_label }
     keywords {
-        SELECT => "select",
-        NULL => "null",
-        TRUE => "true",
-        FALSE => "false",
-        CALLBACK_KEYWORD => "kk",
+        SELECT => "select" in RESERVED,
+        NULL => "null" in RESERVED,
+        TRUE => "true" in RESERVED,
+        FALSE => "false" in RESERVED,
+        CALLBACK_KEYWORD => "kk" in RESERVED,
+        WINDOW => "window" in UNRESERVED + bare_label,
+        OTHER => "other" in UNRESERVED,
+        ROWS => "rows" in RESERVED,
+        RANGE => "range" in RESERVED,
+        GROUPS => "groups" in RESERVED,
+    }
+    admissions {
+        UnreservedNames = UNRESERVED,
+        AllCategories = UnreservedNames + RESERVED,
+        ColId = AllCategories,
+        WindowRefName = ColId - { ROWS, RANGE, GROUPS },
+        AllWordKinds = keywords,
+        PsqlVariableName = AllWordKinds - { NULL, TRUE, FALSE },
+        BareLabels = bare_label,
     }
     punctuation {
         COLON => ":",
@@ -162,6 +178,31 @@ pub fn scan_word(context: &mut LexContext<'_>) -> LexAction {
 pub struct Selection<'input> {
     #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(SELECT, NULL))]
     pub name: WordText<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct AdmissionDefinitions<'input> {
+    #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(WindowRefName))]
+    pub window: WindowName<'input>,
+    #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(PsqlVariableName))]
+    pub variable: VariableName<'input>,
+    #[lex(pattern = r"[A-JL-Za-jl-z]+", admits(BareLabels))]
+    pub bare: BareName<'input>,
+}
+
+#[derive(recursa::Node)]
+pub enum WindowOrRows<'input> {
+    Window(WindowName<'input>),
+    #[tok(ROWS)]
+    Rows,
+}
+
+#[derive(recursa::Node)]
+pub enum FiveTokenChoice {
+    #[tok(SELECT, NULL, TRUE, FALSE, WINDOW)]
+    Window,
+    #[tok(SELECT, NULL, TRUE, FALSE, OTHER)]
+    Other,
 }
 
 #[derive(recursa::Node)]

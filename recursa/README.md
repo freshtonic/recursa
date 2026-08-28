@@ -36,6 +36,24 @@ recursa::grammar! {
     max_lookahead = 1,
 }
 
+recursa::tokens! {
+    categories { UNRESERVED, RESERVED }
+    flags { bare_label }
+    keywords {
+        WINDOW => "WINDOW" in UNRESERVED + bare_label,
+        ROWS => "ROWS" in RESERVED,
+    }
+    admissions {
+        ColId = UNRESERVED + RESERVED,
+        WindowRefName = ColId - { ROWS },
+    }
+    punctuation {
+        LBRACKET => "[",
+        RBRACKET => "]",
+        COMMA => ",",
+    }
+}
+
 #[derive(recursa::Node)]
 #[tok(LBRACKET, this, RBRACKET)]
 pub struct Array<'input> {
@@ -43,6 +61,14 @@ pub struct Array<'input> {
     pub values: Option<recursa::Vec1<Value<'input>>>,
 }
 ```
+
+Each metadata-bearing keyword has one category and any number of orthogonal
+flags. Named admission expressions may use categories, flags, fixed-token
+names, the `keywords` universe, and other admissions with `+` and `-`.
+Generation rejects cycles, unknown names, contradictory metadata, and
+subtractions that remove nothing; duplicate union membership is a warning.
+`#[lex(..., admits(WindowRefName))]` applies the compiled canonical membership
+to that generated content-token type.
 
 This is an excerpt from the
 [compiled JSON grammar](https://github.com/freshtonic/recursa/blob/main/examples/json/src/grammar.rs).

@@ -244,6 +244,10 @@ fn valid_node_file(name: &str) -> bool {
 }
 
 /// Structural placeholder for token declarations consumed by the analyzer.
+///
+/// The analyzer owns keyword category and flag metadata, named admission
+/// expressions, lexical definitions, and validation; this macro intentionally
+/// emits no runtime declarations itself.
 #[proc_macro]
 pub fn tokens(_input: TokenStream) -> TokenStream {
     TokenStream::new()
