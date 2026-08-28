@@ -198,6 +198,20 @@ pub enum WindowOrRows<'input> {
 }
 
 #[derive(recursa::Node)]
+pub enum VariableOrNull<'input> {
+    Variable(VariableName<'input>),
+    #[tok(NULL)]
+    Null,
+}
+
+#[derive(recursa::Node)]
+pub enum BareOrOther<'input> {
+    Bare(BareName<'input>),
+    #[tok(OTHER)]
+    Other,
+}
+
+#[derive(recursa::Node)]
 pub enum FiveTokenChoice {
     #[tok(SELECT, NULL, TRUE, FALSE, WINDOW)]
     Window,
