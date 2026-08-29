@@ -138,13 +138,6 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             }
         }
     });
-    let post_lex = plan.post_lex.as_ref().map(|hook| {
-        quote! {
-            let mut editor = LexEditor { source, records };
-            #hook(&mut editor);
-            records = editor.records;
-        }
-    });
     let matchers = plan
         .lexical_rules
         .iter()
@@ -189,46 +182,6 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let skips = plan.lexical_rules.iter().map(|rule| rule.skip);
     let fixed = plan.lexical_rules.iter().map(|rule| rule.fixed);
     let priorities = plan.lexical_rules.iter().map(|rule| rule.priority);
-    let callbacks = plan.lexical_rules.iter().enumerate().map(|(index, rule)| {
-        if rule.callback.is_some() {
-            let shim = format_ident!("__recursa_lex_callback_{index}");
-            quote!(Some(#shim))
-        } else {
-            quote!(None)
-        }
-    });
-    let callback_shims = plan
-        .lexical_rules
-        .iter()
-        .enumerate()
-        .filter_map(|(index, rule)| {
-            let callback = rule.callback.as_ref()?;
-            let shim = format_ident!("__recursa_lex_callback_{index}");
-            Some(quote! {
-                fn #shim(
-                    context: &mut #facade::__private::LexContext<'_>,
-                ) -> #facade::__private::LexAction {
-                    let initial_end = context.end();
-                    let mut typed = LexContext {
-                        source: context.source(),
-                        start: context.start(),
-                        end: initial_end,
-                    };
-                    let action = #callback(&mut typed);
-                    context
-                        .bump(typed.end - initial_end)
-                        .expect("generated typed callback context validated its bump");
-                    match action {
-                        super::LexAction::Emit => #facade::__private::LexAction::Emit,
-                        super::LexAction::EmitAs(kind) => {
-                            #facade::__private::LexAction::EmitAs(__recursa_raw_kind(kind))
-                        }
-                        super::LexAction::Skip => #facade::__private::LexAction::Skip,
-                        super::LexAction::Error => #facade::__private::LexAction::Error,
-                    }
-                }
-            })
-        });
     let empty_words = vec![0_u64; kind_count.div_ceil(64)];
     let token_starts = plan.tokens.iter().enumerate().map(|(index, token)| {
         let name = format_ident!("__RECURSA_TOKEN_START_{index}");
@@ -321,19 +274,6 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             }
         }
 
-        /// The complete set of decisions a lexer callback can make.
-        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        pub enum LexAction {
-            /// Emit the rule's declared token kind.
-            Emit,
-            /// Emit a different named kind from this grammar.
-            EmitAs(TokenKind),
-            /// Consume the matched source without emitting a record.
-            Skip,
-            /// Emit this grammar's lexical-error record.
-            Error,
-        }
-
         /// A cursor bound to this generated grammar's token identities.
         pub struct Input<'input, A = ()> {
             pub(crate) inner: #facade::__private::Input<'input, A>,
@@ -366,63 +306,11 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                         matcher: #matchers,
                         kind: #kinds,
                         skip: #skips,
-                        callback: #callbacks,
                         fixed: #fixed,
                         priority: #priorities,
                     }
                 ),*
             ];
-
-        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        pub struct LexBumpError {
-            _private: (),
-        }
-
-        impl ::core::fmt::Display for LexBumpError {
-            fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                formatter.write_str(
-                    "lexer callback bump is outside the remaining UTF-8 source",
-                )
-            }
-        }
-
-        impl ::std::error::Error for LexBumpError {}
-
-        /// Backend-independent access to one callback's current match.
-        pub struct LexContext<'source> {
-            source: &'source str,
-            start: usize,
-            end: usize,
-        }
-
-        impl<'source> LexContext<'source> {
-            /// The complete source slice currently claimed by this callback.
-            pub fn slice(&self) -> &str {
-                &self.source[self.start..self.end]
-            }
-
-            /// Source following the callback's current slice.
-            pub fn remainder(&self) -> &str {
-                &self.source[self.end..]
-            }
-
-            /// Extends the current slice by a validated byte count.
-            ///
-            /// Failure leaves the slice unchanged. Bumps may not exceed the
-            /// source or end between UTF-8 code units.
-            pub fn bump(&mut self, bytes: usize) -> Result<(), LexBumpError> {
-                let Some(end) = self.end.checked_add(bytes) else {
-                    return Err(LexBumpError { _private: () });
-                };
-                if end > self.source.len() || !self.source.is_char_boundary(end) {
-                    return Err(LexBumpError { _private: () });
-                }
-                self.end = end;
-                Ok(())
-            }
-        }
-
-        #(#callback_shims)*
 
         fn __recursa_raw_kind(kind: TokenKind) -> u16 {
             match kind {
@@ -455,7 +343,6 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             for record in &mut records {
                 __recursa_classify(source, record);
             }
-            #post_lex
             for record in &mut records {
                 if record.kind == #lexical_error_kind {
                     if record.diagnostic.is_none() {
@@ -750,181 +637,6 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             }
         }
 
-        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        pub struct LexRecord<'input> {
-            source: &'input str,
-            record: #facade::__private::TokenRecord,
-        }
-
-        impl<'input> LexRecord<'input> {
-            pub fn kind(self) -> TokenKind {
-                __recursa_typed_kind(self.record.kind)
-            }
-
-            pub fn text(self) -> &'input str {
-                self.source
-                    .get(self.record.span.range())
-                    .expect("the lexical editor preserves valid UTF-8 spans")
-            }
-
-            pub fn span(self) -> #facade::Span {
-                self.record.span
-            }
-        }
-
-        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        pub enum LexEditError {
-            MissingRecord { index: usize },
-            EmptyReplacement,
-            InvalidSpan { span: #facade::Span },
-            OutOfOrder {
-                previous: #facade::Span,
-                span: #facade::Span,
-            },
-            InvalidRange { start: usize, end: usize },
-        }
-
-        impl ::core::fmt::Display for LexEditError {
-            fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                match self {
-                    Self::MissingRecord { index } => {
-                        write!(formatter, "lexical record index {index} does not exist")
-                    }
-                    Self::EmptyReplacement => {
-                        formatter.write_str("lexical replacement must contain a record")
-                    }
-                    Self::InvalidSpan { span } => write!(
-                        formatter,
-                        "replacement span {}..{} is outside its source record",
-                        span.start(),
-                        span.end(),
-                    ),
-                    Self::OutOfOrder { previous, span } => write!(
-                        formatter,
-                        "replacement span {}..{} overlaps or precedes {}..{}",
-                        span.start(),
-                        span.end(),
-                        previous.start(),
-                        previous.end(),
-                    ),
-                    Self::InvalidRange { start, end } => {
-                        write!(formatter, "lexical record range {start}..{end} is invalid")
-                    }
-                }
-            }
-        }
-
-        impl ::std::error::Error for LexEditError {}
-
-        /// Validated, grammar-typed mutation available only during post-lex.
-        pub struct LexEditor<'input> {
-            source: &'input str,
-            records: Vec<#facade::__private::TokenRecord>,
-        }
-
-        impl<'input> LexEditor<'input> {
-            pub fn source(&self) -> &'input str {
-                self.source
-            }
-
-            pub fn len(&self) -> usize {
-                self.records.len()
-            }
-
-            pub fn is_empty(&self) -> bool {
-                self.records.is_empty()
-            }
-
-            pub fn record(&self, index: usize) -> Option<LexRecord<'input>> {
-                self.records.get(index).copied().map(|record| LexRecord {
-                    source: self.source,
-                    record,
-                })
-            }
-
-            pub fn reclassify(
-                &mut self,
-                index: usize,
-                kind: TokenKind,
-            ) -> Result<(), LexEditError> {
-                let Some(record) = self.records.get_mut(index) else {
-                    return Err(LexEditError::MissingRecord { index });
-                };
-                record.kind = __recursa_raw_kind(kind);
-                __recursa_classify(self.source, record);
-                Ok(())
-            }
-
-            pub fn replace<I>(
-                &mut self,
-                index: usize,
-                replacement: I,
-            ) -> Result<(), LexEditError>
-            where
-                I: IntoIterator<Item = (TokenKind, #facade::Span)>,
-            {
-                let Some(original) = self.records.get(index).copied() else {
-                    return Err(LexEditError::MissingRecord { index });
-                };
-                let mut replacement = replacement
-                    .into_iter()
-                    .map(|(kind, span)| #facade::__private::TokenRecord {
-                        kind: __recursa_raw_kind(kind),
-                        span,
-                        diagnostic: None,
-                    })
-                    .collect::<Vec<_>>();
-                if replacement.is_empty() {
-                    return Err(LexEditError::EmptyReplacement);
-                }
-                let mut previous: Option<#facade::Span> = None;
-                for record in &replacement {
-                    if record.span.start() < original.span.start()
-                        || record.span.end() > original.span.end()
-                        || self.source.get(record.span.range()).is_none()
-                    {
-                        return Err(LexEditError::InvalidSpan { span: record.span });
-                    }
-                    if let Some(previous_span) = previous {
-                        if record.span.start() < previous_span.end() {
-                            return Err(LexEditError::OutOfOrder {
-                                previous: previous_span,
-                                span: record.span,
-                            });
-                        }
-                    }
-                    previous = Some(record.span);
-                }
-                for record in &mut replacement {
-                    __recursa_classify(self.source, record);
-                }
-                self.records.splice(index..index + 1, replacement);
-                Ok(())
-            }
-
-            pub fn remove(
-                &mut self,
-                range: ::core::ops::Range<usize>,
-            ) -> Result<(), LexEditError> {
-                if range.start > range.end || range.end > self.records.len() {
-                    return Err(LexEditError::InvalidRange {
-                        start: range.start,
-                        end: range.end,
-                    });
-                }
-                self.records.drain(range);
-                Ok(())
-            }
-
-            pub fn classify_word(&mut self, index: usize) -> Result<(), LexEditError> {
-                let Some(record) = self.records.get_mut(index) else {
-                    return Err(LexEditError::MissingRecord { index });
-                };
-                __recursa_classify(self.source, record);
-                Ok(())
-            }
-        }
-
         pub struct LexResult<'input> {
             inner: #facade::__private::LexResult<'input>,
         }
@@ -976,9 +688,8 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         }
 
         pub use __recursa_lexical::{
-            GrammarInfo, LexBuildError, LexBuilder, LexBumpError, LexContext, LexEditError,
-            LexEditor, LexError, LexErrorCode, LexErrors, LexRecord, LexResult, Token, Tokens,
-            grammar_info, lex,
+            GrammarInfo, LexBuildError, LexBuilder, LexError, LexErrorCode, LexErrors, LexResult,
+            Token, Tokens, grammar_info, lex,
         };
 
         #[doc(hidden)]

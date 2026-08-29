@@ -43,7 +43,6 @@ fn main() {
     assert_eq!(errors[0].anchor(), recursa::Span::new(13, 14).unwrap());
 
     let alternative_source = String::from("sElEcT");
-    grammar::reset_post_lex_calls();
     let mut alternative = grammar::LexBuilder::new(&alternative_source);
     alternative
         .append(
@@ -59,41 +58,27 @@ fn main() {
     assert_eq!(classified.kind(), grammar::TokenKind::SELECT);
     assert_eq!(classified.text(), "sElEcT");
     assert_eq!(alternative.errors().count(), 0);
-    assert_eq!(grammar::post_lex_calls(), 1);
 
     let mut standalone_keyword = grammar::LexBuilder::new("Kk");
     standalone_keyword
         .append(
-            grammar::TokenKind::CallbackText,
+            grammar::TokenKind::WordText,
             recursa::Span::new(0, 2).unwrap(),
         )
         .expect("an alternative lexer may initially report a content kind");
     let standalone_keyword = standalone_keyword.finish();
     assert_eq!(
         standalone_keyword.tokens().next().unwrap().kind(),
-        grammar::TokenKind::CALLBACK_KEYWORD,
+        grammar::TokenKind::CUSTOM_KEYWORD,
     );
 
-    grammar::reset_callback_calls();
-    let fixed_over_callback = grammar::lex("Kk");
-    let fixed_over_callback = fixed_over_callback.tokens().collect::<Vec<_>>();
-    assert_eq!(fixed_over_callback.len(), 1);
+    let fixed_over_content = grammar::lex("Kk");
+    let fixed_over_content = fixed_over_content.tokens().collect::<Vec<_>>();
+    assert_eq!(fixed_over_content.len(), 1);
     assert_eq!(
-        fixed_over_callback[0].kind(),
-        grammar::TokenKind::CALLBACK_KEYWORD,
+        fixed_over_content[0].kind(),
+        grammar::TokenKind::CUSTOM_KEYWORD,
     );
-    assert_eq!(grammar::callback_calls(), 0);
-
-    let unicode_callback = grammar::lex("~é");
-    let unicode_callback = unicode_callback
-        .tokens()
-        .next()
-        .expect("the callback accepted one complete non-ASCII scalar");
-    assert_eq!(unicode_callback.text(), "~é");
-
-    let repaired_error = grammar::lex(":ERROR");
-    assert_eq!(repaired_error.tokens().count(), 0);
-    assert_eq!(repaired_error.errors().next().unwrap().text(), ":ERROR");
 
     let mut invalid = grammar::LexBuilder::new("abcd");
     invalid
@@ -301,38 +286,11 @@ fn main() {
     );
     assert_eq!(deep_unterminated.anchor(), recursa::Span::new(0, 2).unwrap());
 
-    grammar::reset_post_lex_calls();
-    grammar::reset_callback_calls();
-    let callback_lexed = grammar::lex("~emit ~as ~skip ~error ~tail");
-    assert_eq!(grammar::callback_calls(), 5);
-    assert_eq!(grammar::post_lex_calls(), 1);
-    let callback_tokens = callback_lexed.tokens().collect::<Vec<_>>();
-    assert_eq!(callback_tokens.len(), 3);
+    let declarative = grammar::lex(":NULL :true :FaLsE :'TRUE' :\"FALSE\" !=--comment\n!=-");
+    assert_eq!(declarative.errors().count(), 0);
+    let declarative = declarative.tokens().collect::<Vec<_>>();
     assert_eq!(
-        callback_tokens[0].kind(),
-        grammar::TokenKind::CallbackText
-    );
-    assert_eq!(callback_tokens[0].text(), "~emit");
-    assert_eq!(callback_tokens[1].kind(), grammar::TokenKind::SELECT);
-    assert_eq!(callback_tokens[1].text(), "~as");
-    assert_eq!(
-        callback_tokens[2].kind(),
-        grammar::TokenKind::CallbackText
-    );
-    assert_eq!(callback_tokens[2].text(), "~tail");
-    let callback_errors = callback_lexed.errors().collect::<Vec<_>>();
-    assert_eq!(callback_errors.len(), 1);
-    assert_eq!(callback_errors[0].text(), "~error");
-    assert_eq!(
-        callback_errors[0].span(),
-        recursa::Span::new(16, 22).unwrap()
-    );
-
-    let repaired = grammar::lex(":NULL :true :FaLsE :'TRUE' :\"FALSE\" !=--comment\n!=-");
-    assert_eq!(repaired.errors().count(), 0);
-    let repaired = repaired.tokens().collect::<Vec<_>>();
-    assert_eq!(
-        repaired.iter().map(|token| token.kind()).collect::<Vec<_>>(),
+        declarative.iter().map(|token| token.kind()).collect::<Vec<_>>(),
         [
             grammar::TokenKind::COLON,
             grammar::TokenKind::NULL,
@@ -340,26 +298,28 @@ fn main() {
             grammar::TokenKind::TRUE,
             grammar::TokenKind::COLON,
             grammar::TokenKind::FALSE,
-            grammar::TokenKind::PseudoText,
-            grammar::TokenKind::PseudoText,
+            grammar::TokenKind::COLON,
+            grammar::TokenKind::QuotedText,
+            grammar::TokenKind::COLON,
+            grammar::TokenKind::QuotedText,
             grammar::TokenKind::NOT_EQUAL,
-            grammar::TokenKind::LEGIT_NOT_EQUAL,
+            grammar::TokenKind::OperatorText,
         ]
     );
     assert_eq!(
-        repaired.iter().map(|token| token.text()).collect::<Vec<_>>(),
+        declarative.iter().map(|token| token.text()).collect::<Vec<_>>(),
         [
-            ":", "NULL", ":", "true", ":", "FaLsE", ":'TRUE'", ":\"FALSE\"", "!=",
-            "!=-",
+            ":", "NULL", ":", "true", ":", "FaLsE", ":", "'TRUE'", ":", "\"FALSE\"",
+            "!=", "!=-",
         ]
     );
 
-    let repaired_eof_comment = grammar::lex("!=--comment @");
-    assert_eq!(repaired_eof_comment.errors().count(), 0);
-    let repaired_eof_comment = repaired_eof_comment.tokens().collect::<Vec<_>>();
-    assert_eq!(repaired_eof_comment.len(), 1);
-    assert_eq!(repaired_eof_comment[0].kind(), grammar::TokenKind::NOT_EQUAL);
-    assert_eq!(repaired_eof_comment[0].text(), "!=");
+    let declarative_eof_comment = grammar::lex("!=--comment @");
+    assert_eq!(declarative_eof_comment.errors().count(), 0);
+    let declarative_eof_comment = declarative_eof_comment.tokens().collect::<Vec<_>>();
+    assert_eq!(declarative_eof_comment.len(), 1);
+    assert_eq!(declarative_eof_comment[0].kind(), grammar::TokenKind::NOT_EQUAL);
+    assert_eq!(declarative_eof_comment[0].text(), "!=");
 
     let admitted = grammar::lex("select null");
     let mut admitted_input = admitted.input();
@@ -382,7 +342,7 @@ fn main() {
         (grammar::TokenKind::NULL, true, false, false),
         (grammar::TokenKind::TRUE, true, false, false),
         (grammar::TokenKind::FALSE, true, false, false),
-        (grammar::TokenKind::CALLBACK_KEYWORD, true, true, false),
+        (grammar::TokenKind::CUSTOM_KEYWORD, true, true, false),
         (grammar::TokenKind::WINDOW, true, true, true),
         (grammar::TokenKind::OTHER, true, true, false),
         (grammar::TokenKind::ROWS, false, true, false),

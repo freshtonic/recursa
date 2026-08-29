@@ -6,7 +6,7 @@
 use super::*;
 
 /// Private loader protocol understood by generated roots and the facade.
-pub(super) const PRIVATE_PROTOCOL: u32 = 4;
+pub(super) const PRIVATE_PROTOCOL: u32 = 5;
 /// Stable emitter-format identity hashed into every generated family identity.
 pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v3";
 
@@ -78,14 +78,14 @@ mod tests {
 
     #[test]
     fn generated_public_shape_revision_changes_the_generation_cache_identity() {
-        assert_eq!(PRIVATE_PROTOCOL, 4);
+        assert_eq!(PRIVATE_PROTOCOL, 5);
         assert_eq!(
             generation_protocol_identity(),
-            generation_protocol_identity_for(4)
+            generation_protocol_identity_for(5)
         );
         assert_ne!(
             generation_protocol_identity(),
-            generation_protocol_identity_for(3)
+            generation_protocol_identity_for(4)
         );
     }
 }

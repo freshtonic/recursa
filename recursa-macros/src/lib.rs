@@ -12,7 +12,7 @@ use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Type, parse_macro_input};
 
 /// Matching-version protocol expected by generated root and Node loaders.
-const PRIVATE_PROTOCOL: u32 = 4;
+const PRIVATE_PROTOCOL: u32 = 5;
 
 /// Marks a source declaration as a grammar Node and loads its generated body.
 ///
@@ -266,10 +266,6 @@ fn valid_node_file(name: &str) -> bool {
 /// tie-breaker. Equal unresolved priorities are rejected during source analysis. Unterminated
 /// delimited and nested matches become generated lexical errors spanning their opener through EOF
 /// and expose stable mechanism-specific codes and opener anchors.
-/// Legacy callback arbitration against regular-expression and fixed rules remains available during
-/// migration. Source analysis rejects a callback whose starter overlaps a finalizing closed matcher
-/// because discovering both final extents would require speculatively executing authored code.
-///
 /// The analyzer validates the declaration and owns all generated bindings. This procedural macro
 /// intentionally emits no runtime items itself.
 #[proc_macro]

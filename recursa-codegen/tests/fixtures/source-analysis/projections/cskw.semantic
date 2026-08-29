@@ -6,20 +6,20 @@ grammar edition=Rust2024 anchor=cskw max_lookahead=1 equivalence=AsciiInsensitiv
 [lexical]
 equivalence AsciiInsensitive
 selection LongestPrefixThenFixedThenAuthoredPatternPriority
-kind content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None
+kind content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None
 kind fixed:,
 kind fixed:AS
 kind fixed:FROM
 kind fixed:SELECT
-base content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None pattern="[a-zA-Z_][a-zA-Z0-9_]*" targets=[Alias,ColumnName,TableName] priority=0
-keyword AS recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
-keyword FROM recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
-keyword SELECT recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
-target Alias base=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None accepts=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
-target ColumnName base=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None accepts=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]
-target TableName base=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None accepts=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]
+base content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None pattern="[a-zA-Z_][a-zA-Z0-9_]*" targets=[Alias,ColumnName,TableName] priority=0
+keyword AS recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+keyword FROM recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+keyword SELECT recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+target Alias base=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None accepts=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+target ColumnName base=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None accepts=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]
+target TableName base=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None accepts=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]
 rule Fixed(",") kind=fixed:, priority=Fixed
-rule Regex("[a-zA-Z_][a-zA-Z0-9_]*") kind=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None priority=Pattern { authored: None }
+rule Regex("[a-zA-Z_][a-zA-Z0-9_]*") kind=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None priority=Pattern { authored: None }
 non-token Regex("[ \\t\\n\\r]+") outcome=NonEmitting
 
 [source-token-definitions]
@@ -54,62 +54,62 @@ field cskw::Col::as_alias -> parse-site(cskw::Col::element1)
 field cskw::AsAlias::alias -> parse-site(cskw::AsAlias::element1)
 
 [analysis]
-facts Alias first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] nullable=false extenders=[-] follow=[fixed:,,fixed:FROM,EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow
-facts ColumnName first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS] nullable=false extenders=[-] follow=[fixed:,,fixed:AS,fixed:FROM,EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS -> caller-follow
-facts TableName first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS] nullable=false extenders=[-] follow=[EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS -> caller-follow
+facts Alias first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] nullable=false extenders=[-] follow=[fixed:,,fixed:FROM,EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
+facts ColumnName first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS] nullable=false extenders=[-] follow=[fixed:,,fixed:AS,fixed:FROM,EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS -> caller-follow
+facts TableName first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS] nullable=false extenders=[-] follow=[EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS -> caller-follow
 facts cskw::AsAlias first=[fixed:AS] nullable=false extenders=[-] follow=[fixed:,,fixed:FROM,EOF] first^k=fixed:AS
-facts cskw::Col first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS] nullable=false extenders=[-] follow=[fixed:,,fixed:FROM,EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS -> caller-follow | content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS
+facts cskw::Col first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS] nullable=false extenders=[-] follow=[fixed:,,fixed:FROM,EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS -> caller-follow | content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS
 facts cskw::SelectStmt first=[fixed:SELECT] nullable=false extenders=[-] follow=[EOF] first^k=fixed:SELECT
 facts cskw::Stmt first=[fixed:SELECT] nullable=false extenders=[-] follow=[EOF] first^k=fixed:SELECT
-facts fixed:, first=[fixed:,] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS] first^k=fixed:, -> caller-follow
-facts fixed:AS first=[fixed:AS] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] first^k=fixed:AS -> caller-follow
-facts fixed:FROM first=[fixed:FROM] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS] first^k=fixed:FROM -> caller-follow
-facts fixed:SELECT first=[fixed:SELECT] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS] first^k=fixed:SELECT -> caller-follow
+facts fixed:, first=[fixed:,] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS] first^k=fixed:, -> caller-follow
+facts fixed:AS first=[fixed:AS] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] first^k=fixed:AS -> caller-follow
+facts fixed:FROM first=[fixed:FROM] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS] first^k=fixed:FROM -> caller-follow
+facts fixed:SELECT first=[fixed:SELECT] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS] first^k=fixed:SELECT -> caller-follow
 
 [decisions]
 dispatch cskw::Stmt enum depth=1 caller-fallback=-
   cskw::Stmt::Select: fixed:SELECT
 follow cskw::Stmt::Select::element0 caller
-follow cskw::SelectStmt::element0 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]
+follow cskw::SelectStmt::element0 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]
 follow cskw::SelectStmt::element1 static[fixed:FROM]
-follow cskw::SelectStmt::element2 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]
+follow cskw::SelectStmt::element2 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]
 follow cskw::SelectStmt::element3 caller
 follow cskw::Col::element0 static+caller[fixed:AS]
 follow cskw::Col::element1 caller
-follow cskw::AsAlias::element0 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow cskw::AsAlias::element0 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 follow cskw::AsAlias::element1 caller
 container cskw::Stmt::Select::element0 Direct element=[fixed:SELECT] separator=- separator-first=[] trailing=false stop=caller
   transition Start --ParseElement/static[fixed:SELECT]--> Done
-container cskw::SelectStmt::element0 Direct element=[fixed:SELECT] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]
+container cskw::SelectStmt::element0 Direct element=[fixed:SELECT] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]
   transition Start --ParseElement/static[fixed:SELECT]--> Done
-container cskw::SelectStmt::element1 OneOrMore element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS] separator=fixed:, separator-first=[fixed:,] trailing=false stop=static[fixed:FROM]
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]--> AfterElement
+container cskw::SelectStmt::element1 OneOrMore element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS] separator=fixed:, separator-first=[fixed:,] trailing=false stop=static[fixed:FROM]
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]--> AfterElement
   transition AfterElement --ParseSeparator/static[fixed:,]--> AfterSeparator
-  transition AfterSeparator --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]--> AfterElement
+  transition AfterSeparator --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]--> AfterElement
   transition AfterElement --Stop/static[fixed:FROM]--> Done
-container cskw::SelectStmt::element2 Direct element=[fixed:FROM] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]
+container cskw::SelectStmt::element2 Direct element=[fixed:FROM] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]
   transition Start --ParseElement/static[fixed:FROM]--> Done
-container cskw::SelectStmt::element3 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]--> Done
-container cskw::Col::element0 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS] separator=- separator-first=[] trailing=false stop=static+caller[fixed:AS]
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]--> Done
+container cskw::SelectStmt::element3 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]--> Done
+container cskw::Col::element0 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS] separator=- separator-first=[] trailing=false stop=static+caller[fixed:AS]
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]--> Done
 container cskw::Col::element1 Optional element=[fixed:AS] separator=- separator-first=[] trailing=false stop=caller
   transition Start --ParseElement/static[fixed:AS]--> Done
   transition Start --Stop/caller--> Done
-container cskw::AsAlias::element0 Direct element=[fixed:AS] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+container cskw::AsAlias::element0 Direct element=[fixed:AS] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:AS]--> Done
-container cskw::AsAlias::element1 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container cskw::AsAlias::element1 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]--> Done
 
 [failures]
 failure cskw::Stmt - EnumDispatch expected=static[fixed:SELECT]
 failure cskw::Stmt cskw::Stmt::Select::element0 RequiredSite expected=static[fixed:SELECT]
 failure cskw::SelectStmt cskw::SelectStmt::element0 RequiredSite expected=static[fixed:SELECT]
-failure cskw::SelectStmt cskw::SelectStmt::element1 ContainerMinimum expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]
+failure cskw::SelectStmt cskw::SelectStmt::element1 ContainerMinimum expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]
 failure cskw::SelectStmt cskw::SelectStmt::element1 ContainerContinuation expected=continue[fixed:,] or stop[static[fixed:FROM]]
-failure cskw::SelectStmt cskw::SelectStmt::element1 ContainerAfterSeparator expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]
+failure cskw::SelectStmt cskw::SelectStmt::element1 ContainerAfterSeparator expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]
 failure cskw::SelectStmt cskw::SelectStmt::element2 RequiredSite expected=static[fixed:FROM]
-failure cskw::SelectStmt cskw::SelectStmt::element3 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]
-failure cskw::Col cskw::Col::element0 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None,fixed:AS]
+failure cskw::SelectStmt cskw::SelectStmt::element3 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]
+failure cskw::Col cskw::Col::element0 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None,fixed:AS]
 failure cskw::AsAlias cskw::AsAlias::element0 RequiredSite expected=static[fixed:AS]
-failure cskw::AsAlias cskw::AsAlias::element1 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure cskw::AsAlias cskw::AsAlias::element1 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
