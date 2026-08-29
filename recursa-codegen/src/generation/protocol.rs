@@ -6,7 +6,7 @@
 use super::*;
 
 /// Private loader protocol understood by generated roots and the facade.
-pub(super) const PRIVATE_PROTOCOL: u32 = 5;
+pub(super) const PRIVATE_PROTOCOL: u32 = 6;
 /// Stable emitter-format identity hashed into every generated family identity.
 pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v3";
 
@@ -69,24 +69,6 @@ pub(super) fn authoritative_private_abi_plan() -> PrivateAbiPlan {
     PrivateAbiPlan {
         release: env!("CARGO_PKG_VERSION").to_owned(),
         protocol: PRIVATE_PROTOCOL,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{PRIVATE_PROTOCOL, generation_protocol_identity, generation_protocol_identity_for};
-
-    #[test]
-    fn generated_public_shape_revision_changes_the_generation_cache_identity() {
-        assert_eq!(PRIVATE_PROTOCOL, 5);
-        assert_eq!(
-            generation_protocol_identity(),
-            generation_protocol_identity_for(5)
-        );
-        assert_ne!(
-            generation_protocol_identity(),
-            generation_protocol_identity_for(4)
-        );
     }
 }
 
@@ -245,4 +227,22 @@ pub(super) fn capability_plan_from_recipes(
         );
     }
     accepted_capabilities(requested_arbitrary, requested_serde, diagrams, explorer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PRIVATE_PROTOCOL, generation_protocol_identity, generation_protocol_identity_for};
+
+    #[test]
+    fn generated_public_shape_revision_changes_the_generation_cache_identity() {
+        assert_eq!(PRIVATE_PROTOCOL, 6);
+        assert_eq!(
+            generation_protocol_identity(),
+            generation_protocol_identity_for(6)
+        );
+        assert_ne!(
+            generation_protocol_identity(),
+            generation_protocol_identity_for(5)
+        );
+    }
 }

@@ -791,10 +791,17 @@ impl EmissionPlan {
                 for elements in pretty_element_sets {
                     for element in elements {
                         let ElementParseKind::Semantic {
+                            projection: semantic,
+                            ..
+                        } = &element.kind
+                        else {
+                            continue;
+                        };
+                        let SemanticParseProjection::Direct {
                             terminal_application,
                             repetition_break,
                             ..
-                        } = &element.kind
+                        } = semantic.as_ref()
                         else {
                             continue;
                         };
@@ -836,10 +843,17 @@ impl EmissionPlan {
             for elements in declaration_elements {
                 for element in elements {
                     let ElementParseKind::Semantic {
+                        projection: semantic,
+                        ..
+                    } = &element.kind
+                    else {
+                        continue;
+                    };
+                    let SemanticParseProjection::Direct {
                         terminal_application,
                         repetition_break,
                         ..
-                    } = &element.kind
+                    } = semantic.as_ref()
                     else {
                         continue;
                     };

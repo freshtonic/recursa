@@ -668,6 +668,7 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::ContentDisplayOverride => "RCA3111",
         SourceModelDiagnosticKind::InvalidSeparator => "RCA3112",
         SourceModelDiagnosticKind::UnsupportedFixedSyntax => "RCA3113",
+        SourceModelDiagnosticKind::InvalidFixedTokenPresence => "RCA3129",
         SourceModelDiagnosticKind::InvalidTokenPlacement => "RCA3114",
         SourceModelDiagnosticKind::InvalidPrattTokenPlacement => "RCA3115",
         SourceModelDiagnosticKind::ConfiguredOrdinaryDeriveConflict => "RCA3116",

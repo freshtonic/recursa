@@ -186,13 +186,17 @@ pub(super) fn attachment_pretty_terminal(
     element: &ElementParsePlan,
 ) -> Option<Type> {
     match &element.kind {
-        ElementParseKind::Semantic {
-            terminal,
-            attachment: Some(_),
-            opaque_provenance: true,
-            ..
-        } if !is_recursive_terminal(node, terminal) => Some(terminal.as_ref().clone()),
-        ElementParseKind::Fixed { .. } | ElementParseKind::Semantic { .. } => None,
+        ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
+            SemanticParseProjection::Direct {
+                terminal,
+                attachment: Some(_),
+                opaque_provenance: true,
+                ..
+            } if !is_recursive_terminal(node, terminal) => Some(terminal.as_ref().clone()),
+            SemanticParseProjection::Direct { .. }
+            | SemanticParseProjection::FixedPresence { .. } => None,
+        },
+        ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => None,
     }
 }
 
@@ -284,7 +288,9 @@ pub(super) fn semantic_fields(elements: &[ElementParsePlan]) -> Vec<&FieldPlan> 
         .iter()
         .filter_map(|element| match &element.kind {
             ElementParseKind::Semantic { field, .. } => Some(field),
-            ElementParseKind::Fixed { .. } => None,
+            ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
+                None
+            }
         })
         .collect()
 }
@@ -715,17 +721,18 @@ pub(super) fn render_node_serde(
     };
     let helper_body = match &node.body {
         NodeBodyPlan::Struct { style, elements } => {
-            let fields = elements.iter().filter_map(|element| {
-                let ElementParseKind::Semantic {
+            let fields = elements.iter().filter_map(|element| match &element.kind {
+                ElementParseKind::Semantic { field, projection } => Some((
                     field,
-                    terminal,
-                    wrappers,
-                    ..
-                } = &element.kind
-                else {
-                    return None;
-                };
-                Some((field, field_type(terminal, wrappers)))
+                    match projection.as_ref() {
+                        SemanticParseProjection::Direct {
+                            terminal, wrappers, ..
+                        } => field_type(terminal, wrappers),
+                        SemanticParseProjection::FixedPresence { .. } => syn::parse_quote!(bool),
+                    },
+                )),
+                ElementParseKind::Fixed { .. }
+                | ElementParseKind::OptionalFixedTokenGroup { .. } => None,
             });
             match style {
                 ResolvedFieldStyle::Named => {
@@ -746,18 +753,24 @@ pub(super) fn render_node_serde(
             let variants = trait_variants(&node.body);
             let variants = variants.iter().map(|variant| {
                 let ident = &variant.ident;
-                let fields = variant.elements.iter().filter_map(|element| {
-                    let ElementParseKind::Semantic {
-                        field,
-                        terminal,
-                        wrappers,
-                        ..
-                    } = &element.kind
-                    else {
-                        return None;
-                    };
-                    Some((field, field_type(terminal, wrappers)))
-                });
+                let fields = variant
+                    .elements
+                    .iter()
+                    .filter_map(|element| match &element.kind {
+                        ElementParseKind::Semantic { field, projection } => Some((
+                            field,
+                            match projection.as_ref() {
+                                SemanticParseProjection::Direct {
+                                    terminal, wrappers, ..
+                                } => field_type(terminal, wrappers),
+                                SemanticParseProjection::FixedPresence { .. } => {
+                                    syn::parse_quote!(bool)
+                                }
+                            },
+                        )),
+                        ElementParseKind::Fixed { .. }
+                        | ElementParseKind::OptionalFixedTokenGroup { .. } => None,
+                    });
                 match variant.style {
                     ResolvedFieldStyle::Named => {
                         let fields = fields.map(|(field, ty)| {
@@ -887,7 +900,14 @@ pub(super) fn serde_generic_dependencies(node: &NodeParsePlan) -> Vec<Type> {
         }
     }
     for_each_element(&node.body, &mut |element| {
-        let ElementParseKind::Semantic { terminal, .. } = &element.kind else {
+        let ElementParseKind::Semantic {
+            projection: semantic,
+            ..
+        } = &element.kind
+        else {
+            return;
+        };
+        let SemanticParseProjection::Direct { terminal, .. } = semantic.as_ref() else {
             return;
         };
         if !is_recursive_terminal(node, terminal) {
@@ -920,13 +940,18 @@ pub(super) fn semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<
     elements
         .iter()
         .filter_map(|element| match &element.kind {
-            ElementParseKind::Semantic {
-                terminal, wrappers, ..
-            } if !is_recursive_terminal(node, terminal) => {
-                Some(render_wrapped_type(facade, terminal, wrappers))
+            ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
+                SemanticParseProjection::Direct {
+                    terminal, wrappers, ..
+                } if !is_recursive_terminal(node, terminal) => {
+                    Some(render_wrapped_type(facade, terminal, wrappers))
+                }
+                SemanticParseProjection::Direct { .. } => None,
+                SemanticParseProjection::FixedPresence { .. } => Some(syn::parse_quote!(bool)),
+            },
+            ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
+                None
             }
-            ElementParseKind::Semantic { .. } => None,
-            ElementParseKind::Fixed { .. } => None,
         })
         .collect()
 }

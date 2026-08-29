@@ -245,12 +245,21 @@ pub(super) struct ElementParsePlan {
 #[derive(Clone, Debug)]
 /// Fixed-token envelope around a semantic container.
 pub(super) struct FixedAttachmentParsePlan {
-    /// Fixed tokens consumed before the semantic child.
-    pub(super) before: Vec<AttachedFixedParsePlan>,
+    /// Fixed syntax consumed before the semantic child.
+    pub(super) before: Vec<AttachedFixedSyntaxParsePlan>,
     /// Container operation that parses the semantic child.
     pub(super) semantic: Box<PlannedContainer>,
-    /// Fixed tokens consumed after the semantic child.
-    pub(super) after: Vec<AttachedFixedParsePlan>,
+    /// Fixed syntax consumed after the semantic child.
+    pub(super) after: Vec<AttachedFixedSyntaxParsePlan>,
+}
+
+#[derive(Clone, Debug)]
+/// Classifies required and erased-optional syntax in a generated attachment.
+pub(super) enum AttachedFixedSyntaxParsePlan {
+    /// Consumes one required fixed token.
+    Required(AttachedFixedParsePlan),
+    /// Consumes a fixed sequence atomically when its full spelling is present.
+    Optional(Vec<AttachedFixedParsePlan>),
 }
 
 #[derive(Clone, Debug)]
@@ -285,10 +294,27 @@ pub(super) enum ElementParseKind {
         /// Generated accessor identifying this occurrence.
         accessor: Ident,
     },
-    /// Parses an authored semantic field through its container policy.
+    /// Parses one erased fixed-token group atomically when its full sequence is present.
+    OptionalFixedTokenGroup {
+        /// Fixed tokens selected and consumed as one atomic sequence.
+        tokens: Vec<AttachedFixedParsePlan>,
+        /// Generated span accessor identifying the optional occurrence.
+        accessor: Ident,
+    },
+    /// Parses an authored semantic field through its selected value projection.
     Semantic {
         /// Construction slot receiving the parsed value.
         field: FieldPlan,
+        /// Selects direct semantic parsing or boolean fixed-presence projection.
+        projection: Box<SemanticParseProjection>,
+    },
+}
+
+#[derive(Clone, Debug)]
+/// Classifies how generated parsing constructs one authored semantic field value.
+pub(super) enum SemanticParseProjection {
+    /// Parses the authored field type through its container policy.
+    Direct {
         /// Authored terminal type before materialization.
         terminal: Box<Type>,
         /// Resolved node family, when the terminal is generated.
@@ -316,6 +342,17 @@ pub(super) enum ElementParseKind {
         opaque_provenance: bool,
         /// Pretty line-breaking policy for repeated children.
         repetition_break: PlannedRepetitionBreak,
+        /// Formatting hints retained for the field.
+        pretty: PrettyHints,
+    },
+    /// Parses required fixed syntax around one atomic optional sequence stored as `bool`.
+    FixedPresence {
+        /// Fixed syntax before the optional sequence.
+        before: Vec<AttachedFixedSyntaxParsePlan>,
+        /// Fixed tokens selected and consumed as one atomic sequence.
+        sequence: Vec<AttachedFixedParsePlan>,
+        /// Fixed syntax after the optional sequence.
+        after: Vec<AttachedFixedSyntaxParsePlan>,
         /// Formatting hints retained for the field.
         pretty: PrettyHints,
     },
@@ -513,7 +550,14 @@ impl PrattParsePlan {
         }
         for branch in &self.led {
             let recursive_bp = branch.variant.elements.iter().find_map(|element| {
-                let ElementParseKind::Semantic { pratt_min_bp, .. } = &element.kind else {
+                let ElementParseKind::Semantic {
+                    projection: semantic,
+                    ..
+                } = &element.kind
+                else {
+                    return None;
+                };
+                let SemanticParseProjection::Direct { pratt_min_bp, .. } = semantic.as_ref() else {
                     return None;
                 };
                 *pratt_min_bp
@@ -539,7 +583,15 @@ impl PrattParsePlan {
         for branch in &self.nud {
             if let PrattPosition::Prefix { bp } = branch.position {
                 let recursive_bp = branch.variant.elements.iter().find_map(|element| {
-                    let ElementParseKind::Semantic { pratt_min_bp, .. } = &element.kind else {
+                    let ElementParseKind::Semantic {
+                        projection: semantic,
+                        ..
+                    } = &element.kind
+                    else {
+                        return None;
+                    };
+                    let SemanticParseProjection::Direct { pratt_min_bp, .. } = semantic.as_ref()
+                    else {
                         return None;
                     };
                     *pratt_min_bp
@@ -1167,8 +1219,46 @@ pub(super) fn declaration_elements(
                     },
                 })
             }
+            GrammarElement::OptionalFixedTokenGroup { id, tokens, .. } => {
+                let metadata_name = format!(
+                    "optional_{}",
+                    tokens
+                        .iter()
+                        .map(|token| {
+                            let usage = &source.token_uses[token.token_use.index()];
+                            snake_case(&source.token_definitions[usage.definition.index()].name)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("_")
+                );
+                let plan_fixed = |token: &crate::source_model::AttachedFixedToken| {
+                    let usage = &source.token_uses[token.token_use.index()];
+                    let definition = &source.token_definitions[usage.definition.index()];
+                    let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+                        return Err("an optional group references non-fixed syntax".to_owned());
+                    };
+                    Ok(AttachedFixedParsePlan {
+                        expected: ExpectedSet::empty(kind_count),
+                        capture: PlannedCapturePolicy::Mandatory,
+                        spelling: fixed_pretty_spelling(
+                            &fixed.spelling,
+                            lowered.grammar.text_equivalence,
+                        ),
+                        spacing: fixed.pretty_spacing,
+                    })
+                };
+                Ok(ElementParsePlan {
+                    explorer_source: ExplorerElementSource::OptionalFixed(*id),
+                    metadata_name: metadata_name.clone(),
+                    kind: ElementParseKind::OptionalFixedTokenGroup {
+                        tokens: tokens.iter().map(plan_fixed).collect::<Result<_, _>>()?,
+                        accessor: fixed_accessor_ident(&metadata_name)?,
+                    },
+                })
+            }
             GrammarElement::SemanticField {
                 resolved_field,
+                projection,
                 attachment,
                 separator,
                 pretty,
@@ -1213,41 +1303,107 @@ pub(super) fn declaration_elements(
                         (format!("{}_{}", prefix, base.unraw()), accessor)
                     },
                 );
-                let projection = authored_projection(&field.ty, resolved)?;
-                let operation = declaration_container_operation(&projection.wrappers);
-                let separator_spelling = separator
-                    .as_ref()
-                    .map(|separator| {
-                        let usage = &source.token_uses[separator.token_use.index()];
-                        let definition = &source.token_definitions[usage.definition.index()];
-                        match &definition.kind {
-                            TokenDefinitionKind::Fixed(fixed) => Ok(fixed_pretty_spelling(
-                                &fixed.spelling,
-                                lowered.grammar.text_equivalence,
-                            )),
-                            _ => {
-                                Err("an authored separator references a non-fixed token".to_owned())
-                            }
+                let projection = match projection {
+                    crate::source_model::SemanticFieldProjection::FixedPresence { tokens } => {
+                        let plan_fixed = |token_use: crate::lowering::TokenUseId| {
+                            declaration_fixed_token(
+                                token_use,
+                                lowered,
+                                kind_count,
+                                PlannedCapturePolicy::Inherited,
+                            )
+                        };
+                        let attachment = attachment
+                            .as_ref()
+                            .map(|attachment| {
+                                declaration_fixed_attachment(attachment, lowered, kind_count)
+                            })
+                            .transpose()?;
+                        SemanticParseProjection::FixedPresence {
+                            before: attachment
+                                .as_ref()
+                                .map_or_else(Vec::new, |attachment| attachment.before.clone()),
+                            sequence: tokens
+                                .iter()
+                                .map(|token| plan_fixed(token.token_use))
+                                .collect::<Result<_, _>>()?,
+                            after: attachment.map_or_else(Vec::new, |attachment| attachment.after),
+                            pretty: pretty.clone(),
                         }
-                    })
-                    .transpose()?;
-                let repetition_break = projection
-                    .terminal_node
-                    .filter(|terminal_node| {
-                        separator_spelling.as_deref() == Some(";")
-                            && matches!(
+                    }
+                    crate::source_model::SemanticFieldProjection::Direct => {
+                        let authored = authored_projection(&field.ty, resolved)?;
+                        let operation = declaration_container_operation(&authored.wrappers);
+                        let separator_spelling = separator
+                            .as_ref()
+                            .map(|separator| {
+                                let usage = &source.token_uses[separator.token_use.index()];
+                                let definition =
+                                    &source.token_definitions[usage.definition.index()];
+                                match &definition.kind {
+                                    TokenDefinitionKind::Fixed(fixed) => Ok(fixed_pretty_spelling(
+                                        &fixed.spelling,
+                                        lowered.grammar.text_equivalence,
+                                    )),
+                                    _ => Err("an authored separator references a non-fixed token"
+                                        .to_owned()),
+                                }
+                            })
+                            .transpose()?;
+                        let repetition_break = authored
+                            .terminal_node
+                            .filter(|terminal_node| {
+                                separator_spelling.as_deref() == Some(";")
+                                    && matches!(
+                                        operation,
+                                        ContainerOperation::ZeroOrMore
+                                            | ContainerOperation::OneOrMore
+                                            | ContainerOperation::OptionalOneOrMore
+                                    )
+                                    && matches!(
+                                        resolved.nodes[terminal_node.index()].body,
+                                        ResolvedNodeBody::Enum { .. }
+                                    )
+                            })
+                            .map(PlannedRepetitionBreak::TopLevelStatementFamily)
+                            .unwrap_or(PlannedRepetitionBreak::Soft);
+                        SemanticParseProjection::Direct {
+                            terminal: Box::new(authored.terminal),
+                            terminal_node: authored.terminal_node,
+                            terminal_application: None,
+                            explorer_terminal: declaration_explorer_terminal(
+                                lowered,
+                                node.id,
+                                *resolved_field,
+                            )?,
+                            wrappers: authored.wrappers,
+                            container: Box::new(declaration_container(
                                 operation,
-                                ContainerOperation::ZeroOrMore
-                                    | ContainerOperation::OneOrMore
-                                    | ContainerOperation::OptionalOneOrMore
-                            )
-                            && matches!(
-                                resolved.nodes[terminal_node.index()].body,
-                                ResolvedNodeBody::Enum { .. }
-                            )
-                    })
-                    .map(PlannedRepetitionBreak::TopLevelStatementFamily)
-                    .unwrap_or(PlannedRepetitionBreak::Soft);
+                                separator.is_some(),
+                                separator
+                                    .as_ref()
+                                    .is_some_and(|separator| separator.optional_trailing),
+                                kind_count,
+                            )),
+                            capture: PlannedCapturePolicy::Inherited,
+                            child_capture: PlannedCapturePolicy::Inherited,
+                            pratt_min_bp: None,
+                            separator: separator_spelling,
+                            attachment: attachment
+                                .as_ref()
+                                .map(|attachment| {
+                                    declaration_fixed_attachment(attachment, lowered, kind_count)
+                                        .map(Box::new)
+                                })
+                                .transpose()?,
+                            opaque_provenance: authored_type_depends_on_node_generics(
+                                &field.ty, node, resolved,
+                            ),
+                            repetition_break,
+                            pretty: pretty.clone(),
+                        }
+                    }
+                };
                 Ok(ElementParsePlan {
                     explorer_source: ExplorerElementSource::Semantic(*resolved_field),
                     metadata_name,
@@ -1257,39 +1413,7 @@ pub(super) fn declaration_elements(
                             index: field_index,
                             accessor: Some(accessor),
                         },
-                        terminal: Box::new(projection.terminal),
-                        terminal_node: projection.terminal_node,
-                        terminal_application: None,
-                        explorer_terminal: declaration_explorer_terminal(
-                            lowered,
-                            node.id,
-                            *resolved_field,
-                        )?,
-                        wrappers: projection.wrappers,
-                        container: Box::new(declaration_container(
-                            operation,
-                            separator.is_some(),
-                            separator
-                                .as_ref()
-                                .is_some_and(|separator| separator.optional_trailing),
-                            kind_count,
-                        )),
-                        capture: PlannedCapturePolicy::Inherited,
-                        child_capture: PlannedCapturePolicy::Inherited,
-                        pratt_min_bp: None,
-                        separator: separator_spelling,
-                        attachment: attachment
-                            .as_ref()
-                            .map(|attachment| {
-                                declaration_fixed_attachment(attachment, lowered, kind_count)
-                                    .map(Box::new)
-                            })
-                            .transpose()?,
-                        opaque_provenance: authored_type_depends_on_node_generics(
-                            &field.ty, node, resolved,
-                        ),
-                        repetition_break,
-                        pretty: pretty.clone(),
+                        projection: Box::new(projection),
                     },
                 })
             }
@@ -1303,25 +1427,29 @@ pub(super) fn declaration_fixed_attachment(
     lowered: &crate::materialization::LoweredGrammar,
     kind_count: usize,
 ) -> Result<FixedAttachmentParsePlan, String> {
-    let source = lowered.source_modeled.source_model();
     let plan_fixed = |token_use: crate::lowering::TokenUseId| {
-        let usage = &source.token_uses[token_use.index()];
-        let definition = &source.token_definitions[usage.definition.index()];
-        let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
-            return Err("an authored attachment references non-fixed syntax".to_owned());
-        };
-        Ok(AttachedFixedParsePlan {
-            expected: ExpectedSet::empty(kind_count),
-            capture: PlannedCapturePolicy::Inherited,
-            spelling: fixed_pretty_spelling(&fixed.spelling, lowered.grammar.text_equivalence),
-            spacing: fixed.pretty_spacing,
-        })
+        declaration_fixed_token(
+            token_use,
+            lowered,
+            kind_count,
+            PlannedCapturePolicy::Inherited,
+        )
+    };
+    let plan_syntax = |syntax: &crate::source_model::AttachedFixedSyntax| match syntax {
+        crate::source_model::AttachedFixedSyntax::Required(token) => {
+            plan_fixed(token.token_use).map(AttachedFixedSyntaxParsePlan::Required)
+        }
+        crate::source_model::AttachedFixedSyntax::Optional { tokens, .. } => tokens
+            .iter()
+            .map(|token| plan_fixed(token.token_use))
+            .collect::<Result<Vec<_>, _>>()
+            .map(AttachedFixedSyntaxParsePlan::Optional),
     };
     Ok(FixedAttachmentParsePlan {
         before: attachment
             .before
             .iter()
-            .map(|attached| plan_fixed(attached.token_use))
+            .map(plan_syntax)
             .collect::<Result<_, _>>()?,
         semantic: Box::new(PlannedContainer::Direct {
             child_follow: PlannedFollow::Caller,
@@ -1330,8 +1458,29 @@ pub(super) fn declaration_fixed_attachment(
         after: attachment
             .after
             .iter()
-            .map(|attached| plan_fixed(attached.token_use))
+            .map(plan_syntax)
             .collect::<Result<_, _>>()?,
+    })
+}
+
+/// Freezes one authored fixed-token use for generated attachment or presence parsing.
+fn declaration_fixed_token(
+    token_use: crate::lowering::TokenUseId,
+    lowered: &crate::materialization::LoweredGrammar,
+    kind_count: usize,
+    capture: PlannedCapturePolicy,
+) -> Result<AttachedFixedParsePlan, String> {
+    let source = lowered.source_modeled.source_model();
+    let usage = &source.token_uses[token_use.index()];
+    let definition = &source.token_definitions[usage.definition.index()];
+    let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+        return Err("an authored attachment references non-fixed syntax".to_owned());
+    };
+    Ok(AttachedFixedParsePlan {
+        expected: ExpectedSet::empty(kind_count),
+        capture,
+        spelling: fixed_pretty_spelling(&fixed.spelling, lowered.grammar.text_equivalence),
+        spacing: fixed.pretty_spacing,
     })
 }
 
@@ -1489,7 +1638,7 @@ pub(super) fn authored_type_depends_on_node_generics(
         ResolvedTypeKind::Tuple(elements) => elements
             .iter()
             .any(|element| authored_type_depends_on_node_generics(element, node, resolved)),
-        ResolvedTypeKind::Unsupported => false,
+        ResolvedTypeKind::FixedTokenPresence | ResolvedTypeKind::Unsupported => false,
     }
 }
 
@@ -1671,7 +1820,8 @@ pub(super) fn authored_projection_with(
                 wrappers: Vec::new(),
             }),
         },
-        ResolvedTypeKind::Reference(_)
+        ResolvedTypeKind::FixedTokenPresence
+        | ResolvedTypeKind::Reference(_)
         | ResolvedTypeKind::Tuple(_)
         | ResolvedTypeKind::Unsupported => {
             Err("an authored semantic field has no supported declaration projection".to_owned())
@@ -1781,6 +1931,9 @@ pub(super) fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<()
     for_each_element(body, &mut |element| {
         let name = match &element.kind {
             ElementParseKind::Fixed { accessor, .. } => Some(accessor.unraw().to_string()),
+            ElementParseKind::OptionalFixedTokenGroup { accessor, .. } => {
+                Some(accessor.unraw().to_string())
+            }
             ElementParseKind::Semantic { field, .. } => field
                 .accessor
                 .as_ref()
@@ -1802,8 +1955,12 @@ pub(super) fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<()
         occupied: &mut BTreeSet<String>,
     ) -> Result<(), String> {
         for (index, element) in elements.iter_mut().enumerate() {
-            let ElementParseKind::Fixed { accessor, .. } = &mut element.kind else {
-                continue;
+            let accessor = match &mut element.kind {
+                ElementParseKind::Fixed { accessor, .. }
+                | ElementParseKind::OptionalFixedTokenGroup { accessor, .. } => accessor,
+                ElementParseKind::Semantic { .. } => {
+                    continue;
+                }
             };
             let original = accessor.unraw().to_string();
             if counts.get(&original).copied().unwrap_or(0) <= 1 {
@@ -2254,23 +2411,25 @@ pub(super) fn plan_pratt_lhs(
                 index: field_index,
                 accessor: Some(accessor),
             },
-            terminal: Box::new(terminal_type(&closed, lowered, input_lifetime)?),
-            terminal_node: Some(node.id),
-            terminal_application: Some(led.lhs.owner.application),
-            explorer_terminal: ExplorerTerminalPlan::Node(led.lhs.owner.application),
-            wrappers: vec![FieldWrapper::Boxed],
-            container: Box::new(PlannedContainer::Direct {
-                child_follow: PlannedFollow::Caller,
-                required_failure: PlannedFollow::Caller,
+            projection: Box::new(SemanticParseProjection::Direct {
+                terminal: Box::new(terminal_type(&closed, lowered, input_lifetime)?),
+                terminal_node: Some(node.id),
+                terminal_application: Some(led.lhs.owner.application),
+                explorer_terminal: ExplorerTerminalPlan::Node(led.lhs.owner.application),
+                wrappers: vec![FieldWrapper::Boxed],
+                container: Box::new(PlannedContainer::Direct {
+                    child_follow: PlannedFollow::Caller,
+                    required_failure: PlannedFollow::Caller,
+                }),
+                capture: field_override.unwrap_or(variant_capture),
+                child_capture: field_override.unwrap_or(variant_capture),
+                pratt_min_bp: None,
+                separator: None,
+                attachment: None,
+                opaque_provenance: false,
+                repetition_break: PlannedRepetitionBreak::Soft,
+                pretty: led.lhs.pretty.clone(),
             }),
-            capture: field_override.unwrap_or(variant_capture),
-            child_capture: field_override.unwrap_or(variant_capture),
-            pratt_min_bp: None,
-            separator: None,
-            attachment: None,
-            opaque_provenance: false,
-            repetition_break: PlannedRepetitionBreak::Soft,
-            pretty: led.lhs.pretty.clone(),
         },
     })
 }
@@ -2359,13 +2518,256 @@ pub(super) fn plan_elements(
                     },
                 })
             }
+            MaterializedElement::OptionalFixedTokenGroup {
+                element, tokens, ..
+            } => {
+                let correlation = lowered
+                    .lowering_map
+                    .optional_fixed_groups
+                    .iter()
+                    .find(|correlation| correlation.outer == *site)
+                    .ok_or_else(|| {
+                        "an optional fixed group lacks its normalized correlation".to_owned()
+                    })?;
+                if correlation.element != *element
+                    || correlation.sequence_sites.len() != tokens.len()
+                {
+                    return Err("an optional fixed group has mismatched normalized sites".to_owned());
+                }
+                let machine = decisions
+                    .container_machines()
+                    .iter()
+                    .find(|machine| machine.site() == *site)
+                    .ok_or_else(|| "an optional fixed group lacks its optional machine".to_owned())?;
+                if machine.operation() != ContainerOperation::Optional {
+                    return Err("an optional fixed group did not normalize as optional".to_owned());
+                }
+                let source = lowered.source_modeled.source_model();
+                let metadata_name = format!(
+                    "optional_{}",
+                    tokens
+                        .iter()
+                        .map(|token_use| {
+                            let usage = &source.token_uses[token_use.index()];
+                            snake_case(&source.token_definitions[usage.definition.index()].name)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("_")
+                );
+                let tokens = tokens
+                    .iter()
+                    .zip(&correlation.sequence_sites)
+                    .map(|(token_use, token_site)| {
+                        let usage = &source.token_uses[token_use.index()];
+                        let definition = &source.token_definitions[usage.definition.index()];
+                        let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+                            return Err("an optional group references non-fixed syntax".to_owned());
+                        };
+                        let PlannedFollow::Static(expected) = planned_failure_edge(
+                            decisions,
+                            *token_site,
+                            FailureEdgeKind::RequiredSite,
+                            &lowered.grammar,
+                            kind_count,
+                        )? else {
+                            return Err("an optional group token has a dynamic failure recipe".to_owned());
+                        };
+                        Ok(AttachedFixedParsePlan {
+                            expected,
+                            capture: PlannedCapturePolicy::Mandatory,
+                            spelling: fixed_pretty_spelling(
+                                &fixed.spelling,
+                                lowered.grammar.text_equivalence,
+                            ),
+                            spacing: fixed.pretty_spacing,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(ElementParsePlan {
+                    explorer_source: ExplorerElementSource::OptionalFixed(*element),
+                    metadata_name: metadata_name.clone(),
+                    kind: ElementParseKind::OptionalFixedTokenGroup {
+                        tokens,
+                        accessor: fixed_accessor_ident(&metadata_name)?,
+                    },
+                })
+            }
             MaterializedElement::SemanticField {
                 field,
-                ty,
+                projection: MaterializedSemanticFieldProjection::FixedPresence { tokens },
                 attachment,
-                separator,
                 pretty,
-                ..
+            } => {
+                let resolved_field = node
+                    .fields
+                    .iter()
+                    .find(|candidate| candidate.id == *field)
+                    .ok_or_else(|| "materialized presence field lacks source syntax".to_owned())?;
+                let field_index = variant.map_or_else(
+                    || {
+                        node.fields
+                            .iter()
+                            .position(|candidate| candidate.id == *field)
+                            .unwrap_or(semantic_index)
+                    },
+                    |variant| {
+                        let resolved_variant = match &node.body {
+                            ResolvedNodeBody::Enum { variants } => variants
+                                .iter()
+                                .find(|candidate| candidate.id == variant.resolved_variant),
+                            ResolvedNodeBody::Struct { .. } => None,
+                        };
+                        resolved_variant
+                            .and_then(|variant| {
+                                variant.fields.iter().position(|candidate| candidate == field)
+                            })
+                            .unwrap_or(semantic_index)
+                    },
+                );
+                semantic_index += 1;
+                let base = resolved_field
+                    .syntax
+                    .ident
+                    .clone()
+                    .unwrap_or_else(|| format_ident!("field_{field_index}"));
+                let metadata_name = variant.map_or_else(
+                    || base.unraw().to_string(),
+                    |variant| format!("{}_{}", snake_case(&variant.name), base.unraw()),
+                );
+                let accessor = variant.map_or(base.clone(), |variant| {
+                    let variant_name = snake_case(&variant.name);
+                    if base.unraw() == variant_name {
+                        base.clone()
+                    } else {
+                        format_ident!("{}_{}", variant_name, base)
+                    }
+                });
+                let correlation = lowered
+                    .lowering_map
+                    .presences
+                    .iter()
+                    .find(|correlation| correlation.outer == *site)
+                    .ok_or_else(|| "a fixed presence lacks its normalized correlation".to_owned())?;
+                let before_uses = attachment
+                    .as_ref()
+                    .map_or(&[][..], |attachment| attachment.before.as_slice());
+                let after_uses = attachment
+                    .as_ref()
+                    .map_or(&[][..], |attachment| attachment.after.as_slice());
+                if correlation.presence_index != before_uses.len()
+                    || correlation.envelope_sites.len()
+                        != before_uses.len() + 1 + after_uses.len()
+                    || correlation.sequence_sites.len() != tokens.len()
+                {
+                    return Err("a fixed presence has mismatched normalized sequence sites".to_owned());
+                }
+                let capture = resolved_field
+                    .capture
+                    .map(PlannedCapturePolicy::from)
+                    .unwrap_or(variant_capture);
+                let plan_fixed = |token_use: crate::lowering::TokenUseId,
+                                  site: SiteId|
+                 -> Result<AttachedFixedParsePlan, String> {
+                    let source = lowered.source_modeled.source_model();
+                    let usage = &source.token_uses[token_use.index()];
+                    let definition = &source.token_definitions[usage.definition.index()];
+                    let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+                        return Err("a presence sequence references non-fixed syntax".to_owned());
+                    };
+                    let PlannedFollow::Static(expected) = planned_failure_edge(
+                        decisions,
+                        site,
+                        FailureEdgeKind::RequiredSite,
+                        &lowered.grammar,
+                        kind_count,
+                    )?
+                    else {
+                        return Err("a presence token has a dynamic failure recipe".to_owned());
+                    };
+                    Ok(AttachedFixedParsePlan {
+                        expected,
+                        capture,
+                        spelling: fixed_pretty_spelling(
+                            &fixed.spelling,
+                            lowered.grammar.text_equivalence,
+                        ),
+                        spacing: fixed.pretty_spacing,
+                    })
+                };
+                let before = before_uses
+                    .iter()
+                    .zip(&correlation.envelope_sites[..correlation.presence_index])
+                    .map(|(syntax, site)| {
+                        plan_materialized_attached_syntax(
+                            syntax,
+                            *site,
+                            lowered,
+                            decisions,
+                            kind_count,
+                            capture,
+                        )
+                    })
+                    .collect::<Result<_, _>>()?;
+                let sequence = tokens
+                    .iter()
+                    .zip(&correlation.sequence_sites)
+                    .map(|(token, site)| plan_fixed(*token, *site))
+                    .collect::<Result<_, _>>()?;
+                let after = after_uses
+                    .iter()
+                    .zip(&correlation.envelope_sites[correlation.presence_index + 1..])
+                    .map(|(syntax, site)| {
+                        plan_materialized_attached_syntax(
+                            syntax,
+                            *site,
+                            lowered,
+                            decisions,
+                            kind_count,
+                            capture,
+                        )
+                    })
+                    .collect::<Result<_, _>>()?;
+                let presence_site = if correlation.outer_is_optional {
+                    correlation.outer
+                } else {
+                    correlation.envelope_sites[correlation.presence_index]
+                };
+                let machine = decisions
+                    .container_machines()
+                    .iter()
+                    .find(|machine| machine.site() == presence_site)
+                    .ok_or_else(|| "a fixed presence lacks its optional container machine".to_owned())?;
+                if machine.operation() != ContainerOperation::Optional {
+                    return Err("a fixed presence did not normalize as optional".to_owned());
+                }
+                Ok(ElementParsePlan {
+                    explorer_source: ExplorerElementSource::Semantic(*field),
+                    metadata_name,
+                    kind: ElementParseKind::Semantic {
+                        field: FieldPlan {
+                            ident: resolved_field.syntax.ident.clone(),
+                            index: field_index,
+                            accessor: Some(accessor),
+                        },
+                        projection: Box::new(SemanticParseProjection::FixedPresence {
+                            before,
+                            sequence,
+                            after,
+                            pretty: pretty.clone(),
+                        }),
+                    },
+                })
+            }
+            MaterializedElement::SemanticField {
+                field,
+                projection:
+                    MaterializedSemanticFieldProjection::Direct {
+                        ty,
+                        separator,
+                        ..
+                    },
+                attachment,
+                pretty,
             } => {
                 let resolved_field = node
                     .fields
@@ -2505,34 +2907,36 @@ pub(super) fn plan_elements(
                                 })
                             }),
                         },
-                        terminal: Box::new(terminal_type(ty, lowered, input_lifetime)?),
-                        terminal_node,
-                        terminal_application,
-                        explorer_terminal: explorer_terminal(ty)?,
-                        wrappers,
-                        container: Box::new(container),
-                        capture,
-                        child_capture,
-                        pratt_min_bp,
-                        separator,
-                        attachment: attachment
-                            .as_ref()
-                            .map(|attachment| {
-                                plan_fixed_attachment(
-                                    resolved_field,
-                                    attachment,
-                                    *site,
-                                    lowered,
-                                    decisions,
-                                    kind_count,
-                                    variant_capture,
-                                )
-                                .map(Box::new)
-                            })
-                            .transpose()?,
-                        opaque_provenance: false,
-                        repetition_break,
-                        pretty: pretty.clone(),
+                        projection: Box::new(SemanticParseProjection::Direct {
+                            terminal: Box::new(terminal_type(ty, lowered, input_lifetime)?),
+                            terminal_node,
+                            terminal_application,
+                            explorer_terminal: explorer_terminal(ty)?,
+                            wrappers,
+                            container: Box::new(container),
+                            capture,
+                            child_capture,
+                            pratt_min_bp,
+                            separator,
+                            attachment: attachment
+                                .as_ref()
+                                .map(|attachment| {
+                                    plan_fixed_attachment(
+                                        resolved_field,
+                                        attachment,
+                                        *site,
+                                        lowered,
+                                        decisions,
+                                        kind_count,
+                                        variant_capture,
+                                    )
+                                    .map(Box::new)
+                                })
+                                .transpose()?,
+                            opaque_provenance: false,
+                            repetition_break,
+                            pretty: pretty.clone(),
+                        }),
                     },
                 })
             }
@@ -2556,6 +2960,72 @@ pub(super) fn parse_site_targets(
     sites
         .iter()
         .any(|site| grammar.sites[site.index()].target == target)
+}
+
+/// Freezes one required or erased-optional materialized attachment entry.
+fn plan_materialized_attached_syntax(
+    syntax: &crate::materialization::MaterializedAttachedFixedSyntax,
+    outer_site: SiteId,
+    lowered: &crate::materialization::LoweredGrammar,
+    decisions: &crate::DecisionProducts,
+    kind_count: usize,
+    capture: PlannedCapturePolicy,
+) -> Result<AttachedFixedSyntaxParsePlan, String> {
+    let grammar = &lowered.grammar;
+    let source = lowered.source_modeled.source_model();
+    let plan_fixed = |token_use: crate::lowering::TokenUseId,
+                      site: SiteId|
+     -> Result<AttachedFixedParsePlan, String> {
+        let token_use = &source.token_uses[token_use.index()];
+        let definition = &source.token_definitions[token_use.definition.index()];
+        let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
+            return Err("an attached fixed element did not reference fixed syntax".to_owned());
+        };
+        let PlannedFollow::Static(expected) = planned_failure_edge(
+            decisions,
+            site,
+            FailureEdgeKind::RequiredSite,
+            grammar,
+            kind_count,
+        )?
+        else {
+            return Err("an attached fixed element has a dynamic failure recipe".to_owned());
+        };
+        Ok(AttachedFixedParsePlan {
+            expected,
+            capture,
+            spelling: fixed_pretty_spelling(&fixed.spelling, grammar.text_equivalence),
+            spacing: fixed.pretty_spacing,
+        })
+    };
+    match syntax {
+        crate::materialization::MaterializedAttachedFixedSyntax::Required(token) => {
+            plan_fixed(*token, outer_site).map(AttachedFixedSyntaxParsePlan::Required)
+        }
+        crate::materialization::MaterializedAttachedFixedSyntax::Optional { tokens, .. } => {
+            let machine = decisions
+                .container_machines()
+                .iter()
+                .find(|machine| machine.site() == outer_site)
+                .ok_or_else(|| "an optional attachment lacks its optional machine".to_owned())?;
+            if machine.operation() != ContainerOperation::Optional {
+                return Err("an optional attachment did not normalize as optional".to_owned());
+            }
+            let sequence = grammar.sites[outer_site.index()].target;
+            let TypeShape::Sequence { sites } = &grammar.types[sequence.index()].shape else {
+                return Err("an optional attachment target is not a fixed sequence".to_owned());
+            };
+            if sites.len() != tokens.len() {
+                return Err("an optional attachment has mismatched normalized tokens".to_owned());
+            }
+            tokens
+                .iter()
+                .zip(sites)
+                .map(|(token, site)| plan_fixed(*token, *site))
+                .collect::<Result<Vec<_>, _>>()
+                .map(AttachedFixedSyntaxParsePlan::Optional)
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2585,37 +3055,15 @@ pub(super) fn plan_fixed_attachment(
         .capture
         .map(PlannedCapturePolicy::from)
         .unwrap_or(variant_capture);
-    let source = lowered.source_modeled.source_model();
-    let plan_fixed = |token_use: crate::lowering::TokenUseId,
-                      site: SiteId|
-     -> Result<AttachedFixedParsePlan, String> {
-        let token_use = &source.token_uses[token_use.index()];
-        let definition = &source.token_definitions[token_use.definition.index()];
-        let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
-            return Err("an attached fixed element did not reference fixed syntax".to_owned());
-        };
-        let PlannedFollow::Static(expected) = planned_failure_edge(
-            decisions,
-            site,
-            FailureEdgeKind::RequiredSite,
-            grammar,
-            kind_count,
-        )?
-        else {
-            return Err("an attached fixed element has a dynamic failure recipe".to_owned());
-        };
-        Ok(AttachedFixedParsePlan {
-            expected,
-            capture,
-            spelling: fixed_pretty_spelling(&fixed.spelling, grammar.text_equivalence),
-            spacing: fixed.pretty_spacing,
-        })
-    };
     let before = attachment
         .before
         .iter()
         .zip(&correlation.sites)
-        .map(|(token_use, site)| plan_fixed(*token_use, *site))
+        .map(|(syntax, site)| {
+            plan_materialized_attached_syntax(
+                syntax, *site, lowered, decisions, kind_count, capture,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let semantic_site = correlation.sites[correlation.semantic_index];
     let machine = decisions
@@ -2634,7 +3082,11 @@ pub(super) fn plan_fixed_attachment(
         .after
         .iter()
         .zip(&correlation.sites[after_start..])
-        .map(|(token_use, site)| plan_fixed(*token_use, *site))
+        .map(|(syntax, site)| {
+            plan_materialized_attached_syntax(
+                syntax, *site, lowered, decisions, kind_count, capture,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(FixedAttachmentParsePlan {
         before,
@@ -3604,12 +4056,19 @@ pub(super) fn render_pratt_led_parse(
     let lhs_occurrence = format_ident!("__recursa_lhs_occurrence");
     let ElementParseKind::Semantic {
         field: lhs_field,
-        wrappers: lhs_wrappers,
-        capture: lhs_capture,
+        projection: lhs_projection,
         ..
     } = &branch.lhs.kind
     else {
         unreachable!("a planned Pratt lhs is semantic")
+    };
+    let SemanticParseProjection::Direct {
+        wrappers: lhs_wrappers,
+        capture: lhs_capture,
+        ..
+    } = lhs_projection.as_ref()
+    else {
+        unreachable!("a planned Pratt lhs uses direct semantic projection")
     };
     let wrapped_lhs = render_wrapped_value(quote!(parsed_lhs), lhs_wrappers);
     let lhs_capture = lhs_capture.render(facade);
@@ -3631,47 +4090,18 @@ pub(super) fn render_pratt_led_parse(
         let occurrence = format_ident!("__recursa_occurrence_{element_index}");
         occurrences.push(occurrence.clone());
         let unique_index = variant_index * 1000 + element_index;
-        match &element.kind {
-            ElementParseKind::Fixed {
-                expected, capture, ..
-            } => {
-                let expected_name = expected_static(node_index, unique_index, "fixed");
-                let expected_definition =
-                    render_expected_static(&expected_name, expected, plan, facade);
-                let capture = capture.render(facade);
-                definitions.push(quote! {
-                    #expected_definition
-                    let #occurrence = context.parse_fixed(&#expected_name, #capture)?;
-                });
-            }
-            ElementParseKind::Semantic {
-                field,
-                terminal,
-                wrappers,
-                container,
-                capture,
-                child_capture,
-                pratt_min_bp,
-                attachment,
-                ..
-            } => {
-                definitions.push(render_semantic_parse(
-                    plan,
-                    node_index,
-                    unique_index,
-                    &value,
-                    &occurrence,
-                    terminal,
-                    wrappers,
-                    container,
-                    *capture,
-                    *child_capture,
-                    Some(owner),
-                    *pratt_min_bp,
-                    attachment.as_deref(),
-                ));
-                values.push((field.clone(), value));
-            }
+        let (definition, field) = render_element_parse(
+            plan,
+            node_index,
+            unique_index,
+            element,
+            &value,
+            &occurrence,
+            Some(owner),
+        );
+        definitions.push(definition);
+        if let Some(field) = field {
+            values.push((field, value));
         }
     }
     let construction = render_construction(Some(&variant.ident), variant.style, &values);
@@ -3714,47 +4144,18 @@ pub(super) fn render_sequence_parse(
         let occurrence = format_ident!("__recursa_occurrence_{index}");
         occurrences.push(occurrence.clone());
         let unique_index = variant.map_or(index, |(variant, _)| variant * 1000 + index);
-        match &element.kind {
-            ElementParseKind::Fixed {
-                expected, capture, ..
-            } => {
-                let expected_name = expected_static(node_index, unique_index, "fixed");
-                let expected_definition =
-                    render_expected_static(&expected_name, expected, plan, facade);
-                let capture = capture.render(facade);
-                definitions.push(quote! {
-                    #expected_definition
-                    let #occurrence = context.parse_fixed(&#expected_name, #capture)?;
-                });
-            }
-            ElementParseKind::Semantic {
-                field,
-                terminal,
-                wrappers,
-                container,
-                capture,
-                child_capture,
-                pratt_min_bp,
-                attachment,
-                ..
-            } => {
-                definitions.push(render_semantic_parse(
-                    plan,
-                    node_index,
-                    unique_index,
-                    &value,
-                    &occurrence,
-                    terminal,
-                    wrappers,
-                    container,
-                    *capture,
-                    *child_capture,
-                    pratt_owner,
-                    *pratt_min_bp,
-                    attachment.as_deref(),
-                ));
-                values.push((field.clone(), value));
-            }
+        let (definition, field) = render_element_parse(
+            plan,
+            node_index,
+            unique_index,
+            element,
+            &value,
+            &occurrence,
+            pratt_owner,
+        );
+        definitions.push(definition);
+        if let Some(field) = field {
+            values.push((field, value));
         }
     }
     let target = variant.map(|(_, ident)| ident);
@@ -3783,6 +4184,272 @@ pub(super) fn render_sequence_parse(
             let span = context.consumed_span_from(#start);
             #finish
         }
+    }
+}
+
+/// Renders one planned element and returns its construction slot when semantic.
+fn render_element_parse(
+    plan: &EmissionPlan,
+    node_index: usize,
+    unique_index: usize,
+    element: &ElementParsePlan,
+    value: &Ident,
+    occurrence: &Ident,
+    pratt_owner: Option<&proc_macro2::TokenStream>,
+) -> (proc_macro2::TokenStream, Option<FieldPlan>) {
+    let facade = &plan.facade;
+    match &element.kind {
+        ElementParseKind::Fixed {
+            expected, capture, ..
+        } => {
+            let expected_name = expected_static(node_index, unique_index, "fixed");
+            let expected_definition =
+                render_expected_static(&expected_name, expected, plan, facade);
+            let capture = capture.render(facade);
+            (
+                quote! {
+                    #expected_definition
+                    let #occurrence = context.parse_fixed(&#expected_name, #capture)?;
+                },
+                None,
+            )
+        }
+        ElementParseKind::OptionalFixedTokenGroup { tokens, .. } => (
+            render_optional_fixed_group_parse(
+                plan,
+                node_index,
+                unique_index,
+                occurrence,
+                tokens,
+                "optional_fixed",
+            ),
+            None,
+        ),
+        ElementParseKind::Semantic { field, projection } => {
+            let rendered = match projection.as_ref() {
+                SemanticParseProjection::FixedPresence {
+                    before,
+                    sequence,
+                    after,
+                    ..
+                } => render_fixed_token_presence_parse(
+                    plan,
+                    node_index,
+                    unique_index,
+                    value,
+                    occurrence,
+                    before,
+                    sequence,
+                    after,
+                ),
+                SemanticParseProjection::Direct {
+                    terminal,
+                    wrappers,
+                    container,
+                    capture,
+                    child_capture,
+                    pratt_min_bp,
+                    attachment,
+                    ..
+                } => render_semantic_parse(
+                    plan,
+                    node_index,
+                    unique_index,
+                    value,
+                    occurrence,
+                    terminal,
+                    wrappers,
+                    container,
+                    *capture,
+                    *child_capture,
+                    pratt_owner,
+                    *pratt_min_bp,
+                    attachment.as_deref(),
+                ),
+            };
+            (rendered, Some(field.clone()))
+        }
+    }
+}
+
+/// Emits one required envelope containing an atomically selected fixed-token presence sequence.
+///
+/// # Long-function contract
+///
+/// Rationale: one renderer must keep the semantic boolean, optional token occurrence, and
+/// surrounding fixed-syntax envelope in a single generated parser transaction.
+/// Invariants: the presence sequence is non-empty and source-validated; its complete expected
+/// sequence is peeked before any member is consumed; before and after syntax remains required or
+/// independently atomic according to its normalized plan; every occurrence retains source order.
+/// Phases: render immutable expected-token recipes, render the surrounding fixed syntax, emit the
+/// complete-sequence lookahead and conditional consumption, then finish the optional occurrence
+/// and its containing envelope.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "presence rendering consumes one frozen before/sequence/after parser recipe"
+)]
+pub(super) fn render_fixed_token_presence_parse(
+    plan: &EmissionPlan,
+    node_index: usize,
+    unique_index: usize,
+    value: &Ident,
+    occurrence: &Ident,
+    before: &[AttachedFixedSyntaxParsePlan],
+    sequence: &[AttachedFixedParsePlan],
+    after: &[AttachedFixedSyntaxParsePlan],
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let group_capture = sequence
+        .first()
+        .expect("presence sequences are source-validated non-empty")
+        .capture
+        .render(facade);
+    let render_tokens = |role: &str, tokens: &[AttachedFixedParsePlan]| {
+        tokens
+            .iter()
+            .enumerate()
+            .map(|(index, fixed)| {
+                let expected = expected_static(
+                    node_index,
+                    unique_index,
+                    &format!("presence_{role}_{index}"),
+                );
+                let definition = render_expected_static(&expected, &fixed.expected, plan, facade);
+                let occurrence = format_ident!("__recursa_presence_{role}_{index}");
+                let capture = fixed.capture.render(facade);
+                (
+                    expected.clone(),
+                    definition,
+                    quote!(let #occurrence = context.parse_fixed(&#expected, #capture)?;),
+                    occurrence,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let render_syntax = |role: &str, syntax: &[AttachedFixedSyntaxParsePlan]| {
+        syntax
+            .iter()
+            .enumerate()
+            .map(|(index, syntax)| {
+                let occurrence = format_ident!("__recursa_presence_{role}_{index}");
+                let statement = match syntax {
+                    AttachedFixedSyntaxParsePlan::Required(fixed) => {
+                        let expected = expected_static(
+                            node_index,
+                            unique_index,
+                            &format!("presence_{role}_{index}"),
+                        );
+                        let definition =
+                            render_expected_static(&expected, &fixed.expected, plan, facade);
+                        let capture = fixed.capture.render(facade);
+                        quote! {
+                            #definition
+                            let #occurrence = context.parse_fixed(&#expected, #capture)?;
+                        }
+                    }
+                    AttachedFixedSyntaxParsePlan::Optional(tokens) => {
+                        render_optional_fixed_group_parse(
+                            plan,
+                            node_index,
+                            unique_index,
+                            &occurrence,
+                            tokens,
+                            &format!("presence_{role}_{index}"),
+                        )
+                    }
+                };
+                (statement, occurrence)
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = render_syntax("before", before);
+    let sequence = render_tokens("sequence", sequence);
+    let after = render_syntax("after", after);
+    let before_statements = before.iter().map(|(statement, _)| statement);
+    let before_occurrences = before.iter().map(|(_, occurrence)| occurrence);
+    let sequence_definitions = sequence.iter().map(|(_, definition, _, _)| definition);
+    let sequence_matches = sequence.iter().enumerate().map(|(index, (expected, _, _, _))| {
+        quote!(context.peek(#index).is_some_and(|record| #expected.contains(record.kind)))
+    });
+    let sequence_statements = sequence.iter().map(|(_, _, statement, _)| statement);
+    let sequence_occurrences = sequence.iter().map(|(_, _, _, occurrence)| occurrence);
+    let after_statements = after.iter().map(|(statement, _)| statement);
+    let after_occurrences = after.iter().map(|(_, occurrence)| occurrence);
+    quote! {
+        let __recursa_presence_start = context.cursor();
+        #(#before_statements)*
+        #(#sequence_definitions)*
+        let #value = true #(&& #sequence_matches)*;
+        let __recursa_presence_occurrence = if #value {
+            let __recursa_optional_start = context.cursor();
+            #(#sequence_statements)*
+            let __recursa_optional_span = context.consumed_span_from(__recursa_optional_start);
+            context.finish_group(
+                #group_capture,
+                __recursa_optional_span,
+                [#(#sequence_occurrences),*],
+            )?
+        } else {
+            context.finish_group(#group_capture, None, ::std::iter::empty())?
+        };
+        #(#after_statements)*
+        let __recursa_presence_span = context.consumed_span_from(__recursa_presence_start);
+        let #occurrence = context.finish_group(
+            #group_capture,
+            __recursa_presence_span,
+            [#(#before_occurrences,)* __recursa_presence_occurrence, #(#after_occurrences),*],
+        )?;
+    }
+}
+
+/// Emits one erased fixed-token group only when its complete sequence is present.
+pub(super) fn render_optional_fixed_group_parse(
+    plan: &EmissionPlan,
+    node_index: usize,
+    unique_index: usize,
+    occurrence: &Ident,
+    tokens: &[AttachedFixedParsePlan],
+    role: &str,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let group_capture = PlannedCapturePolicy::Mandatory.render(facade);
+    let tokens = tokens
+        .iter()
+        .enumerate()
+        .map(|(index, fixed)| {
+            let expected = expected_static(node_index, unique_index, &format!("{role}_{index}"));
+            let definition = render_expected_static(&expected, &fixed.expected, plan, facade);
+            let child = format_ident!("__recursa_{role}_{index}");
+            let capture = fixed.capture.render(facade);
+            (
+                expected.clone(),
+                definition,
+                quote!(let #child = context.parse_fixed(&#expected, #capture)?;),
+                child,
+            )
+        })
+        .collect::<Vec<_>>();
+    let definitions = tokens.iter().map(|(_, definition, _, _)| definition);
+    let matches = tokens.iter().enumerate().map(|(index, (expected, _, _, _))| {
+        quote!(context.peek(#index).is_some_and(|record| #expected.contains(record.kind)))
+    });
+    let statements = tokens.iter().map(|(_, _, statement, _)| statement);
+    let children = tokens.iter().map(|(_, _, _, child)| child);
+    quote! {
+        #(#definitions)*
+        let #occurrence = if true #(&& #matches)* {
+            let __recursa_optional_fixed_start = context.cursor();
+            #(#statements)*
+            let __recursa_optional_fixed_span =
+                context.consumed_span_from(__recursa_optional_fixed_start);
+            context.finish_group(
+                #group_capture,
+                __recursa_optional_fixed_span,
+                [#(#children),*],
+            )?
+        } else {
+            context.finish_group(#group_capture, None, ::std::iter::empty())?
+        };
     }
 }
 
@@ -4011,49 +4678,49 @@ pub(super) fn render_attachment_child(
             context.parse_node::<#terminal>(&#semantic_follow_value, #child_capture)
         },
     };
+    let render_syntax = |syntax: &AttachedFixedSyntaxParsePlan, role: &str, index: usize| {
+        let occurrence = format_ident!("__recursa_attachment_{role}_{index}");
+        match syntax {
+            AttachedFixedSyntaxParsePlan::Required(fixed) => {
+                let name = expected_static(
+                    node_index,
+                    unique_index,
+                    &format!("attachment_{role}_{index}"),
+                );
+                let definition = render_expected_static(&name, &fixed.expected, plan, facade);
+                let capture = fixed.capture.render(facade);
+                (
+                    quote! {
+                        #definition
+                        let #occurrence = context.parse_fixed(&#name, #capture)?;
+                    },
+                    occurrence,
+                )
+            }
+            AttachedFixedSyntaxParsePlan::Optional(tokens) => (
+                render_optional_fixed_group_parse(
+                    plan,
+                    node_index,
+                    unique_index,
+                    &occurrence,
+                    tokens,
+                    &format!("attachment_{role}_{index}"),
+                ),
+                occurrence,
+            ),
+        }
+    };
     let before = attachment
         .before
         .iter()
         .enumerate()
-        .map(|(index, fixed)| {
-            let name = expected_static(
-                node_index,
-                unique_index,
-                &format!("attachment_before_{index}"),
-            );
-            let definition = render_expected_static(&name, &fixed.expected, plan, facade);
-            let occurrence = format_ident!("__recursa_attachment_before_{index}");
-            let capture = fixed.capture.render(facade);
-            (
-                quote! {
-                    #definition
-                    let #occurrence = context.parse_fixed(&#name, #capture)?;
-                },
-                occurrence,
-            )
-        })
+        .map(|(index, syntax)| render_syntax(syntax, "before", index))
         .collect::<Vec<_>>();
     let after = attachment
         .after
         .iter()
         .enumerate()
-        .map(|(index, fixed)| {
-            let name = expected_static(
-                node_index,
-                unique_index,
-                &format!("attachment_after_{index}"),
-            );
-            let definition = render_expected_static(&name, &fixed.expected, plan, facade);
-            let occurrence = format_ident!("__recursa_attachment_after_{index}");
-            let capture = fixed.capture.render(facade);
-            (
-                quote! {
-                    #definition
-                    let #occurrence = context.parse_fixed(&#name, #capture)?;
-                },
-                occurrence,
-            )
-        })
+        .map(|(index, syntax)| render_syntax(syntax, "after", index))
         .collect::<Vec<_>>();
     let before_statements = before.iter().map(|(statement, _)| statement);
     let before_occurrences = before.iter().map(|(_, occurrence)| occurrence);

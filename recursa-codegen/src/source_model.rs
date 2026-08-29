@@ -467,12 +467,23 @@ pub(crate) enum GrammarElement {
         /// Locates the authored construct represented by this source-model value.
         site: SourceSite,
     },
+    /// Identifies one erased fixed-token sequence selected atomically when present.
+    OptionalFixedTokenGroup {
+        /// Carries the grammar-local identity used by source-model tables.
+        id: GrammarElementId,
+        /// Supplies the source-ordered fixed sequence matched atomically.
+        tokens: Vec<AttachedFixedToken>,
+        /// Locates the authored optional group.
+        site: SourceSite,
+    },
     /// Identifies the semantic field authored-source form.
     SemanticField {
         /// Carries the grammar-local identity used by source-model tables.
         id: GrammarElementId,
         /// Supplies the resolved field used to correlate authored source with normalized grammar.
         resolved_field: ResolvedFieldId,
+        /// Selects direct semantic parsing or a boolean fixed-token presence projection.
+        projection: SemanticFieldProjection,
         /// Preserves the authored name used by generated bindings and diagnostics.
         name: Option<String>,
         /// Supplies the attachment used to correlate authored source with normalized grammar.
@@ -491,12 +502,78 @@ pub(crate) enum GrammarElement {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Classifies how one authored semantic field obtains its public value.
+pub(crate) enum SemanticFieldProjection {
+    /// Parses the field's resolved semantic type directly.
+    Direct,
+    /// Projects one atomic optional fixed-token sequence to an authored boolean.
+    FixedPresence {
+        /// Supplies the source-ordered fixed sequence matched atomically.
+        tokens: Vec<AttachedFixedToken>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 /// Carries the fixed token attachment retained from authored source structure.
 pub(crate) struct FixedTokenAttachment {
     /// Supplies the before used to correlate authored source with normalized grammar.
-    pub(crate) before: Vec<AttachedFixedToken>,
+    pub(crate) before: Vec<AttachedFixedSyntax>,
     /// Supplies the after used to correlate authored source with normalized grammar.
-    pub(crate) after: Vec<AttachedFixedToken>,
+    pub(crate) after: Vec<AttachedFixedSyntax>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Classifies required and erased-optional fixed syntax inside one field attachment.
+pub(crate) enum AttachedFixedSyntax {
+    /// Selects one required fixed token.
+    Required(AttachedFixedToken),
+    /// Selects one erased atomic optional fixed-token group.
+    Optional {
+        /// Supplies the source-ordered fixed sequence.
+        tokens: Vec<AttachedFixedToken>,
+        /// Locates the authored optional group.
+        site: SourceSite,
+    },
+}
+
+impl AttachedFixedSyntax {
+    /// Returns the first fixed token that can bound this attachment entry.
+    pub(crate) fn first(&self) -> Option<&AttachedFixedToken> {
+        match self {
+            Self::Required(token) => Some(token),
+            Self::Optional { tokens, .. } => tokens.first(),
+        }
+    }
+
+    /// Returns the last fixed token that can bound this attachment entry.
+    pub(crate) fn last(&self) -> Option<&AttachedFixedToken> {
+        match self {
+            Self::Required(token) => Some(token),
+            Self::Optional { tokens, .. } => tokens.last(),
+        }
+    }
+
+    /// Returns the authored site for this attachment entry.
+    pub(crate) fn site(&self) -> &SourceSite {
+        match self {
+            Self::Required(token) => &token.site,
+            Self::Optional { site, .. } => site,
+        }
+    }
+
+    /// Visits every fixed token use retained by this attachment entry.
+    fn remap_token_uses(&mut self, use_remap: &[TokenUseId]) {
+        match self {
+            Self::Required(token) => {
+                token.token_use = use_remap[token.token_use.index()];
+            }
+            Self::Optional { tokens, .. } => {
+                for token in tokens {
+                    token.token_use = use_remap[token.token_use.index()];
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -512,21 +589,27 @@ impl GrammarElement {
     /// Derives the id from the retained source model and its correlations.
     pub(crate) const fn id(&self) -> GrammarElementId {
         match self {
-            Self::FixedToken { id, .. } | Self::SemanticField { id, .. } => *id,
+            Self::FixedToken { id, .. }
+            | Self::OptionalFixedTokenGroup { id, .. }
+            | Self::SemanticField { id, .. } => *id,
         }
     }
 
     /// Assigns the grammar-local element identity after source-order normalization.
     fn set_id(&mut self, value: GrammarElementId) {
         match self {
-            Self::FixedToken { id, .. } | Self::SemanticField { id, .. } => *id = value,
+            Self::FixedToken { id, .. }
+            | Self::OptionalFixedTokenGroup { id, .. }
+            | Self::SemanticField { id, .. } => *id = value,
         }
     }
 
     /// Derives the kind from the retained source model and its correlations.
     pub(crate) const fn kind(&self) -> GrammarElementKind {
         match self {
-            Self::FixedToken { .. } => GrammarElementKind::FixedToken,
+            Self::FixedToken { .. } | Self::OptionalFixedTokenGroup { .. } => {
+                GrammarElementKind::FixedToken
+            }
             Self::SemanticField { .. } => GrammarElementKind::SemanticField,
         }
     }
@@ -535,7 +618,7 @@ impl GrammarElement {
     pub(crate) fn separator(&self) -> Option<&Separator> {
         match self {
             Self::SemanticField { separator, .. } => separator.as_ref(),
-            Self::FixedToken { .. } => None,
+            Self::FixedToken { .. } | Self::OptionalFixedTokenGroup { .. } => None,
         }
     }
 
@@ -543,7 +626,7 @@ impl GrammarElement {
     pub(crate) fn attachment(&self) -> Option<&FixedTokenAttachment> {
         match self {
             Self::SemanticField { attachment, .. } => attachment.as_ref(),
-            Self::FixedToken { .. } => None,
+            Self::FixedToken { .. } | Self::OptionalFixedTokenGroup { .. } => None,
         }
     }
 }
@@ -834,6 +917,8 @@ pub(crate) enum SourceModelDiagnosticKind {
     InvalidSeparator,
     /// Identifies the unsupported fixed syntax authored-source form.
     UnsupportedFixedSyntax,
+    /// Identifies malformed or conflicting fixed-token presence syntax.
+    InvalidFixedTokenPresence,
     /// Identifies the invalid token placement authored-source form.
     InvalidTokenPlacement,
     /// Identifies the invalid pratt token placement authored-source form.
@@ -1798,7 +1883,9 @@ impl SourceModelBuilder<'_> {
             | ResolvedTypeKind::Reference(inner) => {
                 self.pretty_type_has_soft_opportunity(inner, visiting)
             }
-            ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => false,
+            ResolvedTypeKind::FixedTokenPresence
+            | ResolvedTypeKind::Tuple(_)
+            | ResolvedTypeKind::Unsupported => false,
         }
     }
 
@@ -1862,7 +1949,9 @@ impl SourceModelBuilder<'_> {
             ResolvedTypeKind::Group(inner)
             | ResolvedTypeKind::Parenthesized(inner)
             | ResolvedTypeKind::Reference(inner) => self.is_direct_recursive_operand(inner, node),
-            ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => false,
+            ResolvedTypeKind::FixedTokenPresence
+            | ResolvedTypeKind::Tuple(_)
+            | ResolvedTypeKind::Unsupported => false,
         }
     }
 
@@ -2017,13 +2106,23 @@ impl SourceModelBuilder<'_> {
             kind: PrettyBoundaryKind::Fixed(self.tokens.uses[token.token_use.index()].definition),
             site: token.site.clone(),
         };
-        let before = attachment.before.iter().map(fixed).collect::<Vec<_>>();
-        let after = attachment.after.iter().map(fixed).collect::<Vec<_>>();
+        let before = attachment
+            .before
+            .iter()
+            .filter_map(AttachedFixedSyntax::first)
+            .map(fixed)
+            .collect::<Vec<_>>();
+        let after = attachment
+            .after
+            .iter()
+            .filter_map(AttachedFixedSyntax::first)
+            .map(fixed)
+            .collect::<Vec<_>>();
         let site = attachment
             .before
             .first()
             .or_else(|| attachment.after.first())
-            .map(|token| token.site.clone())
+            .map(|syntax| syntax.site().clone())
             .expect("an attachment has fixed syntax");
         let first = self.pretty_type_boundaries(
             &self.resolved_field(field).ty,
@@ -2065,13 +2164,23 @@ impl SourceModelBuilder<'_> {
             kind: PrettyBoundaryKind::Fixed(self.tokens.uses[token.token_use.index()].definition),
             site: token.site.clone(),
         };
-        let before = attachment.before.iter().map(fixed).collect::<Vec<_>>();
-        let after = attachment.after.iter().map(fixed).collect::<Vec<_>>();
+        let before = attachment
+            .before
+            .iter()
+            .filter_map(AttachedFixedSyntax::first)
+            .map(fixed)
+            .collect::<Vec<_>>();
+        let after = attachment
+            .after
+            .iter()
+            .filter_map(AttachedFixedSyntax::first)
+            .map(fixed)
+            .collect::<Vec<_>>();
         let site = attachment
             .before
             .first()
             .or_else(|| attachment.after.first())
-            .map(|token| token.site.clone())
+            .map(|syntax| syntax.site().clone())
             .expect("an attachment has fixed syntax");
         let first = self.pretty_type_boundaries(
             &self.resolved_field(field).ty,
@@ -2147,7 +2256,9 @@ impl SourceModelBuilder<'_> {
                 ResolvedTypeKind::Group(inner)
                 | ResolvedTypeKind::Parenthesized(inner)
                 | ResolvedTypeKind::Reference(inner) => repeated(builder, inner),
-                ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => Some(false),
+                ResolvedTypeKind::FixedTokenPresence
+                | ResolvedTypeKind::Tuple(_)
+                | ResolvedTypeKind::Unsupported => Some(false),
             }
         }
         repeated(self, &self.resolved_field(field).ty)
@@ -2482,15 +2593,35 @@ impl SourceModelBuilder<'_> {
                 kind: PrettyBoundaryKind::Fixed(self.tokens.uses[token_use.index()].definition),
                 site: site.clone(),
             }],
+            GrammarElement::OptionalFixedTokenGroup { tokens, .. } => {
+                let token = match side {
+                    PrettyBoundarySide::First => tokens.first(),
+                    PrettyBoundarySide::Last => tokens.last(),
+                };
+                token.map_or_else(Vec::new, |token| {
+                    vec![PrettyBoundary {
+                        kind: PrettyBoundaryKind::Fixed(
+                            self.tokens.uses[token.token_use.index()].definition,
+                        ),
+                        site: token.site.clone(),
+                    }]
+                })
+            }
             GrammarElement::SemanticField {
                 resolved_field,
+                projection,
                 attachment,
                 site,
                 ..
             } => {
                 let attached = attachment.as_ref().and_then(|attachment| match side {
-                    PrettyBoundarySide::First => attachment.before.first(),
-                    PrettyBoundarySide::Last => attachment.after.last(),
+                    PrettyBoundarySide::First => attachment
+                        .before
+                        .first()
+                        .and_then(AttachedFixedSyntax::first),
+                    PrettyBoundarySide::Last => {
+                        attachment.after.last().and_then(AttachedFixedSyntax::last)
+                    }
                 });
                 if let Some(attached) = attached {
                     vec![PrettyBoundary {
@@ -2500,12 +2631,28 @@ impl SourceModelBuilder<'_> {
                         site: attached.site.clone(),
                     }]
                 } else {
-                    self.pretty_type_boundaries(
-                        &self.resolved_field(*resolved_field).ty,
-                        side,
-                        site,
-                        visiting,
-                    )
+                    match projection {
+                        SemanticFieldProjection::Direct => self.pretty_type_boundaries(
+                            &self.resolved_field(*resolved_field).ty,
+                            side,
+                            site,
+                            visiting,
+                        ),
+                        SemanticFieldProjection::FixedPresence { tokens } => {
+                            let token = match side {
+                                PrettyBoundarySide::First => tokens.first(),
+                                PrettyBoundarySide::Last => tokens.last(),
+                            };
+                            token.map_or_else(Vec::new, |token| {
+                                vec![PrettyBoundary {
+                                    kind: PrettyBoundaryKind::Fixed(
+                                        self.tokens.uses[token.token_use.index()].definition,
+                                    ),
+                                    site: token.site.clone(),
+                                }]
+                            })
+                        }
+                    }
                 }
             }
         }
@@ -2573,7 +2720,9 @@ impl SourceModelBuilder<'_> {
             | ResolvedTypeKind::Reference(inner) => {
                 self.pretty_type_boundaries(inner, side, site, visiting)
             }
-            ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => vec![PrettyBoundary {
+            ResolvedTypeKind::FixedTokenPresence
+            | ResolvedTypeKind::Tuple(_)
+            | ResolvedTypeKind::Unsupported => vec![PrettyBoundary {
                 kind: PrettyBoundaryKind::Dynamic(String::new()),
                 site: site.clone(),
             }],
@@ -2988,6 +3137,44 @@ impl SourceModelBuilder<'_> {
                 field_configured,
                 &mut self.diagnostics,
             );
+            if matches!(resolved_field.ty.kind, ResolvedTypeKind::FixedTokenPresence) {
+                let pretty =
+                    self.lower_pretty_hints(origin, field_configured, resolved_field.range.clone());
+                if let Some(presence) = PositionalTokenPlanner::lower_presence(
+                    &self.resolved,
+                    &mut self.tokens,
+                    &mut self.diagnostics,
+                    origin,
+                    field_configured,
+                    resolved_field.id,
+                    field.ident.as_ref().map(|ident| ident.unraw().to_string()),
+                    pretty,
+                    site,
+                ) {
+                    let elements = PositionalTokenPlanner::lower(
+                        &self.resolved,
+                        &mut self.tokens,
+                        &mut self.diagnostics,
+                        origin,
+                        field_configured,
+                        vec![presence],
+                        TokenAttachment::Field,
+                    );
+                    body.push_attachment(elements);
+                }
+                continue;
+            }
+            if let Some(meta) = field_configured
+                .iter()
+                .find(|meta| meta.path().is_ident("presence"))
+            {
+                self.diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                    sites: vec![self.site(origin, span_range(meta.span()))],
+                    message: "#[presence(...)] is supported only on an unqualified bool field"
+                        .to_owned(),
+                });
+            }
             self.tokens.lower_content_definition(
                 &self.resolved,
                 &self.semantic_facts,
@@ -3000,6 +3187,7 @@ impl SourceModelBuilder<'_> {
             let semantic = GrammarElement::SemanticField {
                 id: GrammarElementId::next(0),
                 resolved_field: resolved_field.id,
+                projection: SemanticFieldProjection::Direct,
                 name: field.ident.as_ref().map(|ident| ident.unraw().to_string()),
                 attachment: None,
                 separator: SeparatorPlanner::lower(
@@ -4087,6 +4275,27 @@ impl TokenCatalog {
                 };
                 (definition, site)
             }
+            TokenSequenceEntry::Optional { tokens, span } => {
+                let group_site = source_site(resolved, origin, span_range(span));
+                let tokens = tokens
+                    .into_iter()
+                    .filter_map(|token| self.fixed_element(resolved, diagnostics, origin, token))
+                    .filter_map(|element| {
+                        let GrammarElement::FixedToken {
+                            token_use, site, ..
+                        } = element
+                        else {
+                            return None;
+                        };
+                        Some(AttachedFixedToken { token_use, site })
+                    })
+                    .collect::<Vec<_>>();
+                return (!tokens.is_empty()).then_some(GrammarElement::OptionalFixedTokenGroup {
+                    id: GrammarElementId::next(0),
+                    tokens,
+                    site: group_site,
+                });
+            }
             TokenSequenceEntry::This(_) => return None,
         };
         let token_use = self.record_use(definition, TokenUseRole::FixedElement, site.clone());
@@ -4435,6 +4644,110 @@ impl SeparatorPlanner {
 struct PositionalTokenPlanner;
 
 impl PositionalTokenPlanner {
+    /// Lowers one fixed-only presence declaration into its authored boolean field.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_presence(
+        resolved: &ResolvedSourceGrammar,
+        tokens: &mut TokenCatalog,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+        origin: SourceOrigin,
+        metas: &[Meta],
+        resolved_field: ResolvedFieldId,
+        name: Option<String>,
+        pretty: PrettyHints,
+        site: SourceSite,
+    ) -> Option<GrammarElement> {
+        let presence_metas = metas
+            .iter()
+            .filter(|meta| meta.path().is_ident("presence"))
+            .collect::<Vec<_>>();
+        let conflicts = metas
+            .iter()
+            .filter(|meta| matches!(path_text(meta.path()).as_str(), "lex" | "sep"))
+            .collect::<Vec<_>>();
+        if presence_metas.len() != 1 || !conflicts.is_empty() {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                sites: presence_metas
+                    .iter()
+                    .chain(conflicts.iter())
+                    .map(|meta| source_site(resolved, origin, span_range(meta.span())))
+                    .collect(),
+                message:
+                    "a bool field accepts exactly one #[presence(...)] and no #[lex] or #[sep]"
+                        .to_owned(),
+            });
+            return None;
+        }
+        let meta = presence_metas[0];
+        let Meta::List(list) = meta else {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+                message: "#[presence] must contain one non-empty fixed-token sequence".to_owned(),
+            });
+            return None;
+        };
+        let sequence = match TokenSequence::parse.parse2(list.tokens.clone()) {
+            Ok(sequence) if !sequence.0.is_empty() => sequence,
+            Ok(_) => {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                    sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+                    message: "#[presence] must contain one non-empty fixed-token sequence"
+                        .to_owned(),
+                });
+                return None;
+            }
+            Err(error) => {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                    sites: vec![source_site(resolved, origin, span_range(error.span()))],
+                    message: error.to_string(),
+                });
+                return None;
+            }
+        };
+        if let Some(span) = sequence.0.iter().find_map(|entry| match entry {
+            TokenSequenceEntry::This(span) => Some(*span),
+            TokenSequenceEntry::Optional { span, .. } => Some(*span),
+            TokenSequenceEntry::Definition(_) | TokenSequenceEntry::Reference(_) => None,
+        }) {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                sites: vec![source_site(resolved, origin, span_range(span))],
+                message: "#[presence(...)] accepts a flat fixed-token sequence".to_owned(),
+            });
+            return None;
+        }
+        let fixed = sequence
+            .0
+            .into_iter()
+            .filter_map(|token| tokens.fixed_element(resolved, diagnostics, origin, token))
+            .map(|element| {
+                let GrammarElement::FixedToken {
+                    token_use, site, ..
+                } = element
+                else {
+                    unreachable!("fixed-element lowering returns fixed syntax")
+                };
+                AttachedFixedToken { token_use, site }
+            })
+            .collect::<Vec<_>>();
+        (!fixed.is_empty()).then_some(GrammarElement::SemanticField {
+            id: GrammarElementId::next(0),
+            resolved_field,
+            projection: SemanticFieldProjection::FixedPresence { tokens: fixed },
+            name,
+            attachment: None,
+            separator: None,
+            pretty,
+            attachment_before: 0,
+            attachment_after: 0,
+            site,
+        })
+    }
+
     /// Inserts positional fixed tokens around semantic fields according to authored attributes.
     fn lower(
         resolved: &ResolvedSourceGrammar,
@@ -4496,7 +4809,9 @@ impl PositionalTokenPlanner {
             .iter()
             .filter_map(|entry| match entry {
                 TokenSequenceEntry::This(span) => Some(*span),
-                TokenSequenceEntry::Definition(_) | TokenSequenceEntry::Reference(_) => None,
+                TokenSequenceEntry::Definition(_)
+                | TokenSequenceEntry::Reference(_)
+                | TokenSequenceEntry::Optional { .. } => None,
             })
             .collect::<Vec<_>>();
         if this_sites.len() > 1 {
@@ -4540,13 +4855,22 @@ impl PositionalTokenPlanner {
                             if let Some(element) =
                                 tokens.fixed_element(resolved, diagnostics, origin, token)
                             {
-                                let GrammarElement::FixedToken {
-                                    token_use, site, ..
-                                } = element
-                                else {
-                                    unreachable!("fixed-element lowering returns fixed syntax")
+                                let attached = match element {
+                                    GrammarElement::FixedToken {
+                                        token_use, site, ..
+                                    } => AttachedFixedSyntax::Required(AttachedFixedToken {
+                                        token_use,
+                                        site,
+                                    }),
+                                    GrammarElement::OptionalFixedTokenGroup {
+                                        tokens,
+                                        site,
+                                        ..
+                                    } => AttachedFixedSyntax::Optional { tokens, site },
+                                    GrammarElement::SemanticField { .. } => {
+                                        unreachable!("fixed-element lowering returns fixed syntax")
+                                    }
                                 };
-                                let attached = AttachedFixedToken { token_use, site };
                                 if seen_this {
                                     after.push(attached);
                                 } else {
@@ -4556,14 +4880,15 @@ impl PositionalTokenPlanner {
                         }
                     }
                 }
-                let [
-                    GrammarElement::SemanticField {
-                        attachment: field_attachment,
-                        ..
-                    },
-                ] = body.as_mut_slice()
-                else {
+                let [field] = body.as_mut_slice() else {
                     unreachable!("a field attachment owns exactly one semantic element")
+                };
+                let field_attachment = match field {
+                    GrammarElement::SemanticField { attachment, .. } => attachment,
+                    GrammarElement::FixedToken { .. }
+                    | GrammarElement::OptionalFixedTokenGroup { .. } => {
+                        unreachable!("a field attachment owns one semantic element")
+                    }
                 };
                 *field_attachment = Some(FixedTokenAttachment { before, after });
                 return body;
@@ -5843,6 +6168,13 @@ enum TokenSequenceEntry {
     Reference(syn::Ident),
     /// Identifies the this authored-source form.
     This(Span),
+    /// Identifies one erased, atomic optional fixed-token group.
+    Optional {
+        /// Supplies the non-empty unnested fixed-token sequence.
+        tokens: Vec<TokenSequenceEntry>,
+        /// Locates the authored `optional` entry.
+        span: Span,
+    },
 }
 
 /// Classifies the fixed token syntax forms retained in the source model.
@@ -6113,7 +6445,32 @@ impl Parse for TokenSequence {
                 entries.push(TokenSequenceEntry::Definition(input.parse()?));
             } else {
                 let ident = syn::Ident::parse_any(input)?;
-                if ident == "this" {
+                if ident == "optional" && input.peek(syn::token::Paren) {
+                    let content;
+                    syn::parenthesized!(content in input);
+                    let nested = TokenSequence::parse(&content)?;
+                    if nested.0.is_empty() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "optional(...) must contain a non-empty fixed-token sequence",
+                        ));
+                    }
+                    if nested.0.iter().any(|entry| {
+                        matches!(
+                            entry,
+                            TokenSequenceEntry::This(_) | TokenSequenceEntry::Optional { .. }
+                        )
+                    }) {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "optional(...) accepts only an unnested fixed-token sequence",
+                        ));
+                    }
+                    entries.push(TokenSequenceEntry::Optional {
+                        tokens: nested.0,
+                        span: ident.span(),
+                    });
+                } else if ident == "this" {
                     entries.push(TokenSequenceEntry::This(ident.span()));
                 } else {
                     entries.push(TokenSequenceEntry::Reference(ident));
@@ -6274,14 +6631,25 @@ fn assign_ordered_elements(
             GrammarElement::FixedToken { token_use, .. } => {
                 *token_use = use_remap[token_use.index()];
             }
+            GrammarElement::OptionalFixedTokenGroup { tokens, .. } => {
+                for fixed in tokens {
+                    fixed.token_use = use_remap[fixed.token_use.index()];
+                }
+            }
             GrammarElement::SemanticField {
+                projection,
                 attachment,
                 separator,
                 ..
             } => {
+                if let SemanticFieldProjection::FixedPresence { tokens } = projection {
+                    for fixed in tokens {
+                        fixed.token_use = use_remap[fixed.token_use.index()];
+                    }
+                }
                 if let Some(attachment) = attachment {
                     for fixed in attachment.before.iter_mut().chain(&mut attachment.after) {
-                        fixed.token_use = use_remap[fixed.token_use.index()];
+                        fixed.remap_token_uses(use_remap);
                     }
                 }
                 if let Some(separator) = separator {
@@ -6483,16 +6851,24 @@ struct Present;
         assert_eq!(attachment.before.len(), 1);
         assert_eq!(attachment.after.len(), 1);
         assert_eq!(
-            model.token_definitions[model.token_uses[attachment.before[0].token_use.index()]
-                .definition
+            model.token_definitions[model.token_uses[attachment.before[0]
+                .first()
+                .expect("required prefix token")
+                .token_use
                 .index()]
+            .definition
+            .index()]
             .name,
             "?",
         );
         assert_eq!(
-            model.token_definitions[model.token_uses[attachment.after[0].token_use.index()]
-                .definition
+            model.token_definitions[model.token_uses[attachment.after[0]
+                .last()
+                .expect("required suffix token")
+                .token_use
                 .index()]
+            .definition
+            .index()]
             .name,
             "!",
         );
@@ -7957,6 +8333,9 @@ enum Expr {
                 super::GrammarElement::FixedToken { token_use, .. } => {
                     let definition = model.token_uses[token_use.index()].definition;
                     model.token_definitions[definition.index()].name.as_str()
+                }
+                super::GrammarElement::OptionalFixedTokenGroup { .. } => {
+                    unreachable!("fixture contains only required syntax")
                 }
             })
             .collect::<Vec<_>>();

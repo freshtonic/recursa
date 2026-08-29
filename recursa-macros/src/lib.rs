@@ -12,12 +12,22 @@ use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Type, parse_macro_input};
 
 /// Matching-version protocol expected by generated root and Node loaders.
-const PRIVATE_PROTOCOL: u32 = 5;
+const PRIVATE_PROTOCOL: u32 = 6;
 
 /// Marks a source declaration as a grammar Node and loads its generated body.
 ///
+/// Fixed syntax belongs in one `#[tok(...)]` sequence. Inside that sequence,
+/// `optional(TOKENS...)` denotes an erased atomic group: the complete fixed-token sequence is
+/// consumed when present, while an incomplete prefix consumes nothing. A plain `bool` field may
+/// separately use `#[presence(TOKENS...)]` to store whether one non-empty fixed-token sequence
+/// occurred. Its ordinary `#[tok(...)]` attachment remains independent and may place required or
+/// erased-optional syntax around `this`.
+///
 /// The derive deliberately interprets no fields or grammar helper attributes.
-#[proc_macro_derive(Node, attributes(lex, node, tok, sep, parse, pratt, spanned, pretty))]
+#[proc_macro_derive(
+    Node,
+    attributes(lex, node, tok, presence, sep, parse, pratt, spanned, pretty)
+)]
 pub fn node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let ident = input.ident;
