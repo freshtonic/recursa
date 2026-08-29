@@ -1603,7 +1603,7 @@ pub(super) fn plan_node(
                     .iter()
                     .find(|branch| branch.declaration() == correlation.lowered)
                     .ok_or_else(|| "materialized enum variant lacks dispatch branch".to_owned())?;
-                if branch.sequences().is_empty() {
+                if branch.sequences().is_empty() && dispatch.balanced().is_none() {
                     return Err(format!(
                         "enum variant `{}` lacks a frozen dispatch sequence",
                         variant.name
@@ -1669,7 +1669,7 @@ pub(super) fn plan_node(
                 ));
             }
             if variants_by_declaration.len() != frozen_branch_count
-                || dispatch.frozen_sequence_count == 0
+                || (dispatch.frozen_sequence_count == 0 && dispatch.balanced.is_none())
             {
                 return Err(format!(
                     "enum Node `{}` lost a frozen dispatch sequence",
@@ -2973,7 +2973,11 @@ pub(super) fn plan_pratt_node(
                         let first = branch
                             .sequences()
                             .iter()
-                            .filter_map(|sequence| sequence.positions().first().cloned())
+                            .filter_map(|sequence| sequence.positions().first())
+                            .map(|position| FirstPosition {
+                                kinds: position.kinds().clone(),
+                                text_predicate: None,
+                            })
                             .collect::<Vec<_>>();
                         let expected = ExpectedSet::from_positions(&first, atom_index, kind_count)?;
                         if expected.is_empty() {
@@ -3927,7 +3931,11 @@ pub(super) fn planned_pratt_extenders(
         .iter()
         .filter(|branch| branch.position().is_some_and(&include))
         .flat_map(|branch| branch.sequences())
-        .filter_map(|sequence| sequence.positions().first().cloned())
+        .filter_map(|sequence| sequence.positions().first())
+        .map(|position| FirstPosition {
+            kinds: position.kinds().clone(),
+            text_predicate: None,
+        })
         .collect::<Vec<_>>();
     ExpectedSet::from_positions(&first, atom_index, kind_count)
 }

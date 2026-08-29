@@ -258,12 +258,14 @@ recursa::tokens! {
         TEXT => "TEXT",
         WHEN => "WHEN",
         THEN => "THEN",
+        CASE => "CASE",
     }
     punctuation {
         PLUS => "+",
         CONCAT => "||",
         DOUBLE_COLON => "::", spacing = tight,
         GT => ">",
+        COMMA => ",",
         LPAREN => "(",
         RPAREN => ")",
     }
@@ -304,6 +306,13 @@ pub enum Expr<'input> {
     Integer(Integer<'input>),
     Name(NameAtom<'input>),
     BeginAtom(BeginAtom),
+    #[tok(CASE)]
+    CaseWord,
+    Case(
+        #[tok(CASE, WHEN, this)] Box<Self>,
+        #[tok(THEN, this, END)] Box<Self>,
+    ),
+    Parenthesized(#[tok(LPAREN, this, RPAREN)] Box<Self>),
     MultiGroup(#[tok(BEGIN, GROUP, this, END, GROUP)] Box<Self>),
     Wrapped(#[tok(WRAP, GROUP, this, END)] Box<Self>),
     Rival(#[tok(WRAP, OTHER, this, END)] Integer<'input>),
@@ -357,6 +366,18 @@ pub struct GroupFollowed<'input> {
 pub struct FollowedExpr<'input> {
     #[tok(WHEN, this, THEN)]
     pub expression: Expr<'input>,
+}
+
+#[derive(recursa::Node)]
+pub enum ExprOrQuery<'input> {
+    Expressions(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
+    Query(ParenthesizedQuery<'input>),
+}
+
+#[derive(recursa::Node)]
+pub struct ParenthesizedQuery<'input> {
+    #[tok(LPAREN, this, RPAREN, OTHER)]
+    pub expression: Box<Expr<'input>>,
 }
 
 #[derive(recursa::Node)]
@@ -474,6 +495,17 @@ fn main() {
         .expect("the unique wrapper NUD admits an infix in its nested expression");
     assert!(input.is_eof());
     assert!(matches!(parsed.into_ast(), grammar::Expr::Wrapped(_)));
+
+    let lexed = grammar::lex("CASE WHEN 1 > 0 THEN 1 END");
+    let mut input = lexed.input();
+    let parsed = grammar::ExprOrQuery::parse(&mut input)
+        .expect("a balanced enum delegates its unique non-opener Pratt branch");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast(),
+        grammar::ExprOrQuery::Expressions(expressions)
+            if matches!(expressions.first(), grammar::Expr::Case(_, _))
+    ));
 
     let lexed = grammar::lex("FROM");
     let mut input = lexed.input();

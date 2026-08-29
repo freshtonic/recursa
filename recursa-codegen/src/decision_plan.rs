@@ -18,10 +18,10 @@ use std::sync::Arc;
 
 use crate::analysis::{FirstFacts, FirstSequenceAnalysis};
 use crate::ir::RepeatSeparator;
-use crate::text_partition::{TextPartition, partition_by_kind_residual};
+use crate::text_partition::{TextPartition, overlay_by_kind_residual};
 use crate::{
     DeclId, FirstPosition, FirstSequence, GrammarDescription, KindId, KindSet, PrattPosition,
-    SiteId, TextPredicate, TextPredicateId, TypeId, TypeShape,
+    SiteId, TextPredicate, TypeId, TypeShape,
 };
 
 #[cfg(test)]
@@ -70,15 +70,15 @@ pub enum DispatchKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One bounded token prefix capable of selecting a dispatch branch.
 pub struct DispatchSequence {
-    /// Supplies the positions consumed when generation replays this decision.
-    positions: Vec<FirstPosition>,
+    /// Exact owned positions consumed when generation replays this decision.
+    positions: Vec<DispatchPosition>,
     /// Supplies the on caller follow consumed when generation replays this decision.
     on_caller_follow: bool,
 }
 
 impl DispatchSequence {
     /// Returns the ordered token positions in this prefix.
-    pub fn positions(&self) -> &[FirstPosition] {
+    pub fn positions(&self) -> &[DispatchPosition] {
         &self.positions
     }
 
@@ -86,6 +86,17 @@ impl DispatchSequence {
     pub const fn on_caller_follow(&self) -> bool {
         self.on_caller_follow
     }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Canonical all-but-one-coordinate key for exact owned dispatch rectangles.
+struct DispatchRectangleMergeKey {
+    /// Whether the represented prefix ends on caller FOLLOW.
+    on_caller_follow: bool,
+    /// Exact owned predicate retained at the coordinate whose kinds are merged.
+    merged_text: TextPartition,
+    /// Every non-merged position as packed kinds and an exact owned predicate.
+    positions: Vec<(Vec<u64>, TextPartition)>,
 }
 
 /// One terminal choice in a frozen dispatch trie.
@@ -153,11 +164,11 @@ impl DispatchPosition {
 
 /// A frozen dispatch-trie node produced by semantic analysis.
 ///
-/// Enum tries retain complete alternative and caller-FOLLOW validation before
-/// exposing a terminal. Pratt tries select only a declaration: after a
-/// non-empty prefix leaves one declaration, they may expose an unconditional
-/// terminal leaf and delegate the remaining syntax to that declaration's
-/// parser.
+/// Ordinary enum paths retain complete alternative and caller-FOLLOW
+/// validation before exposing a terminal. An enum path that has actually
+/// crossed a Pratt NUD may commit after a non-empty exact prefix leaves one
+/// outer declaration; that declaration's parser validates the remaining
+/// syntax. Pratt dispatches apply the same declaration-selection cutoff.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DispatchTrieNode {
     /// Optional decision when the consumed prefix ends here.
@@ -195,7 +206,11 @@ impl DispatchBranch {
         self.declaration
     }
 
-    /// Returns the bounded prefixes that select this branch.
+    /// Returns exact bounded prefixes that select this branch.
+    ///
+    /// Structural-only balanced-opener routes are represented by
+    /// [`DispatchPlan::balanced`] and therefore do not appear as ordinary
+    /// branch sequences.
     pub fn sequences(&self) -> &[DispatchSequence] {
         &self.sequences
     }
@@ -209,10 +224,11 @@ impl DispatchBranch {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Complete source-independent branch selection for one enum or Pratt role.
 ///
-/// Enum plans preserve complete-route and caller-FOLLOW selection. Pratt plans
-/// may commit after a non-empty prefix uniquely identifies one declaration;
-/// the selected declaration remains responsible for validating its residual
-/// syntax and producing any deeper parse error.
+/// Ordinary enum paths preserve complete-route and caller-FOLLOW selection.
+/// Pratt dispatches, and enum derivations that have actually crossed a Pratt
+/// NUD, may commit after a non-empty exact prefix uniquely identifies one
+/// declaration. The selected declaration remains responsible for validating
+/// residual syntax and producing any deeper parse error.
 pub struct DispatchPlan {
     /// Supplies the owner consumed when generation replays this decision.
     owner: TypeId,
@@ -276,9 +292,10 @@ impl DispatchPlan {
 
     /// Reports the bounded lookahead depth proven sufficient for declaration selection.
     ///
-    /// Enum depths include the complete route and its caller-FOLLOW decision.
-    /// Pratt depths stop once a non-empty prefix leaves one declaration, even
-    /// when that declaration's parser must inspect additional syntax.
+    /// Ordinary enum paths include the complete route and caller-FOLLOW
+    /// decision. Pratt dispatches and Pratt-crossed enum paths stop once a
+    /// non-empty exact prefix leaves one declaration, even when its parser
+    /// must inspect additional syntax.
     pub const fn required_lookahead(&self) -> usize {
         self.required_lookahead
     }
@@ -1132,6 +1149,151 @@ fn follow_recipe(sequences: &[FirstSequence]) -> FollowRecipe {
     }
 }
 
+/// Copies one grammar-local FIRST position into an exact owned dispatch position.
+fn owned_dispatch_position(
+    position: FirstPosition,
+    grammar: &GrammarDescription,
+) -> DispatchPosition {
+    DispatchPosition {
+        kinds: position.kinds,
+        text_predicate: position
+            .text_predicate
+            .map(|predicate| grammar.text_predicates[predicate.index()].clone()),
+    }
+}
+
+/// Copies one grammar-local FIRST row into an exact owned dispatch row.
+fn owned_dispatch_sequence(
+    sequence: FirstSequence,
+    grammar: &GrammarDescription,
+) -> DispatchSequence {
+    DispatchSequence {
+        on_caller_follow: sequence.ends(),
+        positions: sequence
+            .positions
+            .into_iter()
+            .map(|position| owned_dispatch_position(position, grammar))
+            .collect(),
+    }
+}
+
+/// Orders exact owned dispatch positions canonically.
+fn compare_dispatch_positions(left: &DispatchPosition, right: &DispatchPosition) -> Ordering {
+    left.kinds
+        .kind_count()
+        .cmp(&right.kinds.kind_count())
+        .then_with(|| left.kinds.words().cmp(right.kinds.words()))
+        .then_with(|| {
+            TextPartition::from_predicate(left.text_predicate.as_ref()).cmp(
+                &TextPartition::from_predicate(right.text_predicate.as_ref()),
+            )
+        })
+}
+
+/// Orders exact owned dispatch sequences canonically.
+fn compare_dispatch_sequences(left: &DispatchSequence, right: &DispatchSequence) -> Ordering {
+    left.positions
+        .iter()
+        .zip(&right.positions)
+        .find_map(|(left, right)| {
+            let ordering = compare_dispatch_positions(left, right);
+            (!ordering.is_eq()).then_some(ordering)
+        })
+        .unwrap_or_else(|| {
+            left.positions
+                .len()
+                .cmp(&right.positions.len())
+                .then_with(|| left.on_caller_follow.cmp(&right.on_caller_follow))
+        })
+}
+
+/// Compacts exact owned dispatch rows into canonical kind-set rectangles.
+fn sort_dedup_dispatch_sequences(sequences: &mut Vec<DispatchSequence>) {
+    sequences.sort_by(compare_dispatch_sequences);
+    sequences.dedup();
+    let maximum_length = sequences
+        .iter()
+        .map(|sequence| sequence.positions.len())
+        .max()
+        .unwrap_or(0);
+    for coordinate in 0..maximum_length {
+        let mut groups = BTreeMap::<DispatchRectangleMergeKey, DispatchSequence>::new();
+        let mut shorter = Vec::new();
+        for sequence in std::mem::take(sequences) {
+            if sequence.positions.len() <= coordinate {
+                shorter.push(sequence);
+                continue;
+            }
+            let key = DispatchRectangleMergeKey {
+                on_caller_follow: sequence.on_caller_follow,
+                merged_text: TextPartition::from_predicate(
+                    sequence.positions[coordinate].text_predicate.as_ref(),
+                ),
+                positions: sequence
+                    .positions
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != coordinate)
+                    .map(|(_, position)| {
+                        (
+                            position.kinds.words().to_vec(),
+                            TextPartition::from_predicate(position.text_predicate.as_ref()),
+                        )
+                    })
+                    .collect(),
+            };
+            groups
+                .entry(key)
+                .and_modify(|merged| {
+                    merged.positions[coordinate]
+                        .kinds
+                        .union_assign(&sequence.positions[coordinate].kinds);
+                })
+                .or_insert(sequence);
+        }
+        sequences.extend(shorter);
+        sequences.extend(groups.into_values());
+    }
+    sequences.sort_by(compare_dispatch_sequences);
+    sequences.dedup();
+}
+
+/// Reconstructs exact selecting prefixes from one compact semantic trie.
+fn compact_sequences_by_declaration(
+    resolution: &crate::analysis::CompactDispatchResolution,
+) -> BTreeMap<DeclId, Vec<DispatchSequence>> {
+    fn visit(
+        node: &crate::analysis::CompactDispatchNode,
+        prefix: &mut Vec<DispatchPosition>,
+        sequences: &mut BTreeMap<DeclId, Vec<DispatchSequence>>,
+    ) {
+        if let Some(terminal) = node.terminal {
+            sequences
+                .entry(terminal.declaration)
+                .or_default()
+                .push(DispatchSequence {
+                    positions: prefix.clone(),
+                    on_caller_follow: terminal.on_caller_follow,
+                });
+        }
+        for edge in node.edges.iter() {
+            prefix.push(DispatchPosition {
+                kinds: edge.kinds.clone(),
+                text_predicate: edge.text.clone().into_predicate(),
+            });
+            visit(&edge.next, prefix, sequences);
+            prefix.pop();
+        }
+    }
+
+    let mut sequences = BTreeMap::new();
+    visit(&resolution.root, &mut Vec::new(), &mut sequences);
+    for rows in sequences.values_mut() {
+        sort_dedup_dispatch_sequences(rows);
+    }
+    sequences
+}
+
 /// Derives the canonical dispatch plan recorded in the immutable decision plan.
 fn dispatch_plan<'a>(
     owner: TypeId,
@@ -1141,6 +1303,9 @@ fn dispatch_plan<'a>(
     first_sequences: &FirstSequenceAnalysis<'_>,
 ) -> DispatchPlan {
     let alternatives = alternatives.into_iter().collect::<Vec<_>>();
+    if kind == DispatchKind::Enum {
+        return compact_enum_dispatch_plan(owner, &alternatives, grammar, first_sequences);
+    }
     let maximum_depth = grammar.max_lookahead;
     let depths = if kind == DispatchKind::PrattLed || maximum_depth == 0 {
         vec![maximum_depth]
@@ -1158,10 +1323,7 @@ fn dispatch_plan<'a>(
                 position: *position,
                 sequences: sequences
                     .into_iter()
-                    .map(|sequence| DispatchSequence {
-                        on_caller_follow: sequence.ends(),
-                        positions: sequence.positions,
-                    })
+                    .map(|sequence| owned_dispatch_sequence(sequence, grammar))
                     .collect(),
             })
             .collect::<Vec<_>>();
@@ -1189,10 +1351,7 @@ fn dispatch_plan<'a>(
                     position: *position,
                     sequences: sequences
                         .into_iter()
-                        .map(|sequence| DispatchSequence {
-                            on_caller_follow: sequence.ends(),
-                            positions: sequence.positions,
-                        })
+                        .map(|sequence| owned_dispatch_sequence(sequence, grammar))
                         .collect(),
                 })
                 .collect::<Vec<_>>();
@@ -1230,6 +1389,126 @@ fn dispatch_plan<'a>(
     }
 }
 
+/// Freezes one enum through the labelled traversal before materializing bounded branch languages.
+fn compact_enum_dispatch_plan(
+    owner: TypeId,
+    alternatives: &[(DeclId, Option<PrattPosition>, &[SiteId])],
+    grammar: &GrammarDescription,
+    first_sequences: &FirstSequenceAnalysis<'_>,
+) -> DispatchPlan {
+    let semantic_alternatives = alternatives
+        .iter()
+        .map(|(declaration, _, sites)| (*declaration, *sites))
+        .collect::<Vec<_>>();
+    let (sequences, trie, required_lookahead, balanced) =
+        if let Some(resolution) = first_sequences.compact_enum_dispatch(&semantic_alternatives) {
+            let mut by_declaration = compact_sequences_by_declaration(&resolution);
+            let sequences: Vec<_> = alternatives
+                .iter()
+                .map(|(declaration, _, _)| by_declaration.remove(declaration).unwrap_or_default())
+                .collect();
+            (
+                sequences,
+                dispatch_trie_from_compact(resolution.root),
+                resolution.required_lookahead,
+                None,
+            )
+        } else {
+            let resolution = first_sequences
+                .compact_balanced_enum_dispatch(&semantic_alternatives)
+                .expect("validated structural dispatch resolves the unbounded shared prefix");
+            // Structural routes are represented by `BalancedDispatch`; branch
+            // rows describe only truthful bounded routes in the ordinary trie.
+            let mut by_declaration = compact_sequences_by_declaration(&resolution.ordinary);
+            let sequences: Vec<_> = alternatives
+                .iter()
+                .map(|(declaration, _, _)| by_declaration.remove(declaration).unwrap_or_default())
+                .collect();
+            (
+                sequences,
+                dispatch_trie_from_compact(resolution.ordinary.root),
+                resolution.ordinary.required_lookahead,
+                Some(BalancedDispatch {
+                    open: resolution.open,
+                    close: resolution.close,
+                    after_close: dispatch_trie_from_compact(resolution.after_close.root),
+                }),
+            )
+        };
+    let mut branches = alternatives
+        .iter()
+        .zip(sequences)
+        .map(|((declaration, position, _), sequences)| DispatchBranch {
+            declaration: *declaration,
+            position: *position,
+            sequences,
+        })
+        .collect::<Vec<_>>();
+    branches.sort_by(|left, right| {
+        grammar.declarations[left.declaration.index()]
+            .name
+            .cmp(&grammar.declarations[right.declaration.index()].name)
+    });
+    let on_caller_follow = trie
+        .terminal
+        .filter(|terminal| terminal.on_caller_follow)
+        .map(|terminal| terminal.declaration);
+    DispatchPlan {
+        owner,
+        kind: DispatchKind::Enum,
+        branches,
+        required_lookahead,
+        on_caller_follow,
+        trie,
+        balanced,
+    }
+}
+
+/// Converts one compact semantic trie into the published dispatch representation.
+fn dispatch_trie_from_compact(node: crate::analysis::CompactDispatchNode) -> DispatchTrieNode {
+    fn convert(
+        node: &crate::analysis::CompactDispatchNode,
+        memo: &mut BTreeMap<
+            (
+                Option<crate::analysis::CompactDispatchTerminal>,
+                usize,
+                usize,
+            ),
+            DispatchTrieNode,
+        >,
+    ) -> DispatchTrieNode {
+        let key = (
+            node.terminal,
+            node.edges.as_ptr() as usize,
+            node.edges.len(),
+        );
+        if let Some(converted) = memo.get(&key) {
+            return converted.clone();
+        }
+        let converted = DispatchTrieNode {
+            terminal: node.terminal.map(|terminal| DispatchTerminal {
+                declaration: terminal.declaration,
+                on_caller_follow: terminal.on_caller_follow,
+            }),
+            edges: node
+                .edges
+                .iter()
+                .map(|edge| DispatchTrieEdge {
+                    position: DispatchPosition {
+                        kinds: edge.kinds.clone(),
+                        text_predicate: edge.text.clone().into_predicate(),
+                    },
+                    next: convert(&edge.next, memo),
+                })
+                .collect::<Vec<_>>()
+                .into(),
+        };
+        memo.insert(key, converted.clone());
+        converted
+    }
+    convert(&node, &mut BTreeMap::new())
+}
+
 /// Builds one balanced-delimiter cut and freezes its post-close residual languages.
 fn try_balanced_dispatch(
     alternatives: &[(DeclId, Option<PrattPosition>, &[SiteId])],
@@ -1263,10 +1542,7 @@ fn try_balanced_dispatch(
             sequences: branch
                 .sequences
                 .into_iter()
-                .map(|sequence| DispatchSequence {
-                    on_caller_follow: sequence.ends(),
-                    positions: sequence.positions,
-                })
+                .map(|sequence| owned_dispatch_sequence(sequence, grammar))
                 .collect(),
         })
         .collect::<Vec<_>>();
@@ -1317,33 +1593,16 @@ fn ordinary_branches_without_balanced_opener(
 /// Reports whether the exact structural strategy can replace one enum conflict diagnostic.
 pub(crate) fn balanced_dispatch_is_supported(
     alternatives: &[&crate::Alternative],
-    grammar: &GrammarDescription,
+    _grammar: &GrammarDescription,
     first_sequences: &FirstSequenceAnalysis<'_>,
 ) -> bool {
     let alternatives = alternatives
         .iter()
-        .map(|alternative| (alternative.declaration, None, alternative.sites.as_slice()))
+        .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
         .collect::<Vec<_>>();
-    let sequences = first_sequences.sequences_batch_at_depth(
-        alternatives.iter().map(|(_, _, sites)| *sites),
-        grammar.max_lookahead,
-    );
-    let branches = alternatives
-        .iter()
-        .zip(sequences)
-        .map(|((declaration, position, _), sequences)| DispatchBranch {
-            declaration: *declaration,
-            position: *position,
-            sequences: sequences
-                .into_iter()
-                .map(|sequence| DispatchSequence {
-                    on_caller_follow: sequence.ends(),
-                    positions: sequence.positions,
-                })
-                .collect(),
-        })
-        .collect::<Vec<_>>();
-    try_balanced_dispatch(&alternatives, &branches, grammar, first_sequences).is_some()
+    first_sequences
+        .compact_balanced_enum_dispatch(&alternatives)
+        .is_some()
 }
 
 /// Dense identity of one canonical dispatch-language suffix.
@@ -1363,9 +1622,18 @@ struct DispatchSuffix {
     /// Terminal reached after every remaining position has matched.
     terminal: DispatchTerminal,
     /// Current symbolic position, absent only at the terminal suffix.
-    position: Option<FirstPosition>,
+    position: Option<DispatchSuffixPosition>,
     /// Canonical residual after consuming the current position.
     next: Option<DispatchSuffixId>,
+}
+
+#[derive(Clone, Debug)]
+/// One exact owned position retained in the private suffix arena.
+struct DispatchSuffixPosition {
+    /// Token kinds accepted at this position.
+    kinds: KindSet,
+    /// Exact canonical text cell accepted at this position.
+    text: TextPartition,
 }
 
 /// Structural identity used to hash-cons equivalent dispatch suffixes.
@@ -1373,8 +1641,8 @@ struct DispatchSuffix {
 struct DispatchSuffixKey {
     /// Terminal reached by the suffix.
     terminal: DispatchTerminal,
-    /// Packed current token kinds and optional text predicate.
-    position: Option<(Vec<u64>, Option<TextPredicateId>)>,
+    /// Packed current token kinds and exact canonical text cell.
+    position: Option<(Vec<u64>, TextPartition)>,
     /// Canonical successor suffix, absent at the terminal.
     next: Option<DispatchSuffixId>,
 }
@@ -1448,16 +1716,20 @@ fn try_freeze_dispatch_trie_with_observer(
                 id
             });
             for position in sequence.positions.iter().rev() {
+                let text = TextPartition::from_predicate(position.text_predicate.as_ref());
                 let key = DispatchSuffixKey {
                     terminal,
-                    position: Some((position.kinds.words().to_vec(), position.text_predicate)),
+                    position: Some((position.kinds.words().to_vec(), text.clone())),
                     next: Some(suffix),
                 };
                 suffix = *suffix_ids.entry(key).or_insert_with(|| {
                     let id = DispatchSuffixId(suffixes.len());
                     suffixes.push(DispatchSuffix {
                         terminal,
-                        position: Some(position.clone()),
+                        position: Some(DispatchSuffixPosition {
+                            kinds: position.kinds.clone(),
+                            text,
+                        }),
                         next: Some(suffix),
                     });
                     id
@@ -1474,7 +1746,6 @@ fn try_freeze_dispatch_trie_with_observer(
         &state,
         false,
         cut_off_unique_pratt_branch,
-        grammar,
         &mut memo,
         &mut observe_state,
     )?;
@@ -1496,7 +1767,6 @@ fn freeze_dispatch_state(
     state: &[DispatchSuffixId],
     matched_prefix: bool,
     cut_off_unique_pratt_branch: bool,
-    grammar: &GrammarDescription,
     memo: &mut BTreeMap<(bool, Vec<DispatchSuffixId>), Option<FrozenDispatchState>>,
     observe_state: &mut impl FnMut(&[DispatchSuffixId]),
 ) -> Option<FrozenDispatchState> {
@@ -1578,15 +1848,14 @@ fn freeze_dispatch_state(
         .copied()
         .filter(|suffix| suffixes[suffix.index()].position.is_some())
         .collect::<Vec<_>>();
-    let partitions = partition_by_kind_residual(
+    let partitions = overlay_by_kind_residual(
         &candidates,
-        grammar,
         |suffix| {
-            suffixes[suffix.index()]
+            &suffixes[suffix.index()]
                 .position
                 .as_ref()
                 .expect("candidate suffix has a position")
-                .text_predicate
+                .text
         },
         |suffix| {
             &suffixes[suffix.index()]
@@ -1610,7 +1879,6 @@ fn freeze_dispatch_state(
             &residual,
             true,
             cut_off_unique_pratt_branch,
-            grammar,
             memo,
             observe_state,
         )?;
@@ -1721,12 +1989,39 @@ fn plan_failure_edges(
             // matched, active extender can reach the D3 caller-FOLLOW guard.
             continue;
         }
-        let mut expected = dispatch
-            .branches
-            .iter()
-            .flat_map(|branch| branch.sequences.iter())
-            .filter_map(|sequence| sequence.positions.first().cloned())
-            .collect::<Vec<_>>();
+        // Failure recipes still use grammar-local FIRST positions, so exact
+        // owned/synthetic dispatch predicates are conservatively projected to
+        // their token kinds rather than assigned fabricated predicate IDs.
+        let mut expected = if dispatch.kind == DispatchKind::Enum {
+            let mut expected = dispatch
+                .trie
+                .edges
+                .iter()
+                .map(|edge| FirstPosition {
+                    kinds: edge.position.kinds.clone(),
+                    text_predicate: None,
+                })
+                .collect::<Vec<_>>();
+            if let Some(balanced) = &dispatch.balanced {
+                expected.push(FirstPosition {
+                    kinds: KindSet::singleton(grammar.kind_count, balanced.open)
+                        .expect("balanced opener belongs to the grammar"),
+                    text_predicate: None,
+                });
+            }
+            expected
+        } else {
+            dispatch
+                .branches
+                .iter()
+                .flat_map(|branch| branch.sequences.iter())
+                .filter_map(|sequence| sequence.positions.first())
+                .map(|position| FirstPosition {
+                    kinds: position.kinds.clone(),
+                    text_predicate: None,
+                })
+                .collect::<Vec<_>>()
+        };
         sort_dedup_positions(&mut expected);
         let uses_caller = dispatch.on_caller_follow.is_some();
         let expected = match (expected.is_empty(), uses_caller) {
@@ -1865,10 +2160,8 @@ fn sequences_overlap(
             left.kinds
                 .intersects(&right.kinds)
                 .expect("decision positions share the grammar kind width")
-                && crate::analysis::predicates_overlap(
-                    left.text_predicate,
-                    right.text_predicate,
-                    &grammar.text_predicates,
+                && TextPartition::from_predicate(left.text_predicate.as_ref()).overlaps(
+                    &TextPartition::from_predicate(right.text_predicate.as_ref()),
                     grammar.text_equivalence,
                 )
         })
@@ -1894,7 +2187,7 @@ fn render_sequence(sequence: &DispatchSequence, grammar: &GrammarDescription) ->
     let mut output = sequence
         .positions
         .iter()
-        .map(|position| render_position(position, grammar))
+        .map(|position| render_dispatch_position(position, grammar))
         .collect::<Vec<_>>()
         .join(" ");
     if sequence.on_caller_follow {
@@ -2245,9 +2538,9 @@ mod tests {
     fn predicated_mixed_opener_cell_remains_unsupported() {
         let grammar = pratt_and_repeat_grammar();
         let open = KindId::new(0);
-        let mixed = FirstPosition {
+        let mixed = DispatchPosition {
             kinds: KindSet::from_kinds(grammar.kinds.len(), [open, KindId::new(1)]).unwrap(),
-            text_predicate: Some(TextPredicateId::new(0)),
+            text_predicate: Some(TextPredicate::Exact("OPEN".to_owned())),
         };
         let branches = [DispatchBranch {
             declaration: DeclId::new(0),
@@ -2267,7 +2560,7 @@ mod tests {
     #[test]
     fn required_lookahead_follows_partitioned_states_instead_of_sequence_pairs() {
         let grammar = pratt_and_repeat_grammar();
-        let position = |kind| FirstPosition {
+        let position = |kind| DispatchPosition {
             kinds: KindSet::singleton(grammar.kinds.len(), KindId::new(kind)).unwrap(),
             text_predicate: None,
         };
@@ -2304,6 +2597,132 @@ mod tests {
         assert!(
             maximum_state_width <= 2,
             "equivalent dispatch suffixes must share one residual identity; width={maximum_state_width}",
+        );
+    }
+
+    #[test]
+    fn compact_rows_keep_ascii_insensitive_shared_heads_and_two_token_selection_exact() {
+        fn predicated_token(
+            grammar: &mut GrammarDescription,
+            atom: crate::AtomId,
+            name: &str,
+            spelling: &str,
+            byte: u32,
+        ) -> TypeId {
+            let declaration = declaration(grammar, name, byte);
+            let text_predicate =
+                grammar.push_text_predicate(TextPredicate::Exact(spelling.to_owned()));
+            grammar.push_type(TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: Some(text_predicate),
+                },
+            ))
+        }
+
+        let mut grammar = GrammarDescription::new(
+            "exact-owned-dispatch-rows",
+            1,
+            2,
+            TextEquivalence::AsciiInsensitive,
+        );
+        let word_declaration = declaration(&mut grammar, "WORD", 0);
+        let word = grammar.push_kind(KindDescription::new("WORD", word_declaration));
+        let atom_declaration = declaration(&mut grammar, "WordAtom", 2);
+        let atom = grammar.push_atom(AtomDescription::new(
+            "WordAtom",
+            atom_declaration,
+            AtomExpression::Kind(word),
+        ));
+        let upper_head = predicated_token(&mut grammar, atom, "UpperHead", "HEAD", 4);
+        let lower_head = predicated_token(&mut grammar, atom, "LowerHead", "head", 6);
+        let left_tail = predicated_token(&mut grammar, atom, "LeftTail", "LEFT", 8);
+        let right_tail = predicated_token(&mut grammar, atom, "RightTail", "RIGHT", 10);
+
+        let choice = grammar.next_type_id();
+        let choice_declaration = declaration(&mut grammar, "Choice", 12);
+        let left_declaration = declaration(&mut grammar, "Choice::Left", 14);
+        let right_declaration = declaration(&mut grammar, "Choice::Right", 16);
+        let mut next_byte = 18;
+        let mut alternative =
+            |branch_declaration, name: &str, targets: [TypeId; 2]| crate::Alternative {
+                declaration: branch_declaration,
+                sites: targets
+                    .into_iter()
+                    .map(|target| {
+                        let site_declaration = declaration(&mut grammar, name, next_byte);
+                        next_byte += 2;
+                        grammar.push_site(ParseSite::new(
+                            choice,
+                            target,
+                            site_declaration,
+                            ContainerShape::Direct,
+                        ))
+                    })
+                    .collect(),
+            };
+        let alternatives = vec![
+            alternative(
+                left_declaration,
+                "Choice::Left::site",
+                [upper_head, left_tail],
+            ),
+            alternative(
+                right_declaration,
+                "Choice::Right::site",
+                [lower_head, right_tail],
+            ),
+        ];
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: alternatives.clone(),
+                },
+            )),
+            choice,
+        );
+
+        let first_sequences = FirstSequenceAnalysis::for_grammar(&grammar);
+        let plan = dispatch_plan(
+            choice,
+            DispatchKind::Enum,
+            alternatives
+                .iter()
+                .map(|alternative| (alternative.declaration, None, alternative.sites.as_slice())),
+            &grammar,
+            &first_sequences,
+        );
+        assert_eq!(plan.required_lookahead(), 2);
+        let rows = plan
+            .branches()
+            .iter()
+            .map(|branch| {
+                assert_eq!(
+                    branch.sequences().len(),
+                    1,
+                    "each branch has one exact selecting rectangle",
+                );
+                let sequence = &branch.sequences()[0];
+                assert_eq!(
+                    sequence.positions().len(),
+                    2,
+                    "the shared exact-text head alone must never be published as selecting",
+                );
+                assert_eq!(
+                    sequence.positions()[0].text_predicate(),
+                    Some(&TextPredicate::Exact("head".to_owned())),
+                    "ASCII-equivalent authored heads share one canonical exact cell",
+                );
+                sequence
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !sequences_overlap(rows[0], rows[1], &grammar),
+            "the owned two-token rows must be truthful disjoint selecting prefixes",
         );
     }
 
