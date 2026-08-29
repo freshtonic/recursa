@@ -576,6 +576,22 @@ pub struct FirstSequence {
 }
 
 impl FirstSequence {
+    /// Creates one non-terminal one-position prefix from an already computed FIRST fact.
+    pub(crate) fn from_position(position: FirstPosition) -> Self {
+        Self {
+            positions: vec![position],
+            ends: false,
+        }
+    }
+
+    /// Creates the empty prefix that delegates selection to caller FOLLOW.
+    pub(crate) fn caller_follow() -> Self {
+        Self {
+            positions: Vec::new(),
+            ends: true,
+        }
+    }
+
     /// Whether this prefix can exhaust the production and must consult the
     /// dynamic caller FOLLOW set rather than assuming end-of-input.
     pub const fn ends(&self) -> bool {
@@ -669,6 +685,7 @@ fn analyze_with_sequence_materialization(
     let warnings = detect_follow_conflicts(
         grammar,
         &first_by_type,
+        &first_sequence_analysis,
         &first_provenance,
         &follow_positions_by_site,
         &static_conflict_kinds_by_declaration,
@@ -837,6 +854,31 @@ impl<'a> FirstSequenceAnalysis<'a> {
         roots: impl IntoIterator<Item = &'sites [SiteId]>,
     ) -> Vec<Vec<FirstSequence>> {
         self.sequences_batch_at_depth(roots, self.grammar.max_lookahead.min(1))
+    }
+
+    /// Derives the bounded consuming and skipping languages for one nullable container site.
+    ///
+    /// The consuming language expands exactly one occurrence before the remaining sequence,
+    /// while the skipping language begins at that remaining sequence. Keeping this construction
+    /// inside semantic analysis prevents decision planning from reconstructing container grammar.
+    pub(crate) fn optional_viability_languages(
+        &self,
+        site: SiteId,
+        tail: &[SiteId],
+    ) -> [Vec<FirstSequence>; 2] {
+        let consuming =
+            DecisionState::consuming_site_and_tail(&self.grammar.sites[site.index()], tail);
+        let skipping = DecisionState::from_sites(tail);
+        let mut languages =
+            self.state_sequences_batch_at_depth([consuming, skipping], self.grammar.max_lookahead);
+        let skipping = languages
+            .pop()
+            .expect("optional viability always derives a skipping language");
+        let consuming = languages
+            .pop()
+            .expect("optional viability always derives a consuming language");
+        debug_assert!(languages.is_empty());
+        [consuming, skipping]
     }
 
     /// Derives decision-site roots through the shared arena at one bounded depth.
@@ -9721,6 +9763,7 @@ fn declaration_label(
 fn detect_follow_conflicts(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
     first_provenance: &[Vec<ProvenancedPosition>],
     follow_by_site: &[ProvenancedFollow],
     static_conflict_kinds_by_declaration: &[KindSet],
@@ -9751,25 +9794,32 @@ fn detect_follow_conflicts(
         {
             let secondary_declaration =
                 follow_source_declaration(evidence.witness.right, site.declaration, proofs);
-            diagnostics.push(Diagnostic::conflict_warning(
-                DiagnosticCode::NullableFollowOverlap,
-                format!(
-                    "nullable use site in `{}` may consume a caller FOLLOW kind",
-                    grammar.types[site.owner.index()].name,
-                ),
-                declaration_label(
-                    site.declaration,
-                    grammar,
-                    "this nullable use site can consume the witness kind",
-                ),
-                declaration_label(
-                    secondary_declaration,
-                    grammar,
-                    "the same kind can follow this use site",
-                ),
-                evidence,
-                ConflictRemedy::ReviewNullableFollow { site: site_id },
-            ));
+            if !optional_static_tail_is_decidable(
+                site_id,
+                secondary_declaration,
+                grammar,
+                first_sequences,
+            ) {
+                diagnostics.push(Diagnostic::conflict_warning(
+                    DiagnosticCode::NullableFollowOverlap,
+                    format!(
+                        "nullable use site in `{}` may consume a caller FOLLOW kind",
+                        grammar.types[site.owner.index()].name,
+                    ),
+                    declaration_label(
+                        site.declaration,
+                        grammar,
+                        "this nullable use site can consume the witness kind",
+                    ),
+                    declaration_label(
+                        secondary_declaration,
+                        grammar,
+                        "the same kind can follow this use site",
+                    ),
+                    evidence,
+                    ConflictRemedy::ReviewNullableFollow { site: site_id },
+                ));
+            }
         }
 
         let active = active_extender_provenance(
@@ -9816,6 +9866,82 @@ fn detect_follow_conflicts(
         }
     }
     aggregate_follow_diagnostics(diagnostics, grammar, proofs)
+}
+
+/// Reports whether exact bounded optional viability resolves this static FOLLOW overlap.
+fn optional_static_tail_is_decidable(
+    site_id: SiteId,
+    secondary_declaration: crate::DeclId,
+    grammar: &GrammarDescription,
+    first_sequences: &FirstSequenceAnalysis<'_>,
+) -> bool {
+    let site = &grammar.sites[site_id.index()];
+    if site
+        .container
+        .semantics()
+        .is_none_or(|semantics| semantics.cardinality != ContainerCardinality::Optional)
+    {
+        return false;
+    }
+    let Some(tail) = site_sequence_tail(site_id, grammar) else {
+        return false;
+    };
+    if !tail
+        .iter()
+        .any(|tail_site| grammar.sites[tail_site.index()].declaration == secondary_declaration)
+    {
+        return false;
+    }
+    let left = DecisionState::consuming_site_and_tail(site, tail);
+    let right = DecisionState::from_sites(tail);
+    let bounded =
+        bounded_nullable_tail_witness(site, tail, &left, &right, grammar, first_sequences);
+    if bounded.is_disjoint() {
+        return true;
+    }
+    analyze_decision(left, right, first_sequences, bounded)
+        .sufficient_depth
+        .is_some_and(|depth| depth <= grammar.max_lookahead)
+}
+
+/// Finds the unique source-ordered suffix following one normalized parse site.
+fn site_sequence_tail(site_id: SiteId, grammar: &GrammarDescription) -> Option<&[SiteId]> {
+    fn find(site_id: SiteId, sites: &[SiteId]) -> Option<&[SiteId]> {
+        sites
+            .iter()
+            .position(|candidate| *candidate == site_id)
+            .map(|index| &sites[index + 1..])
+    }
+    for description in &grammar.types {
+        match &description.shape {
+            TypeShape::Alias { site } => {
+                if *site == site_id {
+                    return Some(&[]);
+                }
+            }
+            TypeShape::Sequence { sites } => {
+                if let Some(tail) = find(site_id, sites) {
+                    return Some(tail);
+                }
+            }
+            TypeShape::Enum { alternatives } => {
+                for alternative in alternatives {
+                    if let Some(tail) = find(site_id, &alternative.sites) {
+                        return Some(tail);
+                    }
+                }
+            }
+            TypeShape::Pratt { variants } => {
+                for variant in variants {
+                    if let Some(tail) = find(site_id, &variant.sites) {
+                        return Some(tail);
+                    }
+                }
+            }
+            TypeShape::Token { .. } => {}
+        }
+    }
+    None
 }
 
 /// Deduplicates FOLLOW conflicts and chooses their canonical witnesses.

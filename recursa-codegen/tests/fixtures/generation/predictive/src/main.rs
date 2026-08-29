@@ -132,6 +132,20 @@ fn main() {
         "alias"
     );
 
+    let consumed_optional = grammar::lex("WITH TIME ZONE WITH UNIQUE");
+    let mut input = consumed_optional.input();
+    let parsed = grammar::OptionalTimeZoneBeforeUnique::parse(&mut input)
+        .expect("a complete WITH TIME ZONE prefix consumes before WITH UNIQUE");
+    assert!(input.is_eof());
+    assert!(parsed.root().value().time_zone.is_some());
+
+    let skipped_optional = grammar::lex("WITH UNIQUE");
+    let mut input = skipped_optional.input();
+    let parsed = grammar::OptionalTimeZoneBeforeUnique::parse(&mut input)
+        .expect("the required WITH UNIQUE tail skips the overlapping optional prefix");
+    assert!(input.is_eof());
+    assert!(parsed.root().value().time_zone.is_none());
+
     let nullable_static = grammar::lex("PRINT message");
     let mut input = nullable_static.input();
     let parsed = grammar::NullablePrefix::parse(&mut input)
