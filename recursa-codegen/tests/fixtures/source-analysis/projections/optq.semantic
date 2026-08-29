@@ -91,7 +91,6 @@ container optq::Stmt::Set::element0 Direct element=[fixed:DEBUG,fixed:SET] separ
 container optq::PrintStmt::element0 Optional element=[fixed:DEBUG] separator=- separator-first=[] trailing=false stop=static[fixed:PRINT]
   transition Start --ParseElement/static[fixed:DEBUG]--> Done
   transition Start --Stop/static[fixed:PRINT]--> Done
-  optional-viability depth=1 languages=2 trie=(terminals=[] edges=[fixed:DEBUG=>(terminals=[Consume] edges=[]),fixed:PRINT=>(terminals=[Skip] edges=[])])
 container optq::PrintStmt::element1 Direct element=[fixed:PRINT] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:PRINT]--> Done
 container optq::PrintStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
@@ -99,7 +98,6 @@ container optq::PrintStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9
 container optq::ReadStmt::element0 Optional element=[fixed:DEBUG] separator=- separator-first=[] trailing=false stop=static[fixed:READ]
   transition Start --ParseElement/static[fixed:DEBUG]--> Done
   transition Start --Stop/static[fixed:READ]--> Done
-  optional-viability depth=1 languages=2 trie=(terminals=[] edges=[fixed:DEBUG=>(terminals=[Consume] edges=[]),fixed:READ=>(terminals=[Skip] edges=[])])
 container optq::ReadStmt::element1 Direct element=[fixed:READ] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:READ]--> Done
 container optq::ReadStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
@@ -107,7 +105,6 @@ container optq::ReadStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_
 container optq::SetStmt::element0 Optional element=[fixed:DEBUG] separator=- separator-first=[] trailing=false stop=static[fixed:SET]
   transition Start --ParseElement/static[fixed:DEBUG]--> Done
   transition Start --Stop/static[fixed:SET]--> Done
-  optional-viability depth=1 languages=2 trie=(terminals=[] edges=[fixed:DEBUG=>(terminals=[Consume] edges=[]),fixed:SET=>(terminals=[Skip] edges=[])])
 container optq::SetStmt::element1 Direct element=[fixed:SET] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:SET]--> Done
 container optq::SetStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller

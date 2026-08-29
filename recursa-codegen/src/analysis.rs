@@ -876,25 +876,44 @@ impl<'a> FirstSequenceAnalysis<'a> {
         self.sequences_batch_at_depth(roots, self.grammar.max_lookahead.min(1))
     }
 
-    /// Freezes one optional site's consume-vs-skip viability without materializing path rows.
-    pub(crate) fn compact_optional_viability(
+    /// Freezes overlapping optional sites in ID order through one shared symbolic arena.
+    pub(crate) fn compact_optional_viabilities(
         &self,
-        site: SiteId,
-        tail: &[SiteId],
-    ) -> CompactOptionalViabilityResolution {
-        let consuming =
-            DecisionState::consuming_site_and_tail(&self.grammar.sites[site.index()], tail);
-        let skipping = DecisionState::from_sites(tail);
-        CompactOptionalViabilityArena::new(self).resolution(vec![
-            CompactOptionalLabelledState {
-                action: CompactOptionalAction::Consume,
-                state: consuming,
-            },
-            CompactOptionalLabelledState {
-                action: CompactOptionalAction::Skip,
-                state: skipping,
-            },
-        ])
+        sites: &[(SiteId, KindSet)],
+    ) -> Vec<(SiteId, CompactOptionalViabilityResolution)> {
+        let mut sites = sites.to_vec();
+        sites.sort_by_key(|(site, _)| *site);
+        sites.dedup_by_key(|(site, _)| *site);
+        if sites.is_empty() {
+            return Vec::new();
+        }
+        let mut arena = CompactOptionalViabilityArena::new(self);
+        sites
+            .into_iter()
+            .filter_map(|(site, selector)| {
+                let tail = self
+                    .site_tail(site)
+                    .expect("validated parse sites have one pre-indexed sequence tail");
+                let consuming =
+                    DecisionState::consuming_site_and_tail(&self.grammar.sites[site.index()], tail);
+                let skipping = DecisionState::from_sites(tail);
+                arena
+                    .resolution(
+                        vec![
+                            CompactOptionalLabelledState {
+                                action: CompactOptionalAction::Consume,
+                                state: consuming,
+                            },
+                            CompactOptionalLabelledState {
+                                action: CompactOptionalAction::Skip,
+                                state: skipping,
+                            },
+                        ],
+                        &selector,
+                    )
+                    .map(|resolution| (site, resolution))
+            })
+            .collect()
     }
 
     /// Derives decision-site roots through the shared arena at one bounded depth.
@@ -3312,6 +3331,12 @@ thread_local! {
     static FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS: Cell<usize> = const { Cell::new(0) };
     /// Counts raw decision-state projections into recursively factored tail components.
     static FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS: Cell<usize> = const { Cell::new(0) };
+    /// Counts compact semantic frontiers built instead of reused across decision sites.
+    static COMPACT_SEMANTIC_FRONTIER_BUILDS: Cell<usize> = const { Cell::new(0) };
+    /// Counts optional labelled transitions before override-region filtering.
+    static OPTIONAL_PARTITION_CANDIDATES_BEFORE: Cell<usize> = const { Cell::new(0) };
+    /// Counts optional labelled transitions retained for exact partitioning.
+    static OPTIONAL_PARTITION_CANDIDATES_AFTER: Cell<usize> = const { Cell::new(0) };
     /// Counts projected transitions expanded into token-kind partition candidates.
     static FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS: Cell<usize> = const { Cell::new(0) };
     /// Counts complete grammar-wide one-position fact constructions.
@@ -3338,6 +3363,34 @@ pub(crate) fn reset_first_sequence_peak_rows_for_test() {
 /// Returns the largest eagerly materialized FIRST-sequence row set on this test thread.
 pub(crate) fn first_sequence_peak_rows_for_test() -> usize {
     FIRST_SEQUENCE_PEAK_ROWS.get()
+}
+
+#[cfg(test)]
+/// Resets compact semantic-frontier cache misses on this test thread.
+pub(crate) fn reset_compact_semantic_frontier_builds_for_test() {
+    COMPACT_SEMANTIC_FRONTIER_BUILDS.set(0);
+}
+
+#[cfg(test)]
+/// Returns compact semantic-frontier cache misses on this test thread.
+pub(crate) fn compact_semantic_frontier_builds_for_test() -> usize {
+    COMPACT_SEMANTIC_FRONTIER_BUILDS.get()
+}
+
+#[cfg(test)]
+/// Resets optional exact-partition candidate accounting on this test thread.
+pub(crate) fn reset_optional_partition_candidates_for_test() {
+    OPTIONAL_PARTITION_CANDIDATES_BEFORE.set(0);
+    OPTIONAL_PARTITION_CANDIDATES_AFTER.set(0);
+}
+
+#[cfg(test)]
+/// Returns optional exact-partition candidates before and after override filtering.
+pub(crate) fn optional_partition_candidates_for_test() -> (usize, usize) {
+    (
+        OPTIONAL_PARTITION_CANDIDATES_BEFORE.get(),
+        OPTIONAL_PARTITION_CANDIDATES_AFTER.get(),
+    )
 }
 
 /// Interns each wide FIRST position once and returns compact row identities.
@@ -6505,8 +6558,6 @@ pub(crate) struct CompactOptionalViabilityResolution {
     pub(crate) root: CompactOptionalNode,
     /// Maximum token prefix needed to distinguish consume from skip.
     pub(crate) required_lookahead: usize,
-    /// Number of symbolic root languages retained without sequence enumeration.
-    pub(crate) frozen_language_count: usize,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -6559,16 +6610,22 @@ struct CompactOptionalNodeKey {
 }
 
 /// Memoization key for one depth-bounded compact optional viability state.
-type CompactOptionalMemoKey = (usize, bool, Vec<CompactOptionalLabelledState>);
+type CompactOptionalMemoKey = (
+    usize,
+    bool,
+    Option<bool>,
+    Option<Vec<u64>>,
+    Vec<CompactOptionalLabelledState>,
+);
 
 /// Shared caches for one compact optional viability construction.
 struct CompactOptionalViabilityArena<'analysis, 'grammar> {
-    /// Shared symbolic semantic frontier traversal.
-    semantic: CompactDispatchArena<'analysis, 'grammar>,
+    /// Shared analysis-run semantic frontier cache.
+    analysis: &'analysis FirstSequenceAnalysis<'grammar>,
     /// Canonical compact nodes shared by equivalent residual languages.
     interned_nodes: BTreeMap<CompactOptionalNodeKey, CompactOptionalNode>,
     /// Frozen viability states keyed by depth, prefix status, and action-labelled residuals.
-    frozen: BTreeMap<CompactOptionalMemoKey, FrozenCompactOptionalState>,
+    frozen: BTreeMap<CompactOptionalMemoKey, Option<FrozenCompactOptionalState>>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -8347,6 +8404,9 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                 .get()
                 .saturating_add(1),
         );
+        #[cfg(test)]
+        COMPACT_SEMANTIC_FRONTIER_BUILDS
+            .set(COMPACT_SEMANTIC_FRONTIER_BUILDS.get().saturating_add(1));
 
         let start = HashedDecisionState::new(state);
         let start_depth = start.state.0.len();
@@ -8805,7 +8865,7 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
     /// Creates one optional viability traversal over shared grammar-wide semantic facts.
     fn new(analysis: &'analysis FirstSequenceAnalysis<'grammar>) -> Self {
         Self {
-            semantic: CompactDispatchArena::new(analysis),
+            analysis,
             interned_nodes: BTreeMap::new(),
             frozen: BTreeMap::new(),
         }
@@ -8852,12 +8912,11 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
         let mut states = states
             .into_iter()
             .map(|mut state| {
-                state.state = self.semantic.analysis.canonical_state(state.state);
+                state.state = self.analysis.canonical_state(state.state);
                 state
             })
             .filter(|state| {
-                self.semantic
-                    .analysis
+                self.analysis
                     .decision_summary_facts
                     .summarize_state(&state.state)
                     != 0
@@ -8876,16 +8935,16 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
         let mut ends = Vec::new();
         let mut transitions = Vec::new();
         for state in states {
-            let frontier = self.semantic.semantic_frontier(false, &state.state);
-            if !frontier.ends.is_empty() {
+            let frontier = self.analysis.decision_frontier(&state.state);
+            if frontier.can_end {
                 ends.push(state.action);
             }
-            transitions.extend(frontier.transitions.into_iter().map(|transition| {
+            transitions.extend(frontier.transitions.iter().map(|transition| {
                 CompactOptionalTransition {
-                    position: transition.position,
+                    position: transition.position.clone(),
                     next: CompactOptionalLabelledState {
                         action: state.action,
-                        state: transition.next,
+                        state: transition.next.clone(),
                     },
                 }
             }));
@@ -8948,15 +9007,146 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
         normalized.into()
     }
 
+    /// Removes terminal choices already implemented by the legacy root selector.
+    fn retain_terminal_overrides(
+        terminals: Rc<[CompactOptionalTerminal]>,
+        fallback_consumes: Option<bool>,
+    ) -> Rc<[CompactOptionalTerminal]> {
+        let Some(fallback_consumes) = fallback_consumes else {
+            return terminals;
+        };
+        let fallback = if fallback_consumes {
+            CompactOptionalAction::Consume
+        } else {
+            CompactOptionalAction::Skip
+        };
+        let unconditional = terminals
+            .iter()
+            .find(|terminal| !terminal.on_caller_follow)
+            .map(|terminal| terminal.action);
+        let caller = terminals
+            .iter()
+            .find(|terminal| terminal.on_caller_follow)
+            .map(|terminal| terminal.action)
+            .or(unconditional);
+        let retained_unconditional = unconditional.filter(|action| *action != fallback);
+        let caller_default = retained_unconditional.unwrap_or(fallback);
+        let retained_caller = caller.filter(|action| *action != caller_default);
+        retained_caller
+            .into_iter()
+            .map(|action| CompactOptionalTerminal {
+                action,
+                on_caller_follow: true,
+            })
+            .chain(
+                retained_unconditional.map(|action| CompactOptionalTerminal {
+                    action,
+                    on_caller_follow: false,
+                }),
+            )
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    /// Clips root and residual frontiers to cells that can override the legacy selector.
+    fn retain_override_transitions(
+        &self,
+        transitions: Vec<CompactOptionalTransition>,
+        terminals_are_empty: bool,
+        fallback_consumes: Option<bool>,
+        root_selector: Option<&KindSet>,
+    ) -> Vec<CompactOptionalTransition> {
+        #[cfg(test)]
+        OPTIONAL_PARTITION_CANDIDATES_BEFORE.set(
+            OPTIONAL_PARTITION_CANDIDATES_BEFORE
+                .get()
+                .saturating_add(transitions.len()),
+        );
+        if !terminals_are_empty {
+            #[cfg(test)]
+            OPTIONAL_PARTITION_CANDIDATES_AFTER.set(
+                OPTIONAL_PARTITION_CANDIDATES_AFTER
+                    .get()
+                    .saturating_add(transitions.len()),
+            );
+            return transitions;
+        }
+        let retained_kinds = if let Some(selector) = root_selector {
+            Some((None, selector.clone()))
+        } else if let Some(fallback_consumes) = fallback_consumes {
+            let override_action = if fallback_consumes {
+                CompactOptionalAction::Skip
+            } else {
+                CompactOptionalAction::Consume
+            };
+            let mut kinds = KindSet::empty(self.analysis.grammar.kind_count);
+            for transition in &transitions {
+                if transition.next.action == override_action {
+                    kinds.union_assign(&transition.position.kinds);
+                }
+            }
+            Some((Some(override_action), kinds))
+        } else {
+            None
+        };
+        let Some((override_action, retained_kinds)) = retained_kinds else {
+            #[cfg(test)]
+            OPTIONAL_PARTITION_CANDIDATES_AFTER.set(
+                OPTIONAL_PARTITION_CANDIDATES_AFTER
+                    .get()
+                    .saturating_add(transitions.len()),
+            );
+            return transitions;
+        };
+        let retained = transitions
+            .into_iter()
+            .filter_map(|mut transition| {
+                if override_action.is_none_or(|action| transition.next.action != action) {
+                    transition.position.kinds = transition
+                        .position
+                        .kinds
+                        .intersection(&retained_kinds)
+                        .expect("optional transition belongs to the same grammar");
+                }
+                (!transition.position.kinds.is_empty()).then_some(transition)
+            })
+            .collect::<Vec<_>>();
+        #[cfg(test)]
+        OPTIONAL_PARTITION_CANDIDATES_AFTER.set(
+            OPTIONAL_PARTITION_CANDIDATES_AFTER
+                .get()
+                .saturating_add(retained.len()),
+        );
+        retained
+    }
+
     /// Freezes one exact action-labelled residual subset at bounded remaining depth.
+    ///
+    /// # Long-function contract
+    ///
+    /// Rationale: terminal choice, exact text partitioning, recursive cutoff, and structural
+    /// hash-consing must advance together so one frozen node cannot combine mismatched semantic
+    /// phases. Invariants: states are canonical and productive, edge cells remain exact and
+    /// disjoint, recursion stops as soon as one action is path-unique, and every memoized child is
+    /// immutable before its parent identity is interned. Phases: normalize and memo-check, apply
+    /// the unique-action cutoff, derive terminals/frontiers, partition and freeze child residuals,
+    /// then intern and memoize the completed node.
     fn freeze(
         &mut self,
         remaining: usize,
         states: Vec<CompactOptionalLabelledState>,
         matched_prefix: bool,
-    ) -> FrozenCompactOptionalState {
+        fallback_consumes: Option<bool>,
+        root_selector: Option<&KindSet>,
+    ) -> Option<FrozenCompactOptionalState> {
         let states = self.normalize_states(states);
-        let memo_key = (remaining, matched_prefix, states.clone());
+        let memo_key = (
+            remaining,
+            matched_prefix,
+            fallback_consumes,
+            root_selector.map(|selector| selector.words().to_vec()),
+            states.clone(),
+        );
         if let Some(frozen) = self.frozen.get(&memo_key) {
             return frozen.clone();
         }
@@ -8966,6 +9156,11 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
             .map(|first| first.action)
             .filter(|action| states.iter().all(|state| state.action == *action));
         if matched_prefix && let Some(action) = unique_action {
+            let action_consumes = action == CompactOptionalAction::Consume;
+            if fallback_consumes == Some(action_consumes) {
+                self.frozen.insert(memo_key, None);
+                return None;
+            }
             let frozen = FrozenCompactOptionalState {
                 node: self.intern_node(CompactOptionalNode {
                     terminals: Rc::from([CompactOptionalTerminal {
@@ -8976,8 +9171,8 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
                 }),
                 relative_required_lookahead: 0,
             };
-            self.frozen.insert(memo_key, frozen.clone());
-            return frozen;
+            self.frozen.insert(memo_key, Some(frozen.clone()));
+            return Some(frozen);
         }
 
         let (ends, transitions) = self.labelled_frontier(&states);
@@ -8996,7 +9191,14 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
                             on_caller_follow: false,
                         }),
                 );
-            let terminals = Self::normalize_terminals(terminals, matched_prefix);
+            let terminals = Self::retain_terminal_overrides(
+                Self::normalize_terminals(terminals, matched_prefix),
+                fallback_consumes,
+            );
+            if terminals.is_empty() {
+                self.frozen.insert(memo_key, None);
+                return None;
+            }
             let frozen = FrozenCompactOptionalState {
                 node: self.intern_node(CompactOptionalNode {
                     terminals,
@@ -9004,34 +9206,79 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
                 }),
                 relative_required_lookahead: 0,
             };
-            self.frozen.insert(memo_key, frozen.clone());
-            return frozen;
+            self.frozen.insert(memo_key, Some(frozen.clone()));
+            return Some(frozen);
         }
 
-        let terminals = Self::normalize_terminals(
-            ends.into_iter().map(|action| CompactOptionalTerminal {
-                action,
-                on_caller_follow: true,
-            }),
-            matched_prefix,
+        let terminals = Self::retain_terminal_overrides(
+            Self::normalize_terminals(
+                ends.into_iter().map(|action| CompactOptionalTerminal {
+                    action,
+                    on_caller_follow: true,
+                }),
+                matched_prefix,
+            ),
+            fallback_consumes,
+        );
+        let transitions = self.retain_override_transitions(
+            transitions,
+            terminals.is_empty(),
+            fallback_consumes,
+            root_selector,
         );
         let partitions = partition_by_kind_residual(
             &transitions,
-            self.semantic.analysis.grammar,
+            self.analysis.grammar,
             |transition| transition.position.text_predicate,
             |transition| &transition.position.kinds,
             |transition| transition.next.clone(),
         );
         let mut edges = Vec::with_capacity(partitions.len());
-        let mut maximum_child_lookahead = 0;
+        let mut maximum_child_lookahead = 0usize;
+        let shielding_fallback = (!terminals.is_empty()).then(|| {
+            self.intern_node(CompactOptionalNode {
+                terminals: Rc::default(),
+                edges: Rc::default(),
+            })
+        });
         for (text, residuals, kinds) in partitions {
-            let next = self.freeze(remaining - 1, residuals, true);
-            maximum_child_lookahead = maximum_child_lookahead.max(next.relative_required_lookahead);
-            edges.push(CompactOptionalEdge {
-                kinds,
-                text,
-                next: next.node,
-            });
+            let selector_parts = if let Some(selector) = root_selector {
+                let selected = kinds
+                    .intersection(selector)
+                    .expect("optional selector belongs to the same grammar");
+                let rejected = kinds
+                    .difference(selector)
+                    .expect("optional selector belongs to the same grammar");
+                [(selected, Some(true)), (rejected, Some(false))]
+            } else {
+                [
+                    (kinds, fallback_consumes),
+                    (KindSet::empty(self.analysis.grammar.kind_count), None),
+                ]
+            };
+            for (kinds, child_fallback) in selector_parts {
+                if kinds.is_empty() {
+                    continue;
+                }
+                let next =
+                    self.freeze(remaining - 1, residuals.clone(), true, child_fallback, None);
+                let (next, child_lookahead) = match next {
+                    Some(next) => (next.node, next.relative_required_lookahead),
+                    None if shielding_fallback.is_some() => (
+                        shielding_fallback
+                            .clone()
+                            .expect("checked shielding fallback exists"),
+                        0,
+                    ),
+                    None => continue,
+                };
+                maximum_child_lookahead = maximum_child_lookahead.max(child_lookahead);
+                edges.push(CompactOptionalEdge {
+                    kinds,
+                    text: text.clone(),
+                    next,
+                });
+            }
         }
         edges.sort_by(|left, right| {
             left.kinds
@@ -9039,17 +9286,15 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
                 .cmp(right.kinds.words())
                 .then_with(|| left.text.cmp(&right.text))
         });
-        let has_multiple_actions = states.first().is_some_and(|first| {
-            states
-                .iter()
-                .skip(1)
-                .any(|state| state.action != first.action)
-        });
-        let relative_required_lookahead = if has_multiple_actions && !edges.is_empty() {
+        let relative_required_lookahead = if !edges.is_empty() {
             maximum_child_lookahead.saturating_add(1)
         } else {
             0
         };
+        if terminals.is_empty() && edges.is_empty() {
+            self.frozen.insert(memo_key, None);
+            return None;
+        }
         let frozen = FrozenCompactOptionalState {
             node: self.intern_node(CompactOptionalNode {
                 terminals,
@@ -9057,24 +9302,29 @@ impl<'analysis, 'grammar> CompactOptionalViabilityArena<'analysis, 'grammar> {
             }),
             relative_required_lookahead,
         };
-        self.frozen.insert(memo_key, frozen.clone());
-        frozen
+        self.frozen.insert(memo_key, Some(frozen.clone()));
+        Some(frozen)
     }
 
     /// Freezes the two symbolic root languages with the non-empty depth convention.
     fn resolution(
         &mut self,
         states: Vec<CompactOptionalLabelledState>,
-    ) -> CompactOptionalViabilityResolution {
-        let frozen_language_count = states.len();
-        let frozen = self.freeze(self.semantic.analysis.grammar.max_lookahead, states, false);
-        CompactOptionalViabilityResolution {
+        selector: &KindSet,
+    ) -> Option<CompactOptionalViabilityResolution> {
+        let frozen = self.freeze(
+            self.analysis.grammar.max_lookahead,
+            states,
+            false,
+            None,
+            Some(selector),
+        )?;
+        Some(CompactOptionalViabilityResolution {
             root: frozen.node,
             required_lookahead: frozen
                 .relative_required_lookahead
-                .min(self.semantic.analysis.grammar.max_lookahead),
-            frozen_language_count,
-        }
+                .min(self.analysis.grammar.max_lookahead),
+        })
     }
 }
 

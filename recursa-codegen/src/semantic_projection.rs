@@ -343,9 +343,8 @@ fn render_container_machine(
     if let Some(decision) = machine.optional_viability_decision() {
         write!(
             rendered,
-            "  optional-viability depth={} languages={} trie=",
+            "  optional-viability depth={} trie=",
             decision.required_lookahead(),
-            decision.frozen_language_count(),
         )
         .expect("writing to a String cannot fail");
         render_optional_viability_decision_node(rendered, decision.trie(), grammar);

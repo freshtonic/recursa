@@ -493,8 +493,6 @@ pub struct OptionalViabilityDecision {
     trie: OptionalViabilityDecisionNode,
     /// Bounded lookahead depth needed to reach every unambiguous action.
     required_lookahead: usize,
-    /// Number of symbolic consume-or-skip root languages represented by the trie.
-    frozen_language_count: usize,
 }
 
 impl OptionalViabilityDecision {
@@ -506,11 +504,6 @@ impl OptionalViabilityDecision {
     /// Returns the bounded lookahead depth required by this optional viability decision.
     pub const fn required_lookahead(&self) -> usize {
         self.required_lookahead
-    }
-
-    /// Returns the number of symbolic root languages frozen into this decision.
-    pub const fn frozen_language_count(&self) -> usize {
-        self.frozen_language_count
     }
 }
 
@@ -789,8 +782,8 @@ impl DecisionProducts {
                 &grammar.declarations[grammar.sites[machine.site.index()].declaration.index()].name;
             write!(
                 output,
-                "optional-viability {declaration} depth={} languages={} trie=",
-                decision.required_lookahead, decision.frozen_language_count,
+                "optional-viability {declaration} depth={} trie=",
+                decision.required_lookahead,
             )
             .expect("writing to a String cannot fail");
             render_optional_viability_decision_trie(&decision.trie, grammar, &mut output);
@@ -841,18 +834,17 @@ impl DecisionProducts {
                 machine.optional_viability_decision.as_ref(),
             ) {
                 (ContainerOperation::Optional, Some(decision)) => {
-                    if decision.frozen_language_count == 0
-                        || decision.required_lookahead > grammar.max_lookahead
+                    if decision.required_lookahead > grammar.max_lookahead
                         || !optional_edges_are_disjoint(&decision.trie, grammar)
                         || !optional_viability_decision_terminals_are_valid(&decision.trie)
                     {
                         return Err(DecisionInvariant::InvalidOptionalViabilityDecision);
                     }
                 }
-                (ContainerOperation::Optional, None) | (_, Some(_)) => {
+                (_, Some(_)) => {
                     return Err(DecisionInvariant::InvalidOptionalViabilityDecision);
                 }
-                (_, None) => {}
+                (ContainerOperation::Optional, None) | (_, None) => {}
             }
         }
         let mut referenced_sites = Vec::new();
@@ -1159,6 +1151,7 @@ pub(crate) fn plan_decisions(
     });
 
     let mut optional_viability_decisions_by_site = vec![None; grammar.sites.len()];
+    let mut overlapping_optional_sites = Vec::new();
     for index in 0..grammar.sites.len() {
         let site_id = SiteId::new(index as u32);
         if grammar.sites[index]
@@ -1168,19 +1161,23 @@ pub(crate) fn plan_decisions(
                 semantics.cardinality == crate::ir::ContainerCardinality::Optional
             })
         {
-            let tail = first_sequences
-                .site_tail(site_id)
-                .expect("validated parse sites have one pre-indexed sequence tail");
-            plan_optional_viability_decision_for_site(
+            plan_nonoverlapping_optional_viability_for_site(
                 site_id,
-                tail,
                 grammar,
                 semantic,
-                first_sequences,
                 &follow_recipes_by_site,
                 &mut optional_viability_decisions_by_site,
+                &mut overlapping_optional_sites,
             );
         }
+    }
+    for (site_id, resolution) in
+        first_sequences.compact_optional_viabilities(&overlapping_optional_sites)
+    {
+        optional_viability_decisions_by_site[site_id.index()] = Some(OptionalViabilityDecision {
+            trie: optional_viability_decision_from_compact(&resolution.root),
+            required_lookahead: resolution.required_lookahead,
+        });
     }
 
     let container_machines = grammar
@@ -1237,58 +1234,67 @@ pub(crate) fn plan_decisions(
     })
 }
 
-/// Freezes the optional consume-vs-skip decision for one pre-indexed site suffix.
-fn plan_optional_viability_decision_for_site(
+/// Elides kind-only optionals, freezes refined selectors, and queues exact static overlaps.
+fn plan_nonoverlapping_optional_viability_for_site(
     site_id: SiteId,
-    tail: &[SiteId],
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
-    first_sequences: &FirstSequenceAnalysis<'_>,
     follow_recipes: &[FollowRecipe],
     decisions: &mut [Option<OptionalViabilityDecision>],
+    overlapping_sites: &mut Vec<(SiteId, KindSet)>,
 ) {
     let site = &grammar.sites[site_id.index()];
     let element_first = &semantic[site.target.index()].positions;
     let stop = &follow_recipes[site_id.index()];
-    let (trie, required_lookahead, frozen_language_count) =
-        if first_positions_overlap(element_first, stop.static_first(), grammar) {
-            #[cfg(test)]
-            OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS.set(
-                OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS
-                    .get()
-                    .saturating_add(1),
-            );
-            let resolution = first_sequences.compact_optional_viability(site_id, tail);
-            (
-                optional_viability_decision_from_compact(&resolution.root),
-                resolution.required_lookahead,
-                resolution.frozen_language_count,
-            )
-        } else {
-            let consuming = element_first
-                .iter()
-                .cloned()
-                .map(FirstSequence::from_position)
-                .collect::<Vec<_>>();
-            let mut skipping = stop
-                .static_first()
-                .iter()
-                .cloned()
-                .map(FirstSequence::from_position)
-                .collect::<Vec<_>>();
-            if stop.uses_caller() {
-                skipping.push(FirstSequence::caller_follow());
-            }
-            let frozen_language_count = 2;
-            let trie = freeze_optional_viability_decision(&consuming, &skipping, grammar);
-            let required_lookahead =
-                optional_viability_decision_lookahead(&trie).min(grammar.max_lookahead);
-            (trie, required_lookahead, frozen_language_count)
-        };
+    let static_overlap = first_positions_overlap(element_first, stop.static_first(), grammar);
+    if static_overlap {
+        #[cfg(test)]
+        OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS.set(
+            OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS
+                .get()
+                .saturating_add(1),
+        );
+        let mut selector = KindSet::empty(grammar.kind_count);
+        for position in element_first {
+            selector.union_assign(&position.kinds);
+        }
+        overlapping_sites.push((site_id, selector));
+        return;
+    }
+    let element_is_kind_only = element_first.iter().all(|position| {
+        matches!(
+            TextPartition::from_predicate(
+                position
+                    .text_predicate
+                    .map(|predicate| &grammar.text_predicates[predicate.index()]),
+            ),
+            TextPartition::Any,
+        )
+    });
+    if element_is_kind_only {
+        return;
+    }
+
+    let consuming = element_first
+        .iter()
+        .cloned()
+        .map(FirstSequence::from_position)
+        .collect::<Vec<_>>();
+    let mut skipping = stop
+        .static_first()
+        .iter()
+        .cloned()
+        .map(FirstSequence::from_position)
+        .collect::<Vec<_>>();
+    if stop.uses_caller() {
+        skipping.push(FirstSequence::caller_follow());
+    }
+    let trie = freeze_optional_viability_decision(&consuming, &skipping, grammar);
+    let required_lookahead =
+        optional_viability_decision_lookahead(&trie).min(grammar.max_lookahead);
     decisions[site_id.index()] = Some(OptionalViabilityDecision {
         trie,
         required_lookahead,
-        frozen_language_count,
     });
 }
 
@@ -2920,9 +2926,9 @@ const fn is_led(position: PrattPosition) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        AtomDescription, AtomExpression, ContainerShape, Declaration, KindDescription, Location,
-        ParseSite, PrattVariant, RepeatSeparator, RepetitionCardinality, SourceId, TextEquivalence,
-        TypeDescription,
+        AtomDescription, AtomExpression, AtomId, ContainerShape, Declaration, KindDescription,
+        Location, ParseSite, PrattVariant, RepeatSeparator, RepetitionCardinality, SourceId,
+        TextEquivalence, TypeDescription,
     };
 
     fn declaration(grammar: &mut GrammarDescription, name: &str, byte: u32) -> DeclId {
@@ -3086,6 +3092,67 @@ mod tests {
         grammar
     }
 
+    fn same_kind_disjoint_text_optional_grammar() -> GrammarDescription {
+        let mut grammar = GrammarDescription::new(
+            "same-kind-disjoint-text-optional",
+            1,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let word_declaration = declaration(&mut grammar, "WORD", 0);
+        let word = grammar.push_kind(KindDescription::new("WORD", word_declaration));
+        let atom_declaration = declaration(&mut grammar, "WordAtom", 2);
+        let atom = grammar.push_atom(AtomDescription::new(
+            "WordAtom",
+            atom_declaration,
+            AtomExpression::Kind(word),
+        ));
+        let predicated_token =
+            |grammar: &mut GrammarDescription, name: &str, spelling: &str, byte: u32| {
+                let declaration = declaration(grammar, name, byte);
+                let text_predicate =
+                    grammar.push_text_predicate(TextPredicate::Exact(spelling.to_owned()));
+                grammar.push_type(TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Token {
+                        atom,
+                        text_predicate: Some(text_predicate),
+                    },
+                ))
+            };
+        let optional_token = predicated_token(&mut grammar, "OPEN", "OPEN", 4);
+        let required_token = predicated_token(&mut grammar, "CLOSE", "CLOSE", 6);
+        let owner = grammar.next_type_id();
+        let owner_declaration = declaration(&mut grammar, "Container", 8);
+        let optional_declaration = declaration(&mut grammar, "Container::optional", 10);
+        let optional = grammar.push_site(ParseSite::new(
+            owner,
+            optional_token,
+            optional_declaration,
+            ContainerShape::optional(ContainerShape::Direct),
+        ));
+        let required_declaration = declaration(&mut grammar, "Container::required", 12);
+        let required = grammar.push_site(ParseSite::new(
+            owner,
+            required_token,
+            required_declaration,
+            ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Container",
+                owner_declaration,
+                TypeShape::Sequence {
+                    sites: vec![optional, required],
+                },
+            )),
+            owner,
+        );
+        grammar.entry_types = vec![owner];
+        grammar
+    }
+
     fn static_and_caller_optional_grammar() -> GrammarDescription {
         let mut grammar = GrammarDescription::new(
             "static-and-caller-optional",
@@ -3095,6 +3162,12 @@ mod tests {
         );
         let first_token = token(&mut grammar, "FIRST", 0);
         let second_token = token(&mut grammar, "SECOND", 2);
+        let first_predicate = grammar.push_text_predicate(TextPredicate::Exact("FIRST".to_owned()));
+        let TypeShape::Token { text_predicate, .. } = &mut grammar.types[first_token.index()].shape
+        else {
+            unreachable!("the fixture first token has token shape");
+        };
+        *text_predicate = Some(first_predicate);
         let owner = grammar.next_type_id();
         let owner_declaration = declaration(&mut grammar, "Container", 4);
         let first_declaration = declaration(&mut grammar, "Container::first", 5);
@@ -3125,7 +3198,7 @@ mod tests {
         grammar
     }
 
-    fn branching_optional_overlap_grammar() -> GrammarDescription {
+    fn branching_optional_overlap_grammar_with_owners(owner_count: usize) -> GrammarDescription {
         let mut grammar =
             GrammarDescription::new("branching-optional", 5, 19, TextEquivalence::Sensitive);
         let a = token(&mut grammar, "A", 0);
@@ -3287,6 +3360,153 @@ mod tests {
         let consuming = path(&mut grammar, "Consuming", b, &mut next_byte);
         let skipping = path(&mut grammar, "Skipping", c, &mut next_byte);
 
+        for index in 0..owner_count {
+            let owner = grammar.next_type_id();
+            let owner_name = format!("Owner{index}");
+            let owner_declaration = declaration(&mut grammar, &owner_name, next_byte);
+            next_byte += 1;
+            let optional_declaration =
+                declaration(&mut grammar, &format!("{owner_name}::optional"), next_byte);
+            next_byte += 1;
+            let optional = grammar.push_site(ParseSite::new(
+                owner,
+                consuming,
+                optional_declaration,
+                ContainerShape::optional(ContainerShape::Direct),
+            ));
+            let required_declaration =
+                declaration(&mut grammar, &format!("{owner_name}::required"), next_byte);
+            next_byte += 1;
+            let required = grammar.push_site(ParseSite::new(
+                owner,
+                skipping,
+                required_declaration,
+                ContainerShape::Direct,
+            ));
+            assert_eq!(
+                grammar.push_type(TypeDescription::new(
+                    owner_name,
+                    owner_declaration,
+                    TypeShape::Sequence {
+                        sites: vec![optional, required],
+                    },
+                )),
+                owner,
+            );
+            grammar.entry_types.push(owner);
+        }
+        grammar
+    }
+
+    fn branching_optional_overlap_grammar() -> GrammarDescription {
+        branching_optional_overlap_grammar_with_owners(1)
+    }
+
+    fn wide_disjoint_tail_optional_overlap_grammar(width: usize) -> GrammarDescription {
+        let mut grammar = GrammarDescription::new(
+            "wide-disjoint-tail-optional",
+            width + 3,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0u32;
+        let mut next_token = |grammar: &mut GrammarDescription, name: &str| {
+            let token = token(grammar, name, next_byte);
+            next_byte += 2;
+            token
+        };
+        let a = next_token(&mut grammar, "A");
+        let b = next_token(&mut grammar, "B");
+        let c = next_token(&mut grammar, "C");
+        let disjoint = (0..width)
+            .map(|index| next_token(&mut grammar, &format!("D{index}")))
+            .collect::<Vec<_>>();
+
+        let consuming = grammar.next_type_id();
+        let consuming_declaration = declaration(&mut grammar, "Consuming", next_byte);
+        next_byte += 1;
+        let consuming_a_declaration = declaration(&mut grammar, "Consuming::a", next_byte);
+        next_byte += 1;
+        let consuming_a = grammar.push_site(ParseSite::new(
+            consuming,
+            a,
+            consuming_a_declaration,
+            ContainerShape::Direct,
+        ));
+        let consuming_b_declaration = declaration(&mut grammar, "Consuming::b", next_byte);
+        next_byte += 1;
+        let consuming_b = grammar.push_site(ParseSite::new(
+            consuming,
+            b,
+            consuming_b_declaration,
+            ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Consuming",
+                consuming_declaration,
+                TypeShape::Sequence {
+                    sites: vec![consuming_a, consuming_b],
+                },
+            )),
+            consuming,
+        );
+
+        let skipping = grammar.next_type_id();
+        let skipping_declaration = declaration(&mut grammar, "Skipping", next_byte);
+        next_byte += 1;
+        let shared_declaration = declaration(&mut grammar, "Skipping::Shared", next_byte);
+        next_byte += 1;
+        let shared_a_declaration = declaration(&mut grammar, "Skipping::Shared::a", next_byte);
+        next_byte += 1;
+        let shared_a = grammar.push_site(ParseSite::new(
+            skipping,
+            a,
+            shared_a_declaration,
+            ContainerShape::Direct,
+        ));
+        let shared_c_declaration = declaration(&mut grammar, "Skipping::Shared::c", next_byte);
+        next_byte += 1;
+        let shared_c = grammar.push_site(ParseSite::new(
+            skipping,
+            c,
+            shared_c_declaration,
+            ContainerShape::Direct,
+        ));
+        let mut alternatives = vec![crate::Alternative {
+            declaration: shared_declaration,
+            sites: vec![shared_a, shared_c],
+        }];
+        for (index, token) in disjoint.into_iter().enumerate() {
+            let alternative_declaration =
+                declaration(&mut grammar, &format!("Skipping::D{index}"), next_byte);
+            next_byte += 1;
+            let site_declaration = declaration(
+                &mut grammar,
+                &format!("Skipping::D{index}::token"),
+                next_byte,
+            );
+            next_byte += 1;
+            let site = grammar.push_site(ParseSite::new(
+                skipping,
+                token,
+                site_declaration,
+                ContainerShape::Direct,
+            ));
+            alternatives.push(crate::Alternative {
+                declaration: alternative_declaration,
+                sites: vec![site],
+            });
+        }
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Skipping",
+                skipping_declaration,
+                TypeShape::Enum { alternatives },
+            )),
+            skipping,
+        );
+
         let owner = grammar.next_type_id();
         let owner_declaration = declaration(&mut grammar, "Owner", next_byte);
         next_byte += 1;
@@ -3319,8 +3539,262 @@ mod tests {
         grammar
     }
 
+    fn mixed_kind_optional_overlap_grammar() -> (GrammarDescription, SiteId, KindId, KindId) {
+        let mut grammar =
+            GrammarDescription::new("mixed-kind-optional", 4, 2, TextEquivalence::Sensitive);
+        let a = token(&mut grammar, "A", 0);
+        let b = token(&mut grammar, "B", 2);
+        let c = token(&mut grammar, "C", 4);
+        let _tail_only = token(&mut grammar, "TAIL_ONLY", 6);
+        let element_kind = KindId::new(0);
+        let tail_only_kind = KindId::new(3);
+        let mixed_declaration = declaration(&mut grammar, "MIXED", 8);
+        let mixed_atom = grammar.push_atom(AtomDescription::new(
+            "MIXED",
+            mixed_declaration,
+            AtomExpression::Category(vec![AtomId::new(0), AtomId::new(3)]),
+        ));
+        let mixed = grammar.push_type(TypeDescription::new(
+            "MIXED",
+            mixed_declaration,
+            TypeShape::Token {
+                atom: mixed_atom,
+                text_predicate: None,
+            },
+        ));
+
+        let path = |grammar: &mut GrammarDescription,
+                    name: &str,
+                    first: TypeId,
+                    second: TypeId,
+                    byte: u32| {
+            let path = grammar.next_type_id();
+            let path_declaration = declaration(grammar, name, byte);
+            let first_declaration = declaration(grammar, &format!("{name}::first"), byte + 1);
+            let first = grammar.push_site(ParseSite::new(
+                path,
+                first,
+                first_declaration,
+                ContainerShape::Direct,
+            ));
+            let second_declaration = declaration(grammar, &format!("{name}::second"), byte + 2);
+            let second = grammar.push_site(ParseSite::new(
+                path,
+                second,
+                second_declaration,
+                ContainerShape::Direct,
+            ));
+            assert_eq!(
+                grammar.push_type(TypeDescription::new(
+                    name,
+                    path_declaration,
+                    TypeShape::Sequence {
+                        sites: vec![first, second],
+                    },
+                )),
+                path,
+            );
+            path
+        };
+        let consuming = path(&mut grammar, "Consuming", a, b, 10);
+        let skipping = path(&mut grammar, "Skipping", mixed, c, 14);
+        let owner = grammar.next_type_id();
+        let owner_declaration = declaration(&mut grammar, "Owner", 18);
+        let optional_declaration = declaration(&mut grammar, "Owner::optional", 19);
+        let optional = grammar.push_site(ParseSite::new(
+            owner,
+            consuming,
+            optional_declaration,
+            ContainerShape::optional(ContainerShape::Direct),
+        ));
+        let required_declaration = declaration(&mut grammar, "Owner::required", 20);
+        let required = grammar.push_site(ParseSite::new(
+            owner,
+            skipping,
+            required_declaration,
+            ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Owner",
+                owner_declaration,
+                TypeShape::Sequence {
+                    sites: vec![optional, required],
+                },
+            )),
+            owner,
+        );
+        grammar.entry_types = vec![owner];
+        (grammar, optional, element_kind, tail_only_kind)
+    }
+
+    fn nullable_tail_and_caller_optional_grammar() -> (GrammarDescription, SiteId) {
+        let mut grammar =
+            GrammarDescription::new("nullable-tail-caller", 5, 2, TextEquivalence::Sensitive);
+        let a = token(&mut grammar, "A", 0);
+        let b = token(&mut grammar, "B", 2);
+        let c = token(&mut grammar, "C", 4);
+        let d = token(&mut grammar, "D", 6);
+        let x = token(&mut grammar, "X", 8);
+        let path = |grammar: &mut GrammarDescription,
+                    name: &str,
+                    first: TypeId,
+                    second: TypeId,
+                    byte: u32| {
+            let path = grammar.next_type_id();
+            let path_declaration = declaration(grammar, name, byte);
+            let first_declaration = declaration(grammar, &format!("{name}::a"), byte + 1);
+            let first = grammar.push_site(ParseSite::new(
+                path,
+                first,
+                first_declaration,
+                ContainerShape::Direct,
+            ));
+            let second_declaration = declaration(grammar, &format!("{name}::tail"), byte + 2);
+            let second = grammar.push_site(ParseSite::new(
+                path,
+                second,
+                second_declaration,
+                ContainerShape::Direct,
+            ));
+            assert_eq!(
+                grammar.push_type(TypeDescription::new(
+                    name,
+                    path_declaration,
+                    TypeShape::Sequence {
+                        sites: vec![first, second],
+                    },
+                )),
+                path,
+            );
+            path
+        };
+        let consuming_a = path(&mut grammar, "ConsumingA", a, b, 10);
+        let consuming_x = path(&mut grammar, "ConsumingX", x, b, 14);
+        let consuming = grammar.next_type_id();
+        let consuming_declaration = declaration(&mut grammar, "Consuming", 18);
+        let consuming_a_declaration = declaration(&mut grammar, "Consuming::A", 19);
+        let consuming_a_site = grammar.push_site(ParseSite::new(
+            consuming,
+            consuming_a,
+            consuming_a_declaration,
+            ContainerShape::Direct,
+        ));
+        let consuming_x_declaration = declaration(&mut grammar, "Consuming::X", 20);
+        let consuming_x_site = grammar.push_site(ParseSite::new(
+            consuming,
+            consuming_x,
+            consuming_x_declaration,
+            ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Consuming",
+                consuming_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: consuming_a_declaration,
+                            sites: vec![consuming_a_site],
+                        },
+                        crate::Alternative {
+                            declaration: consuming_x_declaration,
+                            sites: vec![consuming_x_site],
+                        },
+                    ],
+                },
+            )),
+            consuming,
+        );
+        let skipping = path(&mut grammar, "Skipping", a, c, 22);
+        let caller_tail = path(&mut grammar, "CallerTail", x, d, 26);
+
+        let inner = grammar.next_type_id();
+        let inner_declaration = declaration(&mut grammar, "Inner", 30);
+        let first_declaration = declaration(&mut grammar, "Inner::first", 31);
+        let first = grammar.push_site(ParseSite::new(
+            inner,
+            consuming,
+            first_declaration,
+            ContainerShape::optional(ContainerShape::Direct),
+        ));
+        let second_declaration = declaration(&mut grammar, "Inner::second", 32);
+        let second = grammar.push_site(ParseSite::new(
+            inner,
+            skipping,
+            second_declaration,
+            ContainerShape::optional(ContainerShape::Direct),
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Inner",
+                inner_declaration,
+                TypeShape::Sequence {
+                    sites: vec![first, second],
+                },
+            )),
+            inner,
+        );
+
+        let prefixed = grammar.next_type_id();
+        let prefixed_declaration = declaration(&mut grammar, "Prefixed", 34);
+        let prefix_declaration = declaration(&mut grammar, "Prefixed::prefix", 35);
+        let prefix = grammar.push_site(ParseSite::new(
+            prefixed,
+            d,
+            prefix_declaration,
+            ContainerShape::Direct,
+        ));
+        let inner_site_declaration = declaration(&mut grammar, "Prefixed::inner", 36);
+        let inner_site = grammar.push_site(ParseSite::new(
+            prefixed,
+            inner,
+            inner_site_declaration,
+            ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Prefixed",
+                prefixed_declaration,
+                TypeShape::Sequence {
+                    sites: vec![prefix, inner_site],
+                },
+            )),
+            prefixed,
+        );
+
+        let outer = grammar.next_type_id();
+        let outer_declaration = declaration(&mut grammar, "Outer", 38);
+        let prefixed_site_declaration = declaration(&mut grammar, "Outer::prefixed", 39);
+        let prefixed_site = grammar.push_site(ParseSite::new(
+            outer,
+            prefixed,
+            prefixed_site_declaration,
+            ContainerShape::Direct,
+        ));
+        let tail_declaration = declaration(&mut grammar, "Outer::tail", 40);
+        let tail = grammar.push_site(ParseSite::new(
+            outer,
+            caller_tail,
+            tail_declaration,
+            ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Outer",
+                outer_declaration,
+                TypeShape::Sequence {
+                    sites: vec![prefixed_site, tail],
+                },
+            )),
+            outer,
+        );
+        grammar.entry_types = vec![outer];
+        (grammar, first)
+    }
+
     #[test]
-    fn disjoint_optional_paths_keep_a_single_position_viability_decision() {
+    fn disjoint_optional_paths_use_the_existing_selector_without_a_viability_decision() {
         let grammar = disjoint_optional_grammar();
         OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS.set(0);
         let report = crate::analyze(&grammar);
@@ -3334,26 +3808,39 @@ mod tests {
             .iter()
             .find(|machine| machine.operation() == ContainerOperation::Optional)
             .expect("the fixture contains one optional machine");
-        let decision = machine
-            .optional_viability_decision()
-            .expect("optional machines freeze consume-vs-skip viability");
-        assert_eq!(decision.required_lookahead(), 1);
-        assert_eq!(decision.trie().edges().len(), 2);
-        let action_for = |kind| {
-            decision
-                .trie()
-                .edges()
-                .iter()
-                .find(|edge| edge.position().kinds().contains(KindId::new(kind)))
-                .and_then(|edge| edge.next().terminals().first().copied())
-                .map(OptionalViabilityDecisionTerminal::action)
-        };
-        assert_eq!(action_for(0), Some(OptionalAction::Consume));
-        assert_eq!(action_for(1), Some(OptionalAction::Skip));
+        assert!(
+            machine.optional_viability_decision().is_none(),
+            "disjoint FIRST and FOLLOW use the existing one-position selector",
+        );
         assert_eq!(
             OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS.get(),
             0,
             "disjoint optionals must not materialize max-depth FIRST languages",
+        );
+    }
+
+    #[test]
+    fn same_kind_disjoint_text_paths_retain_an_exact_viability_decision() {
+        let grammar = same_kind_disjoint_text_optional_grammar();
+        OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS.set(0);
+        let report = crate::analyze(&grammar);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let output = report
+            .output
+            .expect("the same-kind disjoint-text grammar is valid");
+        let decision = output
+            .decisions()
+            .container_machines()
+            .iter()
+            .find_map(ContainerMachine::optional_viability_decision)
+            .expect("the kind-only runtime selector needs an exact-text decision");
+
+        assert_eq!(decision.required_lookahead(), 1);
+        assert_eq!(decision.trie().edges().len(), 2);
+        assert_eq!(
+            OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS.get(),
+            0,
+            "disjoint text cells do not require symbolic suffix traversal",
         );
     }
 
@@ -3401,6 +3888,7 @@ mod tests {
     fn overlapping_optional_paths_cut_off_before_exponential_suffixes() {
         let grammar = branching_optional_overlap_grammar();
         crate::analysis::reset_first_sequence_peak_rows_for_test();
+        crate::analysis::reset_optional_partition_candidates_for_test();
         let output = crate::analysis::analyze_for_generation(&grammar)
             .output
             .expect("the depth-two optional overlap is decidable");
@@ -3412,14 +3900,173 @@ mod tests {
             .expect("the fixture contains one optional decision");
 
         assert_eq!(decision.required_lookahead(), 2);
+        let [shared_prefix] = decision.trie().edges() else {
+            panic!("the overlap fixture has one shared first-position cell");
+        };
+        let [override_edge] = shared_prefix.next().edges() else {
+            panic!("the unique consume branch must delegate to the legacy selector");
+        };
         assert_eq!(
-            decision.frozen_language_count(),
-            2,
-            "the frozen decision must retain two symbolic languages, not 2^8 sequence rows",
+            override_edge
+                .next()
+                .terminals()
+                .first()
+                .expect("the retained branch is an explicit skip override")
+                .action(),
+            OptionalAction::Skip,
+        );
+        let (partition_candidates_before, partition_candidates_after) =
+            crate::analysis::optional_partition_candidates_for_test();
+        assert!(
+            partition_candidates_after < partition_candidates_before,
+            "legacy-equivalent branches must be discarded before exact partitioning: \
+             before={partition_candidates_before}, after={partition_candidates_after}",
         );
         assert!(
             crate::analysis::first_sequence_peak_rows_for_test() <= 8,
             "optional viability must not eagerly enumerate the correlated suffix language",
+        );
+    }
+
+    #[test]
+    fn optional_override_partition_discards_wide_disjoint_tail_frontiers() {
+        const DISJOINT_WIDTH: usize = 32;
+        let grammar = wide_disjoint_tail_optional_overlap_grammar(DISJOINT_WIDTH);
+        crate::analysis::reset_optional_partition_candidates_for_test();
+        let output = crate::analysis::analyze_for_generation(&grammar)
+            .output
+            .expect("the depth-two overlap beside a wide disjoint tail is decidable");
+        let decision = output
+            .decisions()
+            .container_machines()
+            .iter()
+            .find_map(ContainerMachine::optional_viability_decision)
+            .expect("the exact A-prefix overlap retains one sparse override");
+        let (before, after) = crate::analysis::optional_partition_candidates_for_test();
+
+        assert!(
+            before.saturating_sub(after) >= DISJOINT_WIDTH,
+            "wide disjoint FIRST branches must be removed before exact partitioning: \
+             before={before}, after={after}",
+        );
+        assert_eq!(decision.required_lookahead(), 2);
+        assert_eq!(decision.trie().edges().len(), 1);
+        assert_eq!(decision.trie().edges()[0].next().edges().len(), 1);
+    }
+
+    #[test]
+    fn optional_override_partition_splits_mixed_root_kind_sets_by_selector() {
+        let (grammar, optional, element_kind, tail_only_kind) =
+            mixed_kind_optional_overlap_grammar();
+        let report = crate::analyze(&grammar);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let output = report.output.expect("the mixed-kind overlap is decidable");
+        let decision = output
+            .decisions()
+            .container_machines()
+            .iter()
+            .find(|machine| machine.site() == optional)
+            .and_then(ContainerMachine::optional_viability_decision)
+            .expect("the shared element kind retains one sparse override");
+        let [root] = decision.trie().edges() else {
+            panic!("only the selector-accepted root partition remains");
+        };
+
+        assert!(root.position().kinds().contains(element_kind));
+        assert!(
+            !root.position().kinds().contains(tail_only_kind),
+            "the selector-rejected half of a mixed tail position delegates to fallback Skip",
+        );
+    }
+
+    #[test]
+    fn optional_override_edges_shield_caller_terminals_before_fallback() {
+        let (grammar, optional) = nullable_tail_and_caller_optional_grammar();
+        let report = crate::analyze(&grammar);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == crate::DiagnosticCode::NullableFollowOverlap),
+            "same-cell caller provenance must retain RCA0300",
+        );
+        let output = report.output.unwrap_or_else(|| {
+            panic!(
+                "caller overlap remains a warning rather than blocking generation: {:?}",
+                report.diagnostics,
+            )
+        });
+        let decision = output
+            .decisions()
+            .container_machines()
+            .iter()
+            .find(|machine| machine.site() == optional)
+            .and_then(ContainerMachine::optional_viability_decision)
+            .expect("the static A-prefix overlap retains exact viability");
+        assert_eq!(
+            decision.trie().terminals(),
+            [OptionalViabilityDecisionTerminal {
+                action: OptionalAction::Skip,
+                on_caller_follow: true,
+            }],
+        );
+        let shared = decision
+            .trie()
+            .edges()
+            .iter()
+            .find(|edge| edge.position().kinds().contains(KindId::new(0)))
+            .expect("the optional paths share one A prefix");
+        let consume_delegate = decision
+            .trie()
+            .edges()
+            .iter()
+            .find(|edge| edge.position().kinds().contains(KindId::new(4)))
+            .expect("the root X branch shields the caller terminal");
+        assert!(consume_delegate.next().terminals().is_empty());
+        assert!(consume_delegate.next().edges().is_empty());
+        let skip_override = shared
+            .next()
+            .edges()
+            .iter()
+            .find(|edge| edge.position().kinds().contains(KindId::new(2)))
+            .expect("the C branch remains an explicit Skip override");
+        assert_eq!(
+            skip_override.next().terminals(),
+            [OptionalViabilityDecisionTerminal {
+                action: OptionalAction::Skip,
+                on_caller_follow: false,
+            }],
+        );
+    }
+
+    #[test]
+    fn equivalent_overlapping_optional_sites_share_one_symbolic_freeze() {
+        let grammar = branching_optional_overlap_grammar_with_owners(1);
+        crate::analysis::reset_compact_semantic_frontier_builds_for_test();
+        crate::analysis::analyze_for_generation(&grammar)
+            .output
+            .expect("the single-owner overlap is decidable");
+        let one_owner_builds = crate::analysis::compact_semantic_frontier_builds_for_test();
+
+        let grammar = branching_optional_overlap_grammar_with_owners(8);
+        crate::analysis::reset_compact_semantic_frontier_builds_for_test();
+        let output = crate::analysis::analyze_for_generation(&grammar)
+            .output
+            .expect("the equivalent multi-owner overlaps are decidable");
+        let eight_owner_builds = crate::analysis::compact_semantic_frontier_builds_for_test();
+
+        assert_eq!(
+            output
+                .decisions()
+                .container_machines()
+                .iter()
+                .filter_map(ContainerMachine::optional_viability_decision)
+                .count(),
+            8,
+        );
+        assert_eq!(
+            eight_owner_builds, one_owner_builds,
+            "equivalent optional roots must reuse the symbolic semantic frontier",
         );
     }
 

@@ -10,8 +10,15 @@ use super::*;
 mod tests {
     use super::super::test_support;
     use super::{
-        ExpectedSet, PlannedFollow, PlannedTextPredicate, TextEquivalence,
-        encode_dispatch_positions, pratt_operand_follow, render_position_dispatch,
+        ExpectedAtomIndex, ExpectedSet, OptionalViabilityDecisionTerminalParsePlan,
+        PlannedContainer, PlannedFollow, PlannedTextPredicate, TextEquivalence,
+        encode_dispatch_positions, planned_container, pratt_operand_follow,
+        render_position_dispatch,
+    };
+    use crate::{
+        AtomDescription, AtomExpression, ContainerShape, Declaration, GrammarDescription,
+        KindDescription, Location, OptionalAction, ParseSite, SourceId, TextPredicate,
+        TypeDescription, TypeShape,
     };
     macro_rules! focused_case {
         ($name:ident) => {
@@ -135,6 +142,120 @@ mod tests {
 
         assert_eq!(encoded.table, [0, 0, 0, 0, 1, 7, 0, 0]);
         assert!(encoded.spellings.is_empty());
+    }
+
+    #[test]
+    fn refined_optional_element_retains_exact_selection_before_caller_follow() {
+        let mut grammar =
+            GrammarDescription::new("refined-caller-optional", 1, 2, TextEquivalence::Sensitive);
+        let mut next_byte = 0;
+        let mut declaration = |grammar: &mut GrammarDescription, name: &str| {
+            let byte = next_byte;
+            next_byte += 1;
+            let location = grammar.push_location(Location::new(SourceId::new(0), byte..byte + 1));
+            grammar.push_declaration(Declaration::new(name, location))
+        };
+        let kind_declaration = declaration(&mut grammar, "WORD");
+        let word = grammar.push_kind(KindDescription::new("WORD", kind_declaration));
+        let atom_declaration = declaration(&mut grammar, "WordAtom");
+        let atom = grammar.push_atom(AtomDescription::new(
+            "WordAtom",
+            atom_declaration,
+            AtomExpression::Kind(word),
+        ));
+        let token = |grammar: &mut GrammarDescription,
+                     declaration: crate::DeclId,
+                     name: &str,
+                     spelling: &str| {
+            let predicate = grammar.push_text_predicate(TextPredicate::Exact(spelling.to_owned()));
+            grammar.push_type(TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: Some(predicate),
+                },
+            ))
+        };
+        let open_declaration = declaration(&mut grammar, "OPEN");
+        let open = token(&mut grammar, open_declaration, "OPEN", "OPEN");
+        let close_declaration = declaration(&mut grammar, "CLOSE");
+        let close = token(&mut grammar, close_declaration, "CLOSE", "CLOSE");
+
+        let inner = grammar.next_type_id();
+        let inner_declaration = declaration(&mut grammar, "Inner");
+        let optional_declaration = declaration(&mut grammar, "Inner::optional");
+        let optional = grammar.push_site(ParseSite::new(
+            inner,
+            open,
+            optional_declaration,
+            ContainerShape::optional(ContainerShape::Direct),
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Inner",
+                inner_declaration,
+                TypeShape::Sequence {
+                    sites: vec![optional],
+                },
+            )),
+            inner,
+        );
+        let root = grammar.next_type_id();
+        let root_declaration = declaration(&mut grammar, "Root");
+        let inner_site_declaration = declaration(&mut grammar, "Root::inner");
+        let inner_site = grammar.push_site(ParseSite::new(
+            root,
+            inner,
+            inner_site_declaration,
+            ContainerShape::Direct,
+        ));
+        let close_site_declaration = declaration(&mut grammar, "Root::close");
+        let close_site = grammar.push_site(ParseSite::new(
+            root,
+            close,
+            close_site_declaration,
+            ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Root",
+                root_declaration,
+                TypeShape::Sequence {
+                    sites: vec![inner_site, close_site],
+                },
+            )),
+            root,
+        );
+        grammar.entry_types = vec![root];
+
+        let report = crate::analyze(&grammar);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let output = report.output.expect("the refined caller grammar is valid");
+        let machine = &output.decisions().container_machines()[optional.index()];
+        assert!(matches!(machine.stop(), crate::FollowRecipe::Caller));
+        let atoms = ExpectedAtomIndex::from_grammar(&grammar).expect("valid direct atom index");
+        let planned = planned_container(machine, output.decisions(), &atoms, grammar.kind_count)
+            .expect("the refined optional joins to generation");
+        let PlannedContainer::Optional {
+            decision: Some(decision),
+            ..
+        } = planned
+        else {
+            panic!("refined optional selection must not fall back to the kind-only selector");
+        };
+        let root = &decision.states[decision.root.index()];
+        assert!(
+            root.terminals
+                .contains(&OptionalViabilityDecisionTerminalParsePlan {
+                    action: OptionalAction::Skip,
+                    on_caller_follow: true,
+                },)
+        );
+        assert_eq!(
+            root.edges[0].position.text_predicate,
+            Some(PlannedTextPredicate::Exact("OPEN".to_owned())),
+        );
     }
 }
 
@@ -4317,13 +4438,12 @@ pub(super) fn planned_container(
         },
         ContainerOperation::Optional => PlannedContainer::Optional {
             selector: element_selector,
-            decision: Some(Box::new(plan_optional_viability_decision(
-                machine.optional_viability_decision().ok_or_else(|| {
-                    "an optional container lacks its frozen viability decision".to_owned()
-                })?,
-                atom_index,
-                kind_count,
-            )?)),
+            decision: machine
+                .optional_viability_decision()
+                .map(|decision| {
+                    plan_optional_viability_decision(decision, atom_index, kind_count).map(Box::new)
+                })
+                .transpose()?,
             child_follow: stop,
         },
         operation @ (ContainerOperation::ZeroOrMore
