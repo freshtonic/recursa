@@ -18,10 +18,10 @@ use std::sync::Arc;
 
 use crate::analysis::{FirstFacts, FirstSequenceAnalysis};
 use crate::ir::RepeatSeparator;
-use crate::text_partition::{TextPartition, overlay_by_kind_residual};
+use crate::text_partition::{TextPartition, overlay_by_kind_residual, partition_by_kind_residual};
 use crate::{
     DeclId, FirstPosition, FirstSequence, GrammarDescription, KindId, KindSet, PrattPosition,
-    SiteId, TextPredicate, TypeId, TypeShape,
+    SiteId, TextPredicate, TextPredicateId, TypeId, TypeShape,
 };
 
 #[cfg(test)]
