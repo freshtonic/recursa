@@ -3331,8 +3331,6 @@ thread_local! {
     static FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS: Cell<usize> = const { Cell::new(0) };
     /// Counts raw decision-state projections into recursively factored tail components.
     static FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS: Cell<usize> = const { Cell::new(0) };
-    /// Counts compact semantic frontiers built instead of reused across decision sites.
-    static COMPACT_SEMANTIC_FRONTIER_BUILDS: Cell<usize> = const { Cell::new(0) };
     /// Counts optional labelled transitions before override-region filtering.
     static OPTIONAL_PARTITION_CANDIDATES_BEFORE: Cell<usize> = const { Cell::new(0) };
     /// Counts optional labelled transitions retained for exact partitioning.
@@ -3366,15 +3364,15 @@ pub(crate) fn first_sequence_peak_rows_for_test() -> usize {
 }
 
 #[cfg(test)]
-/// Resets compact semantic-frontier cache misses on this test thread.
-pub(crate) fn reset_compact_semantic_frontier_builds_for_test() {
-    COMPACT_SEMANTIC_FRONTIER_BUILDS.set(0);
+/// Resets canonical decision-frontier computations on this test thread.
+pub(crate) fn reset_decision_frontier_computations_for_test() {
+    FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.set(0);
 }
 
 #[cfg(test)]
-/// Returns compact semantic-frontier cache misses on this test thread.
-pub(crate) fn compact_semantic_frontier_builds_for_test() -> usize {
-    COMPACT_SEMANTIC_FRONTIER_BUILDS.get()
+/// Returns canonical decision-frontier computations on this test thread.
+pub(crate) fn decision_frontier_computations_for_test() -> usize {
+    FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.get()
 }
 
 #[cfg(test)]
@@ -8404,10 +8402,6 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                 .get()
                 .saturating_add(1),
         );
-        #[cfg(test)]
-        COMPACT_SEMANTIC_FRONTIER_BUILDS
-            .set(COMPACT_SEMANTIC_FRONTIER_BUILDS.get().saturating_add(1));
-
         let start = HashedDecisionState::new(state);
         let start_depth = start.state.0.len();
         let mut best_minimum_depth = HashMap::from([((start.clone(), crossed_pratt), start_depth)]);

@@ -461,7 +461,11 @@ impl OptionalViabilityDecisionEdge {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-/// One state in a frozen optional consume-vs-skip viability trie.
+/// One sparse state in a frozen optional consume-vs-skip viability trie.
+///
+/// Retained terminals and edges override or extend the root kind selector. An absent action
+/// delegates to that selector rather than rejecting the token, so disjoint paths need not be
+/// repeated in every state.
 pub struct OptionalViabilityDecisionNode {
     /// Ordered unconditional and caller-FOLLOW actions available at this prefix.
     terminals: Arc<[OptionalViabilityDecisionTerminal]>,
@@ -486,8 +490,9 @@ impl OptionalViabilityDecisionNode {
 ///
 /// The consuming language expands one occurrence followed by the owning sequence tail. The
 /// skipping language starts at that tail. A terminal may depend on caller FOLLOW when the tail
-/// can end, and unresolved invalid input deliberately yields no action so the established parser
-/// path retains its exact failure diagnostic.
+/// can end. The trie stores only paths that differ from, or must defer beyond, the root kind
+/// selector; a missing action delegates to that selector. Unresolved invalid input consequently
+/// preserves the established parser-path failure diagnostic.
 pub struct OptionalViabilityDecision {
     /// Root of the immutable consume-vs-skip trie.
     trie: OptionalViabilityDecisionNode,
@@ -522,7 +527,10 @@ pub struct ContainerMachine {
     separator_first: Vec<FirstPosition>,
     /// Supplies the stop consumed when generation replays this decision.
     stop: FollowRecipe,
-    /// Supplies exact consume-vs-skip viability for an optional site.
+    /// Supplies sparse consume-vs-skip overrides when the legacy selector is insufficient.
+    ///
+    /// `None` is valid only when exact static FOLLOW is disjoint from an unrefined element FIRST,
+    /// so the existing kind selector completely determines consume versus skip.
     optional_viability_decision: Option<OptionalViabilityDecision>,
     /// Supplies the transitions consumed when generation replays this decision.
     transitions: Vec<ContainerTransition>,
@@ -567,7 +575,10 @@ impl ContainerMachine {
         &self.stop
     }
 
-    /// Returns exact consume-vs-skip viability when this machine is optional.
+    /// Returns sparse consume-vs-skip overrides when this optional cannot use its kind selector.
+    ///
+    /// `None` means analysis proved the element selector complete for this site; non-optional
+    /// machines also have no optional viability decision.
     pub const fn optional_viability_decision(&self) -> Option<&OptionalViabilityDecision> {
         self.optional_viability_decision.as_ref()
     }
@@ -844,7 +855,12 @@ impl DecisionProducts {
                 (_, Some(_)) => {
                     return Err(DecisionInvariant::InvalidOptionalViabilityDecision);
                 }
-                (ContainerOperation::Optional, None) | (_, None) => {}
+                (ContainerOperation::Optional, None)
+                    if optional_legacy_selector_is_complete(machine, grammar) => {}
+                (ContainerOperation::Optional, None) => {
+                    return Err(DecisionInvariant::InvalidOptionalViabilityDecision);
+                }
+                (_, None) => {}
             }
         }
         let mut referenced_sites = Vec::new();
@@ -1234,7 +1250,10 @@ pub(crate) fn plan_decisions(
     })
 }
 
-/// Elides kind-only optionals, freezes refined selectors, and queues exact static overlaps.
+/// Elides selector-complete optionals, freezes refined selectors, and queues exact static overlaps.
+///
+/// Elision is valid only for unrefined element FIRST positions disjoint from exact static FOLLOW.
+/// Generated parsing then uses the existing root kind selector for both consume and skip.
 fn plan_nonoverlapping_optional_viability_for_site(
     site_id: SiteId,
     grammar: &GrammarDescription,
@@ -1347,6 +1366,24 @@ fn first_positions_overlap(
                 )
         })
     })
+}
+
+/// Proves that a missing viability trie can delegate completely to the legacy kind selector.
+fn optional_legacy_selector_is_complete(
+    machine: &ContainerMachine,
+    grammar: &GrammarDescription,
+) -> bool {
+    !first_positions_overlap(&machine.element_first, machine.stop.static_first(), grammar)
+        && machine.element_first.iter().all(|position| {
+            matches!(
+                TextPartition::from_predicate(
+                    position
+                        .text_predicate
+                        .map(|predicate| &grammar.text_predicates[predicate.index()]),
+                ),
+                TextPartition::Any,
+            )
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -3820,6 +3857,66 @@ mod tests {
     }
 
     #[test]
+    fn publication_accepts_only_optional_omissions_covered_by_the_legacy_selector() {
+        let grammar = branching_optional_overlap_grammar();
+        let output = crate::analysis::analyze_for_generation(&grammar)
+            .output
+            .expect("the A B versus A C optional is decidable");
+        let mut missing_required = ConstructedDecisionProducts(output.decisions().clone());
+        let optional = missing_required
+            .0
+            .container_machines
+            .iter_mut()
+            .find(|machine| machine.operation == ContainerOperation::Optional)
+            .expect("the fixture contains one optional machine");
+        assert!(optional.optional_viability_decision.take().is_some());
+        assert_eq!(
+            missing_required.validate_for_publication(&grammar),
+            Err(DecisionInvariant::InvalidOptionalViabilityDecision),
+            "the kind-only selector cannot distinguish A B from A C",
+        );
+
+        let grammar = same_kind_disjoint_text_optional_grammar();
+        let output = crate::analysis::analyze_for_generation(&grammar)
+            .output
+            .expect("the exact-text optional is decidable");
+        let mut missing_refined = ConstructedDecisionProducts(output.decisions().clone());
+        let optional = missing_refined
+            .0
+            .container_machines
+            .iter_mut()
+            .find(|machine| machine.operation == ContainerOperation::Optional)
+            .expect("the fixture contains one optional machine");
+        assert!(optional.optional_viability_decision.take().is_some());
+        assert_eq!(
+            missing_refined.validate_for_publication(&grammar),
+            Err(DecisionInvariant::InvalidOptionalViabilityDecision),
+            "the kind-only selector cannot preserve an exact-text partition",
+        );
+
+        let grammar = disjoint_optional_grammar();
+        let output = crate::analysis::analyze_for_generation(&grammar)
+            .output
+            .expect("the disjoint optional is valid");
+        assert!(
+            output
+                .decisions()
+                .container_machines()
+                .iter()
+                .find(|machine| machine.operation() == ContainerOperation::Optional)
+                .expect("the fixture contains one optional machine")
+                .optional_viability_decision()
+                .is_none(),
+        );
+        assert!(
+            ConstructedDecisionProducts(output.decisions().clone())
+                .validate_for_publication(&grammar)
+                .is_ok(),
+            "disjoint kind-only optionals are complete without a viability trie",
+        );
+    }
+
+    #[test]
     fn same_kind_disjoint_text_paths_retain_an_exact_viability_decision() {
         let grammar = same_kind_disjoint_text_optional_grammar();
         OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS.set(0);
@@ -4042,18 +4139,18 @@ mod tests {
     #[test]
     fn equivalent_overlapping_optional_sites_share_one_symbolic_freeze() {
         let grammar = branching_optional_overlap_grammar_with_owners(1);
-        crate::analysis::reset_compact_semantic_frontier_builds_for_test();
+        crate::analysis::reset_decision_frontier_computations_for_test();
         crate::analysis::analyze_for_generation(&grammar)
             .output
             .expect("the single-owner overlap is decidable");
-        let one_owner_builds = crate::analysis::compact_semantic_frontier_builds_for_test();
+        let one_owner_builds = crate::analysis::decision_frontier_computations_for_test();
 
         let grammar = branching_optional_overlap_grammar_with_owners(8);
-        crate::analysis::reset_compact_semantic_frontier_builds_for_test();
+        crate::analysis::reset_decision_frontier_computations_for_test();
         let output = crate::analysis::analyze_for_generation(&grammar)
             .output
             .expect("the equivalent multi-owner overlaps are decidable");
-        let eight_owner_builds = crate::analysis::compact_semantic_frontier_builds_for_test();
+        let eight_owner_builds = crate::analysis::decision_frontier_computations_for_test();
 
         assert_eq!(
             output
@@ -4063,6 +4160,10 @@ mod tests {
                 .filter_map(ContainerMachine::optional_viability_decision)
                 .count(),
             8,
+        );
+        assert!(
+            one_owner_builds > 0,
+            "the control must observe real decision-frontier computation",
         );
         assert_eq!(
             eight_owner_builds, one_owner_builds,
