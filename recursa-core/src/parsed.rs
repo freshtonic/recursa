@@ -3,7 +3,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
-use crate::{FollowSet, GrammarInfo, HasSpan, Input, ParseError, Span, TokenRecord};
+use crate::input::{Input, RetainedDocument, SourceGaps, TokenRecord, TriviaRecord};
+use crate::{FollowSet, GrammarInfo, HasSpan, ParseError, Span};
 
 #[doc(hidden)]
 /// Seal implemented only by generated grammar-local input types.
@@ -80,14 +81,9 @@ impl<T: crate::Visit> crate::Visit for Parsed<'_, T> {
 
 impl<T: crate::Pretty> crate::Pretty for Parsed<'_, T> {
     fn pretty(&self, context: &mut crate::PrettyContext) -> fmt::Result {
-        let cursor = match &self.origin {
-            Origin::Synthetic | Origin::Uncaptured => ViewCursor::absent(),
-            Origin::Captured { source, provenance } => ViewCursor {
-                occurrence: Some(&provenance.root),
-                source: Some(*source),
-            },
-        };
-        context.with_cursor(cursor, |context| self.ast.pretty(context))
+        context.with_cursor(self.origin.view_cursor(), |context| {
+            self.ast.pretty(context)
+        })
     }
 }
 
@@ -113,10 +109,33 @@ enum Origin<'input> {
     },
 }
 
+impl Origin<'_> {
+    /// Projects one provenance state into the common generated-view cursor.
+    fn view_cursor(&self) -> ViewCursor<'_> {
+        match self {
+            Self::Synthetic | Self::Uncaptured => ViewCursor::absent(),
+            Self::Captured { source, provenance } => ViewCursor {
+                occurrence: provenance.root.as_ref(),
+                source: Some(*source),
+                records: provenance
+                    .document
+                    .as_ref()
+                    .map(|document| document.records.as_ref()),
+                trivia: provenance
+                    .document
+                    .as_ref()
+                    .map(|document| document.trivia.as_ref()),
+            },
+        }
+    }
+}
+
 /// Owned occurrence provenance for one parsed root.
 struct Provenance {
     /// Root occurrence whose descendants follow generated child ordinals.
-    root: OccurrenceNode,
+    root: Option<OccurrenceNode>,
+    /// Opted-in immutable lexical records used for document gap views.
+    document: Option<RetainedDocument>,
 }
 
 /// One private occurrence-sidecar node.
@@ -428,7 +447,13 @@ impl<'input, T> Parsed<'input, T> {
     /// Returns captured source text, if this parse captured provenance.
     pub fn source(&self) -> Option<&'input str> {
         match &self.origin {
-            Origin::Captured { source, provenance } if provenance.root.has_public_capture() => {
+            Origin::Captured { source, provenance }
+                if provenance.document.is_some()
+                    || provenance
+                        .root
+                        .as_ref()
+                        .is_some_and(OccurrenceNode::has_public_capture) =>
+            {
                 Some(*source)
             }
             Origin::Captured { .. } => None,
@@ -445,13 +470,7 @@ impl<'input, T> Parsed<'input, T> {
 impl<T: Node> Parsed<'_, T> {
     /// Returns the generated concrete view of the root occurrence.
     pub fn root(&self) -> T::View<'_> {
-        self.ast.__view(match &self.origin {
-            Origin::Synthetic | Origin::Uncaptured => ViewCursor::absent(),
-            Origin::Captured { source, provenance } => ViewCursor {
-                occurrence: Some(&provenance.root),
-                source: Some(*source),
-            },
-        })
+        self.ast.__view(self.origin.view_cursor())
     }
 }
 
@@ -459,14 +478,7 @@ impl<T: Node> Parsed<'_, T> {
 impl<T> Parsed<'_, T> {
     /// Exposes the typed root and occurrence cursor to the erased Explorer ABI.
     pub(crate) fn explorer_parts(&self) -> (&T, ViewCursor<'_>) {
-        let cursor = match &self.origin {
-            Origin::Synthetic | Origin::Uncaptured => ViewCursor::absent(),
-            Origin::Captured { source, provenance } => ViewCursor {
-                occurrence: Some(&provenance.root),
-                source: Some(*source),
-            },
-        };
-        (&self.ast, cursor)
+        (&self.ast, self.origin.view_cursor())
     }
 
     /// Reports whether this document was constructed without parsed source.
@@ -543,6 +555,10 @@ pub struct ViewCursor<'view> {
     occurrence: Option<&'view OccurrenceNode>,
     /// Complete parsed source used by occurrence spans.
     source: Option<&'view str>,
+    /// Significant and rejected lexical records retained for opted-in gap views.
+    records: Option<&'view [TokenRecord]>,
+    /// Classified trivia retained for opted-in gap views.
+    trivia: Option<&'view [TriviaRecord]>,
 }
 
 impl<'view> ViewCursor<'view> {
@@ -551,6 +567,8 @@ impl<'view> ViewCursor<'view> {
         Self {
             occurrence: None,
             source: None,
+            records: None,
+            trivia: None,
         }
     }
 
@@ -566,6 +584,8 @@ impl<'view> ViewCursor<'view> {
                 .occurrence
                 .and_then(|occurrence| occurrence.children.get(index)),
             source: self.source,
+            records: self.records,
+            trivia: self.trivia,
         }
     }
 
@@ -589,6 +609,8 @@ impl<'view> ViewCursor<'view> {
                 ViewCursor {
                     occurrence: Some(child),
                     source: self.source,
+                    records: self.records,
+                    trivia: self.trivia,
                 }
                 .pretty_provenance()
                 .expect("a child cursor always has an occurrence")
@@ -626,6 +648,11 @@ impl<'view> ViewCursor<'view> {
             cursor: self,
             index: 0,
         }
+    }
+
+    /// Projects immutable beginning, inter-record, and end gaps for an opted-in document.
+    pub fn source_gaps(self) -> Option<SourceGaps<'view>> {
+        SourceGaps::new(self.source?, self.records?, self.trivia?)
     }
 }
 
@@ -1291,11 +1318,13 @@ where
             return Err(error);
         }
     };
-    let origin = if let Some(root) = occurrence.node {
-        debug_assert!(root.is_captured());
+    let root = occurrence.node;
+    let document = input.retained_document();
+    let origin = if root.is_some() || document.is_some() {
+        debug_assert!(root.as_ref().is_none_or(OccurrenceNode::is_captured));
         Origin::Captured {
             source,
-            provenance: Box::new(Provenance { root }),
+            provenance: Box::new(Provenance { root, document }),
         }
     } else {
         Origin::Uncaptured
@@ -1306,8 +1335,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::LexResult;
     use crate::lex::{LexDiagnostic, LexDiagnosticCode};
-    use crate::{ExpectedAtomId, LexResult, ParseErrorKind};
+    use crate::{ExpectedAtomId, ParseErrorKind};
 
     const WORD: u16 = 0;
     const LEXICAL_ERROR: u16 = 1;
@@ -1442,6 +1472,7 @@ mod tests {
                 span: Span::new(0, source.len()).unwrap(),
                 diagnostic: None,
             }],
+            None,
         )
     }
 
@@ -1528,6 +1559,7 @@ mod tests {
                 span: Span::new(0, 2).unwrap(),
                 diagnostic: None,
             }],
+            None,
         );
         let mut input = lexed.input(&GRAMMAR);
 
@@ -1550,6 +1582,7 @@ mod tests {
                     anchor: Span::new(0, 1).unwrap(),
                 }),
             }],
+            None,
         );
         let mut input = lexed.input(&GRAMMAR);
 
@@ -1572,6 +1605,7 @@ mod tests {
                 span: Span::new(0, 1).unwrap(),
                 diagnostic: None,
             }],
+            None,
         );
         let mut input = lexed.input(&GRAMMAR);
 
@@ -1623,6 +1657,7 @@ mod tests {
                     diagnostic: None,
                 },
             ],
+            None,
         );
         let mut input = lexed.input(&GRAMMAR);
 

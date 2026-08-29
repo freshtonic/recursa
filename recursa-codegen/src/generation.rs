@@ -26,7 +26,9 @@ use crate::build_diagnostic::{BuildReport, DiagnosticStage, GenerateError};
 use crate::decision_plan::{
     ContainerOperation, DispatchKind, ExpectedRecipe, FailureEdgeKind, FollowRecipe,
 };
-use crate::lexical::{KeywordRecognition, LexicalMatcher, LexicalPriority, TokenKindIdentity};
+use crate::lexical::{
+    KeywordRecognition, LexicalMatcher, LexicalPriority, NonTokenLexicalOutcome, TokenKindIdentity,
+};
 use crate::lowering::{ModuleId, NodeId, TokenDefinitionId, TokenUseId};
 use crate::materialization::{
     ClosedType, MaterializedApplicationId, MaterializedElement, MaterializedFixedAttachment,

@@ -55,6 +55,8 @@ pub(super) struct LexRulePlan {
     pub(super) kind: u16,
     /// Whether matching text is consumed without a token record.
     pub(super) skip: bool,
+    /// Grammar-local trivia classification retained outside significant parsing.
+    pub(super) trivia_kind: Option<u16>,
     /// Whether this rule recognizes exact fixed syntax.
     pub(super) fixed: bool,
     /// Stable declaration-derived tie-break priority.

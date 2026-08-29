@@ -141,11 +141,16 @@ pub(crate) struct NonTokenLexerRecord {
     pub(crate) site: SourceSite,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 /// Classifies the non token lexer outcome forms retained in the source model.
 pub(crate) enum NonTokenLexerOutcome {
     /// Identifies the non emitting authored-source form.
     NonEmitting,
+    /// Retains a classified trivia record outside the significant-token stream.
+    RetainedTrivia {
+        /// Authored grammar-local trivia classification.
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -6254,13 +6259,13 @@ impl TokenCatalog {
                     }),
             );
         self.lexer_records
-            .extend(syntax.ignored_matchers.into_iter().map(|record| {
+            .extend(syntax.non_token_matchers.into_iter().map(|record| {
                 let pattern = record.matcher.matcher.starter_pattern();
                 NonTokenLexerRecord {
                     pattern,
                     closed_matcher: Some(record.matcher.matcher),
                     priority: record.matcher.priority,
-                    outcome: NonTokenLexerOutcome::NonEmitting,
+                    outcome: record.outcome,
                     site: source_site(resolved, origin, span_range(record.name.span())),
                 }
             }));
@@ -7646,8 +7651,8 @@ struct CentralTokensSyntax {
     matchers: Vec<CentralMatcherSyntax>,
     /// Supplies the non token lexer records used to correlate authored source with normalized grammar.
     non_token_lexer_records: Vec<CentralNonTokenLexerRecordSyntax>,
-    /// Supplies named ignored closed matchers.
-    ignored_matchers: Vec<CentralIgnoredMatcherSyntax>,
+    /// Supplies named non-token closed matchers and their retention behavior.
+    non_token_matchers: Vec<CentralNonTokenMatcherSyntax>,
     /// Retains obsolete post-lex paths only long enough to diagnose their source sites.
     obsolete_post_lex: Vec<syn::Path>,
     /// Supplies declared keyword category names.
@@ -7666,12 +7671,14 @@ struct CentralNonTokenLexerRecordSyntax {
     outcome: NonTokenLexerOutcome,
 }
 
-/// Carries one named ignored closed matcher before source locations are retained.
-struct CentralIgnoredMatcherSyntax {
-    /// Preserves the authored name used in diagnostics and later trivia classification.
+/// Carries one named non-token closed matcher before source locations are retained.
+struct CentralNonTokenMatcherSyntax {
+    /// Preserves the authored name used for diagnostics and optional trivia classification.
     name: syn::Ident,
     /// Preserves the closed matcher and its source literals.
     matcher: ClosedMatcherSyntax,
+    /// Selects discard or classified-trivia retention outside significant parsing.
+    outcome: NonTokenLexerOutcome,
 }
 
 /// Carries the central fixed syntax retained from authored source structure.
@@ -8051,7 +8058,7 @@ impl Parse for CentralTokensSyntax {
         let mut content = Vec::new();
         let mut matchers = Vec::new();
         let mut non_token_lexer_records = Vec::new();
-        let mut ignored_matchers = Vec::new();
+        let mut non_token_matchers = Vec::new();
         let mut obsolete_post_lex = Vec::new();
         let mut categories = Vec::new();
         let mut flags = Vec::new();
@@ -8117,15 +8124,35 @@ impl Parse for CentralTokensSyntax {
                             return Err(body.error("expected `,` after admission declaration"));
                         }
                     }
-                } else if section == "matchers" || section == "ignore" {
+                } else if section == "matchers" || section == "ignore" || section == "trivia" {
                     while !body.is_empty() {
                         let name = syn::Ident::parse_any(&body)?;
                         body.parse::<Token![=>]>()?;
-                        let matcher = body.parse()?;
-                        if section == "matchers" {
-                            matchers.push(CentralMatcherSyntax { name, matcher });
+                        if section == "trivia" && body.peek(LitStr) {
+                            non_token_lexer_records.push(CentralNonTokenLexerRecordSyntax {
+                                pattern: body.parse()?,
+                                outcome: NonTokenLexerOutcome::RetainedTrivia {
+                                    name: name.unraw().to_string(),
+                                },
+                            });
                         } else {
-                            ignored_matchers.push(CentralIgnoredMatcherSyntax { name, matcher });
+                            let matcher = body.parse()?;
+                            if section == "matchers" {
+                                matchers.push(CentralMatcherSyntax { name, matcher });
+                            } else {
+                                let outcome = if section == "ignore" {
+                                    NonTokenLexerOutcome::NonEmitting
+                                } else {
+                                    NonTokenLexerOutcome::RetainedTrivia {
+                                        name: name.unraw().to_string(),
+                                    }
+                                };
+                                non_token_matchers.push(CentralNonTokenMatcherSyntax {
+                                    name,
+                                    matcher,
+                                    outcome,
+                                });
+                            }
                         }
                         if body.peek(Token![,]) {
                             body.parse::<Token![,]>()?;
@@ -8174,7 +8201,7 @@ impl Parse for CentralTokensSyntax {
             content,
             matchers,
             non_token_lexer_records,
-            ignored_matchers,
+            non_token_matchers,
             obsolete_post_lex,
             categories,
             flags,

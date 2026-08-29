@@ -1,7 +1,8 @@
 use regex_automata::meta::Regex;
 use regex_automata::{Anchored, Input as RegexInput};
 
-use crate::{LexResult, Span, TokenKind, TokenRecord};
+use crate::input::{LexResult, TokenRecord, TriviaRecord};
+use crate::{Span, TokenKind};
 
 /// One matching-version generated lexical rule.
 #[doc(hidden)]
@@ -11,8 +12,10 @@ pub struct LexRule {
     pub matcher: LexMatcher,
     /// Grammar-local kind emitted by the default action.
     pub kind: TokenKind,
-    /// Whether the match is ignored as trivia.
+    /// Whether the match is excluded from the significant-token stream.
     pub skip: bool,
+    /// Classified trivia kind retained outside the significant-token stream.
+    pub trivia_kind: Option<u16>,
     /// Whether this rule originated from exact fixed syntax.
     pub fixed: bool,
     /// Deterministic tie-break priority after match length and fixed status.
@@ -471,6 +474,10 @@ pub fn lex<'input>(
     let mut relevant_boundaries = Vec::new();
     let mut local_decisions = Vec::new();
     let mut records = Vec::new();
+    let mut trivia = rules
+        .iter()
+        .any(|rule| rule.trivia_kind.is_some())
+        .then(Vec::new);
     let mut offset = 0;
     while offset < source.len() {
         let remaining = &source[offset..];
@@ -532,7 +539,7 @@ pub fn lex<'input>(
             })
             .max_by_key(|(found, rule)| (found.end, rule.fixed, rule.priority));
 
-        let (end, emitted_kind, diagnostic) = selected.map_or_else(
+        let (end, emitted_kind, retained_kind, diagnostic) = selected.map_or_else(
             || {
                 let length = remaining
                     .chars()
@@ -543,6 +550,7 @@ pub fn lex<'input>(
                 (
                     end,
                     Some(lexical_error_kind),
+                    None,
                     Some(LexDiagnostic {
                         code: LexDiagnosticCode::Unrecognized,
                         anchor: Span::new(offset, end)
@@ -556,6 +564,7 @@ pub fn lex<'input>(
                     return (
                         end,
                         Some(lexical_error_kind),
+                        None,
                         Some(LexDiagnostic {
                             code: rejected.code,
                             anchor: Span::new(
@@ -566,7 +575,12 @@ pub fn lex<'input>(
                         }),
                     );
                 }
-                (offset + found.end, (!rule.skip).then_some(rule.kind), None)
+                (
+                    offset + found.end,
+                    (!rule.skip).then_some(rule.kind),
+                    rule.trivia_kind,
+                    None,
+                )
             },
         );
         let span = Span::new(offset, end).expect("source accepted by LexResult fits checked spans");
@@ -577,7 +591,36 @@ pub fn lex<'input>(
                 diagnostic,
             });
         }
+        if let Some(kind) = retained_kind {
+            trivia
+                .as_mut()
+                .expect("a retained rule enables the trivia sidecar")
+                .push(TriviaRecord { kind, span });
+        }
         offset = end;
     }
-    LexResult::new(source, records)
+    LexResult::new(source, records, trivia)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_retaining_grammar_keeps_no_trivia_sidecar_or_gap_projection() {
+        static RULES: [LexRule; 1] = [LexRule {
+            matcher: LexMatcher::Regex(r"\s+"),
+            kind: 0,
+            skip: true,
+            trivia_kind: None,
+            fixed: false,
+            priority: 0,
+        }];
+
+        let result = lex(" \n", &RULES, 1);
+
+        assert!(result.trivia().is_none());
+        assert!(result.source_gaps().is_none());
+        assert!(result.records().is_empty());
+    }
 }
