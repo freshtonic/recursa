@@ -839,6 +839,7 @@ fn reconcile_follow_warnings_with_decisions(
     });
 }
 
+/// Validates constructed decision products for publication into analysis output.
 fn publish_decisions(
     grammar: &GrammarDescription,
     decisions: crate::decision_plan::ConstructedDecisionProducts,

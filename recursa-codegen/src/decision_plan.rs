@@ -1320,6 +1320,7 @@ pub(crate) fn plan_decisions(
 /// the caller FOLLOW carries no continuation past its first token, so viability is proven by
 /// matching the input against the element's own bounded prefix language instead.
 /// Generated parsing then uses the existing root kind selector for both consume and skip.
+#[allow(clippy::too_many_arguments)]
 fn plan_nonoverlapping_optional_viability_for_site(
     site_id: SiteId,
     grammar: &GrammarDescription,

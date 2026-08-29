@@ -1216,7 +1216,8 @@ fn to_railroad_uncached(node: &DiagramNode, link_prefix: &str) -> RailroadNode {
 }
 
 /// Renders one standalone, deterministic, accessible SVG document.
-pub(super) fn diagram_svg(production: &DiagramNode, label: &str) -> String {
+#[cfg(test)]
+fn diagram_svg(production: &DiagramNode, label: &str) -> String {
     diagram_svg_with_prefix(production, label, "")
 }
 
