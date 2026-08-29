@@ -163,7 +163,7 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
     fs::write(&node, &node_rust).expect("restore generated Node body");
     let incompatible_root = String::from_utf8(root_rust.clone())
         .unwrap()
-        .replace("protocol_7", "protocol_999");
+        .replace("protocol_8", "protocol_999");
     assert_ne!(incompatible_root.as_bytes(), root_rust);
     fs::write(&root, incompatible_root).unwrap();
     force_consumer_recompile(&package, "protocol-mismatch");
@@ -608,6 +608,209 @@ fn main() {
 "#,
     )
     .expect("write the Pretty boundary consumer");
+
+    assert_success(&run_fixture(&package));
+}
+
+#[test]
+fn generated_pretty_honors_bilateral_repetition_separator_spacing() {
+    let package = scaffold_fixture();
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::r#type,
+    derives(Pretty),
+    keyword_matching = sensitive,
+    max_lookahead = 1,
+}
+
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    keywords {
+        WORD_SEP => "OR",
+        TAIL => "TAIL",
+    }
+    punctuation {
+        DOT => ".", spacing = tight,
+        BEFORE_SEP => "@", spacing = before,
+        AFTER_SEP => "%", spacing = after,
+        AROUND_SEP => "&", spacing = around,
+        OPEN_SEP => "(",
+        ITEM_START => "<", spacing = before,
+        ITEM_END => ">", spacing = after,
+    }
+}
+
+#[derive(recursa::Node)]
+pub struct Word<'input> {
+    #[lex(pattern = r"[A-Za-z]+")]
+    pub value: WordText<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct TightPath<'input> {
+    #[sep(DOT)]
+    pub parts: recursa::Vec1<WordText<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub struct BeforePath<'input> {
+    #[sep(BEFORE_SEP)]
+    pub parts: recursa::Vec1<WordText<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub struct AfterPath<'input> {
+    #[sep(AFTER_SEP)]
+    pub parts: recursa::Vec1<WordText<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub struct AroundPath<'input> {
+    #[sep(AROUND_SEP)]
+    pub parts: recursa::Vec1<WordText<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub struct WordPath<'input> {
+    #[sep(WORD_SEP)]
+    pub parts: recursa::Vec1<WordText<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub struct OpeningPath<'input> {
+    #[sep(OPEN_SEP)]
+    pub parts: recursa::Vec1<WordText<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub struct LeadingAroundPath<'input> {
+    #[sep(AROUND_SEP)]
+    #[pretty(separator = leading)]
+    pub parts: recursa::Vec1<WordText<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(TAIL)]
+pub struct Tail;
+
+#[derive(recursa::Node)]
+pub struct TrailingAroundPath<'input> {
+    #[sep(AROUND_SEP, trailing)]
+    #[pretty(trailing_separator = always)]
+    pub parts: recursa::Vec1<WordText<'input>>,
+    pub tail: Tail,
+}
+
+#[derive(recursa::Node)]
+#[tok(ITEM_START, this, ITEM_END)]
+pub struct BoundedWord<'input> {
+    pub value: WordText<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct BilateralPath<'input> {
+    #[sep(DOT)]
+    pub parts: recursa::Vec1<BoundedWord<'input>>,
+}
+"#,
+    )
+    .expect("write the separator-spacing grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa::Pretty as _;
+use recursa_generated_one_node::r#type as grammar;
+
+macro_rules! parse {
+    ($ty:ty, $source:expr) => {{
+        let lexed = grammar::lex($source);
+        let mut input = lexed.input();
+        let parsed = <$ty>::parse(&mut input).expect("separated path parses");
+        assert!(input.is_eof());
+        parsed
+    }};
+}
+
+fn main() {
+    let tight = parse!(grammar::TightPath<'_>, "alpha.beta");
+    assert_eq!(tight.render(), "alpha.beta");
+    assert_eq!(
+        tight.render_with(recursa::PrettyConfig::new(3, 2)),
+        "alpha.beta",
+        "a Tight separator boundary is indivisible",
+    );
+
+    let before = parse!(grammar::BeforePath<'_>, "alpha @beta");
+    assert_eq!(before.render(), "alpha @beta");
+    assert_eq!(
+        before.render_with(recursa::PrettyConfig::new(8, 2)),
+        "alpha @\nbeta",
+    );
+
+    let after = parse!(grammar::AfterPath<'_>, "alpha% beta");
+    assert_eq!(after.render(), "alpha% beta");
+    assert_eq!(
+        after.render_with(recursa::PrettyConfig::new(8, 2)),
+        "alpha%\nbeta",
+    );
+
+    let around = parse!(grammar::AroundPath<'_>, "alpha & beta");
+    assert_eq!(around.render(), "alpha & beta");
+    assert_eq!(
+        around.render_with(recursa::PrettyConfig::new(8, 2)),
+        "alpha &\nbeta",
+    );
+    let (around_text, around_map) = around.render_mapped();
+    assert_eq!(around_text, "alpha & beta");
+    assert!(around_map.entries().iter().any(|entry| {
+        entry.output() == (6..7) && entry.source() == recursa::Span::new(6, 7).unwrap()
+    }));
+
+    let word = parse!(grammar::WordPath<'_>, "alpha OR beta");
+    assert_eq!(word.render(), "alpha OR beta");
+    assert_eq!(
+        word.render_with(recursa::PrettyConfig::new(8, 2)),
+        "alpha OR\nbeta",
+    );
+
+    let opening = parse!(grammar::OpeningPath<'_>, "alpha(beta");
+    assert_eq!(opening.render(), "alpha(beta");
+    assert_eq!(
+        opening.render_with(recursa::PrettyConfig::new(3, 2)),
+        "alpha(beta",
+        "an Auto opening delimiter stays tight after itself",
+    );
+
+    let leading = parse!(grammar::LeadingAroundPath<'_>, "alpha & beta");
+    assert_eq!(
+        leading.render_with(recursa::PrettyConfig::new(8, 2)),
+        "alpha\n& beta",
+    );
+
+    let trailing = parse!(grammar::TrailingAroundPath<'_>, "alpha &TAIL");
+    let (trailing_text, trailing_map) = trailing.render_mapped();
+    assert_eq!(trailing_text, "alpha & TAIL");
+    assert!(trailing_map.entries().iter().any(|entry| {
+        entry.output() == (6..7) && entry.source() == recursa::Span::new(6, 7).unwrap()
+    }));
+
+    let synthetic_trailing = parse!(grammar::TrailingAroundPath<'_>, "alpha TAIL");
+    let (synthetic_text, synthetic_map) = synthetic_trailing.render_mapped();
+    assert_eq!(synthetic_text, "alpha & TAIL");
+    assert!(synthetic_map.entries().iter().any(|entry| {
+        entry.output() == (6..7) && entry.source().is_synthetic()
+    }));
+
+    let bilateral = parse!(grammar::BilateralPath<'_>, "<alpha>.<beta>");
+    assert_eq!(
+        bilateral.render(),
+        "<alpha> . <beta>",
+        "item After/Before requests combine with both sides of the separator",
+    );
+}
+"#,
+    )
+    .expect("write the separator-spacing consumer");
 
     assert_success(&run_fixture(&package));
 }

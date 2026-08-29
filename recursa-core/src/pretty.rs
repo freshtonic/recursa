@@ -142,6 +142,8 @@ enum PrettyEvent {
         hard: bool,
         /// Whether flat layout inserts space before the separator.
         space_before_separator: bool,
+        /// Whether flat layout inserts space after the separator.
+        space_after_separator: bool,
     },
     /// Unconditional newline.
     HardBreak,
@@ -238,28 +240,37 @@ impl PrettySink {
                     leading,
                     hard,
                     space_before_separator,
+                    space_after_separator,
                 } => {
-                    let broken = *hard
-                        || match groups.last().copied() {
-                            Some(GroupMode::Consistent(broken)) => broken,
-                            Some(GroupMode::Inconsistent) => {
-                                column
-                                    .saturating_add(1)
-                                    .saturating_add(
-                                        separator
-                                            .as_ref()
-                                            .map_or(0, |mapped| mapped.text.chars().count()),
-                                    )
-                                    .saturating_add(flat_width_to_next_break(
-                                        &self.events,
-                                        index + 1,
-                                    ))
-                                    > self.config.max_width
-                            }
-                            None => false,
-                        };
+                    let boundary_can_break =
+                        separator.is_none() || *space_before_separator || *space_after_separator;
+                    let broken = boundary_can_break
+                        && (*hard
+                            || match groups.last().copied() {
+                                Some(GroupMode::Consistent(broken)) => broken,
+                                Some(GroupMode::Inconsistent) => {
+                                    column
+                                        .saturating_add(usize::from(*space_before_separator))
+                                        .saturating_add(usize::from(*space_after_separator))
+                                        .saturating_add(
+                                            separator
+                                                .as_ref()
+                                                .map_or(0, |mapped| mapped.text.chars().count()),
+                                        )
+                                        .saturating_add(flat_width_to_next_break(
+                                            &self.events,
+                                            index + 1,
+                                        ))
+                                        > self.config.max_width
+                                }
+                                None => false,
+                            });
                     if broken {
                         if !leading && let Some(separator) = separator {
+                            if *space_before_separator {
+                                output.push(' ');
+                                column = column.saturating_add(1);
+                            }
                             let start = output.len();
                             output.push_str(&separator.text);
                             source_map.push(SourceMapEntry {
@@ -276,8 +287,11 @@ impl PrettySink {
                                 output: start..output.len(),
                                 source: separator.source,
                             });
-                            output.push(' ');
-                            column = column_after(column, &separator.text).saturating_add(1);
+                            column = column_after(column, &separator.text);
+                            if *space_after_separator {
+                                output.push(' ');
+                                column = column.saturating_add(1);
+                            }
                         }
                     } else {
                         if *space_before_separator {
@@ -293,8 +307,10 @@ impl PrettySink {
                             });
                             column = column_after(column, &separator.text);
                         }
-                        output.push(' ');
-                        column = column.saturating_add(1);
+                        if *space_after_separator {
+                            output.push(' ');
+                            column = column.saturating_add(1);
+                        }
                     }
                 }
                 PrettyEvent::BeginGroup => {
@@ -350,7 +366,11 @@ fn flat_width(events: &[PrettyEvent], start: usize) -> Option<usize> {
             }
             PrettyEvent::HardBreak => return None,
             PrettyEvent::RepetitionBreak {
-                separator, hard, ..
+                separator,
+                hard,
+                space_before_separator,
+                space_after_separator,
+                ..
             } => {
                 if *hard {
                     return None;
@@ -359,7 +379,8 @@ fn flat_width(events: &[PrettyEvent], start: usize) -> Option<usize> {
                     separator
                         .as_ref()
                         .map_or(0, |mapped| mapped.text.chars().count())
-                        + 1,
+                        + usize::from(*space_before_separator)
+                        + usize::from(*space_after_separator),
                 );
             }
             PrettyEvent::BeginGroup | PrettyEvent::BeginInconsistentGroup => depth += 1,
@@ -394,7 +415,11 @@ fn flat_width_to_next_break(events: &[PrettyEvent], start: usize) -> usize {
                 width = width.saturating_add(text.chars().count());
             }
             PrettyEvent::RepetitionBreak {
-                separator, hard, ..
+                separator,
+                hard,
+                space_before_separator,
+                space_after_separator,
+                ..
             } => {
                 if *hard {
                     break;
@@ -403,7 +428,8 @@ fn flat_width_to_next_break(events: &[PrettyEvent], start: usize) -> usize {
                     separator
                         .as_ref()
                         .map_or(0, |mapped| mapped.text.chars().count())
-                        + 1,
+                        + usize::from(*space_before_separator)
+                        + usize::from(*space_after_separator),
                 );
             }
             PrettyEvent::HardBreak => break,
@@ -424,6 +450,8 @@ pub struct PrettyContext {
     needs_separator: bool,
     /// Whether an explicit break already supplies that separation.
     separator_supplied: bool,
+    /// Pending repetition boundary that may absorb the next item's spacing request.
+    pending_repetition_break: Option<usize>,
     /// Whether the previous token was automatic punctuation.
     previous_auto_punctuation: bool,
     /// Whether generated policy requires spacing after the previous token.
@@ -453,6 +481,8 @@ struct PrettyLayoutCheckpoint {
     needs_separator: bool,
     /// Saved explicit separator state.
     separator_supplied: bool,
+    /// Saved pending repetition boundary.
+    pending_repetition_break: Option<usize>,
     /// Saved automatic punctuation state.
     previous_auto_punctuation: bool,
     /// Saved trailing-space request.
@@ -478,6 +508,8 @@ struct RepetitionLayout {
     leading_separator: bool,
     /// Whether flat layout inserts space before each separator.
     space_before_separator: bool,
+    /// Whether flat layout inserts space after each separator.
+    space_after_separator: bool,
 }
 
 impl Default for PrettyContext {
@@ -486,6 +518,7 @@ impl Default for PrettyContext {
             sink: PrettySink::new(PrettyConfig::default()),
             needs_separator: false,
             separator_supplied: false,
+            pending_repetition_break: None,
             previous_auto_punctuation: false,
             requested_space_after: false,
             has_emitted_token: false,
@@ -510,6 +543,7 @@ impl PrettyContext {
             sink: PrettySink::new(config),
             needs_separator: false,
             separator_supplied: false,
+            pending_repetition_break: None,
             previous_auto_punctuation: false,
             requested_space_after: false,
             has_emitted_token: false,
@@ -588,16 +622,9 @@ impl PrettyContext {
             text: text.to_owned(),
             source,
         });
-    }
-
-    /// Emits mapped text tightly while updating automatic-spacing state.
-    fn tight_mapped_token(&mut self, mapped: &MappedText) {
-        self.push_text(&mapped.text, mapped.source);
-        self.needs_separator = !mapped.text.is_empty();
-        self.separator_supplied = false;
-        self.previous_auto_punctuation = false;
-        self.requested_space_after = false;
-        self.has_emitted_token |= !mapped.text.is_empty();
+        if !text.is_empty() {
+            self.pending_repetition_break = None;
+        }
     }
 
     /// Emits an opening delimiter tightly and suppresses spacing after it.
@@ -648,7 +675,14 @@ impl PrettyContext {
     #[doc(hidden)]
     pub fn before_token(&mut self, text: &str) -> fmt::Result {
         if self.has_emitted_token && !text.is_empty() {
-            if self.separator_supplied {
+            if let Some(index) = self.pending_repetition_break
+                && let Some(PrettyEvent::RepetitionBreak {
+                    space_after_separator,
+                    ..
+                }) = self.sink.events.get_mut(index)
+            {
+                *space_after_separator = true;
+            } else if self.separator_supplied {
                 if let Some(PrettyEvent::SoftBreak(flat)) = self.sink.events.last_mut()
                     && flat.is_empty()
                 {
@@ -711,6 +745,7 @@ impl PrettyContext {
                 .push(PrettyEvent::SoftBreak(flat.to_owned()));
         }
         self.separator_supplied = true;
+        self.pending_repetition_break = None;
         self.previous_auto_punctuation = false;
         self.requested_space_after = false;
         Ok(())
@@ -730,6 +765,7 @@ impl PrettyContext {
             self.sink.events.push(PrettyEvent::HardBreak);
         }
         self.separator_supplied = true;
+        self.pending_repetition_break = None;
         self.previous_auto_punctuation = false;
         self.requested_space_after = false;
         Ok(())
@@ -809,6 +845,7 @@ impl PrettyContext {
             event_len: self.sink.events.len(),
             needs_separator: self.needs_separator,
             separator_supplied: self.separator_supplied,
+            pending_repetition_break: self.pending_repetition_break,
             previous_auto_punctuation: self.previous_auto_punctuation,
             requested_space_after: self.requested_space_after,
             has_emitted_token: self.has_emitted_token,
@@ -830,6 +867,7 @@ impl PrettyContext {
         self.sink.events.truncate(checkpoint.event_len);
         self.needs_separator = checkpoint.needs_separator;
         self.separator_supplied = checkpoint.separator_supplied;
+        self.pending_repetition_break = checkpoint.pending_repetition_break;
         self.previous_auto_punctuation = checkpoint.previous_auto_punctuation;
         self.requested_space_after = checkpoint.requested_space_after;
         self.has_emitted_token = checkpoint.has_emitted_token;
@@ -860,6 +898,7 @@ impl PrettyContext {
             hard_break,
             leading_separator: false,
             space_before_separator: false,
+            space_after_separator: true,
         });
         let result = render(self);
         self.repetition = previous;
@@ -874,15 +913,17 @@ impl PrettyContext {
         trailing: bool,
         hard_break: bool,
         leading_separator: bool,
-        space_before_separator: bool,
+        separator_spacing: (bool, bool),
         render: impl FnOnce(&mut Self) -> R,
     ) -> R {
+        let (space_before_separator, space_after_separator) = separator_spacing;
         let previous = self.repetition.replace(RepetitionLayout {
             separator: separator.map(str::to_owned),
             trailing,
             hard_break,
             leading_separator,
             space_before_separator,
+            space_after_separator,
         });
         let result = render(self);
         self.repetition = previous;
@@ -913,20 +954,45 @@ impl PrettyContext {
             {
                 let separator = self.repetition_separator(index, layout);
                 if index + 1 < length {
+                    let space_before_separator =
+                        layout.space_before_separator || self.requested_space_after;
+                    self.requested_space_after = false;
+                    self.previous_auto_punctuation = false;
+                    let event_index = self.sink.events.len();
                     self.sink.events.push(PrettyEvent::RepetitionBreak {
                         separator,
                         leading: layout.leading_separator,
                         hard: layout.hard_break,
-                        space_before_separator: layout.space_before_separator,
+                        space_before_separator,
+                        space_after_separator: layout.space_after_separator,
                     });
                     self.separator_supplied = true;
+                    self.pending_repetition_break = Some(event_index);
                 } else if let Some(separator) = separator {
-                    self.tight_mapped_token(&separator);
+                    self.trailing_repetition_separator(&separator, layout);
                 }
             }
         }
         self.repetition = layout;
         Ok(())
+    }
+
+    /// Emits one final repetition separator while preserving its outer boundary policy.
+    fn trailing_repetition_separator(&mut self, separator: &MappedText, layout: &RepetitionLayout) {
+        if (layout.space_before_separator || self.requested_space_after)
+            && !self.separator_supplied
+            && self.has_emitted_token
+        {
+            self.sink
+                .events
+                .push(PrettyEvent::SoftBreak(" ".to_owned()));
+        }
+        self.push_text(&separator.text, separator.source);
+        self.needs_separator = false;
+        self.separator_supplied = false;
+        self.previous_auto_punctuation = false;
+        self.requested_space_after = layout.space_after_separator;
+        self.has_emitted_token |= !separator.text.is_empty();
     }
 
     /// Selects parsed separator text when available, otherwise canonical text.
@@ -1305,5 +1371,114 @@ mod tests {
             Delimited.render_with(PrettyConfig::new(4, 2)),
             "[\n  content\n]"
         );
+    }
+
+    struct SeparatedWords {
+        separator: &'static str,
+        spacing: (bool, bool),
+        leading: bool,
+        trailing: bool,
+        item_boundaries: bool,
+        tail: Option<&'static str>,
+    }
+
+    impl Pretty for SeparatedWords {
+        fn pretty(&self, context: &mut PrettyContext) -> fmt::Result {
+            context.group(|context| {
+                context.with_repetition_style(
+                    Some(self.separator),
+                    self.trailing,
+                    false,
+                    self.leading,
+                    self.spacing,
+                    |context| {
+                        context.render_repeated_by(["alpha", "beta"].iter(), |context, word| {
+                            if self.item_boundaries {
+                                context.around_token(word)
+                            } else {
+                                context.tight_token(word)
+                            }
+                        })
+                    },
+                )?;
+                if let Some(tail) = self.tail {
+                    context.token(tail)?;
+                }
+                Ok(())
+            })
+        }
+    }
+
+    #[test]
+    fn repetition_breaks_preserve_each_separator_spacing_side() {
+        let config = PrettyConfig::new(8, 2);
+        for (separator, spacing, flat, broken) in [
+            ("@", (true, false), "alpha @beta", "alpha @\nbeta"),
+            ("%", (false, true), "alpha% beta", "alpha%\nbeta"),
+            ("&", (true, true), "alpha & beta", "alpha &\nbeta"),
+            ("OR", (true, true), "alpha OR beta", "alpha OR\nbeta"),
+        ] {
+            let words = SeparatedWords {
+                separator,
+                spacing,
+                leading: false,
+                trailing: false,
+                item_boundaries: false,
+                tail: None,
+            };
+            assert_eq!(words.render(), flat);
+            assert_eq!(words.render_with(config), broken);
+        }
+
+        let leading = SeparatedWords {
+            separator: "&",
+            spacing: (true, true),
+            leading: true,
+            trailing: false,
+            item_boundaries: false,
+            tail: None,
+        };
+        assert_eq!(leading.render_with(config), "alpha\n& beta");
+    }
+
+    #[test]
+    fn repetition_spacing_combines_item_boundaries_and_survives_a_trailing_separator() {
+        let bilateral = SeparatedWords {
+            separator: ".",
+            spacing: (false, false),
+            leading: false,
+            trailing: false,
+            item_boundaries: true,
+            tail: None,
+        };
+        assert_eq!(bilateral.render(), "alpha . beta");
+
+        let trailing = SeparatedWords {
+            separator: "&",
+            spacing: (true, true),
+            leading: false,
+            trailing: true,
+            item_boundaries: false,
+            tail: Some("tail"),
+        };
+        assert_eq!(trailing.render(), "alpha & beta & tail");
+    }
+
+    #[test]
+    fn tight_repetition_boundaries_are_indivisible_even_when_the_group_overflows() {
+        for separator in [".", "("] {
+            let words = SeparatedWords {
+                separator,
+                spacing: (false, false),
+                leading: false,
+                trailing: false,
+                item_boundaries: false,
+                tail: None,
+            };
+            assert_eq!(
+                words.render_with(PrettyConfig::new(3, 2)),
+                format!("alpha{separator}beta")
+            );
+        }
     }
 }

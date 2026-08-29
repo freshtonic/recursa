@@ -1225,6 +1225,7 @@ pub(super) fn corrupted_real_plan_family_content_fails_before_publication() {
                     hard_break: false,
                     leading_separator: false,
                     space_before_separator: false,
+                    space_after_separator: true,
                 });
             }
             PrettySemanticProjection::FixedPresence { .. } => {
@@ -2315,6 +2316,15 @@ pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
     assert!(repetition.space_before_separator);
     repetition.space_before_separator = false;
     assert_plan_family_is_unselectable(package.path(), &word_separator_spacing, "Pretty");
+
+    let mut separator_trailing_spacing = plan.clone();
+    let repetition = repetition_behavior(pretty_node(
+        &mut separator_trailing_spacing,
+        "LeadingPretty",
+    ));
+    assert!(repetition.space_after_separator);
+    repetition.space_after_separator = false;
+    assert_plan_family_is_unselectable(package.path(), &separator_trailing_spacing, "Pretty");
 
     let mut top_level_break = plan.clone();
     let repetition = repetition_behavior(pretty_node(&mut top_level_break, "MixedProgram"));

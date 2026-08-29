@@ -6,7 +6,7 @@
 use super::*;
 
 /// Private loader protocol understood by generated roots and the facade.
-pub(super) const PRIVATE_PROTOCOL: u32 = 7;
+pub(super) const PRIVATE_PROTOCOL: u32 = 8;
 /// Stable emitter-format identity hashed into every generated family identity.
 pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v33";
 /// Fingerprint of the production generator sources compiled into this codegen build.
@@ -383,11 +383,11 @@ mod tests {
 
     #[test]
     fn generated_public_shape_revision_changes_the_generation_cache_identity() {
-        assert_eq!(PRIVATE_PROTOCOL, 7);
+        assert_eq!(PRIVATE_PROTOCOL, 8);
         assert_eq!(EMITTER_IDENTITY, "recursa-generation-compound-v33");
         assert_eq!(
             generation_protocol_identity(),
-            generation_protocol_identity_for(7, GENERATOR_SOURCE_FINGERPRINT)
+            generation_protocol_identity_for(8, GENERATOR_SOURCE_FINGERPRINT)
         );
         assert_ne!(
             generation_protocol_identity(),
@@ -404,8 +404,8 @@ mod tests {
                 .all(|byte| byte.is_ascii_hexdigit())
         );
         assert_ne!(
-            generation_protocol_identity_for(7, "1111111111111111"),
-            generation_protocol_identity_for(7, "2222222222222222")
+            generation_protocol_identity_for(8, "1111111111111111"),
+            generation_protocol_identity_for(8, "2222222222222222")
         );
     }
 

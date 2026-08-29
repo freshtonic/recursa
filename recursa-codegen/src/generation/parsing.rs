@@ -352,6 +352,26 @@ mod tests {
     }
 
     #[test]
+    fn pratt_operand_stops_preserve_an_inherited_authored_boundary() {
+        let active = ExpectedSet {
+            words: vec![0b0101],
+            atoms: vec![0, 2],
+        };
+        let inactive = ExpectedSet {
+            words: vec![0b1_0001],
+            atoms: vec![0, 4],
+        };
+
+        assert_eq!(
+            pratt_operand_follow(&PlannedFollow::Caller, &active, &inactive),
+            PlannedFollow::CallerAndPrattStops(ExpectedSet {
+                words: vec![0b1_0000],
+                atoms: vec![4],
+            }),
+        );
+    }
+
+    #[test]
     fn large_position_dispatch_uses_one_packed_matcher() {
         let positions = (0..1_520)
             .map(|position| {
@@ -1051,6 +1071,8 @@ pub(super) enum SemanticParseProjection {
         pratt_excluded_led: Vec<usize>,
         /// Canonical repetition separator spelling, if any.
         separator: Option<String>,
+        /// Pretty spacing declared by the repetition separator, if any.
+        separator_spacing: Option<PrettySpacing>,
         /// Fixed tokens attached around the semantic child.
         attachment: Option<Box<FixedAttachmentParsePlan>>,
         /// Whether the terminal hides generated-node provenance.
@@ -1195,6 +1217,8 @@ pub(super) enum PlannedFollow {
     Static(ExpectedSet),
     /// Unions a frozen FOLLOW set with the caller context.
     StaticAndCaller(ExpectedSet),
+    /// Adds generated Pratt stops without replacing the inherited static boundary.
+    CallerAndPrattStops(ExpectedSet),
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1485,7 +1509,9 @@ impl ExpectedSetPool {
 fn collect_follow_expected_set(follow: &PlannedFollow, values: &mut BTreeSet<ExpectedSet>) {
     match follow {
         PlannedFollow::Caller => {}
-        PlannedFollow::Static(expected) | PlannedFollow::StaticAndCaller(expected) => {
+        PlannedFollow::Static(expected)
+        | PlannedFollow::StaticAndCaller(expected)
+        | PlannedFollow::CallerAndPrattStops(expected) => {
             values.insert(expected.clone());
         }
     }
@@ -2658,16 +2684,19 @@ pub(super) fn declaration_elements(
                     crate::source_model::SemanticFieldProjection::Direct => {
                         let authored = authored_projection(&field.ty, resolved)?;
                         let operation = declaration_container_operation(&authored.wrappers);
-                        let separator_spelling = separator
+                        let separator_behavior = separator
                             .as_ref()
                             .map(|separator| {
                                 let usage = &source.token_uses[separator.token_use.index()];
                                 let definition =
                                     &source.token_definitions[usage.definition.index()];
                                 match &definition.kind {
-                                    TokenDefinitionKind::Fixed(fixed) => Ok(fixed_pretty_spelling(
-                                        &fixed.spelling,
-                                        lowered.grammar.text_equivalence,
+                                    TokenDefinitionKind::Fixed(fixed) => Ok((
+                                        fixed_pretty_spelling(
+                                            &fixed.spelling,
+                                            lowered.grammar.text_equivalence,
+                                        ),
+                                        fixed.pretty_spacing,
                                     )),
                                     _ => Err("an authored separator references a non-fixed token"
                                         .to_owned()),
@@ -2677,7 +2706,9 @@ pub(super) fn declaration_elements(
                         let repetition_break = authored
                             .terminal_node
                             .filter(|terminal_node| {
-                                separator_spelling.as_deref() == Some(";")
+                                separator_behavior
+                                    .as_ref()
+                                    .is_some_and(|(spelling, _)| spelling == ";")
                                     && matches!(
                                         operation,
                                         ContainerOperation::ZeroOrMore
@@ -2713,7 +2744,10 @@ pub(super) fn declaration_elements(
                             child_capture: PlannedCapturePolicy::Inherited,
                             pratt_min_bp: None,
                             pratt_excluded_led: Vec::new(),
-                            separator: separator_spelling,
+                            separator: separator_behavior
+                                .as_ref()
+                                .map(|(spelling, _)| spelling.clone()),
+                            separator_spacing: separator_behavior.map(|(_, spacing)| spacing),
                             attachment: attachment
                                 .as_ref()
                                 .map(|attachment| {
@@ -3538,7 +3572,9 @@ pub(super) fn plan_pratt_node(
     let (nud_failure_expected, nud_failure_uses_caller) = match &nud_failure {
         PlannedFollow::Caller => (ExpectedSet::empty(kind_count), true),
         PlannedFollow::Static(expected) => (expected.clone(), false),
-        PlannedFollow::StaticAndCaller(expected) => (expected.clone(), true),
+        PlannedFollow::StaticAndCaller(expected) | PlannedFollow::CallerAndPrattStops(expected) => {
+            (expected.clone(), true)
+        }
     };
     if nud_dispatch_expected != nud_failure_expected
         || nud_dispatch.states[nud_dispatch.root.index()]
@@ -3785,6 +3821,7 @@ pub(super) fn plan_pratt_lhs(
                 pratt_min_bp: None,
                 pratt_excluded_led: Vec::new(),
                 separator: None,
+                separator_spacing: None,
                 attachment: None,
                 opaque_provenance: false,
                 repetition_break: PlannedRepetitionBreak::Soft,
@@ -4193,16 +4230,19 @@ pub(super) fn plan_elements(
                 } else {
                     None
                 };
-                let separator = separator
+                let separator_behavior = separator
                     .as_ref()
                     .map(|separator| {
                         let source = lowered.source_modeled.source_model();
                         let token_use = &source.token_uses[separator.token_use.index()];
                         let definition = &source.token_definitions[token_use.definition.index()];
                         match &definition.kind {
-                            TokenDefinitionKind::Fixed(fixed) => Ok(fixed_pretty_spelling(
-                                &fixed.spelling,
-                                lowered.grammar.text_equivalence,
+                            TokenDefinitionKind::Fixed(fixed) => Ok((
+                                fixed_pretty_spelling(
+                                    &fixed.spelling,
+                                    lowered.grammar.text_equivalence,
+                                ),
+                                fixed.pretty_spacing,
                             )),
                             _ => Err("a repetition separator is not fixed syntax".to_owned()),
                         }
@@ -4224,7 +4264,9 @@ pub(super) fn plan_elements(
                 });
                 let repetition_break = terminal_application
                     .filter(|application| {
-                        separator.as_deref() == Some(";")
+                        separator_behavior
+                            .as_ref()
+                            .is_some_and(|(spelling, _)| spelling == ";")
                             && matches!(container, PlannedContainer::Repeated { .. })
                             && lowered.applications.iter().any(|candidate| {
                                 candidate.id == *application
@@ -4293,7 +4335,10 @@ pub(super) fn plan_elements(
                             child_capture,
                             pratt_min_bp,
                             pratt_excluded_led,
-                            separator,
+                            separator: separator_behavior
+                                .as_ref()
+                                .map(|(spelling, _)| spelling.clone()),
+                            separator_spacing: separator_behavior.map(|(_, spacing)| spacing),
                             attachment,
                             opaque_provenance: false,
                             repetition_break,
@@ -5030,6 +5075,26 @@ pub(super) fn follow_with_static(
             expected.union_assign(additional);
             PlannedFollow::StaticAndCaller(expected)
         }
+        PlannedFollow::CallerAndPrattStops(expected) => {
+            let mut expected = expected.clone();
+            expected.union_assign(additional);
+            PlannedFollow::CallerAndPrattStops(expected)
+        }
+    }
+}
+
+/// Adds generated Pratt stop tokens without replacing an inherited authored boundary.
+fn follow_with_pratt_stops(follow: &PlannedFollow, additional: &ExpectedSet) -> PlannedFollow {
+    match follow {
+        PlannedFollow::Caller => PlannedFollow::CallerAndPrattStops(additional.clone()),
+        PlannedFollow::CallerAndPrattStops(expected) => {
+            let mut expected = expected.clone();
+            expected.union_assign(additional);
+            PlannedFollow::CallerAndPrattStops(expected)
+        }
+        PlannedFollow::Static(_) | PlannedFollow::StaticAndCaller(_) => {
+            follow_with_static(follow, additional)
+        }
     }
 }
 
@@ -5055,10 +5120,15 @@ pub(super) fn pratt_operand_follow(
             expected.difference_assign(active);
             PlannedFollow::StaticAndCaller(expected)
         }
+        PlannedFollow::CallerAndPrattStops(expected) => {
+            let mut expected = expected.clone();
+            expected.difference_assign(active);
+            PlannedFollow::CallerAndPrattStops(expected)
+        }
     };
     let mut inactive_only = inactive.clone();
     inactive_only.difference_assign(active);
-    follow_with_static(&without_active, &inactive_only)
+    follow_with_pratt_stops(&without_active, &inactive_only)
 }
 
 /// Adds the next-loop starters to a completed non-recursive Pratt LED tail.
@@ -5717,7 +5787,7 @@ pub(super) fn render_pratt_parse(
                 #nud_failure_definition
                 let _ = min_bp;
                 let #nud_follow_value = #nud_follow
-                    .union(context.follow())
+                    .with_caller(context.follow())
                     .expect("matching generated Pratt FOLLOW widths");
                 let #expression_start = context.cursor();
                 let parsed = match { #nud_selection } {
@@ -5806,7 +5876,7 @@ pub(super) fn render_pratt_parse(
             (Some(#index), _) => {
                 if #lbp < min_bp { break; }
                 if __recursa_pratt_excluded.contains(&#index) { break; }
-                if context.next_is(context.follow()) {
+                if context.next_is_pratt_boundary() {
                     if !(#continuation_viable) { break; }
                     return Err(context.pratt_ambiguity(
                         __recursa_pratt_guard
@@ -5829,7 +5899,7 @@ pub(super) fn render_pratt_parse(
         quote! {
             #nud_failure_definition
             let #nud_follow_value = #nud_follow
-                .union(context.follow())
+                .with_caller(context.follow())
                 .expect("matching generated Pratt FOLLOW widths");
             let #expression_start = context.cursor();
             let mut lhs = match { #nud_selection } {
@@ -7063,8 +7133,19 @@ pub(super) fn render_follow_value(
             (
                 quote! {
                     let #value = #expected
-                        .union(context.follow())
+                        .with_caller(context.follow())
                         .expect("matching generated FOLLOW widths");
+                },
+                quote!(#value),
+            )
+        }
+        PlannedFollow::CallerAndPrattStops(expected) => {
+            let expected = render_expected_set(plan, expected);
+            (
+                quote! {
+                    let #value = #expected
+                        .union(context.follow())
+                        .expect("matching generated Pratt stop/FOLLOW widths");
                 },
                 quote!(#value),
             )
