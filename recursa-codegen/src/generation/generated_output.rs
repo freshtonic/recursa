@@ -551,6 +551,9 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         impl ExactSizeIterator for Tokens<'_, '_> {}
 
         /// Stable mechanism-specific classification of a lexical failure.
+        ///
+        /// This grammar-local type deliberately repeats the matching-version core protocol rather
+        /// than exposing the private core enum as part of a generated grammar's public API.
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub enum LexErrorCode {
             /// No lexical rule accepted the current source scalar.
@@ -606,6 +609,9 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
             /// Typed mechanism-specific classification for this lexical failure.
             pub fn diagnostic_code(self) -> LexErrorCode {
+                // Keep this conversion exhaustive and explicit: generated output and core are a
+                // matching-version protocol, while their public and private enum types remain
+                // intentionally decoupled.
                 match self.record.diagnostic.map(|diagnostic| diagnostic.code) {
                     Some(#facade::__private::LexDiagnosticCode::UnterminatedSameDelimiter) => {
                         LexErrorCode::UnterminatedSameDelimiter

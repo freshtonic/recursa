@@ -5170,7 +5170,7 @@ struct ClosedMatcherSyntax {
 
 /// One named argument supplied to a closed matcher constructor.
 struct ClosedMatcherArgument {
-    /// Argument name.
+    /// Identifies the parameter checked for uniqueness and family-specific applicability.
     name: syn::Ident,
     /// Literal or literal-array value.
     value: syn::Expr,

@@ -67,6 +67,16 @@ fn main() {
         grammar::TokenKind::CALLBACK_KEYWORD,
     );
 
+    grammar::reset_callback_calls();
+    let fixed_over_callback = grammar::lex("Kk");
+    let fixed_over_callback = fixed_over_callback.tokens().collect::<Vec<_>>();
+    assert_eq!(fixed_over_callback.len(), 1);
+    assert_eq!(
+        fixed_over_callback[0].kind(),
+        grammar::TokenKind::CALLBACK_KEYWORD,
+    );
+    assert_eq!(grammar::callback_calls(), 0);
+
     let unicode_callback = grammar::lex("~é");
     let unicode_callback = unicode_callback
         .tokens()
@@ -112,6 +122,37 @@ fn main() {
     let alternative_error = alternative_error.finish().errors().next().unwrap();
     assert_eq!(alternative_error.code(), "RCA4000");
     assert_eq!(alternative_error.anchor(), recursa::Span::new(0, 4).unwrap());
+
+    let gap_source = "sElEcT unscanned ?";
+    let error_start = gap_source.rfind('?').unwrap();
+    let mut sparse = grammar::LexBuilder::new(gap_source);
+    sparse
+        .append(
+            grammar::TokenKind::WordText,
+            recursa::Span::new(0, 6).unwrap(),
+        )
+        .unwrap();
+    sparse
+        .append(
+            grammar::TokenKind::LexicalError,
+            recursa::Span::new(error_start, error_start + 1).unwrap(),
+        )
+        .unwrap();
+    let sparse = sparse.finish();
+    let sparse_tokens = sparse.tokens().collect::<Vec<_>>();
+    assert_eq!(sparse_tokens.len(), 1);
+    assert_eq!(sparse_tokens[0].kind(), grammar::TokenKind::SELECT);
+    assert_eq!(sparse_tokens[0].span(), recursa::Span::new(0, 6).unwrap());
+    assert_eq!(sparse_tokens[0].text(), "sElEcT");
+    let sparse_errors = sparse.errors().collect::<Vec<_>>();
+    assert_eq!(sparse_errors.len(), 1);
+    assert_eq!(sparse_errors[0].kind(), grammar::TokenKind::LexicalError);
+    assert_eq!(
+        sparse_errors[0].span(),
+        recursa::Span::new(error_start, error_start + 1).unwrap()
+    );
+    assert_eq!(sparse_errors[0].text(), "?");
+    assert_eq!(sparse_errors[0].code(), "RCA4000");
 
     let dollar = grammar::lex("$tag$body$tag$");
     assert_eq!(dollar.errors().count(), 0);
@@ -254,7 +295,9 @@ fn main() {
     assert_eq!(deep_unterminated.anchor(), recursa::Span::new(0, 2).unwrap());
 
     grammar::reset_post_lex_calls();
+    grammar::reset_callback_calls();
     let callback_lexed = grammar::lex("~emit ~as ~skip ~error ~tail");
+    assert_eq!(grammar::callback_calls(), 5);
     assert_eq!(grammar::post_lex_calls(), 1);
     let callback_tokens = callback_lexed.tokens().collect::<Vec<_>>();
     assert_eq!(callback_tokens.len(), 3);

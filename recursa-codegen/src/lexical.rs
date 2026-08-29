@@ -373,10 +373,6 @@ struct RetainedFixedMatcher {
     spelling: String,
     /// Whether ASCII case variants are equivalent matches.
     ascii_insensitive: bool,
-    /// Authored names that emit this canonical fixed spelling.
-    target_names: Vec<String>,
-    /// Authored definition sites used when an opaque callback overlaps the spelling.
-    sites: Vec<SourceSite>,
 }
 
 /// Normalized fixed spelling considered during carrier proof.
@@ -387,10 +383,6 @@ struct FixedMatcher {
     word_shaped: bool,
     /// Whether ASCII case variants are equivalent matches.
     ascii_insensitive: bool,
-    /// Authored names that emit this canonical fixed spelling.
-    target_names: Vec<String>,
-    /// Authored definition sites for source diagnostics.
-    sites: Vec<SourceSite>,
 }
 
 /// Proof that one or more content kinds recognize a fixed keyword spelling.
@@ -1022,36 +1014,25 @@ const fn plan_non_token_outcome(
 
 /// Derives the fixed matchers under the grammar keyword and lexical-selection policies.
 fn fixed_matchers(model: &SourceModel, text_equivalence: TextEquivalence) -> Vec<FixedMatcher> {
-    let mut fixed = BTreeMap::<String, (bool, bool, Vec<String>, Vec<SourceSite>)>::new();
+    let mut fixed = BTreeMap::<String, (bool, bool)>::new();
     for definition in &model.token_definitions {
         let TokenDefinitionKind::Fixed(fixed_definition) = &definition.kind else {
             continue;
         };
         let word_shaped = is_word_shaped(&fixed_definition.spelling);
         let spelling = canonical_fixed_spelling(&fixed_definition.spelling, text_equivalence);
-        let (_, _, target_names, sites) = fixed.entry(spelling).or_insert_with(|| {
-            (
-                word_shaped,
-                word_shaped && text_equivalence == TextEquivalence::AsciiInsensitive,
-                Vec::new(),
-                Vec::new(),
-            )
-        });
-        target_names.push(definition.name.clone());
-        sites.extend(definition.definition_sites.iter().cloned());
+        fixed.entry(spelling).or_insert((
+            word_shaped,
+            word_shaped && text_equivalence == TextEquivalence::AsciiInsensitive,
+        ));
     }
     fixed
         .into_iter()
         .map(
-            |(spelling, (word_shaped, ascii_insensitive, mut target_names, sites))| {
-                target_names.sort();
-                FixedMatcher {
-                    spelling,
-                    word_shaped,
-                    ascii_insensitive,
-                    target_names,
-                    sites,
-                }
+            |(spelling, (word_shaped, ascii_insensitive))| FixedMatcher {
+                spelling,
+                word_shaped,
+                ascii_insensitive,
             },
         )
         .collect()
@@ -1121,8 +1102,6 @@ fn retained_fixed_matchers(
         .map(|matcher| RetainedFixedMatcher {
             spelling: matcher.spelling.clone(),
             ascii_insensitive: matcher.ascii_insensitive,
-            target_names: matcher.target_names.clone(),
-            sites: matcher.sites.clone(),
         })
         .collect()
 }
@@ -1782,44 +1761,6 @@ fn lexical_diagnostics(
                 right.final_extent,
             ))
     });
-    for contender in &contenders {
-        if contender.final_extent != PatternFinalExtent::OpaqueCallback {
-            continue;
-        }
-        for fixed in retained_fixed_matchers {
-            let fixed_pattern = retained_fixed_pattern(fixed);
-            let Some(witness) = prefix_overlap_witness(&contender.pattern, &fixed_pattern) else {
-                continue;
-            };
-            let evidence_contenders = vec![
-                pattern_evidence(contender),
-                LexicalPatternEvidence {
-                    pattern: fixed_pattern,
-                    target_names: fixed.target_names.clone(),
-                    authored_priority: None,
-                    outcome: LexicalPatternOutcome::EmitsTokenKind,
-                },
-            ];
-            let mut sites = contender
-                .sites
-                .iter()
-                .cloned()
-                .chain(fixed.sites.iter().cloned())
-                .collect::<Vec<_>>();
-            sites = sorted_sites(source, sites);
-            diagnostics.push(LexicalDiagnostic {
-                code: LexicalDiagnosticCode::Rca3005,
-                sites,
-                evidence: LexicalDiagnosticEvidence::PatternOverlap {
-                    contenders: evidence_contenders.clone(),
-                    witness,
-                },
-                remedies: vec![LexicalRemedy::MakePatternsDisjoint {
-                    contenders: evidence_contenders,
-                }],
-            });
-        }
-    }
     for ambiguity in pattern_ambiguities(&contenders, retained_fixed_matchers) {
         let indices = ambiguity.indices;
         let witness = ambiguity.witness;
@@ -1888,28 +1829,6 @@ fn closed_pattern_final_extent(matcher: Option<&ClosedMatcher>) -> PatternFinalE
         Some(ClosedMatcher::NextExclusion { .. }) | None => PatternFinalExtent::Exact,
         Some(_) => PatternFinalExtent::Closed,
     }
-}
-
-/// Renders one retained fixed spelling as the anchored language used by overlap proof.
-fn retained_fixed_pattern(matcher: &RetainedFixedMatcher) -> String {
-    if !matcher.ascii_insensitive {
-        return regex_syntax::escape(&matcher.spelling);
-    }
-    matcher
-        .spelling
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphabetic() {
-                format!(
-                    "[{}{}]",
-                    character.to_ascii_lowercase(),
-                    character.to_ascii_uppercase()
-                )
-            } else {
-                regex_syntax::escape(&character.to_string())
-            }
-        })
-        .collect()
 }
 
 /// Validates pattern.
@@ -2042,7 +1961,10 @@ fn pattern_ambiguities(
         .map(|(indices, witness)| PatternAmbiguity {
             requires_disjoint_patterns: indices
                 .iter()
-                .any(|&index| contenders[index].final_extent == PatternFinalExtent::OpaqueCallback),
+                .any(|&index| contenders[index].final_extent == PatternFinalExtent::OpaqueCallback)
+                && indices
+                    .iter()
+                    .any(|&index| contenders[index].final_extent == PatternFinalExtent::Closed),
             indices,
             witness,
         })
@@ -2056,7 +1978,8 @@ fn pattern_ambiguities(
                 || right_extent == PatternFinalExtent::OpaqueCallback;
             let finalizing = left_extent == PatternFinalExtent::Closed
                 || right_extent == PatternFinalExtent::Closed;
-            if !opaque
+            let opaque_finalizing = opaque && finalizing;
+            if !opaque_finalizing
                 && (!finalizing
                     || contenders[left].authored_priority.unwrap_or(0)
                         != contenders[right].authored_priority.unwrap_or(0))
@@ -2076,7 +1999,7 @@ fn pattern_ambiguities(
             ambiguities.push(PatternAmbiguity {
                 indices: vec![left, right],
                 witness,
-                requires_disjoint_patterns: opaque,
+                requires_disjoint_patterns: opaque_finalizing,
             });
         }
     }
@@ -2716,7 +2639,7 @@ struct Root {
     }
 
     #[test]
-    fn opaque_callback_overlapping_a_standalone_keyword_fails_closed() {
+    fn opaque_callback_silently_keeps_the_standalone_keyword_rule() {
         let source = source_model(
             r#"
 recursa::grammar! {
@@ -2735,19 +2658,21 @@ struct Root {
 
         let report = plan_lexical(&source);
 
-        assert!(report.plan.is_none());
-        assert!(matches!(
-            report.diagnostics.as_slice(),
-            [super::LexicalDiagnostic {
-                code: super::LexicalDiagnosticCode::Rca3005,
-                evidence: super::LexicalDiagnosticEvidence::PatternOverlap { witness, .. },
-                ..
-            }] if witness == "IF"
-        ));
+        assert!(report.diagnostics.is_empty());
+        let plan = report.plan.unwrap();
+        assert_eq!(
+            plan.keywords[0].recognition,
+            super::KeywordRecognition::Standalone
+        );
+        assert!(
+            plan.rules
+                .iter()
+                .any(|rule| { rule.matcher == super::LexicalMatcher::Fixed("IF".to_owned()) })
+        );
     }
 
     #[test]
-    fn central_only_opaque_callback_overlapping_a_keyword_fails_closed() {
+    fn central_only_opaque_callback_participates_in_carrier_proof_without_a_target_view() {
         let report = plan(
             r#"
 recursa::grammar! {
@@ -2767,15 +2692,15 @@ struct Root;
 "#,
         );
 
-        assert!(report.plan.is_none());
-        assert!(matches!(
-            report.diagnostics.as_slice(),
-            [super::LexicalDiagnostic {
-                code: super::LexicalDiagnosticCode::Rca3005,
-                evidence: super::LexicalDiagnosticEvidence::PatternOverlap { witness, .. },
-                ..
-            }] if witness == "IF"
-        ));
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let plan = report.plan.unwrap();
+        assert_eq!(plan.content_bases.len(), 1);
+        assert!(plan.content_bases[0].target_names.is_empty());
+        assert_eq!(plan.parser_targets.len(), 0);
+        assert_eq!(
+            plan.keywords[0].recognition,
+            super::KeywordRecognition::Standalone
+        );
     }
 
     #[test]
@@ -3346,36 +3271,68 @@ struct Root;
     }
 
     #[test]
-    fn opaque_callback_overlap_fails_closed_regardless_of_authored_priority() {
-        for callback_priority in [0, 2] {
-            let source = source_model(
-                &r#"
-recursa::grammar! { module = crate }
+    fn legacy_callback_overlap_preserves_priority_selection_against_regular_patterns() {
+        let callback_wins_source = source_model(
+            r#"
+recursa::grammar! {
+    module = crate,
+    keyword_matching = ascii_insensitive,
+}
 
 #[derive(recursa::Node)]
+#[tok("IF", this)]
 struct Root {
     #[lex(pattern = r"[A-Za-z]+", priority = 1)]
     safe: Safe,
-    #[lex(pattern = r"[A-Za-z]+", callback = crate::scan_word, priority = CALLBACK_PRIORITY)]
+    #[lex(pattern = r"[A-Za-z]+", callback = crate::scan_word, priority = 2)]
     callback: Callback,
 }
-"#
-                .replace("CALLBACK_PRIORITY", &callback_priority.to_string()),
-            );
-            let report = plan_lexical(&source);
-            assert!(report.plan.is_none());
-            assert!(matches!(
-                report.diagnostics.as_slice(),
-                [super::LexicalDiagnostic {
-                    code: super::LexicalDiagnosticCode::Rca3005,
-                    remedies,
-                    ..
-                }] if matches!(
-                    remedies.as_slice(),
-                    [super::LexicalRemedy::MakePatternsDisjoint { .. }]
-                )
-            ));
-        }
+"#,
+        );
+        let callback_wins = plan_lexical(&callback_wins_source);
+        assert!(callback_wins.diagnostics.is_empty());
+        assert_eq!(
+            callback_wins.plan.unwrap().keywords[0].recognition,
+            super::KeywordRecognition::Standalone,
+        );
+
+        let safe_wins_source = source_model(
+            r#"
+recursa::grammar! {
+    module = crate,
+    keyword_matching = ascii_insensitive,
+}
+
+#[derive(recursa::Node)]
+#[tok("IF", this)]
+struct Root {
+    #[lex(pattern = r"[A-Za-z]+", priority = 1)]
+    safe: Safe,
+    #[lex(pattern = r"[A-Za-z]+", callback = crate::scan_word, priority = 0)]
+    callback: Callback,
+}
+"#,
+        );
+        let safe_wins = plan_lexical(&safe_wins_source);
+        assert!(safe_wins.diagnostics.is_empty());
+        let plan = safe_wins.plan.unwrap();
+        let super::KeywordRecognition::CombinedCarriers {
+            carrier,
+            additional_carriers,
+        } = &plan.keywords[0].recognition
+        else {
+            panic!("the higher-priority callback-free carrier should prove the keyword")
+        };
+        assert!(additional_carriers.is_empty());
+        assert_eq!(
+            plan.token_kinds[carrier.index()].identity,
+            super::TokenKindIdentity::ContentBase(super::ContentBaseIdentity {
+                pattern: r"[A-Za-z]+".to_owned(),
+                callback: None,
+                closed_matcher: None,
+                priority: Some(1),
+            }),
+        );
     }
 
     #[test]
