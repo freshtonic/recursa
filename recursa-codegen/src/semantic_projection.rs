@@ -340,23 +340,23 @@ fn render_container_machine(
         )
         .expect("writing to a String cannot fail");
     }
-    if let Some(decision) = machine.optional_decision() {
+    if let Some(decision) = machine.optional_viability_decision() {
         write!(
             rendered,
-            "  optional-decision depth={} sequences={} trie=",
+            "  optional-viability depth={} languages={} trie=",
             decision.required_lookahead(),
-            decision.frozen_sequence_count(),
+            decision.frozen_language_count(),
         )
         .expect("writing to a String cannot fail");
-        render_optional_decision_node(rendered, decision.trie(), grammar);
+        render_optional_viability_decision_node(rendered, decision.trie(), grammar);
         rendered.push('\n');
     }
 }
 
 /// Appends one optional consume-vs-skip trie in canonical semantic order.
-fn render_optional_decision_node(
+fn render_optional_viability_decision_node(
     rendered: &mut String,
-    node: &crate::OptionalDecisionNode,
+    node: &crate::OptionalViabilityDecisionNode,
     grammar: &crate::GrammarDescription,
 ) {
     rendered.push_str("(terminals=[");
@@ -386,7 +386,7 @@ fn render_optional_decision_node(
             write!(rendered, "@{predicate:?}").expect("writing to a String cannot fail");
         }
         rendered.push_str("=>");
-        render_optional_decision_node(rendered, edge.next(), grammar);
+        render_optional_viability_decision_node(rendered, edge.next(), grammar);
     }
     rendered.push_str("])");
 }
