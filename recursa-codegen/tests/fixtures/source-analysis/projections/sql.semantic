@@ -111,7 +111,7 @@ facts sql::DropProcedure first=[fixed:DROP] nullable=false extenders=[-] follow=
 facts sql::DropSchema first=[fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DROP fixed:SCHEMA
 facts sql::DropTable first=[fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DROP fixed:TABLE
 facts sql::DropView first=[fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DROP fixed:VIEW
-facts sql::Statement first=[fixed:CREATE,fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:CREATE fixed:TABLE | fixed:CREATE fixed:VIEW | fixed:CREATE fixed:INDEX | fixed:CREATE fixed:SCHEMA | fixed:CREATE fixed:FUNCTION | fixed:CREATE fixed:PROCEDURE | fixed:DROP fixed:TABLE | fixed:DROP fixed:VIEW | fixed:DROP fixed:INDEX | fixed:DROP fixed:SCHEMA | fixed:DROP fixed:FUNCTION | fixed:DROP fixed:PROCEDURE
+facts sql::Statement first=[fixed:CREATE,fixed:DROP] nullable=false extenders=[-] follow=[EOF] first^k=fixed:CREATE,fixed:DROP fixed:FUNCTION,fixed:INDEX,fixed:PROCEDURE,fixed:SCHEMA,fixed:TABLE,fixed:VIEW
 
 [decisions]
 dispatch sql::Statement enum depth=2 caller-fallback=-

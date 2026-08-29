@@ -654,27 +654,26 @@ impl From<CaptureMode> for PlannedCapturePolicy {
 
 /// Converts one analyzed FIRST position into a runtime dispatch condition.
 pub(super) fn planned_dispatch_position(
-    position: &FirstPosition,
+    position: &crate::DispatchPosition,
     grammar: &crate::GrammarDescription,
     kind_count: usize,
 ) -> Result<DispatchPositionPlan, String> {
-    let text_predicate = position
-        .text_predicate
-        .map(|predicate| {
-            grammar
-                .text_predicates
-                .get(predicate.index())
-                .ok_or_else(|| "frozen dispatch references an unknown text predicate".to_owned())
-                .map(|predicate| match predicate {
-                    TextPredicate::Any => PlannedTextPredicate::Any,
-                    TextPredicate::Exact(text) => PlannedTextPredicate::Exact(text.clone()),
-                    TextPredicate::OneOf(options) => PlannedTextPredicate::OneOf(options.clone()),
-                    TextPredicate::NotIn(options) => PlannedTextPredicate::NotIn(options.clone()),
-                })
-        })
-        .transpose()?;
+    let text_predicate = position.text_predicate().map(|predicate| match predicate {
+        TextPredicate::Any => PlannedTextPredicate::Any,
+        TextPredicate::Exact(text) => PlannedTextPredicate::Exact(text.clone()),
+        TextPredicate::OneOf(options) => PlannedTextPredicate::OneOf(options.clone()),
+        TextPredicate::NotIn(options) => PlannedTextPredicate::NotIn(options.clone()),
+    });
+    let first_position = FirstPosition {
+        kinds: position.kinds().clone(),
+        text_predicate: None,
+    };
     Ok(DispatchPositionPlan {
-        expected: ExpectedSet::from_positions(std::slice::from_ref(position), grammar, kind_count)?,
+        expected: ExpectedSet::from_positions(
+            std::slice::from_ref(&first_position),
+            grammar,
+            kind_count,
+        )?,
         text_predicate,
     })
 }
