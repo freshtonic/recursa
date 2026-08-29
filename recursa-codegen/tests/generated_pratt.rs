@@ -166,12 +166,7 @@ fn pratt_diagrams_render_frozen_roles_binding_powers_and_operands() {
     assert!(
         contains_text_sequence(
             diagram,
-            &[
-                "infix lbp=30 rbp=30 Power",
-                "Expr",
-                "^",
-                "Expr",
-            ],
+            &["infix lbp=30 rbp=30 Power", "Expr", "^", "Expr",],
         ),
         "infix lhs, tail, and binding powers must be rendered:\n{}",
         expression.1,

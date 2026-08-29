@@ -221,6 +221,10 @@ _Avoid_: Bounded FIRST expansion, runtime grammar rediscovery
 A frozen predictive consume-or-skip strategy for one optional parse site. Analysis compares one occurrence plus the owning sequence tail against that tail alone, retaining exact token-text partitions and an explicit caller-FOLLOW fallback; generated parsing only executes the frozen decision.
 _Avoid_: Trial parsing, first-token optional commitment
 
+**Suffix-proving viability**:
+The optional viability decision variant for an element whose FIRST overlaps caller FOLLOW and whose bounded prefix language is closed. The trie walks the element's own prefixes; a fully matched or depth-exhausted prefix consumes unconditionally, and a sticky unconditional Skip fallback below the root returns diverging input to the caller. Open element languages keep the greedy legacy selector.
+_Avoid_: Backtracking optional, speculative parse
+
 **Parse plan**:
 The immutable executable plan for parsing one materialized grammar type, formed by joining source-independent semantic decisions with source construction and capture facts. Generation renders it without rediscovering grammar semantics.
 _Avoid_: Generated parse body, analysis facts

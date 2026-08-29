@@ -847,7 +847,12 @@ impl DecisionProducts {
             .set(INDEPENDENT_DECISION_VALIDATIONS.get().saturating_add(1));
         let first_sequences = FirstSequenceAnalysis::for_grammar(grammar);
         let caller_first_by_site = crate::analysis::caller_first_by_site_for_replay(grammar);
-        self.validate_with_first_sequences(grammar, semantic, &first_sequences, &caller_first_by_site)
+        self.validate_with_first_sequences(
+            grammar,
+            semantic,
+            &first_sequences,
+            &caller_first_by_site,
+        )
     }
 
     /// Validates cross-table identities that are independent of decision reconstruction.
@@ -1015,8 +1020,7 @@ impl DecisionProducts {
         caller_first_by_site: &[Vec<FirstPosition>],
     ) -> Result<(), DecisionInvariant> {
         self.validate_structure(grammar)?;
-        let expected =
-            plan_decisions(grammar, semantic, first_sequences, caller_first_by_site).0;
+        let expected = plan_decisions(grammar, semantic, first_sequences, caller_first_by_site).0;
         if self.follow_recipes_by_site != expected.follow_recipes_by_site {
             return Err(DecisionInvariant::FollowRecipeMismatch);
         }
@@ -1120,6 +1124,12 @@ pub(crate) fn plan_decisions(
 ) -> ConstructedDecisionProducts {
     #[cfg(test)]
     DECISION_PLAN_CONSTRUCTIONS.set(DECISION_PLAN_CONSTRUCTIONS.get().saturating_add(1));
+    // An empty slice deliberately disables caller-overlap planning (test replays);
+    // any other length mismatch would silently disable it site-by-site instead.
+    debug_assert!(
+        caller_first_by_site.is_empty() || caller_first_by_site.len() == grammar.sites.len(),
+        "caller FOLLOW positions must align with grammar sites",
+    );
     // Build dispatch, container, Pratt, and failure products from the same semantic snapshot to prevent phase drift.
     let mut follow_recipes_by_site = vec![FollowRecipe::Caller; grammar.sites.len()];
     let mut dispatches = Vec::new();
@@ -1492,7 +1502,10 @@ struct OptionalSuffixKey {
 /// With `suffix_proving`, the consuming language is the element's own bounded prefix set and the
 /// decision proves viability by suffix: a fully matched or depth-exhausted consuming prefix
 /// consumes unconditionally, while input that diverges from every consuming prefix skips through
-/// a sticky unconditional fallback so the caller keeps tokens the element cannot claim.
+/// a sticky unconditional fallback so the caller keeps tokens the element cannot claim. At a
+/// node where one consuming prefix can already end while another continues, Consume outranks
+/// the sticky Skip — an early-endable element keeps the legacy greedy commitment rather than
+/// skipping input that its longer prefixes no longer match.
 fn freeze_optional_viability_decision(
     consuming: &[FirstSequence],
     skipping: &[FirstSequence],
@@ -1569,7 +1582,14 @@ fn freeze_optional_viability_decision(
     });
     state.sort_unstable();
     state.dedup();
-    let trie = freeze_optional_state(&suffixes, &state, false, sticky, grammar, &mut BTreeMap::new());
+    let trie = freeze_optional_state(
+        &suffixes,
+        &state,
+        false,
+        sticky,
+        grammar,
+        &mut BTreeMap::new(),
+    );
     assert!(optional_edges_are_disjoint(&trie, grammar));
     trie
 }
@@ -1585,9 +1605,15 @@ fn freeze_optional_state(
     matched_prefix: bool,
     sticky: Option<OptionalSuffixId>,
     grammar: &GrammarDescription,
-    memo: &mut BTreeMap<(bool, Vec<OptionalSuffixId>), OptionalViabilityDecisionNode>,
+    memo: &mut BTreeMap<
+        (bool, Option<OptionalSuffixId>, Vec<OptionalSuffixId>),
+        OptionalViabilityDecisionNode,
+    >,
 ) -> OptionalViabilityDecisionNode {
-    let memo_key = (matched_prefix, state.to_vec());
+    // `sticky` is constant within one builder invocation, but it joins the memo
+    // key so a future shared or hoisted memo cannot conflate tries built under
+    // different fallback regimes.
+    let memo_key = (matched_prefix, sticky, state.to_vec());
     if let Some(frozen) = memo.get(&memo_key) {
         return frozen.clone();
     }
@@ -3971,8 +3997,23 @@ mod tests {
     /// (`WITH`) and no static tail exists, so only the second lookahead token
     /// (`TIME` versus `UNIQUE`) proves whether the optional is viable.
     fn suffix_proving_caller_overlap_optional_grammar() -> (GrammarDescription, SiteId) {
-        let mut grammar =
-            GrammarDescription::new("caller-suffix-overlap", 6, 5, TextEquivalence::Sensitive);
+        caller_overlap_optional_grammar_at_lookahead(5)
+    }
+
+    /// The caller-overlap fixture at one configurable bounded depth.
+    ///
+    /// At depth 5 the element `WITH TIME ZONE` is a closed prefix language;
+    /// at depth 2 its sequences truncate, so the element is open and the
+    /// suffix-proving path must decline.
+    fn caller_overlap_optional_grammar_at_lookahead(
+        max_lookahead: usize,
+    ) -> (GrammarDescription, SiteId) {
+        let mut grammar = GrammarDescription::new(
+            "caller-suffix-overlap",
+            6,
+            max_lookahead,
+            TextEquivalence::Sensitive,
+        );
         let with_tok = token(&mut grammar, "WITH", 0);
         let time_tok = token(&mut grammar, "TIME", 2);
         let zone_tok = token(&mut grammar, "ZONE", 4);
@@ -4010,14 +4051,7 @@ mod tests {
             );
             sequence
         };
-        let qualifier = triple(
-            &mut grammar,
-            "Qualifier",
-            with_tok,
-            time_tok,
-            zone_tok,
-            10,
-        );
+        let qualifier = triple(&mut grammar, "Qualifier", with_tok, time_tok, zone_tok, 10);
         let unique_keys = triple(
             &mut grammar,
             "UniqueKeys",
@@ -4157,6 +4191,35 @@ mod tests {
         assert!(
             proven.edges().is_empty(),
             "the proven prefix needs no further lookahead",
+        );
+    }
+
+    #[test]
+    fn open_element_languages_keep_the_greedy_legacy_selector() {
+        let (grammar, optional) = caller_overlap_optional_grammar_at_lookahead(2);
+        let report = crate::analyze(&grammar);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == crate::DiagnosticCode::NullableFollowOverlap),
+            "the caller overlap still warns when no decision can prove the suffix",
+        );
+        let output = report.output.unwrap_or_else(|| {
+            panic!(
+                "caller overlap remains a warning rather than blocking generation: {:?}",
+                report.diagnostics,
+            )
+        });
+        let machine = output
+            .decisions()
+            .container_machines()
+            .iter()
+            .find(|machine| machine.site() == optional)
+            .expect("the fixture optional site has a container machine");
+        assert!(
+            machine.optional_viability_decision().is_none(),
+            "an element whose bounded prefixes truncate must not divergence-skip",
         );
     }
 
