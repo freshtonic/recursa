@@ -1194,7 +1194,42 @@ fn an_authored_explorer_entry_method_collision_is_diagnosed_before_emission() {
 }
 
 #[test]
-fn source_edits_select_a_fresh_generation_in_the_same_build_directory() {
+fn semantic_source_edits_select_a_fresh_generation_in_the_same_build_directory() {
+    let package = scaffold_fixture();
+    let first = run_fixture(&package);
+    assert!(
+        first.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let before = generation_directories(&target_dir(&package));
+    assert!(
+        !before.is_empty(),
+        "the first build must publish a Generation"
+    );
+
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read compound grammar");
+    fs::write(
+        &grammar,
+        source.replace(r#"ignore = r"[ \t\n\r]+","#, r#"ignore = r"[ \t\r\n]+","#),
+    )
+    .expect("edit compound grammar lexical plan");
+    let second = run_fixture(&package);
+    assert!(
+        second.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let after = generation_directories(&target_dir(&package));
+    assert!(
+        after.len() > before.len(),
+        "before={before:?}\nafter={after:?}"
+    );
+}
+
+#[test]
+fn semantically_neutral_source_edits_reuse_the_published_generation() {
     let package = scaffold_fixture();
     let first = run_fixture(&package);
     assert!(
@@ -1210,8 +1245,8 @@ fn source_edits_select_a_fresh_generation_in_the_same_build_directory() {
 
     let grammar = package.path().join("src/grammar.rs");
     let mut source = fs::read_to_string(&grammar).expect("read compound grammar");
-    source.push_str("\n// identity-changing source edit\n");
-    fs::write(&grammar, source).expect("edit compound grammar");
+    source.push_str("\n// semantically neutral source edit\n");
+    fs::write(&grammar, source).expect("edit compound grammar comment");
     let second = run_fixture(&package);
     assert!(
         second.status.success(),
@@ -1219,9 +1254,9 @@ fn source_edits_select_a_fresh_generation_in_the_same_build_directory() {
         String::from_utf8_lossy(&second.stderr)
     );
     let after = generation_directories(&target_dir(&package));
-    assert!(
-        after.len() > before.len(),
-        "before={before:?}\nafter={after:?}"
+    assert_eq!(
+        after, before,
+        "a comment-only edit must not relocate the published Generation"
     );
 }
 
