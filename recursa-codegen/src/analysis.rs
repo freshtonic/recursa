@@ -9886,6 +9886,14 @@ fn optional_static_tail_is_decidable(
     let Some(tail) = site_sequence_tail(site_id, grammar) else {
         return false;
     };
+    let tail_is_nullable = first_sequences
+        .first_batch([tail])
+        .into_iter()
+        .flatten()
+        .any(|sequence| sequence.positions.is_empty() && sequence.ends());
+    if tail_is_nullable {
+        return false;
+    }
     if !tail
         .iter()
         .any(|tail_site| grammar.sites[tail_site.index()].declaration == secondary_declaration)

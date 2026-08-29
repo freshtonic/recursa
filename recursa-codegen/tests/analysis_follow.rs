@@ -13,11 +13,15 @@ struct Builder {
 
 impl Builder {
     fn new(name: &str, kinds: &[&str]) -> Self {
+        Self::with_lookahead(name, kinds, 1)
+    }
+
+    fn with_lookahead(name: &str, kinds: &[&str], max_lookahead: usize) -> Self {
         let mut builder = Self {
             grammar: GrammarDescription::new(
                 name,
                 kinds.len(),
-                1,
+                max_lookahead,
                 recursa_codegen::TextEquivalence::AsciiInsensitive,
             ),
             next_byte: 0,
@@ -102,6 +106,103 @@ impl Builder {
         self.grammar
             .push_site(ParseSite::new(owner, target, declaration, container))
     }
+}
+
+fn mixed_static_and_caller_optional_overlap() -> (GrammarDescription, recursa_codegen::SiteId) {
+    let mut builder = Builder::with_lookahead("mixed-static-caller", &["X", "A", "B", "C", "D"], 2);
+    let x = builder.token("X", 0);
+    let a = builder.token("A", 1);
+    let b = builder.token("B", 2);
+    let c = builder.token("C", 3);
+    let d = builder.token("D", 4);
+
+    let ab = builder.grammar.next_type_id();
+    let ab_decl = builder.declaration("Ab");
+    let ab_a = builder.site(ab, a, "ab_a", ContainerShape::Direct);
+    let ab_b = builder.site(ab, b, "ab_b", ContainerShape::Direct);
+    assert_eq!(
+        builder.grammar.push_type(TypeDescription::new(
+            "Ab",
+            ab_decl,
+            TypeShape::Sequence {
+                sites: vec![ab_a, ab_b],
+            },
+        )),
+        ab,
+    );
+
+    let ac = builder.grammar.next_type_id();
+    let ac_decl = builder.declaration("Ac");
+    let ac_a = builder.site(ac, a, "ac_a", ContainerShape::Direct);
+    let ac_c = builder.site(ac, c, "ac_c", ContainerShape::Direct);
+    assert_eq!(
+        builder.grammar.push_type(TypeDescription::new(
+            "Ac",
+            ac_decl,
+            TypeShape::Sequence {
+                sites: vec![ac_a, ac_c],
+            },
+        )),
+        ac,
+    );
+
+    let owner = builder.grammar.next_type_id();
+    let owner_decl = builder.declaration("Owner");
+    let required_x = builder.site(owner, x, "required_x", ContainerShape::Direct);
+    let optional_ab = builder.site(
+        owner,
+        ab,
+        "optional_ab",
+        ContainerShape::optional(ContainerShape::Direct),
+    );
+    let optional_ac = builder.site(
+        owner,
+        ac,
+        "optional_ac",
+        ContainerShape::optional(ContainerShape::Direct),
+    );
+    assert_eq!(
+        builder.grammar.push_type(TypeDescription::new(
+            "Owner",
+            owner_decl,
+            TypeShape::Sequence {
+                sites: vec![required_x, optional_ab, optional_ac],
+            },
+        )),
+        owner,
+    );
+
+    let ad = builder.grammar.next_type_id();
+    let ad_decl = builder.declaration("Ad");
+    let ad_a = builder.site(ad, a, "ad_a", ContainerShape::Direct);
+    let ad_d = builder.site(ad, d, "ad_d", ContainerShape::Direct);
+    assert_eq!(
+        builder.grammar.push_type(TypeDescription::new(
+            "Ad",
+            ad_decl,
+            TypeShape::Sequence {
+                sites: vec![ad_a, ad_d],
+            },
+        )),
+        ad,
+    );
+
+    let root = builder.grammar.next_type_id();
+    let root_decl = builder.declaration("Root");
+    let owner_site = builder.site(root, owner, "owner", ContainerShape::Direct);
+    let caller_ad = builder.site(root, ad, "caller_ad", ContainerShape::Direct);
+    assert_eq!(
+        builder.grammar.push_type(TypeDescription::new(
+            "Root",
+            root_decl,
+            TypeShape::Sequence {
+                sites: vec![owner_site, caller_ad],
+            },
+        )),
+        root,
+    );
+    builder.grammar.entry_types.push(root);
+    (builder.grammar, optional_ab)
 }
 
 fn nested_nullable_follow(predicate_match: bool) -> (GrammarDescription, recursa_codegen::SiteId) {
@@ -285,6 +386,21 @@ fn nested_nullable_tail_warning_is_predicate_aware_and_keeps_output() {
 
     let (refined, _) = nested_nullable_follow(false);
     assert!(analyze(&refined).diagnostics.is_empty());
+}
+
+#[test]
+fn decidable_static_optional_tail_does_not_hide_same_cell_caller_follow() {
+    let (grammar, optional_ab) = mixed_static_and_caller_optional_overlap();
+    let report = analyze(&grammar);
+
+    assert!(report.output.is_some(), "{:?}", report.diagnostics);
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == DiagnosticCode::NullableFollowOverlap
+            && matches!(
+                diagnostic.conflict_remedy,
+                Some(ConflictRemedy::ReviewNullableFollow { site }) if site == optional_ab
+            )
+    }));
 }
 
 #[test]
