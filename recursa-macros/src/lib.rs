@@ -12,7 +12,7 @@ use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Type, parse_macro_input};
 
 /// Matching-version protocol expected by generated root and Node loaders.
-const PRIVATE_PROTOCOL: u32 = 2;
+const PRIVATE_PROTOCOL: u32 = 3;
 
 /// Marks a source declaration as a grammar Node and loads its generated body.
 ///
@@ -251,6 +251,24 @@ fn valid_node_file(name: &str) -> bool {
 /// `#[lex(..., admits(Name))]`; its generated type then accepts exactly that canonical fixed-token
 /// membership in addition to its content kind. Legacy fixed-token names remain valid inside
 /// `admits(...)` while consumers migrate.
+///
+/// Closed source-backed matchers are declared centrally in `matchers { ... }` and bound by a
+/// same-named content-token field using `#[lex(matcher)]`. The supported constructors are
+/// `same_delimiter(opener = r"...")`, `nested(opener = "...", closer = "...")`,
+/// `next_exclusion(pattern = r"...", excluded = r"...")`,
+/// `operator_run(characters = "...", fences = ["..."], trailing = "...", qualifying = "...")`,
+/// and `physical_line(prefix = r"...")`. `physical_line` includes the first LF, CRLF, or CR
+/// terminator after its prefix, or extends to EOF when no terminator remains. The same vocabulary
+/// is available as named non-emitting rules in `ignore { ... }`.
+///
+/// Each constructor accepts an optional `priority = N`. Selection compares final matched byte
+/// extent, then exact fixed-token status, then explicit priority; declaration order is never a
+/// tie-breaker. Equal unresolved priorities are rejected during source analysis. Unterminated
+/// delimited and nested matches become generated lexical errors spanning their opener through EOF
+/// and expose stable mechanism-specific codes and opener anchors.
+/// Legacy callbacks remain available for disjoint migration rules; source analysis rejects a
+/// callback whose starter overlaps another rule because discovering its final extent would require
+/// speculatively executing authored code.
 ///
 /// The analyzer validates the declaration and owns all generated bindings. This procedural macro
 /// intentionally emits no runtime items itself.

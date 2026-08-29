@@ -19,8 +19,8 @@ use regex_automata::dfa::{Automaton as _, dense};
 use regex_automata::{Anchored, Input, MatchKind};
 
 use crate::source_model::{
-    AuthoredFixedTokenClass, SourceModel, SourceModeledGrammar, SourceSite, TokenDefinitionKind,
-    canonical_fixed_spelling,
+    AuthoredFixedTokenClass, ClosedMatcher, SourceModel, SourceModeledGrammar, SourceSite,
+    TokenDefinitionKind, canonical_fixed_spelling,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -93,23 +93,30 @@ impl LexicalPlan {
         bases.sort_by(|(left, left_kind), (right, right_kind)| {
             (
                 &left.pattern,
+                &left.closed_matcher,
                 left.target_names.as_slice(),
                 left_kind,
                 left.authored_priority,
             )
                 .cmp(&(
                     &right.pattern,
+                    &right.closed_matcher,
                     right.target_names.as_slice(),
                     right_kind,
                     right.authored_priority,
                 ))
         });
         for (base, kind) in bases {
+            let closed = base
+                .closed_matcher
+                .as_ref()
+                .map_or_else(String::new, |matcher| format!(" closed={matcher:?}"));
             writeln!(
                 rendered,
-                "base {} pattern={:?} targets=[{}] priority={}",
+                "base {} pattern={:?}{} targets=[{}] priority={}",
                 kind,
                 base.pattern,
+                closed,
                 base.target_names.as_slice().join(","),
                 base.authored_priority.unwrap_or(0),
             )
@@ -172,34 +179,59 @@ impl LexicalPlan {
         rules.sort_by(|(left, left_kind), (right, right_kind)| {
             (
                 &left.matcher,
+                &left.closed_matcher,
                 left_kind,
                 left.role,
                 lexical_priority_projection_key(left.priority),
             )
                 .cmp(&(
                     &right.matcher,
+                    &right.closed_matcher,
                     right_kind,
                     right.role,
                     lexical_priority_projection_key(right.priority),
                 ))
         });
         for (rule, kind) in rules {
+            let closed = rule
+                .closed_matcher
+                .as_ref()
+                .map_or_else(String::new, |matcher| format!(" closed={matcher:?}"));
             writeln!(
                 rendered,
-                "rule {:?} kind={} priority={:?}",
-                rule.matcher, kind, rule.priority,
+                "rule {:?}{} kind={} priority={:?}",
+                rule.matcher, closed, kind, rule.priority,
             )
             .expect("writing to String cannot fail");
         }
         let mut non_token_rules = self.non_token_rules.iter().collect::<Vec<_>>();
         non_token_rules.sort_by(|left, right| {
-            (&left.matcher, left.outcome).cmp(&(&right.matcher, right.outcome))
+            (
+                &left.matcher,
+                &left.closed_matcher,
+                lexical_priority_projection_key(left.priority),
+                left.outcome,
+            )
+                .cmp(&(
+                    &right.matcher,
+                    &right.closed_matcher,
+                    lexical_priority_projection_key(right.priority),
+                    right.outcome,
+                ))
         });
         for rule in non_token_rules {
+            let closed = rule
+                .closed_matcher
+                .as_ref()
+                .map_or_else(String::new, |matcher| format!(" closed={matcher:?}"));
+            let priority = match rule.priority {
+                LexicalPriority::Pattern { authored: None } => String::new(),
+                priority => format!(" priority={priority:?}"),
+            };
             writeln!(
                 rendered,
-                "non-token {:?} outcome={:?}",
-                rule.matcher, rule.outcome
+                "non-token {:?}{}{} outcome={:?}",
+                rule.matcher, closed, priority, rule.outcome
             )
             .expect("writing to String cannot fail");
         }
@@ -224,8 +256,12 @@ pub(crate) fn kind_label(identity: &TokenKindIdentity) -> String {
                 .callback
                 .as_ref()
                 .map_or_else(|| "-".to_owned(), crate::source_syntax::path_text);
+            let closed = base
+                .closed_matcher
+                .as_ref()
+                .map_or_else(String::new, |matcher| format!(":closed={matcher:?}"));
             format!(
-                "content:{:?}:callback={callback}:priority={:?}",
+                "content:{:?}{closed}:callback={callback}:priority={:?}",
                 base.pattern, base.priority,
             )
         }
@@ -255,6 +291,8 @@ pub(crate) enum TokenKindIdentity {
 pub(crate) struct ContentBaseIdentity {
     /// Preserves the authored matcher pattern for validation and generation.
     pub(crate) pattern: String,
+    /// Preserves the closed scanning mechanism, when centrally declared.
+    pub(crate) closed_matcher: Option<ClosedMatcher>,
     /// Opaque callback invoked for a match, if authored.
     pub(crate) callback: Option<syn::Path>,
     /// Controls deterministic selection among competing lexical matchers.
@@ -270,6 +308,8 @@ pub(crate) struct ContentBasePlan {
     pub(crate) target_names: Vec<String>,
     /// Preserves the authored matcher pattern for validation and generation.
     pub(crate) pattern: String,
+    /// Preserves the closed scanning mechanism, when centrally declared.
+    pub(crate) closed_matcher: Option<ClosedMatcher>,
     /// Opaque callback invoked for a match, if authored.
     pub(crate) callback: Option<syn::Path>,
     /// Preserves an explicitly authored pattern priority, when present.
@@ -294,16 +334,33 @@ struct PatternContender {
     authored_priority: Option<u32>,
     /// Whether authors may resolve an overlap by assigning a priority.
     priority_authorable: bool,
+    /// Whether the starter alone determines the match's final extent.
+    final_extent: PatternFinalExtent,
     /// Observable effect when this matcher wins.
     outcome: LexicalPatternOutcome,
     /// Retains source sites in deterministic diagnostic order.
     sites: Vec<SourceSite>,
 }
 
+/// Describes how much lexical planning knows about a contender's final extent.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum PatternFinalExtent {
+    /// The anchored regular-expression extent is final.
+    Exact,
+    /// A closed scanner computes the final extent after its starter matches.
+    Closed,
+    /// Authored callback code may extend the starter and cannot be run speculatively.
+    OpaqueCallback,
+}
+
 /// Equivalent non-emitting lexer records merged for planning.
 struct NonTokenRuleGroup {
     /// Preserves the authored matcher pattern for validation and generation.
     pattern: String,
+    /// Preserves the closed scanning mechanism, when centrally declared.
+    closed_matcher: Option<ClosedMatcher>,
+    /// Preserves explicit matcher arbitration priority.
+    authored_priority: Option<u32>,
     /// Effect shared by all records in the group.
     outcome: crate::source_model::NonTokenLexerOutcome,
     /// Retains source sites in deterministic diagnostic order.
@@ -316,6 +373,10 @@ struct RetainedFixedMatcher {
     spelling: String,
     /// Whether ASCII case variants are equivalent matches.
     ascii_insensitive: bool,
+    /// Authored names that emit this canonical fixed spelling.
+    target_names: Vec<String>,
+    /// Authored definition sites used when an opaque callback overlaps the spelling.
+    sites: Vec<SourceSite>,
 }
 
 /// Normalized fixed spelling considered during carrier proof.
@@ -326,6 +387,10 @@ struct FixedMatcher {
     word_shaped: bool,
     /// Whether ASCII case variants are equivalent matches.
     ascii_insensitive: bool,
+    /// Authored names that emit this canonical fixed spelling.
+    target_names: Vec<String>,
+    /// Authored definition sites for source diagnostics.
+    sites: Vec<SourceSite>,
 }
 
 /// Proof that one or more content kinds recognize a fixed keyword spelling.
@@ -465,6 +530,8 @@ impl ParserTargetPlan {
 pub(crate) struct LexicalRule {
     /// Supplies the matcher used to validate or execute the lexical plan.
     pub(crate) matcher: LexicalMatcher,
+    /// Preserves the closed scanning mechanism, when centrally declared.
+    pub(crate) closed_matcher: Option<ClosedMatcher>,
     /// Identifies the token kind produced by this lexical rule.
     pub(crate) kind: KindId,
     /// Supplies the role used to validate or execute the lexical plan.
@@ -478,6 +545,10 @@ pub(crate) struct LexicalRule {
 pub(crate) struct NonTokenLexicalRule {
     /// Supplies the matcher used to validate or execute the lexical plan.
     pub(crate) matcher: LexicalMatcher,
+    /// Preserves the closed scanning mechanism, when centrally declared.
+    pub(crate) closed_matcher: Option<ClosedMatcher>,
+    /// Controls deterministic selection among competing lexical matchers.
+    pub(crate) priority: LexicalPriority,
     /// Supplies the outcome used to validate or execute the lexical plan.
     pub(crate) outcome: NonTokenLexicalOutcome,
     /// Retains source sites in deterministic diagnostic order.
@@ -824,6 +895,8 @@ pub(crate) enum LexicalDefinitionMetadata {
     Content {
         /// Preserves the authored matcher pattern for validation and generation.
         pattern: String,
+        /// Preserves the closed scanning mechanism, when centrally declared.
+        closed_matcher: Option<ClosedMatcher>,
         /// Supplies the callback used to validate or execute the lexical plan.
         callback: Option<syn::Path>,
         /// Preserves an explicitly authored pattern priority, when present.
@@ -890,14 +963,18 @@ pub(crate) enum LexicalRemedy {
 fn non_token_rule_groups(source: &SourceModeledGrammar) -> Vec<NonTokenRuleGroup> {
     let mut groups = Vec::<NonTokenRuleGroup>::new();
     for record in &source.source_model().lexer_records {
-        if let Some(group) = groups
-            .iter_mut()
-            .find(|group| group.pattern == record.pattern && group.outcome == record.outcome)
-        {
+        if let Some(group) = groups.iter_mut().find(|group| {
+            group.pattern == record.pattern
+                && group.closed_matcher == record.closed_matcher
+                && group.authored_priority == record.priority
+                && group.outcome == record.outcome
+        }) {
             group.sites.push(record.site.clone());
         } else {
             groups.push(NonTokenRuleGroup {
                 pattern: record.pattern.clone(),
+                closed_matcher: record.closed_matcher.clone(),
+                authored_priority: record.priority,
                 outcome: record.outcome,
                 sites: NonEmpty::new(record.site.clone()),
             });
@@ -909,8 +986,18 @@ fn non_token_rule_groups(source: &SourceModeledGrammar) -> Vec<NonTokenRuleGroup
         });
     }
     groups.sort_by(|left, right| {
-        (&left.pattern, non_token_source_outcome_key(left.outcome))
-            .cmp(&(&right.pattern, non_token_source_outcome_key(right.outcome)))
+        (
+            &left.pattern,
+            &left.closed_matcher,
+            left.authored_priority,
+            non_token_source_outcome_key(left.outcome),
+        )
+            .cmp(&(
+                &right.pattern,
+                &right.closed_matcher,
+                right.authored_priority,
+                non_token_source_outcome_key(right.outcome),
+            ))
     });
     groups
 }
@@ -935,25 +1022,36 @@ const fn plan_non_token_outcome(
 
 /// Derives the fixed matchers under the grammar keyword and lexical-selection policies.
 fn fixed_matchers(model: &SourceModel, text_equivalence: TextEquivalence) -> Vec<FixedMatcher> {
-    let mut fixed = BTreeMap::<String, (bool, bool)>::new();
+    let mut fixed = BTreeMap::<String, (bool, bool, Vec<String>, Vec<SourceSite>)>::new();
     for definition in &model.token_definitions {
-        let TokenDefinitionKind::Fixed(definition) = &definition.kind else {
+        let TokenDefinitionKind::Fixed(fixed_definition) = &definition.kind else {
             continue;
         };
-        let word_shaped = is_word_shaped(&definition.spelling);
-        let spelling = canonical_fixed_spelling(&definition.spelling, text_equivalence);
-        fixed.entry(spelling).or_insert((
-            word_shaped,
-            word_shaped && text_equivalence == TextEquivalence::AsciiInsensitive,
-        ));
+        let word_shaped = is_word_shaped(&fixed_definition.spelling);
+        let spelling = canonical_fixed_spelling(&fixed_definition.spelling, text_equivalence);
+        let (_, _, target_names, sites) = fixed.entry(spelling).or_insert_with(|| {
+            (
+                word_shaped,
+                word_shaped && text_equivalence == TextEquivalence::AsciiInsensitive,
+                Vec::new(),
+                Vec::new(),
+            )
+        });
+        target_names.push(definition.name.clone());
+        sites.extend(definition.definition_sites.iter().cloned());
     }
     fixed
         .into_iter()
         .map(
-            |(spelling, (word_shaped, ascii_insensitive))| FixedMatcher {
-                spelling,
-                word_shaped,
-                ascii_insensitive,
+            |(spelling, (word_shaped, ascii_insensitive, mut target_names, sites))| {
+                target_names.sort();
+                FixedMatcher {
+                    spelling,
+                    word_shaped,
+                    ascii_insensitive,
+                    target_names,
+                    sites,
+                }
             },
         )
         .collect()
@@ -1023,6 +1121,8 @@ fn retained_fixed_matchers(
         .map(|matcher| RetainedFixedMatcher {
             spelling: matcher.spelling.clone(),
             ascii_insensitive: matcher.ascii_insensitive,
+            target_names: matcher.target_names.clone(),
+            sites: matcher.sites.clone(),
         })
         .collect()
 }
@@ -1151,6 +1251,7 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
                             &kind_by_content_base,
                             &ContentBaseIdentity {
                                 pattern: base.pattern.clone(),
+                                closed_matcher: base.closed_matcher.clone(),
                                 callback: base.callback.clone(),
                                 priority: base.priority,
                             },
@@ -1178,6 +1279,7 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
                 kind: content_base_kind(&kind_by_content_base, &group.identity),
                 target_names,
                 pattern: group.identity.pattern.clone(),
+                closed_matcher: group.identity.closed_matcher.clone(),
                 callback: group.identity.callback.clone(),
                 authored_priority: group.identity.priority,
             }
@@ -1210,6 +1312,7 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
             .entry((role, matcher.clone(), kind))
             .or_insert(LexicalRule {
                 matcher,
+                closed_matcher: None,
                 kind,
                 role,
                 priority: LexicalPriority::Fixed,
@@ -1223,6 +1326,7 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
             .entry((role, matcher.clone(), kind))
             .or_insert(LexicalRule {
                 matcher,
+                closed_matcher: group.identity.closed_matcher.clone(),
                 kind,
                 role,
                 priority: LexicalPriority::Pattern {
@@ -1313,6 +1417,10 @@ pub(crate) fn plan_lexical(source: &SourceModeledGrammar) -> LexicalPlanReport {
             .into_iter()
             .map(|group| NonTokenLexicalRule {
                 matcher: LexicalMatcher::Regex(group.pattern),
+                closed_matcher: group.closed_matcher,
+                priority: LexicalPriority::Pattern {
+                    authored: group.authored_priority,
+                },
                 outcome: plan_non_token_outcome(group.outcome),
                 sites: group.sites,
             })
@@ -1428,6 +1536,7 @@ fn definition_conflict_diagnostics(
                         admitted_fixed_tokens.dedup();
                         LexicalDefinitionMetadata::Content {
                             pattern: content.pattern.clone(),
+                            closed_matcher: content.closed_matcher.clone(),
                             callback: content.callback.clone(),
                             authored_priority: content.priority,
                             admitted_fixed_tokens,
@@ -1435,6 +1544,7 @@ fn definition_conflict_diagnostics(
                     }
                     TokenDefinitionKind::LexicalBase(base) => LexicalDefinitionMetadata::Content {
                         pattern: base.pattern.clone(),
+                        closed_matcher: base.closed_matcher.clone(),
                         callback: base.callback.clone(),
                         authored_priority: base.priority,
                         admitted_fixed_tokens: Vec::new(),
@@ -1476,15 +1586,21 @@ fn definition_metadata_key(metadata: &LexicalDefinitionMetadata) -> String {
         } => format!("fixed:{class:?}:{canonical_spelling:?}"),
         LexicalDefinitionMetadata::Content {
             pattern,
+            closed_matcher,
             callback,
             authored_priority,
             admitted_fixed_tokens,
-        } => format!(
-            "content:{pattern:?}:callback={}:priority={authored_priority:?}:admits={admitted_fixed_tokens:?}",
-            callback
+        } => {
+            let closed = closed_matcher
                 .as_ref()
-                .map_or_else(|| "-".to_owned(), crate::source_syntax::path_text),
-        ),
+                .map_or_else(String::new, |matcher| format!(":closed={matcher:?}"));
+            format!(
+                "content:{pattern:?}{closed}:callback={}:priority={authored_priority:?}:admits={admitted_fixed_tokens:?}",
+                callback
+                    .as_ref()
+                    .map_or_else(|| "-".to_owned(), crate::source_syntax::path_text),
+            )
+        }
     }
 }
 
@@ -1494,6 +1610,7 @@ fn content_base_identity(
 ) -> ContentBaseIdentity {
     ContentBaseIdentity {
         pattern: content.pattern.clone(),
+        closed_matcher: content.closed_matcher.clone(),
         callback: content.callback.clone(),
         priority: content.priority,
     }
@@ -1523,6 +1640,7 @@ fn content_base_groups(source: &SourceModel) -> Vec<ContentBaseGroup<'_>> {
     grouped.sort_by(|left, right| {
         (
             &left.identity.pattern,
+            &left.identity.closed_matcher,
             left.identity.priority,
             left.identity
                 .callback
@@ -1531,6 +1649,7 @@ fn content_base_groups(source: &SourceModel) -> Vec<ContentBaseGroup<'_>> {
         )
             .cmp(&(
                 &right.identity.pattern,
+                &right.identity.closed_matcher,
                 right.identity.priority,
                 right
                     .identity
@@ -1551,6 +1670,7 @@ fn content_base_identity_for_definition(
         TokenDefinitionKind::Content(content) => Some(content_base_identity(content)),
         TokenDefinitionKind::LexicalBase(base) => Some(ContentBaseIdentity {
             pattern: base.pattern.clone(),
+            closed_matcher: base.closed_matcher.clone(),
             callback: base.callback.clone(),
             priority: base.priority,
         }),
@@ -1591,8 +1711,9 @@ fn lexical_diagnostics(
             Ok(()) => contenders.push(PatternContender {
                 pattern: group.pattern.clone(),
                 target_names: Vec::new(),
-                authored_priority: None,
-                priority_authorable: false,
+                authored_priority: group.authored_priority,
+                priority_authorable: group.closed_matcher.is_some(),
+                final_extent: closed_pattern_final_extent(group.closed_matcher.as_ref()),
                 outcome: match group.outcome {
                     crate::source_model::NonTokenLexerOutcome::NonEmitting => {
                         LexicalPatternOutcome::NonEmitting
@@ -1622,6 +1743,11 @@ fn lexical_diagnostics(
                     .collect(),
                 authored_priority: group.identity.priority,
                 priority_authorable: group.priority_authorable(),
+                final_extent: if group.identity.callback.is_some() {
+                    PatternFinalExtent::OpaqueCallback
+                } else {
+                    closed_pattern_final_extent(group.identity.closed_matcher.as_ref())
+                },
                 outcome: if group.identity.callback.is_some() {
                     LexicalPatternOutcome::OpaqueCallback
                 } else {
@@ -1646,15 +1772,57 @@ fn lexical_diagnostics(
             left.authored_priority,
             left.outcome,
             &left.target_names,
+            left.final_extent,
         )
             .cmp(&(
                 &right.pattern,
                 right.authored_priority,
                 right.outcome,
                 &right.target_names,
+                right.final_extent,
             ))
     });
-    for (indices, witness) in pattern_ambiguities(&contenders, retained_fixed_matchers) {
+    for contender in &contenders {
+        if contender.final_extent != PatternFinalExtent::OpaqueCallback {
+            continue;
+        }
+        for fixed in retained_fixed_matchers {
+            let fixed_pattern = retained_fixed_pattern(fixed);
+            let Some(witness) = prefix_overlap_witness(&contender.pattern, &fixed_pattern) else {
+                continue;
+            };
+            let evidence_contenders = vec![
+                pattern_evidence(contender),
+                LexicalPatternEvidence {
+                    pattern: fixed_pattern,
+                    target_names: fixed.target_names.clone(),
+                    authored_priority: None,
+                    outcome: LexicalPatternOutcome::EmitsTokenKind,
+                },
+            ];
+            let mut sites = contender
+                .sites
+                .iter()
+                .cloned()
+                .chain(fixed.sites.iter().cloned())
+                .collect::<Vec<_>>();
+            sites = sorted_sites(source, sites);
+            diagnostics.push(LexicalDiagnostic {
+                code: LexicalDiagnosticCode::Rca3005,
+                sites,
+                evidence: LexicalDiagnosticEvidence::PatternOverlap {
+                    contenders: evidence_contenders.clone(),
+                    witness,
+                },
+                remedies: vec![LexicalRemedy::MakePatternsDisjoint {
+                    contenders: evidence_contenders,
+                }],
+            });
+        }
+    }
+    for ambiguity in pattern_ambiguities(&contenders, retained_fixed_matchers) {
+        let indices = ambiguity.indices;
+        let witness = ambiguity.witness;
         let evidence_contenders = indices
             .iter()
             .map(|&index| pattern_evidence(&contenders[index]))
@@ -1669,9 +1837,10 @@ fn lexical_diagnostics(
             .map(|&index| contenders[index].authored_priority.unwrap_or(0))
             .max()
             .expect("an ambiguity has contenders");
-        let (code, evidence) = if indices
-            .iter()
-            .any(|&index| contenders[index].authored_priority.is_none())
+        let (code, evidence) = if ambiguity.requires_disjoint_patterns
+            || indices
+                .iter()
+                .any(|&index| contenders[index].authored_priority.is_none())
         {
             (
                 LexicalDiagnosticCode::Rca3005,
@@ -1691,9 +1860,10 @@ fn lexical_diagnostics(
             )
         };
         let mut remedies = Vec::new();
-        if indices
-            .iter()
-            .any(|&index| contenders[index].priority_authorable)
+        if !ambiguity.requires_disjoint_patterns
+            && indices
+                .iter()
+                .any(|&index| contenders[index].priority_authorable)
         {
             remedies.push(LexicalRemedy::AssignDistinctPriority {
                 contenders: evidence_contenders.clone(),
@@ -1710,6 +1880,36 @@ fn lexical_diagnostics(
         });
     }
     diagnostics
+}
+
+/// Classifies whether a closed matcher changes the extent recognized by its starter pattern.
+fn closed_pattern_final_extent(matcher: Option<&ClosedMatcher>) -> PatternFinalExtent {
+    match matcher {
+        Some(ClosedMatcher::NextExclusion { .. }) | None => PatternFinalExtent::Exact,
+        Some(_) => PatternFinalExtent::Closed,
+    }
+}
+
+/// Renders one retained fixed spelling as the anchored language used by overlap proof.
+fn retained_fixed_pattern(matcher: &RetainedFixedMatcher) -> String {
+    if !matcher.ascii_insensitive {
+        return regex_syntax::escape(&matcher.spelling);
+    }
+    matcher
+        .spelling
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphabetic() {
+                format!(
+                    "[{}{}]",
+                    character.to_ascii_lowercase(),
+                    character.to_ascii_uppercase()
+                )
+            } else {
+                regex_syntax::escape(&character.to_string())
+            }
+        })
+        .collect()
 }
 
 /// Validates pattern.
@@ -1751,11 +1951,21 @@ fn accepts_empty<A: regex_automata::dfa::Automaton>(dfa: &A) -> bool {
     dfa.is_match_state(dfa.next_eoi_state(state))
 }
 
+/// One witnessed ambiguity that source analysis must reject before runtime rule selection.
+struct PatternAmbiguity {
+    /// Indices of the simultaneously applicable contenders.
+    indices: Vec<usize>,
+    /// Shortest known source prefix on which the contenders are simultaneously applicable.
+    witness: String,
+    /// Whether an opaque callback makes authored priorities insufficient to select safely.
+    requires_disjoint_patterns: bool,
+}
+
 /// Derives the pattern ambiguities under the grammar keyword and lexical-selection policies.
 fn pattern_ambiguities(
     contenders: &[PatternContender],
     retained_fixed_matchers: &[RetainedFixedMatcher],
-) -> Vec<(Vec<usize>, String)> {
+) -> Vec<PatternAmbiguity> {
     if contenders.len() < 2 {
         return Vec::new();
     }
@@ -1827,7 +2037,132 @@ fn pattern_ambiguities(
             frontier.push_back((next, next_witness, next_fixed_progress));
         }
     }
-    ambiguities.into_iter().collect()
+    let mut ambiguities = ambiguities
+        .into_iter()
+        .map(|(indices, witness)| PatternAmbiguity {
+            requires_disjoint_patterns: indices
+                .iter()
+                .any(|&index| contenders[index].final_extent == PatternFinalExtent::OpaqueCallback),
+            indices,
+            witness,
+        })
+        .collect::<Vec<_>>();
+
+    for left in 0..contenders.len() {
+        for right in left + 1..contenders.len() {
+            let left_extent = contenders[left].final_extent;
+            let right_extent = contenders[right].final_extent;
+            let opaque = left_extent == PatternFinalExtent::OpaqueCallback
+                || right_extent == PatternFinalExtent::OpaqueCallback;
+            let finalizing = left_extent == PatternFinalExtent::Closed
+                || right_extent == PatternFinalExtent::Closed;
+            if !opaque
+                && (!finalizing
+                    || contenders[left].authored_priority.unwrap_or(0)
+                        != contenders[right].authored_priority.unwrap_or(0))
+            {
+                continue;
+            }
+            if ambiguities.iter().any(|ambiguity| {
+                ambiguity.indices.contains(&left) && ambiguity.indices.contains(&right)
+            }) {
+                continue;
+            }
+            let Some(witness) =
+                prefix_overlap_witness(&contenders[left].pattern, &contenders[right].pattern)
+            else {
+                continue;
+            };
+            ambiguities.push(PatternAmbiguity {
+                indices: vec![left, right],
+                witness,
+                requires_disjoint_patterns: opaque,
+            });
+        }
+    }
+    ambiguities.sort_by(|left, right| {
+        (
+            &left.indices,
+            &left.witness,
+            left.requires_disjoint_patterns,
+        )
+            .cmp(&(
+                &right.indices,
+                &right.witness,
+                right.requires_disjoint_patterns,
+            ))
+    });
+    ambiguities
+}
+
+/// Finds a valid UTF-8 prefix on which both anchored patterns have accepted, at possibly different ends.
+fn prefix_overlap_witness(left: &str, right: &str) -> Option<String> {
+    type State = (
+        Option<regex_automata::util::primitives::StateID>,
+        Option<regex_automata::util::primitives::StateID>,
+        bool,
+        bool,
+    );
+
+    let (Ok(left_dfa), Ok(right_dfa)) = (dense::DFA::new(left), dense::DFA::new(right)) else {
+        return None;
+    };
+    let input = Input::new(b"").anchored(Anchored::Yes);
+    let (Ok(left_start), Ok(right_start)) = (
+        left_dfa.start_state_forward(&input),
+        right_dfa.start_state_forward(&input),
+    ) else {
+        return None;
+    };
+    let start = (Some(left_start), Some(right_start), false, false);
+    let mut seen = BTreeSet::from([start]);
+    let mut frontier = VecDeque::from([(start, Vec::<u8>::new())]);
+    while let Some(((left_state, right_state, left_matched, right_matched), witness)) =
+        frontier.pop_front()
+    {
+        let left_matched =
+            left_matched || left_state.is_some_and(|state| dfa_accepts(&left_dfa, state));
+        let right_matched =
+            right_matched || right_state.is_some_and(|state| dfa_accepts(&right_dfa, state));
+        if left_matched
+            && right_matched
+            && !witness.is_empty()
+            && let Ok(witness) = String::from_utf8(witness.clone())
+        {
+            return Some(witness);
+        }
+        for byte in u8::MIN..=u8::MAX {
+            let advance =
+                |dfa: &dense::DFA<Vec<u32>>,
+                 state: Option<regex_automata::util::primitives::StateID>| {
+                    state.and_then(|state| {
+                        let next = dfa.next_state(state, byte);
+                        (!dfa.is_dead_state(next) && !dfa.is_quit_state(next)).then_some(next)
+                    })
+                };
+            let next_left = advance(&left_dfa, left_state);
+            let next_right = advance(&right_dfa, right_state);
+            if (next_left.is_none() && !left_matched) || (next_right.is_none() && !right_matched) {
+                continue;
+            }
+            let next = (next_left, next_right, left_matched, right_matched);
+            if !seen.insert(next) {
+                continue;
+            }
+            let mut next_witness = witness.clone();
+            next_witness.push(byte);
+            frontier.push_back((next, next_witness));
+        }
+    }
+    None
+}
+
+/// Reports whether one anchored DFA state accepts at end of input.
+fn dfa_accepts(
+    dfa: &dense::DFA<Vec<u32>>,
+    state: regex_automata::util::primitives::StateID,
+) -> bool {
+    dfa.is_match_state(dfa.next_eoi_state(state))
 }
 
 /// Derives the sorted sites under the grammar keyword and lexical-selection policies.
@@ -1870,7 +2205,8 @@ impl CarrierProver {
             .enumerate()
             .map(|(group, definition)| CarrierCandidate::Emitting {
                 group,
-                opaque: definition.identity.callback.is_some(),
+                opaque: definition.identity.callback.is_some()
+                    || definition.identity.closed_matcher.is_some(),
                 priority: definition.identity.priority.unwrap_or(0),
             })
             .collect::<Vec<_>>();
@@ -1882,7 +2218,9 @@ impl CarrierProver {
         candidates.extend(
             non_token_records
                 .iter()
-                .map(|_| CarrierCandidate::NonEmitting { priority: 0 }),
+                .map(|record| CarrierCandidate::NonEmitting {
+                    priority: record.priority.unwrap_or(0),
+                }),
         );
         let (dfa, matcher_constructions) = if patterns.is_empty() {
             (None, 0)
@@ -2048,6 +2386,7 @@ mod tests {
     fn content_base_identity(pattern: &str) -> super::TokenKindIdentity {
         super::TokenKindIdentity::ContentBase(super::ContentBaseIdentity {
             pattern: pattern.to_owned(),
+            closed_matcher: None,
             callback: None,
             priority: None,
         })
@@ -2377,7 +2716,7 @@ struct Root {
     }
 
     #[test]
-    fn opaque_callback_silently_keeps_the_standalone_keyword_rule() {
+    fn opaque_callback_overlapping_a_standalone_keyword_fails_closed() {
         let source = source_model(
             r#"
 recursa::grammar! {
@@ -2396,21 +2735,19 @@ struct Root {
 
         let report = plan_lexical(&source);
 
-        assert!(report.diagnostics.is_empty());
-        let plan = report.plan.unwrap();
-        assert_eq!(
-            plan.keywords[0].recognition,
-            super::KeywordRecognition::Standalone
-        );
-        assert!(
-            plan.rules
-                .iter()
-                .any(|rule| { rule.matcher == super::LexicalMatcher::Fixed("IF".to_owned()) })
-        );
+        assert!(report.plan.is_none());
+        assert!(matches!(
+            report.diagnostics.as_slice(),
+            [super::LexicalDiagnostic {
+                code: super::LexicalDiagnosticCode::Rca3005,
+                evidence: super::LexicalDiagnosticEvidence::PatternOverlap { witness, .. },
+                ..
+            }] if witness == "IF"
+        ));
     }
 
     #[test]
-    fn central_only_opaque_callback_participates_in_carrier_proof_without_a_target_view() {
+    fn central_only_opaque_callback_overlapping_a_keyword_fails_closed() {
         let report = plan(
             r#"
 recursa::grammar! {
@@ -2430,15 +2767,15 @@ struct Root;
 "#,
         );
 
-        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        let plan = report.plan.unwrap();
-        assert_eq!(plan.content_bases.len(), 1);
-        assert!(plan.content_bases[0].target_names.is_empty());
-        assert_eq!(plan.parser_targets.len(), 0);
-        assert_eq!(
-            plan.keywords[0].recognition,
-            super::KeywordRecognition::Standalone
-        );
+        assert!(report.plan.is_none());
+        assert!(matches!(
+            report.diagnostics.as_slice(),
+            [super::LexicalDiagnostic {
+                code: super::LexicalDiagnosticCode::Rca3005,
+                evidence: super::LexicalDiagnosticEvidence::PatternOverlap { witness, .. },
+                ..
+            }] if witness == "IF"
+        ));
     }
 
     #[test]
@@ -3009,67 +3346,36 @@ struct Root;
     }
 
     #[test]
-    fn carrier_proof_accounts_for_the_priority_of_an_opaque_callback_winner() {
-        let callback_wins_source = source_model(
-            r#"
-recursa::grammar! {
-    module = crate,
-    keyword_matching = ascii_insensitive,
-}
+    fn opaque_callback_overlap_fails_closed_regardless_of_authored_priority() {
+        for callback_priority in [0, 2] {
+            let source = source_model(
+                &r#"
+recursa::grammar! { module = crate }
 
 #[derive(recursa::Node)]
-#[tok("IF", this)]
 struct Root {
     #[lex(pattern = r"[A-Za-z]+", priority = 1)]
     safe: Safe,
-    #[lex(pattern = r"[A-Za-z]+", callback = crate::scan_word, priority = 2)]
+    #[lex(pattern = r"[A-Za-z]+", callback = crate::scan_word, priority = CALLBACK_PRIORITY)]
     callback: Callback,
 }
-"#,
-        );
-        let callback_wins = plan_lexical(&callback_wins_source);
-        assert!(callback_wins.diagnostics.is_empty());
-        assert_eq!(
-            callback_wins.plan.unwrap().keywords[0].recognition,
-            super::KeywordRecognition::Standalone,
-        );
-
-        let safe_wins_source = source_model(
-            r#"
-recursa::grammar! {
-    module = crate,
-    keyword_matching = ascii_insensitive,
-}
-
-#[derive(recursa::Node)]
-#[tok("IF", this)]
-struct Root {
-    #[lex(pattern = r"[A-Za-z]+", priority = 1)]
-    safe: Safe,
-    #[lex(pattern = r"[A-Za-z]+", callback = crate::scan_word, priority = 0)]
-    callback: Callback,
-}
-"#,
-        );
-        let safe_wins = plan_lexical(&safe_wins_source);
-        assert!(safe_wins.diagnostics.is_empty());
-        let plan = safe_wins.plan.unwrap();
-        let super::KeywordRecognition::CombinedCarriers {
-            carrier,
-            additional_carriers,
-        } = &plan.keywords[0].recognition
-        else {
-            panic!("the higher-priority callback-free carrier should prove the keyword")
-        };
-        assert!(additional_carriers.is_empty());
-        assert_eq!(
-            plan.token_kinds[carrier.index()].identity,
-            super::TokenKindIdentity::ContentBase(super::ContentBaseIdentity {
-                pattern: r"[A-Za-z]+".to_owned(),
-                callback: None,
-                priority: Some(1),
-            }),
-        );
+"#
+                .replace("CALLBACK_PRIORITY", &callback_priority.to_string()),
+            );
+            let report = plan_lexical(&source);
+            assert!(report.plan.is_none());
+            assert!(matches!(
+                report.diagnostics.as_slice(),
+                [super::LexicalDiagnostic {
+                    code: super::LexicalDiagnosticCode::Rca3005,
+                    remedies,
+                    ..
+                }] if matches!(
+                    remedies.as_slice(),
+                    [super::LexicalRemedy::MakePatternsDisjoint { .. }]
+                )
+            ));
+        }
     }
 
     #[test]
@@ -3633,14 +3939,14 @@ recursa::grammar! { module = crate }
 
 recursa::tokens! {
     literals {
-        A => r"x" with crate::cb_a,
-        B => r"x" with crate::cb_b,
+        A => r"a" with crate::cb_a,
+        B => r"b" with crate::cb_b,
     }
 }
 
 #[derive(recursa::Node)]
 struct Root {
-    #[lex(pattern = r"x", priority = 1)]
+    #[lex(pattern = r"w", priority = 1)]
     winner: Winner,
 }
 "#,
@@ -3653,14 +3959,14 @@ recursa::grammar! { module = crate }
 
 recursa::tokens! {
     literals {
-        B => r"x" with crate::cb_b,
-        A => r"x" with crate::cb_a,
+        B => r"b" with crate::cb_b,
+        A => r"a" with crate::cb_a,
     }
 }
 
 #[derive(recursa::Node)]
 struct Root {
-    #[lex(pattern = r"x", priority = 1)]
+    #[lex(pattern = r"w", priority = 1)]
     winner: Winner,
 }
 "#,

@@ -9,6 +9,8 @@ pub struct TokenRecord {
     pub kind: TokenKind,
     /// Exact matched source extent.
     pub span: Span,
+    /// Structured lexical failure attached to this record, when its kind is the grammar error kind.
+    pub diagnostic: Option<crate::lex::LexDiagnostic>,
 }
 
 /// A lexing result that borrows source text and owns compact token records.

@@ -392,6 +392,20 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::pretty_hints_reject_missing_pretty_trait_empty_groups_and_tight_breaks --locked",
     },
     ProducerEvidence {
+        codes: &["RCA4000", "RCA4001", "RCA4002", "RCA4004"],
+        producer_source: "../recursa-core/src/lex.rs",
+        test_source: "tests/generated_lexing.rs",
+        test_name: "a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text",
+        command: "cargo test -p recursa-codegen --test generated_lexing a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text --locked",
+    },
+    ProducerEvidence {
+        codes: &["RCA4003"],
+        producer_source: "../recursa-core/src/lex.rs",
+        test_source: "../recursa-core/src/lex.rs",
+        test_name: "checked_nested_depth_transition_produces_rca4003_at_the_span_domain_bound",
+        command: "cargo test -p recursa-core lex::tests::checked_nested_depth_transition_produces_rca4003_at_the_span_domain_bound --locked",
+    },
+    ProducerEvidence {
         codes: &[
             "RCA3202", "RCA3203", "RCA3204", "RCA3205", "RCA3206", "RCA3207", "RCA3208",
         ],
@@ -537,7 +551,9 @@ fn producer_test_command(source: &str, test: &str) -> String {
         .file_stem()
         .and_then(std::ffi::OsStr::to_str)
         .expect("Rust test source has a stem");
-    if source.starts_with("tests/") {
+    if source.starts_with("../recursa-core/src/") {
+        format!("cargo test -p recursa-core {stem}::tests::{test} --locked")
+    } else if source.starts_with("tests/") {
         format!("cargo test -p recursa-codegen --test {stem} {test} --locked")
     } else {
         let path = if source == "src/generation/tests.rs" {
@@ -756,6 +772,115 @@ struct Root {
             .iter()
             .all(|diagnostic| diagnostic.code().as_str() == "RCA2012")
     );
+}
+
+#[test]
+fn closed_matcher_priority_ties_fail_at_source_analysis_and_distinct_priorities_succeed() {
+    let source = |second_priority| {
+        format!(
+            r#"
+recursa::grammar! {{ module = crate }}
+
+recursa::tokens! {{
+    matchers {{
+        LineRegion => physical_line(prefix = r"@x", priority = 1),
+        DelimitedRegion => same_delimiter(opener = r"@x", priority = {second_priority}),
+    }}
+}}
+
+#[derive(recursa::Node)]
+struct Root;
+"#
+        )
+    };
+    let tied = write_fixture(&source(1));
+    let error = crate::source_analysis::analyze_source_tree(
+        crate::source_analysis::SourceAnalysisInput::rust_2024(tied.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect_err("equal closed-matcher priorities must not fall back to declaration order");
+    assert_eq!(error.diagnostics().len(), 1);
+    assert_eq!(
+        error.diagnostics()[0].code().as_str(),
+        "RCA3006",
+        "{:?}",
+        error.diagnostics()
+    );
+    assert!(
+        error.diagnostics()[0]
+            .evidence()
+            .canonical_text()
+            .contains("priority=Some(1)")
+    );
+
+    let distinct = write_fixture(&source(2));
+    let analyzed = crate::source_analysis::analyze_source_tree(
+        crate::source_analysis::SourceAnalysisInput::rust_2024(distinct.path(), "grammar.rs"),
+        &mut Vec::new(),
+    );
+    assert!(
+        analyzed.is_ok(),
+        "explicit closed-matcher priority must resolve the tie"
+    );
+
+    let converging_extent = write_fixture(
+        r#"
+recursa::grammar! { module = crate }
+
+recursa::tokens! {
+    keywords { EXACT_A => "a" }
+    matchers {
+        ShortStarter => physical_line(prefix = r"a"),
+        LongStarter => physical_line(prefix = r"ab"),
+    }
+}
+
+#[derive(recursa::Node)]
+struct Root;
+"#,
+    );
+    let error = crate::source_analysis::analyze_source_tree(
+        crate::source_analysis::SourceAnalysisInput::rust_2024(
+            converging_extent.path(),
+            "grammar.rs",
+        ),
+        &mut Vec::new(),
+    )
+    .expect_err("closed starters that converge on one final line extent need a priority");
+    assert_eq!(error.diagnostics().len(), 1, "{:?}", error.diagnostics());
+    assert_eq!(error.diagnostics()[0].code().as_str(), "RCA3005");
+    assert!(
+        error.diagnostics()[0]
+            .evidence()
+            .canonical_text()
+            .contains("witness=ab"),
+        "a shorter fixed spelling must not suppress the closed-matcher tie: {:?}",
+        error.diagnostics()
+    );
+
+    let opaque_callback = write_fixture(
+        r#"
+recursa::grammar! { module = crate }
+
+#[derive(recursa::Node)]
+struct Root {
+    #[lex(pattern = r"~", callback = crate::scan, priority = 1)]
+    callback: Callback,
+    #[lex(pattern = r"~.", priority = 2)]
+    ordinary: Ordinary,
+}
+"#,
+    );
+    let error = crate::source_analysis::analyze_source_tree(
+        crate::source_analysis::SourceAnalysisInput::rust_2024(
+            opaque_callback.path(),
+            "grammar.rs",
+        ),
+        &mut Vec::new(),
+    )
+    .expect_err("an opaque callback must not be run speculatively to discover its final extent");
+    assert_eq!(error.diagnostics().len(), 1, "{:?}", error.diagnostics());
+    assert_eq!(error.diagnostics()[0].code().as_str(), "RCA3005");
 }
 
 #[test]

@@ -1427,6 +1427,7 @@ mod tests {
             vec![TokenRecord {
                 kind: WORD,
                 span: Span::new(0, source.len()).unwrap(),
+                diagnostic: None,
             }],
         )
     }
@@ -1512,6 +1513,7 @@ mod tests {
             vec![TokenRecord {
                 kind: WORD,
                 span: Span::new(0, 2).unwrap(),
+                diagnostic: None,
             }],
         );
         let mut input = lexed.input(&GRAMMAR);
@@ -1528,6 +1530,7 @@ mod tests {
             vec![TokenRecord {
                 kind: LEXICAL_ERROR,
                 span: Span::new(0, 1).unwrap(),
+                diagnostic: None,
             }],
         );
         let mut input = lexed.input(&GRAMMAR);
@@ -1547,10 +1550,12 @@ mod tests {
                 TokenRecord {
                     kind: WORD,
                     span: Span::new(0, 1).unwrap(),
+                    diagnostic: None,
                 },
                 TokenRecord {
                     kind: WORD,
                     span: Span::new(2, 3).unwrap(),
+                    diagnostic: None,
                 },
             ],
         );

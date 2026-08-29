@@ -34,6 +34,27 @@ recursa::tokens! {
         COLON => ":",
         NOT_EQUAL => "!=",
         LEGIT_NOT_EQUAL => "!=-",
+        DOLLAR_TAG => "$tag$",
+    }
+    matchers {
+        DollarRegion => same_delimiter(opener = r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$"),
+        NestedRegion => nested(opener = "{-", closer = "-}"),
+        BoundedNumber => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        OperatorText => operator_run(
+            characters = "-+*/<>=!#%^&|?",
+            fences = ["/*", "--"],
+            trailing = "+-",
+            qualifying = "!#%^&|?",
+            priority = 3
+        ),
+        PsqlLine => physical_line(prefix = r"\\[A-Za-z]+"),
+        PriorityLow => physical_line(prefix = r"§", priority = 1),
+        PriorityHigh => physical_line(prefix = r"§", priority = 2),
+        PriorityHighFirst => physical_line(prefix = r"¤", priority = 2),
+        PriorityLowSecond => physical_line(prefix = r"¤", priority = 1),
+    }
+    ignore {
+        BlockComment => nested(opener = "/*", closer = "*/"),
     }
 }
 
@@ -221,14 +242,14 @@ pub enum FiveTokenChoice {
 
 #[derive(recursa::Node)]
 pub struct LowSelection<'input> {
-    #[lex(pattern = r"~", priority = 1)]
+    #[lex(pattern = r"`", priority = 1)]
     pub name: LowText<'input>,
 }
 
 #[derive(recursa::Node)]
 pub struct CallbackSelection<'input> {
     #[lex(
-        pattern = r"[~kK]",
+        pattern = r"~",
         callback = crate::grammar::scan_word,
         priority = 2
     )]
@@ -251,4 +272,26 @@ pub struct QuotedSelection<'input> {
 pub struct BrokenOperatorSelection<'input> {
     #[lex(pattern = r"!=--")]
     pub name: BrokenOperator<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct ClosedMatcherDefinitions<'input> {
+    #[lex(matcher)]
+    pub dollar: DollarRegion<'input>,
+    #[lex(matcher)]
+    pub nested: NestedRegion<'input>,
+    #[lex(matcher)]
+    pub number: BoundedNumber<'input>,
+    #[lex(matcher)]
+    pub operator: OperatorText<'input>,
+    #[lex(matcher)]
+    pub line: PsqlLine<'input>,
+    #[lex(matcher)]
+    pub priority_low: PriorityLow<'input>,
+    #[lex(matcher)]
+    pub priority_high: PriorityHigh<'input>,
+    #[lex(matcher)]
+    pub priority_high_first: PriorityHighFirst<'input>,
+    #[lex(matcher)]
+    pub priority_low_second: PriorityLowSecond<'input>,
 }

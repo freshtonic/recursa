@@ -70,6 +70,45 @@ subtractions that remove nothing; duplicate union membership is a warning.
 `#[lex(..., admits(WindowRefName))]` applies the compiled canonical membership
 to that generated content-token type.
 
+Closed lexical mechanisms live beside the token grammar rather than inside
+callbacks. Declare an emitting matcher in `matchers`, bind its same-named token
+type with `#[lex(matcher)]`, or declare the same matcher vocabulary in `ignore`
+for non-emitting input:
+
+```rust,ignore
+recursa::tokens! {
+    matchers {
+        DollarString => same_delimiter(opener = r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$"),
+        Number => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        MetaCommand => physical_line(prefix = r"\\[A-Za-z]+"),
+    }
+    ignore {
+        BlockComment => nested(opener = "/*", closer = "*/"),
+    }
+}
+
+#[derive(recursa::Node)]
+pub struct Definitions<'input> {
+    #[lex(matcher)]
+    dollar: DollarString<'input>,
+    #[lex(matcher)]
+    number: Number<'input>,
+    #[lex(matcher)]
+    command: MetaCommand<'input>,
+}
+```
+
+The closed vocabulary also includes configurable operator runs. Arbitration
+uses final byte extent, then exact fixed-token status, then optional explicit
+`priority`; declaration order never decides a tie. A physical-line matcher
+includes its LF, CRLF, or CR ending, or reaches EOF. Unterminated delimited and
+nested regions produce opener-anchored lexical errors over the complete
+opener-to-EOF range; generated `LexError::code`, `diagnostic_code`, and `anchor`
+preserve their stable diagnostic identity.
+Legacy lexer callbacks continue to work when their starters are disjoint from every other rule.
+An overlapping callback is rejected during source analysis because its final extent cannot be
+known without speculatively executing authored code; migrate that overlap to a closed matcher.
+
 This is an excerpt from the
 [compiled JSON grammar](https://github.com/freshtonic/recursa/blob/main/examples/json/src/grammar.rs).
 Its companion

@@ -850,16 +850,22 @@ fn render_lexical_metadata(metadata: &LexicalDefinitionMetadata) -> String {
         } => format!("fixed:{canonical_spelling}:{}", fixed_class(*class)),
         LexicalDefinitionMetadata::Content {
             pattern,
+            closed_matcher,
             callback,
             authored_priority,
             admitted_fixed_tokens,
-        } => format!(
-            "content:{pattern:?}:callback={}:priority={authored_priority:?}:admits={}",
-            callback
+        } => {
+            let closed = closed_matcher
                 .as_ref()
-                .map_or_else(|| "-".to_owned(), crate::source_syntax::path_text),
-            admitted_fixed_tokens.join("|"),
-        ),
+                .map_or_else(String::new, |matcher| format!(":closed={matcher:?}"));
+            format!(
+                "content:{pattern:?}{closed}:callback={}:priority={authored_priority:?}:admits={}",
+                callback
+                    .as_ref()
+                    .map_or_else(|| "-".to_owned(), crate::source_syntax::path_text),
+                admitted_fixed_tokens.join("|"),
+            )
+        }
     }
 }
 

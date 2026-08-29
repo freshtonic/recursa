@@ -145,7 +145,46 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             records = editor.records;
         }
     });
-    let patterns = plan.lexical_rules.iter().map(|rule| &rule.pattern);
+    let matchers = plan
+        .lexical_rules
+        .iter()
+        .map(|rule| match rule.closed_matcher.as_ref() {
+            None => {
+                let pattern = &rule.pattern;
+                quote!(#facade::__private::LexMatcher::Regex(#pattern))
+            }
+            Some(ClosedMatcher::SameDelimiter { opener }) => {
+                quote!(#facade::__private::LexMatcher::SameDelimiter { opener: #opener })
+            }
+            Some(ClosedMatcher::Nested { opener, closer }) => {
+                quote!(#facade::__private::LexMatcher::Nested {
+                    opener: #opener,
+                    closer: #closer,
+                })
+            }
+            Some(ClosedMatcher::NextExclusion { pattern, excluded }) => {
+                quote!(#facade::__private::LexMatcher::NextExclusion {
+                    pattern: #pattern,
+                    excluded: #excluded,
+                })
+            }
+            Some(ClosedMatcher::OperatorRun {
+                characters,
+                fences,
+                trailing,
+                qualifying,
+            }) => {
+                quote!(#facade::__private::LexMatcher::OperatorRun {
+                    characters: #characters,
+                    fences: &[#(#fences),*],
+                    trailing: #trailing,
+                    qualifying: #qualifying,
+                })
+            }
+            Some(ClosedMatcher::PhysicalLine { prefix }) => {
+                quote!(#facade::__private::LexMatcher::PhysicalLine { prefix: #prefix })
+            }
+        });
     let kinds = plan.lexical_rules.iter().map(|rule| rule.kind);
     let skips = plan.lexical_rules.iter().map(|rule| rule.skip);
     let fixed = plan.lexical_rules.iter().map(|rule| rule.fixed);
@@ -324,7 +363,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             static __RECURSA_LEX_RULES: &[#facade::__private::LexRule] = &[
                 #(
                     #facade::__private::LexRule {
-                        pattern: #patterns,
+                        matcher: #matchers,
                         kind: #kinds,
                         skip: #skips,
                         callback: #callbacks,
@@ -417,6 +456,18 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 __recursa_classify(source, record);
             }
             #post_lex
+            for record in &mut records {
+                if record.kind == #lexical_error_kind {
+                    if record.diagnostic.is_none() {
+                        record.diagnostic = Some(#facade::__private::LexDiagnostic {
+                            code: #facade::__private::LexDiagnosticCode::Unrecognized,
+                            anchor: record.span,
+                        });
+                    }
+                } else {
+                    record.diagnostic = None;
+                }
+            }
             #facade::__private::LexResult::new(source, records)
         }
 
@@ -458,6 +509,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             pub fn span(self) -> #facade::Span {
                 self.record.span
             }
+
         }
 
         impl ::core::fmt::Display for Token<'_> {
@@ -498,6 +550,34 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
         impl ExactSizeIterator for Tokens<'_, '_> {}
 
+        /// Stable mechanism-specific classification of a lexical failure.
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        pub enum LexErrorCode {
+            /// No lexical rule accepted the current source scalar.
+            Unrecognized,
+            /// A same-delimiter region reached EOF without its matching closer.
+            UnterminatedSameDelimiter,
+            /// A nested region reached EOF with nonzero nesting depth.
+            UnterminatedNested,
+            /// Nested depth exceeded its checked internal representation.
+            NestedDepthOverflow,
+            /// A token candidate was immediately followed by an excluded scalar.
+            ExcludedFollowingCharacter,
+        }
+
+        impl LexErrorCode {
+            /// Returns the append-only Recursa diagnostic-code spelling.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    Self::Unrecognized => "RCA4000",
+                    Self::UnterminatedSameDelimiter => "RCA4001",
+                    Self::UnterminatedNested => "RCA4002",
+                    Self::NestedDepthOverflow => "RCA4003",
+                    Self::ExcludedFollowingCharacter => "RCA4004",
+                }
+            }
+        }
+
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct LexError<'input> {
             source: &'input str,
@@ -517,6 +597,39 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
             pub fn span(self) -> #facade::Span {
                 self.record.span
+            }
+
+            /// Stable diagnostic code for this lexical failure.
+            pub fn code(self) -> &'static str {
+                self.diagnostic_code().as_str()
+            }
+
+            /// Typed mechanism-specific classification for this lexical failure.
+            pub fn diagnostic_code(self) -> LexErrorCode {
+                match self.record.diagnostic.map(|diagnostic| diagnostic.code) {
+                    Some(#facade::__private::LexDiagnosticCode::UnterminatedSameDelimiter) => {
+                        LexErrorCode::UnterminatedSameDelimiter
+                    }
+                    Some(#facade::__private::LexDiagnosticCode::UnterminatedNested) => {
+                        LexErrorCode::UnterminatedNested
+                    }
+                    Some(#facade::__private::LexDiagnosticCode::NestedDepthOverflow) => {
+                        LexErrorCode::NestedDepthOverflow
+                    }
+                    Some(#facade::__private::LexDiagnosticCode::ExcludedFollowingCharacter) => {
+                        LexErrorCode::ExcludedFollowingCharacter
+                    }
+                    Some(#facade::__private::LexDiagnosticCode::Unrecognized) | None => {
+                        LexErrorCode::Unrecognized
+                    }
+                }
+            }
+
+            /// Primary source range identifying the construct that began the failure.
+            pub fn anchor(self) -> #facade::Span {
+                self.record
+                    .diagnostic
+                    .map_or(self.record.span, |diagnostic| diagnostic.anchor)
             }
         }
 
@@ -620,6 +733,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 self.records.push(#facade::__private::TokenRecord {
                     kind: __recursa_raw_kind(kind),
                     span,
+                    diagnostic: None,
                 });
                 Ok(self)
             }
@@ -752,6 +866,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                     .map(|(kind, span)| #facade::__private::TokenRecord {
                         kind: __recursa_raw_kind(kind),
                         span,
+                        diagnostic: None,
                     })
                     .collect::<Vec<_>>();
                 if replacement.is_empty() {
@@ -857,7 +972,8 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
 
         pub use __recursa_lexical::{
             GrammarInfo, LexBuildError, LexBuilder, LexBumpError, LexContext, LexEditError,
-            LexEditor, LexError, LexErrors, LexRecord, LexResult, Token, Tokens, grammar_info, lex,
+            LexEditor, LexError, LexErrorCode, LexErrors, LexRecord, LexResult, Token, Tokens,
+            grammar_info, lex,
         };
 
         #[doc(hidden)]
