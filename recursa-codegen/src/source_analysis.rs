@@ -680,7 +680,7 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::IneffectiveAdmissionSubtraction => "RCA3124",
         SourceModelDiagnosticKind::ObsoleteFieldLexCallback => "RCA3125",
         SourceModelDiagnosticKind::ObsoleteCentralLexCallback => "RCA3126",
-        SourceModelDiagnosticKind::ObsoletePostLexHook => "RCA3117",
+        SourceModelDiagnosticKind::ObsoletePostLexHook => "RCA3127",
         SourceModelDiagnosticKind::ObsoleteParserPostcondition => "RCA3128",
         SourceModelDiagnosticKind::InapplicablePrettyHint => "RCA3210",
         SourceModelDiagnosticKind::UnsafePrettyHint => "RCA3211",
