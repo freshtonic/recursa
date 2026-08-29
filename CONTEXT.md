@@ -229,6 +229,22 @@ _Avoid_: Generated parse body, analysis facts
 The sealed facade contract that gives a generated grammar type its safe grammar-bound input entry while keeping recursive FOLLOW-aware operations private.
 _Avoid_: Manual parser trait, parse plan
 
+**Nested AST**:
+An authored semantic tree whose child relationships are represented directly by Rust values and owning containers.
+_Avoid_: Normal AST, pointer AST
+
+**Flat AST**:
+A generated semantic tree whose Nodes live in typed arenas and refer to one another through typed indices rather than owning child values.
+_Avoid_: Packed AST, untyped node table, bump-allocated tree
+
+**Construction backend**:
+One caller-selectable, grammar-specific materialization of the representation-independent parser, with its own intermediate Node values and final output.
+_Avoid_: Second parser, output mode, parser callback
+
+**Selective construction**:
+A construction backend that retains or derives values only for chosen Node families while the parser still recognizes the complete grammar.
+_Avoid_: Partial parse, incomplete AST
+
 **FOLLOW recipe**:
 A per-parse-site runtime composition fixed by analysis: static suffix FIRST, caller FOLLOW, or their union when the suffix is nullable.
 _Avoid_: Static type FOLLOW, emitter-derived FOLLOW
