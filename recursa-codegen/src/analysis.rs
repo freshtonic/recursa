@@ -623,6 +623,7 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
     let mut diagnostics = detect_conflicts(
         grammar,
         &first_by_type,
+        &first_sequence_analysis,
         &first_provenance,
         &atom_kinds,
         &mut proofs,
@@ -646,12 +647,9 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
     let decisions = if has_errors {
         None
     } else {
-        match publish_decisions(
-            grammar,
-            &first_by_type,
-            &first_sequence_analysis,
-            crate::decision_plan::plan_decisions(grammar, &first_by_type, &first_sequence_analysis),
-        ) {
+        let planned =
+            crate::decision_plan::plan_decisions(grammar, &first_by_type, &first_sequence_analysis);
+        match publish_decisions(grammar, &first_by_type, &first_sequence_analysis, planned) {
             Ok(decisions) => Some(decisions),
             Err(diagnostic) => {
                 diagnostics.push(*diagnostic);
@@ -2939,6 +2937,14 @@ fn sort_dedup_first_sequences(sequences: &mut Vec<FirstSequence>) {
 
 #[cfg(test)]
 thread_local! {
+    /// Counts paired decision products built while proving static conflicts.
+    static CONFLICT_DECISION_PRODUCT_BUILDS: Cell<usize> = const { Cell::new(0) };
+    /// Counts paired residual states expanded while building one decision product.
+    static DECISION_PRODUCT_STATE_EXPANSIONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts raw left/right consuming-transition pairs considered by a decision product.
+    static DECISION_PRODUCT_TRANSITION_PAIRS: Cell<usize> = const { Cell::new(0) };
+    /// Counts explicit paired residual states expanded while constructing a bounded witness.
+    static DECISION_WITNESS_STATE_EXPANSIONS: Cell<usize> = const { Cell::new(0) };
     /// Counts distinct interned position states visited by rectangle grouping.
     static RECTANGLE_POSITION_STATES: Cell<usize> = const { Cell::new(0) };
     /// Tracks the largest eager rectangle row set presented for normalization.
@@ -4503,6 +4509,8 @@ enum DecisionItem {
         target: TypeId,
         /// Supplies the separator consumed by semantic analysis.
         separator: Option<TypeId>,
+        /// Whether the separator may terminate the repetition without another element.
+        optional_trailing: bool,
     },
 }
 
@@ -4515,6 +4523,10 @@ struct DecisionSiteSemantics {
     cardinality: u8,
     /// Optional separator type for repeated sites.
     separator: Option<TypeId>,
+    /// Whether a repeated site accepts one final separator without another element.
+    optional_trailing: bool,
+    /// Minimum Pratt binding power required at this site.
+    min_bp: u8,
 }
 
 /// Projects one authored site to its source-independent decision behavior.
@@ -4531,6 +4543,10 @@ fn decision_site_semantics(site: &crate::ParseSite) -> DecisionSiteSemantics {
         target: site.target,
         cardinality,
         separator: semantics.separator_type(),
+        optional_trailing: semantics
+            .separator
+            .is_some_and(|separator| separator.optional_trailing),
+        min_bp: site.min_bp,
     }
 }
 
@@ -4586,6 +4602,9 @@ impl DecisionState {
                 DecisionItem::RepeatTail {
                     target: site.target,
                     separator: semantics.separator_type(),
+                    optional_trailing: semantics
+                        .separator
+                        .is_some_and(|separator| separator.optional_trailing),
                 },
             ]
         } else {
@@ -4661,8 +4680,8 @@ struct DecisionCutoffFacts {
     by_type: Vec<DecisionCutoffFact>,
     /// Facts indexed by parse-site identity.
     by_site: Vec<DecisionCutoffFact>,
-    /// Facts for repetition continuations indexed by target and separator.
-    by_repeat: BTreeMap<(TypeId, Option<TypeId>), DecisionCutoffFact>,
+    /// Facts for repetition continuations indexed by target and separator behavior.
+    by_repeat: BTreeMap<(TypeId, Option<TypeId>, bool), DecisionCutoffFact>,
 }
 
 impl DecisionCutoffFacts {
@@ -4683,7 +4702,13 @@ impl DecisionCutoffFacts {
                 .filter_map(|site| {
                     let semantics = container_semantics(site);
                     semantics.cardinality.is_repeated().then_some((
-                        (site.target, semantics.separator_type()),
+                        (
+                            site.target,
+                            semantics.separator_type(),
+                            semantics
+                                .separator
+                                .is_some_and(|separator| separator.optional_trailing),
+                        ),
                         Default::default(),
                     ))
                 })
@@ -4693,7 +4718,7 @@ impl DecisionCutoffFacts {
             let by_repeat = facts
                 .by_repeat
                 .keys()
-                .map(|&(target, separator)| {
+                .map(|&(target, separator, optional_trailing)| {
                     let mut items = Vec::new();
                     if let Some(separator) = separator {
                         items.push((
@@ -4706,12 +4731,22 @@ impl DecisionCutoffFacts {
                         summaries.by_type[target.index()],
                     ));
                     items.push((
-                        &facts.by_repeat[&(target, separator)],
-                        decision_repeat_tail_summary(target, separator, &summaries.by_type),
+                        &facts.by_repeat[&(target, separator, optional_trailing)],
+                        decision_repeat_tail_summary(
+                            target,
+                            separator,
+                            optional_trailing,
+                            &summaries.by_type,
+                        ),
                     ));
                     let mut fact = compose_decision_cutoff_facts(&items);
+                    if optional_trailing {
+                        let separator = separator
+                            .expect("optional trailing behavior requires a separator type");
+                        fact.union_assign(&facts.by_type[separator.index()]);
+                    }
                     fact.can_end = true;
-                    ((target, separator), fact)
+                    ((target, separator, optional_trailing), fact)
                 })
                 .collect::<BTreeMap<_, _>>();
             let by_site = grammar
@@ -4730,8 +4765,11 @@ impl DecisionCutoffFacts {
                         ContainerCardinality::ZeroOrMore
                         | ContainerCardinality::OneOrMore
                         | ContainerCardinality::OptionalOneOrMore => {
-                            let repeat =
-                                &facts.by_repeat[&(site.target, semantics.separator_type())];
+                            let optional_trailing = semantics
+                                .separator
+                                .is_some_and(|separator| separator.optional_trailing);
+                            let repeat = &facts.by_repeat
+                                [&(site.target, semantics.separator_type(), optional_trailing)];
                             let mut fact = compose_decision_cutoff_facts(&[
                                 (target, summaries.by_type[site.target.index()]),
                                 (
@@ -4739,6 +4777,7 @@ impl DecisionCutoffFacts {
                                     decision_repeat_tail_summary(
                                         site.target,
                                         semantics.separator_type(),
+                                        optional_trailing,
                                         &summaries.by_type,
                                     ),
                                 ),
@@ -4843,9 +4882,18 @@ impl DecisionCutoffFacts {
                         &self.by_site[site_id.index()],
                         summaries.by_site[site_id.index()],
                     ),
-                    DecisionItem::RepeatTail { target, separator } => (
-                        &self.by_repeat[&(*target, *separator)],
-                        decision_repeat_tail_summary(*target, *separator, &summaries.by_type),
+                    DecisionItem::RepeatTail {
+                        target,
+                        separator,
+                        optional_trailing,
+                    } => (
+                        &self.by_repeat[&(*target, *separator, *optional_trailing)],
+                        decision_repeat_tail_summary(
+                            *target,
+                            *separator,
+                            *optional_trailing,
+                            &summaries.by_type,
+                        ),
                     ),
                 })
                 .collect::<Vec<_>>(),
@@ -4855,9 +4903,13 @@ impl DecisionCutoffFacts {
     /// Reports whether every repetition continuation has a grammar-derived fact.
     fn supports_state(&self, state: &DecisionState) -> bool {
         state.0.iter().all(|item| match item {
-            DecisionItem::RepeatTail { target, separator } => {
-                self.by_repeat.contains_key(&(*target, *separator))
-            }
+            DecisionItem::RepeatTail {
+                target,
+                separator,
+                optional_trailing,
+            } => self
+                .by_repeat
+                .contains_key(&(*target, *separator, *optional_trailing)),
             DecisionItem::Type(_) | DecisionItem::Site(_) => true,
         })
     }
@@ -4949,8 +5001,12 @@ impl DecisionSummaryFacts {
         match item {
             DecisionItem::Type(type_id) => self.by_type[type_id.index()],
             DecisionItem::Site(site_id) => self.by_site[site_id.index()],
-            DecisionItem::RepeatTail { target, separator } => {
-                decision_repeat_tail_summary(*target, *separator, &self.by_type)
+            DecisionItem::RepeatTail {
+                target,
+                separator,
+                optional_trailing,
+            } => {
+                decision_repeat_tail_summary(*target, *separator, *optional_trailing, &self.by_type)
             }
         }
     }
@@ -4981,24 +5037,49 @@ fn decision_site_summary(site: &crate::ParseSite, by_type: &[u8]) -> u8 {
         ContainerCardinality::ZeroOrMore | ContainerCardinality::OptionalOneOrMore => {
             decision_sequence_summary([
                 target,
-                decision_repeat_tail_summary(site.target, semantics.separator_type(), by_type),
+                decision_repeat_tail_summary(
+                    site.target,
+                    semantics.separator_type(),
+                    semantics
+                        .separator
+                        .is_some_and(|separator| separator.optional_trailing),
+                    by_type,
+                ),
             ]) | FIRST_LANGUAGE_CUTOFF_END
         }
         ContainerCardinality::OneOrMore => decision_sequence_summary([
             target,
-            decision_repeat_tail_summary(site.target, semantics.separator_type(), by_type),
+            decision_repeat_tail_summary(
+                site.target,
+                semantics.separator_type(),
+                semantics
+                    .separator
+                    .is_some_and(|separator| separator.optional_trailing),
+                by_type,
+            ),
         ]),
     }
 }
 
 /// Solves the least fixed point for one repeat-tail item's epsilon-or-continuation language.
-fn decision_repeat_tail_summary(target: TypeId, separator: Option<TypeId>, by_type: &[u8]) -> u8 {
+fn decision_repeat_tail_summary(
+    target: TypeId,
+    separator: Option<TypeId>,
+    optional_trailing: bool,
+    by_type: &[u8],
+) -> u8 {
     let continuation = if let Some(separator) = separator {
         decision_sequence_summary([by_type[separator.index()], by_type[target.index()]])
     } else {
         by_type[target.index()]
     };
-    FIRST_LANGUAGE_CUTOFF_END | (continuation & FIRST_LANGUAGE_CUTOFF_CONTINUES)
+    let trailing = if optional_trailing {
+        let separator = separator.expect("optional trailing behavior requires a separator type");
+        by_type[separator.index()]
+    } else {
+        0
+    };
+    FIRST_LANGUAGE_CUTOFF_END | ((continuation | trailing) & FIRST_LANGUAGE_CUTOFF_CONTINUES)
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -5067,6 +5148,14 @@ struct DecisionOutcome {
     end_of_alternative: bool,
 }
 
+/// Distinguishes a proven unbounded shared prefix from a finite decision product.
+enum DecisionProduct {
+    /// A canonical back-edge proves that no finite lookahead separates the languages.
+    Cyclic,
+    /// The complete acyclic product supports the exact sufficient-depth calculation.
+    Acyclic(BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>>),
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Carries the decision parent consumed while deriving source-independent grammar facts.
 struct DecisionParent {
@@ -5097,16 +5186,20 @@ fn analyze_decision(
     right: DecisionState,
     grammar: &GrammarDescription,
     atom_kinds: &[KindSet],
+    bounded_witness: Option<Vec<DecisionWitness>>,
 ) -> DecisionOutcome {
+    #[cfg(test)]
+    CONFLICT_DECISION_PRODUCT_BUILDS.set(CONFLICT_DECISION_PRODUCT_BUILDS.get() + 1);
     let start = paired_residual(left, right, grammar);
-    let graph = build_decision_product(start.clone(), grammar, atom_kinds);
-    let sufficient_depth = if decision_graph_has_cycle(&start, &graph) {
-        None
-    } else {
-        Some(longest_decision_path(&start, &graph, &mut BTreeMap::new()) + 1)
+    let sufficient_depth = match build_decision_product(start.clone(), grammar, atom_kinds) {
+        DecisionProduct::Cyclic => None,
+        DecisionProduct::Acyclic(graph) => {
+            Some(longest_decision_path(&start, &graph, &mut BTreeMap::new()) + 1)
+        }
     };
-    let witness_path =
-        decision_witness_at_depth(&start, &graph, grammar.max_lookahead).unwrap_or_default();
+    let witness_path = bounded_witness
+        .or_else(|| decision_witness_at_depth(&start, grammar, atom_kinds, grammar.max_lookahead))
+        .unwrap_or_default();
     let end_of_alternative = witness_path
         .iter()
         .any(|witness| matches!(witness, DecisionWitness::End));
@@ -5129,35 +5222,68 @@ fn build_decision_product(
     start: PairedDecisionState,
     grammar: &GrammarDescription,
     atom_kinds: &[KindSet],
-) -> BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>> {
+) -> DecisionProduct {
     let mut graph = BTreeMap::new();
     let mut parents = BTreeMap::from([(start.clone(), Vec::new())]);
     let mut queue = VecDeque::from([start]);
     while let Some(state) = queue.pop_front() {
+        #[cfg(test)]
+        DECISION_PRODUCT_STATE_EXPANSIONS.set(DECISION_PRODUCT_STATE_EXPANSIONS.get() + 1);
+        let Some(paired_successors) =
+            paired_decision_successors_until(&state, grammar, atom_kinds, |successor| {
+                pumping_ancestor(&state, successor, &parents).is_some()
+                    || decision_state_is_ancestor(&state, &successor.state, &parents)
+            })
+        else {
+            return DecisionProduct::Cyclic;
+        };
         let mut successors = Vec::new();
-        for successor in paired_decision_successors(&state, grammar, atom_kinds) {
-            let pumped = pumping_ancestor(&state, &successor, &parents);
-            if pumped.is_none() {
-                let parent = DecisionParent {
-                    state: state.clone(),
-                    left_minimum_stack_depth: successor.left_minimum_stack_depth,
-                    right_minimum_stack_depth: successor.right_minimum_stack_depth,
-                };
-                let incoming = parents.entry(successor.state.clone()).or_default();
-                if incoming.binary_search(&parent).is_err() {
-                    incoming.push(parent);
-                    incoming.sort();
-                    // A new derivation to an existing residual can establish a
-                    // boundary-safe pumping proof that its first derivation did
-                    // not. Revisit that residual with the expanded parent graph.
-                    queue.push_back(successor.state.clone());
-                }
+        for successor in paired_successors {
+            let parent = DecisionParent {
+                state: state.clone(),
+                left_minimum_stack_depth: successor.left_minimum_stack_depth,
+                right_minimum_stack_depth: successor.right_minimum_stack_depth,
+            };
+            let incoming = parents.entry(successor.state.clone()).or_default();
+            if incoming.binary_search(&parent).is_err() {
+                incoming.push(parent);
+                incoming.sort();
+                // A new derivation to an existing residual can establish a
+                // boundary-safe pumping proof that its first derivation did
+                // not. Revisit that residual with the expanded parent graph.
+                queue.push_back(successor.state.clone());
             }
-            successors.push((pumped.unwrap_or(successor.state), successor.witness));
+            successors.push((successor.state, successor.witness));
         }
         graph.insert(state, successors);
     }
-    graph
+    DecisionProduct::Acyclic(graph)
+}
+
+/// Reports whether `candidate` is the current state or one of its exact product ancestors.
+fn decision_state_is_ancestor(
+    current: &PairedDecisionState,
+    candidate: &PairedDecisionState,
+    parents: &BTreeMap<PairedDecisionState, Vec<DecisionParent>>,
+) -> bool {
+    let mut visited = BTreeSet::new();
+    let mut queue = VecDeque::from([current]);
+    while let Some(state) = queue.pop_front() {
+        if !visited.insert(state) {
+            continue;
+        }
+        if state == candidate {
+            return true;
+        }
+        queue.extend(
+            parents
+                .get(state)
+                .into_iter()
+                .flatten()
+                .map(|parent| &parent.state),
+        );
+    }
+    false
 }
 
 /// Derives the pumping ancestor from normalized grammar structure and previously established semantic facts.
@@ -5261,61 +5387,135 @@ fn paired_decision_successors(
     grammar: &GrammarDescription,
     atom_kinds: &[KindSet],
 ) -> Vec<PairedDecisionSuccessor> {
+    paired_decision_successors_until(state, grammar, atom_kinds, |_| false)
+        .expect("an unconditional paired-successor traversal cannot stop")
+}
+
+/// Derives paired successors while allowing an exact semantic proof to stop a wide symbolic cell early.
+fn paired_decision_successors_until(
+    state: &PairedDecisionState,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+    mut stop: impl FnMut(&PairedDecisionSuccessor) -> bool,
+) -> Option<Vec<PairedDecisionSuccessor>> {
     if matches!(state, PairedDecisionState::End) {
-        return vec![PairedDecisionSuccessor {
+        let successor = PairedDecisionSuccessor {
             state: PairedDecisionState::End,
             witness: DecisionWitness::End,
             left_minimum_stack_depth: 0,
             right_minimum_stack_depth: 0,
-        }];
+        };
+        if stop(&successor) {
+            return None;
+        }
+        return Some(vec![successor]);
     }
     let PairedDecisionState::Residual(left, right) = state else {
         unreachable!()
     };
-    let left = decision_frontier(left, grammar, atom_kinds);
-    let right = decision_frontier(right, grammar, atom_kinds);
+    let left_frontier = decision_frontier(left, grammar, atom_kinds);
+    let right_frontier = decision_frontier(right, grammar, atom_kinds);
     let mut successors = Vec::new();
-    if left.can_end && right.can_end {
-        successors.push(PairedDecisionSuccessor {
+    if left_frontier.can_end && right_frontier.can_end {
+        let successor = PairedDecisionSuccessor {
             state: PairedDecisionState::End,
             witness: DecisionWitness::End,
             left_minimum_stack_depth: 0,
             right_minimum_stack_depth: 0,
-        });
-    }
-    for left in &left.transitions {
-        for right in &right.transitions {
-            if !predicates_overlap(
-                left.position.text_predicate,
-                right.position.text_predicate,
-                &grammar.text_predicates,
-                grammar.text_equivalence,
-            ) {
-                continue;
-            }
-            let intersection = left
-                .position
-                .kinds
-                .intersection(&right.position.kinds)
-                .expect("decision positions have the grammar width");
-            let Some(kind) = intersection.iter().next() else {
-                continue;
-            };
-            successors.push(PairedDecisionSuccessor {
-                state: paired_residual(left.next.clone(), right.next.clone(), grammar),
-                witness: DecisionWitness::Token(crate::LookaheadWitnessPosition {
-                    kind,
-                    left_text_predicate: left.position.text_predicate,
-                    right_text_predicate: right.position.text_predicate,
-                }),
-                left_minimum_stack_depth: left.minimum_stack_depth,
-                right_minimum_stack_depth: right.minimum_stack_depth,
-            });
+        };
+        if stop(&successor) {
+            return None;
         }
+        successors.push(successor);
+    }
+
+    let candidates = left_frontier
+        .transitions
+        .iter()
+        .enumerate()
+        .map(|(index, _)| (false, index))
+        .chain(
+            right_frontier
+                .transitions
+                .iter()
+                .enumerate()
+                .map(|(index, _)| (true, index)),
+        )
+        .collect::<Vec<_>>();
+    let transition = |candidate: &(bool, usize)| {
+        if candidate.0 {
+            &right_frontier.transitions[candidate.1]
+        } else {
+            &left_frontier.transitions[candidate.1]
+        }
+    };
+    let cells = partition_by_kind_residual(
+        &candidates,
+        grammar,
+        |candidate| transition(candidate).position.text_predicate,
+        |candidate| &transition(candidate).position.kinds,
+        |candidate| *candidate,
+    );
+    let mut overlapping = BTreeMap::<(usize, usize), KindId>::new();
+    for (_, members, kinds) in cells {
+        let left_members = members
+            .iter()
+            .filter_map(|(right, index)| (!right).then_some(*index))
+            .collect::<Vec<_>>();
+        let right_members = members
+            .iter()
+            .filter_map(|(right, index)| right.then_some(*index))
+            .collect::<Vec<_>>();
+        let Some(kind) = kinds.iter().next() else {
+            continue;
+        };
+        for left in &left_members {
+            for right in &right_members {
+                #[cfg(test)]
+                DECISION_PRODUCT_TRANSITION_PAIRS.set(DECISION_PRODUCT_TRANSITION_PAIRS.get() + 1);
+                let left_transition = &left_frontier.transitions[*left];
+                let right_transition = &right_frontier.transitions[*right];
+                let successor = PairedDecisionSuccessor {
+                    state: paired_residual(
+                        left_transition.next.clone(),
+                        right_transition.next.clone(),
+                        grammar,
+                    ),
+                    witness: DecisionWitness::Token(crate::LookaheadWitnessPosition {
+                        kind,
+                        left_text_predicate: left_transition.position.text_predicate,
+                        right_text_predicate: right_transition.position.text_predicate,
+                    }),
+                    left_minimum_stack_depth: left_transition.minimum_stack_depth,
+                    right_minimum_stack_depth: right_transition.minimum_stack_depth,
+                };
+                if stop(&successor) {
+                    return None;
+                }
+                overlapping
+                    .entry((*left, *right))
+                    .and_modify(|known| *known = (*known).min(kind))
+                    .or_insert(kind);
+            }
+        }
+    }
+    for ((left, right), kind) in overlapping {
+        let left = &left_frontier.transitions[left];
+        let right = &right_frontier.transitions[right];
+        successors.push(PairedDecisionSuccessor {
+            state: paired_residual(left.next.clone(), right.next.clone(), grammar),
+            witness: DecisionWitness::Token(crate::LookaheadWitnessPosition {
+                kind,
+                left_text_predicate: left.position.text_predicate,
+                right_text_predicate: right.position.text_predicate,
+            }),
+            left_minimum_stack_depth: left.minimum_stack_depth,
+            right_minimum_stack_depth: right.minimum_stack_depth,
+        });
     }
     successors.sort();
     successors.dedup();
-    successors
+    Some(successors)
 }
 
 /// Derives the paired residual from normalized grammar structure and previously established semantic facts.
@@ -5356,12 +5556,18 @@ fn decision_items_equivalent(
             DecisionItem::RepeatTail {
                 target: left_target,
                 separator: left_separator,
+                optional_trailing: left_optional_trailing,
             },
             DecisionItem::RepeatTail {
                 target: right_target,
                 separator: right_separator,
+                optional_trailing: right_optional_trailing,
             },
-        ) => left_target == right_target && left_separator == right_separator,
+        ) => {
+            left_target == right_target
+                && left_separator == right_separator
+                && left_optional_trailing == right_optional_trailing
+        }
         _ => false,
     }
 }
@@ -5510,6 +5716,9 @@ fn walk_decision_frontier(
                                 DecisionItem::RepeatTail {
                                     target: site.target,
                                     separator: semantics.separator_type(),
+                                    optional_trailing: semantics
+                                        .separator
+                                        .is_some_and(|separator| separator.optional_trailing),
                                 },
                             ],
                             rest,
@@ -5520,7 +5729,11 @@ fn walk_decision_frontier(
                     }
                 }
             }
-            DecisionItem::RepeatTail { target, separator } => {
+            DecisionItem::RepeatTail {
+                target,
+                separator,
+                optional_trailing,
+            } => {
                 queue_decision_expansion(
                     Vec::new(),
                     rest,
@@ -5537,6 +5750,7 @@ fn walk_decision_frontier(
                     DecisionItem::RepeatTail {
                         target: *target,
                         separator: *separator,
+                        optional_trailing: *optional_trailing,
                     },
                 ]);
                 queue_decision_expansion(
@@ -5546,6 +5760,17 @@ fn walk_decision_frontier(
                     &mut best_minimum_depth,
                     &mut queue,
                 );
+                if *optional_trailing {
+                    let separator =
+                        separator.expect("optional trailing behavior requires a separator type");
+                    queue_decision_expansion(
+                        vec![DecisionItem::Type(separator)],
+                        rest,
+                        minimum_stack_depth,
+                        &mut best_minimum_depth,
+                        &mut queue,
+                    );
+                }
             }
         }
     }
@@ -5630,33 +5855,6 @@ fn compare_first_positions(left: &FirstPosition, right: &FirstPosition) -> std::
         .then_with(|| left.text_predicate.cmp(&right.text_predicate))
 }
 
-/// Derives the decision graph has cycle from normalized grammar structure and previously established semantic facts.
-fn decision_graph_has_cycle(
-    start: &PairedDecisionState,
-    graph: &BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>>,
-) -> bool {
-    fn visit(
-        state: &PairedDecisionState,
-        graph: &BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>>,
-        visiting: &mut BTreeSet<PairedDecisionState>,
-        visited: &mut BTreeSet<PairedDecisionState>,
-    ) -> bool {
-        if visiting.contains(state) {
-            return true;
-        }
-        if !visited.insert(state.clone()) {
-            return false;
-        }
-        visiting.insert(state.clone());
-        let cyclic = graph[state]
-            .iter()
-            .any(|(successor, _)| visit(successor, graph, visiting, visited));
-        visiting.remove(state);
-        cyclic
-    }
-    visit(start, graph, &mut BTreeSet::new(), &mut BTreeSet::new())
-}
-
 /// Derives the longest decision path from normalized grammar structure and previously established semantic facts.
 fn longest_decision_path(
     state: &PairedDecisionState,
@@ -5678,19 +5876,23 @@ fn longest_decision_path(
 /// Derives the decision witness at depth from normalized grammar structure and previously established semantic facts.
 fn decision_witness_at_depth(
     start: &PairedDecisionState,
-    graph: &BTreeMap<PairedDecisionState, Vec<(PairedDecisionState, DecisionWitness)>>,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
     depth: usize,
 ) -> Option<Vec<DecisionWitness>> {
     let mut frontier = BTreeMap::from([(start.clone(), Vec::new())]);
     for _ in 0..depth {
         let mut next = BTreeMap::new();
         for (state, path) in frontier {
-            for (successor, witness) in &graph[&state] {
+            #[cfg(test)]
+            DECISION_WITNESS_STATE_EXPANSIONS
+                .set(DECISION_WITNESS_STATE_EXPANSIONS.get().saturating_add(1));
+            for successor in paired_decision_successors(&state, grammar, atom_kinds) {
                 let mut candidate = path.clone();
                 if !matches!(candidate.last(), Some(DecisionWitness::End)) {
-                    candidate.push(witness.clone());
+                    candidate.push(successor.witness);
                 }
-                let slot = next.entry(successor.clone()).or_insert(candidate.clone());
+                let slot = next.entry(successor.state).or_insert(candidate.clone());
                 if candidate < *slot {
                     *slot = candidate;
                 }
@@ -5708,6 +5910,7 @@ fn decision_witness_at_depth(
 fn detect_conflicts(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
     provenanced: &[Vec<ProvenancedPosition>],
     atom_kinds: &[KindSet],
     proofs: &mut ProofArena,
@@ -5715,6 +5918,7 @@ fn detect_conflicts(
 ) -> Vec<Diagnostic> {
     // Collect static conflicts before caller-FOLLOW checks so diagnostics preserve their semantic phase and remedy.
     let mut diagnostics = Vec::new();
+    let mut bounded_site_languages = HashMap::new();
     for (index, description) in grammar.types.iter().enumerate() {
         let owner = TypeId::new(index as u32);
         match &description.shape {
@@ -5741,11 +5945,37 @@ fn detect_conflicts(
                             provenanced,
                             proofs,
                         );
+                        let evidence = overlap_evidence(
+                            &left_first.positions,
+                            &right_first.positions,
+                            grammar,
+                            proofs,
+                        );
+                        if evidence.is_none() && !(left_first.nullable && right_first.nullable) {
+                            continue;
+                        }
+                        if bounded_required_site_languages_are_disjoint(
+                            &left.sites,
+                            &right.sites,
+                            grammar,
+                            semantic,
+                        ) {
+                            continue;
+                        }
+                        let bounded_witness = bounded_site_language_witness(
+                            &left.sites,
+                            &right.sites,
+                            grammar,
+                            semantic,
+                            first_sequences,
+                            &mut bounded_site_languages,
+                        );
                         let decision = analyze_decision(
                             DecisionState::from_sites(&left.sites),
                             DecisionState::from_sites(&right.sites),
                             grammar,
                             atom_kinds,
+                            bounded_witness,
                         );
                         if decision
                             .sufficient_depth
@@ -5753,12 +5983,6 @@ fn detect_conflicts(
                         {
                             continue;
                         }
-                        let evidence = overlap_evidence(
-                            &left_first.positions,
-                            &right_first.positions,
-                            grammar,
-                            proofs,
-                        );
                         let sufficient_depth = decision.sufficient_depth;
                         let remedy = sufficient_depth.map_or(
                             ConflictRemedy::RestructureSharedPrefix {
@@ -5817,10 +6041,12 @@ fn detect_conflicts(
                     variants,
                     grammar,
                     semantic,
+                    first_sequences,
                     provenanced,
                     atom_kinds,
                     proofs,
                     &mut diagnostics,
+                    &mut bounded_site_languages,
                 );
                 let mut variants = variants.iter().collect::<Vec<_>>();
                 variants
@@ -5846,6 +6072,97 @@ fn detect_conflicts(
     diagnostics
 }
 
+/// Reports whether two single required sites are already separated by the configured bounded FIRST languages.
+fn bounded_required_site_languages_are_disjoint(
+    left: &[SiteId],
+    right: &[SiteId],
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+) -> bool {
+    let Some((left, right)) = bounded_required_site_languages(left, right, grammar, semantic)
+    else {
+        return false;
+    };
+    disambiguation_depth(
+        left,
+        right,
+        &grammar.text_predicates,
+        grammar.text_equivalence,
+        grammar.max_lookahead,
+    )
+    .is_some()
+}
+
+/// Borrows both exact bounded FIRST languages when each side is one required site.
+fn bounded_required_site_languages<'a>(
+    left: &[SiteId],
+    right: &[SiteId],
+    grammar: &GrammarDescription,
+    semantic: &'a [FirstFacts],
+) -> Option<(&'a [FirstSequence], &'a [FirstSequence])> {
+    Some((
+        bounded_required_site_language(left, grammar, semantic)?,
+        bounded_required_site_language(right, grammar, semantic)?,
+    ))
+}
+
+/// Derives a configured-depth witness from the existing type language or one cached site composition.
+fn bounded_site_language_witness(
+    left: &[SiteId],
+    right: &[SiteId],
+    grammar: &GrammarDescription,
+    semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
+    cached: &mut HashMap<DecisionSiteSemantics, Vec<FirstSequence>>,
+) -> Option<Vec<DecisionWitness>> {
+    if let Some((left, right)) = bounded_required_site_languages(left, right, grammar, semantic) {
+        return bounded_first_sequence_witness(left, right, grammar);
+    }
+    let left = cached_single_site_language(left, grammar, first_sequences, cached)?;
+    let right = cached_single_site_language(right, grammar, first_sequences, cached)?;
+    bounded_first_sequence_witness(&left, &right, grammar)
+}
+
+/// Materializes one exact zero-binding-power site language once per semantic container shape.
+fn cached_single_site_language(
+    sites: &[SiteId],
+    grammar: &GrammarDescription,
+    first_sequences: &FirstSequenceAnalysis<'_>,
+    cached: &mut HashMap<DecisionSiteSemantics, Vec<FirstSequence>>,
+) -> Option<Vec<FirstSequence>> {
+    let [site_id] = sites else {
+        return None;
+    };
+    let site = &grammar.sites[site_id.index()];
+    if site.min_bp != 0 || site.container.semantics().is_none() {
+        return None;
+    }
+    let key = decision_site_semantics(site);
+    if let Some(language) = cached.get(&key) {
+        return Some(language.clone());
+    }
+    let language = first_sequences.sequences(sites);
+    cached.insert(key, language.clone());
+    Some(language)
+}
+
+/// Borrows the precomputed bounded FIRST language when a site is exactly one required target.
+fn bounded_required_site_language<'a>(
+    sites: &[SiteId],
+    grammar: &GrammarDescription,
+    semantic: &'a [FirstFacts],
+) -> Option<&'a [FirstSequence]> {
+    let [site] = sites else {
+        return None;
+    };
+    let site = &grammar.sites[site.index()];
+    let semantics = site.container.semantics()?;
+    if site.min_bp != 0 || semantics.cardinality != ContainerCardinality::One {
+        return None;
+    }
+    Some(&semantic[site.target.index()].sequences)
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Diagnoses overlapping Pratt roles and extender selections.
 fn detect_pratt_conflicts(
@@ -5854,10 +6171,12 @@ fn detect_pratt_conflicts(
     variants: &[crate::PrattVariant],
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
     provenanced: &[Vec<ProvenancedPosition>],
     atom_kinds: &[KindSet],
     proofs: &mut ProofArena,
     diagnostics: &mut Vec<Diagnostic>,
+    bounded_site_languages: &mut HashMap<DecisionSiteSemantics, Vec<FirstSequence>>,
 ) {
     let mut nud = variants
         .iter()
@@ -5871,10 +6190,12 @@ fn detect_pratt_conflicts(
         DiagnosticCode::PrattAtomOverlap,
         grammar,
         semantic,
+        first_sequences,
         provenanced,
         atom_kinds,
         proofs,
         diagnostics,
+        bounded_site_languages,
     );
 
     let mut led = variants
@@ -5889,10 +6210,12 @@ fn detect_pratt_conflicts(
         DiagnosticCode::PrattLedOverlap,
         grammar,
         semantic,
+        first_sequences,
         provenanced,
         atom_kinds,
         proofs,
         diagnostics,
+        bounded_site_languages,
     );
 }
 
@@ -5905,10 +6228,12 @@ fn detect_pratt_group_conflicts(
     code: DiagnosticCode,
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
     provenanced: &[Vec<ProvenancedPosition>],
     atom_kinds: &[KindSet],
     proofs: &mut ProofArena,
     diagnostics: &mut Vec<Diagnostic>,
+    bounded_site_languages: &mut HashMap<DecisionSiteSemantics, Vec<FirstSequence>>,
 ) {
     // Compare Pratt groups as units because member-wise conflicts would lose the binding-power context.
     for left_index in 0..variants.len() {
@@ -5939,11 +6264,37 @@ fn detect_pratt_group_conflicts(
                     proofs,
                 )
             };
+            let evidence = overlap_evidence(
+                &left_first.positions,
+                &right_first.positions,
+                grammar,
+                proofs,
+            );
+            if evidence.is_none() && !(left_first.nullable && right_first.nullable) {
+                continue;
+            }
+            if bounded_required_site_languages_are_disjoint(
+                &left.sites,
+                &right.sites,
+                grammar,
+                semantic,
+            ) {
+                continue;
+            }
+            let bounded_witness = bounded_site_language_witness(
+                &left.sites,
+                &right.sites,
+                grammar,
+                semantic,
+                first_sequences,
+                bounded_site_languages,
+            );
             let decision = analyze_decision(
                 DecisionState::from_sites(&left.sites),
                 DecisionState::from_sites(&right.sites),
                 grammar,
                 atom_kinds,
+                bounded_witness,
             );
             if decision
                 .sufficient_depth
@@ -5951,12 +6302,6 @@ fn detect_pratt_group_conflicts(
             {
                 continue;
             }
-            let evidence = overlap_evidence(
-                &left_first.positions,
-                &right_first.positions,
-                grammar,
-                proofs,
-            );
             let left_position = pratt_position_name(left.position);
             let right_position = pratt_position_name(right.position);
             let remedy = decision.sufficient_depth.map_or(
@@ -6060,12 +6405,19 @@ fn detect_static_conflicts_for_sites(
         if tail.nullable {
             continue;
         }
+        let current =
+            first_for_sites_provenance(owner, &[site_id], grammar, semantic, provenanced, proofs);
+        let Some(evidence) = overlap_evidence(&current.positions, &tail.positions, grammar, proofs)
+        else {
+            continue;
+        };
         let tail_sites = &sites[index + 1..];
         let decision = analyze_decision(
             DecisionState::consuming_site_and_tail(site, tail_sites),
             DecisionState::from_sites(tail_sites),
             grammar,
             atom_kinds,
+            None,
         );
         if decision
             .sufficient_depth
@@ -6074,50 +6426,44 @@ fn detect_static_conflicts_for_sites(
             continue;
         }
         let sufficient_depth = decision.sufficient_depth;
-        let current =
-            first_for_sites_provenance(owner, &[site_id], grammar, semantic, provenanced, proofs);
-        if let Some(evidence) =
-            overlap_evidence(&current.positions, &tail.positions, grammar, proofs)
-        {
-            static_conflict_kinds_by_declaration[site.declaration.index()]
-                .union_assign(&evidence.overlap);
-            let tail_site = sites[index + 1];
-            let remedy = sufficient_depth.map_or(
-                ConflictRemedy::MakeSiteRequired { site: site_id },
-                |sufficient| ConflictRemedy::RaiseMaxLookahead {
-                    configured: grammar.max_lookahead,
-                    sufficient,
-                },
-            );
-            let mut diagnostic = Diagnostic::conflict(
-                DiagnosticCode::StaticUseSiteOverlap,
-                format!(
-                    "nullable use site in `{}` overlaps its required tail",
-                    grammar.types[owner.index()].name,
-                ),
-                declaration_label(
-                    site.declaration,
-                    grammar,
-                    "this use site is nullable and can consume the witness kind",
-                ),
-                declaration_label(
-                    grammar.sites[tail_site.index()].declaration,
-                    grammar,
-                    "the following required tail can start with the same kind",
-                ),
-                evidence,
-                remedy,
-            );
-            if let Some(sufficient_depth) = sufficient_depth {
-                diagnostic.lookahead = Some(crate::SharedPrefixEvidence {
-                    configured_depth: grammar.max_lookahead,
-                    sufficient_depth: Some(sufficient_depth),
-                    witness: decision.witness,
-                    end_of_alternative: decision.end_of_alternative,
-                });
-            }
-            diagnostics.push(diagnostic);
+        static_conflict_kinds_by_declaration[site.declaration.index()]
+            .union_assign(&evidence.overlap);
+        let tail_site = sites[index + 1];
+        let remedy = sufficient_depth.map_or(
+            ConflictRemedy::MakeSiteRequired { site: site_id },
+            |sufficient| ConflictRemedy::RaiseMaxLookahead {
+                configured: grammar.max_lookahead,
+                sufficient,
+            },
+        );
+        let mut diagnostic = Diagnostic::conflict(
+            DiagnosticCode::StaticUseSiteOverlap,
+            format!(
+                "nullable use site in `{}` overlaps its required tail",
+                grammar.types[owner.index()].name,
+            ),
+            declaration_label(
+                site.declaration,
+                grammar,
+                "this use site is nullable and can consume the witness kind",
+            ),
+            declaration_label(
+                grammar.sites[tail_site.index()].declaration,
+                grammar,
+                "the following required tail can start with the same kind",
+            ),
+            evidence,
+            remedy,
+        );
+        if let Some(sufficient_depth) = sufficient_depth {
+            diagnostic.lookahead = Some(crate::SharedPrefixEvidence {
+                configured_depth: grammar.max_lookahead,
+                sufficient_depth: Some(sufficient_depth),
+                witness: decision.witness,
+                end_of_alternative: decision.end_of_alternative,
+            });
         }
+        diagnostics.push(diagnostic);
     }
 }
 
@@ -6524,6 +6870,50 @@ fn first_sequences_overlap_within(
         })
 }
 
+/// Derives the canonical configured-depth ambiguity witness from exact symbolic FIRST languages.
+fn bounded_first_sequence_witness(
+    left: &[FirstSequence],
+    right: &[FirstSequence],
+    grammar: &GrammarDescription,
+) -> Option<Vec<DecisionWitness>> {
+    left.iter()
+        .flat_map(|left| right.iter().map(move |right| (left, right)))
+        .filter(|(left, right)| {
+            first_sequences_overlap_within(
+                left,
+                right,
+                &grammar.text_predicates,
+                grammar.text_equivalence,
+                grammar.max_lookahead,
+            )
+        })
+        .filter_map(|(left, right)| {
+            let mut witness = left
+                .positions
+                .iter()
+                .zip(&right.positions)
+                .map(|(left, right)| {
+                    let kind = left
+                        .kinds
+                        .intersection(&right.kinds)
+                        .expect("FIRST positions have the grammar width")
+                        .iter()
+                        .next()?;
+                    Some(DecisionWitness::Token(crate::LookaheadWitnessPosition {
+                        kind,
+                        left_text_predicate: left.text_predicate,
+                        right_text_predicate: right.text_predicate,
+                    }))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            if witness.len() < grammar.max_lookahead && left.ends && right.ends {
+                witness.push(DecisionWitness::End);
+            }
+            Some(witness)
+        })
+        .min()
+}
+
 /// Computes the token kinds that can extend each Pratt expression.
 fn compute_extenders(
     grammar: &GrammarDescription,
@@ -6825,7 +7215,11 @@ mod decision_product_tests {
         }));
         for target in [token_a, empty] {
             for separator in [None, Some(token_b)] {
-                items.push(DecisionItem::RepeatTail { target, separator });
+                items.push(DecisionItem::RepeatTail {
+                    target,
+                    separator,
+                    optional_trailing: false,
+                });
             }
         }
         (grammar, items)
@@ -7061,6 +7455,1313 @@ mod decision_product_tests {
             root,
         );
         (grammar, root)
+    }
+
+    #[test]
+    fn recursive_language_inclusion_bounds_paired_product_states() {
+        const BASE_BRANCHES: usize = 32;
+        fn push_token(grammar: &mut GrammarDescription, next_byte: &mut u32, name: &str) -> TypeId {
+            let declaration = test_declaration(grammar, next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        }
+
+        fn push_sequence(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            expected: TypeId,
+            name: &str,
+            targets: &[TypeId],
+        ) {
+            let declaration = test_declaration(grammar, next_byte, name);
+            let sites = targets
+                .iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    let declaration =
+                        test_declaration(grammar, next_byte, &format!("{name}::{index}"));
+                    grammar.push_site(crate::ParseSite::new(
+                        expected,
+                        *target,
+                        declaration,
+                        crate::ContainerShape::Direct,
+                    ))
+                })
+                .collect();
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Sequence { sites },
+                )),
+                expected,
+            );
+        }
+
+        fn push_choice(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            expected: TypeId,
+            name: &str,
+            targets: &[TypeId],
+        ) {
+            let declaration = test_declaration(grammar, next_byte, name);
+            let alternatives = targets
+                .iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    let declaration =
+                        test_declaration(grammar, next_byte, &format!("{name}::{index}"));
+                    let site = grammar.push_site(crate::ParseSite::new(
+                        expected,
+                        *target,
+                        declaration,
+                        crate::ContainerShape::Direct,
+                    ));
+                    crate::Alternative {
+                        declaration,
+                        sites: vec![site],
+                    }
+                })
+                .collect();
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Enum { alternatives },
+                )),
+                expected,
+            );
+        }
+
+        let mut grammar = GrammarDescription::new(
+            "recursive-language-inclusion",
+            3 + BASE_BRANCHES,
+            5,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let with = push_token(&mut grammar, &mut next_byte, "WITH");
+        let name = push_token(&mut grammar, &mut next_byte, "NAME");
+        let values = push_token(&mut grammar, &mut next_byte, "VALUES");
+        let base_statements = (0..BASE_BRANCHES)
+            .map(|index| push_token(&mut grammar, &mut next_byte, &format!("BASE{index}")))
+            .collect::<Vec<_>>();
+
+        let cte = grammar.next_type_id();
+        let with_clause = TypeId::new(cte.get() + 1);
+        let with_statement = TypeId::new(cte.get() + 2);
+        let select_body = TypeId::new(cte.get() + 3);
+        let compound_body = TypeId::new(cte.get() + 4);
+        let subquery = TypeId::new(cte.get() + 5);
+        let statement = TypeId::new(cte.get() + 6);
+        push_sequence(&mut grammar, &mut next_byte, cte, "Cte", &[name, statement]);
+        push_sequence(
+            &mut grammar,
+            &mut next_byte,
+            with_clause,
+            "WithClause",
+            &[with, cte],
+        );
+        push_sequence(
+            &mut grammar,
+            &mut next_byte,
+            with_statement,
+            "WithStatement",
+            &[with_clause, statement],
+        );
+        push_choice(
+            &mut grammar,
+            &mut next_byte,
+            select_body,
+            "SelectBody",
+            &[with_statement, values],
+        );
+        push_sequence(
+            &mut grammar,
+            &mut next_byte,
+            compound_body,
+            "CompoundBody",
+            &[select_body],
+        );
+        push_choice(
+            &mut grammar,
+            &mut next_byte,
+            subquery,
+            "Subquery",
+            &[compound_body],
+        );
+        let mut statement_alternatives = vec![with_statement, subquery];
+        statement_alternatives.extend(base_statements);
+        push_choice(
+            &mut grammar,
+            &mut next_byte,
+            statement,
+            "Statement",
+            &statement_alternatives,
+        );
+
+        let atom_kinds = expand_atoms(&grammar);
+        DECISION_PRODUCT_STATE_EXPANSIONS.set(0);
+        DECISION_PRODUCT_TRANSITION_PAIRS.set(0);
+        FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.set(0);
+        let product = build_decision_product(
+            paired_residual(
+                DecisionState(vec![DecisionItem::Type(with_statement)]),
+                DecisionState(vec![DecisionItem::Type(subquery)]),
+                &grammar,
+            ),
+            &grammar,
+            &atom_kinds,
+        );
+        let state_expansions = DECISION_PRODUCT_STATE_EXPANSIONS.get();
+        let transition_pairs = DECISION_PRODUCT_TRANSITION_PAIRS.get();
+        let closure_visits = FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.get();
+        assert!(matches!(product, DecisionProduct::Cyclic));
+        assert!(
+            state_expansions <= 8
+                && transition_pairs <= BASE_BRANCHES + 8
+                && closure_visits <= BASE_BRANCHES * 8,
+            "recursive language inclusion must pump before the product graph expands; states={state_expansions} transition_pairs={transition_pairs} closure_visits={closure_visits}",
+        );
+
+        let outcome = analyze_decision(
+            DecisionState(vec![DecisionItem::Type(with_statement)]),
+            DecisionState(vec![DecisionItem::Type(subquery)]),
+            &grammar,
+            &atom_kinds,
+            None,
+        );
+        assert_eq!(outcome.sufficient_depth, None);
+    }
+
+    #[test]
+    fn shallow_recursive_overlap_stops_before_unrelated_finite_product_branches() {
+        const FINITE_BRANCHES: usize = 16;
+
+        fn push_token(grammar: &mut GrammarDescription, next_byte: &mut u32, name: &str) -> TypeId {
+            let declaration = test_declaration(grammar, next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        }
+
+        let mut grammar = GrammarDescription::new(
+            "shallow-recursive-overlap",
+            1 + FINITE_BRANCHES * 2,
+            5,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let recurse = push_token(&mut grammar, &mut next_byte, "RECURSE");
+        let finite = (0..FINITE_BRANCHES)
+            .map(|index| {
+                let first = push_token(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("FINITE_FIRST_{index}"),
+                );
+                let second = push_token(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("FINITE_SECOND_{index}"),
+                );
+                (first, second)
+            })
+            .collect::<Vec<_>>();
+
+        let recursive = grammar.next_type_id();
+        let declaration = test_declaration(&mut grammar, &mut next_byte, "Recursive");
+        let mut alternatives = Vec::with_capacity(1 + FINITE_BRANCHES);
+        let recursive_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "Recursive::Recursive");
+        let recursive_sites = [recurse, recursive]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                let declaration = test_declaration(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("Recursive::Recursive::{index}"),
+                );
+                grammar.push_site(crate::ParseSite::new(
+                    recursive,
+                    target,
+                    declaration,
+                    crate::ContainerShape::Direct,
+                ))
+            })
+            .collect();
+        alternatives.push(crate::Alternative {
+            declaration: recursive_declaration,
+            sites: recursive_sites,
+        });
+        alternatives.extend(finite.into_iter().enumerate().map(|(branch, targets)| {
+            let alternative = test_declaration(
+                &mut grammar,
+                &mut next_byte,
+                &format!("Recursive::{branch}"),
+            );
+            let sites = [targets.0, targets.1]
+                .into_iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    let declaration = test_declaration(
+                        &mut grammar,
+                        &mut next_byte,
+                        &format!("Recursive::{branch}::{index}"),
+                    );
+                    grammar.push_site(crate::ParseSite::new(
+                        recursive,
+                        target,
+                        declaration,
+                        crate::ContainerShape::Direct,
+                    ))
+                })
+                .collect();
+            crate::Alternative {
+                declaration: alternative,
+                sites,
+            }
+        }));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Recursive",
+                declaration,
+                TypeShape::Enum { alternatives },
+            )),
+            recursive,
+        );
+
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let choice_alternatives = (0..2)
+            .map(|index| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("Choice::{index}"));
+                let site = grammar.push_site(crate::ParseSite::new(
+                    choice,
+                    recursive,
+                    declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                crate::Alternative {
+                    declaration,
+                    sites: vec![site],
+                }
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: choice_alternatives,
+                },
+            )),
+            choice,
+        );
+
+        let repeated_choice = grammar.next_type_id();
+        let repeated_choice_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "RepeatedChoice");
+        let repeated_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "RepeatedChoice::Repeated");
+        let repeated_site = grammar.push_site(crate::ParseSite::new(
+            repeated_choice,
+            recursive,
+            repeated_declaration,
+            crate::ContainerShape::zero_or_more(crate::ContainerShape::Direct, Some(recurse)),
+        ));
+        let direct_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "RepeatedChoice::Direct");
+        let direct_site = grammar.push_site(crate::ParseSite::new(
+            repeated_choice,
+            recursive,
+            direct_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "RepeatedChoice",
+                repeated_choice_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: repeated_declaration,
+                            sites: vec![repeated_site],
+                        },
+                        crate::Alternative {
+                            declaration: direct_declaration,
+                            sites: vec![direct_site],
+                        },
+                    ],
+                },
+            )),
+            repeated_choice,
+        );
+
+        let atom_kinds = expand_atoms(&grammar);
+        let recursive_state = DecisionState(vec![DecisionItem::Type(recursive)]);
+        let paired_start =
+            paired_residual(recursive_state.clone(), recursive_state.clone(), &grammar);
+        let direct_witness =
+            decision_witness_at_depth(&paired_start, &grammar, &atom_kinds, grammar.max_lookahead)
+                .expect("recursive language overlaps itself");
+        let first_sequence_analysis = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let mut language = first_sequence_analysis.language();
+        let root = language.build(grammar.max_lookahead, vec![recursive_state.clone()]);
+        let sequences = language.materialize(root);
+        let frozen_witness = bounded_first_sequence_witness(&sequences, &sequences, &grammar)
+            .expect("frozen recursive language overlaps itself");
+        assert_eq!(frozen_witness, direct_witness);
+        let repeated_start = paired_residual(
+            DecisionState::from_sites(&[repeated_site]),
+            DecisionState::from_sites(&[direct_site]),
+            &grammar,
+        );
+        let direct_repeated_witness = decision_witness_at_depth(
+            &repeated_start,
+            &grammar,
+            &atom_kinds,
+            grammar.max_lookahead,
+        )
+        .expect("the repeated and direct languages overlap");
+        let repeated_root = language.build(
+            grammar.max_lookahead,
+            vec![DecisionState::from_sites(&[repeated_site])],
+        );
+        let repeated_sequences = language.materialize(repeated_root);
+        let direct_root = language.build(
+            grammar.max_lookahead,
+            vec![DecisionState::from_sites(&[direct_site])],
+        );
+        let direct_sequences = language.materialize(direct_root);
+        let frozen_repeated_witness =
+            bounded_first_sequence_witness(&repeated_sequences, &direct_sequences, &grammar)
+                .expect("the frozen repeated and direct languages overlap");
+        assert_eq!(frozen_repeated_witness, direct_repeated_witness);
+
+        DECISION_PRODUCT_STATE_EXPANSIONS.set(0);
+        let outcome = analyze_decision(
+            recursive_state.clone(),
+            recursive_state,
+            &grammar,
+            &atom_kinds,
+            Some(frozen_witness),
+        );
+        assert_eq!(outcome.sufficient_depth, None);
+        assert_eq!(outcome.witness.len(), grammar.max_lookahead);
+        assert!(
+            DECISION_PRODUCT_STATE_EXPANSIONS.get() <= 4,
+            "a proven shallow cycle must stop the unbounded product before unrelated finite branches; expansions={}",
+            DECISION_PRODUCT_STATE_EXPANSIONS.get(),
+        );
+
+        DECISION_WITNESS_STATE_EXPANSIONS.set(0);
+        let report = analyze(&grammar);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::EnumFirstOverlap),
+        );
+        assert_eq!(
+            DECISION_WITNESS_STATE_EXPANSIONS.get(),
+            0,
+            "required and repeated enum sites must reuse exact frozen FIRST-k languages for the conflict witness",
+        );
+    }
+
+    #[test]
+    fn recursive_product_stops_inside_a_wide_overlap_cell() {
+        const FINITE_BRANCHES: usize = 128;
+
+        let mut grammar = GrammarDescription::new(
+            "recursive-wide-overlap-cell",
+            FINITE_BRANCHES + 1,
+            5,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let shared_declaration = test_declaration(&mut grammar, &mut next_byte, "SHARED");
+        let shared_kind =
+            grammar.push_kind(crate::KindDescription::new("SHARED", shared_declaration));
+        let shared_atom = grammar.push_atom(crate::AtomDescription::new(
+            "SHARED",
+            shared_declaration,
+            AtomExpression::Kind(shared_kind),
+        ));
+        let shared = grammar.push_type(crate::TypeDescription::new(
+            "Shared",
+            shared_declaration,
+            TypeShape::Token {
+                atom: shared_atom,
+                text_predicate: None,
+            },
+        ));
+
+        // Put the recursive residual before every finite residual in typed-ID
+        // order. A cycle proof is therefore the first exact member of the
+        // one wide symbolic SHARED cell.
+        let recursive = grammar.next_type_id();
+        let recursive_declaration = test_declaration(&mut grammar, &mut next_byte, "Recursive");
+        let mut alternatives = Vec::with_capacity(FINITE_BRANCHES + 1);
+        let mut recursive_tail_site = None;
+        for (branch, target) in std::iter::once(recursive)
+            .chain((0..FINITE_BRANCHES).map(|index| TypeId::new(2 + index as u32)))
+            .enumerate()
+        {
+            let declaration = test_declaration(
+                &mut grammar,
+                &mut next_byte,
+                &format!("Recursive::{branch}"),
+            );
+            let sites = [shared, target]
+                .into_iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    let site_declaration = test_declaration(
+                        &mut grammar,
+                        &mut next_byte,
+                        &format!("Recursive::{branch}::{index}"),
+                    );
+                    grammar.push_site(crate::ParseSite::new(
+                        recursive,
+                        target,
+                        site_declaration,
+                        crate::ContainerShape::Direct,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            if branch == 0 {
+                recursive_tail_site = Some(sites[1]);
+            }
+            alternatives.push(crate::Alternative { declaration, sites });
+        }
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Recursive",
+                recursive_declaration,
+                TypeShape::Enum { alternatives },
+            )),
+            recursive,
+        );
+
+        for branch in 0..FINITE_BRANCHES {
+            let name = format!("FINITE_{branch}");
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+            let kind = grammar.push_kind(crate::KindDescription::new(&name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                &name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    &name,
+                    declaration,
+                    TypeShape::Token {
+                        atom,
+                        text_predicate: None,
+                    },
+                )),
+                TypeId::new(2 + branch as u32),
+            );
+        }
+
+        let atom_kinds = expand_atoms(&grammar);
+        DECISION_PRODUCT_TRANSITION_PAIRS.set(0);
+        let state = DecisionState(vec![DecisionItem::Site(
+            recursive_tail_site.expect("recursive tail site"),
+        )]);
+        let product = build_decision_product(
+            paired_residual(state.clone(), state, &grammar),
+            &grammar,
+            &atom_kinds,
+        );
+        assert!(matches!(product, DecisionProduct::Cyclic));
+        assert!(
+            DECISION_PRODUCT_TRANSITION_PAIRS.get() <= 1,
+            "a proven first recursive successor must stop before the unrelated Cartesian tail of its symbolic cell; transition_pairs={}",
+            DECISION_PRODUCT_TRANSITION_PAIRS.get(),
+        );
+    }
+
+    #[test]
+    fn optional_trailing_separator_is_part_of_the_frozen_single_site_language() {
+        let mut grammar = GrammarDescription::new(
+            "optional-trailing-separator",
+            2,
+            3,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let mut push_token = |grammar: &mut GrammarDescription, name: &str| {
+            let declaration = test_declaration(grammar, &mut next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            let target = grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ));
+            (target, kind)
+        };
+        let (item, item_kind) = push_token(&mut grammar, "ITEM");
+        let (separator, separator_kind) = push_token(&mut grammar, "COMMA");
+
+        let exact = grammar.next_type_id();
+        let exact_declaration = test_declaration(&mut grammar, &mut next_byte, "Exact");
+        let exact_sites = [item, separator]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("Exact::{index}"));
+                grammar.push_site(crate::ParseSite::new(
+                    exact,
+                    target,
+                    declaration,
+                    crate::ContainerShape::Direct,
+                ))
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Exact",
+                exact_declaration,
+                TypeShape::Sequence { sites: exact_sites },
+            )),
+            exact,
+        );
+
+        let choice = grammar.next_type_id();
+        let repeated_declaration = test_declaration(&mut grammar, &mut next_byte, "Repeated");
+        let repeated_site = grammar.push_site(crate::ParseSite::new(
+            choice,
+            item,
+            repeated_declaration,
+            crate::ContainerShape::repeated_with_separator(
+                crate::ContainerShape::Direct,
+                crate::RepetitionCardinality::OneOrMore,
+                Some(crate::RepeatSeparator::new(separator, true)),
+            ),
+        ));
+        let exact_alternative = test_declaration(&mut grammar, &mut next_byte, "ExactAlternative");
+        let exact_site = grammar.push_site(crate::ParseSite::new(
+            choice,
+            exact,
+            exact_alternative,
+            crate::ContainerShape::Direct,
+        ));
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: repeated_declaration,
+                            sites: vec![repeated_site],
+                        },
+                        crate::Alternative {
+                            declaration: exact_alternative,
+                            sites: vec![exact_site],
+                        },
+                    ],
+                },
+            )),
+            choice,
+        );
+
+        let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let repeated = first_sequences.sequences(&[repeated_site]);
+        let exact = first_sequences.sequences(&[exact_site]);
+        let frozen = bounded_first_sequence_witness(&repeated, &exact, &grammar)
+            .expect("a trailing separator is an exact shared prefix");
+        assert_eq!(
+            frozen,
+            vec![
+                DecisionWitness::Token(crate::LookaheadWitnessPosition {
+                    kind: item_kind,
+                    left_text_predicate: None,
+                    right_text_predicate: None,
+                }),
+                DecisionWitness::Token(crate::LookaheadWitnessPosition {
+                    kind: separator_kind,
+                    left_text_predicate: None,
+                    right_text_predicate: None,
+                }),
+                DecisionWitness::End,
+            ],
+        );
+        let direct = decision_witness_at_depth(
+            &paired_residual(
+                DecisionState::from_sites(&[repeated_site]),
+                DecisionState::from_sites(&[exact_site]),
+                &grammar,
+            ),
+            &grammar,
+            &atom_kinds,
+            grammar.max_lookahead,
+        )
+        .expect("direct decision traversal must retain the trailing separator");
+        assert_eq!(frozen, direct);
+    }
+
+    #[test]
+    fn nonzero_pratt_binding_power_keeps_authored_identity_outside_the_site_language_cache() {
+        let mut grammar = GrammarDescription::new(
+            "binding-power-sensitive-site",
+            2,
+            3,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let mut push_token = |grammar: &mut GrammarDescription, name: &str| {
+            let declaration = test_declaration(grammar, &mut next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        };
+        let number = push_token(&mut grammar, "NUMBER");
+        let bang = push_token(&mut grammar, "BANG");
+
+        let expression = grammar.next_type_id();
+        let expression_declaration = test_declaration(&mut grammar, &mut next_byte, "Expression");
+        let atom_declaration = test_declaration(&mut grammar, &mut next_byte, "Expression::Atom");
+        let atom_site = grammar.push_site(crate::ParseSite::new(
+            expression,
+            number,
+            atom_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        let postfix_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "Expression::Postfix");
+        let postfix_site = grammar.push_site(crate::ParseSite::new(
+            expression,
+            bang,
+            postfix_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Expression",
+                expression_declaration,
+                TypeShape::Pratt {
+                    variants: vec![
+                        crate::PrattVariant {
+                            declaration: atom_declaration,
+                            position: PrattPosition::Atom,
+                            sites: vec![atom_site],
+                        },
+                        crate::PrattVariant {
+                            declaration: postfix_declaration,
+                            position: PrattPosition::Postfix { bp: 5 },
+                            sites: vec![postfix_site],
+                        },
+                    ],
+                },
+            )),
+            expression,
+        );
+
+        let choice = grammar.next_type_id();
+        let low_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice::Low");
+        let low = grammar.push_site(crate::ParseSite::new(
+            choice,
+            expression,
+            low_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        let high_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice::High");
+        let high = grammar.push_site(
+            crate::ParseSite::new(
+                choice,
+                expression,
+                high_declaration,
+                crate::ContainerShape::Direct,
+            )
+            .with_min_bp(10),
+        );
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: low_declaration,
+                            sites: vec![low],
+                        },
+                        crate::Alternative {
+                            declaration: high_declaration,
+                            sites: vec![high],
+                        },
+                    ],
+                },
+            )),
+            choice,
+        );
+
+        let atom_kinds = expand_atoms(&grammar);
+        let semantic = compute_first(&grammar, &atom_kinds);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        assert_ne!(
+            decision_site_semantics(&grammar.sites[low.index()]),
+            decision_site_semantics(&grammar.sites[high.index()]),
+        );
+        assert_ne!(
+            first_sequences.canonical_sites[low.index()],
+            first_sequences.canonical_sites[high.index()],
+        );
+        let mut cache = HashMap::new();
+        assert!(
+            cached_single_site_language(&[low], &grammar, &first_sequences, &mut cache).is_some()
+        );
+        assert!(
+            cached_single_site_language(&[high], &grammar, &first_sequences, &mut cache).is_none()
+        );
+        assert!(
+            bounded_site_language_witness(
+                &[low],
+                &[high],
+                &grammar,
+                &semantic,
+                &first_sequences,
+                &mut cache,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn cached_single_site_cardinalities_match_direct_decision_witnesses() {
+        let mut grammar = GrammarDescription::new(
+            "single-site-cardinalities",
+            1,
+            3,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let item_declaration = test_declaration(&mut grammar, &mut next_byte, "ITEM");
+        let item_kind = grammar.push_kind(crate::KindDescription::new("ITEM", item_declaration));
+        let item_atom = grammar.push_atom(crate::AtomDescription::new(
+            "ITEM",
+            item_declaration,
+            AtomExpression::Kind(item_kind),
+        ));
+        let item = grammar.push_type(crate::TypeDescription::new(
+            "Item",
+            item_declaration,
+            TypeShape::Token {
+                atom: item_atom,
+                text_predicate: None,
+            },
+        ));
+
+        let owner = grammar.next_type_id();
+        let direct_declaration = test_declaration(&mut grammar, &mut next_byte, "Owner::Direct");
+        let direct = grammar.push_site(crate::ParseSite::new(
+            owner,
+            item,
+            direct_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        let shapes = [
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+            crate::ContainerShape::one_or_more(crate::ContainerShape::Direct, None),
+            crate::ContainerShape::optional(crate::ContainerShape::one_or_more(
+                crate::ContainerShape::Direct,
+                None,
+            )),
+        ];
+        let shaped = shapes
+            .into_iter()
+            .enumerate()
+            .map(|(index, shape)| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("Owner::{index}"));
+                grammar.push_site(crate::ParseSite::new(owner, item, declaration, shape))
+            })
+            .collect::<Vec<_>>();
+        let owner_declaration = test_declaration(&mut grammar, &mut next_byte, "Owner");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Owner",
+                owner_declaration,
+                TypeShape::Sequence {
+                    sites: std::iter::once(direct)
+                        .chain(shaped.iter().copied())
+                        .collect(),
+                },
+            )),
+            owner,
+        );
+
+        let atom_kinds = expand_atoms(&grammar);
+        let semantic = compute_first(&grammar, &atom_kinds);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let mut cache = HashMap::new();
+        for site in shaped {
+            let frozen = bounded_site_language_witness(
+                &[site],
+                &[direct],
+                &grammar,
+                &semantic,
+                &first_sequences,
+                &mut cache,
+            )
+            .expect("each cardinality overlaps one direct item");
+            let direct_witness = decision_witness_at_depth(
+                &paired_residual(
+                    DecisionState::from_sites(&[site]),
+                    DecisionState::from_sites(&[direct]),
+                    &grammar,
+                ),
+                &grammar,
+                &atom_kinds,
+                grammar.max_lookahead,
+            )
+            .expect("direct decision traversal sees the same overlap");
+            assert_eq!(frozen, direct_witness);
+        }
+        assert_eq!(
+            cache.len(),
+            4,
+            "the direct and three container cardinalities have distinct semantics",
+        );
+    }
+
+    #[test]
+    fn cached_text_predicates_match_direct_ascii_insensitive_witnesses() {
+        let mut grammar = GrammarDescription::new(
+            "single-site-text-predicates",
+            1,
+            2,
+            TextEquivalence::AsciiInsensitive,
+        );
+        let mut next_byte = 0;
+        let word_declaration = test_declaration(&mut grammar, &mut next_byte, "WORD");
+        let word_kind = grammar.push_kind(crate::KindDescription::new("WORD", word_declaration));
+        let word_atom = grammar.push_atom(crate::AtomDescription::new(
+            "WORD",
+            word_declaration,
+            AtomExpression::Kind(word_kind),
+        ));
+        let predicates = [
+            TextPredicate::Any,
+            TextPredicate::Exact("A".to_owned()),
+            TextPredicate::OneOf(vec!["a".to_owned(), "B".to_owned()]),
+            TextPredicate::NotIn(vec!["b".to_owned()]),
+        ]
+        .into_iter()
+        .map(|predicate| grammar.push_text_predicate(predicate))
+        .collect::<Vec<_>>();
+        let targets = predicates
+            .iter()
+            .enumerate()
+            .map(|(index, predicate)| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("Word{index}"));
+                grammar.push_type(crate::TypeDescription::new(
+                    format!("Word{index}"),
+                    declaration,
+                    TypeShape::Token {
+                        atom: word_atom,
+                        text_predicate: Some(*predicate),
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        let owner = grammar.next_type_id();
+        let sites = targets
+            .iter()
+            .enumerate()
+            .flat_map(|(index, target)| {
+                let repeated_declaration = test_declaration(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("Owner::Repeated{index}"),
+                );
+                let repeated = grammar.push_site(crate::ParseSite::new(
+                    owner,
+                    *target,
+                    repeated_declaration,
+                    crate::ContainerShape::one_or_more(crate::ContainerShape::Direct, None),
+                ));
+                let direct_declaration = test_declaration(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("Owner::Direct{index}"),
+                );
+                let direct = grammar.push_site(crate::ParseSite::new(
+                    owner,
+                    *target,
+                    direct_declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                [repeated, direct]
+            })
+            .collect::<Vec<_>>();
+        let owner_declaration = test_declaration(&mut grammar, &mut next_byte, "Owner");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Owner",
+                owner_declaration,
+                TypeShape::Sequence {
+                    sites: sites.clone(),
+                },
+            )),
+            owner,
+        );
+
+        let atom_kinds = expand_atoms(&grammar);
+        let semantic = compute_first(&grammar, &atom_kinds);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let mut cache = HashMap::new();
+        for (left_index, right_index) in [(0, 1), (1, 2), (1, 3), (2, 3)] {
+            let left = sites[left_index * 2];
+            let right = sites[right_index * 2 + 1];
+            let frozen = bounded_site_language_witness(
+                &[left],
+                &[right],
+                &grammar,
+                &semantic,
+                &first_sequences,
+                &mut cache,
+            )
+            .expect("ASCII-insensitive predicates overlap on a concrete spelling");
+            let direct = decision_witness_at_depth(
+                &paired_residual(
+                    DecisionState::from_sites(&[left]),
+                    DecisionState::from_sites(&[right]),
+                    &grammar,
+                ),
+                &grammar,
+                &atom_kinds,
+                grammar.max_lookahead,
+            )
+            .expect("direct predicate traversal sees the same overlap");
+            assert_eq!(frozen, direct);
+            assert!(matches!(frozen.first(), Some(DecisionWitness::Token(_))));
+        }
+    }
+
+    #[test]
+    fn disjoint_statement_like_alternatives_skip_paired_decision_products() {
+        const BRANCH_COUNT: usize = 64;
+        const WRAPPER_DEPTH: usize = 4;
+        let mut grammar = GrammarDescription::new(
+            "disjoint-statement-like-alternatives",
+            BRANCH_COUNT,
+            5,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let mut alternatives = Vec::with_capacity(BRANCH_COUNT);
+        for branch in 0..BRANCH_COUNT {
+            let token_name = format!("Token{branch}");
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &token_name);
+            let kind = grammar.push_kind(crate::KindDescription::new(&token_name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                &token_name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            let mut target = grammar.push_type(crate::TypeDescription::new(
+                &token_name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ));
+            for depth in 0..WRAPPER_DEPTH {
+                let name = format!("Branch{branch}Wrapper{depth}");
+                let owner = grammar.next_type_id();
+                let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+                let site_declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("{name}::value"));
+                let site = grammar.push_site(crate::ParseSite::new(
+                    owner,
+                    target,
+                    site_declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                assert_eq!(
+                    grammar.push_type(crate::TypeDescription::new(
+                        name,
+                        declaration,
+                        TypeShape::Sequence { sites: vec![site] },
+                    )),
+                    owner,
+                );
+                target = owner;
+            }
+            alternatives.push(target);
+        }
+
+        let optional_sequence = grammar.next_type_id();
+        let declaration = test_declaration(&mut grammar, &mut next_byte, "OptionalThenRequired");
+        let optional_declaration = test_declaration(
+            &mut grammar,
+            &mut next_byte,
+            "OptionalThenRequired::optional",
+        );
+        let optional = grammar.push_site(crate::ParseSite::new(
+            optional_sequence,
+            alternatives[0],
+            optional_declaration,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+        ));
+        let required_declaration = test_declaration(
+            &mut grammar,
+            &mut next_byte,
+            "OptionalThenRequired::required",
+        );
+        let required = grammar.push_site(crate::ParseSite::new(
+            optional_sequence,
+            alternatives[1],
+            required_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "OptionalThenRequired",
+                declaration,
+                TypeShape::Sequence {
+                    sites: vec![optional, required],
+                },
+            )),
+            optional_sequence,
+        );
+
+        let pratt = grammar.next_type_id();
+        let declaration = test_declaration(&mut grammar, &mut next_byte, "DisjointPratt");
+        let variants = alternatives[2..4]
+            .iter()
+            .enumerate()
+            .map(|(branch, target)| {
+                let declaration = test_declaration(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("DisjointPratt::Branch{branch}"),
+                );
+                let site = grammar.push_site(crate::ParseSite::new(
+                    pratt,
+                    *target,
+                    declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                crate::PrattVariant {
+                    declaration,
+                    position: PrattPosition::Atom,
+                    sites: vec![site],
+                }
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "DisjointPratt",
+                declaration,
+                TypeShape::Pratt { variants },
+            )),
+            pratt,
+        );
+
+        let statement = grammar.next_type_id();
+        let declaration = test_declaration(&mut grammar, &mut next_byte, "Statement");
+        let alternatives = alternatives
+            .into_iter()
+            .enumerate()
+            .map(|(branch, target)| {
+                let declaration = test_declaration(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("Statement::Branch{branch}"),
+                );
+                let site = grammar.push_site(crate::ParseSite::new(
+                    statement,
+                    target,
+                    declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                crate::Alternative {
+                    declaration,
+                    sites: vec![site],
+                }
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Statement",
+                declaration,
+                TypeShape::Enum { alternatives },
+            )),
+            statement,
+        );
+
+        CONFLICT_DECISION_PRODUCT_BUILDS.set(0);
+        let report = analyze(&grammar);
+        assert!(report.diagnostics.is_empty());
+        assert_eq!(
+            CONFLICT_DECISION_PRODUCT_BUILDS.get(),
+            0,
+            "disjoint FIRST languages must not build pairwise decision products",
+        );
+    }
+
+    #[test]
+    fn bounded_first_languages_skip_paired_products_for_shared_prefixes() {
+        const BRANCH_COUNT: usize = 32;
+        let mut grammar = GrammarDescription::new(
+            "bounded-statement-like-alternatives",
+            BRANCH_COUNT + 1,
+            5,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let (shared, suffixes) = {
+            let mut push_token = |grammar: &mut GrammarDescription, name: String| {
+                let declaration = test_declaration(grammar, &mut next_byte, &name);
+                let kind = grammar.push_kind(crate::KindDescription::new(&name, declaration));
+                let atom = grammar.push_atom(crate::AtomDescription::new(
+                    &name,
+                    declaration,
+                    AtomExpression::Kind(kind),
+                ));
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Token {
+                        atom,
+                        text_predicate: None,
+                    },
+                ))
+            };
+            let shared = push_token(&mut grammar, "Shared".to_owned());
+            let suffixes = (0..BRANCH_COUNT)
+                .map(|branch| push_token(&mut grammar, format!("Suffix{branch}")))
+                .collect::<Vec<_>>();
+            (shared, suffixes)
+        };
+
+        let mut branches = Vec::with_capacity(BRANCH_COUNT);
+        for (branch, suffix) in suffixes.into_iter().enumerate() {
+            let name = format!("Branch{branch}");
+            let owner = grammar.next_type_id();
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+            let sites = [shared, suffix]
+                .into_iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    let declaration =
+                        test_declaration(&mut grammar, &mut next_byte, &format!("{name}::{index}"));
+                    grammar.push_site(crate::ParseSite::new(
+                        owner,
+                        target,
+                        declaration,
+                        crate::ContainerShape::Direct,
+                    ))
+                })
+                .collect();
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Sequence { sites },
+                )),
+                owner,
+            );
+            branches.push(owner);
+        }
+
+        let statement = grammar.next_type_id();
+        let declaration = test_declaration(&mut grammar, &mut next_byte, "Statement");
+        let alternatives = branches
+            .into_iter()
+            .enumerate()
+            .map(|(branch, target)| {
+                let declaration = test_declaration(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("Statement::Branch{branch}"),
+                );
+                let site = grammar.push_site(crate::ParseSite::new(
+                    statement,
+                    target,
+                    declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                crate::Alternative {
+                    declaration,
+                    sites: vec![site],
+                }
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Statement",
+                declaration,
+                TypeShape::Enum { alternatives },
+            )),
+            statement,
+        );
+
+        CONFLICT_DECISION_PRODUCT_BUILDS.set(0);
+        let report = analyze(&grammar);
+        assert!(report.diagnostics.is_empty());
+        assert_eq!(
+            CONFLICT_DECISION_PRODUCT_BUILDS.get(),
+            0,
+            "bounded FIRST languages already prove every shared prefix disjoint",
+        );
     }
 
     #[test]
@@ -7473,14 +9174,20 @@ mod decision_product_tests {
         let items = items
             .into_iter()
             .filter(|item| match item {
-                DecisionItem::RepeatTail { target, separator } => {
-                    grammar.sites.iter().any(|site| {
-                        let semantics = container_semantics(site);
-                        semantics.cardinality.is_repeated()
-                            && site.target == *target
-                            && semantics.separator_type() == *separator
-                    })
-                }
+                DecisionItem::RepeatTail {
+                    target,
+                    separator,
+                    optional_trailing,
+                } => grammar.sites.iter().any(|site| {
+                    let semantics = container_semantics(site);
+                    semantics.cardinality.is_repeated()
+                        && site.target == *target
+                        && semantics.separator_type() == *separator
+                        && semantics
+                            .separator
+                            .is_some_and(|separator| separator.optional_trailing)
+                            == *optional_trailing
+                }),
                 DecisionItem::Type(_) | DecisionItem::Site(_) => true,
             })
             .collect::<Vec<_>>();
@@ -8760,6 +10467,110 @@ mod decision_product_tests {
         let parents = BTreeMap::from([(ancestor.clone(), Vec::new())]);
 
         assert_eq!(pumping_ancestor(&ancestor, &successor, &parents), None);
+    }
+
+    #[test]
+    fn decision_product_preserves_continuations_inspected_by_nullable_expansion() {
+        fn push_token(grammar: &mut GrammarDescription, next_byte: &mut u32, name: &str) -> TypeId {
+            let declaration = test_declaration(grammar, next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        }
+
+        fn push_recursive_sequence(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            name: &str,
+            shared: TypeId,
+            empty: TypeId,
+            tail: TypeId,
+        ) -> TypeId {
+            let recursive = grammar.next_type_id();
+            let declaration = test_declaration(grammar, next_byte, name);
+            let sites = [shared, empty, tail, recursive]
+                .into_iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    let site_declaration =
+                        test_declaration(grammar, next_byte, &format!("{name}::{index}"));
+                    grammar.push_site(crate::ParseSite::new(
+                        recursive,
+                        target,
+                        site_declaration,
+                        crate::ContainerShape::Direct,
+                    ))
+                })
+                .collect();
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Sequence { sites },
+                )),
+                recursive,
+            );
+            recursive
+        }
+
+        let mut grammar = GrammarDescription::new(
+            "protected-continuation-product",
+            3,
+            3,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let shared = push_token(&mut grammar, &mut next_byte, "SHARED");
+        let left_tail = push_token(&mut grammar, &mut next_byte, "LEFT_TAIL");
+        let right_tail = push_token(&mut grammar, &mut next_byte, "RIGHT_TAIL");
+        let empty_declaration = test_declaration(&mut grammar, &mut next_byte, "Empty");
+        let empty = grammar.push_type(crate::TypeDescription::new(
+            "Empty",
+            empty_declaration,
+            TypeShape::Sequence { sites: Vec::new() },
+        ));
+        let left = push_recursive_sequence(
+            &mut grammar,
+            &mut next_byte,
+            "Left",
+            shared,
+            empty,
+            left_tail,
+        );
+        let right = push_recursive_sequence(
+            &mut grammar,
+            &mut next_byte,
+            "Right",
+            shared,
+            empty,
+            right_tail,
+        );
+
+        let atom_kinds = expand_atoms(&grammar);
+        let product = build_decision_product(
+            paired_residual(
+                DecisionState(vec![DecisionItem::Type(empty), DecisionItem::Type(left)]),
+                DecisionState(vec![DecisionItem::Type(empty), DecisionItem::Type(right)]),
+                &grammar,
+            ),
+            &grammar,
+            &atom_kinds,
+        );
+        assert!(
+            matches!(product, DecisionProduct::Acyclic(_)),
+            "the recursive-looking successor inspected its continuation and cannot pump",
+        );
     }
 
     #[test]
