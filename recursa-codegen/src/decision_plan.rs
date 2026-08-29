@@ -101,13 +101,24 @@ struct DispatchRectangleMergeKey {
     positions: Vec<(Vec<u64>, TextPartition)>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Closed selection policy for a frozen dispatch terminal.
+pub enum DispatchTerminalMode {
+    /// Select immediately without considering outgoing edges.
+    Immediate,
+    /// Select only when lookahead belongs to the caller FOLLOW set.
+    CallerFollow,
+    /// Try every exact outgoing edge first, then select when none matches.
+    FallbackAfterEdges,
+}
+
 /// One terminal choice in a frozen dispatch trie.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DispatchTerminal {
     /// Declaration selected at this terminal.
     declaration: DeclId,
-    /// Whether this terminal represents caller-FOLLOW fallback.
-    on_caller_follow: bool,
+    /// Closed selection policy for this terminal.
+    mode: DispatchTerminalMode,
 }
 
 impl DispatchTerminal {
@@ -116,9 +127,14 @@ impl DispatchTerminal {
         self.declaration
     }
 
+    /// Returns the closed selection policy for this terminal.
+    pub const fn mode(self) -> DispatchTerminalMode {
+        self.mode
+    }
+
     /// Returns whether selection depends on caller FOLLOW.
     pub const fn on_caller_follow(self) -> bool {
-        self.on_caller_follow
+        matches!(self.mode, DispatchTerminalMode::CallerFollow)
     }
 }
 
@@ -212,7 +228,10 @@ impl DispatchBranch {
     ///
     /// Structural-only balanced-opener routes are represented by
     /// [`DispatchPlan::balanced`] and therefore do not appear as ordinary
-    /// branch sequences.
+    /// branch sequences. A [`DispatchTerminalMode::FallbackAfterEdges`]
+    /// terminal selects the complement of its outgoing predicates, which is
+    /// not an exact positive prefix and is therefore omitted here; consult
+    /// [`DispatchPlan::trie`] for that authoritative decision.
     pub fn sequences(&self) -> &[DispatchSequence] {
         &self.sequences
     }
@@ -328,6 +347,10 @@ impl DispatchPlan {
                 grammar.declarations[declaration.index()].name.as_str()
             }),
         );
+        if dispatch_trie_has_fallback_after_edges(&self.trie) {
+            output.push_str("\n  fallback-trie=");
+            render_dispatch_trie(&self.trie, grammar, &mut output);
+        }
         if let Some(balanced) = &self.balanced {
             write!(
                 output,
@@ -360,6 +383,16 @@ impl DispatchPlan {
         }
         output
     }
+}
+
+/// Reports whether a trie contains a complement terminal that cannot be projected as a row.
+fn dispatch_trie_has_fallback_after_edges(node: &DispatchTrieNode) -> bool {
+    node.terminal
+        .is_some_and(|terminal| terminal.mode == DispatchTerminalMode::FallbackAfterEdges)
+        || node
+            .edges
+            .iter()
+            .any(|edge| dispatch_trie_has_fallback_after_edges(&edge.next))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1895,13 +1928,18 @@ fn compact_sequences_by_declaration(
         prefix: &mut Vec<DispatchPosition>,
         sequences: &mut BTreeMap<DeclId, Vec<DispatchSequence>>,
     ) {
-        if let Some(terminal) = node.terminal {
+        if let Some(terminal) = node.terminal.filter(|terminal| {
+            terminal.mode != crate::analysis::CompactDispatchTerminalMode::FallbackAfterEdges
+        }) {
             sequences
                 .entry(terminal.declaration)
                 .or_default()
                 .push(DispatchSequence {
                     positions: prefix.clone(),
-                    on_caller_follow: terminal.on_caller_follow,
+                    on_caller_follow: matches!(
+                        terminal.mode,
+                        crate::analysis::CompactDispatchTerminalMode::CallerFollow
+                    ),
                 });
         }
         for edge in node.edges.iter() {
@@ -2079,7 +2117,7 @@ fn compact_enum_dispatch_plan(
     });
     let on_caller_follow = trie
         .terminal
-        .filter(|terminal| terminal.on_caller_follow)
+        .filter(|terminal| terminal.mode == DispatchTerminalMode::CallerFollow)
         .map(|terminal| terminal.declaration);
     DispatchPlan {
         owner,
@@ -2116,7 +2154,17 @@ fn dispatch_trie_from_compact(node: crate::analysis::CompactDispatchNode) -> Dis
         let converted = DispatchTrieNode {
             terminal: node.terminal.map(|terminal| DispatchTerminal {
                 declaration: terminal.declaration,
-                on_caller_follow: terminal.on_caller_follow,
+                mode: match terminal.mode {
+                    crate::analysis::CompactDispatchTerminalMode::Immediate => {
+                        DispatchTerminalMode::Immediate
+                    }
+                    crate::analysis::CompactDispatchTerminalMode::CallerFollow => {
+                        DispatchTerminalMode::CallerFollow
+                    }
+                    crate::analysis::CompactDispatchTerminalMode::FallbackAfterEdges => {
+                        DispatchTerminalMode::FallbackAfterEdges
+                    }
+                },
             }),
             edges: node
                 .edges
@@ -2327,7 +2375,11 @@ fn try_freeze_dispatch_trie_with_observer(
         for sequence in &branch.sequences {
             let terminal = DispatchTerminal {
                 declaration: branch.declaration,
-                on_caller_follow: sequence.on_caller_follow,
+                mode: if sequence.on_caller_follow {
+                    DispatchTerminalMode::CallerFollow
+                } else {
+                    DispatchTerminalMode::Immediate
+                },
             };
             let terminal_key = DispatchSuffixKey {
                 terminal,
@@ -2427,7 +2479,7 @@ fn freeze_dispatch_state(
             node: DispatchTrieNode {
                 terminal: Some(DispatchTerminal {
                     declaration: terminal.declaration,
-                    on_caller_follow: false,
+                    mode: DispatchTerminalMode::Immediate,
                 }),
                 edges: Arc::default(),
             },
@@ -2447,7 +2499,7 @@ fn freeze_dispatch_state(
         }
         if terminals
             .iter()
-            .any(|candidate| !candidate.on_caller_follow)
+            .any(|candidate| candidate.mode != DispatchTerminalMode::CallerFollow)
         {
             if state
                 .iter()
@@ -2460,7 +2512,7 @@ fn freeze_dispatch_state(
                 node: DispatchTrieNode {
                     terminal: Some(DispatchTerminal {
                         declaration: first.declaration,
-                        on_caller_follow: false,
+                        mode: DispatchTerminalMode::Immediate,
                     }),
                     edges: Arc::default(),
                 },
@@ -2868,8 +2920,12 @@ fn render_dispatch_trie(
     output.push_str("(terminal=");
     if let Some(terminal) = node.terminal {
         output.push_str(&grammar.declarations[terminal.declaration.index()].name);
-        if terminal.on_caller_follow {
-            output.push_str("@caller-follow");
+        match terminal.mode {
+            DispatchTerminalMode::Immediate => {}
+            DispatchTerminalMode::CallerFollow => output.push_str("@caller-follow"),
+            DispatchTerminalMode::FallbackAfterEdges => {
+                output.push_str("@fallback-after-edges");
+            }
         }
     } else {
         output.push('-');
@@ -4184,7 +4240,7 @@ mod tests {
                 next: DispatchTrieNode {
                     terminal: Some(DispatchTerminal {
                         declaration: DeclId::new(0),
-                        on_caller_follow: false,
+                        mode: DispatchTerminalMode::Immediate,
                     }),
                     edges: Arc::default(),
                 },
@@ -4225,7 +4281,7 @@ mod tests {
         let mut edges = balanced.after_close.edges.to_vec();
         edges[0].next.terminal = Some(DispatchTerminal {
             declaration: DeclId::new(1),
-            on_caller_follow: true,
+            mode: DispatchTerminalMode::CallerFollow,
         });
         balanced.after_close.edges = edges.into();
 
@@ -4482,7 +4538,7 @@ mod tests {
             grammar.declarations[terminal.declaration().index()].name,
             "Expr::Add",
         );
-        assert!(!terminal.on_caller_follow());
+        assert_eq!(terminal.mode(), DispatchTerminalMode::Immediate);
         assert!(
             operator.next().edges().is_empty(),
             "recursive RHS lookahead must not participate in LED selection",

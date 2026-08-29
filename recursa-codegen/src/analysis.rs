@@ -6584,12 +6584,23 @@ struct DecisionFrontier {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Selection policy attached to one compact dispatch terminal.
+pub(crate) enum CompactDispatchTerminalMode {
+    /// Select immediately without considering outgoing edges.
+    Immediate,
+    /// Select only when lookahead belongs to the caller FOLLOW set.
+    CallerFollow,
+    /// Try every exact outgoing edge first, then select when none matches.
+    FallbackAfterEdges,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// One terminal selected by a compact labelled dispatch traversal.
 pub(crate) struct CompactDispatchTerminal {
     /// Outer enum declaration selected at this terminal.
     pub(crate) declaration: crate::DeclId,
-    /// Whether exhaustion delegates selection to the caller FOLLOW set.
-    pub(crate) on_caller_follow: bool,
+    /// Closed selection policy for this terminal.
+    pub(crate) mode: CompactDispatchTerminalMode,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -8701,7 +8712,7 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                 node: self.intern_node(CompactDispatchNode {
                     terminal: Some(CompactDispatchTerminal {
                         declaration,
-                        on_caller_follow: false,
+                        mode: CompactDispatchTerminalMode::Immediate,
                     }),
                     edges: Rc::default(),
                 }),
@@ -8757,14 +8768,14 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                 [declaration] if !transitions.is_empty() => CompactDispatchNode {
                     terminal: Some(CompactDispatchTerminal {
                         declaration: *declaration,
-                        on_caller_follow: false,
+                        mode: CompactDispatchTerminalMode::Immediate,
                     }),
                     edges: Rc::default(),
                 },
                 [declaration] => CompactDispatchNode {
                     terminal: Some(CompactDispatchTerminal {
                         declaration: *declaration,
-                        on_caller_follow: true,
+                        mode: CompactDispatchTerminalMode::CallerFollow,
                     }),
                     edges: Rc::default(),
                 },
@@ -8781,9 +8792,15 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
             return Some(frozen);
         }
 
+        let crossed_pratt_fallback =
+            matched_prefix && !ends.is_empty() && ends.iter().all(|end| end.crossed_pratt);
         let terminal = first_end.map(|end| CompactDispatchTerminal {
             declaration: end.declaration,
-            on_caller_follow: true,
+            mode: if crossed_pratt_fallback {
+                CompactDispatchTerminalMode::FallbackAfterEdges
+            } else {
+                CompactDispatchTerminalMode::CallerFollow
+            },
         });
         let partitions = partition_by_kind_residual(
             &transitions,
@@ -16429,7 +16446,7 @@ mod decision_product_tests {
             pratt_edge.next.terminal,
             Some(CompactDispatchTerminal {
                 declaration: pratt_declaration,
-                on_caller_follow: false,
+                mode: CompactDispatchTerminalMode::Immediate,
             }),
             "the structurally skipped Pratt NUD must remain crossed after the close",
         );

@@ -900,8 +900,17 @@ pub(super) struct DispatchTrieNodePlan {
 pub(super) struct DispatchTargetPlan {
     /// Zero-based branch selected by the trie.
     pub(super) variant: usize,
-    /// Whether selection depends on the caller-supplied FOLLOW set.
-    pub(super) on_caller_follow: bool,
+    /// Closed selection policy retained from semantic analysis.
+    pub(super) mode: crate::DispatchTerminalMode,
+}
+
+/// Returns the stable packed-table digit for one closed terminal mode.
+const fn dispatch_terminal_mode_code(mode: crate::DispatchTerminalMode) -> usize {
+    match mode {
+        crate::DispatchTerminalMode::Immediate => 0,
+        crate::DispatchTerminalMode::CallerFollow => 1,
+        crate::DispatchTerminalMode::FallbackAfterEdges => 2,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1812,7 +1821,7 @@ pub(super) fn plan_predictive_dispatch(
                     .find(|(declaration, _)| *declaration == terminal.declaration())
                     .map(|(_, variant)| DispatchTargetPlan {
                         variant: *variant,
-                        on_caller_follow: terminal.on_caller_follow(),
+                        mode: terminal.mode(),
                     })
                     .ok_or_else(|| "frozen dispatch terminal lacks a source variant".to_owned())
             })
@@ -2004,11 +2013,16 @@ pub(super) fn validate_predictive_dispatch(
         if node.target.is_some_and(|target| target.variant >= variants) {
             return Err("frozen predictive dispatch references an unknown variant".to_owned());
         }
-        if node
-            .target
-            .is_some_and(|target| !target.on_caller_follow && !node.edges.is_empty())
-        {
-            return Err("frozen predictive dispatch extends an unconditional terminal".to_owned());
+        if node.target.is_some_and(|target| {
+            matches!(target.mode, crate::DispatchTerminalMode::Immediate) && !node.edges.is_empty()
+        }) {
+            return Err("frozen predictive dispatch extends an immediate terminal".to_owned());
+        }
+        if node.target.is_some_and(|target| {
+            matches!(target.mode, crate::DispatchTerminalMode::FallbackAfterEdges)
+                && node.edges.is_empty()
+        }) {
+            return Err("frozen predictive dispatch fallback lacks competitor edges".to_owned());
         }
         if node.edges.iter().enumerate().any(|(index, edge)| {
             node.edges[index + 1..]
@@ -2178,7 +2192,9 @@ pub(super) fn plan_node(
                     .iter()
                     .find(|branch| branch.declaration() == correlation.lowered)
                     .ok_or_else(|| "materialized enum variant lacks dispatch branch".to_owned())?;
-                if branch.sequences().is_empty() && dispatch.balanced().is_none() {
+                if branch.sequences().is_empty()
+                    && !dispatch_reaches_declaration(dispatch, branch.declaration())
+                {
                     return Err(format!(
                         "enum variant `{}` lacks a frozen dispatch sequence",
                         variant.name
@@ -2232,9 +2248,12 @@ pub(super) fn plan_node(
                     node.ident
                 ));
             }
-            let root_uses_caller = dispatch.states[dispatch.root.index()]
-                .target
-                .is_some_and(|target| target.on_caller_follow);
+            let root_uses_caller =
+                dispatch.states[dispatch.root.index()]
+                    .target
+                    .is_some_and(|target| {
+                        matches!(target.mode, crate::DispatchTerminalMode::CallerFollow)
+                    });
             if root_uses_caller != failure_uses_caller {
                 return Err(format!(
                     "enum Node `{}` dispatch and caller-FOLLOW failure products disagree",
@@ -2439,6 +2458,30 @@ pub(super) fn structural_body(
     disambiguate_fixed_accessors(&mut body)?;
     validate_accessor_names(node, &body)?;
     Ok(body)
+}
+
+/// Reports whether the authoritative trie selects one declaration on any path.
+fn dispatch_trie_reaches_declaration(
+    trie: &crate::DispatchTrieNode,
+    declaration: crate::DeclId,
+) -> bool {
+    trie.terminal()
+        .is_some_and(|terminal| terminal.declaration() == declaration)
+        || trie
+            .edges()
+            .iter()
+            .any(|edge| dispatch_trie_reaches_declaration(edge.next(), declaration))
+}
+
+/// Reports whether an ordinary or balanced dispatch selects one declaration.
+fn dispatch_reaches_declaration(
+    dispatch: &crate::DispatchPlan,
+    declaration: crate::DeclId,
+) -> bool {
+    dispatch_trie_reaches_declaration(dispatch.trie(), declaration)
+        || dispatch.balanced().is_some_and(|balanced| {
+            dispatch_trie_reaches_declaration(balanced.after_close(), declaration)
+        })
 }
 
 /// Creates the canonical dispatch plan for an enum with no selectable variants.
@@ -3500,7 +3543,7 @@ pub(super) fn plan_pratt_node(
     if nud_dispatch_expected != nud_failure_expected
         || nud_dispatch.states[nud_dispatch.root.index()]
             .target
-            .is_some_and(|target| target.on_caller_follow)
+            .is_some_and(|target| matches!(target.mode, crate::DispatchTerminalMode::CallerFollow))
             != nud_failure_uses_caller
     {
         return Err("the frozen Pratt nud dispatch and failure products disagree".to_owned());
@@ -5249,9 +5292,6 @@ pub(super) fn render_predictive_graph_selection(
     let mut edge_values = Vec::new();
     let mut state_values = Vec::with_capacity(states.len() * 4);
     for (state_index, node) in states.iter().enumerate() {
-        debug_assert!(
-            !node.target.is_some_and(|target| !target.on_caller_follow) || node.edges.is_empty()
-        );
         let edge_start = edge_values.len() / 2;
         for edge in &node.edges {
             let position = if let Some(position) = position_registry.get(&edge.position) {
@@ -5282,8 +5322,8 @@ pub(super) fn render_predictive_graph_selection(
         let target = node.target.map_or(0, |target| {
             target
                 .variant
-                .checked_mul(2)
-                .and_then(|variant| variant.checked_add(usize::from(target.on_caller_follow)))
+                .checked_mul(3)
+                .and_then(|variant| variant.checked_add(dispatch_terminal_mode_code(target.mode)))
                 .and_then(|target| target.checked_add(1))
                 .expect("frozen dispatch target encoding fits usize")
         });
@@ -5379,7 +5419,7 @@ pub(super) fn render_predictive_graph_selection(
                     #decoder_name(#states_name, state_slot);
                 let target = (encoded_target != 0).then(|| {
                     let target = encoded_target - 1;
-                    (target / 2, target & 1 != 0)
+                    (target / 3, target % 3)
                 });
                 let edge_start =
                     #decoder_name(#states_name, state_slot + 1);
@@ -5388,19 +5428,23 @@ pub(super) fn render_predictive_graph_selection(
                 let expected_index =
                     #decoder_name(#states_name, state_slot + 3);
                 let expected = &#module_anchor::__RECURSA_EXPECTED_SETS[expected_index];
-                if let Some((variant, on_caller_follow)) = target {
-                    if !on_caller_follow
+                if let Some((variant, mode)) = target {
+                    if mode == 0
                         || context.peek(#depth).is_none()
-                        || context
-                            .peek(#depth)
-                            .is_some_and(|record| context.follow().contains(record.kind))
+                        || (mode == 1
+                            && context
+                                .peek(#depth)
+                                .is_some_and(|record| context.follow().contains(record.kind)))
                     {
                         break variant;
                     }
                 }
                 #unused_edges
                 #edge_traversal
-                if target.is_some_and(|(_, on_caller_follow)| on_caller_follow) {
+                if let Some((variant, 2)) = target {
+                    break variant;
+                }
+                if target.is_some_and(|(_, mode)| mode == 1) {
                     let __recursa_dispatch_expected = expected
                         .union(context.follow())
                         .expect("matching generated dispatch/FOLLOW widths");
@@ -5460,9 +5504,6 @@ pub(super) fn render_predictive_selection(
     let mut edge_values = Vec::new();
     let mut state_values = Vec::new();
     for node in &dispatch.states {
-        debug_assert!(
-            !node.target.is_some_and(|target| !target.on_caller_follow) || node.edges.is_empty()
-        );
         let edge_start = edge_values.len() / 2;
         for edge in &node.edges {
             let position = if let Some(position) = position_registry.get(&edge.position) {
@@ -5482,8 +5523,8 @@ pub(super) fn render_predictive_selection(
         let target = node.target.map_or(0, |target| {
             target
                 .variant
-                .checked_mul(2)
-                .and_then(|variant| variant.checked_add(usize::from(target.on_caller_follow)))
+                .checked_mul(3)
+                .and_then(|variant| variant.checked_add(dispatch_terminal_mode_code(target.mode)))
                 .and_then(|target| target.checked_add(1))
                 .expect("frozen Pratt target encoding fits usize")
         });
@@ -5560,7 +5601,7 @@ pub(super) fn render_predictive_selection(
                     #decoder_name(#states_name, state_slot);
                 let target = (encoded_target != 0).then(|| {
                     let target = encoded_target - 1;
-                    (target / 2, target & 1 != 0)
+                    (target / 3, target % 3)
                 });
                 let edge_start =
                     #decoder_name(#states_name, state_slot + 1);
@@ -5578,8 +5619,8 @@ pub(super) fn render_predictive_selection(
                         continue '__recursa_pratt_dispatch;
                     }
                 }
-                if let Some((variant, on_caller_follow)) = target {
-                    if !on_caller_follow
+                if let Some((variant, mode)) = target {
+                    if mode != 1
                         || context.peek(#depth).is_none()
                         || context
                             .peek(#depth)

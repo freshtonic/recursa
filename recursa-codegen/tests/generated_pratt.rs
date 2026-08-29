@@ -260,12 +260,16 @@ recursa::tokens! {
         THEN => "THEN",
         CASE => "CASE",
     }
+    admissions {
+        NameWords = { WHEN },
+    }
     punctuation {
         PLUS => "+",
         CONCAT => "||",
         DOUBLE_COLON => "::", spacing = tight,
         GT => ">",
         COMMA => ",",
+        DOT => ".", spacing = tight,
         LPAREN => "(",
         RPAREN => ")",
     }
@@ -279,13 +283,20 @@ pub struct Integer<'input> {
 
 #[derive(recursa::Node)]
 pub struct Name<'input> {
-    #[lex(pattern = r"[a-z]+")]
+    #[lex(pattern = r"[a-z]+", admits(NameWords))]
     pub value: NameText<'input>,
 }
 
 #[derive(recursa::Node)]
 pub enum NameAtom<'input> {
     Plain(Name<'input>),
+}
+
+#[derive(recursa::Node)]
+pub struct QualifiedName<'input> {
+    pub qualifier: Name<'input>,
+    #[tok(DOT, this)]
+    pub name: Name<'input>,
 }
 
 #[derive(recursa::Node)]
@@ -304,6 +315,7 @@ pub struct BeginAtom;
 #[pratt]
 pub enum Expr<'input> {
     Integer(Integer<'input>),
+    Qualified(QualifiedName<'input>),
     Name(NameAtom<'input>),
     BeginAtom(BeginAtom),
     #[tok(CASE)]
@@ -366,6 +378,24 @@ pub struct GroupFollowed<'input> {
 pub struct FollowedExpr<'input> {
     #[tok(WHEN, this, THEN)]
     pub expression: Expr<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct QualifiedFollowed<'input> {
+    #[tok(this, WHEN)]
+    pub expression: Expr<'input>,
+}
+
+#[derive(recursa::Node)]
+pub enum OrdinaryChoice<'input> {
+    Expression(Expr<'input>),
+    Rival(#[tok(this, OTHER)] Name<'input>),
+}
+
+#[derive(recursa::Node)]
+pub struct OrdinaryChoiceFollowed<'input> {
+    #[tok(this, WHEN)]
+    pub choice: OrdinaryChoice<'input>,
 }
 
 #[derive(recursa::Node)]
@@ -507,6 +537,24 @@ fn main() {
             if matches!(expressions.first(), grammar::Expr::Case(_, _))
     ));
 
+    let lexed = grammar::lex("(name)::BOOL");
+    let mut input = lexed.input();
+    let parsed = grammar::ExprOrQuery::parse(&mut input)
+        .expect("a crossed-Pratt post-close fallback leaves its extender to the expression");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast(),
+        grammar::ExprOrQuery::Expressions(expressions)
+            if matches!(expressions.first(), grammar::Expr::Cast(_, grammar::TypeName::Bool))
+    ));
+
+    let lexed = grammar::lex("(name) OTHER");
+    let mut input = lexed.input();
+    let parsed = grammar::ExprOrQuery::parse(&mut input)
+        .expect("an exact post-close competitor wins before the crossed-Pratt fallback");
+    assert!(input.is_eof());
+    assert!(matches!(parsed.into_ast(), grammar::ExprOrQuery::Query(_)));
+
     let lexed = grammar::lex("FROM");
     let mut input = lexed.input();
     let error = match grammar::Expr::parse(&mut input) {
@@ -523,6 +571,40 @@ fn main() {
     grammar::FollowedExpr::parse(&mut input)
         .expect("a uniquely selected infix validates its nested right operand");
     assert!(input.is_eof());
+
+    let lexed = grammar::lex("left.right WHEN");
+    let mut input = lexed.input();
+    let parsed = grammar::QualifiedFollowed::parse(&mut input)
+        .expect("a qualified Pratt atom yields to the caller keyword");
+    assert!(input.is_eof());
+    assert!(matches!(parsed.into_ast().expression, grammar::Expr::Qualified(_)));
+
+    let lexed = grammar::lex("name");
+    let mut input = lexed.input();
+    let parsed = grammar::OrdinaryChoice::parse(&mut input)
+        .expect("an ordinary crossed-Pratt fallback selects at EOF");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast(),
+        grammar::OrdinaryChoice::Expression(grammar::Expr::Name(_))
+    ));
+
+    let lexed = grammar::lex("name WHEN");
+    let mut input = lexed.input();
+    let parsed = grammar::OrdinaryChoiceFollowed::parse(&mut input)
+        .expect("an ordinary crossed-Pratt fallback selects on unmatched caller FOLLOW");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast().choice,
+        grammar::OrdinaryChoice::Expression(grammar::Expr::Name(_))
+    ));
+
+    let lexed = grammar::lex("name OTHER");
+    let mut input = lexed.input();
+    let parsed = grammar::OrdinaryChoice::parse(&mut input)
+        .expect("an exact ordinary competitor wins before the crossed-Pratt fallback");
+    assert!(input.is_eof());
+    assert!(matches!(parsed.into_ast(), grammar::OrdinaryChoice::Rival(_)));
 
     let lexed = grammar::lex("WHEN 1 > ANY (0) THEN");
     let mut input = lexed.input();

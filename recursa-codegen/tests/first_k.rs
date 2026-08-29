@@ -1,7 +1,8 @@
 use recursa_codegen::{
     Alternative, AtomDescription, AtomExpression, ConflictRemedy, ContainerShape, Declaration,
-    DiagnosticCode, GrammarDescription, KindDescription, Location, ParseSite, SourceId,
-    TypeDescription, TypeId, TypeShape, analyze,
+    DiagnosticCode, DispatchTerminalMode, GrammarDescription, KindDescription, Location, ParseSite,
+    PrattPosition, PrattVariant, SourceId, TextPredicate, TypeDescription, TypeId, TypeShape,
+    analyze,
 };
 
 struct Builder {
@@ -435,10 +436,90 @@ fn shorter_language_freezes_caller_follow_before_a_longer_suffix() {
     assert!(
         after_a
             .terminal()
-            .is_some_and(|terminal| terminal.on_caller_follow()),
+            .is_some_and(|terminal| terminal.mode() == DispatchTerminalMode::CallerFollow),
         "the shorter A language consults caller FOLLOW"
     );
     assert_eq!(after_a.edges().len(), 1, "B continues the longer language");
+}
+
+#[test]
+fn crossed_pratt_fallback_is_projected_without_fabricating_a_complement_sequence() {
+    let mut builder = Builder::new(2, &["WORD"]);
+    let exact_special = builder
+        .grammar
+        .push_text_predicate(TextPredicate::Exact("SPECIAL".to_owned()));
+    let word = builder.token("Word", 0);
+    let special = builder.token_from_atom("Special", builder.atoms[0], Some(exact_special));
+
+    let expression = builder.grammar.next_type_id();
+    let expression_declaration = builder.declaration("Expression");
+    let atom_declaration = builder.declaration("Expression::Word");
+    let atom_site_declaration = builder.declaration("Expression::Word::value");
+    let atom_site = builder.grammar.push_site(ParseSite::new(
+        expression,
+        word,
+        atom_site_declaration,
+        ContainerShape::Direct,
+    ));
+    assert_eq!(
+        builder.grammar.push_type(TypeDescription::new(
+            "Expression",
+            expression_declaration,
+            TypeShape::Pratt {
+                variants: vec![PrattVariant {
+                    declaration: atom_declaration,
+                    position: PrattPosition::Atom,
+                    sites: vec![atom_site],
+                }],
+            },
+        )),
+        expression,
+    );
+    let rival = builder.sequence("Rival", &[word, special]);
+    let root = builder.choice("Root", &[expression, rival]);
+
+    let output = analyze(&builder.grammar)
+        .output
+        .expect("the exact same-kind competitor remains bounded");
+    let TypeShape::Enum { alternatives } = &builder.grammar.types[root.index()].shape else {
+        unreachable!("Root is an enum")
+    };
+    let expression_choice_declaration = alternatives[0].declaration;
+    let dispatch = output
+        .decisions()
+        .dispatches()
+        .iter()
+        .find(|dispatch| dispatch.owner() == root)
+        .expect("Root dispatch");
+    let expression_branch = dispatch
+        .branches()
+        .iter()
+        .find(|branch| branch.declaration() == expression_choice_declaration)
+        .expect("Expression branch");
+    assert!(
+        expression_branch.sequences().is_empty(),
+        "the complement of SPECIAL is not an exact positive prefix",
+    );
+    let after_word = dispatch
+        .trie()
+        .edges()
+        .first()
+        .expect("the shared WORD prefix")
+        .next();
+    assert_eq!(
+        after_word.terminal().map(|terminal| terminal.mode()),
+        Some(DispatchTerminalMode::FallbackAfterEdges),
+    );
+    assert_eq!(
+        after_word.edges()[0].position().text_predicate(),
+        Some(&TextPredicate::Exact("special".to_owned())),
+    );
+    assert!(
+        dispatch
+            .canonical_facts(&builder.grammar)
+            .contains("fallback-trie="),
+        "the canonical projection retains the authoritative complement decision",
+    );
 }
 
 #[test]
