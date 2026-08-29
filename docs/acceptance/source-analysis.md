@@ -37,7 +37,7 @@ The M3-DIAG-003 checker parses each cited `#[test]` function and checks the exac
 
 M3 internal invariant codes occupy `RCA9101` through `RCA9104` for Discovery, Resolution, Lowering, and Analysis respectively, following #43's `RCA9xxx` internal-diagnostic allocation. M4 emission uses the separately registered `RCA9105` code and Emission stage. `RCA9001` through `RCA9005` remain reserved for the distinct M4 loader/protocol failures specified by #40 and are intentionally absent from the typed build-diagnostic registry.
 
-Runtime lexical failures use the separate matching-version `RCA4000` through `RCA4004` contract. They are intentionally absent from the build-diagnostic registry; their producer ledger points to generated downstream assertions, except for the source-domain nesting-overflow invariant that cannot be reached through a valid public `Span`.
+Runtime lexical failures use the separate matching-version `RCA4000`, `RCA4001`, `RCA4002`, and `RCA4004` contract. They are intentionally absent from the build-diagnostic registry, and their producer ledger points to generated downstream assertions. The non-contiguous allocation is retained rather than renumbering a published-in-branch identifier.
 
 M3-DIAG-004 verifies the private, line-oriented transport seam without claiming publication behavior. A black-box Cargo build-script fixture would require the public generation/publication surface that M3 deliberately does not provide; that publication-specific transport evidence is deferred to the M4 acceptance row.
 

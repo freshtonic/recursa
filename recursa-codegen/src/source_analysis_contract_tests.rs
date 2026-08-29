@@ -56,7 +56,7 @@ struct ProducerEvidence {
     command: &'static str,
 }
 
-/// Executable evidence for stable lexical failures in the matching-version runtime protocol.
+/// Executable downstream evidence for stable failures in the matching-version runtime protocol.
 ///
 /// These codes are not build diagnostics, so this ledger is deliberately separate from the build
 /// diagnostic registry and its producer ledger.
@@ -69,8 +69,6 @@ struct RuntimeLexicalEvidence {
     assertion_source: &'static str,
     /// Selects that asserting function within its source file.
     assertion_name: &'static str,
-    /// Distinguishes the downstream fixture entry point from an ordinary Rust test.
-    assertion_is_test: bool,
     /// Points to the Cargo-visible test that runs the assertion source.
     command_test_source: &'static str,
     /// Selects the Cargo-visible test used by the executable command.
@@ -80,31 +78,18 @@ struct RuntimeLexicalEvidence {
 }
 
 /// Complete stable-code contract for failures produced while lexing user input.
-const RUNTIME_LEXICAL_CODES: &[&str] = &["RCA4000", "RCA4001", "RCA4002", "RCA4003", "RCA4004"];
+const RUNTIME_LEXICAL_CODES: &[&str] = &["RCA4000", "RCA4001", "RCA4002", "RCA4004"];
 
-/// Maps every runtime lexical failure code to executable public or invariant evidence.
-const RUNTIME_LEXICAL_EVIDENCE: &[RuntimeLexicalEvidence] = &[
-    RuntimeLexicalEvidence {
-        codes: &["RCA4000", "RCA4001", "RCA4002", "RCA4004"],
-        producer_source: "../recursa-core/src/lex.rs",
-        assertion_source: "tests/fixtures/generation/lexing/src/main.rs",
-        assertion_name: "main",
-        assertion_is_test: false,
-        command_test_source: "tests/generated_lexing.rs",
-        command_test_name: "a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text",
-        command: "cargo test -p recursa-codegen --test generated_lexing a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text --locked",
-    },
-    RuntimeLexicalEvidence {
-        codes: &["RCA4003"],
-        producer_source: "../recursa-core/src/lex.rs",
-        assertion_source: "../recursa-core/src/lex.rs",
-        assertion_name: "checked_nested_depth_transition_produces_rca4003_at_the_span_domain_bound",
-        assertion_is_test: true,
-        command_test_source: "../recursa-core/src/lex.rs",
-        command_test_name: "checked_nested_depth_transition_produces_rca4003_at_the_span_domain_bound",
-        command: "cargo test -p recursa-core lex::tests::checked_nested_depth_transition_produces_rca4003_at_the_span_domain_bound --locked",
-    },
-];
+/// Maps every runtime lexical failure code to executable downstream evidence.
+const RUNTIME_LEXICAL_EVIDENCE: &[RuntimeLexicalEvidence] = &[RuntimeLexicalEvidence {
+    codes: &["RCA4000", "RCA4001", "RCA4002", "RCA4004"],
+    producer_source: "../recursa-core/src/lex.rs",
+    assertion_source: "tests/fixtures/generation/lexing/src/main.rs",
+    assertion_name: "main",
+    command_test_source: "tests/generated_lexing.rs",
+    command_test_name: "a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text",
+    command: "cargo test -p recursa-codegen --test generated_lexing a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text --locked",
+}];
 
 macro_rules! phase_producer_evidence {
     ($code:literal, $module:literal, $test:literal) => {
@@ -515,7 +500,7 @@ fn every_registered_code_has_real_producer_evidence() {
 }
 
 #[test]
-fn runtime_lexical_codes_have_public_or_invariant_producer_evidence() {
+fn runtime_lexical_codes_have_public_producer_evidence() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let expected = RUNTIME_LEXICAL_CODES
         .iter()
@@ -527,11 +512,8 @@ fn runtime_lexical_codes_have_public_or_invariant_producer_evidence() {
         let producer = std::fs::read_to_string(manifest.join(evidence.producer_source)).unwrap();
         let assertion_source =
             std::fs::read_to_string(manifest.join(evidence.assertion_source)).unwrap();
-        let assertion_output = asserted_function_output(
-            &assertion_source,
-            evidence.assertion_name,
-            evidence.assertion_is_test,
-        );
+        let assertion_output =
+            asserted_function_output(&assertion_source, evidence.assertion_name, false);
         let command_test_source =
             std::fs::read_to_string(manifest.join(evidence.command_test_source)).unwrap();
         let command_output = asserted_test_output(&command_test_source, evidence.command_test_name);
