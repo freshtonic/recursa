@@ -15,7 +15,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use crate::analysis::{FirstFacts, first_sequences_for_decision_sites};
+use crate::analysis::{FirstFacts, FirstSequenceAnalysis};
 use crate::ir::RepeatSeparator;
 use crate::text_partition::{TextPartition, partition_by_residual};
 use crate::{
@@ -566,6 +566,17 @@ impl DecisionProducts {
         grammar: &GrammarDescription,
         semantic: &[FirstFacts],
     ) -> Result<(), DecisionInvariant> {
+        let first_sequences = FirstSequenceAnalysis::for_grammar(grammar);
+        self.validate_with_first_sequences(grammar, semantic, &first_sequences)
+    }
+
+    /// Validates decisions while reusing the originating analysis-run FIRST support.
+    pub(crate) fn validate_with_first_sequences(
+        &self,
+        grammar: &GrammarDescription,
+        semantic: &[FirstFacts],
+        first_sequences: &FirstSequenceAnalysis<'_>,
+    ) -> Result<(), DecisionInvariant> {
         // Validate every cross-table identity before generation can trust this frozen product as executable authority.
         if self.follow_recipes_by_site.len() != grammar.sites.len()
             || self.container_machines.len() != grammar.sites.len()
@@ -703,7 +714,7 @@ impl DecisionProducts {
         if failure_keys.len() != failure_count {
             return Err(DecisionInvariant::DuplicateFailureEdge);
         }
-        let expected = plan_decisions(grammar, semantic);
+        let expected = plan_decisions(grammar, semantic, first_sequences);
         if self.follow_recipes_by_site != expected.follow_recipes_by_site {
             return Err(DecisionInvariant::FollowRecipeMismatch);
         }
@@ -761,6 +772,7 @@ impl std::fmt::Display for DecisionInvariant {
 pub(crate) fn plan_decisions(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
 ) -> DecisionProducts {
     // Build dispatch, container, Pratt, and failure products from the same semantic snapshot to prevent phase drift.
     let mut follow_recipes_by_site = vec![FollowRecipe::Caller; grammar.sites.len()];
@@ -769,17 +781,16 @@ pub(crate) fn plan_decisions(
         let owner = TypeId::new(index as u32);
         match &description.shape {
             TypeShape::Alias { site } => {
-                plan_follow_for_sites(&[*site], grammar, semantic, &mut follow_recipes_by_site);
+                plan_follow_for_sites(&[*site], first_sequences, &mut follow_recipes_by_site);
             }
             TypeShape::Sequence { sites } => {
-                plan_follow_for_sites(sites, grammar, semantic, &mut follow_recipes_by_site);
+                plan_follow_for_sites(sites, first_sequences, &mut follow_recipes_by_site);
             }
             TypeShape::Enum { alternatives } => {
                 for alternative in alternatives {
                     plan_follow_for_sites(
                         &alternative.sites,
-                        grammar,
-                        semantic,
+                        first_sequences,
                         &mut follow_recipes_by_site,
                     );
                 }
@@ -790,15 +801,14 @@ pub(crate) fn plan_decisions(
                         (alternative.declaration, None, alternative.sites.as_slice())
                     }),
                     grammar,
-                    semantic,
+                    first_sequences,
                 ));
             }
             TypeShape::Pratt { variants } => {
                 for variant in variants {
                     plan_follow_for_sites(
                         &variant.sites,
-                        grammar,
-                        semantic,
+                        first_sequences,
                         &mut follow_recipes_by_site,
                     );
                 }
@@ -816,7 +826,7 @@ pub(crate) fn plan_decisions(
                             )
                         }),
                     grammar,
-                    semantic,
+                    first_sequences,
                 ));
                 if variants.iter().any(|variant| is_led(variant.position)) {
                     dispatches.push(dispatch_plan(
@@ -833,7 +843,7 @@ pub(crate) fn plan_decisions(
                                 )
                             }),
                         grammar,
-                        semantic,
+                        first_sequences,
                     ));
                 }
             }
@@ -963,12 +973,11 @@ fn container_transitions(
 /// Plans follow for sites.
 fn plan_follow_for_sites(
     sites: &[SiteId],
-    grammar: &GrammarDescription,
-    semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
     recipes: &mut [FollowRecipe],
 ) {
     for (index, site) in sites.iter().enumerate() {
-        let suffix = first_sequences_for_decision_sites(&sites[index + 1..], grammar, semantic);
+        let suffix = first_sequences.sequences(&sites[index + 1..]);
         recipes[site.index()] = follow_recipe(&suffix);
     }
 }
@@ -996,14 +1005,15 @@ fn dispatch_plan<'a>(
     kind: DispatchKind,
     alternatives: impl IntoIterator<Item = (DeclId, Option<PrattPosition>, &'a [SiteId])>,
     grammar: &GrammarDescription,
-    semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
 ) -> DispatchPlan {
     let mut branches = alternatives
         .into_iter()
         .map(|(declaration, position, sites)| DispatchBranch {
             declaration,
             position,
-            sequences: first_sequences_for_decision_sites(sites, grammar, semantic)
+            sequences: first_sequences
+                .sequences(sites)
                 .into_iter()
                 .map(|sequence| {
                     let on_caller_follow = sequence.ends();

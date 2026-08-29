@@ -11,6 +11,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+use std::rc::Rc;
 
 use crate::ir::{ContainerCardinality, ContainerSemantics};
 use crate::text_partition::{
@@ -611,7 +612,8 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
             diagnostic_context,
         };
     }
-    populate_first_sequences(grammar, &atom_kinds, &mut first_by_type);
+    let first_sequence_analysis = FirstSequenceAnalysis::new(grammar, &atom_kinds);
+    populate_first_sequences(grammar, &first_sequence_analysis, &mut first_by_type);
     let extenders_by_type = compute_extenders(grammar, &first_by_type);
     let (mut proofs, first_provenance) = compute_first_provenance(grammar, &first_by_type);
     let extender_provenance =
@@ -647,7 +649,8 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
         match publish_decisions(
             grammar,
             &first_by_type,
-            crate::decision_plan::plan_decisions(grammar, &first_by_type),
+            &first_sequence_analysis,
+            crate::decision_plan::plan_decisions(grammar, &first_by_type, &first_sequence_analysis),
         ) {
             Ok(decisions) => Some(decisions),
             Err(diagnostic) => {
@@ -699,29 +702,84 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
 fn publish_decisions(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
     decisions: crate::DecisionProducts,
 ) -> Result<crate::DecisionProducts, Box<Diagnostic>> {
-    decisions.validate(grammar, semantic).map_err(|invariant| {
-        Box::new(Diagnostic::internal_analysis_invariant(format!(
-            "invalid frozen decision product: {invariant}"
-        )))
-    })?;
+    decisions
+        .validate_with_first_sequences(grammar, semantic, first_sequences)
+        .map_err(|invariant| {
+            Box::new(Diagnostic::internal_analysis_invariant(format!(
+                "invalid frozen decision product: {invariant}"
+            )))
+        })?;
     Ok(decisions)
 }
 
 /// Derives the first sequences for decision sites from normalized grammar structure and previously established semantic facts.
-pub(crate) fn first_sequences_for_decision_sites(
-    sites: &[SiteId],
-    grammar: &GrammarDescription,
-    _semantic: &[FirstFacts],
-) -> Vec<FirstSequence> {
-    let atom_kinds = expand_atoms(grammar);
-    let mut language = FirstLanguageArena::new(grammar, &atom_kinds);
-    let root = language.build(
-        grammar.max_lookahead,
-        vec![DecisionState::from_sites(sites)],
-    );
-    language.materialize(root)
+/// Reuses immutable grammar-wide FIRST support while keeping each root analysis isolated.
+pub(crate) struct FirstSequenceAnalysis<'a> {
+    /// Grammar analyzed by each root-local arena.
+    grammar: &'a GrammarDescription,
+    /// Expanded token kinds shared by each root-local arena.
+    atom_kinds: Rc<[KindSet]>,
+    /// Fixed-point end/continuation facts shared by root-local arenas.
+    decision_summary_facts: Rc<DecisionSummaryFacts>,
+    /// Fixed-point one-position languages shared by root-local arenas.
+    decision_cutoff_facts: Rc<DecisionCutoffFacts>,
+    /// Canonical grammar sites shared by root-local arenas.
+    canonical_sites: Rc<[SiteId]>,
+}
+
+impl<'a> FirstSequenceAnalysis<'a> {
+    /// Creates analysis-run FIRST support from one normalized grammar.
+    pub(crate) fn for_grammar(grammar: &'a GrammarDescription) -> Self {
+        let atom_kinds = expand_atoms(grammar);
+        Self::new(grammar, &atom_kinds)
+    }
+
+    /// Creates one analysis-run FIRST support context.
+    pub(crate) fn new(grammar: &'a GrammarDescription, atom_kinds: &[KindSet]) -> Self {
+        let decision_summary_facts = Rc::new(DecisionSummaryFacts::from_grammar(grammar));
+        let decision_cutoff_facts = Rc::new(DecisionCutoffFacts::from_grammar(
+            grammar,
+            &decision_summary_facts,
+        ));
+        let mut sites_by_semantics = HashMap::new();
+        let canonical_sites = grammar
+            .sites
+            .iter()
+            .enumerate()
+            .map(|(index, site)| {
+                let site_id = SiteId::new(index.try_into().expect("grammar site identity width"));
+                *sites_by_semantics
+                    .entry(decision_site_semantics(site))
+                    .or_insert(site_id)
+            })
+            .collect::<Vec<_>>()
+            .into();
+        Self {
+            grammar,
+            atom_kinds: atom_kinds.to_vec().into(),
+            decision_summary_facts,
+            decision_cutoff_facts,
+            canonical_sites,
+        }
+    }
+
+    /// Derives one decision-site root with a fresh root-local arena.
+    pub(crate) fn sequences(&self, sites: &[SiteId]) -> Vec<FirstSequence> {
+        let mut language = self.language();
+        let root = language.build(
+            self.grammar.max_lookahead,
+            vec![DecisionState::from_sites(sites)],
+        );
+        language.materialize(root)
+    }
+
+    /// Creates one fresh mutable language arena over shared immutable grammar facts.
+    fn language(&self) -> FirstLanguageArena<'a> {
+        FirstLanguageArena::from_analysis(self)
+    }
 }
 
 /// Compacts reachable proof nodes and remaps every report reference.
@@ -1252,10 +1310,10 @@ fn first_facts(positions: Vec<FirstPosition>, nullable: bool, kind_count: usize)
 /// Populates bounded FIRST sequences after left recursion has been rejected.
 fn populate_first_sequences(
     grammar: &GrammarDescription,
-    atom_kinds: &[KindSet],
+    analysis: &FirstSequenceAnalysis<'_>,
     semantic: &mut [FirstFacts],
 ) {
-    let mut language = FirstLanguageArena::new(grammar, atom_kinds);
+    let mut language = analysis.language();
     let mut roots = Vec::with_capacity(grammar.types.len());
     for index in 0..grammar.types.len() {
         roots.push(language.build(
@@ -1545,9 +1603,13 @@ struct FirstLanguageArena<'a> {
     /// Normalized grammar whose residuals are explored.
     grammar: &'a GrammarDescription,
     /// Expanded token kinds indexed by atom identity.
-    atom_kinds: &'a [KindSet],
+    atom_kinds: Rc<[KindSet]>,
     /// Fixed-point end/continuation facts used only at the bounded cutoff.
-    decision_summary_facts: DecisionSummaryFacts,
+    decision_summary_facts: Rc<DecisionSummaryFacts>,
+    /// Fixed-point one-position languages used by final-depth projection.
+    decision_cutoff_facts: Rc<DecisionCutoffFacts>,
+    /// Canonical grammar sites grouped by their decision-language semantics.
+    canonical_sites: Rc<[SiteId]>,
     /// Canonical semantic decision states indexed by dense identity.
     decision_states: Vec<DecisionState>,
     /// Dense identities interned by semantic decision-state value.
@@ -1590,12 +1652,20 @@ struct FirstLanguageArena<'a> {
 }
 
 impl<'a> FirstLanguageArena<'a> {
+    #[cfg(test)]
     /// Creates an empty symbolic FIRST arena for one grammar analysis.
     fn new(grammar: &'a GrammarDescription, atom_kinds: &'a [KindSet]) -> Self {
+        FirstSequenceAnalysis::new(grammar, atom_kinds).language()
+    }
+
+    /// Creates a root-local arena from one analysis-run immutable support context.
+    fn from_analysis(analysis: &FirstSequenceAnalysis<'a>) -> Self {
         Self {
-            grammar,
-            atom_kinds,
-            decision_summary_facts: DecisionSummaryFacts::from_grammar(grammar),
+            grammar: analysis.grammar,
+            atom_kinds: Rc::clone(&analysis.atom_kinds),
+            decision_summary_facts: Rc::clone(&analysis.decision_summary_facts),
+            decision_cutoff_facts: Rc::clone(&analysis.decision_cutoff_facts),
+            canonical_sites: Rc::clone(&analysis.canonical_sites),
             decision_states: Vec::new(),
             decision_state_ids: HashMap::new(),
             positions: Vec::new(),
@@ -1879,7 +1949,12 @@ impl<'a> FirstLanguageArena<'a> {
     }
 
     /// Interns one semantic decision state and returns its dense arena identity.
-    fn intern_decision_state(&mut self, state: DecisionState) -> FirstLanguageDecisionStateId {
+    fn intern_decision_state(&mut self, mut state: DecisionState) -> FirstLanguageDecisionStateId {
+        for item in &mut state.0 {
+            if let DecisionItem::Site(site) = item {
+                *site = self.canonical_sites[site.index()];
+            }
+        }
         if let Some(id) = self.decision_state_ids.get(&state) {
             return *id;
         }
@@ -2084,7 +2159,7 @@ impl<'a> FirstLanguageArena<'a> {
         let frontier = decision_frontier(
             &self.decision_states[residual.index()],
             self.grammar,
-            self.atom_kinds,
+            &self.atom_kinds,
         );
         let can_end = frontier.can_end;
         let mut transitions = Vec::with_capacity(frontier.transitions.len());
@@ -2120,23 +2195,53 @@ impl<'a> FirstLanguageArena<'a> {
         #[cfg(test)]
         FIRST_LANGUAGE_FRONTIER_EXPANSIONS
             .set(FIRST_LANGUAGE_FRONTIER_EXPANSIONS.get().saturating_add(1));
-        let frontier = decision_frontier(
-            &self.decision_states[residual.index()],
-            self.grammar,
-            self.atom_kinds,
-        );
-        let mut transitions = Vec::with_capacity(frontier.transitions.len());
-        for transition in frontier.transitions {
+        let state = &self.decision_states[residual.index()];
+        let (can_end, projected) = if self.decision_cutoff_facts.supports_state(state) {
+            let frontier = self
+                .decision_cutoff_facts
+                .for_state(state, &self.decision_summary_facts);
+            (
+                frontier.can_end,
+                frontier
+                    .transitions
+                    .into_iter()
+                    .map(|transition| {
+                        (
+                            FirstPosition {
+                                kinds: self.atom_kinds[transition.atom.index()].clone(),
+                                text_predicate: transition.text_predicate,
+                            },
+                            transition.summary,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            let frontier = decision_frontier(state, self.grammar, &self.atom_kinds);
+            (
+                frontier.can_end,
+                frontier
+                    .transitions
+                    .into_iter()
+                    .map(|transition| {
+                        let summary =
+                            decision_cutoff_summary(&transition.next, &self.decision_summary_facts);
+                        (transition.position, summary)
+                    })
+                    .collect(),
+            )
+        };
+        let mut transitions = Vec::with_capacity(projected.len());
+        for (position, summary) in projected {
             #[cfg(test)]
             FIRST_LANGUAGE_CUTOFF_SUMMARY_READS
                 .set(FIRST_LANGUAGE_CUTOFF_SUMMARY_READS.get().saturating_add(1));
-            let summary = decision_cutoff_summary(&transition.next, &self.decision_summary_facts);
-            let position = self.intern_position(transition.position);
+            let position = self.intern_position(position);
             transitions.push(FirstLanguageCutoffTransition { position, summary });
         }
         self.sort_dedup_cutoff_transitions(&mut transitions);
         let frontier = FirstLanguageCutoffFrontier {
-            can_end: frontier.can_end,
+            can_end,
             transitions,
         };
         let frontier = self.intern_cutoff_frontier(frontier);
@@ -2868,6 +2973,8 @@ thread_local! {
     static FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS: Cell<usize> = const { Cell::new(0) };
     /// Counts projected transitions expanded into token-kind partition candidates.
     static FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS: Cell<usize> = const { Cell::new(0) };
+    /// Counts complete grammar-wide one-position fact constructions.
+    static FIRST_LANGUAGE_CUTOFF_FACT_CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
     /// Counts distinct commutative deterministic node overlays.
     static FIRST_LANGUAGE_NODE_UNION_MISSES: Cell<usize> = const { Cell::new(0) };
 }
@@ -4399,6 +4506,34 @@ enum DecisionItem {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// Source-independent parse-site behavior observable to bounded decisions.
+struct DecisionSiteSemantics {
+    /// Referenced grammar type.
+    target: TypeId,
+    /// Normalized cardinality encoded without source container ownership.
+    cardinality: u8,
+    /// Optional separator type for repeated sites.
+    separator: Option<TypeId>,
+}
+
+/// Projects one authored site to its source-independent decision behavior.
+fn decision_site_semantics(site: &crate::ParseSite) -> DecisionSiteSemantics {
+    let semantics = container_semantics(site);
+    let cardinality = match semantics.cardinality {
+        ContainerCardinality::One => 0,
+        ContainerCardinality::Optional => 1,
+        ContainerCardinality::ZeroOrMore => 2,
+        ContainerCardinality::OneOrMore => 3,
+        ContainerCardinality::OptionalOneOrMore => 4,
+    };
+    DecisionSiteSemantics {
+        target: site.target,
+        cardinality,
+        separator: semantics.separator_type(),
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 /// Carries the decision state consumed while deriving source-independent grammar facts.
 struct DecisionState(Vec<DecisionItem>);
@@ -4468,6 +4603,290 @@ struct DecisionSummaryFacts {
     by_type: Vec<u8>,
     /// Exact-end and continuation facts indexed by parse-site identity.
     by_site: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// One consuming edge retained by the one-position cutoff fixed point.
+struct DecisionCutoffFactTransition {
+    /// Token atom consumed by this edge.
+    atom: AtomId,
+    /// Optional token-text restriction.
+    text_predicate: Option<TextPredicateId>,
+    /// Exact-end and continuation facts after consuming this edge.
+    summary: u8,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// One-position decision language for a grammar item or type.
+struct DecisionCutoffFact {
+    /// Whether this language can consume no token.
+    can_end: bool,
+    /// Canonical consuming edges and their residual summaries.
+    transitions: Vec<DecisionCutoffFactTransition>,
+}
+
+impl DecisionCutoffFact {
+    /// Unions another alternative and canonicalizes equal token predicates.
+    fn union_assign(&mut self, other: &Self) {
+        self.can_end |= other.can_end;
+        self.transitions.extend_from_slice(&other.transitions);
+        self.normalize();
+    }
+
+    /// Coalesces equal token predicates by existentially unioning successor facts.
+    fn normalize(&mut self) {
+        let mut summaries = BTreeMap::<(AtomId, Option<TextPredicateId>), u8>::new();
+        for transition in self.transitions.drain(..) {
+            *summaries
+                .entry((transition.atom, transition.text_predicate))
+                .or_default() |= transition.summary;
+        }
+        self.transitions = summaries
+            .into_iter()
+            .map(
+                |((atom, text_predicate), summary)| DecisionCutoffFactTransition {
+                    atom,
+                    text_predicate,
+                    summary,
+                },
+            )
+            .collect();
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Grammar-wide one-position decision facts solved as a monotone fixed point.
+struct DecisionCutoffFacts {
+    /// Facts indexed by type identity.
+    by_type: Vec<DecisionCutoffFact>,
+    /// Facts indexed by parse-site identity.
+    by_site: Vec<DecisionCutoffFact>,
+    /// Facts for repetition continuations indexed by target and separator.
+    by_repeat: BTreeMap<(TypeId, Option<TypeId>), DecisionCutoffFact>,
+}
+
+impl DecisionCutoffFacts {
+    /// Solves the finite one-position language equations for all grammar items.
+    fn from_grammar(grammar: &GrammarDescription, summaries: &DecisionSummaryFacts) -> Self {
+        #[cfg(test)]
+        FIRST_LANGUAGE_CUTOFF_FACT_CONSTRUCTIONS.set(
+            FIRST_LANGUAGE_CUTOFF_FACT_CONSTRUCTIONS
+                .get()
+                .saturating_add(1),
+        );
+        let mut facts = Self {
+            by_type: vec![DecisionCutoffFact::default(); grammar.types.len()],
+            by_site: vec![DecisionCutoffFact::default(); grammar.sites.len()],
+            by_repeat: grammar
+                .sites
+                .iter()
+                .filter_map(|site| {
+                    let semantics = container_semantics(site);
+                    semantics.cardinality.is_repeated().then_some((
+                        (site.target, semantics.separator_type()),
+                        Default::default(),
+                    ))
+                })
+                .collect(),
+        };
+        loop {
+            let by_repeat = facts
+                .by_repeat
+                .keys()
+                .map(|&(target, separator)| {
+                    let mut items = Vec::new();
+                    if let Some(separator) = separator {
+                        items.push((
+                            &facts.by_type[separator.index()],
+                            summaries.by_type[separator.index()],
+                        ));
+                    }
+                    items.push((
+                        &facts.by_type[target.index()],
+                        summaries.by_type[target.index()],
+                    ));
+                    items.push((
+                        &facts.by_repeat[&(target, separator)],
+                        decision_repeat_tail_summary(target, separator, &summaries.by_type),
+                    ));
+                    let mut fact = compose_decision_cutoff_facts(&items);
+                    fact.can_end = true;
+                    ((target, separator), fact)
+                })
+                .collect::<BTreeMap<_, _>>();
+            let by_site = grammar
+                .sites
+                .iter()
+                .map(|site| {
+                    let semantics = container_semantics(site);
+                    let target = &facts.by_type[site.target.index()];
+                    match semantics.cardinality {
+                        ContainerCardinality::One => target.clone(),
+                        ContainerCardinality::Optional => {
+                            let mut fact = target.clone();
+                            fact.can_end = true;
+                            fact
+                        }
+                        ContainerCardinality::ZeroOrMore
+                        | ContainerCardinality::OneOrMore
+                        | ContainerCardinality::OptionalOneOrMore => {
+                            let repeat =
+                                &facts.by_repeat[&(site.target, semantics.separator_type())];
+                            let mut fact = compose_decision_cutoff_facts(&[
+                                (target, summaries.by_type[site.target.index()]),
+                                (
+                                    repeat,
+                                    decision_repeat_tail_summary(
+                                        site.target,
+                                        semantics.separator_type(),
+                                        &summaries.by_type,
+                                    ),
+                                ),
+                            ]);
+                            if matches!(
+                                semantics.cardinality,
+                                ContainerCardinality::ZeroOrMore
+                                    | ContainerCardinality::OptionalOneOrMore
+                            ) {
+                                fact.can_end = true;
+                            }
+                            fact
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+            let by_type = grammar
+                .types
+                .iter()
+                .map(|description| match &description.shape {
+                    TypeShape::Token {
+                        atom,
+                        text_predicate,
+                    } => DecisionCutoffFact {
+                        can_end: false,
+                        transitions: vec![DecisionCutoffFactTransition {
+                            atom: *atom,
+                            text_predicate: *text_predicate,
+                            summary: FIRST_LANGUAGE_CUTOFF_END,
+                        }],
+                    },
+                    TypeShape::Alias { site } => by_site[site.index()].clone(),
+                    TypeShape::Sequence { sites } => compose_decision_cutoff_facts(
+                        &sites
+                            .iter()
+                            .map(|site| (&by_site[site.index()], summaries.by_site[site.index()]))
+                            .collect::<Vec<_>>(),
+                    ),
+                    TypeShape::Enum { alternatives } => {
+                        let mut fact = DecisionCutoffFact::default();
+                        for alternative in alternatives {
+                            fact.union_assign(&compose_decision_cutoff_facts(
+                                &alternative
+                                    .sites
+                                    .iter()
+                                    .map(|site| {
+                                        (&by_site[site.index()], summaries.by_site[site.index()])
+                                    })
+                                    .collect::<Vec<_>>(),
+                            ));
+                        }
+                        fact
+                    }
+                    TypeShape::Pratt { variants } => {
+                        let mut fact = DecisionCutoffFact::default();
+                        for variant in variants
+                            .iter()
+                            .filter(|variant| is_pratt_nud(variant.position))
+                        {
+                            fact.union_assign(&compose_decision_cutoff_facts(
+                                &variant
+                                    .sites
+                                    .iter()
+                                    .map(|site| {
+                                        (&by_site[site.index()], summaries.by_site[site.index()])
+                                    })
+                                    .collect::<Vec<_>>(),
+                            ));
+                        }
+                        fact
+                    }
+                })
+                .collect::<Vec<_>>();
+            let next = Self {
+                by_type,
+                by_site,
+                by_repeat,
+            };
+            if next == facts {
+                return facts;
+            }
+            facts = next;
+        }
+    }
+
+    /// Composes the one-position fact for one semantic decision stack.
+    fn for_state(
+        &self,
+        state: &DecisionState,
+        summaries: &DecisionSummaryFacts,
+    ) -> DecisionCutoffFact {
+        compose_decision_cutoff_facts(
+            &state
+                .0
+                .iter()
+                .map(|item| match item {
+                    DecisionItem::Type(type_id) => (
+                        &self.by_type[type_id.index()],
+                        summaries.by_type[type_id.index()],
+                    ),
+                    DecisionItem::Site(site_id) => (
+                        &self.by_site[site_id.index()],
+                        summaries.by_site[site_id.index()],
+                    ),
+                    DecisionItem::RepeatTail { target, separator } => (
+                        &self.by_repeat[&(*target, *separator)],
+                        decision_repeat_tail_summary(*target, *separator, &summaries.by_type),
+                    ),
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// Reports whether every repetition continuation has a grammar-derived fact.
+    fn supports_state(&self, state: &DecisionState) -> bool {
+        state.0.iter().all(|item| match item {
+            DecisionItem::RepeatTail { target, separator } => {
+                self.by_repeat.contains_key(&(*target, *separator))
+            }
+            DecisionItem::Type(_) | DecisionItem::Site(_) => true,
+        })
+    }
+}
+
+/// Composes one-position languages for an ordered semantic sequence.
+fn compose_decision_cutoff_facts(items: &[(&DecisionCutoffFact, u8)]) -> DecisionCutoffFact {
+    let mut fact = DecisionCutoffFact::default();
+    let mut prefix_can_end = true;
+    for (index, (item, summary)) in items.iter().enumerate() {
+        if !prefix_can_end {
+            break;
+        }
+        for transition in &item.transitions {
+            let successor = decision_sequence_summary(
+                std::iter::once(transition.summary)
+                    .chain(items[index + 1..].iter().map(|(_, summary)| *summary)),
+            );
+            fact.transitions.push(DecisionCutoffFactTransition {
+                atom: transition.atom,
+                text_predicate: transition.text_predicate,
+                summary: successor,
+            });
+        }
+        prefix_can_end &= summary & FIRST_LANGUAGE_CUTOFF_END != 0;
+    }
+    fact.can_end = prefix_can_end;
+    fact.normalize();
+    fact
 }
 
 impl DecisionSummaryFacts {
@@ -4931,7 +5350,7 @@ fn decision_items_equivalent(
         (DecisionItem::Site(left), DecisionItem::Site(right)) => {
             let left = &grammar.sites[left.index()];
             let right = &grammar.sites[right.index()];
-            left.target == right.target && left.container.semantics() == right.container.semantics()
+            decision_site_semantics(left) == decision_site_semantics(right)
         }
         (
             DecisionItem::RepeatTail {
@@ -6681,6 +7100,211 @@ mod decision_product_tests {
     }
 
     #[test]
+    fn json_table_like_pratt_sequence_bounds_projected_state_growth() {
+        const BRANCH_COUNT: usize = 6;
+        FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(0);
+        FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.set(0);
+        FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.set(0);
+        let mut grammar = GrammarDescription::new(
+            "json-table-like-pratt",
+            BRANCH_COUNT * 4,
+            5,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let tokens = (0..BRANCH_COUNT * 4)
+            .map(|index| {
+                let name = format!("K{index}");
+                let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+                let kind = grammar.push_kind(crate::KindDescription::new(&name, declaration));
+                let atom = grammar.push_atom(crate::AtomDescription::new(
+                    &name,
+                    declaration,
+                    AtomExpression::Kind(kind),
+                ));
+                grammar.push_type(crate::TypeDescription::new(
+                    format!("Token{index}"),
+                    declaration,
+                    TypeShape::Token {
+                        atom,
+                        text_predicate: None,
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        let expr = grammar.next_type_id();
+        let expression_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr");
+        let mut variants = Vec::new();
+        for index in 0..BRANCH_COUNT {
+            for (role, position, targets) in [
+                (
+                    "Atom",
+                    PrattPosition::Atom,
+                    vec![
+                        (tokens[index], crate::ContainerShape::Direct),
+                        (
+                            expr,
+                            crate::ContainerShape::zero_or_more(
+                                crate::ContainerShape::Direct,
+                                Some(tokens[BRANCH_COUNT * 3]),
+                            ),
+                        ),
+                        (tokens[BRANCH_COUNT * 3 + 1], crate::ContainerShape::Direct),
+                    ],
+                ),
+                (
+                    "Prefix",
+                    PrattPosition::Prefix { bp: 20 },
+                    vec![
+                        (tokens[BRANCH_COUNT + index], crate::ContainerShape::Direct),
+                        (expr, crate::ContainerShape::Direct),
+                    ],
+                ),
+                (
+                    "Infix",
+                    PrattPosition::Infix { lbp: 10, rbp: 11 },
+                    vec![
+                        (
+                            tokens[BRANCH_COUNT * 2 + index],
+                            crate::ContainerShape::Direct,
+                        ),
+                        (expr, crate::ContainerShape::Direct),
+                    ],
+                ),
+                (
+                    "Postfix",
+                    PrattPosition::Postfix { bp: 15 },
+                    vec![(
+                        tokens[BRANCH_COUNT * 3 + index],
+                        crate::ContainerShape::Direct,
+                    )],
+                ),
+            ] {
+                let declaration = test_declaration(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("Expr::{role}{index}"),
+                );
+                let sites = targets
+                    .into_iter()
+                    .enumerate()
+                    .map(|(site_index, (target, shape))| {
+                        let site_declaration = test_declaration(
+                            &mut grammar,
+                            &mut next_byte,
+                            &format!("Expr::{role}{index}::{site_index}"),
+                        );
+                        grammar.push_site(crate::ParseSite::new(
+                            expr,
+                            target,
+                            site_declaration,
+                            shape,
+                        ))
+                    })
+                    .collect();
+                variants.push(crate::PrattVariant {
+                    declaration,
+                    position,
+                    sites,
+                });
+            }
+        }
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Expr",
+                expression_declaration,
+                TypeShape::Pratt { variants },
+            )),
+            expr,
+        );
+        let token = tokens[0];
+        let root = grammar.next_type_id();
+        let declaration = test_declaration(&mut grammar, &mut next_byte, "JsonTableLike");
+        let shapes = [
+            (expr, crate::ContainerShape::Direct),
+            (
+                token,
+                crate::ContainerShape::optional(crate::ContainerShape::Direct),
+            ),
+            (token, crate::ContainerShape::Direct),
+            (expr, crate::ContainerShape::Direct),
+            (
+                token,
+                crate::ContainerShape::optional(crate::ContainerShape::Direct),
+            ),
+            (
+                token,
+                crate::ContainerShape::optional(crate::ContainerShape::Direct),
+            ),
+            (token, crate::ContainerShape::Direct),
+            (
+                token,
+                crate::ContainerShape::optional(crate::ContainerShape::Direct),
+            ),
+        ];
+        let sites = shapes
+            .into_iter()
+            .enumerate()
+            .map(|(index, (target, shape))| {
+                let site_declaration = test_declaration(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("JsonTableLike::{index}"),
+                );
+                grammar.push_site(crate::ParseSite::new(root, target, site_declaration, shape))
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "JsonTableLike",
+                declaration,
+                TypeShape::Sequence { sites },
+            )),
+            root,
+        );
+        let atom_kinds = expand_atoms(&grammar);
+        let mut oracle = FirstLanguageArena::new(&grammar, &atom_kinds);
+        oracle.canonical_sites = (0..grammar.sites.len())
+            .map(|index| SiteId::new(index.try_into().expect("test site identity width")))
+            .collect::<Vec<_>>()
+            .into();
+        let oracle_root = oracle.build(
+            grammar.max_lookahead,
+            vec![DecisionState(vec![DecisionItem::Type(root)])],
+        );
+        let expected = oracle.materialize(oracle_root);
+
+        FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(0);
+        FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.set(0);
+        FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.set(0);
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+        let actual_root = arena.build(
+            grammar.max_lookahead,
+            vec![DecisionState(vec![DecisionItem::Type(root)])],
+        );
+        assert_eq!(
+            arena.materialize(actual_root),
+            expected,
+            "site canonicalization must preserve the exact bounded FIRST language",
+        );
+
+        assert!(
+            arena.decision_states.len() <= BRANCH_COUNT * 4
+                && FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.get() <= BRANCH_COUNT * 3
+                && FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get() <= BRANCH_COUNT * 6
+                && FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.get() <= BRANCH_COUNT * 32,
+            "a JsonTable-shaped Pratt sequence must remain bounded by observable prefix languages: decisions={} components={} nodes={} states={} frontier_computations={} component_builds={} partition_inputs={}",
+            arena.decision_states.len(),
+            arena.projected_components.len(),
+            arena.nodes.len(),
+            arena.states.len(),
+            FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.get(),
+            FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get(),
+            FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.get(),
+        );
+    }
+
+    #[test]
     fn cutoff_subsets_reuse_individual_residual_summaries() {
         const RESIDUAL_COUNT: usize = 12;
         FIRST_LANGUAGE_FRONTIER_EXPANSIONS.set(0);
@@ -6839,6 +7463,110 @@ mod decision_product_tests {
             "cutoff projection must not intern semantically unobservable successor states; inputs={} retained={}",
             states.len(),
             arena.decision_states.len(),
+        );
+    }
+
+    #[test]
+    fn cutoff_frontier_projection_avoids_full_decision_closure() {
+        let (grammar, items) = cutoff_summary_equivalence_grammar();
+        let atom_kinds = expand_atoms(&grammar);
+        let items = items
+            .into_iter()
+            .filter(|item| match item {
+                DecisionItem::RepeatTail { target, separator } => {
+                    grammar.sites.iter().any(|site| {
+                        let semantics = container_semantics(site);
+                        semantics.cardinality.is_repeated()
+                            && site.target == *target
+                            && semantics.separator_type() == *separator
+                    })
+                }
+                DecisionItem::Type(_) | DecisionItem::Site(_) => true,
+            })
+            .collect::<Vec<_>>();
+        let mut states = vec![DecisionState(Vec::new())];
+        states.extend(items.iter().cloned().map(|item| DecisionState(vec![item])));
+        states.extend(items.iter().cloned().flat_map(|left| {
+            items
+                .iter()
+                .cloned()
+                .map(move |right| DecisionState(vec![left.clone(), right]))
+        }));
+        let expected = states
+            .iter()
+            .map(|state| {
+                let full = decision_frontier(state, &grammar, &atom_kinds);
+                let summary_facts = DecisionSummaryFacts::from_grammar(&grammar);
+                let mut sequences = Vec::new();
+                if full.can_end {
+                    sequences.push(FirstSequence {
+                        positions: Vec::new(),
+                        ends: true,
+                    });
+                }
+                for transition in full.transitions {
+                    let summary = decision_cutoff_summary(&transition.next, &summary_facts);
+                    if summary & FIRST_LANGUAGE_CUTOFF_END != 0 {
+                        sequences.push(FirstSequence {
+                            positions: vec![transition.position.clone()],
+                            ends: true,
+                        });
+                    }
+                    if summary & FIRST_LANGUAGE_CUTOFF_CONTINUES != 0 {
+                        sequences.push(FirstSequence {
+                            positions: vec![transition.position],
+                            ends: false,
+                        });
+                    }
+                }
+                sort_dedup_first_sequences(&mut sequences);
+                sequences
+            })
+            .collect::<Vec<_>>();
+        FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.set(0);
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+
+        for (state, expected) in states.into_iter().zip(expected) {
+            let root = arena.build(1, vec![state]);
+            assert_eq!(arena.materialize(root), expected);
+        }
+
+        assert_eq!(
+            FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.get(),
+            0,
+            "cutoff projection must compose fixed-point item facts without walking full decision closures",
+        );
+    }
+
+    #[test]
+    fn root_local_first_arenas_share_grammar_wide_cutoff_facts() {
+        FIRST_LANGUAGE_CUTOFF_FACT_CONSTRUCTIONS.set(0);
+        let (grammar, _) = cutoff_summary_equivalence_grammar();
+        let atom_kinds = expand_atoms(&grammar);
+        let analysis = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+
+        for sites in grammar.sites.chunks(2).take(4) {
+            let site_ids = sites
+                .iter()
+                .map(|site| {
+                    SiteId::new(
+                        grammar
+                            .sites
+                            .iter()
+                            .position(|candidate| std::ptr::eq(candidate, site))
+                            .expect("site belongs to grammar")
+                            .try_into()
+                            .expect("test site identity width"),
+                    )
+                })
+                .collect::<Vec<_>>();
+            analysis.sequences(&site_ids);
+        }
+
+        assert_eq!(
+            FIRST_LANGUAGE_CUTOFF_FACT_CONSTRUCTIONS.get(),
+            1,
+            "one analysis run must solve immutable cutoff facts once across root-local arenas",
         );
     }
 
@@ -8037,10 +8765,12 @@ mod decision_product_tests {
     #[test]
     fn invalid_decision_products_are_suppressed_at_the_analysis_publication_boundary() {
         let grammar = GrammarDescription::new("empty", 0, 1, TextEquivalence::Sensitive);
-        let mut decisions = crate::decision_plan::plan_decisions(&grammar, &[]);
+        let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let mut decisions = crate::decision_plan::plan_decisions(&grammar, &[], &first_sequences);
         decisions.corrupt_site_product_for_test();
 
-        let diagnostic = publish_decisions(&grammar, &[], decisions)
+        let diagnostic = publish_decisions(&grammar, &[], &first_sequences, decisions)
             .expect_err("invalid decisions cannot become AnalysisOutput");
         assert_eq!(diagnostic.code, DiagnosticCode::InternalAnalysisInvariant);
         assert_eq!(diagnostic.severity, crate::Severity::Error);
