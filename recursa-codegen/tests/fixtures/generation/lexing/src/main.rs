@@ -5,7 +5,7 @@ fn assert_token_kind_value<T: Copy + Eq + std::hash::Hash + std::fmt::Debug>() {
 
 fn downstream_error_code(code: grammar::LexErrorCode) -> &'static str {
     match code {
-        grammar::LexErrorCode::Unrecognized | grammar::LexErrorCode::MatcherInvariant => "RCA4000",
+        grammar::LexErrorCode::Unrecognized => "RCA4000",
         grammar::LexErrorCode::UnterminatedSameDelimiter => "RCA4001",
         grammar::LexErrorCode::UnterminatedNested => "RCA4002",
         grammar::LexErrorCode::ExcludedFollowingCharacter => "RCA4004",

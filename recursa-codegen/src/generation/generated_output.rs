@@ -558,10 +558,8 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         #[non_exhaustive]
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub enum LexErrorCode {
-            /// No lexical rule accepted the current source scalar.
+            /// No lexical rule accepted the scalar, or no public mechanism-specific class exists.
             Unrecognized,
-            /// A generated matcher violated a checked internal invariant.
-            MatcherInvariant,
             /// A same-delimiter region reached EOF without its matching closer.
             UnterminatedSameDelimiter,
             /// A nested region reached EOF with nonzero nesting depth.
@@ -575,7 +573,6 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             pub const fn as_str(self) -> &'static str {
                 match self {
                     Self::Unrecognized => "RCA4000",
-                    Self::MatcherInvariant => "RCA4000",
                     Self::UnterminatedSameDelimiter => "RCA4001",
                     Self::UnterminatedNested => "RCA4002",
                     Self::ExcludedFollowingCharacter => "RCA4004",
@@ -625,7 +622,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                         LexErrorCode::ExcludedFollowingCharacter
                     }
                     Some(#facade::__private::LexDiagnosticCode::MatcherInvariant) => {
-                        LexErrorCode::MatcherInvariant
+                        LexErrorCode::Unrecognized
                     }
                     Some(#facade::__private::LexDiagnosticCode::Unrecognized) | None => {
                         LexErrorCode::Unrecognized
