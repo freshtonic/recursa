@@ -163,5 +163,25 @@ fn main() {
     assert_eq!(parsed.root().span_elements().get(0).unwrap().span(), None);
     assert_eq!(parsed.root().span_elements().get(1).unwrap().span(), None);
 
+    let first_rectangle = grammar::lex("B C");
+    let mut input = first_rectangle.input();
+    let parsed = grammar::OverlappingRectangles::parse(&mut input)
+        .expect("B C selects the first complete language");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.root().value(),
+        grammar::OverlappingRectangles::First(_)
+    ));
+
+    let second_rectangle = grammar::lex("B D");
+    let mut input = second_rectangle.input();
+    let parsed = grammar::OverlappingRectangles::parse(&mut input)
+        .expect("B D selects the second complete language");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.root().value(),
+        grammar::OverlappingRectangles::Second(_)
+    ));
+
     println!("predictive-ok");
 }

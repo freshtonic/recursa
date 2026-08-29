@@ -60,7 +60,7 @@ facts optq::Debug first=[fixed:DEBUG] nullable=false extenders=[-] follow=[fixed
 facts optq::PrintStmt first=[fixed:DEBUG,fixed:PRINT] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:PRINT | fixed:PRINT content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
 facts optq::ReadStmt first=[fixed:DEBUG,fixed:READ] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:READ | fixed:READ content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
 facts optq::SetStmt first=[fixed:DEBUG,fixed:SET] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:SET | fixed:SET content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
-facts optq::Stmt first=[fixed:DEBUG,fixed:PRINT,fixed:READ,fixed:SET] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:PRINT | fixed:DEBUG fixed:READ | fixed:DEBUG fixed:SET | fixed:PRINT content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow | fixed:READ content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow | fixed:SET content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
+facts optq::Stmt first=[fixed:DEBUG,fixed:PRINT,fixed:READ,fixed:SET] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:PRINT,fixed:READ,fixed:SET | fixed:PRINT,fixed:READ,fixed:SET content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
 
 [decisions]
 dispatch optq::Stmt enum depth=2 caller-fallback=-

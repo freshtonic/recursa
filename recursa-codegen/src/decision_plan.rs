@@ -12,13 +12,15 @@
 #![deny(missing_docs, clippy::missing_docs_in_private_items)]
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use crate::analysis::{FirstFacts, first_sequences_for_decision_sites};
 use crate::ir::RepeatSeparator;
+use crate::text_partition::{TextPartition, partition_by_residual};
 use crate::{
-    DeclId, FirstPosition, FirstSequence, GrammarDescription, PrattPosition, SiteId, TypeId,
-    TypeShape,
+    DeclId, FirstPosition, FirstSequence, GrammarDescription, KindId, KindSet, PrattPosition,
+    SiteId, TextPredicate, TypeId, TypeShape,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -78,20 +80,41 @@ impl DispatchTerminal {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DispatchTrieEdge {
     /// Token predicate labeling the edge.
-    position: FirstPosition,
+    position: DispatchPosition,
     /// Trie node reached after matching the position.
     next: DispatchTrieNode,
 }
 
 impl DispatchTrieEdge {
     /// Returns the token predicate labeling this edge.
-    pub const fn position(&self) -> &FirstPosition {
+    pub const fn position(&self) -> &DispatchPosition {
         &self.position
     }
 
     /// Returns the node reached after matching the edge.
     pub const fn next(&self) -> &DispatchTrieNode {
         &self.next
+    }
+}
+
+/// One disjoint token and text partition labeling a frozen dispatch edge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DispatchPosition {
+    /// Token kinds belonging to this edge partition.
+    kinds: KindSet,
+    /// Optional owned text refinement derived from the complete outgoing language.
+    text_predicate: Option<TextPredicate>,
+}
+
+impl DispatchPosition {
+    /// Returns the token kinds belonging to this disjoint edge partition.
+    pub const fn kinds(&self) -> &KindSet {
+        &self.kinds
+    }
+
+    /// Returns the text refinement belonging to this disjoint edge partition.
+    pub const fn text_predicate(&self) -> Option<&TextPredicate> {
+        self.text_predicate.as_ref()
     }
 }
 
@@ -1005,7 +1028,7 @@ fn dispatch_plan<'a>(
             .any(|sequence| sequence.positions.is_empty() && sequence.on_caller_follow)
             .then_some(branch.declaration)
     });
-    let trie = freeze_dispatch_trie(&branches);
+    let trie = freeze_dispatch_trie(&branches, grammar);
     DispatchPlan {
         owner,
         kind,
@@ -1016,85 +1039,183 @@ fn dispatch_plan<'a>(
     }
 }
 
-/// Derives the canonical freeze dispatch trie recorded in the immutable decision plan.
-fn freeze_dispatch_trie(branches: &[DispatchBranch]) -> DispatchTrieNode {
-    let mut root = DispatchTrieNode::default();
-    for branch in branches {
-        'sequence: for sequence in &branch.sequences {
-            let mut node = &mut root;
-            for position in &sequence.positions {
-                if let Some(terminal) = node.terminal.filter(|terminal| !terminal.on_caller_follow)
-                {
-                    assert_eq!(
-                        terminal.declaration, branch.declaration,
-                        "validated dispatch cannot extend another branch's terminal"
-                    );
-                    continue 'sequence;
-                }
-                let edge_index = node
-                    .edges
-                    .iter()
-                    .position(|edge| edge.position == *position);
-                let edge = if let Some(index) = edge_index {
-                    &mut node.edges[index]
-                } else {
-                    node.edges.push(DispatchTrieEdge {
-                        position: position.clone(),
-                        next: DispatchTrieNode::default(),
-                    });
-                    node.edges.last_mut().expect("the inserted edge exists")
-                };
-                node = &mut edge.next;
-            }
-            let terminal = DispatchTerminal {
-                declaration: branch.declaration,
-                on_caller_follow: sequence.on_caller_follow,
-            };
-            match &mut node.terminal {
-                Some(existing) => {
-                    assert_eq!(
-                        existing.declaration, terminal.declaration,
-                        "validated dispatch cannot map one prefix to two terminals"
-                    );
-                    if !terminal.on_caller_follow {
-                        assert!(
-                            node.edges.iter().all(|edge| trie_targets_declaration(
-                                &edge.next,
-                                terminal.declaration
-                            )),
-                            "validated dispatch cannot shadow another branch"
-                        );
-                        existing.on_caller_follow = false;
-                        node.edges.clear();
-                    }
-                }
-                None => {
-                    if !terminal.on_caller_follow {
-                        assert!(
-                            node.edges.iter().all(|edge| trie_targets_declaration(
-                                &edge.next,
-                                terminal.declaration
-                            )),
-                            "validated dispatch cannot shadow another branch"
-                        );
-                        node.edges.clear();
-                    }
-                    node.terminal = Some(terminal);
-                }
-            }
-        }
-    }
+/// One immutable complete sequence used while partitioning a dispatch trie.
+#[derive(Clone, Debug)]
+struct DispatchPath {
+    /// Terminal selected after all positions have matched.
+    terminal: DispatchTerminal,
+    /// Complete symbolic positions in this path.
+    positions: Vec<FirstPosition>,
+}
+
+/// One residual path position in a symbolic dispatch state.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct DispatchCursor {
+    /// Index into the immutable complete path table.
+    path: usize,
+    /// Next position to match in that path.
+    offset: usize,
+}
+
+/// Derives the canonical frozen dispatch trie from exact symbolic language partitions.
+fn freeze_dispatch_trie(
+    branches: &[DispatchBranch],
+    grammar: &GrammarDescription,
+) -> DispatchTrieNode {
+    let paths = branches
+        .iter()
+        .flat_map(|branch| {
+            branch.sequences.iter().map(|sequence| DispatchPath {
+                terminal: DispatchTerminal {
+                    declaration: branch.declaration,
+                    on_caller_follow: sequence.on_caller_follow,
+                },
+                positions: sequence.positions.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let state = (0..paths.len())
+        .map(|path| DispatchCursor { path, offset: 0 })
+        .collect::<Vec<_>>();
+    let mut memo = BTreeMap::new();
+    let root = freeze_dispatch_state(&paths, &state, grammar, &mut memo);
+    assert!(dispatch_edges_are_disjoint(&root, grammar));
     root
 }
 
-/// Derives the canonical trie targets declaration recorded in the immutable decision plan.
-fn trie_targets_declaration(node: &DispatchTrieNode, declaration: DeclId) -> bool {
-    node.terminal
-        .is_none_or(|terminal| terminal.declaration == declaration)
-        && node
-            .edges
+/// Freezes one residual-language state and memoizes equivalent suffix states.
+fn freeze_dispatch_state(
+    paths: &[DispatchPath],
+    state: &[DispatchCursor],
+    grammar: &GrammarDescription,
+    memo: &mut BTreeMap<Vec<DispatchCursor>, DispatchTrieNode>,
+) -> DispatchTrieNode {
+    if let Some(node) = memo.get(state) {
+        return node.clone();
+    }
+
+    let terminals = state
+        .iter()
+        .filter_map(|cursor| {
+            (cursor.offset == paths[cursor.path].positions.len())
+                .then_some(paths[cursor.path].terminal)
+        })
+        .collect::<Vec<_>>();
+    let terminal = terminals.first().copied();
+    if let Some(first) = terminal {
+        assert!(
+            terminals
+                .iter()
+                .all(|candidate| candidate.declaration == first.declaration),
+            "validated dispatch cannot map one prefix to two terminals"
+        );
+        if terminals
             .iter()
-            .all(|edge| trie_targets_declaration(&edge.next, declaration))
+            .any(|candidate| !candidate.on_caller_follow)
+        {
+            assert!(
+                state
+                    .iter()
+                    .all(|cursor| { paths[cursor.path].terminal.declaration == first.declaration }),
+                "validated dispatch cannot shadow another branch"
+            );
+            let node = DispatchTrieNode {
+                terminal: Some(DispatchTerminal {
+                    declaration: first.declaration,
+                    on_caller_follow: false,
+                }),
+                edges: Vec::new(),
+            };
+            memo.insert(state.to_vec(), node.clone());
+            return node;
+        }
+    }
+
+    let mut partitions = BTreeMap::<(TextPartition, Vec<DispatchCursor>), KindSet>::new();
+    for kind_index in 0..grammar.kinds.len() {
+        let kind = KindId::new(kind_index.try_into().expect("validated kind width"));
+        let candidates = state
+            .iter()
+            .copied()
+            .filter(|cursor| {
+                paths[cursor.path]
+                    .positions
+                    .get(cursor.offset)
+                    .is_some_and(|position| position.kinds.contains(kind))
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            continue;
+        }
+        for (text, residual) in partition_by_residual(
+            &candidates,
+            grammar,
+            |cursor| paths[cursor.path].positions[cursor.offset].text_predicate,
+            |cursor| DispatchCursor {
+                path: cursor.path,
+                offset: cursor.offset + 1,
+            },
+        ) {
+            let kinds = partitions
+                .entry((text, residual))
+                .or_insert_with(|| KindSet::empty(grammar.kinds.len()));
+            kinds.insert(kind).expect("kind belongs to grammar width");
+        }
+    }
+
+    let mut edges = partitions
+        .into_iter()
+        .map(|((text, residual), kinds)| DispatchTrieEdge {
+            position: DispatchPosition {
+                kinds,
+                text_predicate: text.into_predicate(),
+            },
+            next: freeze_dispatch_state(paths, &residual, grammar, memo),
+        })
+        .collect::<Vec<_>>();
+    edges.sort_by(compare_dispatch_edges);
+    let node = DispatchTrieNode { terminal, edges };
+    memo.insert(state.to_vec(), node.clone());
+    node
+}
+
+/// Orders disjoint outgoing edges independently of declaration construction order.
+fn compare_dispatch_edges(left: &DispatchTrieEdge, right: &DispatchTrieEdge) -> Ordering {
+    left.position
+        .kinds
+        .words()
+        .cmp(right.position.kinds.words())
+        .then_with(|| {
+            TextPartition::from_predicate(left.position.text_predicate.as_ref()).cmp(
+                &TextPartition::from_predicate(right.position.text_predicate.as_ref()),
+            )
+        })
+}
+
+/// Verifies every frozen trie node uses pairwise-disjoint edge predicates.
+fn dispatch_edges_are_disjoint(node: &DispatchTrieNode, grammar: &GrammarDescription) -> bool {
+    for (index, left) in node.edges.iter().enumerate() {
+        for right in &node.edges[index + 1..] {
+            let kinds_overlap = !left
+                .position
+                .kinds
+                .intersection(&right.position.kinds)
+                .expect("dispatch edges share the grammar width")
+                .is_empty();
+            if kinds_overlap
+                && TextPartition::from_predicate(left.position.text_predicate.as_ref()).overlaps(
+                    &TextPartition::from_predicate(right.position.text_predicate.as_ref()),
+                    grammar.text_equivalence,
+                )
+            {
+                return false;
+            }
+        }
+        if !dispatch_edges_are_disjoint(&left.next, grammar) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Derives the canonical required dispatch lookahead recorded in the immutable decision plan.
