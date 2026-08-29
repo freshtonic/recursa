@@ -11,7 +11,7 @@
 //! adapted once into stable build diagnostics and Cargo invalidation output is
 //! emitted independently of analysis success.
 
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 use crate::analysis::analyze_for_generation;
 use crate::build_diagnostic::diagnostic_code_spec;
@@ -375,8 +375,14 @@ fn emit_invalidation(inputs: &DiscoveryInputs, cargo: &mut impl CargoOutput) {
     }
 }
 
-/// Publishes non-blocking diagnostics through Cargo without multiline output.
+/// Publishes non-blocking diagnostics through Cargo without multiline or duplicate output.
+///
+/// The build report retains diagnostics with distinct semantic origins. Cargo's compact warning
+/// projection intentionally omits source ranges, so distinct findings can become identical at
+/// this boundary. Such indistinguishable directives are emitted once while the structured report
+/// remains lossless for programmatic consumers.
 pub(crate) fn emit_warnings(report: &BuildReport, cargo: &mut impl CargoOutput) {
+    let mut emitted = BTreeSet::new();
     for warning in report.warnings() {
         let location = cargo_one_line(&warning.primary().location().map_or_else(
             || "<global>".to_owned(),
@@ -387,13 +393,16 @@ pub(crate) fn emit_warnings(report: &BuildReport, cargo: &mut impl CargoOutput) 
             || "review this diagnostic".to_owned(),
             |remedy| remedy.canonical_text(),
         ));
-        cargo.emit(format!(
+        let directive = format!(
             "cargo::warning=[{}] {location}: {}; evidence: {}; remedy: {}",
             warning.code().as_str(),
             cargo_one_line(warning.summary()),
             evidence,
             remedy,
-        ));
+        );
+        if emitted.insert(directive.clone()) {
+            cargo.emit(directive);
+        }
     }
 }
 
