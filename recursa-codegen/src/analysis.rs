@@ -9,6 +9,7 @@
 
 #[cfg(test)]
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::rc::Rc;
@@ -492,7 +493,7 @@ pub struct FirstFacts {
     kinds: KindSet,
     /// First-position alternatives, retaining optional text predicates.
     pub positions: Vec<FirstPosition>,
-    /// Bounded lookahead sequences used to distinguish shared prefixes.
+    /// Bounded lookahead sequences for this grammar type.
     pub sequences: Vec<FirstSequence>,
     /// Whether the type can consume no tokens.
     pub nullable: bool,
@@ -613,7 +614,6 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
         };
     }
     let first_sequence_analysis = FirstSequenceAnalysis::new(grammar, &atom_kinds);
-    populate_first_sequences(grammar, &first_sequence_analysis, &mut first_by_type);
     let extenders_by_type = compute_extenders(grammar, &first_by_type);
     let (mut proofs, first_provenance) = compute_first_provenance(grammar, &first_by_type);
     let extender_provenance =
@@ -625,7 +625,6 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
         &first_by_type,
         &first_sequence_analysis,
         &first_provenance,
-        &atom_kinds,
         &mut proofs,
         &mut static_conflict_kinds_by_declaration,
     );
@@ -657,6 +656,9 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
             }
         }
     };
+    if decisions.is_some() {
+        populate_first_sequences(grammar, &first_sequence_analysis, &mut first_by_type);
+    }
     let first_provenance_by_type = first_provenance
         .into_iter()
         .map(|positions| {
@@ -713,6 +715,11 @@ fn publish_decisions(
     Ok(decisions)
 }
 
+/// Identifies one canonical paired residual set and remaining witness depth.
+type DecisionWitnessCacheKey = (Vec<PairedDecisionState>, usize);
+/// Stores exact paired residual witnesses shared across conflict sites.
+type DecisionWitnessCache = BTreeMap<DecisionWitnessCacheKey, Option<Vec<DecisionWitness>>>;
+
 /// Derives the first sequences for decision sites from normalized grammar structure and previously established semantic facts.
 /// Reuses immutable grammar-wide FIRST support while keeping each root analysis isolated.
 pub(crate) struct FirstSequenceAnalysis<'a> {
@@ -726,6 +733,10 @@ pub(crate) struct FirstSequenceAnalysis<'a> {
     decision_cutoff_facts: Rc<DecisionCutoffFacts>,
     /// Canonical grammar sites shared by root-local arenas.
     canonical_sites: Rc<[SiteId]>,
+    /// Exact paired residual witnesses shared across conflict sites in this analysis run.
+    decision_witnesses: RefCell<DecisionWitnessCache>,
+    /// Normalized single-side decision frontiers shared across paired witness searches.
+    decision_frontiers: RefCell<HashMap<DecisionState, Rc<DecisionFrontier>>>,
 }
 
 impl<'a> FirstSequenceAnalysis<'a> {
@@ -737,9 +748,11 @@ impl<'a> FirstSequenceAnalysis<'a> {
 
     /// Creates one analysis-run FIRST support context.
     pub(crate) fn new(grammar: &'a GrammarDescription, atom_kinds: &[KindSet]) -> Self {
-        let decision_summary_facts = Rc::new(DecisionSummaryFacts::from_grammar(grammar));
+        let decision_summary_facts =
+            Rc::new(DecisionSummaryFacts::from_grammar(grammar, atom_kinds));
         let decision_cutoff_facts = Rc::new(DecisionCutoffFacts::from_grammar(
             grammar,
+            atom_kinds,
             &decision_summary_facts,
         ));
         let mut sites_by_semantics = HashMap::new();
@@ -761,17 +774,73 @@ impl<'a> FirstSequenceAnalysis<'a> {
             decision_summary_facts,
             decision_cutoff_facts,
             canonical_sites,
+            decision_witnesses: RefCell::new(BTreeMap::new()),
+            decision_frontiers: RefCell::new(HashMap::new()),
         }
     }
 
     /// Derives one decision-site root with a fresh root-local arena.
     pub(crate) fn sequences(&self, sites: &[SiteId]) -> Vec<FirstSequence> {
+        self.sequences_for_state(DecisionState::from_sites(sites))
+    }
+
+    /// Derives one arbitrary semantic decision-state root with a fresh root-local arena.
+    fn sequences_for_state(&self, state: DecisionState) -> Vec<FirstSequence> {
         let mut language = self.language();
-        let root = language.build(
-            self.grammar.max_lookahead,
-            vec![DecisionState::from_sites(sites)],
-        );
+        let root = language.build(self.grammar.max_lookahead, vec![state]);
         language.materialize(root)
+    }
+
+    /// Canonicalizes authored site identities before using a decision state as a phase cache key.
+    fn canonical_state(&self, state: DecisionState) -> DecisionState {
+        canonicalize_decision_state(state, &self.canonical_sites)
+    }
+
+    /// Derives one exact configured-depth witness through the analysis-run residual cache.
+    fn decision_witness_at_depth(
+        &self,
+        start: &PairedDecisionState,
+        depth: usize,
+    ) -> Option<Vec<DecisionWitness>> {
+        let mut frontier = |state: &DecisionState| self.decision_frontier(state);
+        canonical_decision_witness_suffix(
+            start,
+            self.grammar,
+            depth,
+            &mut self.decision_witnesses.borrow_mut(),
+            &mut frontier,
+        )
+    }
+
+    /// Derives and caches one canonical single-side decision frontier.
+    fn decision_frontier(&self, state: &DecisionState) -> Rc<DecisionFrontier> {
+        let state = self.canonical_state(state.clone());
+        if let Some(frontier) = self.decision_frontiers.borrow().get(&state) {
+            return Rc::clone(frontier);
+        }
+        #[cfg(test)]
+        FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.set(
+            FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS
+                .get()
+                .saturating_add(1),
+        );
+        let mut frontier = decision_frontier(&state, self.grammar, &self.atom_kinds);
+        for transition in &mut frontier.transitions {
+            transition.next = self.canonical_state(transition.next.clone());
+        }
+        frontier.transitions.sort_by(|left, right| {
+            compare_first_positions(&left.position, &right.position)
+                .then_with(|| left.next.cmp(&right.next))
+                .then_with(|| right.minimum_stack_depth.cmp(&left.minimum_stack_depth))
+        });
+        frontier
+            .transitions
+            .dedup_by(|left, right| left.position == right.position && left.next == right.next);
+        let frontier = Rc::new(frontier);
+        self.decision_frontiers
+            .borrow_mut()
+            .insert(state, Rc::clone(&frontier));
+        frontier
     }
 
     /// Creates one fresh mutable language arena over shared immutable grammar facts.
@@ -1312,16 +1381,19 @@ fn populate_first_sequences(
     semantic: &mut [FirstFacts],
 ) {
     let mut language = analysis.language();
-    let mut roots = Vec::with_capacity(grammar.types.len());
-    for index in 0..grammar.types.len() {
-        roots.push(language.build(
+    for (index, facts) in semantic.iter_mut().enumerate() {
+        #[cfg(test)]
+        FIRST_LANGUAGE_AGGREGATE_MATERIALIZATIONS.set(
+            FIRST_LANGUAGE_AGGREGATE_MATERIALIZATIONS
+                .get()
+                .saturating_add(1),
+        );
+        let root = language.build(
             grammar.max_lookahead,
             vec![DecisionState(vec![DecisionItem::Type(TypeId::new(
                 index.try_into().expect("validated type width"),
             ))])],
-        ));
-    }
-    for (facts, root) in semantic.iter_mut().zip(roots) {
+        );
         facts.sequences = language.materialize(root);
     }
 }
@@ -1608,6 +1680,8 @@ struct FirstLanguageArena<'a> {
     decision_cutoff_facts: Rc<DecisionCutoffFacts>,
     /// Canonical grammar sites grouped by their decision-language semantics.
     canonical_sites: Rc<[SiteId]>,
+    /// Whether this arena materializes deterministic cells in addition to authored covers.
+    build_deterministic_cells: bool,
     /// Canonical semantic decision states indexed by dense identity.
     decision_states: Vec<DecisionState>,
     /// Dense identities interned by semantic decision-state value.
@@ -1653,7 +1727,9 @@ impl<'a> FirstLanguageArena<'a> {
     #[cfg(test)]
     /// Creates an empty symbolic FIRST arena for one grammar analysis.
     fn new(grammar: &'a GrammarDescription, atom_kinds: &'a [KindSet]) -> Self {
-        FirstSequenceAnalysis::new(grammar, atom_kinds).language()
+        let mut language = FirstSequenceAnalysis::new(grammar, atom_kinds).language();
+        language.build_deterministic_cells = true;
+        language
     }
 
     /// Creates a root-local arena from one analysis-run immutable support context.
@@ -1664,6 +1740,7 @@ impl<'a> FirstLanguageArena<'a> {
             decision_summary_facts: Rc::clone(&analysis.decision_summary_facts),
             decision_cutoff_facts: Rc::clone(&analysis.decision_cutoff_facts),
             canonical_sites: Rc::clone(&analysis.canonical_sites),
+            build_deterministic_cells: false,
             decision_states: Vec::new(),
             decision_state_ids: HashMap::new(),
             positions: Vec::new(),
@@ -1748,6 +1825,9 @@ impl<'a> FirstLanguageArena<'a> {
         if remaining == 0 {
             return self.build_cutoff(&residuals);
         }
+        if !self.build_deterministic_cells {
+            return self.build_cover_state(remaining, residuals);
+        }
         if remaining == 1 {
             let mut frontiers = residuals
                 .into_iter()
@@ -1787,13 +1867,48 @@ impl<'a> FirstLanguageArena<'a> {
             unreachable!("outer bounded state retains full residual precision")
         };
         let (exact_end, transitions) = self.frontier(residuals);
+        let cells = if self.build_deterministic_cells {
+            self.build_cells(&transitions, remaining - 1)
+        } else {
+            Vec::new()
+        };
         let node = FirstLanguageNode {
             exact_end,
             cutoff: false,
-            cells: self.build_cells(&transitions, remaining - 1),
+            cells,
             covers: self.build_covers(&transitions, remaining - 1),
         };
         debug_assert!(first_language_cells_are_disjoint(&node.cells, self.grammar));
+        let node_id = self.intern_node(node);
+        self.states.insert(key, node_id);
+        node_id
+    }
+
+    /// Builds the authored cover used by public sequence materialization without a duplicate deterministic graph.
+    fn build_cover_state(
+        &mut self,
+        remaining: usize,
+        residuals: Vec<FirstLanguageDecisionStateId>,
+    ) -> FirstLanguageNodeId {
+        debug_assert!(remaining > 0);
+        let key = FirstLanguageStateKey {
+            remaining,
+            residuals: FirstLanguageStateResiduals::Full(residuals),
+        };
+        if let Some(node) = self.states.get(&key) {
+            return *node;
+        }
+        self.record_state_build(remaining);
+        let FirstLanguageStateResiduals::Full(residuals) = &key.residuals else {
+            unreachable!("cover-only state retains full residual precision")
+        };
+        let (exact_end, transitions) = self.frontier(residuals);
+        let node = FirstLanguageNode {
+            exact_end,
+            cutoff: false,
+            cells: Vec::new(),
+            covers: self.build_covers(&transitions, remaining - 1),
+        };
         let node_id = self.intern_node(node);
         self.states.insert(key, node_id);
         node_id
@@ -1834,7 +1949,7 @@ impl<'a> FirstLanguageArena<'a> {
         let FirstLanguageStateResiduals::Projected(components) = &key.residuals else {
             unreachable!("recursive bounded state retains projected components")
         };
-        if components.len() > 1 {
+        if self.build_deterministic_cells && components.len() == 2 {
             let components = components.clone();
             let mut level = components
                 .iter()
@@ -1868,10 +1983,15 @@ impl<'a> FirstLanguageArena<'a> {
             transitions.extend_from_slice(&component.transitions);
         }
         self.sort_dedup_projected_transitions(&mut transitions);
+        let cells = if self.build_deterministic_cells {
+            self.build_projected_cells(&transitions, remaining - 1)
+        } else {
+            Vec::new()
+        };
         let node = FirstLanguageNode {
             exact_end,
             cutoff: false,
-            cells: self.build_projected_cells(&transitions, remaining - 1),
+            cells,
             covers: self.build_projected_covers(&transitions, remaining - 1),
         };
         debug_assert!(first_language_cells_are_disjoint(&node.cells, self.grammar));
@@ -1898,10 +2018,15 @@ impl<'a> FirstLanguageArena<'a> {
             unreachable!("two-position state retains projected frontier precision")
         };
         let (exact_end, transitions) = self.depth_two_frontier(frontiers);
+        let cells = if self.build_deterministic_cells {
+            self.build_depth_two_cells(&transitions)
+        } else {
+            Vec::new()
+        };
         let node = FirstLanguageNode {
             exact_end,
             cutoff: false,
-            cells: self.build_depth_two_cells(&transitions),
+            cells,
             covers: self.build_depth_two_covers(&transitions),
         };
         debug_assert!(first_language_cells_are_disjoint(&node.cells, self.grammar));
@@ -1928,10 +2053,15 @@ impl<'a> FirstLanguageArena<'a> {
             unreachable!("final-position state retains projected frontier precision")
         };
         let (exact_end, transitions) = self.cutoff_frontier(frontiers);
+        let cells = if self.build_deterministic_cells {
+            self.build_cutoff_cells(&transitions)
+        } else {
+            Vec::new()
+        };
         let node = FirstLanguageNode {
             exact_end,
             cutoff: false,
-            cells: self.build_cutoff_cells(&transitions),
+            cells,
             covers: self.build_cutoff_covers(&transitions),
         };
         debug_assert!(first_language_cells_are_disjoint(&node.cells, self.grammar));
@@ -1947,12 +2077,8 @@ impl<'a> FirstLanguageArena<'a> {
     }
 
     /// Interns one semantic decision state and returns its dense arena identity.
-    fn intern_decision_state(&mut self, mut state: DecisionState) -> FirstLanguageDecisionStateId {
-        for item in &mut state.0 {
-            if let DecisionItem::Site(site) = item {
-                *site = self.canonical_sites[site.index()];
-            }
-        }
+    fn intern_decision_state(&mut self, state: DecisionState) -> FirstLanguageDecisionStateId {
+        let state = canonicalize_decision_state(state, &self.canonical_sites);
         if let Some(id) = self.decision_state_ids.get(&state) {
             return *id;
         }
@@ -2641,7 +2767,6 @@ impl<'a> FirstLanguageArena<'a> {
         transitions: &[FirstLanguageTransition],
         remaining: usize,
     ) -> Vec<FirstLanguageCover> {
-        debug_assert!(remaining > 0);
         let mut coalesced =
             BTreeMap::<(Option<TextPredicateId>, FirstLanguageNodeId), KindSet>::new();
         for transition in transitions {
@@ -2941,10 +3066,14 @@ thread_local! {
     static CONFLICT_DECISION_PRODUCT_BUILDS: Cell<usize> = const { Cell::new(0) };
     /// Counts paired residual states expanded while building one decision product.
     static DECISION_PRODUCT_STATE_EXPANSIONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts parent states inspected while checking one product successor for cycles.
+    static DECISION_PRODUCT_ANCESTOR_STATE_VISITS: Cell<usize> = const { Cell::new(0) };
     /// Counts raw left/right consuming-transition pairs considered by a decision product.
     static DECISION_PRODUCT_TRANSITION_PAIRS: Cell<usize> = const { Cell::new(0) };
     /// Counts explicit paired residual states expanded while constructing a bounded witness.
     static DECISION_WITNESS_STATE_EXPANSIONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts exact symbolic edge pairs inspected while deriving a frozen bounded witness.
+    static BOUNDED_WITNESS_EDGE_PAIR_CHECKS: Cell<usize> = const { Cell::new(0) };
     /// Counts distinct interned position states visited by rectangle grouping.
     static RECTANGLE_POSITION_STATES: Cell<usize> = const { Cell::new(0) };
     /// Tracks the largest eager rectangle row set presented for normalization.
@@ -2983,6 +3112,8 @@ thread_local! {
     static FIRST_LANGUAGE_CUTOFF_FACT_CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
     /// Counts distinct commutative deterministic node overlays.
     static FIRST_LANGUAGE_NODE_UNION_MISSES: Cell<usize> = const { Cell::new(0) };
+    /// Counts grammar-wide per-type FIRST-k publications after successful analysis.
+    static FIRST_LANGUAGE_AGGREGATE_MATERIALIZATIONS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Interns each wide FIRST position once and returns compact row identities.
@@ -4615,6 +4746,19 @@ impl DecisionState {
     }
 }
 
+/// Rewrites authored site identities to the canonical representative of their semantics.
+fn canonicalize_decision_state(
+    mut state: DecisionState,
+    canonical_sites: &[SiteId],
+) -> DecisionState {
+    for item in &mut state.0 {
+        if let DecisionItem::Site(site) = item {
+            *site = canonical_sites[site.index()];
+        }
+    }
+    state
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Grammar-wide least-fixed-point facts needed to summarize cutoff residuals compositionally.
 struct DecisionSummaryFacts {
@@ -4622,6 +4766,14 @@ struct DecisionSummaryFacts {
     by_type: Vec<u8>,
     /// Exact-end and continuation facts indexed by parse-site identity.
     by_site: Vec<u8>,
+    /// Whether each type derives at least one finite token sequence.
+    productive_by_type: Vec<bool>,
+    /// Whether each parse site derives at least one finite token sequence.
+    productive_by_site: Vec<bool>,
+    /// Whether each type has a finite consuming path that reaches a dead residual.
+    dead_prefix_by_type: Vec<bool>,
+    /// Whether each parse site has a finite consuming path that reaches a dead residual.
+    dead_prefix_by_site: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -4686,7 +4838,11 @@ struct DecisionCutoffFacts {
 
 impl DecisionCutoffFacts {
     /// Solves the finite one-position language equations for all grammar items.
-    fn from_grammar(grammar: &GrammarDescription, summaries: &DecisionSummaryFacts) -> Self {
+    fn from_grammar(
+        grammar: &GrammarDescription,
+        atom_kinds: &[KindSet],
+        summaries: &DecisionSummaryFacts,
+    ) -> Self {
         #[cfg(test)]
         FIRST_LANGUAGE_CUTOFF_FACT_CONSTRUCTIONS.set(
             FIRST_LANGUAGE_CUTOFF_FACT_CONSTRUCTIONS
@@ -4801,14 +4957,20 @@ impl DecisionCutoffFacts {
                     TypeShape::Token {
                         atom,
                         text_predicate,
-                    } => DecisionCutoffFact {
-                        can_end: false,
-                        transitions: vec![DecisionCutoffFactTransition {
-                            atom: *atom,
-                            text_predicate: *text_predicate,
-                            summary: FIRST_LANGUAGE_CUTOFF_END,
-                        }],
-                    },
+                    } => {
+                        if decision_token_is_viable(*atom, *text_predicate, grammar, atom_kinds) {
+                            DecisionCutoffFact {
+                                can_end: false,
+                                transitions: vec![DecisionCutoffFactTransition {
+                                    atom: *atom,
+                                    text_predicate: *text_predicate,
+                                    summary: FIRST_LANGUAGE_CUTOFF_END,
+                                }],
+                            }
+                        } else {
+                            DecisionCutoffFact::default()
+                        }
+                    }
                     TypeShape::Alias { site } => by_site[site.index()].clone(),
                     TypeShape::Sequence { sites } => compose_decision_cutoff_facts(
                         &sites
@@ -4943,9 +5105,9 @@ fn compose_decision_cutoff_facts(items: &[(&DecisionCutoffFact, u8)]) -> Decisio
 
 impl DecisionSummaryFacts {
     /// Solves the monotone two-bit grammar equations without optimistic recursion defaults.
-    fn from_grammar(grammar: &GrammarDescription) -> Self {
+    fn from_grammar(grammar: &GrammarDescription, atom_kinds: &[KindSet]) -> Self {
         let mut by_type = vec![0_u8; grammar.types.len()];
-        loop {
+        let (by_type, by_site) = loop {
             let by_site = grammar
                 .sites
                 .iter()
@@ -4955,7 +5117,16 @@ impl DecisionSummaryFacts {
                 .types
                 .iter()
                 .map(|description| match &description.shape {
-                    TypeShape::Token { .. } => FIRST_LANGUAGE_CUTOFF_CONTINUES,
+                    TypeShape::Token {
+                        atom,
+                        text_predicate,
+                    } => {
+                        if decision_token_is_viable(*atom, *text_predicate, grammar, atom_kinds) {
+                            FIRST_LANGUAGE_CUTOFF_CONTINUES
+                        } else {
+                            0
+                        }
+                    }
                     TypeShape::Alias { site } => by_site[site.index()],
                     TypeShape::Sequence { sites } => {
                         decision_sequence_summary(sites.iter().map(|site| by_site[site.index()]))
@@ -4985,9 +5156,137 @@ impl DecisionSummaryFacts {
                     .all(|(next, previous)| next | previous == *next)
             );
             if next == by_type {
-                return Self { by_type, by_site };
+                break (by_type, by_site);
             }
             by_type = next;
+        };
+        let mut productive_by_type = vec![false; grammar.types.len()];
+        let productive_by_site = loop {
+            let productive_by_site = grammar
+                .sites
+                .iter()
+                .map(|site| decision_site_productive(site, &productive_by_type))
+                .collect::<Vec<_>>();
+            let next = grammar
+                .types
+                .iter()
+                .map(|description| match &description.shape {
+                    TypeShape::Token {
+                        atom,
+                        text_predicate,
+                    } => decision_token_is_viable(*atom, *text_predicate, grammar, atom_kinds),
+                    TypeShape::Alias { site } => productive_by_site[site.index()],
+                    TypeShape::Sequence { sites } => {
+                        sites.iter().all(|site| productive_by_site[site.index()])
+                    }
+                    TypeShape::Enum { alternatives } => alternatives.iter().any(|alternative| {
+                        alternative
+                            .sites
+                            .iter()
+                            .all(|site| productive_by_site[site.index()])
+                    }),
+                    TypeShape::Pratt { variants } => variants
+                        .iter()
+                        .filter(|variant| is_pratt_nud(variant.position))
+                        .any(|variant| {
+                            variant
+                                .sites
+                                .iter()
+                                .all(|site| productive_by_site[site.index()])
+                        }),
+                })
+                .collect::<Vec<_>>();
+            debug_assert!(
+                next.iter()
+                    .zip(&productive_by_type)
+                    .all(|(next, previous)| *next || !*previous)
+            );
+            if next == productive_by_type {
+                break productive_by_site;
+            }
+            productive_by_type = next;
+        };
+        let mut dead_prefix_by_type = vec![false; grammar.types.len()];
+        let dead_prefix_by_site = loop {
+            let dead_prefix_by_site = grammar
+                .sites
+                .iter()
+                .map(|site| {
+                    decision_site_has_dead_prefix(site, &productive_by_type, &dead_prefix_by_type)
+                })
+                .collect::<Vec<_>>();
+            let next = grammar
+                .types
+                .iter()
+                .enumerate()
+                .map(|(index, description)| {
+                    if by_type[index] == 0 {
+                        return true;
+                    }
+                    match &description.shape {
+                        TypeShape::Token {
+                            atom,
+                            text_predicate,
+                        } => !decision_token_is_viable(*atom, *text_predicate, grammar, atom_kinds),
+                        TypeShape::Alias { site } => dead_prefix_by_site[site.index()],
+                        TypeShape::Sequence { sites } => {
+                            decision_sequence_has_dead_prefix(sites.iter().map(|site| {
+                                (
+                                    productive_by_site[site.index()],
+                                    dead_prefix_by_site[site.index()],
+                                )
+                            }))
+                        }
+                        TypeShape::Enum { alternatives } => {
+                            alternatives.is_empty()
+                                || alternatives.iter().any(|alternative| {
+                                    decision_sequence_has_dead_prefix(alternative.sites.iter().map(
+                                        |site| {
+                                            (
+                                                productive_by_site[site.index()],
+                                                dead_prefix_by_site[site.index()],
+                                            )
+                                        },
+                                    ))
+                                })
+                        }
+                        TypeShape::Pratt { variants } => {
+                            let nud = variants
+                                .iter()
+                                .filter(|variant| is_pratt_nud(variant.position))
+                                .collect::<Vec<_>>();
+                            nud.is_empty()
+                                || nud.iter().any(|variant| {
+                                    decision_sequence_has_dead_prefix(variant.sites.iter().map(
+                                        |site| {
+                                            (
+                                                productive_by_site[site.index()],
+                                                dead_prefix_by_site[site.index()],
+                                            )
+                                        },
+                                    ))
+                                })
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+            debug_assert!(
+                next.iter()
+                    .zip(&dead_prefix_by_type)
+                    .all(|(next, previous)| *next || !*previous)
+            );
+            if next == dead_prefix_by_type {
+                break dead_prefix_by_site;
+            }
+            dead_prefix_by_type = next;
+        };
+        Self {
+            by_type,
+            by_site,
+            productive_by_type,
+            productive_by_site,
+            dead_prefix_by_type,
+            dead_prefix_by_site,
         }
     }
 
@@ -5010,6 +5309,123 @@ impl DecisionSummaryFacts {
             }
         }
     }
+
+    /// Reports whether a semantic state can derive the empty token sequence.
+    fn state_is_nullable(&self, state: &DecisionState) -> bool {
+        self.summarize_state(state) & FIRST_LANGUAGE_CUTOFF_END != 0
+    }
+
+    /// Reports whether a semantic state derives at least one finite token sequence.
+    fn state_is_productive(&self, state: &DecisionState) -> bool {
+        state.0.iter().all(|item| match item {
+            DecisionItem::Type(type_id) => self.productive_by_type[type_id.index()],
+            DecisionItem::Site(site_id) => self.productive_by_site[site_id.index()],
+            DecisionItem::RepeatTail { .. } => true,
+        })
+    }
+
+    /// Reports whether a finite consuming prefix can reach a residual with no end or transition.
+    fn state_has_dead_prefix(&self, state: &DecisionState) -> bool {
+        decision_sequence_has_dead_prefix(state.0.iter().map(|item| match item {
+            DecisionItem::Type(type_id) => (
+                self.productive_by_type[type_id.index()],
+                self.dead_prefix_by_type[type_id.index()],
+            ),
+            DecisionItem::Site(site_id) => (
+                self.productive_by_site[site_id.index()],
+                self.dead_prefix_by_site[site_id.index()],
+            ),
+            DecisionItem::RepeatTail {
+                target, separator, ..
+            } => (
+                true,
+                decision_repeat_tail_has_dead_prefix(
+                    *target,
+                    *separator,
+                    &self.productive_by_type,
+                    &self.dead_prefix_by_type,
+                ),
+            ),
+        }))
+    }
+}
+
+/// Reports whether a token can consume at least one normalized lexical value.
+fn decision_token_is_viable(
+    atom: AtomId,
+    text_predicate: Option<TextPredicateId>,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+) -> bool {
+    !atom_kinds[atom.index()].is_empty()
+        && text_predicate.is_none_or(|predicate| {
+            !matches!(
+                &grammar.text_predicates[predicate.index()],
+                TextPredicate::OneOf(options) if options.is_empty()
+            )
+        })
+}
+
+/// Reports whether one parse-site container derives at least one finite token sequence.
+fn decision_site_productive(site: &crate::ParseSite, productive_by_type: &[bool]) -> bool {
+    match container_semantics(site).cardinality {
+        ContainerCardinality::One | ContainerCardinality::OneOrMore => {
+            productive_by_type[site.target.index()]
+        }
+        ContainerCardinality::Optional
+        | ContainerCardinality::ZeroOrMore
+        | ContainerCardinality::OptionalOneOrMore => true,
+    }
+}
+
+/// Reports whether an ordered semantic sequence can consume into a dead residual.
+fn decision_sequence_has_dead_prefix(items: impl IntoIterator<Item = (bool, bool)>) -> bool {
+    let mut prefix_productive = true;
+    for (productive, has_dead_prefix) in items {
+        if prefix_productive && has_dead_prefix {
+            return true;
+        }
+        prefix_productive &= productive;
+        if !prefix_productive {
+            return false;
+        }
+    }
+    false
+}
+
+/// Reports whether one parse-site container can consume into a dead residual.
+fn decision_site_has_dead_prefix(
+    site: &crate::ParseSite,
+    productive_by_type: &[bool],
+    dead_prefix_by_type: &[bool],
+) -> bool {
+    let semantics = container_semantics(site);
+    let target = site.target;
+    let target_dead = dead_prefix_by_type[target.index()];
+    if !semantics.cardinality.is_repeated() {
+        return target_dead;
+    }
+    target_dead
+        || (productive_by_type[target.index()]
+            && decision_repeat_tail_has_dead_prefix(
+                target,
+                semantics.separator_type(),
+                productive_by_type,
+                dead_prefix_by_type,
+            ))
+}
+
+/// Reports whether choosing another repetition element can consume into a dead residual.
+fn decision_repeat_tail_has_dead_prefix(
+    target: TypeId,
+    separator: Option<TypeId>,
+    productive_by_type: &[bool],
+    dead_prefix_by_type: &[bool],
+) -> bool {
+    separator.map_or(dead_prefix_by_type[target.index()], |separator| {
+        dead_prefix_by_type[separator.index()]
+            || (productive_by_type[separator.index()] && dead_prefix_by_type[target.index()])
+    })
 }
 
 /// Composes exact-end and continuation facts for an ordered semantic sequence.
@@ -5111,7 +5527,7 @@ struct DecisionTransition {
     minimum_stack_depth: usize,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 /// Carries the decision frontier consumed while deriving source-independent grammar facts.
 struct DecisionFrontier {
     /// Supplies the can end consumed by semantic analysis.
@@ -5159,12 +5575,87 @@ enum DecisionProduct {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Carries the decision parent consumed while deriving source-independent grammar facts.
 struct DecisionParent {
-    /// Supplies the state consumed by semantic analysis.
-    state: PairedDecisionState,
+    /// Supplies the dense parent-state identity consumed by semantic analysis.
+    state: usize,
     /// Supplies the left minimum stack depth consumed by semantic analysis.
     left_minimum_stack_depth: usize,
     /// Supplies the right minimum stack depth consumed by semantic analysis.
     right_minimum_stack_depth: usize,
+}
+
+/// Hash-conses paired residuals and their incoming derivations for product traversal.
+///
+/// `states`, `incoming`, and `successors` remain index-aligned for every dense identity.
+/// Each `incoming` row remains sorted because product insertion uses binary search to deduplicate
+/// derivations before scheduling a parent-driven revisit.
+struct DecisionProductParents {
+    /// Canonical paired residual value for each dense identity.
+    states: Vec<PairedDecisionState>,
+    /// Dense identity assigned to each canonical paired residual.
+    ids: BTreeMap<PairedDecisionState, usize>,
+    /// Incoming derivations indexed by child-state identity.
+    incoming: Vec<Vec<DecisionParent>>,
+    /// Complete consuming successors already generated for each state identity.
+    successors: Vec<Option<Vec<PairedDecisionSuccessor>>>,
+}
+
+impl DecisionProductParents {
+    /// Creates a parent arena rooted at one paired residual.
+    fn new(start: PairedDecisionState) -> Self {
+        Self {
+            states: vec![start.clone()],
+            ids: BTreeMap::from([(start, 0)]),
+            incoming: vec![Vec::new()],
+            successors: vec![None],
+        }
+    }
+
+    /// Returns the dense identity for one paired residual, interning it when absent.
+    fn intern(&mut self, state: PairedDecisionState) -> usize {
+        if let Some(id) = self.ids.get(&state) {
+            return *id;
+        }
+        let id = self.states.len();
+        self.states.push(state.clone());
+        self.ids.insert(state, id);
+        self.incoming.push(Vec::new());
+        self.successors.push(None);
+        id
+    }
+}
+
+#[derive(Default)]
+/// Reuses generation-stamped dense visitation storage across ancestor traversals.
+struct DecisionVisitScratch {
+    /// Generation in which each dense state identity was last visited.
+    marks: Vec<u32>,
+    /// Current nonzero traversal generation.
+    generation: u32,
+    /// Pending dense state identities for the current traversal.
+    queue: VecDeque<usize>,
+}
+
+impl DecisionVisitScratch {
+    /// Starts a fresh traversal from one state identity.
+    fn start(&mut self, start: usize, state_count: usize) {
+        self.marks.resize(state_count, 0);
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.marks.fill(0);
+            self.generation = 1;
+        }
+        self.queue.clear();
+        self.queue.push_back(start);
+    }
+
+    /// Marks a state for the current generation and reports whether it was new.
+    fn visit(&mut self, state: usize) -> bool {
+        if self.marks[state] == self.generation {
+            return false;
+        }
+        self.marks[state] = self.generation;
+        true
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -5180,26 +5671,57 @@ struct PairedDecisionSuccessor {
     right_minimum_stack_depth: usize,
 }
 
+/// Distinguishes unavailable frozen analysis from an exact bounded witness result.
+enum BoundedDecisionWitness {
+    /// The decision shape is outside the sound frozen-language subset and needs explicit traversal.
+    Unsupported,
+    /// Exact bounded languages were compared and either produced or disproved a witness.
+    Exact(Option<Vec<DecisionWitness>>),
+}
+
+impl BoundedDecisionWitness {
+    /// Reports that exact configured-depth languages have no shared prefix.
+    fn is_disjoint(&self) -> bool {
+        matches!(self, Self::Exact(None))
+    }
+}
+
 /// Derives the analyze decision from normalized grammar structure and previously established semantic facts.
 fn analyze_decision(
     left: DecisionState,
     right: DecisionState,
-    grammar: &GrammarDescription,
-    atom_kinds: &[KindSet],
-    bounded_witness: Option<Vec<DecisionWitness>>,
+    first_sequences: &FirstSequenceAnalysis<'_>,
+    bounded_witness: BoundedDecisionWitness,
 ) -> DecisionOutcome {
-    #[cfg(test)]
-    CONFLICT_DECISION_PRODUCT_BUILDS.set(CONFLICT_DECISION_PRODUCT_BUILDS.get() + 1);
-    let start = paired_residual(left, right, grammar);
-    let sufficient_depth = match build_decision_product(start.clone(), grammar, atom_kinds) {
-        DecisionProduct::Cyclic => None,
-        DecisionProduct::Acyclic(graph) => {
-            Some(longest_decision_path(&start, &graph, &mut BTreeMap::new()) + 1)
+    let left = first_sequences.canonical_state(left);
+    let right = first_sequences.canonical_state(right);
+    let start = paired_residual(left, right, first_sequences.grammar);
+    let bounded_proves_complete_overlap = matches!(
+        &bounded_witness,
+        BoundedDecisionWitness::Exact(Some(witness))
+            if witness
+                .iter()
+                .any(|position| matches!(position, DecisionWitness::End))
+    );
+    let sufficient_depth = if bounded_proves_complete_overlap {
+        None
+    } else {
+        #[cfg(test)]
+        CONFLICT_DECISION_PRODUCT_BUILDS.set(CONFLICT_DECISION_PRODUCT_BUILDS.get() + 1);
+        match build_decision_product(start.clone(), first_sequences) {
+            DecisionProduct::Cyclic => None,
+            DecisionProduct::Acyclic(graph) => {
+                Some(longest_decision_path(&start, &graph, &mut BTreeMap::new()) + 1)
+            }
         }
     };
-    let witness_path = bounded_witness
-        .or_else(|| decision_witness_at_depth(&start, grammar, atom_kinds, grammar.max_lookahead))
-        .unwrap_or_default();
+    let witness_path = match bounded_witness {
+        BoundedDecisionWitness::Unsupported => {
+            first_sequences.decision_witness_at_depth(&start, first_sequences.grammar.max_lookahead)
+        }
+        BoundedDecisionWitness::Exact(witness) => witness,
+    }
+    .unwrap_or_default();
     let end_of_alternative = witness_path
         .iter()
         .any(|witness| matches!(witness, DecisionWitness::End));
@@ -5220,38 +5742,77 @@ fn analyze_decision(
 /// Freezes validated dispatch, container, and failure decisions for generation.
 fn build_decision_product(
     start: PairedDecisionState,
-    grammar: &GrammarDescription,
-    atom_kinds: &[KindSet],
+    first_sequences: &FirstSequenceAnalysis<'_>,
 ) -> DecisionProduct {
+    let grammar = first_sequences.grammar;
+    let summary_facts = &first_sequences.decision_summary_facts;
+    if paired_state_has_complete_overlap(&start, grammar, summary_facts) {
+        return DecisionProduct::Cyclic;
+    }
     let mut graph = BTreeMap::new();
-    let mut parents = BTreeMap::from([(start.clone(), Vec::new())]);
-    let mut queue = VecDeque::from([start]);
-    while let Some(state) = queue.pop_front() {
+    let mut parents = DecisionProductParents::new(start);
+    let mut queue = VecDeque::from([0]);
+    let mut ancestor_scratch = DecisionVisitScratch::default();
+    let mut path_scratch = DecisionVisitScratch::default();
+    let mut depth_first_burst = 64usize;
+    while let Some(state_id) = if depth_first_burst == 0 {
+        queue.pop_front()
+    } else {
+        depth_first_burst -= 1;
+        queue.pop_back()
+    } {
         #[cfg(test)]
         DECISION_PRODUCT_STATE_EXPANSIONS.set(DECISION_PRODUCT_STATE_EXPANSIONS.get() + 1);
-        let Some(paired_successors) =
-            paired_decision_successors_until(&state, grammar, atom_kinds, |successor| {
-                pumping_ancestor(&state, successor, &parents).is_some()
-                    || decision_state_is_ancestor(&state, &successor.state, &parents)
-            })
-        else {
-            return DecisionProduct::Cyclic;
+        let state = parents.states[state_id].clone();
+        let paired_successors = if let Some(cached) = &parents.successors[state_id] {
+            if cached.iter().any(|successor| {
+                paired_state_has_complete_overlap(&successor.state, grammar, summary_facts)
+                    || decision_successor_closes_cycle(
+                        state_id,
+                        successor,
+                        &parents,
+                        &mut ancestor_scratch,
+                        &mut path_scratch,
+                    )
+            }) {
+                return DecisionProduct::Cyclic;
+            }
+            cached.clone()
+        } else {
+            let mut frontier = |state: &DecisionState| first_sequences.decision_frontier(state);
+            let Some(generated) =
+                paired_decision_successors_until(&state, grammar, &mut frontier, |successor| {
+                    paired_state_has_complete_overlap(&successor.state, grammar, summary_facts)
+                        || decision_successor_closes_cycle(
+                            state_id,
+                            successor,
+                            &parents,
+                            &mut ancestor_scratch,
+                            &mut path_scratch,
+                        )
+                })
+            else {
+                return DecisionProduct::Cyclic;
+            };
+            parents.successors[state_id] = Some(generated.clone());
+            generated
         };
         let mut successors = Vec::new();
         for successor in paired_successors {
+            let successor_id = parents.intern(successor.state.clone());
             let parent = DecisionParent {
-                state: state.clone(),
+                state: state_id,
                 left_minimum_stack_depth: successor.left_minimum_stack_depth,
                 right_minimum_stack_depth: successor.right_minimum_stack_depth,
             };
-            let incoming = parents.entry(successor.state.clone()).or_default();
+            let incoming = &mut parents.incoming[successor_id];
             if incoming.binary_search(&parent).is_err() {
                 incoming.push(parent);
                 incoming.sort();
                 // A new derivation to an existing residual can establish a
                 // boundary-safe pumping proof that its first derivation did
                 // not. Revisit that residual with the expanded parent graph.
-                queue.push_back(successor.state.clone());
+                queue.push_back(successor_id);
             }
             successors.push((successor.state, successor.witness));
         }
@@ -5260,52 +5821,138 @@ fn build_decision_product(
     DecisionProduct::Acyclic(graph)
 }
 
-/// Reports whether `candidate` is the current state or one of its exact product ancestors.
-fn decision_state_is_ancestor(
-    current: &PairedDecisionState,
-    candidate: &PairedDecisionState,
-    parents: &BTreeMap<PairedDecisionState, Vec<DecisionParent>>,
+/// Proves that a paired residual accepts at least one identical complete token sequence.
+fn paired_state_has_complete_overlap(
+    state: &PairedDecisionState,
+    grammar: &GrammarDescription,
+    summary_facts: &DecisionSummaryFacts,
 ) -> bool {
-    let mut visited = BTreeSet::new();
-    let mut queue = VecDeque::from([current]);
-    while let Some(state) = queue.pop_front() {
-        if !visited.insert(state) {
+    let PairedDecisionState::Residual(left, right) = state else {
+        return true;
+    };
+    states_have_productive_common_prefix_with_nullable_suffixes(left, right, grammar, summary_facts)
+}
+
+/// Proves both states accept one shared productive prefix followed by nullable suffixes.
+fn states_have_productive_common_prefix_with_nullable_suffixes(
+    left: &DecisionState,
+    right: &DecisionState,
+    grammar: &GrammarDescription,
+    summary_facts: &DecisionSummaryFacts,
+) -> bool {
+    let common_length = left
+        .0
+        .iter()
+        .zip(&right.0)
+        .take_while(|(left, right)| decision_items_equivalent(left, right, grammar))
+        .count();
+    let common = DecisionState(left.0[..common_length].to_vec());
+    let left_suffix = DecisionState(left.0[common_length..].to_vec());
+    let right_suffix = DecisionState(right.0[common_length..].to_vec());
+    summary_facts.state_is_productive(&common)
+        && summary_facts.state_is_nullable(&left_suffix)
+        && summary_facts.state_is_nullable(&right_suffix)
+}
+
+/// Proves `shorter` is productive and `longer` adds only a nullable semantic suffix.
+#[cfg(test)]
+fn state_is_productive_prefix_with_nullable_extension(
+    shorter: &DecisionState,
+    longer: &DecisionState,
+    grammar: &GrammarDescription,
+    summary_facts: &DecisionSummaryFacts,
+) -> bool {
+    shorter.0.len() <= longer.0.len()
+        && states_have_productive_common_prefix_with_nullable_suffixes(
+            shorter,
+            longer,
+            grammar,
+            summary_facts,
+        )
+        && shorter
+            .0
+            .iter()
+            .zip(&longer.0)
+            .all(|(left, right)| decision_items_equivalent(left, right, grammar))
+}
+
+/// Reports whether a successor repeats or safely self-embeds one product ancestor.
+fn decision_successor_closes_cycle(
+    current: usize,
+    successor: &PairedDecisionSuccessor,
+    parents: &DecisionProductParents,
+    ancestor_scratch: &mut DecisionVisitScratch,
+    path_scratch: &mut DecisionVisitScratch,
+) -> bool {
+    ancestor_scratch.start(current, parents.states.len());
+    while let Some(candidate) = ancestor_scratch.queue.pop_front() {
+        #[cfg(test)]
+        DECISION_PRODUCT_ANCESTOR_STATE_VISITS.set(
+            DECISION_PRODUCT_ANCESTOR_STATE_VISITS
+                .get()
+                .saturating_add(1),
+        );
+        if !ancestor_scratch.visit(candidate) {
             continue;
         }
-        if state == candidate {
+        let candidate_state = &parents.states[candidate];
+        if candidate_state == &successor.state
+            || (paired_residual_self_embeds(candidate_state, &successor.state)
+                && path_preserves_continuations(
+                    candidate,
+                    current,
+                    successor,
+                    parents,
+                    path_scratch,
+                ))
+        {
             return true;
         }
-        queue.extend(
-            parents
-                .get(state)
-                .into_iter()
-                .flatten()
-                .map(|parent| &parent.state),
+        ancestor_scratch.queue.extend(
+            parents.incoming[candidate]
+                .iter()
+                .map(|parent| parent.state),
         );
     }
     false
 }
 
 /// Derives the pumping ancestor from normalized grammar structure and previously established semantic facts.
+#[cfg(test)]
 fn pumping_ancestor(
-    current: &PairedDecisionState,
+    current: usize,
     successor: &PairedDecisionSuccessor,
-    parents: &BTreeMap<PairedDecisionState, Vec<DecisionParent>>,
-) -> Option<PairedDecisionState> {
-    let mut visited = BTreeSet::new();
-    let mut queue = VecDeque::from([current]);
-    while let Some(candidate) = queue.pop_front() {
-        if !visited.insert(candidate) {
+    parents: &DecisionProductParents,
+) -> Option<usize> {
+    let mut ancestor_scratch = DecisionVisitScratch::default();
+    let mut path_scratch = DecisionVisitScratch::default();
+    ancestor_scratch.start(current, parents.states.len());
+    while let Some(candidate) = ancestor_scratch.queue.pop_front() {
+        #[cfg(test)]
+        DECISION_PRODUCT_ANCESTOR_STATE_VISITS.set(
+            DECISION_PRODUCT_ANCESTOR_STATE_VISITS
+                .get()
+                .saturating_add(1),
+        );
+        if !ancestor_scratch.visit(candidate) {
             continue;
         }
-        if paired_residual_self_embeds(candidate, &successor.state)
-            && path_preserves_continuations(candidate, current, successor, parents)
+        if paired_residual_self_embeds(&parents.states[candidate], &successor.state)
+            && path_preserves_continuations(
+                candidate,
+                current,
+                successor,
+                parents,
+                &mut path_scratch,
+            )
         {
-            return Some(candidate.clone());
+            return Some(candidate);
         }
-        if let Some(incoming) = parents.get(candidate) {
-            queue.extend(incoming.iter().map(|parent| &parent.state));
-        }
+        ancestor_scratch.queue.extend(
+            parents.incoming[candidate]
+                .iter()
+                .map(|parent| parent.state),
+        );
     }
     None
 }
@@ -5340,12 +5987,14 @@ fn residual_self_embeds(ancestor: &DecisionState, successor: &DecisionState) -> 
 
 /// Derives the path preserves continuations from normalized grammar structure and previously established semantic facts.
 fn path_preserves_continuations(
-    ancestor: &PairedDecisionState,
-    current: &PairedDecisionState,
+    ancestor: usize,
+    current: usize,
     successor: &PairedDecisionSuccessor,
-    parents: &BTreeMap<PairedDecisionState, Vec<DecisionParent>>,
+    parents: &DecisionProductParents,
+    scratch: &mut DecisionVisitScratch,
 ) -> bool {
-    let PairedDecisionState::Residual(ancestor_left, ancestor_right) = ancestor else {
+    let PairedDecisionState::Residual(ancestor_left, ancestor_right) = &parents.states[ancestor]
+    else {
         return false;
     };
     let left_continuation = &ancestor_left.0[1..];
@@ -5355,39 +6004,38 @@ fn path_preserves_continuations(
     {
         return false;
     }
-    let mut visited = BTreeSet::new();
-    let mut queue = VecDeque::from([current]);
-    while let Some(state) = queue.pop_front() {
-        if !visited.insert(state) {
+    scratch.start(current, parents.states.len());
+    while let Some(state) = scratch.queue.pop_front() {
+        if !scratch.visit(state) {
             continue;
         }
         if state == ancestor {
             return true;
         }
-        let PairedDecisionState::Residual(left, right) = state else {
+        let PairedDecisionState::Residual(left, right) = &parents.states[state] else {
             continue;
         };
         if !left.0.ends_with(left_continuation) || !right.0.ends_with(right_continuation) {
             continue;
         }
-        for parent in parents.get(state).into_iter().flatten() {
+        for parent in &parents.incoming[state] {
             if parent.left_minimum_stack_depth > left_continuation.len()
                 && parent.right_minimum_stack_depth > right_continuation.len()
             {
-                queue.push_back(&parent.state);
+                scratch.queue.push_back(parent.state);
             }
         }
     }
     false
 }
 
-/// Derives the paired decision successors from normalized grammar structure and previously established semantic facts.
-fn paired_decision_successors(
+/// Derives paired successors from a caller-provided single-side frontier cache.
+fn paired_decision_successors_with(
     state: &PairedDecisionState,
     grammar: &GrammarDescription,
-    atom_kinds: &[KindSet],
+    frontier: &mut impl FnMut(&DecisionState) -> Rc<DecisionFrontier>,
 ) -> Vec<PairedDecisionSuccessor> {
-    paired_decision_successors_until(state, grammar, atom_kinds, |_| false)
+    paired_decision_successors_until(state, grammar, frontier, |_| false)
         .expect("an unconditional paired-successor traversal cannot stop")
 }
 
@@ -5395,7 +6043,7 @@ fn paired_decision_successors(
 fn paired_decision_successors_until(
     state: &PairedDecisionState,
     grammar: &GrammarDescription,
-    atom_kinds: &[KindSet],
+    frontier: &mut impl FnMut(&DecisionState) -> Rc<DecisionFrontier>,
     mut stop: impl FnMut(&PairedDecisionSuccessor) -> bool,
 ) -> Option<Vec<PairedDecisionSuccessor>> {
     if matches!(state, PairedDecisionState::End) {
@@ -5413,8 +6061,8 @@ fn paired_decision_successors_until(
     let PairedDecisionState::Residual(left, right) = state else {
         unreachable!()
     };
-    let left_frontier = decision_frontier(left, grammar, atom_kinds);
-    let right_frontier = decision_frontier(right, grammar, atom_kinds);
+    let left_frontier = frontier(left);
+    let right_frontier = frontier(right);
     let mut successors = Vec::new();
     if left_frontier.can_end && right_frontier.can_end {
         let successor = PairedDecisionSuccessor {
@@ -5874,36 +6522,144 @@ fn longest_decision_path(
 }
 
 /// Derives the decision witness at depth from normalized grammar structure and previously established semantic facts.
+#[cfg(test)]
 fn decision_witness_at_depth(
     start: &PairedDecisionState,
     grammar: &GrammarDescription,
     atom_kinds: &[KindSet],
     depth: usize,
 ) -> Option<Vec<DecisionWitness>> {
-    let mut frontier = BTreeMap::from([(start.clone(), Vec::new())]);
-    for _ in 0..depth {
-        let mut next = BTreeMap::new();
-        for (state, path) in frontier {
-            #[cfg(test)]
-            DECISION_WITNESS_STATE_EXPANSIONS
-                .set(DECISION_WITNESS_STATE_EXPANSIONS.get().saturating_add(1));
-            for successor in paired_decision_successors(&state, grammar, atom_kinds) {
-                let mut candidate = path.clone();
-                if !matches!(candidate.last(), Some(DecisionWitness::End)) {
-                    candidate.push(successor.witness);
-                }
-                let slot = next.entry(successor.state).or_insert(candidate.clone());
-                if candidate < *slot {
-                    *slot = candidate;
-                }
-            }
-        }
-        if next.is_empty() {
-            return None;
-        }
-        frontier = next;
+    let mut frontier =
+        |state: &DecisionState| Rc::new(decision_frontier(state, grammar, atom_kinds));
+    canonical_decision_witness_suffix(start, grammar, depth, &mut BTreeMap::new(), &mut frontier)
+}
+
+/// Derives the lexicographically first fixed-depth witness without enumerating unrelated paths.
+fn canonical_decision_witness_suffix(
+    state: &PairedDecisionState,
+    grammar: &GrammarDescription,
+    remaining: usize,
+    memo: &mut BTreeMap<(Vec<PairedDecisionState>, usize), Option<Vec<DecisionWitness>>>,
+    frontier: &mut impl FnMut(&DecisionState) -> Rc<DecisionFrontier>,
+) -> Option<Vec<DecisionWitness>> {
+    canonical_decision_witness_subset(
+        std::slice::from_ref(state),
+        grammar,
+        remaining,
+        memo,
+        frontier,
+    )
+}
+
+/// Derives one canonical witness while merging residuals reached by the same observed prefix.
+fn canonical_decision_witness_subset(
+    states: &[PairedDecisionState],
+    grammar: &GrammarDescription,
+    remaining: usize,
+    memo: &mut BTreeMap<(Vec<PairedDecisionState>, usize), Option<Vec<DecisionWitness>>>,
+    frontier: &mut impl FnMut(&DecisionState) -> Rc<DecisionFrontier>,
+) -> Option<Vec<DecisionWitness>> {
+    if remaining == 0 {
+        return Some(Vec::new());
     }
-    frontier.into_values().min()
+    let key = (states.to_vec(), remaining);
+    if let Some(witness) = memo.get(&key) {
+        return witness.clone();
+    }
+    if let [PairedDecisionState::Residual(left, right)] = states
+        && left == right
+    {
+        let result = canonical_single_decision_witness_suffix(
+            left,
+            remaining,
+            &mut BTreeMap::new(),
+            frontier,
+        );
+        memo.insert(key, result.clone());
+        return result;
+    }
+    let mut successors_by_witness = BTreeMap::<DecisionWitness, BTreeSet<_>>::new();
+    for state in states {
+        #[cfg(test)]
+        DECISION_WITNESS_STATE_EXPANSIONS
+            .set(DECISION_WITNESS_STATE_EXPANSIONS.get().saturating_add(1));
+        for successor in paired_decision_successors_with(state, grammar, frontier) {
+            successors_by_witness
+                .entry(successor.witness)
+                .or_default()
+                .insert(successor.state);
+        }
+    }
+    for (witness, successors) in successors_by_witness {
+        if matches!(witness, DecisionWitness::End) {
+            let result = Some(vec![DecisionWitness::End]);
+            memo.insert(key, result.clone());
+            return result;
+        }
+        let successors = successors.into_iter().collect::<Vec<_>>();
+        if let Some(suffix) =
+            canonical_decision_witness_subset(&successors, grammar, remaining - 1, memo, frontier)
+        {
+            let mut result = Vec::with_capacity(1 + suffix.len());
+            result.push(witness);
+            result.extend(suffix);
+            memo.insert(key, Some(result.clone()));
+            return Some(result);
+        }
+    }
+    memo.insert(key, None);
+    None
+}
+
+/// Derives the canonical prefix of one language without constructing its Cartesian self-product.
+fn canonical_single_decision_witness_suffix(
+    state: &DecisionState,
+    remaining: usize,
+    memo: &mut BTreeMap<(DecisionState, usize), Option<Vec<DecisionWitness>>>,
+    frontier: &mut impl FnMut(&DecisionState) -> Rc<DecisionFrontier>,
+) -> Option<Vec<DecisionWitness>> {
+    if remaining == 0 {
+        return Some(Vec::new());
+    }
+    let key = (state.clone(), remaining);
+    if let Some(witness) = memo.get(&key) {
+        return witness.clone();
+    }
+    let state_frontier = frontier(state);
+    let mut successors_by_witness = BTreeMap::<DecisionWitness, BTreeSet<DecisionState>>::new();
+    for transition in &state_frontier.transitions {
+        successors_by_witness
+            .entry(DecisionWitness::Token(crate::LookaheadWitnessPosition {
+                kind: transition
+                    .position
+                    .kinds
+                    .iter()
+                    .next()
+                    .expect("a decision transition consumes at least one kind"),
+                left_text_predicate: transition.position.text_predicate,
+                right_text_predicate: transition.position.text_predicate,
+            }))
+            .or_default()
+            .insert(transition.next.clone());
+    }
+    for (witness, successors) in successors_by_witness {
+        let suffix = successors
+            .into_iter()
+            .filter_map(|successor| {
+                canonical_single_decision_witness_suffix(&successor, remaining - 1, memo, frontier)
+            })
+            .min();
+        if let Some(suffix) = suffix {
+            let mut result = Vec::with_capacity(1 + suffix.len());
+            result.push(witness);
+            result.extend(suffix);
+            memo.insert(key, Some(result.clone()));
+            return Some(result);
+        }
+    }
+    let result = state_frontier.can_end.then_some(vec![DecisionWitness::End]);
+    memo.insert(key, result.clone());
+    result
 }
 
 /// Produces canonical ambiguity diagnostics from overlapping semantic decisions.
@@ -5912,13 +6668,11 @@ fn detect_conflicts(
     semantic: &[FirstFacts],
     first_sequences: &FirstSequenceAnalysis<'_>,
     provenanced: &[Vec<ProvenancedPosition>],
-    atom_kinds: &[KindSet],
     proofs: &mut ProofArena,
     static_conflict_kinds_by_declaration: &mut [KindSet],
 ) -> Vec<Diagnostic> {
     // Collect static conflicts before caller-FOLLOW checks so diagnostics preserve their semantic phase and remedy.
     let mut diagnostics = Vec::new();
-    let mut bounded_site_languages = HashMap::new();
     for (index, description) in grammar.types.iter().enumerate() {
         let owner = TypeId::new(index as u32);
         match &description.shape {
@@ -5954,27 +6708,19 @@ fn detect_conflicts(
                         if evidence.is_none() && !(left_first.nullable && right_first.nullable) {
                             continue;
                         }
-                        if bounded_required_site_languages_are_disjoint(
-                            &left.sites,
-                            &right.sites,
-                            grammar,
-                            semantic,
-                        ) {
-                            continue;
-                        }
                         let bounded_witness = bounded_site_language_witness(
                             &left.sites,
                             &right.sites,
                             grammar,
-                            semantic,
                             first_sequences,
-                            &mut bounded_site_languages,
                         );
+                        if bounded_witness.is_disjoint() {
+                            continue;
+                        }
                         let decision = analyze_decision(
                             DecisionState::from_sites(&left.sites),
                             DecisionState::from_sites(&right.sites),
-                            grammar,
-                            atom_kinds,
+                            first_sequences,
                             bounded_witness,
                         );
                         if decision
@@ -6028,8 +6774,8 @@ fn detect_conflicts(
                 sites,
                 grammar,
                 semantic,
+                first_sequences,
                 provenanced,
-                atom_kinds,
                 proofs,
                 &mut diagnostics,
                 static_conflict_kinds_by_declaration,
@@ -6043,10 +6789,8 @@ fn detect_conflicts(
                     semantic,
                     first_sequences,
                     provenanced,
-                    atom_kinds,
                     proofs,
                     &mut diagnostics,
-                    &mut bounded_site_languages,
                 );
                 let mut variants = variants.iter().collect::<Vec<_>>();
                 variants
@@ -6057,8 +6801,8 @@ fn detect_conflicts(
                         &variant.sites,
                         grammar,
                         semantic,
+                        first_sequences,
                         provenanced,
-                        atom_kinds,
                         proofs,
                         &mut diagnostics,
                         static_conflict_kinds_by_declaration,
@@ -6072,95 +6816,39 @@ fn detect_conflicts(
     diagnostics
 }
 
-/// Reports whether two single required sites are already separated by the configured bounded FIRST languages.
-fn bounded_required_site_languages_are_disjoint(
-    left: &[SiteId],
-    right: &[SiteId],
-    grammar: &GrammarDescription,
-    semantic: &[FirstFacts],
-) -> bool {
-    let Some((left, right)) = bounded_required_site_languages(left, right, grammar, semantic)
-    else {
-        return false;
-    };
-    disambiguation_depth(
-        left,
-        right,
-        &grammar.text_predicates,
-        grammar.text_equivalence,
-        grammar.max_lookahead,
-    )
-    .is_some()
-}
-
-/// Borrows both exact bounded FIRST languages when each side is one required site.
-fn bounded_required_site_languages<'a>(
-    left: &[SiteId],
-    right: &[SiteId],
-    grammar: &GrammarDescription,
-    semantic: &'a [FirstFacts],
-) -> Option<(&'a [FirstSequence], &'a [FirstSequence])> {
-    Some((
-        bounded_required_site_language(left, grammar, semantic)?,
-        bounded_required_site_language(right, grammar, semantic)?,
-    ))
-}
-
-/// Derives a configured-depth witness from the existing type language or one cached site composition.
+/// Derives a configured-depth witness from exact paired decision residuals.
 fn bounded_site_language_witness(
     left: &[SiteId],
     right: &[SiteId],
     grammar: &GrammarDescription,
-    semantic: &[FirstFacts],
     first_sequences: &FirstSequenceAnalysis<'_>,
-    cached: &mut HashMap<DecisionSiteSemantics, Vec<FirstSequence>>,
-) -> Option<Vec<DecisionWitness>> {
-    if let Some((left, right)) = bounded_required_site_languages(left, right, grammar, semantic) {
-        return bounded_first_sequence_witness(left, right, grammar);
+) -> BoundedDecisionWitness {
+    if left.iter().chain(right).any(|site| {
+        let site = &grammar.sites[site.index()];
+        site.min_bp != 0 || site.container.semantics().is_none()
+    }) {
+        return BoundedDecisionWitness::Unsupported;
     }
-    let left = cached_single_site_language(left, grammar, first_sequences, cached)?;
-    let right = cached_single_site_language(right, grammar, first_sequences, cached)?;
-    bounded_first_sequence_witness(&left, &right, grammar)
-}
-
-/// Materializes one exact zero-binding-power site language once per semantic container shape.
-fn cached_single_site_language(
-    sites: &[SiteId],
-    grammar: &GrammarDescription,
-    first_sequences: &FirstSequenceAnalysis<'_>,
-    cached: &mut HashMap<DecisionSiteSemantics, Vec<FirstSequence>>,
-) -> Option<Vec<FirstSequence>> {
-    let [site_id] = sites else {
-        return None;
-    };
-    let site = &grammar.sites[site_id.index()];
-    if site.min_bp != 0 || site.container.semantics().is_none() {
-        return None;
+    let left_state = first_sequences.canonical_state(DecisionState::from_sites(left));
+    let right_state = first_sequences.canonical_state(DecisionState::from_sites(right));
+    if !first_sequences
+        .decision_summary_facts
+        .state_is_productive(&left_state)
+        || !first_sequences
+            .decision_summary_facts
+            .state_is_productive(&right_state)
+        || first_sequences
+            .decision_summary_facts
+            .state_has_dead_prefix(&left_state)
+        || first_sequences
+            .decision_summary_facts
+            .state_has_dead_prefix(&right_state)
+    {
+        return BoundedDecisionWitness::Unsupported;
     }
-    let key = decision_site_semantics(site);
-    if let Some(language) = cached.get(&key) {
-        return Some(language.clone());
-    }
-    let language = first_sequences.sequences(sites);
-    cached.insert(key, language.clone());
-    Some(language)
-}
-
-/// Borrows the precomputed bounded FIRST language when a site is exactly one required target.
-fn bounded_required_site_language<'a>(
-    sites: &[SiteId],
-    grammar: &GrammarDescription,
-    semantic: &'a [FirstFacts],
-) -> Option<&'a [FirstSequence]> {
-    let [site] = sites else {
-        return None;
-    };
-    let site = &grammar.sites[site.index()];
-    let semantics = site.container.semantics()?;
-    if site.min_bp != 0 || semantics.cardinality != ContainerCardinality::One {
-        return None;
-    }
-    Some(&semantic[site.target.index()].sequences)
+    let paired = paired_residual(left_state.clone(), right_state.clone(), grammar);
+    let witness = first_sequences.decision_witness_at_depth(&paired, grammar.max_lookahead);
+    BoundedDecisionWitness::Exact(witness)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6173,10 +6861,8 @@ fn detect_pratt_conflicts(
     semantic: &[FirstFacts],
     first_sequences: &FirstSequenceAnalysis<'_>,
     provenanced: &[Vec<ProvenancedPosition>],
-    atom_kinds: &[KindSet],
     proofs: &mut ProofArena,
     diagnostics: &mut Vec<Diagnostic>,
-    bounded_site_languages: &mut HashMap<DecisionSiteSemantics, Vec<FirstSequence>>,
 ) {
     let mut nud = variants
         .iter()
@@ -6192,10 +6878,8 @@ fn detect_pratt_conflicts(
         semantic,
         first_sequences,
         provenanced,
-        atom_kinds,
         proofs,
         diagnostics,
-        bounded_site_languages,
     );
 
     let mut led = variants
@@ -6212,10 +6896,8 @@ fn detect_pratt_conflicts(
         semantic,
         first_sequences,
         provenanced,
-        atom_kinds,
         proofs,
         diagnostics,
-        bounded_site_languages,
     );
 }
 
@@ -6230,10 +6912,8 @@ fn detect_pratt_group_conflicts(
     semantic: &[FirstFacts],
     first_sequences: &FirstSequenceAnalysis<'_>,
     provenanced: &[Vec<ProvenancedPosition>],
-    atom_kinds: &[KindSet],
     proofs: &mut ProofArena,
     diagnostics: &mut Vec<Diagnostic>,
-    bounded_site_languages: &mut HashMap<DecisionSiteSemantics, Vec<FirstSequence>>,
 ) {
     // Compare Pratt groups as units because member-wise conflicts would lose the binding-power context.
     for left_index in 0..variants.len() {
@@ -6273,27 +6953,15 @@ fn detect_pratt_group_conflicts(
             if evidence.is_none() && !(left_first.nullable && right_first.nullable) {
                 continue;
             }
-            if bounded_required_site_languages_are_disjoint(
-                &left.sites,
-                &right.sites,
-                grammar,
-                semantic,
-            ) {
+            let bounded_witness =
+                bounded_site_language_witness(&left.sites, &right.sites, grammar, first_sequences);
+            if bounded_witness.is_disjoint() {
                 continue;
             }
-            let bounded_witness = bounded_site_language_witness(
-                &left.sites,
-                &right.sites,
-                grammar,
-                semantic,
-                first_sequences,
-                bounded_site_languages,
-            );
             let decision = analyze_decision(
                 DecisionState::from_sites(&left.sites),
                 DecisionState::from_sites(&right.sites),
-                grammar,
-                atom_kinds,
+                first_sequences,
                 bounded_witness,
             );
             if decision
@@ -6382,8 +7050,8 @@ fn detect_static_conflicts_for_sites(
     sites: &[SiteId],
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
     provenanced: &[Vec<ProvenancedPosition>],
-    atom_kinds: &[KindSet],
     proofs: &mut ProofArena,
     diagnostics: &mut Vec<Diagnostic>,
     static_conflict_kinds_by_declaration: &mut [KindSet],
@@ -6412,13 +7080,20 @@ fn detect_static_conflicts_for_sites(
             continue;
         };
         let tail_sites = &sites[index + 1..];
-        let decision = analyze_decision(
-            DecisionState::consuming_site_and_tail(site, tail_sites),
-            DecisionState::from_sites(tail_sites),
+        let left = DecisionState::consuming_site_and_tail(site, tail_sites);
+        let right = DecisionState::from_sites(tail_sites);
+        let bounded_witness = bounded_nullable_tail_witness(
+            site,
+            tail_sites,
+            &left,
+            &right,
             grammar,
-            atom_kinds,
-            None,
+            first_sequences,
         );
+        if bounded_witness.is_disjoint() {
+            continue;
+        }
+        let decision = analyze_decision(left, right, first_sequences, bounded_witness);
         if decision
             .sufficient_depth
             .is_some_and(|depth| depth <= grammar.max_lookahead)
@@ -6465,6 +7140,47 @@ fn detect_static_conflicts_for_sites(
         }
         diagnostics.push(diagnostic);
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Derives the exact configured-depth witness for a nullable consuming site against its required tail.
+fn bounded_nullable_tail_witness(
+    site: &crate::ParseSite,
+    tail_sites: &[SiteId],
+    left: &DecisionState,
+    right: &DecisionState,
+    grammar: &GrammarDescription,
+    first_sequences: &FirstSequenceAnalysis<'_>,
+) -> BoundedDecisionWitness {
+    if site.min_bp != 0
+        || site.container.semantics().is_none()
+        || tail_sites
+            .iter()
+            .any(|site| grammar.sites[site.index()].min_bp != 0)
+    {
+        return BoundedDecisionWitness::Unsupported;
+    }
+    if !first_sequences
+        .decision_summary_facts
+        .state_is_productive(left)
+        || !first_sequences
+            .decision_summary_facts
+            .state_is_productive(right)
+        || first_sequences
+            .decision_summary_facts
+            .state_has_dead_prefix(left)
+        || first_sequences
+            .decision_summary_facts
+            .state_has_dead_prefix(right)
+    {
+        return BoundedDecisionWitness::Unsupported;
+    }
+    let left = first_sequences.canonical_state(left.clone());
+    let right = first_sequences.canonical_state(right.clone());
+    let paired = paired_residual(left, right, grammar);
+    BoundedDecisionWitness::Exact(
+        first_sequences.decision_witness_at_depth(&paired, grammar.max_lookahead),
+    )
 }
 
 /// Derives the declaration label from normalized grammar structure and previously established semantic facts.
@@ -6871,7 +7587,290 @@ fn first_sequences_overlap_within(
 }
 
 /// Derives the canonical configured-depth ambiguity witness from exact symbolic FIRST languages.
+///
+/// Work includes input-trie materialization and packed-kind posting candidates
+/// across reachable overlapping node pairs. Shared prefixes avoid repeating
+/// suffix work, but a fully overlapping edge product can still be Cartesian.
+#[cfg(test)]
 fn bounded_first_sequence_witness(
+    left: &[FirstSequence],
+    right: &[FirstSequence],
+    grammar: &GrammarDescription,
+) -> Option<Vec<DecisionWitness>> {
+    let left = FirstSequenceWitnessTrie::from_sequences(left, grammar.max_lookahead);
+    let right = FirstSequenceWitnessTrie::from_sequences(right, grammar.max_lookahead);
+    minimum_bounded_witness(
+        &left,
+        &right,
+        FirstSequenceWitnessNodeId(0),
+        FirstSequenceWitnessNodeId(0),
+        grammar,
+        &mut BTreeMap::new(),
+    )
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Dense identity of one bounded-witness prefix-trie node.
+struct FirstSequenceWitnessNodeId(usize);
+
+#[cfg(test)]
+impl FirstSequenceWitnessNodeId {
+    /// Returns the vector index owned by this identity.
+    const fn index(self) -> usize {
+        self.0
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Ordered key for one exact symbolic position in a bounded-witness trie.
+struct FirstSequenceWitnessPosition(FirstPosition);
+
+#[cfg(test)]
+impl Ord for FirstSequenceWitnessPosition {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        compare_first_positions(&self.0, &other.0)
+    }
+}
+
+#[cfg(test)]
+impl PartialOrd for FirstSequenceWitnessPosition {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Marks a bounded sequence that reaches a non-ending lookahead cutoff.
+#[cfg(test)]
+const FIRST_SEQUENCE_CUTOFF_TERMINAL: u8 = 1;
+/// Marks a bounded sequence that ends exactly at its terminal trie node.
+#[cfg(test)]
+const FIRST_SEQUENCE_END_TERMINAL: u8 = 2;
+
+#[cfg(test)]
+#[derive(Default)]
+/// Mutable prefix-trie node used only while interning exact input sequences.
+struct FirstSequenceWitnessBuildNode {
+    /// Bit zero records an `ends=false` terminal and bit one an `ends=true` terminal.
+    terminals: u8,
+    /// Exact symbolic outgoing positions and their interned children.
+    edges: BTreeMap<FirstSequenceWitnessPosition, FirstSequenceWitnessNodeId>,
+}
+
+/// One exact symbolic outgoing edge in a bounded-witness prefix trie.
+#[cfg(test)]
+struct FirstSequenceWitnessEdge {
+    /// Token kinds and text predicate consumed by the edge.
+    position: FirstPosition,
+    /// Prefix-trie state after consuming the position.
+    child: FirstSequenceWitnessNodeId,
+}
+
+/// One immutable prefix-trie node with symbolic kind-word postings.
+#[cfg(test)]
+struct FirstSequenceWitnessNode {
+    /// Depth of this prefix from the root.
+    depth: usize,
+    /// Bit zero records an `ends=false` terminal and bit one an `ends=true` terminal.
+    terminals: u8,
+    /// Canonically ordered exact symbolic outgoing edges.
+    edges: Vec<FirstSequenceWitnessEdge>,
+    /// Edge indices mentioning each non-empty packed token-kind word.
+    edges_by_kind_word: BTreeMap<usize, Vec<usize>>,
+}
+
+/// Exact prefix trie over one materialized bounded FIRST language.
+#[cfg(test)]
+struct FirstSequenceWitnessTrie {
+    /// Dense canonical nodes, rooted at index zero.
+    nodes: Vec<FirstSequenceWitnessNode>,
+}
+
+#[cfg(test)]
+impl FirstSequenceWitnessTrie {
+    /// Interns exact symbolic sequences and indexes outgoing overlap candidates by packed kind word.
+    fn from_sequences(sequences: &[FirstSequence], max_lookahead: usize) -> Self {
+        let mut build = vec![FirstSequenceWitnessBuildNode::default()];
+        let mut depths = vec![0];
+        for sequence in sequences {
+            debug_assert!(sequence.positions.len() <= max_lookahead);
+            let mut node = FirstSequenceWitnessNodeId(0);
+            for position in &sequence.positions {
+                let key = FirstSequenceWitnessPosition(position.clone());
+                let child = if let Some(child) = build[node.index()].edges.get(&key) {
+                    *child
+                } else {
+                    let child = FirstSequenceWitnessNodeId(build.len());
+                    let depth = depths[node.index()] + 1;
+                    build.push(FirstSequenceWitnessBuildNode::default());
+                    depths.push(depth);
+                    build[node.index()].edges.insert(key, child);
+                    child
+                };
+                node = child;
+            }
+            build[node.index()].terminals |= if sequence.ends {
+                FIRST_SEQUENCE_END_TERMINAL
+            } else {
+                FIRST_SEQUENCE_CUTOFF_TERMINAL
+            };
+        }
+        let nodes = build
+            .into_iter()
+            .zip(depths)
+            .map(|(node, depth)| {
+                let edges = node
+                    .edges
+                    .into_iter()
+                    .map(|(position, child)| FirstSequenceWitnessEdge {
+                        position: position.0,
+                        child,
+                    })
+                    .collect::<Vec<_>>();
+                let mut edges_by_kind_word = BTreeMap::<usize, Vec<usize>>::new();
+                for (edge, transition) in edges.iter().enumerate() {
+                    for (word, kinds) in transition.position.kinds.words().iter().enumerate() {
+                        if *kinds != 0 {
+                            edges_by_kind_word.entry(word).or_default().push(edge);
+                        }
+                    }
+                }
+                FirstSequenceWitnessNode {
+                    depth,
+                    terminals: node.terminals,
+                    edges,
+                    edges_by_kind_word,
+                }
+            })
+            .collect();
+        Self { nodes }
+    }
+}
+
+/// Returns the canonical witness suffix shared by two exact prefix-trie nodes.
+#[cfg(test)]
+fn minimum_bounded_witness(
+    left: &FirstSequenceWitnessTrie,
+    right: &FirstSequenceWitnessTrie,
+    left_node: FirstSequenceWitnessNodeId,
+    right_node: FirstSequenceWitnessNodeId,
+    grammar: &GrammarDescription,
+    memo: &mut BTreeMap<
+        (FirstSequenceWitnessNodeId, FirstSequenceWitnessNodeId),
+        Option<Vec<DecisionWitness>>,
+    >,
+) -> Option<Vec<DecisionWitness>> {
+    let key = (left_node, right_node);
+    if let Some(witness) = memo.get(&key) {
+        return witness.clone();
+    }
+    let left_node = &left.nodes[left_node.index()];
+    let right_node = &right.nodes[right_node.index()];
+    debug_assert_eq!(left_node.depth, right_node.depth);
+    let terminal = if left_node.depth == grammar.max_lookahead {
+        (left_node.terminals != 0 && right_node.terminals != 0).then(Vec::new)
+    } else if left_node.terminals & right_node.terminals & FIRST_SEQUENCE_CUTOFF_TERMINAL != 0 {
+        Some(Vec::new())
+    } else if left_node.terminals & right_node.terminals & FIRST_SEQUENCE_END_TERMINAL != 0 {
+        Some(vec![DecisionWitness::End])
+    } else {
+        None
+    };
+    if terminal.as_ref().is_some_and(Vec::is_empty) {
+        memo.insert(key, terminal.clone());
+        return terminal;
+    }
+
+    let mut pairs_by_witness = BTreeMap::<
+        crate::LookaheadWitnessPosition,
+        Vec<(FirstSequenceWitnessNodeId, FirstSequenceWitnessNodeId)>,
+    >::new();
+    for left_edge in &left_node.edges {
+        let mut right_candidates = BTreeSet::new();
+        for (word, kinds) in left_edge.position.kinds.words().iter().enumerate() {
+            if *kinds == 0 {
+                continue;
+            }
+            right_candidates.extend(
+                right_node
+                    .edges_by_kind_word
+                    .get(&word)
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            );
+        }
+        for right_edge in right_candidates {
+            #[cfg(test)]
+            BOUNDED_WITNESS_EDGE_PAIR_CHECKS
+                .set(BOUNDED_WITNESS_EDGE_PAIR_CHECKS.get().saturating_add(1));
+            let right_edge = &right_node.edges[right_edge];
+            let Some(kind) =
+                first_common_kind(&left_edge.position.kinds, &right_edge.position.kinds)
+            else {
+                continue;
+            };
+            if !predicates_overlap(
+                left_edge.position.text_predicate,
+                right_edge.position.text_predicate,
+                &grammar.text_predicates,
+                grammar.text_equivalence,
+            ) {
+                continue;
+            }
+            pairs_by_witness
+                .entry(crate::LookaheadWitnessPosition {
+                    kind,
+                    left_text_predicate: left_edge.position.text_predicate,
+                    right_text_predicate: right_edge.position.text_predicate,
+                })
+                .or_default()
+                .push((left_edge.child, right_edge.child));
+        }
+    }
+    for (witness, children) in pairs_by_witness {
+        let suffix = children
+            .into_iter()
+            .filter_map(|(left_child, right_child)| {
+                minimum_bounded_witness(left, right, left_child, right_child, grammar, memo)
+            })
+            .min();
+        if let Some(suffix) = suffix {
+            let mut candidate = Vec::with_capacity(suffix.len() + 1);
+            candidate.push(DecisionWitness::Token(witness));
+            candidate.extend(suffix);
+            memo.insert(key, Some(candidate.clone()));
+            return Some(candidate);
+        }
+    }
+    memo.insert(key, terminal.clone());
+    terminal
+}
+
+/// Returns the smallest concrete kind shared by two equally wide symbolic sets without allocating.
+#[cfg(test)]
+fn first_common_kind(left: &KindSet, right: &KindSet) -> Option<KindId> {
+    debug_assert_eq!(left.kind_count(), right.kind_count());
+    left.words()
+        .iter()
+        .zip(right.words())
+        .enumerate()
+        .find_map(|(word, (left, right))| {
+            let shared = left & right;
+            (shared != 0).then(|| {
+                KindId::new(
+                    (word * u64::BITS as usize + shared.trailing_zeros() as usize)
+                        .try_into()
+                        .expect("shared grammar kind identity width"),
+                )
+            })
+        })
+}
+
+#[cfg(test)]
+/// Retains the original Cartesian implementation as an exhaustive semantic oracle.
+fn naive_bounded_first_sequence_witness(
     left: &[FirstSequence],
     right: &[FirstSequence],
     grammar: &GrammarDescription,
@@ -7614,6 +8613,7 @@ mod decision_product_tests {
         );
 
         let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
         DECISION_PRODUCT_STATE_EXPANSIONS.set(0);
         DECISION_PRODUCT_TRANSITION_PAIRS.set(0);
         FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.set(0);
@@ -7623,28 +8623,376 @@ mod decision_product_tests {
                 DecisionState(vec![DecisionItem::Type(subquery)]),
                 &grammar,
             ),
-            &grammar,
-            &atom_kinds,
+            &first_sequences,
         );
         let state_expansions = DECISION_PRODUCT_STATE_EXPANSIONS.get();
         let transition_pairs = DECISION_PRODUCT_TRANSITION_PAIRS.get();
         let closure_visits = FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.get();
         assert!(matches!(product, DecisionProduct::Cyclic));
         assert!(
-            state_expansions <= 8
-                && transition_pairs <= BASE_BRANCHES + 8
-                && closure_visits <= BASE_BRANCHES * 8,
-            "recursive language inclusion must pump before the product graph expands; states={state_expansions} transition_pairs={transition_pairs} closure_visits={closure_visits}",
+            state_expansions <= 1 && transition_pairs <= 1 && closure_visits <= BASE_BRANCHES * 8,
+            "a productive common language with a nullable extension must prove complete overlap from its first shared successor; states={state_expansions} transition_pairs={transition_pairs} closure_visits={closure_visits}",
         );
 
         let outcome = analyze_decision(
             DecisionState(vec![DecisionItem::Type(with_statement)]),
             DecisionState(vec![DecisionItem::Type(subquery)]),
-            &grammar,
-            &atom_kinds,
-            None,
+            &first_sequences,
+            BoundedDecisionWitness::Unsupported,
         );
         assert_eq!(outcome.sufficient_depth, None);
+    }
+
+    #[test]
+    fn complete_overlap_proof_requires_productivity_and_a_nullable_extension() {
+        let mut grammar =
+            GrammarDescription::new("complete-overlap-proof", 2, 2, TextEquivalence::Sensitive);
+        let mut next_byte = 0;
+        let mut push_token = |grammar: &mut GrammarDescription, name: &str| {
+            let declaration = test_declaration(grammar, &mut next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        };
+        let common = push_token(&mut grammar, "COMMON");
+        let tail = push_token(&mut grammar, "TAIL");
+        let never = grammar.next_type_id();
+        let never_site_declaration = test_declaration(&mut grammar, &mut next_byte, "Never::self");
+        let never_site = grammar.push_site(crate::ParseSite::new(
+            never,
+            never,
+            never_site_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        let never_declaration = test_declaration(&mut grammar, &mut next_byte, "Never");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Never",
+                never_declaration,
+                TypeShape::Sequence {
+                    sites: vec![never_site],
+                },
+            )),
+            never,
+        );
+        let optional_tail_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "OptionalTail");
+        let optional_tail = grammar.push_site(crate::ParseSite::new(
+            common,
+            tail,
+            optional_tail_declaration,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+        ));
+        let other_optional_tail_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "OtherOptionalTail");
+        let other_optional_tail = grammar.push_site(crate::ParseSite::new(
+            common,
+            common,
+            other_optional_tail_declaration,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+        ));
+        let atom_kinds = expand_atoms(&grammar);
+        let facts = DecisionSummaryFacts::from_grammar(&grammar, &atom_kinds);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+
+        let productive = DecisionState(vec![DecisionItem::Type(common)]);
+        assert!(state_is_productive_prefix_with_nullable_extension(
+            &productive,
+            &DecisionState(vec![
+                DecisionItem::Type(common),
+                DecisionItem::Site(optional_tail),
+            ]),
+            &grammar,
+            &facts,
+        ));
+        assert!(!state_is_productive_prefix_with_nullable_extension(
+            &productive,
+            &DecisionState(vec![DecisionItem::Type(common), DecisionItem::Type(tail),]),
+            &grammar,
+            &facts,
+        ));
+        assert!(!state_is_productive_prefix_with_nullable_extension(
+            &DecisionState(vec![DecisionItem::Type(never)]),
+            &DecisionState(vec![
+                DecisionItem::Type(never),
+                DecisionItem::Site(optional_tail),
+            ]),
+            &grammar,
+            &facts,
+        ));
+        assert!(facts.state_has_dead_prefix(&DecisionState(vec![DecisionItem::Type(never),])));
+
+        let left = DecisionState(vec![
+            DecisionItem::Type(common),
+            DecisionItem::Site(optional_tail),
+        ]);
+        let right = DecisionState(vec![
+            DecisionItem::Type(common),
+            DecisionItem::Site(other_optional_tail),
+        ]);
+        assert!(states_have_productive_common_prefix_with_nullable_suffixes(
+            &left, &right, &grammar, &facts,
+        ));
+        DECISION_PRODUCT_STATE_EXPANSIONS.set(0);
+        assert!(matches!(
+            build_decision_product(PairedDecisionState::Residual(left, right), &first_sequences,),
+            DecisionProduct::Cyclic,
+        ));
+        assert_eq!(
+            DECISION_PRODUCT_STATE_EXPANSIONS.get(),
+            0,
+            "a productive common prefix with independently nullable tails must stop before product expansion",
+        );
+    }
+
+    #[test]
+    fn complete_overlap_proof_rejects_lexically_empty_token_suffixes() {
+        let mut grammar =
+            GrammarDescription::new("empty-token-productivity", 2, 1, TextEquivalence::Sensitive);
+        let mut next_byte = 0;
+        let a_declaration = test_declaration(&mut grammar, &mut next_byte, "A");
+        let a_kind = grammar.push_kind(crate::KindDescription::new("A", a_declaration));
+        let a_atom = grammar.push_atom(crate::AtomDescription::new(
+            "A",
+            a_declaration,
+            AtomExpression::Kind(a_kind),
+        ));
+        let a = grammar.push_type(crate::TypeDescription::new(
+            "A",
+            a_declaration,
+            TypeShape::Token {
+                atom: a_atom,
+                text_predicate: None,
+            },
+        ));
+        let b_declaration = test_declaration(&mut grammar, &mut next_byte, "B");
+        let b_kind = grammar.push_kind(crate::KindDescription::new("B", b_declaration));
+        let b_atom = grammar.push_atom(crate::AtomDescription::new(
+            "B",
+            b_declaration,
+            AtomExpression::Kind(b_kind),
+        ));
+        let b = grammar.push_type(crate::TypeDescription::new(
+            "B",
+            b_declaration,
+            TypeShape::Token {
+                atom: b_atom,
+                text_predicate: None,
+            },
+        ));
+
+        let empty_atom_declaration = test_declaration(&mut grammar, &mut next_byte, "EmptyAtom");
+        let empty_atom = grammar.push_atom(crate::AtomDescription::new(
+            "EmptyAtom",
+            empty_atom_declaration,
+            AtomExpression::Category(Vec::new()),
+        ));
+        let empty_atom_token = grammar.push_type(crate::TypeDescription::new(
+            "EmptyAtomToken",
+            empty_atom_declaration,
+            TypeShape::Token {
+                atom: empty_atom,
+                text_predicate: None,
+            },
+        ));
+        let empty_text_declaration = test_declaration(&mut grammar, &mut next_byte, "EmptyText");
+        let empty_text = grammar.push_text_predicate(TextPredicate::OneOf(Vec::new()));
+        let empty_text_token = grammar.push_type(crate::TypeDescription::new(
+            "EmptyTextToken",
+            empty_text_declaration,
+            TypeShape::Token {
+                atom: a_atom,
+                text_predicate: Some(empty_text),
+            },
+        ));
+        let optional_tail_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "OptionalTail");
+        let optional_tail = grammar.push_site(crate::ParseSite::new(
+            a,
+            b,
+            optional_tail_declaration,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+        ));
+        let atom_kinds = expand_atoms(&grammar);
+        let facts = DecisionSummaryFacts::from_grammar(&grammar, &atom_kinds);
+        let cutoff = DecisionCutoffFacts::from_grammar(&grammar, &atom_kinds, &facts);
+
+        for empty in [empty_atom_token, empty_text_token] {
+            assert_eq!(
+                facts.summarize_state(&DecisionState(vec![DecisionItem::Type(empty)])),
+                0,
+                "a lexically empty token has no exact end or consuming continuation",
+            );
+            assert!(
+                cutoff.by_type[empty.index()].transitions.is_empty(),
+                "cutoff facts must not synthesize a transition for a lexically empty token",
+            );
+            let shorter = DecisionState(vec![DecisionItem::Type(a), DecisionItem::Type(empty)]);
+            let longer = DecisionState(vec![
+                DecisionItem::Type(a),
+                DecisionItem::Type(empty),
+                DecisionItem::Site(optional_tail),
+            ]);
+            assert!(!state_is_productive_prefix_with_nullable_extension(
+                &shorter, &longer, &grammar, &facts,
+            ));
+        }
+    }
+
+    #[test]
+    fn decision_product_follows_a_deep_overlap_before_wide_finite_siblings() {
+        const BRANCH_COUNT: usize = 64;
+        let mut grammar = GrammarDescription::new(
+            "deep-overlap-before-wide-siblings",
+            BRANCH_COUNT * 3 - 1,
+            3,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let mut push_token = |grammar: &mut GrammarDescription, name: &str| {
+            let declaration = test_declaration(grammar, &mut next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        };
+        let starters = (0..BRANCH_COUNT)
+            .map(|index| push_token(&mut grammar, &format!("START_{index}")))
+            .collect::<Vec<_>>();
+        let mut left_tails = (0..BRANCH_COUNT - 1)
+            .map(|index| push_token(&mut grammar, &format!("LEFT_{index}")))
+            .collect::<Vec<_>>();
+        let mut right_tails = (0..BRANCH_COUNT - 1)
+            .map(|index| push_token(&mut grammar, &format!("RIGHT_{index}")))
+            .collect::<Vec<_>>();
+        let common = push_token(&mut grammar, "COMMON");
+        let mut push_wrapper = |grammar: &mut GrammarDescription, name: &str| {
+            let owner = grammar.next_type_id();
+            let declaration = test_declaration(grammar, &mut next_byte, name);
+            let site_declaration =
+                test_declaration(grammar, &mut next_byte, &format!("{name}::value"));
+            let site = grammar.push_site(crate::ParseSite::new(
+                owner,
+                common,
+                site_declaration,
+                crate::ContainerShape::Direct,
+            ));
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Sequence { sites: vec![site] },
+                )),
+                owner,
+            );
+            owner
+        };
+        left_tails.push(push_wrapper(&mut grammar, "LeftCommon"));
+        right_tails.push(push_wrapper(&mut grammar, "RightCommon"));
+
+        let mut push_choice = |grammar: &mut GrammarDescription, name: &str, tails: &[TypeId]| {
+            let owner = grammar.next_type_id();
+            let declaration = test_declaration(grammar, &mut next_byte, name);
+            let alternatives = starters
+                .iter()
+                .copied()
+                .zip(tails.iter().copied())
+                .enumerate()
+                .map(|(index, (starter, tail))| {
+                    let alternative =
+                        test_declaration(grammar, &mut next_byte, &format!("{name}::{index}"));
+                    let sites = [starter, tail]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(site_index, target)| {
+                            let site_declaration = test_declaration(
+                                grammar,
+                                &mut next_byte,
+                                &format!("{name}::{index}::{site_index}"),
+                            );
+                            grammar.push_site(crate::ParseSite::new(
+                                owner,
+                                target,
+                                site_declaration,
+                                crate::ContainerShape::Direct,
+                            ))
+                        })
+                        .collect();
+                    crate::Alternative {
+                        declaration: alternative,
+                        sites,
+                    }
+                })
+                .collect();
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Enum { alternatives },
+                )),
+                owner,
+            );
+            owner
+        };
+        let left = push_choice(&mut grammar, "Left", &left_tails);
+        let right = push_choice(&mut grammar, "Right", &right_tails);
+        let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        DECISION_PRODUCT_STATE_EXPANSIONS.set(0);
+
+        let left_state = DecisionState(vec![DecisionItem::Type(left)]);
+        let right_state = DecisionState(vec![DecisionItem::Type(right)]);
+        let start = PairedDecisionState::Residual(left_state.clone(), right_state.clone());
+        let product = build_decision_product(start.clone(), &first_sequences);
+
+        assert!(matches!(product, DecisionProduct::Cyclic));
+        assert!(
+            DECISION_PRODUCT_STATE_EXPANSIONS.get() <= 2,
+            "the product must follow the deepest scheduled branch before expanding unrelated finite siblings; expansions={}",
+            DECISION_PRODUCT_STATE_EXPANSIONS.get(),
+        );
+        let witness =
+            decision_witness_at_depth(&start, &grammar, &atom_kinds, grammar.max_lookahead)
+                .expect("the final branch has one complete shared sequence");
+        assert!(
+            witness
+                .iter()
+                .any(|position| matches!(position, DecisionWitness::End)),
+        );
+        DECISION_PRODUCT_STATE_EXPANSIONS.set(0);
+        let outcome = analyze_decision(
+            left_state,
+            right_state,
+            &first_sequences,
+            BoundedDecisionWitness::Exact(Some(witness)),
+        );
+        assert_eq!(outcome.sufficient_depth, None);
+        assert_eq!(
+            DECISION_PRODUCT_STATE_EXPANSIONS.get(),
+            0,
+            "a bounded complete witness already proves that no finite lookahead separates the languages",
+        );
     }
 
     #[test]
@@ -7869,9 +9217,8 @@ mod decision_product_tests {
         let outcome = analyze_decision(
             recursive_state.clone(),
             recursive_state,
-            &grammar,
-            &atom_kinds,
-            Some(frozen_witness),
+            &first_sequence_analysis,
+            BoundedDecisionWitness::Exact(Some(frozen_witness)),
         );
         assert_eq!(outcome.sufficient_depth, None);
         assert_eq!(outcome.witness.len(), grammar.max_lookahead);
@@ -7889,10 +9236,10 @@ mod decision_product_tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == DiagnosticCode::EnumFirstOverlap),
         );
-        assert_eq!(
+        assert!(
+            DECISION_WITNESS_STATE_EXPANSIONS.get() <= grammar.max_lookahead,
+            "required and repeated enum sites must reuse the analysis-run direct witness cache; expansions={}",
             DECISION_WITNESS_STATE_EXPANSIONS.get(),
-            0,
-            "required and repeated enum sites must reuse exact frozen FIRST-k languages for the conflict witness",
         );
     }
 
@@ -7994,14 +9341,14 @@ mod decision_product_tests {
         }
 
         let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
         DECISION_PRODUCT_TRANSITION_PAIRS.set(0);
         let state = DecisionState(vec![DecisionItem::Site(
             recursive_tail_site.expect("recursive tail site"),
         )]);
         let product = build_decision_product(
             paired_residual(state.clone(), state, &grammar),
-            &grammar,
-            &atom_kinds,
+            &first_sequences,
         );
         assert!(matches!(product, DecisionProduct::Cyclic));
         assert!(
@@ -8250,7 +9597,6 @@ mod decision_product_tests {
         );
 
         let atom_kinds = expand_atoms(&grammar);
-        let semantic = compute_first(&grammar, &atom_kinds);
         let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
         assert_ne!(
             decision_site_semantics(&grammar.sites[low.index()]),
@@ -8260,28 +9606,50 @@ mod decision_product_tests {
             first_sequences.canonical_sites[low.index()],
             first_sequences.canonical_sites[high.index()],
         );
-        let mut cache = HashMap::new();
-        assert!(
-            cached_single_site_language(&[low], &grammar, &first_sequences, &mut cache).is_some()
+        assert!(matches!(
+            bounded_site_language_witness(&[low], &[high], &grammar, &first_sequences,),
+            BoundedDecisionWitness::Unsupported,
+        ));
+        let tail_sites = [low];
+        let left =
+            DecisionState::consuming_site_and_tail(&grammar.sites[high.index()], &tail_sites);
+        let right = DecisionState::from_sites(&tail_sites);
+        let bounded = bounded_nullable_tail_witness(
+            &grammar.sites[high.index()],
+            &tail_sites,
+            &left,
+            &right,
+            &grammar,
+            &first_sequences,
         );
+        assert!(matches!(&bounded, BoundedDecisionWitness::Unsupported));
+        DECISION_WITNESS_STATE_EXPANSIONS.set(0);
+        FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.set(0);
+        let _ = analyze_decision(left.clone(), right.clone(), &first_sequences, bounded);
         assert!(
-            cached_single_site_language(&[high], &grammar, &first_sequences, &mut cache).is_none()
+            DECISION_WITNESS_STATE_EXPANSIONS.get() > 0,
+            "unsupported binding-power states retain explicit witness traversal",
         );
+        let frontier_computations = FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.get();
         assert!(
-            bounded_site_language_witness(
-                &[low],
-                &[high],
-                &grammar,
-                &semantic,
-                &first_sequences,
-                &mut cache,
-            )
-            .is_none()
+            frontier_computations > 0,
+            "the unbounded decision product and fallback must use the analysis-run frontier cache",
+        );
+        let _ = analyze_decision(
+            left,
+            right,
+            &first_sequences,
+            BoundedDecisionWitness::Unsupported,
+        );
+        assert_eq!(
+            FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.get(),
+            frontier_computations,
+            "repeated unsupported decisions must reuse the analysis-run frontier cache",
         );
     }
 
     #[test]
-    fn cached_single_site_cardinalities_match_direct_decision_witnesses() {
+    fn single_site_cardinalities_match_direct_decision_witnesses() {
         let mut grammar = GrammarDescription::new(
             "single-site-cardinalities",
             1,
@@ -8315,6 +9683,7 @@ mod decision_product_tests {
         ));
         let shapes = [
             crate::ContainerShape::optional(crate::ContainerShape::Direct),
+            crate::ContainerShape::zero_or_more(crate::ContainerShape::Direct, None),
             crate::ContainerShape::one_or_more(crate::ContainerShape::Direct, None),
             crate::ContainerShape::optional(crate::ContainerShape::one_or_more(
                 crate::ContainerShape::Direct,
@@ -8345,19 +9714,13 @@ mod decision_product_tests {
         );
 
         let atom_kinds = expand_atoms(&grammar);
-        let semantic = compute_first(&grammar, &atom_kinds);
         let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
-        let mut cache = HashMap::new();
-        for site in shaped {
-            let frozen = bounded_site_language_witness(
-                &[site],
-                &[direct],
-                &grammar,
-                &semantic,
-                &first_sequences,
-                &mut cache,
-            )
-            .expect("each cardinality overlaps one direct item");
+        for &site in &shaped {
+            let BoundedDecisionWitness::Exact(Some(frozen)) =
+                bounded_site_language_witness(&[site], &[direct], &grammar, &first_sequences)
+            else {
+                panic!("each cardinality overlaps one direct item");
+            };
             let direct_witness = decision_witness_at_depth(
                 &paired_residual(
                     DecisionState::from_sites(&[site]),
@@ -8371,15 +9734,40 @@ mod decision_product_tests {
             .expect("direct decision traversal sees the same overlap");
             assert_eq!(frozen, direct_witness);
         }
-        assert_eq!(
-            cache.len(),
-            4,
-            "the direct and three container cardinalities have distinct semantics",
-        );
+        for (current, tail) in [
+            (shaped[0], direct),
+            (shaped[0], shaped[2]),
+            (shaped[1], direct),
+            (shaped[1], shaped[2]),
+        ] {
+            let tail_sites = [tail];
+            let left = DecisionState::consuming_site_and_tail(
+                &grammar.sites[current.index()],
+                &tail_sites,
+            );
+            let right = DecisionState::from_sites(&tail_sites);
+            let BoundedDecisionWitness::Exact(frozen) = bounded_nullable_tail_witness(
+                &grammar.sites[current.index()],
+                &tail_sites,
+                &left,
+                &right,
+                &grammar,
+                &first_sequences,
+            ) else {
+                panic!("zero-binding-power nullable current and tail states are supported");
+            };
+            let direct_witness = decision_witness_at_depth(
+                &paired_residual(left, right, &grammar),
+                &grammar,
+                &atom_kinds,
+                grammar.max_lookahead,
+            );
+            assert_eq!(frozen, direct_witness);
+        }
     }
 
     #[test]
-    fn cached_text_predicates_match_direct_ascii_insensitive_witnesses() {
+    fn text_predicates_match_direct_ascii_insensitive_witnesses() {
         let mut grammar = GrammarDescription::new(
             "single-site-text-predicates",
             1,
@@ -8462,21 +9850,15 @@ mod decision_product_tests {
         );
 
         let atom_kinds = expand_atoms(&grammar);
-        let semantic = compute_first(&grammar, &atom_kinds);
         let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
-        let mut cache = HashMap::new();
         for (left_index, right_index) in [(0, 1), (1, 2), (1, 3), (2, 3)] {
             let left = sites[left_index * 2];
             let right = sites[right_index * 2 + 1];
-            let frozen = bounded_site_language_witness(
-                &[left],
-                &[right],
-                &grammar,
-                &semantic,
-                &first_sequences,
-                &mut cache,
-            )
-            .expect("ASCII-insensitive predicates overlap on a concrete spelling");
+            let BoundedDecisionWitness::Exact(Some(frozen)) =
+                bounded_site_language_witness(&[left], &[right], &grammar, &first_sequences)
+            else {
+                panic!("ASCII-insensitive predicates overlap on a concrete spelling");
+            };
             let direct = decision_witness_at_depth(
                 &paired_residual(
                     DecisionState::from_sites(&[left]),
@@ -8491,6 +9873,707 @@ mod decision_product_tests {
             assert_eq!(frozen, direct);
             assert!(matches!(frozen.first(), Some(DecisionWitness::Token(_))));
         }
+    }
+
+    #[test]
+    fn bounded_witness_indexes_correlated_mostly_disjoint_prefixes() {
+        const BRANCHES: usize = 256;
+        let kind_count = BRANCHES * 2 + 1;
+        let grammar = GrammarDescription::new(
+            "indexed-bounded-witness",
+            kind_count,
+            3,
+            TextEquivalence::Sensitive,
+        );
+        let position = |kind| FirstPosition {
+            kinds: KindSet::singleton(kind_count, KindId::new(kind))
+                .expect("test kind is within the grammar width"),
+            text_predicate: None,
+        };
+        let shared = position(0);
+        let left = (0..BRANCHES)
+            .map(|branch| FirstSequence {
+                positions: vec![shared.clone(), position(branch as u16 + 1)],
+                ends: true,
+            })
+            .collect::<Vec<_>>();
+        let right = (0..BRANCHES)
+            .map(|branch| FirstSequence {
+                positions: vec![
+                    shared.clone(),
+                    position(if branch == 0 {
+                        1
+                    } else {
+                        (BRANCHES + branch) as u16
+                    }),
+                ],
+                ends: true,
+            })
+            .collect::<Vec<_>>();
+
+        BOUNDED_WITNESS_EDGE_PAIR_CHECKS.set(0);
+        assert_eq!(
+            bounded_first_sequence_witness(&left, &right, &grammar),
+            Some(vec![
+                DecisionWitness::Token(crate::LookaheadWitnessPosition {
+                    kind: KindId::new(0),
+                    left_text_predicate: None,
+                    right_text_predicate: None,
+                }),
+                DecisionWitness::Token(crate::LookaheadWitnessPosition {
+                    kind: KindId::new(1),
+                    left_text_predicate: None,
+                    right_text_predicate: None,
+                }),
+                DecisionWitness::End,
+            ]),
+        );
+        assert!(
+            BOUNDED_WITNESS_EDGE_PAIR_CHECKS.get() <= BRANCHES * 4,
+            "shared prefixes must be compared once and mostly-disjoint suffixes indexed; checks={}",
+            BOUNDED_WITNESS_EDGE_PAIR_CHECKS.get(),
+        );
+    }
+
+    #[test]
+    fn indexed_bounded_witness_matches_the_cartesian_oracle_exhaustively() {
+        for equivalence in [
+            TextEquivalence::Sensitive,
+            TextEquivalence::AsciiInsensitive,
+        ] {
+            let mut grammar = GrammarDescription::new("bounded-witness-oracle", 3, 2, equivalence);
+            let any = grammar.push_text_predicate(TextPredicate::Any);
+            let exact_a = grammar.push_text_predicate(TextPredicate::Exact("A".to_owned()));
+            let exact_a_alias = grammar.push_text_predicate(TextPredicate::Exact("A".to_owned()));
+            let one_of = grammar
+                .push_text_predicate(TextPredicate::OneOf(vec!["a".to_owned(), "B".to_owned()]));
+            let not_in_b = grammar.push_text_predicate(TextPredicate::NotIn(vec!["b".to_owned()]));
+            let exact_z = grammar.push_text_predicate(TextPredicate::Exact("Z".to_owned()));
+            let kinds = |members: &[u16]| FirstPosition {
+                kinds: KindSet::from_kinds(3, members.iter().copied().map(KindId::new))
+                    .expect("oracle kinds are within the grammar width"),
+                text_predicate: None,
+            };
+            let mut kind_zero = kinds(&[0]);
+            kind_zero.text_predicate = Some(any);
+            let mut wide = kinds(&[0, 1]);
+            wide.text_predicate = Some(exact_a);
+            let mut kind_one = kinds(&[1]);
+            kind_one.text_predicate = Some(one_of);
+            let mut kind_two_not_in = kinds(&[2]);
+            kind_two_not_in.text_predicate = Some(not_in_b);
+            let mut wide_not_in = kinds(&[0, 1]);
+            wide_not_in.text_predicate = Some(not_in_b);
+            let mut kind_two_exact = kinds(&[2]);
+            kind_two_exact.text_predicate = Some(exact_z);
+            let universe = [
+                FirstSequence {
+                    positions: Vec::new(),
+                    ends: false,
+                },
+                FirstSequence {
+                    positions: Vec::new(),
+                    ends: true,
+                },
+                FirstSequence {
+                    positions: vec![kind_zero],
+                    ends: false,
+                },
+                FirstSequence {
+                    positions: vec![wide],
+                    ends: true,
+                },
+                FirstSequence {
+                    positions: vec![kind_one, kind_two_not_in],
+                    ends: true,
+                },
+                FirstSequence {
+                    positions: vec![wide_not_in, kind_two_exact],
+                    ends: false,
+                },
+            ];
+            let languages = (0..1_usize << universe.len())
+                .map(|members| {
+                    universe
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| members & (1 << index) != 0)
+                        .map(|(_, sequence)| sequence.clone())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            for (left_index, left) in languages.iter().enumerate() {
+                for (right_index, right) in languages.iter().enumerate() {
+                    assert_eq!(
+                        bounded_first_sequence_witness(left, right, &grammar),
+                        naive_bounded_first_sequence_witness(left, right, &grammar),
+                        "indexed witness diverged for {equivalence:?} language masks {left_index:#08b} and {right_index:#08b}",
+                    );
+                }
+            }
+
+            let unrefined = vec![FirstSequence {
+                positions: vec![kinds(&[0])],
+                ends: true,
+            }];
+            let mut explicit_any_position = kinds(&[0]);
+            explicit_any_position.text_predicate = Some(any);
+            let explicit_any = vec![FirstSequence {
+                positions: vec![explicit_any_position],
+                ends: true,
+            }];
+            assert_eq!(
+                bounded_first_sequence_witness(&unrefined, &explicit_any, &grammar),
+                naive_bounded_first_sequence_witness(&unrefined, &explicit_any, &grammar),
+                "a nonempty unrefined position is semantically Any",
+            );
+
+            let mut original_position = kinds(&[0]);
+            original_position.text_predicate = Some(exact_a);
+            let mut alias_position = kinds(&[0]);
+            alias_position.text_predicate = Some(exact_a_alias);
+            let equivalent_left = vec![
+                FirstSequence {
+                    positions: vec![alias_position],
+                    ends: true,
+                },
+                FirstSequence {
+                    positions: vec![original_position],
+                    ends: true,
+                },
+            ];
+            let canonical =
+                bounded_first_sequence_witness(&equivalent_left, &explicit_any, &grammar);
+            assert_eq!(
+                canonical,
+                naive_bounded_first_sequence_witness(&equivalent_left, &explicit_any, &grammar,),
+            );
+            assert_eq!(
+                canonical,
+                Some(vec![
+                    DecisionWitness::Token(crate::LookaheadWitnessPosition {
+                        kind: KindId::new(0),
+                        left_text_predicate: Some(exact_a),
+                        right_text_predicate: Some(any),
+                    }),
+                    DecisionWitness::End,
+                ]),
+                "semantically equal predicate IDs retain canonical witness ordering",
+            );
+        }
+    }
+
+    #[test]
+    fn nullable_current_vs_tail_uses_the_direct_bounded_witness_cache() {
+        const BRANCHES: usize = 16;
+        let mut grammar = GrammarDescription::new(
+            "nullable-current-vs-tail",
+            BRANCHES,
+            3,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let tokens = (0..BRANCHES)
+            .map(|branch| {
+                let name = format!("TOKEN_{branch}");
+                let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+                let kind = grammar.push_kind(crate::KindDescription::new(&name, declaration));
+                let atom = grammar.push_atom(crate::AtomDescription::new(
+                    &name,
+                    declaration,
+                    AtomExpression::Kind(kind),
+                ));
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Token {
+                        atom,
+                        text_predicate: None,
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let alternatives = tokens
+            .into_iter()
+            .enumerate()
+            .map(|(branch, target)| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("Choice::{branch}"));
+                let site = grammar.push_site(crate::ParseSite::new(
+                    choice,
+                    target,
+                    declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                crate::Alternative {
+                    declaration,
+                    sites: vec![site],
+                }
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum { alternatives },
+            )),
+            choice,
+        );
+        let root = grammar.next_type_id();
+        let current_declaration = test_declaration(&mut grammar, &mut next_byte, "Root::current");
+        let current = grammar.push_site(crate::ParseSite::new(
+            root,
+            choice,
+            current_declaration,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+        ));
+        let tail_declaration = test_declaration(&mut grammar, &mut next_byte, "Root::tail");
+        let tail = grammar.push_site(crate::ParseSite::new(
+            root,
+            choice,
+            tail_declaration,
+            crate::ContainerShape::one_or_more(crate::ContainerShape::Direct, None),
+        ));
+        let root_declaration = test_declaration(&mut grammar, &mut next_byte, "Root");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Root",
+                root_declaration,
+                TypeShape::Sequence {
+                    sites: vec![current, tail],
+                },
+            )),
+            root,
+        );
+
+        DECISION_WITNESS_STATE_EXPANSIONS.set(0);
+        FIRST_LANGUAGE_STATE_COUNT.set(0);
+        let report = analyze(&grammar);
+        assert_eq!(
+            FIRST_LANGUAGE_STATE_COUNT.get(),
+            0,
+            "nullable current-vs-tail witnesses must not materialize complete FIRST-k languages",
+        );
+        assert!(
+            DECISION_WITNESS_STATE_EXPANSIONS.get() <= BRANCHES * grammar.max_lookahead,
+            "direct nullable-tail witness work must remain bounded by reachable paired residuals; expansions={}",
+            DECISION_WITNESS_STATE_EXPANSIONS.get(),
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::StaticUseSiteOverlap),
+            "frozen witness reuse must not suppress the unresolved static conflict",
+        );
+    }
+
+    #[test]
+    fn unproductive_required_sites_do_not_bypass_enum_or_pratt_conflicts() {
+        fn grammar_with_unproductive_choice(pratt: bool) -> GrammarDescription {
+            let mut grammar = GrammarDescription::new(
+                "unproductive-required-site",
+                1,
+                1,
+                TextEquivalence::Sensitive,
+            );
+            let mut next_byte = 0;
+            let a_declaration = test_declaration(&mut grammar, &mut next_byte, "A");
+            let a_kind = grammar.push_kind(crate::KindDescription::new("A", a_declaration));
+            let a_atom = grammar.push_atom(crate::AtomDescription::new(
+                "A",
+                a_declaration,
+                AtomExpression::Kind(a_kind),
+            ));
+            let a = grammar.push_type(crate::TypeDescription::new(
+                "A",
+                a_declaration,
+                TypeShape::Token {
+                    atom: a_atom,
+                    text_predicate: None,
+                },
+            ));
+
+            let tail = grammar.next_type_id();
+            let tail_a_declaration = test_declaration(&mut grammar, &mut next_byte, "Tail::a");
+            let tail_a = grammar.push_site(crate::ParseSite::new(
+                tail,
+                a,
+                tail_a_declaration,
+                crate::ContainerShape::Direct,
+            ));
+            let tail_self_declaration =
+                test_declaration(&mut grammar, &mut next_byte, "Tail::self");
+            let tail_self = grammar.push_site(crate::ParseSite::new(
+                tail,
+                tail,
+                tail_self_declaration,
+                crate::ContainerShape::Direct,
+            ));
+            let tail_declaration = test_declaration(&mut grammar, &mut next_byte, "Tail");
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    "Tail",
+                    tail_declaration,
+                    TypeShape::Sequence {
+                        sites: vec![tail_a, tail_self],
+                    },
+                )),
+                tail,
+            );
+
+            let choice = grammar.next_type_id();
+            let tail_choice_declaration =
+                test_declaration(&mut grammar, &mut next_byte, "Choice::Tail");
+            let tail_choice = grammar.push_site(crate::ParseSite::new(
+                choice,
+                tail,
+                tail_choice_declaration,
+                crate::ContainerShape::Direct,
+            ));
+            let a_choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice::A");
+            let a_choice = grammar.push_site(crate::ParseSite::new(
+                choice,
+                a,
+                a_choice_declaration,
+                crate::ContainerShape::Direct,
+            ));
+            let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+            let shape = if pratt {
+                TypeShape::Pratt {
+                    variants: vec![
+                        crate::PrattVariant {
+                            declaration: tail_choice_declaration,
+                            position: PrattPosition::Atom,
+                            sites: vec![tail_choice],
+                        },
+                        crate::PrattVariant {
+                            declaration: a_choice_declaration,
+                            position: PrattPosition::Atom,
+                            sites: vec![a_choice],
+                        },
+                    ],
+                }
+            } else {
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: tail_choice_declaration,
+                            sites: vec![tail_choice],
+                        },
+                        crate::Alternative {
+                            declaration: a_choice_declaration,
+                            sites: vec![a_choice],
+                        },
+                    ],
+                }
+            };
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    "Choice",
+                    choice_declaration,
+                    shape,
+                )),
+                choice,
+            );
+            grammar
+        }
+
+        for (pratt, code) in [
+            (false, DiagnosticCode::EnumFirstOverlap),
+            (true, DiagnosticCode::PrattAtomOverlap),
+        ] {
+            DECISION_WITNESS_STATE_EXPANSIONS.set(0);
+            let report = analyze(&grammar_with_unproductive_choice(pratt));
+            assert!(
+                DECISION_WITNESS_STATE_EXPANSIONS.get() > 0,
+                "unproductive required sites must retain explicit traversal",
+            );
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == code),
+                "unproductive required sites must not suppress {code:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn productive_choices_with_dead_shared_prefixes_use_explicit_conflict_analysis() {
+        fn push_token(grammar: &mut GrammarDescription, next_byte: &mut u32, name: &str) -> TypeId {
+            let declaration = test_declaration(grammar, next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        }
+
+        fn push_choice(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            name: &str,
+            alternatives: &[&[TypeId]],
+        ) -> TypeId {
+            let owner = grammar.next_type_id();
+            let declaration = test_declaration(grammar, next_byte, name);
+            let alternatives = alternatives
+                .iter()
+                .enumerate()
+                .map(|(alternative_index, targets)| {
+                    let alternative = test_declaration(
+                        grammar,
+                        next_byte,
+                        &format!("{name}::{alternative_index}"),
+                    );
+                    let sites = targets
+                        .iter()
+                        .enumerate()
+                        .map(|(site_index, target)| {
+                            let site = test_declaration(
+                                grammar,
+                                next_byte,
+                                &format!("{name}::{alternative_index}::{site_index}"),
+                            );
+                            grammar.push_site(crate::ParseSite::new(
+                                owner,
+                                *target,
+                                site,
+                                crate::ContainerShape::Direct,
+                            ))
+                        })
+                        .collect();
+                    crate::Alternative {
+                        declaration: alternative,
+                        sites,
+                    }
+                })
+                .collect();
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Enum { alternatives },
+                )),
+                owner,
+            );
+            owner
+        }
+
+        let mut grammar = GrammarDescription::new(
+            "productive-choice-with-dead-prefix",
+            5,
+            1,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let a = push_token(&mut grammar, &mut next_byte, "A");
+        let b = push_token(&mut grammar, &mut next_byte, "B");
+        let c = push_token(&mut grammar, &mut next_byte, "C");
+        let d = push_token(&mut grammar, &mut next_byte, "D");
+        let e = push_token(&mut grammar, &mut next_byte, "E");
+        let empty_declaration = test_declaration(&mut grammar, &mut next_byte, "Empty");
+        let empty = grammar.push_type(crate::TypeDescription::new(
+            "Empty",
+            empty_declaration,
+            TypeShape::Enum {
+                alternatives: Vec::new(),
+            },
+        ));
+        let left = push_choice(&mut grammar, &mut next_byte, "Left", &[&[a, empty], &[b]]);
+        let right = push_choice(&mut grammar, &mut next_byte, "Right", &[&[a, empty], &[c]]);
+        let _root = push_choice(
+            &mut grammar,
+            &mut next_byte,
+            "Root",
+            &[&[left, d], &[right, e]],
+        );
+
+        DECISION_WITNESS_STATE_EXPANSIONS.set(0);
+        let report = analyze(&grammar);
+        assert!(
+            DECISION_WITNESS_STATE_EXPANSIONS.get() > 0,
+            "a reachable dead prefix must retain explicit configured-depth traversal",
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::EnumFirstOverlap),
+            "a dead shared A prefix must not be erased by productive B/C alternatives",
+        );
+    }
+
+    #[test]
+    fn unproductive_nullable_tail_falls_back_to_explicit_conflict_analysis() {
+        let mut grammar = GrammarDescription::new(
+            "unproductive-nullable-tail",
+            1,
+            1,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let a_declaration = test_declaration(&mut grammar, &mut next_byte, "A");
+        let a_kind = grammar.push_kind(crate::KindDescription::new("A", a_declaration));
+        let a_atom = grammar.push_atom(crate::AtomDescription::new(
+            "A",
+            a_declaration,
+            AtomExpression::Kind(a_kind),
+        ));
+        let a = grammar.push_type(crate::TypeDescription::new(
+            "A",
+            a_declaration,
+            TypeShape::Token {
+                atom: a_atom,
+                text_predicate: None,
+            },
+        ));
+
+        let tail = grammar.next_type_id();
+        let tail_a_declaration = test_declaration(&mut grammar, &mut next_byte, "Tail::a");
+        let tail_a = grammar.push_site(crate::ParseSite::new(
+            tail,
+            a,
+            tail_a_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        let tail_self_declaration = test_declaration(&mut grammar, &mut next_byte, "Tail::self");
+        let tail_self = grammar.push_site(crate::ParseSite::new(
+            tail,
+            tail,
+            tail_self_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        let tail_declaration = test_declaration(&mut grammar, &mut next_byte, "Tail");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Tail",
+                tail_declaration,
+                TypeShape::Sequence {
+                    sites: vec![tail_a, tail_self],
+                },
+            )),
+            tail,
+        );
+
+        let root = grammar.next_type_id();
+        let current_declaration = test_declaration(&mut grammar, &mut next_byte, "Root::current");
+        let current = grammar.push_site(crate::ParseSite::new(
+            root,
+            a,
+            current_declaration,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+        ));
+        let tail_site_declaration = test_declaration(&mut grammar, &mut next_byte, "Root::tail");
+        let tail_site = grammar.push_site(crate::ParseSite::new(
+            root,
+            tail,
+            tail_site_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        let root_declaration = test_declaration(&mut grammar, &mut next_byte, "Root");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Root",
+                root_declaration,
+                TypeShape::Sequence {
+                    sites: vec![current, tail_site],
+                },
+            )),
+            root,
+        );
+
+        DECISION_WITNESS_STATE_EXPANSIONS.set(0);
+        let report = analyze(&grammar);
+        assert!(
+            DECISION_WITNESS_STATE_EXPANSIONS.get() > 0,
+            "an empty bounded language for an unproductive state must retain explicit traversal",
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::StaticUseSiteOverlap),
+            "unproductive bounded languages must not suppress the overlapping nullable tail",
+        );
+    }
+
+    #[test]
+    fn separable_nullable_current_vs_tail_skips_an_irrelevant_explicit_witness() {
+        let mut grammar = GrammarDescription::new(
+            "separable-nullable-current-vs-tail",
+            1,
+            3,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let item_declaration = test_declaration(&mut grammar, &mut next_byte, "ITEM");
+        let item_kind = grammar.push_kind(crate::KindDescription::new("ITEM", item_declaration));
+        let item_atom = grammar.push_atom(crate::AtomDescription::new(
+            "ITEM",
+            item_declaration,
+            AtomExpression::Kind(item_kind),
+        ));
+        let item = grammar.push_type(crate::TypeDescription::new(
+            "Item",
+            item_declaration,
+            TypeShape::Token {
+                atom: item_atom,
+                text_predicate: None,
+            },
+        ));
+        let root = grammar.next_type_id();
+        let current_declaration = test_declaration(&mut grammar, &mut next_byte, "Root::current");
+        let current = grammar.push_site(crate::ParseSite::new(
+            root,
+            item,
+            current_declaration,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+        ));
+        let tail_declaration = test_declaration(&mut grammar, &mut next_byte, "Root::tail");
+        let tail = grammar.push_site(crate::ParseSite::new(
+            root,
+            item,
+            tail_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        let root_declaration = test_declaration(&mut grammar, &mut next_byte, "Root");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Root",
+                root_declaration,
+                TypeShape::Sequence {
+                    sites: vec![current, tail],
+                },
+            )),
+            root,
+        );
+
+        CONFLICT_DECISION_PRODUCT_BUILDS.set(0);
+        DECISION_WITNESS_STATE_EXPANSIONS.set(0);
+        let _ = analyze(&grammar);
+        assert_eq!(
+            CONFLICT_DECISION_PRODUCT_BUILDS.get(),
+            0,
+            "an exact absent bounded witness must skip the irrelevant unbounded product",
+        );
+        assert!(
+            DECISION_WITNESS_STATE_EXPANSIONS.get() <= grammar.max_lookahead,
+            "the direct exact witness must prove separation with bounded residual work; expansions={}",
+            DECISION_WITNESS_STATE_EXPANSIONS.get(),
+        );
     }
 
     #[test]
@@ -8765,6 +10848,87 @@ mod decision_product_tests {
     }
 
     #[test]
+    fn bounded_multi_site_alternatives_skip_pairwise_products() {
+        const BRANCH_COUNT: usize = 32;
+        let mut grammar = GrammarDescription::new(
+            "bounded-multi-site-alternatives",
+            BRANCH_COUNT + 1,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let mut push_token = |grammar: &mut GrammarDescription, name: String| {
+            let declaration = test_declaration(grammar, &mut next_byte, &name);
+            let kind = grammar.push_kind(crate::KindDescription::new(&name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                &name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        };
+        let shared = push_token(&mut grammar, "Shared".to_owned());
+        let suffixes = (0..BRANCH_COUNT)
+            .map(|branch| push_token(&mut grammar, format!("Suffix{branch}")))
+            .collect::<Vec<_>>();
+        let statement = grammar.next_type_id();
+        let alternatives = suffixes
+            .into_iter()
+            .enumerate()
+            .map(|(branch, suffix)| {
+                let declaration = test_declaration(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("Statement::Branch{branch}"),
+                );
+                let sites = [shared, suffix]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, target)| {
+                        let site_declaration = test_declaration(
+                            &mut grammar,
+                            &mut next_byte,
+                            &format!("Statement::Branch{branch}::{index}"),
+                        );
+                        grammar.push_site(crate::ParseSite::new(
+                            statement,
+                            target,
+                            site_declaration,
+                            crate::ContainerShape::Direct,
+                        ))
+                    })
+                    .collect();
+                crate::Alternative { declaration, sites }
+            })
+            .collect();
+        let statement_declaration = test_declaration(&mut grammar, &mut next_byte, "Statement");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Statement",
+                statement_declaration,
+                TypeShape::Enum { alternatives },
+            )),
+            statement,
+        );
+
+        CONFLICT_DECISION_PRODUCT_BUILDS.set(0);
+        let report = analyze(&grammar);
+        assert!(report.diagnostics.is_empty());
+        assert_eq!(
+            CONFLICT_DECISION_PRODUCT_BUILDS.get(),
+            0,
+            "exact cached multi-site languages must reject every disjoint pair before the unbounded product",
+        );
+    }
+
+    #[test]
     fn correlated_prefixes_bound_working_first_states_before_projection() {
         const BRANCH_COUNT: usize = 32;
         FIRST_SEQUENCE_PEAK_ROWS.set(0);
@@ -8798,6 +10962,246 @@ mod decision_product_tests {
             "projected transition work must stay proportional to structural arcs, not kind width; inputs={}",
             FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.get(),
         );
+    }
+
+    #[test]
+    fn canonical_witness_search_stops_after_first_correlated_path() {
+        const BRANCH_COUNT: usize = 16;
+        let (grammar, root) = correlated_pair_grammar(BRANCH_COUNT);
+        let atom_kinds = expand_atoms(&grammar);
+        let state = DecisionState(vec![DecisionItem::Type(root)]);
+        let paired = paired_residual(state.clone(), state, &grammar);
+        let analysis = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        DECISION_WITNESS_STATE_EXPANSIONS.set(0);
+
+        let witness = analysis
+            .decision_witness_at_depth(&paired, grammar.max_lookahead)
+            .expect("a productive language overlaps itself");
+
+        assert!(!witness.is_empty());
+        assert!(
+            DECISION_WITNESS_STATE_EXPANSIONS.get() <= grammar.max_lookahead,
+            "canonical witness search must not enumerate unrelated correlated paths; expansions={}",
+            DECISION_WITNESS_STATE_EXPANSIONS.get(),
+        );
+        DECISION_WITNESS_STATE_EXPANSIONS.set(0);
+        assert_eq!(
+            analysis.decision_witness_at_depth(&paired, grammar.max_lookahead),
+            Some(witness),
+        );
+        assert_eq!(
+            DECISION_WITNESS_STATE_EXPANSIONS.get(),
+            0,
+            "repeated conflict sites must share the exact residual witness cache",
+        );
+    }
+
+    #[test]
+    fn included_language_witness_skips_the_paired_cartesian_frontier() {
+        const BRANCH_COUNT: usize = 32;
+        let mut grammar = GrammarDescription::new(
+            "included-language-witness",
+            BRANCH_COUNT + 1,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let shared_declaration = test_declaration(&mut grammar, &mut next_byte, "SHARED");
+        let shared_kind =
+            grammar.push_kind(crate::KindDescription::new("SHARED", shared_declaration));
+        let shared_atom = grammar.push_atom(crate::AtomDescription::new(
+            "SHARED",
+            shared_declaration,
+            AtomExpression::Kind(shared_kind),
+        ));
+        let shared = grammar.push_type(crate::TypeDescription::new(
+            "Shared",
+            shared_declaration,
+            TypeShape::Token {
+                atom: shared_atom,
+                text_predicate: None,
+            },
+        ));
+        let tails = (0..BRANCH_COUNT)
+            .map(|index| {
+                let name = format!("TAIL_{index}");
+                let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+                let kind = grammar.push_kind(crate::KindDescription::new(&name, declaration));
+                let atom = grammar.push_atom(crate::AtomDescription::new(
+                    &name,
+                    declaration,
+                    AtomExpression::Kind(kind),
+                ));
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Token {
+                        atom,
+                        text_predicate: None,
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let alternatives = tails
+            .into_iter()
+            .enumerate()
+            .map(|(index, tail)| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("Choice::{index}"));
+                let sites = [shared, tail]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(site_index, target)| {
+                        let site_declaration = test_declaration(
+                            &mut grammar,
+                            &mut next_byte,
+                            &format!("Choice::{index}::{site_index}"),
+                        );
+                        grammar.push_site(crate::ParseSite::new(
+                            choice,
+                            target,
+                            site_declaration,
+                            crate::ContainerShape::Direct,
+                        ))
+                    })
+                    .collect();
+                crate::Alternative { declaration, sites }
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum { alternatives },
+            )),
+            choice,
+        );
+        let atom_kinds = expand_atoms(&grammar);
+        let state = DecisionState(vec![DecisionItem::Type(choice)]);
+        let paired = paired_residual(state.clone(), state, &grammar);
+        let analysis = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        DECISION_PRODUCT_TRANSITION_PAIRS.set(0);
+
+        let witness = analysis
+            .decision_witness_at_depth(&paired, grammar.max_lookahead)
+            .expect("a productive language overlaps itself");
+
+        assert_eq!(witness.len(), grammar.max_lookahead);
+        assert_eq!(
+            DECISION_PRODUCT_TRANSITION_PAIRS.get(),
+            0,
+            "a proven included language must derive its witness without pairing every shared-token branch",
+        );
+    }
+
+    #[test]
+    fn production_sequence_materialization_skips_unused_deterministic_cells() {
+        const BRANCH_COUNT: usize = 8;
+        let (grammar, root) = correlated_pair_grammar(BRANCH_COUNT);
+        let atom_kinds = expand_atoms(&grammar);
+        let state = DecisionState(vec![DecisionItem::Type(root)]);
+        let mut oracle = FirstLanguageArena::new(&grammar, &atom_kinds);
+        let oracle_root = oracle.build(grammar.max_lookahead, vec![state.clone()]);
+        let expected = oracle.materialize(oracle_root);
+
+        FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.set(0);
+        FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(0);
+        let analysis = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let actual = analysis.sequences_for_state(state);
+
+        assert_eq!(actual, expected);
+        assert_eq!(
+            FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.get(),
+            0,
+            "public sequence materialization must not construct an unused deterministic product",
+        );
+        assert_eq!(
+            FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get(),
+            0,
+            "public sequence materialization must not precompute a duplicate projected graph",
+        );
+    }
+
+    #[test]
+    fn successful_analysis_materializes_aggregate_sequences_for_every_type() {
+        let (grammar, _) = correlated_pair_grammar(4);
+        FIRST_LANGUAGE_AGGREGATE_MATERIALIZATIONS.set(0);
+
+        let report = analyze(&grammar);
+        let output = report.output.expect("the grammar is conflict-free");
+
+        assert_eq!(
+            FIRST_LANGUAGE_AGGREGATE_MATERIALIZATIONS.get(),
+            grammar.types.len(),
+        );
+        assert!(
+            output
+                .first_by_type
+                .iter()
+                .all(|facts| !facts.sequences.is_empty()),
+            "successful semantic output retains the complete per-type FIRST-k projection",
+        );
+    }
+
+    #[test]
+    fn erroneous_analysis_skips_aggregate_sequence_publication() {
+        let mut grammar = GrammarDescription::new("conflicting", 1, 1, TextEquivalence::Sensitive);
+        let mut next_byte = 0;
+        let token_declaration = test_declaration(&mut grammar, &mut next_byte, "A");
+        let kind = grammar.push_kind(crate::KindDescription::new("A", token_declaration));
+        let atom = grammar.push_atom(crate::AtomDescription::new(
+            "A",
+            token_declaration,
+            AtomExpression::Kind(kind),
+        ));
+        let token = grammar.push_type(crate::TypeDescription::new(
+            "A",
+            token_declaration,
+            TypeShape::Token {
+                atom,
+                text_predicate: None,
+            },
+        ));
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let alternatives = ["left", "right"]
+            .into_iter()
+            .map(|name| {
+                let declaration = test_declaration(&mut grammar, &mut next_byte, name);
+                let site = grammar.push_site(crate::ParseSite::new(
+                    choice,
+                    token,
+                    declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                crate::Alternative {
+                    declaration,
+                    sites: vec![site],
+                }
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum { alternatives },
+            )),
+            choice,
+        );
+        FIRST_LANGUAGE_AGGREGATE_MATERIALIZATIONS.set(0);
+
+        let report = analyze(&grammar);
+
+        assert!(report.output.is_none());
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::EnumFirstOverlap)
+        );
+        assert_eq!(FIRST_LANGUAGE_AGGREGATE_MATERIALIZATIONS.get(), 0);
     }
 
     #[test]
@@ -9094,7 +11498,7 @@ mod decision_product_tests {
                     | (u8::from(!full.transitions.is_empty()) * FIRST_LANGUAGE_CUTOFF_CONTINUES)
             })
             .collect::<Vec<_>>();
-        let facts = DecisionSummaryFacts::from_grammar(&grammar);
+        let facts = DecisionSummaryFacts::from_grammar(&grammar, &atom_kinds);
         FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(0);
         FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.set(0);
 
@@ -9121,7 +11525,7 @@ mod decision_product_tests {
     fn cutoff_language_matches_full_projection_without_interning_successors() {
         let (grammar, items) = cutoff_summary_equivalence_grammar();
         let atom_kinds = expand_atoms(&grammar);
-        let summary_facts = DecisionSummaryFacts::from_grammar(&grammar);
+        let summary_facts = DecisionSummaryFacts::from_grammar(&grammar, &atom_kinds);
         let mut states = vec![DecisionState(Vec::new())];
         states.extend(items.into_iter().map(|item| DecisionState(vec![item])));
         let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
@@ -9203,7 +11607,7 @@ mod decision_product_tests {
             .iter()
             .map(|state| {
                 let full = decision_frontier(state, &grammar, &atom_kinds);
-                let summary_facts = DecisionSummaryFacts::from_grammar(&grammar);
+                let summary_facts = DecisionSummaryFacts::from_grammar(&grammar, &atom_kinds);
                 let mut sequences = Vec::new();
                 if full.can_end {
                     sequences.push(FirstSequence {
@@ -10190,6 +12594,92 @@ mod decision_product_tests {
     }
 
     #[test]
+    fn nary_projected_states_build_one_canonical_subset_without_node_unions() {
+        const COMPONENT_COUNT: usize = 64;
+        let mut grammar = GrammarDescription::new(
+            "nary-projected-subset",
+            COMPONENT_COUNT + 1,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        for index in 0..=COMPONENT_COUNT {
+            let name = format!("K{index}");
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+            grammar.push_kind(crate::KindDescription::new(name, declaration));
+        }
+        let atom_kinds = Vec::new();
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+        let terminal = arena.intern_projected_component(FirstLanguageProjectedComponent {
+            exact_end: true,
+            cutoff: false,
+            transitions: Vec::new(),
+        });
+        let shared = arena.intern_position(FirstPosition {
+            kinds: KindSet::singleton(grammar.kind_count, KindId::new(0))
+                .expect("shared kind belongs to grammar"),
+            text_predicate: None,
+        });
+        let mut components = Vec::new();
+        let mut expected = Vec::new();
+        for index in 0..COMPONENT_COUNT {
+            let suffix_position = FirstPosition {
+                kinds: KindSet::singleton(
+                    grammar.kind_count,
+                    KindId::new((index + 1).try_into().expect("test kind identity width")),
+                )
+                .expect("suffix kind belongs to grammar"),
+                text_predicate: None,
+            };
+            let suffix_position_id = arena.intern_position(suffix_position.clone());
+            let suffix = arena.intern_projected_component(FirstLanguageProjectedComponent {
+                exact_end: false,
+                cutoff: false,
+                transitions: vec![FirstLanguageProjectedTransition {
+                    position: suffix_position_id,
+                    next: terminal,
+                }],
+            });
+            components.push(
+                arena.intern_projected_component(FirstLanguageProjectedComponent {
+                    exact_end: false,
+                    cutoff: false,
+                    transitions: vec![FirstLanguageProjectedTransition {
+                        position: shared,
+                        next: suffix,
+                    }],
+                }),
+            );
+            expected.push(FirstSequence {
+                positions: vec![arena.positions[shared.index()].clone(), suffix_position],
+                ends: true,
+            });
+        }
+        sort_dedup_first_sequences(&mut expected);
+
+        FIRST_LANGUAGE_NODE_UNION_MISSES.set(0);
+        let root = arena.build_projected_state(2, components.clone());
+        assert_eq!(
+            arena.materialize(root),
+            expected,
+            "direct subset construction must preserve correlated suffixes",
+        );
+        assert_eq!(
+            FIRST_LANGUAGE_NODE_UNION_MISSES.get(),
+            0,
+            "n-ary projected sets must not retain intermediate deterministic unions",
+        );
+
+        components.reverse();
+        components.push(components[0]);
+        assert_eq!(
+            arena.build_projected_state(2, components),
+            root,
+            "component order and duplicates must share one canonical projected subset",
+        );
+    }
+
+    #[test]
     fn deterministic_node_union_reuses_nested_mixed_languages() {
         const KIND_COUNT: usize = 128;
         const LANGUAGE_COUNT: usize = 12;
@@ -10464,9 +12954,59 @@ mod decision_product_tests {
             left_minimum_stack_depth: 1,
             right_minimum_stack_depth: 1,
         };
-        let parents = BTreeMap::from([(ancestor.clone(), Vec::new())]);
+        let parents = DecisionProductParents::new(ancestor);
 
-        assert_eq!(pumping_ancestor(&ancestor, &successor, &parents), None);
+        assert_eq!(pumping_ancestor(0, &successor, &parents), None);
+    }
+
+    #[test]
+    fn paired_cycle_checks_share_one_ancestor_traversal() {
+        const ANCESTORS: usize = 128;
+        let states = (0..ANCESTORS)
+            .map(|index| {
+                let item = DecisionItem::Type(TypeId::new(index as u32));
+                PairedDecisionState::Residual(
+                    DecisionState(vec![item.clone()]),
+                    DecisionState(vec![item]),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut parents = DecisionProductParents::new(states[0].clone());
+        for index in 1..ANCESTORS {
+            let parent = parents.intern(states[index - 1].clone());
+            let child = parents.intern(states[index].clone());
+            parents.incoming[child].push(DecisionParent {
+                state: parent,
+                left_minimum_stack_depth: 0,
+                right_minimum_stack_depth: 0,
+            });
+        }
+        let successor_item = DecisionItem::Type(TypeId::new(ANCESTORS as u32));
+        let successor = PairedDecisionSuccessor {
+            state: PairedDecisionState::Residual(
+                DecisionState(vec![successor_item.clone()]),
+                DecisionState(vec![successor_item]),
+            ),
+            witness: DecisionWitness::End,
+            left_minimum_stack_depth: 0,
+            right_minimum_stack_depth: 0,
+        };
+
+        DECISION_PRODUCT_ANCESTOR_STATE_VISITS.set(0);
+        let mut ancestor_scratch = DecisionVisitScratch::default();
+        let mut path_scratch = DecisionVisitScratch::default();
+        assert!(!decision_successor_closes_cycle(
+            ANCESTORS - 1,
+            &successor,
+            &parents,
+            &mut ancestor_scratch,
+            &mut path_scratch,
+        ));
+        assert!(
+            DECISION_PRODUCT_ANCESTOR_STATE_VISITS.get() <= ANCESTORS + 1,
+            "pumping and exact-cycle checks must share one parent traversal; visits={}",
+            DECISION_PRODUCT_ANCESTOR_STATE_VISITS.get(),
+        );
     }
 
     #[test]
@@ -10558,14 +13098,14 @@ mod decision_product_tests {
         );
 
         let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
         let product = build_decision_product(
             paired_residual(
                 DecisionState(vec![DecisionItem::Type(empty), DecisionItem::Type(left)]),
                 DecisionState(vec![DecisionItem::Type(empty), DecisionItem::Type(right)]),
                 &grammar,
             ),
-            &grammar,
-            &atom_kinds,
+            &first_sequences,
         );
         assert!(
             matches!(product, DecisionProduct::Acyclic(_)),

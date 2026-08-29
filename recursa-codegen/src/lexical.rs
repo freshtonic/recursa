@@ -15,7 +15,7 @@ use crate::{KindId, KindSet, TextEquivalence};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 
-use regex_automata::dfa::{Automaton as _, dense};
+use regex_automata::dfa::{Automaton as _, StartKind, dense};
 use regex_automata::{Anchored, Input, MatchKind};
 
 use crate::source_model::{
@@ -1847,9 +1847,7 @@ fn pattern_ambiguities(
         .iter()
         .map(|contender| contender.pattern.as_str())
         .collect::<Vec<_>>();
-    let mut builder = dense::Builder::new();
-    builder.configure(dense::DFA::config().match_kind(MatchKind::All));
-    let Ok(dfa) = builder.build_many(&patterns) else {
+    let Some(dfa) = all_matches_dfa(&patterns) else {
         return Vec::new();
     };
     let input = Input::new(b"").anchored(Anchored::Yes);
@@ -2020,6 +2018,17 @@ fn dfa_accepts(
     dfa.is_match_state(dfa.next_eoi_state(state))
 }
 
+/// Builds the shared all-matches DFA used by anchored lexical-policy analysis.
+fn all_matches_dfa(patterns: &[&str]) -> Option<dense::DFA<Vec<u32>>> {
+    let mut builder = dense::Builder::new();
+    builder.configure(
+        dense::DFA::config()
+            .match_kind(MatchKind::All)
+            .start_kind(StartKind::Anchored),
+    );
+    builder.build_many(patterns).ok()
+}
+
 /// Derives the sorted sites under the grammar keyword and lexical-selection policies.
 fn sorted_sites(source: &SourceModeledGrammar, mut sites: Vec<SourceSite>) -> Vec<SourceSite> {
     sites.sort_by_key(|site| source_site_key(source, site));
@@ -2079,9 +2088,7 @@ impl CarrierProver {
         let (dfa, matcher_constructions) = if patterns.is_empty() {
             (None, 0)
         } else {
-            let mut builder = dense::Builder::new();
-            builder.configure(dense::DFA::config().match_kind(MatchKind::All));
-            (builder.build_many(&patterns).ok(), 1)
+            (all_matches_dfa(&patterns), 1)
         };
         Self {
             dfa,
@@ -2648,6 +2655,48 @@ struct Root {
                 witness,
             } if contenders.len() == 2 && witness == "A"
         ));
+    }
+
+    #[test]
+    fn combined_pattern_dfas_exclude_unused_unanchored_search_states() {
+        let dfa = super::all_matches_dfa(&[r"[A-Za-z_][A-Za-z0-9_]*", r"'[^']*'"])
+            .expect("valid lexical patterns compile");
+
+        assert_eq!(dfa.start_kind(), regex_automata::dfa::StartKind::Anchored,);
+    }
+
+    const POSTGRESQL_PATTERN_FAMILIES: [&str; 14] = [
+        r"[ \t\r\n\f]+",
+        r"--",
+        r"/\*",
+        r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$",
+        r"(?:(?:[0-9](?:_?[0-9])*\.[0-9](?:_?[0-9])*|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*\.[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*\.)",
+        r"(?:0[xX](?:_?[0-9a-fA-F])+|0[oO](?:_?[0-7])+|0[bB](?:_?[01])+|[0-9](?:_?[0-9])*)",
+        r"\$[0-9]+",
+        r"[-+*/<>=~!@#%^&|?]+",
+        r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+        r"'[^']*(?:''[^']*)*'",
+        r"(?i:U)&'(?:[^']|'')*'",
+        r"(?i:E)'(?:[^'\\]|\\.|'')*'",
+        r"(?i:B)'[^']*'",
+        r"(?i:X)'[^']*'",
+    ];
+
+    #[test]
+    fn postgresql_pattern_families_build_one_anchored_dfa() {
+        let dfa = super::all_matches_dfa(&POSTGRESQL_PATTERN_FAMILIES)
+            .expect("PostgreSQL pattern families compile");
+
+        assert_eq!(dfa.start_kind(), regex_automata::dfa::StartKind::Anchored,);
+    }
+
+    #[test]
+    #[ignore = "manual representative-scale PostgreSQL DFA memory check"]
+    fn postgresql_pattern_families_stay_within_the_memory_budget() {
+        let dfa = super::all_matches_dfa(&POSTGRESQL_PATTERN_FAMILIES)
+            .expect("PostgreSQL pattern families compile");
+
+        assert!(dfa.memory_usage() < 1024 * 1024, "{dfa:?}");
     }
 
     #[test]

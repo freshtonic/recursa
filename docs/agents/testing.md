@@ -44,6 +44,14 @@ cargo test -p recursa-codegen --test generation_functional_matrix --locked \
   --ignored --exact
 ```
 
+The representative PostgreSQL lexical-family DFA memory budget is also manual:
+
+```sh
+cargo test -p recursa-codegen --lib --locked \
+  lexical::tests::postgresql_pattern_families_stay_within_the_memory_budget -- \
+  --ignored --exact
+```
+
 Representative-scale and benchmark work associated with the deferred performance ticket remains
 manual until the user explicitly requests it. Correctness failures discovered by ordinary tests
 remain part of the default suite even when their fixture compilation is relatively slow.
