@@ -1048,7 +1048,7 @@ pub(super) fn render_node(
     let diagram_documentation = plan.diagrams.as_ref().map(|diagrams| {
         let diagram = &diagrams.nodes[node_index];
         syn::LitStr::new(
-            &render_node_diagram_document(diagram),
+            &render_node_diagram_document(diagram, diagrams.anchor_depth),
             proc_macro2::Span::call_site(),
         )
     });

@@ -655,7 +655,7 @@ pub(super) fn render_token_binding(
     #[cfg(feature = "diagrams")]
     let token_diagram_documentation = plan.diagrams.as_ref().map(|diagrams| {
         syn::LitStr::new(
-            &render_token_diagram_document(&diagrams.tokens[binding.token]),
+            &render_token_diagram_document(&diagrams.tokens[binding.token], diagrams.anchor_depth),
             proc_macro2::Span::call_site(),
         )
     });

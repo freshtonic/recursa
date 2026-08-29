@@ -61,6 +61,8 @@ pub(super) enum DiagramNode {
 pub(super) struct DiagramPlan {
     /// Display name labeling the aggregate grammar diagram.
     pub(super) grammar_name: String,
+    /// Crate-relative module depth of the grammar anchor owning the output.
+    pub(super) anchor_depth: usize,
     /// Node productions in canonical parse-plan order.
     pub(super) nodes: Vec<NodeDiagramPlan>,
     /// Typed content-token diagrams in canonical token order.
@@ -123,6 +125,7 @@ pub(super) fn plan_diagrams(
     kind_names: &[String],
     kind_static_texts: &[Option<String>],
 ) -> Result<DiagramPlan, String> {
+    let anchor_depth = resolved.build_inputs.module_anchor.segments.len();
     let mut links = BTreeMap::<String, Option<String>>::new();
     for node in nodes {
         let source = resolved
@@ -131,7 +134,7 @@ pub(super) fn plan_diagrams(
             .find(|source| source.key.segments.join("::") == node.semantic_key)
             .ok_or_else(|| format!("diagram plan cannot correlate Node `{}`", node.semantic_key))?;
         let link = node_is_publicly_linkable(resolved, source)
-            .then(|| rustdoc_path(&node.semantic_key, "struct"));
+            .then(|| rustdoc_path(&node.semantic_key, node_rustdoc_kind(node), anchor_depth));
         for application in lowered
             .applications
             .iter()
@@ -153,7 +156,7 @@ pub(super) fn plan_diagrams(
                     format!("diagram plan cannot correlate Node `{}`", node.semantic_key)
                 })?;
             let public_path = node_is_publicly_linkable(resolved, source)
-                .then(|| rustdoc_path(&node.semantic_key, "struct"));
+                .then(|| rustdoc_path(&node.semantic_key, node_rustdoc_kind(node), anchor_depth));
             let applications = lowered
                 .applications
                 .iter()
@@ -257,7 +260,7 @@ pub(super) fn plan_diagrams(
             let public_path = token_bindings
                 .iter()
                 .find(|binding| binding.token == token_index && binding.publicly_materialized)
-                .map(|binding| rustdoc_path(&binding.semantic_key, "type"));
+                .map(|binding| rustdoc_path(&binding.semantic_key, "type", anchor_depth));
             let ident = binding.map_or_else(
                 || definition.name.clone(),
                 |binding| binding.ident.unraw().to_string(),
@@ -287,6 +290,7 @@ pub(super) fn plan_diagrams(
         .collect();
     Ok(DiagramPlan {
         grammar_name: resolved.build_inputs.module_anchor.segments.join("::"),
+        anchor_depth,
         nodes,
         tokens,
         fixed_tokens,
@@ -306,19 +310,46 @@ fn merge_link(links: &mut BTreeMap<String, Option<String>>, label: &str, link: O
     }
 }
 
-/// Converts a semantic key into a path relative to the generated grammar module.
-fn rustdoc_path(semantic_key: &str, kind: &str) -> String {
+/// Returns the Rustdoc item kind for one generated Node's Rust type.
+///
+/// Enum and Pratt parse bodies generate Rust enums; struct bodies generate
+/// structs. Links must name the kind Rustdoc uses in the page filename.
+fn node_rustdoc_kind(node: &NodeParsePlan) -> &'static str {
+    match node
+        .parse_applications
+        .first()
+        .map(|application| &application.body)
+    {
+        Some(NodeBodyPlan::Struct { .. }) => "struct",
+        _ => "enum",
+    }
+}
+
+/// Converts a semantic key into a Rustdoc path relative to the module anchor.
+///
+/// Semantic keys are crate-relative; the anchor owns the generated output
+/// (including the aggregate `grammar_docs` page), so exactly `anchor_depth`
+/// leading module segments are stripped. An anchor of `crate` strips none.
+fn rustdoc_path(semantic_key: &str, kind: &str, anchor_depth: usize) -> String {
     let mut segments = semantic_key.split("::").collect::<Vec<_>>();
     let name = segments.pop().expect("semantic keys are nonempty");
-    if !segments.is_empty() {
-        segments.remove(0);
-    }
+    let segments = &segments[anchor_depth.min(segments.len())..];
     let page = format!("{kind}.{name}.html");
     if segments.is_empty() {
         page
     } else {
         format!("{}/{}", segments.join("/"), page)
     }
+}
+
+/// Returns the `../` ascent from a declaration's module up to the anchor.
+///
+/// Declaration-local diagrams embed into the Rustdoc page of their own
+/// module; anchor-relative link targets therefore first ascend one level per
+/// module below the anchor.
+fn ascent_to_anchor(semantic_key: &str, anchor_depth: usize) -> String {
+    let module_depth = semantic_key.split("::").count().saturating_sub(1);
+    "../".repeat(module_depth.saturating_sub(anchor_depth))
 }
 
 /// Reports whether a Node and every containing module are publicly reachable.
@@ -731,29 +762,108 @@ fn inline_references(
     expanded: &mut BTreeSet<String>,
     budget: &mut usize,
 ) -> DiagramNode {
+    let planned = plan_inline_depths(node, bodies, expanded, budget);
+    rewrite_planned_references(node, bodies, &planned, expanded, 0)
+}
+
+/// Chooses which references inline and at which depth, spending breadth-first.
+///
+/// Depth-ordered spending guarantees a diagram shows its own structure one
+/// level down before any grandchild expands: every admissible depth-one
+/// reference is admitted before the first depth-two candidate is considered,
+/// so deep sub-trees cannot starve a node's own top-level clauses. Within one
+/// depth, candidates are admitted in traversal order.
+fn plan_inline_depths(
+    root: &DiagramNode,
+    bodies: &BTreeMap<String, DiagramNode>,
+    seeded: &BTreeSet<String>,
+    budget: &mut usize,
+) -> BTreeMap<String, usize> {
+    let mut planned = BTreeMap::new();
+    let mut level = vec![root];
+    let mut depth = 0usize;
+    while !level.is_empty() && *budget > 0 {
+        let mut candidates = Vec::new();
+        for node in level {
+            collect_body_references(node, &mut candidates);
+        }
+        let mut admitted = Vec::new();
+        for reference in candidates {
+            if *budget == 0 {
+                break;
+            }
+            if seeded.contains(&reference) || planned.contains_key(&reference) {
+                continue;
+            }
+            let Some(body) = bodies.get(&reference) else {
+                continue;
+            };
+            if diagram_leaf_count(body) > INLINE_BODY_LEAF_LIMIT {
+                continue;
+            }
+            planned.insert(reference, depth);
+            *budget -= 1;
+            admitted.push(body);
+        }
+        level = admitted;
+        depth += 1;
+    }
+    planned
+}
+
+/// Collects same-grammar reference names from one shallow body in traversal order.
+fn collect_body_references(node: &DiagramNode, references: &mut Vec<String>) {
+    match node {
+        DiagramNode::NonTerminal {
+            reference: Some(reference),
+            ..
+        } => references.push(reference.clone()),
+        DiagramNode::Empty
+        | DiagramNode::Terminal(_)
+        | DiagramNode::NonTerminal { .. }
+        | DiagramNode::Comment(_) => {}
+        DiagramNode::Inline { body, .. } => collect_body_references(body, references),
+        DiagramNode::Sequence(nodes) | DiagramNode::Choice(nodes) => {
+            for node in nodes {
+                collect_body_references(node, references);
+            }
+        }
+        DiagramNode::Optional(node) => collect_body_references(node, references),
+        DiagramNode::Repeat { item, separator } => {
+            collect_body_references(item, references);
+            collect_body_references(separator, references);
+        }
+    }
+}
+
+/// Expands each planned reference at its planned depth, linking every other one.
+///
+/// The rewrite walks the same tree the planner walked, so a reference planned
+/// at a depth always has an occurrence there; occurrences at other depths, and
+/// later occurrences at the same depth, stay opaque linked boxes.
+fn rewrite_planned_references(
+    node: &DiagramNode,
+    bodies: &BTreeMap<String, DiagramNode>,
+    planned: &BTreeMap<String, usize>,
+    expanded: &mut BTreeSet<String>,
+    depth: usize,
+) -> DiagramNode {
     match node {
         DiagramNode::NonTerminal {
             label,
             link,
             reference: Some(reference),
-        } if bodies.contains_key(reference) => {
-            if *budget > 0
-                && diagram_leaf_count(&bodies[reference]) <= INLINE_BODY_LEAF_LIMIT
-                && expanded.insert(reference.clone())
-            {
-                *budget -= 1;
-                DiagramNode::Inline {
-                    label: label.clone(),
-                    link: link.clone(),
-                    body: Box::new(inline_references(
-                        &bodies[reference],
-                        bodies,
-                        expanded,
-                        budget,
-                    )),
-                }
-            } else {
-                node.clone()
+        } if planned.get(reference) == Some(&depth) && expanded.insert(reference.clone()) => {
+            DiagramNode::Inline {
+                label: label.clone(),
+                link: link.clone(),
+                body: Box::new(rewrite_planned_references(
+                    &bodies[reference],
+                    bodies,
+                    planned,
+                    expanded,
+                    depth + 1,
+                )),
             }
         }
         DiagramNode::Empty
@@ -763,26 +873,36 @@ fn inline_references(
         DiagramNode::Inline { label, link, body } => DiagramNode::Inline {
             label: label.clone(),
             link: link.clone(),
-            body: Box::new(inline_references(body, bodies, expanded, budget)),
+            body: Box::new(rewrite_planned_references(
+                body,
+                bodies,
+                planned,
+                expanded,
+                depth + 1,
+            )),
         },
         DiagramNode::Sequence(nodes) => DiagramNode::Sequence(
             nodes
                 .iter()
-                .map(|node| inline_references(node, bodies, expanded, budget))
+                .map(|node| rewrite_planned_references(node, bodies, planned, expanded, depth))
                 .collect(),
         ),
         DiagramNode::Choice(nodes) => DiagramNode::Choice(
             nodes
                 .iter()
-                .map(|node| inline_references(node, bodies, expanded, budget))
+                .map(|node| rewrite_planned_references(node, bodies, planned, expanded, depth))
                 .collect(),
         ),
-        DiagramNode::Optional(node) => {
-            DiagramNode::Optional(Box::new(inline_references(node, bodies, expanded, budget)))
-        }
+        DiagramNode::Optional(node) => DiagramNode::Optional(Box::new(rewrite_planned_references(
+            node, bodies, planned, expanded, depth,
+        ))),
         DiagramNode::Repeat { item, separator } => DiagramNode::Repeat {
-            item: Box::new(inline_references(item, bodies, expanded, budget)),
-            separator: Box::new(inline_references(separator, bodies, expanded, budget)),
+            item: Box::new(rewrite_planned_references(
+                item, bodies, planned, expanded, depth,
+            )),
+            separator: Box::new(rewrite_planned_references(
+                separator, bodies, planned, expanded, depth,
+            )),
         },
     }
 }
@@ -951,20 +1071,31 @@ pub(super) fn render_aggregate_diagram_document(plan: &DiagramPlan) -> String {
 }
 
 /// Renders declaration-local Rustdoc for one generated Node.
-pub(super) fn render_node_diagram_document(node: &NodeDiagramPlan) -> String {
+pub(super) fn render_node_diagram_document(node: &NodeDiagramPlan, anchor_depth: usize) -> String {
     format!(
         "## Generated grammar diagram\n\nRECURSA_NODE_DIAGRAM: {}\n\n{}\n\nFixed-token terminals are syntax-only and do not add AST fields. Boxed subdiagrams expand a referenced production in place; repeated references stay opaque.\n",
         node.ident,
-        scrollable_diagram(&diagram_svg(&node.production, &node.semantic_key))
+        scrollable_diagram(&diagram_svg_with_prefix(
+            &node.production,
+            &node.semantic_key,
+            &ascent_to_anchor(&node.semantic_key, anchor_depth),
+        ))
     )
 }
 
 /// Renders declaration-local Rustdoc for one generated content-token type.
-pub(super) fn render_token_diagram_document(token: &TokenDiagramPlan) -> String {
+pub(super) fn render_token_diagram_document(
+    token: &TokenDiagramPlan,
+    anchor_depth: usize,
+) -> String {
     format!(
         "## Generated token diagram\n\nRECURSA_TOKEN_DIAGRAM: {}\n\n{}\n\nThe label `{}` represents the content-token regex `{}`; parsed values retain exact matched text.\n",
         token.ident,
-        scrollable_diagram(&diagram_svg(&token.production, &token.semantic_key)),
+        scrollable_diagram(&diagram_svg_with_prefix(
+            &token.production,
+            &token.semantic_key,
+            &ascent_to_anchor(&token.semantic_key, anchor_depth),
+        )),
         token.label,
         token.pattern
     )
@@ -1210,6 +1341,60 @@ mod tests {
     }
 
     #[test]
+    fn rustdoc_paths_strip_exactly_the_anchor_depth() {
+        // Anchor `crate` (depth 0): every crate-relative module segment survives.
+        assert_eq!(
+            rustdoc_path("ast::utility::explain::ExplainStmt", "struct", 0),
+            "ast/utility/explain/struct.ExplainStmt.html",
+        );
+        // Anchor `crate::grammar` (depth 1): the anchor segment is stripped.
+        assert_eq!(
+            rustdoc_path("grammar::Record", "struct", 1),
+            "struct.Record.html",
+        );
+        assert_eq!(
+            rustdoc_path("grammar::nested::Leaf", "struct", 1),
+            "nested/struct.Leaf.html",
+        );
+    }
+
+    #[test]
+    fn declaration_local_documents_ascend_to_the_anchor_before_descending() {
+        let node = NodeDiagramPlan {
+            semantic_key: "ast::utility::explain::ExplainStmt".to_owned(),
+            ident: "ExplainStmt".to_owned(),
+            public_path: Some("ast/utility/explain/struct.ExplainStmt.html".to_owned()),
+            production: DiagramNode::NonTerminal {
+                label: "ExplainInput".to_owned(),
+                link: Some("ast/utility/explain/struct.ExplainInput.html".to_owned()),
+                reference: None,
+            },
+        };
+        let document = render_node_diagram_document(&node, 0);
+        assert!(
+            document
+                .contains("xlink:href=\"../../../ast/utility/explain/struct.ExplainInput.html\""),
+            "a page three modules below the anchor ascends three times:\n{document}",
+        );
+
+        let anchored = NodeDiagramPlan {
+            semantic_key: "grammar::Record".to_owned(),
+            ident: "Record".to_owned(),
+            public_path: Some("struct.Record.html".to_owned()),
+            production: DiagramNode::NonTerminal {
+                label: "Label".to_owned(),
+                link: Some("struct.Label.html".to_owned()),
+                reference: None,
+            },
+        };
+        let document = render_node_diagram_document(&anchored, 1);
+        assert!(
+            document.contains("xlink:href=\"struct.Label.html\""),
+            "a page at the anchor links its siblings directly:\n{document}",
+        );
+    }
+
+    #[test]
     fn labels_drop_module_qualifiers_but_keep_type_argument_structure() {
         assert_eq!(shorten_label("grammar::Pair"), "Pair");
         assert_eq!(
@@ -1333,6 +1518,65 @@ mod tests {
             "expansions stop exactly at the budget and the rest stay linked",
         );
         assert_eq!(budget, 0);
+    }
+
+    #[test]
+    fn budget_spends_breadth_first_so_shallow_references_inline_before_grandchildren() {
+        fn reference(name: &str) -> DiagramNode {
+            DiagramNode::NonTerminal {
+                label: shorten_label(name),
+                link: None,
+                reference: Some(name.to_owned()),
+            }
+        }
+
+        let mut bodies = BTreeMap::new();
+        for deep in ["grammar::DeepA", "grammar::DeepB"] {
+            let children = (0..8)
+                .map(|index| format!("{deep}Child{index}"))
+                .collect::<Vec<_>>();
+            for child in &children {
+                bodies.insert(child.clone(), DiagramNode::Terminal("C".into()));
+            }
+            bodies.insert(
+                deep.to_owned(),
+                DiagramNode::Sequence(children.iter().map(|name| reference(name)).collect()),
+            );
+        }
+        bodies.insert(
+            "grammar::WhereClause".to_owned(),
+            sequence(vec![DiagramNode::Terminal("WHERE".into())]),
+        );
+        bodies.insert(
+            "grammar::Root".to_owned(),
+            sequence(vec![
+                reference("grammar::DeepA"),
+                reference("grammar::DeepB"),
+                reference("grammar::WhereClause"),
+            ]),
+        );
+
+        let mut expanded = BTreeSet::from(["grammar::Root".to_owned()]);
+        let mut budget = INLINE_EXPANSION_BUDGET;
+        let inlined = inline_references(
+            &bodies["grammar::Root"],
+            &bodies,
+            &mut expanded,
+            &mut budget,
+        );
+        let DiagramNode::Sequence(elements) = &inlined else {
+            panic!("the root stays a sequence: {inlined:?}");
+        };
+        assert!(
+            matches!(&elements[0], DiagramNode::Inline { .. }),
+            "the first depth-one reference expands: {:?}",
+            elements[0],
+        );
+        assert!(
+            matches!(&elements[2], DiagramNode::Inline { label, .. } if label == "WhereClause"),
+            "a later depth-one reference expands before any grandchild starves it: {:?}",
+            elements[2],
+        );
     }
 
     #[test]
