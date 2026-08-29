@@ -244,6 +244,8 @@ pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, St
     rendering
         .validate_rendered_rust(&root_tokens)
         .map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
+    let root_tokens = apply_generated_lint_boundary(root_tokens)
+        .map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
     let root = root_tokens.to_string();
     let mut instrumentation = RenderInstrumentation::default();
     let mut nodes = Vec::new();
@@ -252,6 +254,8 @@ pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, St
         let tokens = render_node(plan, node, index, &mut instrumentation);
         rendering
             .validate_rendered_rust(&tokens)
+            .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
+        let tokens = apply_generated_lint_boundary(tokens)
             .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
         nodes.push((name, tokens.to_string()));
     }
@@ -279,6 +283,56 @@ pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, St
             .collect(),
         selector,
     })
+}
+
+/// Applies the closed generated-code lint policy to concrete generated items.
+///
+/// The source files are loaded into a downstream module with `include!`, where a file-level inner
+/// attribute is not permitted and an attribute on the `include!` invocation is ignored. Applying
+/// the policy to each concrete item keeps handwritten downstream items under their crate's lint
+/// settings. Rust ignores lint attributes on macro invocations, so the known pass-through
+/// capability gates are traversed and the policy is applied to the concrete items in their token
+/// bodies. Structural handshake and loader macros remain unchanged.
+fn apply_generated_lint_boundary(
+    tokens: proc_macro2::TokenStream,
+) -> Result<proc_macro2::TokenStream, syn::Error> {
+    let file = syn::parse2::<syn::File>(tokens)?;
+    let mut rendered = proc_macro2::TokenStream::new();
+    for item in file.items {
+        let bounded = if let syn::Item::Macro(mut item) = item {
+            if item.mac.path.is_ident("__recursa_if_arbitrary")
+                || item.mac.path.is_ident("__recursa_if_serde")
+                || item.mac.path.is_ident("__recursa_if_explorer")
+            {
+                item.mac.tokens = apply_generated_lint_boundary(item.mac.tokens)?;
+            }
+            quote!(#item)
+        } else {
+            quote! {
+                #[allow(
+                    dead_code,
+                    non_camel_case_types,
+                    private_bounds,
+                    private_interfaces,
+                    unreachable_patterns,
+                    unused_variables,
+                    clippy::blocks_in_conditions,
+                    clippy::borrowed_box,
+                    clippy::collapsible_if,
+                    clippy::match_single_binding,
+                    clippy::needless_borrow,
+                    clippy::needless_return,
+                    clippy::never_loop,
+                    clippy::new_ret_no_self,
+                    clippy::possible_missing_else,
+                    clippy::unnecessary_literal_unwrap
+                )]
+                #item
+            }
+        };
+        rendered.extend(bounded);
+    }
+    Ok(rendered)
 }
 /// Renders the structural root, preserving protocol sections and exports in their planned order.
 ///
@@ -461,7 +515,6 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         ];
 
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-        #[allow(non_camel_case_types)]
         pub enum TokenKind {
             #(#kind_variants,)*
             LexicalError,
@@ -1088,7 +1141,6 @@ pub(super) fn render_node(
         #explorer
 
         #diagram_attribute
-        #[allow(dead_code)]
         impl #impl_generics #node_ident #type_generics #where_clause {
             pub fn parse #inherent_method_generics(
                 input: &mut #module_anchor::Input<#input_lifetime, A>,

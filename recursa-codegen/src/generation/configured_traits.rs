@@ -1278,7 +1278,6 @@ pub(super) fn render_node_serde(
     let helper_definition = quote! {
         #[derive(#(#derives),*)]
         #[serde(remote = #remote, crate = #serde_crate)]
-        #[allow(non_camel_case_types)]
         #helper_body
     };
     let serialize_impl = serialize.then(|| {
