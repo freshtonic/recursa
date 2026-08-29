@@ -682,12 +682,17 @@ impl EmissionPlan {
             ));
         }
         for token in &tokens {
+            let accepted_kind_variants = token
+                .accepted_kind_variants
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
             canonical.push_str(&format!(
                 ";token={}:{}:{}:{:?}",
                 token.ident,
                 token.kind,
                 token.capture.canonical_name(),
-                token.accepted_kind_variants,
+                accepted_kind_variants,
             ));
         }
         for binding in &token_bindings {
