@@ -212,6 +212,104 @@ fn mixed_static_and_caller_optional_overlap(
     (builder.grammar, optional_ab)
 }
 
+fn mixed_exact_cell_optional_overlap() -> (
+    GrammarDescription,
+    recursa_codegen::SiteId,
+    recursa_codegen::SiteId,
+) {
+    let mut builder = Builder::with_lookahead("mixed-exact-cells", &["A", "B", "X", "C"], 2);
+    let a = builder.token("A", 0);
+    let b = builder.token("B", 1);
+    let x = builder.token("X", 2);
+    let c = builder.token("C", 3);
+
+    let element = builder.grammar.next_type_id();
+    let element_decl = builder.declaration("Element");
+    let starts_a_decl = builder.declaration("Element::StartsA");
+    let starts_a = builder.site(element, a, "element_a", ContainerShape::Direct);
+    let starts_a_x = builder.site(element, x, "element_a_x", ContainerShape::Direct);
+    let starts_b_decl = builder.declaration("Element::StartsB");
+    let starts_b = builder.site(element, b, "element_b", ContainerShape::Direct);
+    let starts_b_x = builder.site(element, x, "element_b_x", ContainerShape::Direct);
+    assert_eq!(
+        builder.grammar.push_type(TypeDescription::new(
+            "Element",
+            element_decl,
+            TypeShape::Enum {
+                alternatives: vec![
+                    Alternative {
+                        declaration: starts_a_decl,
+                        sites: vec![starts_a, starts_a_x],
+                    },
+                    Alternative {
+                        declaration: starts_b_decl,
+                        sites: vec![starts_b, starts_b_x],
+                    },
+                ],
+            },
+        )),
+        element,
+    );
+
+    let tail = builder.grammar.next_type_id();
+    let tail_decl = builder.declaration("Tail");
+    let tail_a = builder.site(tail, a, "tail_a", ContainerShape::Direct);
+    let tail_c = builder.site(tail, c, "tail_c", ContainerShape::Direct);
+    assert_eq!(
+        builder.grammar.push_type(TypeDescription::new(
+            "Tail",
+            tail_decl,
+            TypeShape::Sequence {
+                sites: vec![tail_a, tail_c],
+            },
+        )),
+        tail,
+    );
+
+    let owner = builder.grammar.next_type_id();
+    let owner_decl = builder.declaration("Owner");
+    let required_x = builder.site(owner, x, "required_x", ContainerShape::Direct);
+    let optional_element = builder.site(
+        owner,
+        element,
+        "optional_element",
+        ContainerShape::optional(ContainerShape::Direct),
+    );
+    let optional_tail = builder.site(
+        owner,
+        tail,
+        "optional_tail",
+        ContainerShape::optional(ContainerShape::Direct),
+    );
+    assert_eq!(
+        builder.grammar.push_type(TypeDescription::new(
+            "Owner",
+            owner_decl,
+            TypeShape::Sequence {
+                sites: vec![required_x, optional_element, optional_tail],
+            },
+        )),
+        owner,
+    );
+
+    let root = builder.grammar.next_type_id();
+    let root_decl = builder.declaration("Root");
+    let owner_use = builder.site(root, owner, "owner", ContainerShape::Direct);
+    let caller_b = builder.site(root, b, "caller_b", ContainerShape::Direct);
+    assert_eq!(
+        builder.grammar.push_type(TypeDescription::new(
+            "Root",
+            root_decl,
+            TypeShape::Sequence {
+                sites: vec![owner_use, caller_b],
+            },
+        )),
+        root,
+    );
+    builder.grammar.entry_types.push(root);
+    (builder.grammar, optional_element, owner_use)
+}
+
 fn nested_nullable_follow(predicate_match: bool) -> (GrammarDescription, recursa_codegen::SiteId) {
     let mut builder = Builder::new("nested-follow", &["Word"]);
     let select = builder
@@ -420,6 +518,57 @@ fn decidable_static_optional_tail_ignores_disjoint_caller_follow() {
         matches!(
             diagnostic.conflict_remedy,
             Some(ConflictRemedy::ReviewNullableFollow { site }) if site == optional_ab
+        )
+    }));
+}
+
+#[test]
+fn decidable_static_cell_does_not_pollute_distinct_caller_follow_evidence() {
+    let (grammar, optional_element, owner_use) = mixed_exact_cell_optional_overlap();
+    let report = analyze(&grammar);
+
+    assert!(report.output.is_some(), "{:?}", report.diagnostics);
+    let warnings = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code == DiagnosticCode::NullableFollowOverlap
+                && matches!(
+                    diagnostic.conflict_remedy,
+                    Some(ConflictRemedy::ReviewNullableFollow { site })
+                        if site == optional_element
+                )
+        })
+        .collect::<Vec<_>>();
+    let [warning] = warnings.as_slice() else {
+        panic!("the optional element must have one caller-FOLLOW warning: {warnings:#?}");
+    };
+    let evidence = warning
+        .conflict
+        .as_ref()
+        .expect("the caller-FOLLOW warning retains exact evidence");
+    assert_eq!(
+        evidence.overlap.iter().collect::<Vec<_>>(),
+        [KindId::new(1)]
+    );
+    assert_eq!(evidence.witness.kind, KindId::new(1));
+    assert_eq!(
+        warning.secondary.as_slice(),
+        [recursa_codegen::DiagnosticLabel::located(
+            grammar.declarations[grammar.sites[owner_use.index()].declaration.index()].location,
+            "the same kind can follow this use site",
+        )],
+        "the secondary declaration must come from caller-FOLLOW propagation",
+    );
+    assert!(report.proofs().chain(evidence.witness.right).any(|node| {
+        matches!(
+            node.step,
+            recursa_codegen::ProvenanceStep::FollowPropagation {
+                owner,
+                site: Some(site),
+                ..
+            } if owner == grammar.sites[optional_element.index()].owner
+                && site == optional_element
         )
     }));
 }
