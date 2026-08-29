@@ -6,9 +6,9 @@
 use super::*;
 
 /// Private loader protocol understood by generated roots and the facade.
-pub(super) const PRIVATE_PROTOCOL: u32 = 6;
+pub(super) const PRIVATE_PROTOCOL: u32 = 7;
 /// Stable emitter-format identity hashed into every generated family identity.
-pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v3";
+pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v32";
 
 /// Returns the emitter, release, and protocol prefix that invalidates cached Generations.
 pub(super) fn generation_protocol_identity() -> String {
@@ -72,7 +72,7 @@ pub(super) fn authoritative_private_abi_plan() -> PrivateAbiPlan {
     }
 }
 
-/// Enumerates accepted facade combinations in deterministic boolean-product order.
+/// Reconstructs complete generated trait behavior from authored selections and intrinsic traits.
 pub(super) fn authoritative_configured_trait_identity(
     lowered: &crate::materialization::LoweredGrammar,
     resolved: &crate::resolution::ResolvedSourceGrammar,
@@ -109,9 +109,19 @@ pub(super) fn authoritative_configured_trait_identity(
                     | TokenDefinitionKind::LexicalBase(_) => None,
                 })
         {
-            for selection in &token.configured_traits.effective {
-                canonical.push_str(&format!("{:?},", selection.recipe));
-            }
+            append_content_token_trait_identity(
+                &mut canonical,
+                token
+                    .configured_traits
+                    .effective
+                    .iter()
+                    .map(|selection| selection.recipe),
+                PRIVATE_CONTENT_TOKEN_SUPPORT_TRAITS
+                    .into_iter()
+                    .filter(|recipe| {
+                        authoritative_content_token_support(lowered, content.id, *recipe)
+                    }),
+            );
         } else {
             canonical.push_str("<missing>");
         }
@@ -120,7 +130,7 @@ pub(super) fn authoritative_configured_trait_identity(
     stable_hash(canonical.as_bytes())
 }
 
-/// Hashes configured-trait recipes in canonical Node-then-token order.
+/// Hashes complete Node and content-token trait behavior in canonical order.
 pub(super) fn configured_trait_plan_identity(
     nodes: &[NodeParsePlan],
     tokens: &[TokenParsePlan],
@@ -135,12 +145,80 @@ pub(super) fn configured_trait_plan_identity(
     }
     for (index, token) in tokens.iter().enumerate() {
         canonical.push_str(&format!("token-{index}:"));
-        for recipe in &token.configured_traits {
-            canonical.push_str(&format!("{recipe:?},"));
-        }
+        append_content_token_trait_identity(
+            &mut canonical,
+            token.configured_traits.iter().copied(),
+            PRIVATE_CONTENT_TOKEN_SUPPORT_TRAITS
+                .into_iter()
+                .filter(|recipe| content_token_support_required_in(nodes, token.semantic, *recipe)),
+        );
         canonical.push(';');
     }
     stable_hash(canonical.as_bytes())
+}
+
+/// Records intrinsic content-token traits before their optional configured recipes.
+fn append_content_token_trait_identity(
+    canonical: &mut String,
+    configured: impl IntoIterator<Item = ConfiguredTraitRecipe>,
+    support: impl IntoIterator<Item = ConfiguredTraitRecipe>,
+) {
+    canonical.push_str("intrinsic[");
+    for recipe in INTRINSIC_CONTENT_TOKEN_VALUE_TRAITS {
+        canonical.push_str(&format!("{recipe:?},"));
+    }
+    canonical.push_str("];configured[");
+    for recipe in configured {
+        canonical.push_str(&format!("{recipe:?},"));
+    }
+    canonical.push_str("];support[");
+    for recipe in support {
+        canonical.push_str(&format!("{recipe:?},"));
+    }
+    canonical.push(']');
+}
+
+/// Reconstructs one private hidden-token support edge from materialized authored structure.
+fn authoritative_content_token_support(
+    lowered: &crate::materialization::LoweredGrammar,
+    token: ContentTokenId,
+    recipe: ConfiguredTraitRecipe,
+) -> bool {
+    let source = lowered.source_modeled.source_model();
+    lowered.applications.iter().any(|application| {
+        let configured = source
+            .nodes
+            .iter()
+            .find(|node| node.resolved_node == application.node)
+            .is_some_and(|node| {
+                node.configured_traits
+                    .effective
+                    .iter()
+                    .any(|selection| selection.recipe == recipe)
+            });
+        configured
+            && application.parsed_fields().any(|element| {
+                matches!(
+                    element,
+                    MaterializedElement::SemanticField {
+                        projection: MaterializedSemanticFieldProjection::Direct { ty, .. },
+                        ..
+                    } if closed_content_token_terminal(ty) == Some(token)
+                )
+            })
+    })
+}
+
+/// Resolves a hidden terminal below supported storage wrappers.
+fn closed_content_token_terminal(ty: &ClosedType) -> Option<ContentTokenId> {
+    match ty {
+        ClosedType::ContentToken(token) => Some(*token),
+        ClosedType::Boxed(inner)
+        | ClosedType::Optional(inner)
+        | ClosedType::ZeroOrMore(inner)
+        | ClosedType::OneOrMore(inner) => closed_content_token_terminal(inner),
+        ClosedType::Node(_) => None,
+    }
 }
 
 /// Enumerates facade capability combinations that satisfy requested generated behavior.
@@ -231,14 +309,18 @@ pub(super) fn capability_plan_from_recipes(
 
 #[cfg(test)]
 mod tests {
-    use super::{PRIVATE_PROTOCOL, generation_protocol_identity, generation_protocol_identity_for};
+    use super::{
+        EMITTER_IDENTITY, PRIVATE_PROTOCOL, generation_protocol_identity,
+        generation_protocol_identity_for,
+    };
 
     #[test]
     fn generated_public_shape_revision_changes_the_generation_cache_identity() {
-        assert_eq!(PRIVATE_PROTOCOL, 6);
+        assert_eq!(PRIVATE_PROTOCOL, 7);
+        assert_eq!(EMITTER_IDENTITY, "recursa-generation-compound-v32");
         assert_eq!(
             generation_protocol_identity(),
-            generation_protocol_identity_for(6)
+            generation_protocol_identity_for(7)
         );
         assert_ne!(
             generation_protocol_identity(),

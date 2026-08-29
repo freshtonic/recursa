@@ -11,6 +11,9 @@
 //! identities permit legal recursive Nodes while explicit alias tracking
 //! rejects open, cyclic, or unsupported authored types.
 
+#[cfg(test)]
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -26,11 +29,14 @@ use crate::resolution::{
     ResolvedGenericArgument, ResolvedNode, ResolvedSourceGrammar, ResolvedType, ResolvedTypeKind,
     ResolvedVariantId, SemanticOwner, SemanticTarget, SemanticUseId, TypeAliasId,
 };
+#[cfg(test)]
+use crate::source_model::PrettyBoundaryProofCounts;
 use crate::source_model::{
     AttachedFixedSyntax, ConfiguredTraitRecipe, DeclaredRepetition, GrammarElement,
-    MaterializedPrettyBoundary, NodeBody, SemanticFieldProjection, Separator, SourceModel,
-    SourceModeledGrammar, SourcePrattPosition, SourcePrattVariant,
-    materialized_pretty_boundary_changes_lexing,
+    MaterializedPrettyBoundary, NodeBody, PrettyBoundaryProver, PrettyPatternCatalogId,
+    SemanticFieldProjection, Separator, SourceModel, SourceModeledGrammar, SourcePrattPosition,
+    SourcePrattVariant, TokenDefinitionKind, materialized_pretty_boundary_changes_lexing,
+    materialized_pretty_lexical_patterns,
 };
 use crate::{
     AtomDescription, AtomExpression, ContainerShape, DeclId, Declaration, GrammarDescription,
@@ -67,6 +73,30 @@ pub(crate) struct MaterializationReport {
     pub(crate) diagnostics: Vec<MaterializationDiagnostic>,
     /// Complete lowered grammar, withheld when either diagnostic collection blocks it.
     pub(crate) lowered: Option<LoweredGrammar>,
+    /// Counts Pretty-boundary proof work for focused cache invariant tests.
+    #[cfg(test)]
+    pub(crate) pretty_boundary_proof_counts: PrettyBoundaryProofCounts,
+    /// Counts closed Pretty-summary fixed-point work for focused cache invariant tests.
+    #[cfg(test)]
+    pub(crate) closed_pretty_summary_counts: ClosedPrettySummaryCounts,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Counts deterministic closed Pretty-summary work within one materialization run.
+pub(crate) struct ClosedPrettySummaryCounts {
+    /// Counts whole-application fixed-point rounds, including the stable round.
+    pub(crate) fixed_point_rounds: usize,
+    /// Counts application bodies evaluated while finding the fixed point.
+    pub(crate) body_evaluations: usize,
+    /// Counts Node-summary queries served from the run-local cache.
+    pub(crate) cache_queries: usize,
+    /// Counts fixed-point summaries that differ from the former cycle-cut oracle in tests.
+    pub(crate) legacy_mismatches: usize,
+    /// Records the largest distinct boundary set retained by one summary side.
+    pub(crate) max_retained_boundaries: usize,
+    /// Records the largest number of insertions attempted while building one summary side.
+    pub(crate) max_attempted_boundary_insertions: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -922,17 +952,117 @@ struct Materializer {
     active_aliases: Vec<TypeAliasId>,
     /// Supplies the active applications needed to materialize a concrete grammar application.
     active_applications: Vec<ApplicationKey>,
+    /// Reuses compiled regular-language products across Pretty-boundary checks in this run.
+    pretty_boundary_prover: RefCell<PrettyBoundaryProver>,
+    /// Identifies the immutable source-ordered lexical pattern catalog for Pretty checks.
+    pretty_lexical_catalog: PrettyPatternCatalogId,
+    /// Caches the least fixed point of every closed application Pretty boundary summary.
+    closed_pretty_boundary_summaries: RefCell<Vec<PrettyBoundarySummary>>,
+    /// Counts fixed-point and cache work for deterministic focused tests.
+    #[cfg(test)]
+    closed_pretty_summary_counts: Cell<ClosedPrettySummaryCounts>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// Carries the pretty boundary summary while expanding resolved grammar type applications.
 struct PrettyBoundarySummary {
     /// Supplies the first needed to materialize a concrete grammar application.
-    first: Vec<MaterializedPrettyBoundary>,
+    first: OrderedPrettyBoundaries,
     /// Supplies the last needed to materialize a concrete grammar application.
-    last: Vec<MaterializedPrettyBoundary>,
+    last: OrderedPrettyBoundaries,
     /// Supplies the nullable needed to materialize a concrete grammar application.
     nullable: bool,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Gives one Pretty boundary a stable identity for fixed-point set normalization.
+enum PrettyBoundaryIdentity {
+    /// Identifies one fixed token definition.
+    Fixed(crate::lowering::TokenDefinitionId),
+    /// Identifies one regex-backed boundary language.
+    Regex(String),
+}
+
+impl From<&MaterializedPrettyBoundary> for PrettyBoundaryIdentity {
+    fn from(boundary: &MaterializedPrettyBoundary) -> Self {
+        match boundary {
+            MaterializedPrettyBoundary::Fixed(id) => Self::Fixed(*id),
+            MaterializedPrettyBoundary::Regex(pattern) => Self::Regex(pattern.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+/// Retains distinct Pretty boundaries in deterministic first-discovery order.
+struct OrderedPrettyBoundaries {
+    /// Stores boundary values in deterministic semantic iteration order.
+    values: Vec<MaterializedPrettyBoundary>,
+    /// Rejects duplicate values before they can expand fixed-point intermediates.
+    identities: BTreeSet<PrettyBoundaryIdentity>,
+    /// Counts attempted insertions for deterministic bounded-work tests.
+    #[cfg(test)]
+    attempted_insertions: usize,
+}
+
+impl PartialEq for OrderedPrettyBoundaries {
+    fn eq(&self, other: &Self) -> bool {
+        self.identities == other.identities
+    }
+}
+
+impl Eq for OrderedPrettyBoundaries {}
+
+impl OrderedPrettyBoundaries {
+    /// Creates one ordered set containing exactly one boundary.
+    fn singleton(boundary: MaterializedPrettyBoundary) -> Self {
+        let mut boundaries = Self::default();
+        boundaries.insert(boundary);
+        boundaries
+    }
+
+    /// Inserts one boundary only when its semantic identity is not already retained.
+    fn insert(&mut self, boundary: MaterializedPrettyBoundary) {
+        #[cfg(test)]
+        {
+            self.attempted_insertions += 1;
+        }
+        if self
+            .identities
+            .insert(PrettyBoundaryIdentity::from(&boundary))
+        {
+            self.values.push(boundary);
+        }
+        debug_assert_eq!(self.identities.len(), self.values.len());
+    }
+
+    /// Extends this set from another ordered set without constructing duplicate intermediates.
+    fn extend_from(&mut self, boundaries: &Self) {
+        for boundary in &boundaries.values {
+            self.insert(boundary.clone());
+        }
+    }
+
+    /// Borrows retained values in deterministic first-discovery order.
+    fn as_slice(&self) -> &[MaterializedPrettyBoundary] {
+        &self.values
+    }
+
+    /// Reports whether every retained identity is also present in `other`.
+    fn is_subset(&self, other: &Self) -> bool {
+        self.identities.is_subset(&other.identities)
+    }
+
+    /// Returns the number of distinct retained boundaries.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Returns the number of attempted insertions that built this set.
+    #[cfg(test)]
+    fn attempted_insertions(&self) -> usize {
+        self.attempted_insertions
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -946,6 +1076,15 @@ enum PrettyBoundarySite {
 
 /// Derives the materialize while materializing grammar applications and container shapes.
 pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> MaterializationReport {
+    let equivalence = source_modeled
+        .resolved()
+        .configuration
+        .syntax
+        .text_equivalence;
+    let lexical_patterns =
+        materialized_pretty_lexical_patterns(source_modeled.source_model(), equivalence);
+    let mut pretty_boundary_prover = PrettyBoundaryProver::default();
+    let pretty_lexical_catalog = pretty_boundary_prover.intern_catalog(&lexical_patterns);
     let lexical = plan_lexical(&source_modeled);
     let materializer = Materializer {
         source_modeled,
@@ -955,6 +1094,11 @@ pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> Materializati
         diagnostics: Vec::new(),
         active_aliases: Vec::new(),
         active_applications: Vec::new(),
+        pretty_boundary_prover: RefCell::new(pretty_boundary_prover),
+        pretty_lexical_catalog,
+        closed_pretty_boundary_summaries: RefCell::default(),
+        #[cfg(test)]
+        closed_pretty_summary_counts: Cell::default(),
     };
     materializer.run(lexical.diagnostics)
 }
@@ -1009,11 +1153,19 @@ impl Materializer {
         if self.diagnostics.is_empty() && lexical_diagnostics.is_empty() {
             self.validate_closed_pretty_boundaries();
         }
+        #[cfg(test)]
+        let pretty_boundary_proof_counts = self.pretty_boundary_prover.borrow().proof_counts();
+        #[cfg(test)]
+        let closed_pretty_summary_counts = self.closed_pretty_summary_counts.get();
         if !self.diagnostics.is_empty() {
             return MaterializationReport {
                 lexical_diagnostics,
                 diagnostics: std::mem::take(&mut self.diagnostics),
                 lowered: None,
+                #[cfg(test)]
+                pretty_boundary_proof_counts,
+                #[cfg(test)]
+                closed_pretty_summary_counts,
             };
         }
         if !lexical_diagnostics.is_empty() {
@@ -1021,6 +1173,10 @@ impl Materializer {
                 lexical_diagnostics,
                 diagnostics: Vec::new(),
                 lowered: None,
+                #[cfg(test)]
+                pretty_boundary_proof_counts,
+                #[cfg(test)]
+                closed_pretty_summary_counts,
             };
         }
         let (grammar, lowering_map) = self.project_normalized_grammar();
@@ -1036,11 +1192,16 @@ impl Materializer {
                 grammar,
                 lowering_map,
             }),
+            #[cfg(test)]
+            pretty_boundary_proof_counts,
+            #[cfg(test)]
+            closed_pretty_summary_counts,
         }
     }
 
     /// Validates closed pretty boundaries.
     fn validate_closed_pretty_boundaries(&mut self) {
+        self.initialize_closed_pretty_boundary_summaries();
         let invalid = self
             .applications
             .iter()
@@ -1094,6 +1255,110 @@ impl Materializer {
         }
     }
 
+    /// Computes every application boundary summary as one finite monotone least fixed point.
+    fn initialize_closed_pretty_boundary_summaries(&self) {
+        let mut current = vec![PrettyBoundarySummary::default(); self.applications.len()];
+        let lattice_height = self
+            .applications
+            .len()
+            .saturating_mul(
+                self.source_model()
+                    .token_definitions
+                    .len()
+                    .saturating_mul(2)
+                    .saturating_add(1),
+            )
+            .saturating_add(1);
+        let mut rounds = 0_usize;
+        loop {
+            rounds += 1;
+            assert!(
+                rounds <= lattice_height,
+                "closed Pretty-summary fixed point exceeded its finite lattice height"
+            );
+            *self.closed_pretty_boundary_summaries.borrow_mut() = current.clone();
+            #[cfg(test)]
+            self.update_closed_pretty_summary_counts(|counts| {
+                counts.fixed_point_rounds += 1;
+            });
+
+            let next = self
+                .applications
+                .iter()
+                .map(|application| {
+                    #[cfg(test)]
+                    self.update_closed_pretty_summary_counts(|counts| {
+                        counts.body_evaluations += 1;
+                    });
+                    self.body_pretty_boundaries(&application.body, &mut BTreeSet::new())
+                })
+                .collect::<Vec<_>>();
+            debug_assert!(current.iter().zip(&next).all(|(before, after)| {
+                before.first.is_subset(&after.first)
+                    && before.last.is_subset(&after.last)
+                    && (!before.nullable || after.nullable)
+            }));
+            if next == current {
+                break;
+            }
+            current = next;
+        }
+
+        #[cfg(test)]
+        {
+            let summaries = self.closed_pretty_boundary_summaries.borrow();
+            let max_retained_boundaries = summaries
+                .iter()
+                .flat_map(|summary| [&summary.first, &summary.last])
+                .map(OrderedPrettyBoundaries::len)
+                .max()
+                .unwrap_or_default();
+            let max_attempted_boundary_insertions = summaries
+                .iter()
+                .flat_map(|summary| [&summary.first, &summary.last])
+                .map(OrderedPrettyBoundaries::attempted_insertions)
+                .max()
+                .unwrap_or_default();
+            self.update_closed_pretty_summary_counts(|counts| {
+                counts.max_retained_boundaries = max_retained_boundaries;
+                counts.max_attempted_boundary_insertions = max_attempted_boundary_insertions;
+            });
+        }
+
+        #[cfg(test)]
+        self.compare_closed_pretty_summaries_with_cycle_cut_oracle();
+    }
+
+    /// Updates deterministic test-only counters without introducing shared global state.
+    #[cfg(test)]
+    fn update_closed_pretty_summary_counts(
+        &self,
+        update: impl FnOnce(&mut ClosedPrettySummaryCounts),
+    ) {
+        let mut counts = self.closed_pretty_summary_counts.get();
+        update(&mut counts);
+        self.closed_pretty_summary_counts.set(counts);
+    }
+
+    /// Compares the fixed point with the former active-cycle-cut traversal on small fixtures.
+    #[cfg(test)]
+    fn compare_closed_pretty_summaries_with_cycle_cut_oracle(&self) {
+        let fixed_point = std::mem::take(&mut *self.closed_pretty_boundary_summaries.borrow_mut());
+        let mismatches = self
+            .applications
+            .iter()
+            .enumerate()
+            .filter(|(index, application)| {
+                let oracle = self.body_pretty_boundaries(&application.body, &mut BTreeSet::new());
+                oracle != fixed_point[*index]
+            })
+            .count();
+        *self.closed_pretty_boundary_summaries.borrow_mut() = fixed_point;
+        self.update_closed_pretty_summary_counts(|counts| {
+            counts.legacy_mismatches = mismatches;
+        });
+    }
+
     /// Derives the body pretty lexing violation while materializing grammar applications and container shapes.
     fn body_pretty_lexing_violation(
         &self,
@@ -1124,22 +1389,50 @@ impl Materializer {
         &self,
         elements: &[MaterializedElement],
     ) -> Option<PrettyBoundarySite> {
-        let mut trailing = Vec::new();
+        let mut trailing = OrderedPrettyBoundaries::default();
         for element in elements {
             if self.attachment_changes_pretty_lexing(element) {
                 return Some(Self::element_pretty_boundary_site(element));
             }
             let summary = self.element_pretty_boundaries(element, &mut BTreeSet::new());
-            if self.pretty_boundary_pairs_change_lexing(&trailing, &summary.first) {
+            if !Self::element_has_pretty_break_before(element)
+                && self.pretty_boundary_pairs_change_lexing(
+                    trailing.as_slice(),
+                    summary.first.as_slice(),
+                )
+            {
                 return Some(Self::element_pretty_boundary_site(element));
             }
-            if summary.nullable {
-                trailing.extend(summary.last);
+            let last = if Self::element_has_pretty_break_after(element) {
+                OrderedPrettyBoundaries::default()
             } else {
-                trailing = summary.last;
+                summary.last
+            };
+            if summary.nullable {
+                trailing.extend_from(&last);
+            } else {
+                trailing = last;
             }
         }
         None
+    }
+
+    /// Reports whether this materialized element emits a separating Pretty break before itself.
+    fn element_has_pretty_break_before(element: &MaterializedElement) -> bool {
+        matches!(
+            element,
+            MaterializedElement::SemanticField { pretty, .. }
+                if pretty.break_before.is_some()
+        )
+    }
+
+    /// Reports whether this materialized element emits a separating Pretty break after itself.
+    fn element_has_pretty_break_after(element: &MaterializedElement) -> bool {
+        matches!(
+            element,
+            MaterializedElement::SemanticField { pretty, .. }
+                if pretty.break_after.is_some()
+        )
     }
 
     /// Derives the element pretty boundary site while materializing grammar applications and container shapes.
@@ -1204,13 +1497,15 @@ impl Materializer {
         {
             return true;
         }
-        let mut trailing = Vec::new();
+        let mut trailing = OrderedPrettyBoundaries::default();
         for summary in summaries.drain(..) {
-            if self.pretty_boundary_pairs_change_lexing(&trailing, &summary.first) {
+            if self
+                .pretty_boundary_pairs_change_lexing(trailing.as_slice(), summary.first.as_slice())
+            {
                 return true;
             }
             if summary.nullable {
-                trailing.extend(summary.last);
+                trailing.extend_from(&summary.last);
             } else {
                 trailing = summary.last;
             }
@@ -1225,6 +1520,7 @@ impl Materializer {
         right: &[MaterializedPrettyBoundary],
     ) -> bool {
         let equivalence = self.resolved().configuration.syntax.text_equivalence;
+        let mut prover = self.pretty_boundary_prover.borrow_mut();
         left.iter().any(|left| {
             right.iter().any(|right| {
                 materialized_pretty_boundary_changes_lexing(
@@ -1232,6 +1528,8 @@ impl Materializer {
                     equivalence,
                     left,
                     right,
+                    self.pretty_lexical_catalog,
+                    &mut prover,
                 )
             })
         })
@@ -1320,16 +1618,16 @@ impl Materializer {
 
     /// Summarizes a source-ordered sequence while preserving nullable boundary alternatives.
     fn pretty_sequence_summary(summaries: &[PrettyBoundarySummary]) -> PrettyBoundarySummary {
-        let mut first = Vec::new();
+        let mut first = OrderedPrettyBoundaries::default();
         for summary in summaries {
-            first.extend(summary.first.clone());
+            first.extend_from(&summary.first);
             if !summary.nullable {
                 break;
             }
         }
-        let mut last = Vec::new();
+        let mut last = OrderedPrettyBoundaries::default();
         for summary in summaries.iter().rev() {
-            last.extend(summary.last.clone());
+            last.extend_from(&summary.last);
             if !summary.nullable {
                 break;
             }
@@ -1345,8 +1643,8 @@ impl Materializer {
     fn fixed_sequence_changes_pretty_lexing(&self, tokens: &[TokenUseId]) -> bool {
         tokens.windows(2).any(|pair| {
             self.pretty_boundary_pairs_change_lexing(
-                &self.fixed_pretty_boundaries(pair[0]).last,
-                &self.fixed_pretty_boundaries(pair[1]).first,
+                self.fixed_pretty_boundaries(pair[0]).last.as_slice(),
+                self.fixed_pretty_boundaries(pair[1]).first.as_slice(),
             )
         })
     }
@@ -1356,8 +1654,8 @@ impl Materializer {
         let definition = self.source_model().token_uses[token_use.index()].definition;
         let boundary = MaterializedPrettyBoundary::Fixed(definition);
         PrettyBoundarySummary {
-            first: vec![boundary.clone()],
-            last: vec![boundary],
+            first: OrderedPrettyBoundaries::singleton(boundary.clone()),
+            last: OrderedPrettyBoundaries::singleton(boundary),
             nullable: false,
         }
     }
@@ -1387,12 +1685,24 @@ impl Materializer {
                     .expect("every closed content token has a source lexical pattern");
                 let boundary = MaterializedPrettyBoundary::Regex(pattern);
                 PrettyBoundarySummary {
-                    first: vec![boundary.clone()],
-                    last: vec![boundary],
+                    first: OrderedPrettyBoundaries::singleton(boundary.clone()),
+                    last: OrderedPrettyBoundaries::singleton(boundary),
                     nullable: false,
                 }
             }
             ClosedType::Node(node) => {
+                if let Some(summary) = self
+                    .closed_pretty_boundary_summaries
+                    .borrow()
+                    .get(node.application.index())
+                    .cloned()
+                {
+                    #[cfg(test)]
+                    self.update_closed_pretty_summary_counts(|counts| {
+                        counts.cache_queries += 1;
+                    });
+                    return summary;
+                }
                 if !active.insert(node.application) {
                     return PrettyBoundarySummary::default();
                 }
@@ -1452,16 +1762,16 @@ impl Materializer {
             .iter()
             .map(|element| self.element_pretty_boundaries(element, active))
             .collect::<Vec<_>>();
-        let mut first = Vec::new();
+        let mut first = OrderedPrettyBoundaries::default();
         for summary in &summaries {
-            first.extend(summary.first.clone());
+            first.extend_from(&summary.first);
             if !summary.nullable {
                 break;
             }
         }
-        let mut last = Vec::new();
+        let mut last = OrderedPrettyBoundaries::default();
         for summary in summaries.iter().rev() {
-            last.extend(summary.last.clone());
+            last.extend_from(&summary.last);
             if !summary.nullable {
                 break;
             }
@@ -1480,8 +1790,8 @@ impl Materializer {
     ) -> PrettyBoundarySummary {
         let mut combined = PrettyBoundarySummary::default();
         for summary in summaries {
-            combined.first.extend(summary.first);
-            combined.last.extend(summary.last);
+            combined.first.extend_from(&summary.first);
+            combined.last.extend_from(&summary.last);
             combined.nullable |= summary.nullable;
         }
         combined
@@ -2483,6 +2793,7 @@ impl Materializer {
             .expect("source count overflow");
         let mut kind_atoms = Vec::with_capacity(self.lexical_plan().token_kinds.len());
         let mut fixed_types = BTreeMap::new();
+        let mut fixed_kinds_by_spelling = BTreeMap::new();
         for kind_plan in &self.lexical_plan().token_kinds {
             let source_definition = self
                 .lexical_plan()
@@ -2513,6 +2824,10 @@ impl Materializer {
                 kind_plan.identity,
                 crate::lexical::TokenKindIdentity::Fixed(_)
             ) {
+                let TokenDefinitionKind::Fixed(fixed) = &source_definition.kind else {
+                    unreachable!("a fixed lexical kind has a fixed source definition")
+                };
+                fixed_kinds_by_spelling.insert(fixed.spelling.as_str(), kind);
                 let ty = grammar.push_type(TypeDescription::new(
                     &name,
                     declaration,
@@ -2522,6 +2837,14 @@ impl Materializer {
                     },
                 ));
                 fixed_types.insert(kind, ty);
+            }
+        }
+        for (open, close) in [("(", ")"), ("[", "]"), ("{", "}")] {
+            if let (Some(open), Some(close)) = (
+                fixed_kinds_by_spelling.get(open),
+                fixed_kinds_by_spelling.get(close),
+            ) {
+                grammar.push_balanced_delimiter(*open, *close);
             }
         }
         let mut content_types = BTreeMap::new();
@@ -3865,12 +4188,12 @@ mod tests {
         MaterializedFieldLowering, MaterializedFieldView, MaterializedNodeApplication,
         MaterializedNodeBody, MaterializedPrattLed, MaterializedPrattLedPosition,
         MaterializedPrattNud, MaterializedPrattNudPosition, MaterializedPrattVariant,
-        MaterializedSemanticFieldProjection, materialize,
+        MaterializedSemanticFieldProjection, PrettyBoundarySummary, materialize,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
-    use crate::lowering::RustEdition;
+    use crate::lowering::{RustEdition, TokenDefinitionId};
     use crate::resolution::{ResolutionInput, resolve_local_semantics};
-    use crate::source_model::{SourceModelInput, lower_source_model};
+    use crate::source_model::{MaterializedPrettyBoundary, SourceModelInput, lower_source_model};
     use crate::source_syntax::CargoCfgSnapshot;
     use crate::{AtomExpression, ContainerShape, KindSet, TypeShape};
 
@@ -4119,6 +4442,207 @@ struct Root<'input> { value: Pair<Number<'input>, Name<'input>> }
             trivia_safe_report.diagnostics
         );
         assert!(trivia_safe_report.lowered.is_some());
+
+        let break_safe_report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { COLON => ":" }
+    lexer_tokens { MERGED => r"[A-Za-z]+:" }
+    ignore = r"[ \t\r\n]+"
+}
+#[derive(recursa::Node)]
+struct Name<'input> { #[lex(pattern = r"[A-Za-z]+") ] text: NameText<'input> }
+#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
+#[derive(recursa::Node)]
+struct Pair<T> {
+    value: T,
+    #[pretty(break_before = soft)]
+    suffix: Colon,
+}
+#[derive(recursa::Node)]
+struct PairAfter<T> {
+    #[pretty(break_after = soft)]
+    value: T,
+    suffix: Colon,
+}
+#[derive(recursa::Node)]
+struct Root<'input> {
+    before: Pair<Name<'input>>,
+    after: PairAfter<Name<'input>>,
+}
+"#,
+        ));
+        assert!(
+            break_safe_report.diagnostics.is_empty(),
+            "{:?}",
+            break_safe_report.diagnostics
+        );
+        assert!(break_safe_report.lowered.is_some());
+    }
+
+    #[test]
+    fn materialization_reuses_one_prebuilt_pretty_catalog_for_repeated_boundaries() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
+
+#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
+#[derive(recursa::Node)]
+struct Repeated<T> {
+    first: T,
+    second: T,
+    third: T,
+    fourth: T,
+    fifth: T,
+    sixth: T,
+    seventh: T,
+    eighth: T,
+}
+#[derive(recursa::Node)] struct Root { value: Repeated<Colon> }
+"#,
+        ));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.lowered.is_some());
+        assert_eq!(report.pretty_boundary_proof_counts.catalogs, 1);
+        assert_eq!(report.pretty_boundary_proof_counts.catalog_queries, 7);
+        assert_eq!(report.pretty_boundary_proof_counts.catalog_products, 1);
+    }
+
+    #[test]
+    fn closed_pretty_summaries_converge_once_for_a_recursive_shared_dag() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
+
+#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
+#[derive(recursa::Node)]
+struct Recursive<T> {
+    value: T,
+    next: Option<Box<Self>>,
+}
+#[derive(recursa::Node)]
+enum Fanout<T> {
+    First(Recursive<T>),
+    Second(Recursive<T>),
+    Third(Recursive<T>),
+    Fourth(Recursive<T>),
+    Fifth(Recursive<T>),
+    Sixth(Recursive<T>),
+    Seventh(Recursive<T>),
+    Eighth(Recursive<T>),
+}
+#[derive(recursa::Node)] struct Root { value: Fanout<Colon> }
+"#,
+        ));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.lowered.is_some());
+        assert_eq!(report.closed_pretty_summary_counts.fixed_point_rounds, 5);
+        assert_eq!(report.closed_pretty_summary_counts.body_evaluations, 20);
+        assert_eq!(
+            report.closed_pretty_summary_counts.max_retained_boundaries,
+            1
+        );
+        assert_eq!(
+            report
+                .closed_pretty_summary_counts
+                .max_attempted_boundary_insertions,
+            8
+        );
+        assert!(
+            report.closed_pretty_summary_counts.cache_queries
+                > report.closed_pretty_summary_counts.body_evaluations
+        );
+    }
+
+    #[test]
+    fn closed_pretty_fixed_point_matches_cycle_cut_oracle_for_mutual_recursion() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
+
+#[derive(recursa::Node)] #[tok(COLON)] struct Colon;
+#[derive(recursa::Node)] enum Left { Base(Colon), Next(Box<Right>) }
+#[derive(recursa::Node)] enum Right { Base(Colon), Next(Box<Left>) }
+#[derive(recursa::Node)]
+struct Shared {
+    first: Left,
+    second: Left,
+    third: Left,
+    fourth: Left,
+}
+#[derive(recursa::Node)] struct Root { value: Shared }
+"#,
+        ));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.lowered.is_some());
+        assert_eq!(report.closed_pretty_summary_counts.legacy_mismatches, 0);
+        assert!(
+            report.closed_pretty_summary_counts.cache_queries
+                > report.closed_pretty_summary_counts.body_evaluations
+        );
+    }
+
+    #[test]
+    fn closed_pretty_fixed_point_ignores_mutual_recursion_discovery_order() {
+        let x = MaterializedPrettyBoundary::Regex("X".to_owned());
+        let y = MaterializedPrettyBoundary::Regex("Y".to_owned());
+        let mut current = [
+            PrettyBoundarySummary::default(),
+            PrettyBoundarySummary::default(),
+        ];
+        let mut converged = false;
+
+        for _ in 0..8 {
+            let mut next = [
+                PrettyBoundarySummary::default(),
+                PrettyBoundarySummary::default(),
+            ];
+            next[0].first.extend_from(&current[1].first);
+            next[0].first.insert(x.clone());
+            next[1].first.extend_from(&current[0].first);
+            next[1].first.insert(y.clone());
+            if next == current {
+                current = next;
+                converged = true;
+                break;
+            }
+            current = next;
+        }
+
+        assert!(
+            converged,
+            "membership must converge despite alternating order"
+        );
+        for summary in current {
+            assert!(summary.first.as_slice().contains(&x));
+            assert!(summary.first.as_slice().contains(&y));
+            assert_eq!(summary.first.as_slice().len(), 2);
+        }
+
+        let mut forward = super::OrderedPrettyBoundaries::default();
+        forward.insert(x.clone());
+        forward.insert(y.clone());
+        let mut reversed = super::OrderedPrettyBoundaries::default();
+        reversed.insert(y.clone());
+        reversed.insert(x.clone());
+        reversed.insert(x.clone());
+        assert_eq!(forward, reversed);
+        assert_ne!(forward.as_slice(), reversed.as_slice());
+        assert_eq!(reversed.as_slice().len(), 2);
+
+        let mut distinct_kinds = super::OrderedPrettyBoundaries::default();
+        distinct_kinds.insert(MaterializedPrettyBoundary::Fixed(TokenDefinitionId::next(
+            0,
+        )));
+        distinct_kinds.insert(x);
+        assert_eq!(distinct_kinds.as_slice().len(), 2);
     }
 
     fn assert_code(

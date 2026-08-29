@@ -13,6 +13,7 @@
 
 use std::path::Path;
 
+use crate::analysis::analyze_for_generation;
 use crate::build_diagnostic::diagnostic_code_spec;
 use crate::discovery::{
     DiscoveryDiagnostic, DiscoveryDiagnosticKind, DiscoveryInput, discover_module_tree,
@@ -36,7 +37,7 @@ use crate::source_syntax::CargoCfgSnapshot;
 use crate::{
     AnalysisReport, BuildReport, ConflictRemedy, DiagnosticEvidence, DiagnosticFact,
     DiagnosticLocation, DiagnosticRemedy, DiagnosticStage, GenerateError, LexicalEvidenceClass,
-    RecursaDiagnostic, RecursaDiagnosticCode, RecursaDiagnosticLabel, Remedy, Severity, analyze,
+    RecursaDiagnostic, RecursaDiagnosticCode, RecursaDiagnosticLabel, Remedy, Severity,
 };
 
 #[derive(Clone, Debug)]
@@ -210,7 +211,7 @@ pub(crate) fn analyze_source_tree(
         ));
     };
 
-    let analysis = analyze(&lowered.grammar);
+    let analysis = analyze_for_generation(&lowered.grammar);
     collector.extend(
         analysis
             .diagnostics
@@ -218,21 +219,10 @@ pub(crate) fn analyze_source_tree(
             .map(|diagnostic| adapt_analysis(diagnostic, &analysis, &lowered, input.selected_root)),
     );
     collector.stop_if_errors(cargo)?;
-    let Some(output) = analysis.output.as_ref() else {
+    if analysis.output.is_none() {
         return Err(collector.internal_failure(
             DiagnosticStage::Analysis,
             "semantic analysis produced neither errors nor semantic analysis output",
-            input.selected_root,
-            cargo,
-        ));
-    };
-    if let Err(invariant) = output
-        .decisions()
-        .validate(&lowered.grammar, output.first_by_type())
-    {
-        return Err(collector.internal_failure(
-            DiagnosticStage::Analysis,
-            &format!("invalid frozen decision product: {invariant}"),
             input.selected_root,
             cargo,
         ));

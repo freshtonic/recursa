@@ -5,6 +5,26 @@
 
 use super::*;
 
+#[cfg(test)]
+std::thread_local! {
+    /// Per-test observation of complete emission-plan validation passes.
+    static EMISSION_PLAN_VALIDATION_COUNT: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
+#[cfg(test)]
+/// Resets the current test thread's complete emission-plan validation count.
+pub(super) fn reset_emission_plan_validation_count() {
+    EMISSION_PLAN_VALIDATION_COUNT.set(0);
+}
+
+#[cfg(test)]
+/// Returns the current test thread's complete emission-plan validation count.
+pub(super) fn emission_plan_validation_count() -> usize {
+    EMISSION_PLAN_VALIDATION_COUNT.get()
+}
+
 #[derive(Clone)]
 /// Immutable source-aware plan consumed by generated-code rendering.
 ///
@@ -38,6 +58,8 @@ pub(super) struct EmissionPlan {
     pub(super) kind_names: Vec<String>,
     /// Expected-atom descriptions in semantic analysis order.
     pub(super) atom_names: Vec<String>,
+    /// Canonical grammar-wide storage for every emitted static expectation.
+    pub(super) expected_sets: ExpectedSetPool,
     /// Frozen Node parse plans in canonical materialization order.
     pub(super) nodes: Vec<NodeParsePlan>,
     /// Frozen content-token plans in semantic token order.
@@ -50,7 +72,7 @@ pub(super) struct EmissionPlan {
     pub(super) word_classifiers: Vec<WordClassifierPlan>,
     /// Kind set eligible for word-shaped fixed-token classification.
     pub(super) word_candidate_kinds: Vec<u16>,
-    /// Grammar-default configured-trait recipes for generated token types.
+    /// Grammar-default optional trait recipes for generated token types.
     pub(super) root_configured_traits: Vec<ConfiguredTraitRecipe>,
     /// Release and protocol handshake embedded into structural loaders.
     pub(super) private_abi: PrivateAbiPlan,
@@ -69,10 +91,22 @@ pub(super) struct EmissionPlan {
     pub(super) plan_families: EmissionPlanFamilies,
 }
 
+/// Opaque proof that an immutable emission plan passed its complete invariant check.
+pub(super) struct ValidatedEmissionPlan(EmissionPlan);
+
+impl std::ops::Deref for ValidatedEmissionPlan {
+    type Target = EmissionPlan;
+
+    /// Borrows the immutable plan certified by this validation proof.
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[derive(Clone, Debug)]
 /// Frozen identities for capability-owned subplans independently checked before rendering.
 pub(super) struct EmissionPlanFamilies {
-    /// Identity reconstructed from authored configured-trait selections.
+    /// Identity reconstructed from authored recipes and intrinsic content-token value traits.
     pub(super) configured_traits: u64,
     /// Authoritative matching-version loader handshake.
     pub(super) private_abi: u64,
@@ -128,13 +162,30 @@ pub(super) fn publicly_reachable(
 
 impl EmissionPlan {
     /// Joins frozen semantic products into a validated emission plan.
+    pub(super) fn join(
+        analyzed: &crate::source_analysis::AnalyzedGrammar,
+        cfg: &CargoCfgSnapshot,
+    ) -> Result<ValidatedEmissionPlan, String> {
+        Self::build(analyzed, cfg).map(ValidatedEmissionPlan)
+    }
+
+    #[cfg(test)]
+    /// Joins a mutable raw plan for corruption and checked-rendering tests.
+    pub(super) fn join_for_test(
+        analyzed: &crate::source_analysis::AnalyzedGrammar,
+        cfg: &CargoCfgSnapshot,
+    ) -> Result<Self, String> {
+        Self::build(analyzed, cfg)
+    }
+
+    /// Builds and validates the immutable plan wrapped by the production join seam.
     ///
     /// # Long-function contract
     ///
     /// Rationale: keeps the analyzed grammar and all capability plans in one immutable generation snapshot.
     /// Invariants: source order, Debug field order, and family-identity inputs remain canonical.
     /// Phases: joins source facts, constructs capability plans, computes identities, then validates.
-    pub(super) fn join(
+    fn build(
         analyzed: &crate::source_analysis::AnalyzedGrammar,
         cfg: &CargoCfgSnapshot,
     ) -> Result<Self, String> {
@@ -304,6 +355,7 @@ impl EmissionPlan {
             .collect::<Result<Vec<_>, String>>()?;
         let mut nodes = Vec::new();
         let mut instrumentation = EmissionInstrumentation::default();
+        let expected_atom_index = ExpectedAtomIndex::from_grammar(&lowered.grammar)?;
         for node in &resolved.nodes {
             let applications = lowered
                 .applications
@@ -352,6 +404,7 @@ impl EmissionPlan {
                     application,
                     lowered,
                     decisions,
+                    &expected_atom_index,
                     kind_count,
                     &mut instrumentation,
                 )?;
@@ -392,6 +445,7 @@ impl EmissionPlan {
                 next_parse_index += 1;
             }
         }
+        let expected_sets = ExpectedSetPool::from_plans(&nodes, &tokens, kind_count);
         let frozen_dispatch_sequences = nodes
             .iter()
             .flat_map(|node| &node.parse_applications)
@@ -694,6 +748,7 @@ impl EmissionPlan {
             kind_static_texts,
             kind_names,
             atom_names,
+            expected_sets,
             nodes,
             tokens,
             token_bindings,
@@ -722,6 +777,8 @@ impl EmissionPlan {
     /// Invariants: semantic decisions are consumed rather than recomputed and every family identity matches its frozen plan.
     /// Phases: validates ABI and capabilities, plan families, names, then feature-selected payloads.
     pub(super) fn validate(&self) -> Result<(), String> {
+        #[cfg(test)]
+        EMISSION_PLAN_VALIDATION_COUNT.set(EMISSION_PLAN_VALIDATION_COUNT.get() + 1);
         if self.identity.is_empty() || self.nodes.is_empty() {
             return Err("the Emission plan lacks a Generation identity or Nodes".to_owned());
         }
@@ -731,6 +788,12 @@ impl EmissionPlan {
         {
             return Err("the generated token-kind plan has inconsistent width".to_owned());
         }
+        self.expected_sets.validate(
+            &self.nodes,
+            &self.tokens,
+            self.kind_count,
+            self.atom_names.len(),
+        )?;
         if self.lexical_rules.is_empty() {
             return Err("the generated lexical plan has no rules".to_owned());
         }
@@ -905,7 +968,7 @@ impl EmissionPlan {
             != configured_trait_plan_identity(&self.nodes, &self.tokens)
         {
             return Err(
-                "the configured-trait plan family diverges from its frozen identity".to_owned(),
+                "the generated trait-behavior family diverges from its frozen identity".to_owned(),
             );
         }
         if self.plan_families.private_abi != plan_family_identity(&self.private_abi) {

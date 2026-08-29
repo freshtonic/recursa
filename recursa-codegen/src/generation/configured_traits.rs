@@ -5,6 +5,438 @@
 
 use super::*;
 
+/// Structural value traits intrinsic to every generated content-token type.
+///
+/// These traits let ordinary Rust derives on authored AST Nodes compose through generated token
+/// fields. They are emitted independently of optional configured-trait recipes, but remain part
+/// of trait-family identity and debug metadata.
+pub(super) const INTRINSIC_CONTENT_TOKEN_VALUE_TRAITS: [ConfiguredTraitRecipe; 7] = [
+    ConfiguredTraitRecipe::Debug,
+    ConfiguredTraitRecipe::Clone,
+    ConfiguredTraitRecipe::PartialEq,
+    ConfiguredTraitRecipe::Eq,
+    ConfiguredTraitRecipe::PartialOrd,
+    ConfiguredTraitRecipe::Ord,
+    ConfiguredTraitRecipe::Hash,
+];
+
+/// Optional recipes supported privately when a locally configured Node owns a hidden token field.
+pub(super) const PRIVATE_CONTENT_TOKEN_SUPPORT_TRAITS: [ConfiguredTraitRecipe; 3] = [
+    ConfiguredTraitRecipe::Arbitrary,
+    ConfiguredTraitRecipe::Serialize,
+    ConfiguredTraitRecipe::Deserialize,
+];
+
+/// Reports whether a locally configured Node needs one hidden token adapter.
+pub(super) fn content_token_support_required(
+    plan: &EmissionPlan,
+    token: ContentTokenId,
+    recipe: ConfiguredTraitRecipe,
+) -> bool {
+    content_token_support_required_in(&plan.nodes, token, recipe)
+}
+
+/// Reports private hidden-token support directly from the frozen Node plans.
+pub(super) fn content_token_support_required_in(
+    nodes: &[NodeParsePlan],
+    token: ContentTokenId,
+    recipe: ConfiguredTraitRecipe,
+) -> bool {
+    nodes.iter().any(|node| {
+        if !node.configured_traits.contains(&recipe) {
+            return false;
+        }
+        let mut required = false;
+        for_each_element(&node.body, &mut |element| {
+            if let ElementParseKind::Semantic { projection, .. } = &element.kind
+                && matches!(
+                    projection.as_ref(),
+                    SemanticParseProjection::Direct {
+                        explorer_terminal: ExplorerTerminalPlan::Content(candidate),
+                        ..
+                    } if *candidate == token
+                )
+            {
+                required = true;
+            }
+        });
+        required
+    })
+}
+
+/// Renders feature-gated private adapters without changing public token trait selections.
+pub(super) fn render_content_token_optional_trait_helpers(
+    plan: &EmissionPlan,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let arbitrary = plan.tokens.iter().any(|token| {
+        content_token_support_required(plan, token.semantic, ConfiguredTraitRecipe::Arbitrary)
+    });
+    let serialize = plan.tokens.iter().any(|token| {
+        content_token_support_required(plan, token.semantic, ConfiguredTraitRecipe::Serialize)
+    });
+    let deserialize = plan.tokens.iter().any(|token| {
+        content_token_support_required(plan, token.semantic, ConfiguredTraitRecipe::Deserialize)
+    });
+    let arbitrary = arbitrary.then(|| {
+        quote! {
+            __recursa_if_arbitrary! {
+                #[doc(hidden)]
+                pub(crate) trait __RecursaArbitraryWith<'arbitrary>: Sized {
+                    fn __recursa_arbitrary_with(
+                        input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
+                    ) -> #facade::__private::arbitrary::Result<Self>;
+                }
+
+                impl<'arbitrary, T> __RecursaArbitraryWith<'arbitrary> for Box<T>
+                where
+                    T: __RecursaArbitraryWith<'arbitrary>,
+                {
+                    fn __recursa_arbitrary_with(
+                        input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
+                    ) -> #facade::__private::arbitrary::Result<Self> {
+                        T::__recursa_arbitrary_with(input).map(Box::new)
+                    }
+                }
+
+                impl<'arbitrary, T> __RecursaArbitraryWith<'arbitrary> for Option<T>
+                where
+                    T: __RecursaArbitraryWith<'arbitrary>,
+                {
+                    fn __recursa_arbitrary_with(
+                        input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
+                    ) -> #facade::__private::arbitrary::Result<Self> {
+                        T::__recursa_arbitrary_with(input).map(Some)
+                    }
+                }
+
+                impl<'arbitrary, T> __RecursaArbitraryWith<'arbitrary> for Vec<T>
+                where
+                    T: __RecursaArbitraryWith<'arbitrary>,
+                {
+                    fn __recursa_arbitrary_with(
+                        input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
+                    ) -> #facade::__private::arbitrary::Result<Self> {
+                        T::__recursa_arbitrary_with(input).map(|value| vec![value])
+                    }
+                }
+
+                impl<'arbitrary, T> __RecursaArbitraryWith<'arbitrary> for #facade::Vec1<T>
+                where
+                    T: __RecursaArbitraryWith<'arbitrary>,
+                {
+                    fn __recursa_arbitrary_with(
+                        input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
+                    ) -> #facade::__private::arbitrary::Result<Self> {
+                        T::__recursa_arbitrary_with(input).map(#facade::Vec1::new)
+                    }
+                }
+            }
+        }
+    });
+    let serde = (serialize || deserialize).then(|| {
+        let serialize = serialize.then(|| {
+            quote! {
+                #[doc(hidden)]
+                pub(crate) trait __RecursaSerializeWith {
+                    fn __recursa_serialize_with<S>(
+                        &self,
+                        serializer: S,
+                    ) -> Result<S::Ok, S::Error>
+                    where
+                        S: #facade::__private::serde::Serializer;
+                }
+
+                impl<T> __RecursaSerializeWith for Box<T>
+                where
+                    T: __RecursaSerializeWith,
+                {
+                    fn __recursa_serialize_with<S>(
+                        &self,
+                        serializer: S,
+                    ) -> Result<S::Ok, S::Error>
+                    where
+                        S: #facade::__private::serde::Serializer,
+                    {
+                        (**self).__recursa_serialize_with(serializer)
+                    }
+                }
+
+                struct __RecursaSerializeRef<'value, T>(&'value T);
+
+                impl<T> #facade::__private::serde::Serialize for __RecursaSerializeRef<'_, T>
+                where
+                    T: __RecursaSerializeWith,
+                {
+                    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                    where
+                        S: #facade::__private::serde::Serializer,
+                    {
+                        self.0.__recursa_serialize_with(serializer)
+                    }
+                }
+
+                impl<T> __RecursaSerializeWith for Option<T>
+                where
+                    T: __RecursaSerializeWith,
+                {
+                    fn __recursa_serialize_with<S>(
+                        &self,
+                        serializer: S,
+                    ) -> Result<S::Ok, S::Error>
+                    where
+                        S: #facade::__private::serde::Serializer,
+                    {
+                        match self {
+                            Some(value) => #facade::__private::serde::Serializer::serialize_some(
+                                serializer,
+                                &__RecursaSerializeRef(value),
+                            ),
+                            None => #facade::__private::serde::Serializer::serialize_none(serializer),
+                        }
+                    }
+                }
+
+                impl<T> __RecursaSerializeWith for Vec<T>
+                where
+                    T: __RecursaSerializeWith,
+                {
+                    fn __recursa_serialize_with<S>(
+                        &self,
+                        serializer: S,
+                    ) -> Result<S::Ok, S::Error>
+                    where
+                        S: #facade::__private::serde::Serializer,
+                    {
+                        let mut sequence = #facade::__private::serde::Serializer::serialize_seq(
+                            serializer,
+                            Some(self.len()),
+                        )?;
+                        for value in self {
+                            #facade::__private::serde::ser::SerializeSeq::serialize_element(
+                                &mut sequence,
+                                &__RecursaSerializeRef(value),
+                            )?;
+                        }
+                        #facade::__private::serde::ser::SerializeSeq::end(sequence)
+                    }
+                }
+
+                impl<T> __RecursaSerializeWith for #facade::Vec1<T>
+                where
+                    T: __RecursaSerializeWith,
+                {
+                    fn __recursa_serialize_with<S>(
+                        &self,
+                        serializer: S,
+                    ) -> Result<S::Ok, S::Error>
+                    where
+                        S: #facade::__private::serde::Serializer,
+                    {
+                        let mut sequence = #facade::__private::serde::Serializer::serialize_seq(
+                            serializer,
+                            Some(self.len()),
+                        )?;
+                        for value in self.iter() {
+                            #facade::__private::serde::ser::SerializeSeq::serialize_element(
+                                &mut sequence,
+                                &__RecursaSerializeRef(value),
+                            )?;
+                        }
+                        #facade::__private::serde::ser::SerializeSeq::end(sequence)
+                    }
+                }
+
+                pub(crate) fn __recursa_serialize_content<T, S>(
+                    value: &T,
+                    serializer: S,
+                ) -> Result<S::Ok, S::Error>
+                where
+                    T: __RecursaSerializeWith,
+                    S: #facade::__private::serde::Serializer,
+                {
+                    value.__recursa_serialize_with(serializer)
+                }
+            }
+        });
+        let deserialize = deserialize.then(|| {
+            quote! {
+                #[doc(hidden)]
+                pub(crate) trait __RecursaDeserializeWith<'de>: Sized {
+                    fn __recursa_deserialize_with<D>(deserializer: D) -> Result<Self, D::Error>
+                    where
+                        D: #facade::__private::serde::Deserializer<'de>;
+                }
+
+                impl<'de, T> __RecursaDeserializeWith<'de> for Box<T>
+                where
+                    T: __RecursaDeserializeWith<'de>,
+                {
+                    fn __recursa_deserialize_with<D>(deserializer: D) -> Result<Self, D::Error>
+                    where
+                        D: #facade::__private::serde::Deserializer<'de>,
+                    {
+                        T::__recursa_deserialize_with(deserializer).map(Box::new)
+                    }
+                }
+
+                struct __RecursaDeserializeSeed<T>(::core::marker::PhantomData<fn() -> T>);
+
+                impl<'de, T> #facade::__private::serde::de::DeserializeSeed<'de>
+                    for __RecursaDeserializeSeed<T>
+                where
+                    T: __RecursaDeserializeWith<'de>,
+                {
+                    type Value = T;
+
+                    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+                    where
+                        D: #facade::__private::serde::Deserializer<'de>,
+                    {
+                        T::__recursa_deserialize_with(deserializer)
+                    }
+                }
+
+                struct __RecursaOptionVisitor<T>(::core::marker::PhantomData<fn() -> T>);
+
+                impl<'de, T> #facade::__private::serde::de::Visitor<'de>
+                    for __RecursaOptionVisitor<T>
+                where
+                    T: __RecursaDeserializeWith<'de>,
+                {
+                    type Value = Option<T>;
+
+                    fn expecting(
+                        &self,
+                        formatter: &mut ::core::fmt::Formatter<'_>,
+                    ) -> ::core::fmt::Result {
+                        formatter.write_str("an optional content token")
+                    }
+
+                    fn visit_none<E>(self) -> Result<Self::Value, E> {
+                        Ok(None)
+                    }
+
+                    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                        Ok(None)
+                    }
+
+                    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+                    where
+                        D: #facade::__private::serde::Deserializer<'de>,
+                    {
+                        T::__recursa_deserialize_with(deserializer).map(Some)
+                    }
+                }
+
+                impl<'de, T> __RecursaDeserializeWith<'de> for Option<T>
+                where
+                    T: __RecursaDeserializeWith<'de>,
+                {
+                    fn __recursa_deserialize_with<D>(deserializer: D) -> Result<Self, D::Error>
+                    where
+                        D: #facade::__private::serde::Deserializer<'de>,
+                    {
+                        #facade::__private::serde::Deserializer::deserialize_option(
+                            deserializer,
+                            __RecursaOptionVisitor(::core::marker::PhantomData),
+                        )
+                    }
+                }
+
+                struct __RecursaSequenceVisitor<T>(::core::marker::PhantomData<fn() -> T>);
+
+                impl<'de, T> #facade::__private::serde::de::Visitor<'de>
+                    for __RecursaSequenceVisitor<T>
+                where
+                    T: __RecursaDeserializeWith<'de>,
+                {
+                    type Value = Vec<T>;
+
+                    fn expecting(
+                        &self,
+                        formatter: &mut ::core::fmt::Formatter<'_>,
+                    ) -> ::core::fmt::Result {
+                        formatter.write_str("a sequence of content tokens")
+                    }
+
+                    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: #facade::__private::serde::de::SeqAccess<'de>,
+                    {
+                        let mut values = Vec::new();
+                        while let Some(value) =
+                            #facade::__private::serde::de::SeqAccess::next_element_seed(
+                                &mut sequence,
+                                __RecursaDeserializeSeed(::core::marker::PhantomData),
+                            )?
+                        {
+                            values.push(value);
+                        }
+                        Ok(values)
+                    }
+                }
+
+                impl<'de, T> __RecursaDeserializeWith<'de> for Vec<T>
+                where
+                    T: __RecursaDeserializeWith<'de>,
+                {
+                    fn __recursa_deserialize_with<D>(deserializer: D) -> Result<Self, D::Error>
+                    where
+                        D: #facade::__private::serde::Deserializer<'de>,
+                    {
+                        #facade::__private::serde::Deserializer::deserialize_seq(
+                            deserializer,
+                            __RecursaSequenceVisitor(::core::marker::PhantomData),
+                        )
+                    }
+                }
+
+                impl<'de, T> __RecursaDeserializeWith<'de> for #facade::Vec1<T>
+                where
+                    T: __RecursaDeserializeWith<'de>,
+                {
+                    fn __recursa_deserialize_with<D>(deserializer: D) -> Result<Self, D::Error>
+                    where
+                        D: #facade::__private::serde::Deserializer<'de>,
+                    {
+                        let values = <Vec<T> as __RecursaDeserializeWith<'de>>
+                            ::__recursa_deserialize_with(deserializer)?;
+                        let mut values = values.into_iter();
+                        let Some(first) = values.next() else {
+                            return Err(#facade::__private::serde::de::Error::custom(
+                                "expected at least one content token",
+                            ));
+                        };
+                        let mut result = #facade::Vec1::new(first);
+                        for value in values {
+                            result.push(value);
+                        }
+                        Ok(result)
+                    }
+                }
+
+                pub(crate) fn __recursa_deserialize_content<'de, T, D>(
+                    deserializer: D,
+                ) -> Result<T, D::Error>
+                where
+                    T: __RecursaDeserializeWith<'de>,
+                    D: #facade::__private::serde::Deserializer<'de>,
+                {
+                    T::__recursa_deserialize_with(deserializer)
+                }
+            }
+        });
+        quote! {
+            __recursa_if_serde! {
+                #serialize
+                #deserialize
+            }
+        }
+    });
+    quote!(#arbitrary #serde)
+}
+
 #[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
@@ -146,6 +578,11 @@ pub(super) fn type_depends_on_node_type_parameters(ty: &Type, node: &NodeParsePl
         .generics
         .type_params()
         .map(|parameter| parameter.ident.unraw().to_string())
+        .chain(
+            node.generics
+                .const_params()
+                .map(|parameter| parameter.ident.unraw().to_string()),
+        )
         .collect::<BTreeSet<_>>();
     if candidates.is_empty() {
         return false;
@@ -169,6 +606,17 @@ pub(super) fn type_depends_on_node_type_parameters(ty: &Type, node: &NodeParsePl
                 self.depends = true;
             }
             syn_visit::visit_type_path(self, path);
+        }
+
+        fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+            if path.qself.is_none()
+                && path.path.segments.len() == 1
+                && let Some(segment) = path.path.segments.first()
+                && self.candidates.contains(&segment.ident.unraw().to_string())
+            {
+                self.depends = true;
+            }
+            syn_visit::visit_expr_path(self, path);
         }
     }
 
@@ -288,6 +736,21 @@ pub(super) fn semantic_fields(elements: &[ElementParsePlan]) -> Vec<&FieldPlan> 
         .iter()
         .filter_map(|element| match &element.kind {
             ElementParseKind::Semantic { field, .. } => Some(field),
+            ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Borrows semantic fields together with the projections needed by capability renderers.
+fn semantic_fields_with_projections(
+    elements: &[ElementParsePlan],
+) -> Vec<(&FieldPlan, &SemanticParseProjection)> {
+    elements
+        .iter()
+        .filter_map(|element| match &element.kind {
+            ElementParseKind::Semantic { field, projection } => Some((field, projection.as_ref())),
             ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
                 None
             }
@@ -603,10 +1066,11 @@ pub(super) fn render_node_arbitrary(
     node: &NodeParsePlan,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
     let node_ident = &node.ident;
     let mut generics = node.generics.clone();
     generics.params.insert(0, syn::parse_quote!('arbitrary));
-    for field_type in semantic_field_types(facade, node) {
+    for field_type in non_content_semantic_field_types(facade, node) {
         generics
             .make_where_clause()
             .predicates
@@ -616,14 +1080,32 @@ pub(super) fn render_node_arbitrary(
     }
     let (impl_generics, _, where_clause) = generics.split_for_impl();
     let (_, type_generics, _) = node.generics.split_for_impl();
-    let arbitrary_value = || quote!(#facade::__private::arbitrary::Arbitrary::arbitrary(input)?);
+    let arbitrary_value = |projection: &SemanticParseProjection| match projection {
+        SemanticParseProjection::Direct {
+            terminal,
+            wrappers,
+            explorer_terminal: ExplorerTerminalPlan::Content(_),
+            ..
+        } => {
+            let field_type = render_wrapped_type(facade, terminal, wrappers);
+            quote! {
+                <#field_type as #module_anchor::__RecursaArbitraryWith<'arbitrary>>
+                    ::__recursa_arbitrary_with(input)?
+            }
+        }
+        SemanticParseProjection::Direct { .. } | SemanticParseProjection::FixedPresence { .. } => {
+            quote!(#facade::__private::arbitrary::Arbitrary::arbitrary(input)?)
+        }
+    };
     let body = match &node.body {
         NodeBodyPlan::Struct { style, elements } => {
-            let fields = semantic_fields(elements);
-            let values = fields.iter().map(|_| arbitrary_value());
+            let fields = semantic_fields_with_projections(elements);
+            let values = fields
+                .iter()
+                .map(|(_, projection)| arbitrary_value(projection));
             match style {
                 ResolvedFieldStyle::Named => {
-                    let entries = fields.iter().zip(values).map(|(field, value)| {
+                    let entries = fields.iter().zip(values).map(|((field, _), value)| {
                         let ident = field.ident.as_ref().expect("named field");
                         quote!(#ident: #value)
                     });
@@ -636,12 +1118,14 @@ pub(super) fn render_node_arbitrary(
         NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
             let variants = trait_variants(&node.body);
             let arms = variants.iter().enumerate().map(|(index, variant)| {
-                let fields = semantic_fields(&variant.elements);
-                let values = fields.iter().map(|_| arbitrary_value());
+                let fields = semantic_fields_with_projections(&variant.elements);
+                let values = fields
+                    .iter()
+                    .map(|(_, projection)| arbitrary_value(projection));
                 let variant_ident = &variant.ident;
                 let value = match variant.style {
                     ResolvedFieldStyle::Named => {
-                        let entries = fields.iter().zip(values).map(|(field, value)| {
+                        let entries = fields.iter().zip(values).map(|((field, _), value)| {
                             let ident = field.ident.as_ref().expect("named field");
                             quote!(#ident: #value)
                         });
@@ -730,20 +1214,21 @@ pub(super) fn render_node_serde(
                         } => field_type(terminal, wrappers),
                         SemanticParseProjection::FixedPresence { .. } => syn::parse_quote!(bool),
                     },
+                    serde_content_adapter(plan, projection, serialize, deserialize),
                 )),
                 ElementParseKind::Fixed { .. }
                 | ElementParseKind::OptionalFixedTokenGroup { .. } => None,
             });
             match style {
                 ResolvedFieldStyle::Named => {
-                    let fields = fields.map(|(field, ty)| {
+                    let fields = fields.map(|(field, ty, adapter)| {
                         let ident = field.ident.as_ref().expect("named field");
-                        quote!(#ident: #ty)
+                        quote!(#adapter #ident: #ty)
                     });
                     quote!(struct #helper #generics { #(#fields),* })
                 }
                 ResolvedFieldStyle::Unnamed => {
-                    let fields = fields.map(|(_, ty)| quote!(#ty));
+                    let fields = fields.map(|(_, ty, adapter)| quote!(#adapter #ty));
                     quote!(struct #helper #generics (#(#fields),*);)
                 }
                 ResolvedFieldStyle::Unit => quote!(struct #helper #generics;),
@@ -767,20 +1252,21 @@ pub(super) fn render_node_serde(
                                     syn::parse_quote!(bool)
                                 }
                             },
+                            serde_content_adapter(plan, projection, serialize, deserialize),
                         )),
                         ElementParseKind::Fixed { .. }
                         | ElementParseKind::OptionalFixedTokenGroup { .. } => None,
                     });
                 match variant.style {
                     ResolvedFieldStyle::Named => {
-                        let fields = fields.map(|(field, ty)| {
+                        let fields = fields.map(|(field, ty, adapter)| {
                             let field_ident = field.ident.as_ref().expect("named field");
-                            quote!(#field_ident: #ty)
+                            quote!(#adapter #field_ident: #ty)
                         });
                         quote!(#ident { #(#fields),* })
                     }
                     ResolvedFieldStyle::Unnamed => {
-                        let fields = fields.map(|(_, ty)| quote!(#ty));
+                        let fields = fields.map(|(_, ty, adapter)| quote!(#adapter #ty));
                         quote!(#ident(#(#fields),*))
                     }
                     ResolvedFieldStyle::Unit => quote!(#ident),
@@ -859,7 +1345,7 @@ pub(super) fn add_serde_bounds(
     generics: &mut Generics,
     bound: proc_macro2::TokenStream,
 ) {
-    for field_type in semantic_field_types(facade, node)
+    for field_type in non_content_semantic_field_types(facade, node)
         .into_iter()
         .chain(serde_generic_dependencies(node))
     {
@@ -868,6 +1354,41 @@ pub(super) fn add_serde_bounds(
             .predicates
             .push(syn::parse_quote!(#field_type: #bound));
     }
+}
+
+/// Renders direction-specific private text adapters for one hidden content-token field.
+fn serde_content_adapter(
+    plan: &EmissionPlan,
+    projection: &SemanticParseProjection,
+    serialize: bool,
+    deserialize: bool,
+) -> proc_macro2::TokenStream {
+    if !matches!(
+        projection,
+        SemanticParseProjection::Direct {
+            explorer_terminal: ExplorerTerminalPlan::Content(_),
+            ..
+        }
+    ) {
+        return proc_macro2::TokenStream::new();
+    }
+    let mut adapters = Vec::new();
+    let module_anchor = &plan.module_anchor;
+    if serialize {
+        let path = syn::LitStr::new(
+            &quote!(#module_anchor::__recursa_serialize_content).to_string(),
+            proc_macro2::Span::call_site(),
+        );
+        adapters.push(quote!(serialize_with = #path));
+    }
+    if deserialize {
+        let path = syn::LitStr::new(
+            &quote!(#module_anchor::__recursa_deserialize_content).to_string(),
+            proc_macro2::Span::call_site(),
+        );
+        adapters.push(quote!(deserialize_with = #path));
+    }
+    quote!(#[serde(#(#adapters),*)])
 }
 
 /// Collects generic type parameters reached by serializable semantic fields.
@@ -941,6 +1462,38 @@ pub(super) fn semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<
         .iter()
         .filter_map(|element| match &element.kind {
             ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
+                SemanticParseProjection::Direct {
+                    terminal, wrappers, ..
+                } if !is_recursive_terminal(node, terminal) => {
+                    Some(render_wrapped_type(facade, terminal, wrappers))
+                }
+                SemanticParseProjection::Direct { .. } => None,
+                SemanticParseProjection::FixedPresence { .. } => Some(syn::parse_quote!(bool)),
+            },
+            ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Returns semantic field types whose public optional-trait bounds remain externally meaningful.
+fn non_content_semantic_field_types(facade: &Ident, node: &NodeParsePlan) -> Vec<Type> {
+    let elements = match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => elements.clone(),
+        NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => trait_variants(&node.body)
+            .into_iter()
+            .flat_map(|variant| variant.elements)
+            .collect(),
+    };
+    elements
+        .iter()
+        .filter_map(|element| match &element.kind {
+            ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
+                SemanticParseProjection::Direct {
+                    explorer_terminal: ExplorerTerminalPlan::Content(_),
+                    ..
+                } => None,
                 SemanticParseProjection::Direct {
                     terminal, wrappers, ..
                 } if !is_recursive_terminal(node, terminal) => {

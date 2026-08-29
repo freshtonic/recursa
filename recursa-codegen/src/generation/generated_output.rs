@@ -1,37 +1,259 @@
-//! Assembly and validation of one complete logical generated output.
+//! Assembly of one complete logical generated output from a validated emission plan.
 //!
-//! Capability renderers feed this boundary; it validates every logical Rust file and
-//! returns one complete payload without performing filesystem publication.
+//! Capability renderers feed this boundary; production consumes the opaque plan validation proof,
+//! while checked test plans retain the complete invariant and Rust-syntax failure contracts.
 
 use super::*;
 
+#[allow(clippy::items_after_test_module)]
+#[cfg(test)]
+mod tests {
+    use super::{super::test_support, WordClassifierPlan, render_word_classifiers};
+
+    #[test]
+    fn word_classification_reads_source_once_and_shards_large_vocabularies() {
+        let classifiers = (0_u16..130)
+            .map(|kind| WordClassifierPlan {
+                canonical_spelling: format!("word_{kind}"),
+                kind,
+                ascii_insensitive: kind % 2 == 0,
+            })
+            .collect::<Vec<_>>();
+
+        let facade: syn::Ident = syn::parse_quote!(recursa);
+        let rendered = render_word_classifiers(&classifiers, &[7], &facade).to_string();
+
+        assert_eq!(rendered.matches("source . get").count(), 1);
+        assert_eq!(rendered.matches("is_some_and").count(), 0);
+        assert_eq!(
+            rendered.matches("fn __recursa_classify_words_0_").count(),
+            3
+        );
+        assert_eq!(
+            rendered.matches("fn __recursa_classify_words_1_").count(),
+            1
+        );
+        assert!(rendered.contains("let Some (text) = source . get"));
+        assert!(rendered.contains("record . kind = kind"));
+        assert_eq!(rendered.matches("record . kind =").count(), 1);
+        assert!(
+            rendered
+                .split("fn __recursa_classify_words_")
+                .skip(1)
+                .all(|body| body.matches("return Some").count() <= 64)
+        );
+
+        let classifiers = (0_u16..4_097)
+            .map(|kind| WordClassifierPlan {
+                canonical_spelling: format!("large_word_{kind}"),
+                kind,
+                ascii_insensitive: false,
+            })
+            .collect::<Vec<_>>();
+        let rendered = render_word_classifiers(&classifiers, &[7], &facade).to_string();
+        assert_eq!(
+            rendered.matches("fn __recursa_classify_words_0_").count(),
+            65
+        );
+        assert_eq!(
+            rendered.matches("fn __recursa_classify_words_1_").count(),
+            2
+        );
+        assert_eq!(
+            rendered.matches("fn __recursa_classify_words_2_").count(),
+            1
+        );
+        assert!(
+            rendered
+                .split("fn __recursa_classify_words_")
+                .skip(1)
+                .all(|body| body.matches("return Some").count() <= 64)
+        );
+    }
+
+    #[test]
+    fn validated_generation_is_not_revalidated_during_rendering() {
+        test_support::validated_generation_is_not_revalidated_during_rendering();
+    }
+
+    #[test]
+    fn checked_rendering_retains_invalid_rust_diagnostics() {
+        test_support::checked_rendering_retains_invalid_rust_diagnostics();
+    }
+
+    #[test]
+    fn generated_expectations_use_one_grammar_wide_pool() {
+        test_support::generated_expectations_use_one_grammar_wide_pool();
+    }
+}
+
+/// Renders bounded private keyword classifiers and their single record-update entry point.
+fn render_word_classifiers(
+    classifiers: &[WordClassifierPlan],
+    candidate_kinds: &[u16],
+    facade: &syn::Ident,
+) -> proc_macro2::TokenStream {
+    const CLASSIFIERS_PER_HELPER: usize = 64;
+
+    let mut helper_items = Vec::new();
+    let mut level = classifiers
+        .chunks(CLASSIFIERS_PER_HELPER)
+        .enumerate()
+        .map(|(index, chunk)| {
+            let helper = format_ident!("__recursa_classify_words_0_{index}");
+            let comparisons = chunk.iter().map(|classifier| {
+                let canonical = &classifier.canonical_spelling;
+                let kind = classifier.kind;
+                let matches = if classifier.ascii_insensitive {
+                    quote!(text.eq_ignore_ascii_case(#canonical))
+                } else {
+                    quote!(text == #canonical)
+                };
+                quote! {
+                    if #matches {
+                        return Some(#kind);
+                    }
+                }
+            });
+            helper_items.push(quote! {
+                fn #helper(text: &str) -> Option<u16> {
+                    #(#comparisons)*
+                    None
+                }
+            });
+            helper
+        })
+        .collect::<Vec<_>>();
+
+    let mut level_index = 1_usize;
+    while level.len() > 1 {
+        let next_level = level
+            .chunks(CLASSIFIERS_PER_HELPER)
+            .enumerate()
+            .map(|(index, children)| {
+                let helper = format_ident!("__recursa_classify_words_{level_index}_{index}");
+                let calls = children.iter().map(|child| {
+                    quote! {
+                        if let Some(kind) = #child(text) {
+                            return Some(kind);
+                        }
+                    }
+                });
+                helper_items.push(quote! {
+                    fn #helper(text: &str) -> Option<u16> {
+                        #(#calls)*
+                        None
+                    }
+                });
+                helper
+            })
+            .collect::<Vec<_>>();
+        level = next_level;
+        level_index += 1;
+    }
+
+    let classification = level.first().map(|root| {
+        quote! {
+            let Some(text) = source.get(record.span.range()) else {
+                return;
+            };
+            if let Some(kind) = #root(text) {
+                record.kind = kind;
+            }
+        }
+    });
+
+    quote! {
+        #(#helper_items)*
+
+        fn __recursa_classify(
+            source: &str,
+            record: &mut #facade::__private::TokenRecord,
+        ) {
+            if ![#(#candidate_kinds),*].contains(&record.kind) {
+                return;
+            }
+            #classification
+        }
+    }
+}
+
 /// One complete logical output ready for filesystem publication.
 ///
-/// The root and Node files have already parsed as Rust, anchors align with Node order, and the
-/// selector names only this generation identity. This value contains no partially rendered state.
+/// Root and Node files come from typed token streams, anchors align with Node order, and the
+/// selector names only this generation identity. Checked test plans additionally parse every
+/// logical Rust file. This value contains no partially rendered state.
 pub(super) struct RenderedGeneration {
-    /// Validated structural root source shared by every Node loader.
+    /// Structural root source shared by every Node loader.
     pub(super) root: String,
-    /// Validated Node filenames and sources in parse-plan order.
+    /// Node filenames and sources in parse-plan order.
     pub(super) nodes: Vec<(String, String)>,
     /// Loader anchors positionally aligned with [`Self::nodes`].
     pub(super) node_anchors: Vec<String>,
-    /// Validated loader source that selects this Generation identity.
+    /// Loader source that selects this Generation identity.
     pub(super) selector: String,
 }
 
-/// Validates and renders every logical file without performing filesystem publication.
-pub(super) fn render(plan: &EmissionPlan) -> Result<RenderedGeneration, String> {
-    plan.validate()?;
-    let root = render_root(plan).to_string();
+/// Supplies an immutable emission plan and its boundary-specific checks to rendering.
+pub(super) trait RenderingPlan {
+    /// Borrows the plan consumed by capability renderers.
+    fn emission_plan(&self) -> &EmissionPlan;
+
+    /// Rechecks plan invariants when a test deliberately bypasses the validation proof.
+    fn validate_for_rendering(&self) -> Result<(), String>;
+
+    /// Checks rendered Rust when exercising the internal syntax-failure contract.
+    fn validate_rendered_rust(&self, tokens: &proc_macro2::TokenStream) -> Result<(), syn::Error>;
+}
+
+impl RenderingPlan for ValidatedEmissionPlan {
+    fn emission_plan(&self) -> &EmissionPlan {
+        self
+    }
+
+    fn validate_for_rendering(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn validate_rendered_rust(&self, _tokens: &proc_macro2::TokenStream) -> Result<(), syn::Error> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl RenderingPlan for EmissionPlan {
+    fn emission_plan(&self) -> &EmissionPlan {
+        self
+    }
+
+    fn validate_for_rendering(&self) -> Result<(), String> {
+        self.validate()
+    }
+
+    fn validate_rendered_rust(&self, tokens: &proc_macro2::TokenStream) -> Result<(), syn::Error> {
+        syn::parse2::<syn::File>(tokens.clone()).map(|_| ())
+    }
+}
+
+/// Renders every logical file without performing filesystem publication.
+pub(super) fn render(plan: &impl RenderingPlan) -> Result<RenderedGeneration, String> {
+    plan.validate_for_rendering()?;
+    let rendering = plan;
+    let plan = rendering.emission_plan();
+    let root_tokens = render_root(plan);
+    rendering
+        .validate_rendered_rust(&root_tokens)
+        .map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
+    let root = root_tokens.to_string();
     let mut instrumentation = RenderInstrumentation::default();
     let mut nodes = Vec::new();
     for (index, node) in plan.nodes.iter().enumerate() {
         let name = format!("node-{index}.rs");
-        let rendered = render_node(plan, node, index, &mut instrumentation).to_string();
-        syn::parse_file(&rendered)
+        let tokens = render_node(plan, node, index, &mut instrumentation);
+        rendering
+            .validate_rendered_rust(&tokens)
             .map_err(|error| format!("Node rendering is invalid Rust: {error}"))?;
-        nodes.push((name, rendered));
+        nodes.push((name, tokens.to_string()));
     }
     if instrumentation.frozen_dispatch_nodes_rendered
         != plan.instrumentation.frozen_dispatch_nodes_consumed
@@ -39,14 +261,14 @@ pub(super) fn render(plan: &EmissionPlan) -> Result<RenderedGeneration, String> 
         return Err("the renderer did not consume exactly the frozen dispatch trie".to_owned());
     }
     let selected_root = format!("/recursa-generations/{}/root.rs", plan.identity);
-    let selector_body = quote! {
+    let selector_tokens = quote! {
         include!(concat!(env!("OUT_DIR"), #selected_root));
-    }
-    .to_string();
-    let selector = format!("// recursa-generation:{}\n{selector_body}", plan.identity);
-    syn::parse_file(&root).map_err(|error| format!("root rendering is invalid Rust: {error}"))?;
-    syn::parse_file(&selector)
+    };
+    rendering
+        .validate_rendered_rust(&selector_tokens)
         .map_err(|error| format!("Generation selector rendering is invalid Rust: {error}"))?;
+    let selector_body = selector_tokens.to_string();
+    let selector = format!("// recursa-generation:{}\n{selector_body}", plan.identity);
     Ok(RenderedGeneration {
         root,
         nodes,
@@ -120,24 +342,8 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 }
             });
     let word_candidate_kinds = &plan.word_candidate_kinds;
-    let word_classifiers = plan.word_classifiers.iter().map(|classifier| {
-        let canonical = &classifier.canonical_spelling;
-        let kind = classifier.kind;
-        let matches = if classifier.ascii_insensitive {
-            quote!(text.eq_ignore_ascii_case(#canonical))
-        } else {
-            quote!(text == #canonical)
-        };
-        quote! {
-            if source
-                .get(record.span.range())
-                .is_some_and(|text| #matches)
-            {
-                record.kind = #kind;
-                return;
-            }
-        }
-    });
+    let word_classification =
+        render_word_classifiers(&plan.word_classifiers, word_candidate_kinds, facade);
     let matchers = plan
         .lexical_rules
         .iter()
@@ -183,15 +389,19 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
     let fixed = plan.lexical_rules.iter().map(|rule| rule.fixed);
     let priorities = plan.lexical_rules.iter().map(|rule| rule.priority);
     let empty_words = vec![0_u64; kind_count.div_ceil(64)];
-    let token_starts = plan.tokens.iter().enumerate().map(|(index, token)| {
-        let name = format_ident!("__RECURSA_TOKEN_START_{index}");
-        render_expected_static(&name, &token.expected, plan, facade)
-    });
+    let expected_set_count = plan.expected_sets.values().len();
+    let expected_sets = plan
+        .expected_sets
+        .values()
+        .iter()
+        .map(|expected| render_expected_value(expected, plan, facade));
     let token_items = plan
         .tokens
         .iter()
         .enumerate()
         .map(|(index, token)| render_token(plan, token, index));
+    let content_token_pretty_helper = render_content_token_pretty_helper(plan);
+    let content_token_optional_trait_helpers = render_content_token_optional_trait_helpers(plan);
     let visit_events = render_visit_events(plan);
     let explorer_schema = plan
         .explorer
@@ -246,7 +456,9 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
                 &[#(#empty_words),*],
                 &[],
             );
-        #(#token_starts)*
+        static __RECURSA_EXPECTED_SETS: [#facade::__private::FollowSet; #expected_set_count] = [
+            #(#expected_sets),*
+        ];
 
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         #[allow(non_camel_case_types)]
@@ -326,15 +538,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             }
         }
 
-        fn __recursa_classify(
-            source: &str,
-            record: &mut #facade::__private::TokenRecord,
-        ) {
-            if ![#(#word_candidate_kinds),*].contains(&record.kind) {
-                return;
-            }
-            #(#word_classifiers)*
-        }
+        #word_classification
 
         fn __recursa_finalize<'input>(
             source: &'input str,
@@ -697,6 +901,8 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             #(#token_items)*
         }
 
+        #content_token_pretty_helper
+        #content_token_optional_trait_helpers
         #visit_events
         #explorer_schema
         #explorer_lex
@@ -871,7 +1077,9 @@ pub(super) fn render_node(
             fn view<'view>(
                 &'view self,
                 cursor: #facade::__private::ViewCursor<'view>,
-            ) -> Self::View<'view> { #view_ident { value: self, cursor } }
+            ) -> <Self as #facade::__private::NodeViewFactory>::View<'view> {
+                #view_ident { value: self, cursor }
+            }
         }
 
         #(#parse_implementations)*

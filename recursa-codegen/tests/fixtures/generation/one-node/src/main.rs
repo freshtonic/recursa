@@ -1,7 +1,63 @@
 use recursa::{HasSpan as _, NodeView as _};
 use recursa_generated_one_node::r#type as grammar;
 
+struct VisitCount(usize);
+
+impl<'input> recursa::TotalVisitor<grammar::__RecursaVisitEvents<'input>> for VisitCount {
+    type Error = ();
+
+    fn total_enter<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEvent<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEvents<'input>: 'visit,
+    {
+        self.0 += 1;
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn total_exit<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEvent<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEvents<'input>: 'visit,
+    {
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+struct VisitMutCount(usize);
+
+impl<'input> recursa::TotalVisitorMut<grammar::__RecursaVisitEventsMut<'input>> for VisitMutCount {
+    type Error = ();
+
+    fn total_enter_mut<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEventMut<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEventsMut<'input>: 'visit,
+    {
+        self.0 += 1;
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn total_exit_mut<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEventMut<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEventsMut<'input>: 'visit,
+    {
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
 fn assert_token_kind_value<T: Copy + Eq + std::hash::Hash + std::fmt::Debug>() {}
+
+fn assert_ast_traits<T: Clone + std::fmt::Debug>() {}
 
 fn parse_with_capability<T, I>(input: &mut I) -> Result<T::Output, recursa::ParseError>
 where
@@ -12,6 +68,7 @@ where
 
 fn main() {
     assert_token_kind_value::<grammar::TokenKind>();
+    assert_ast_traits::<grammar::r#match<'static>>();
     assert!(option_env!("RECURSA_GENERATION").is_none());
     assert_eq!(
         grammar::grammar_info().name().split("::").next(),
@@ -38,11 +95,25 @@ fn main() {
     assert_eq!(parsed.root().text().span(), None);
     assert_eq!(input.cursor(), 1);
     assert!(input.is_eof());
-    let ast = parsed.into_ast();
+    let mut ast = parsed.into_ast();
     assert_eq!(ast.text.text(), "alpha");
+    ast.marker = Some(grammar::Marker);
+    let mut visits = VisitCount(0);
+    assert!(recursa::Visit::visit(&ast, &mut visits).is_continue());
+    assert_eq!(
+        visits.0, 3,
+        "the parent, generated token, and lifetime-free child are visited",
+    );
+    let mut mutable_visits = VisitMutCount(0);
+    assert!(recursa::VisitMut::visit_mut(&mut ast, &mut mutable_visits).is_continue());
+    assert_eq!(
+        mutable_visits.0, 3,
+        "the parent, generated token, and lifetime-free child are visited mutably",
+    );
 
     let synthetic = recursa::Parsed::synthetic(grammar::r#match {
         text: grammar::WordText::new(String::from("owned")),
+        marker: None,
     });
     assert_eq!(synthetic.source(), None);
     assert_eq!(synthetic.root().span(), None);

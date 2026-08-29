@@ -24,7 +24,7 @@ pub(super) struct TokenParsePlan {
     pub(super) capture: PlannedCapturePolicy,
     /// Deterministic synthesized spelling used by generated `Arbitrary`.
     pub(super) arbitrary_spelling: String,
-    /// Effective generator-owned trait recipes for the token type.
+    /// Effective optional recipes in addition to intrinsic structural value traits.
     pub(super) configured_traits: Vec<ConfiguredTraitRecipe>,
 }
 
@@ -236,9 +236,9 @@ pub(super) fn render_token(
             },
         }
     });
-    let expected = format_ident!("__RECURSA_TOKEN_START_{index}");
+    let expected = render_expected_set(plan, &token.expected);
     let capture = token.capture.render(facade);
-    let standard_derives = token
+    let mut standard_derives = token
         .configured_traits
         .iter()
         .filter_map(|recipe| match recipe {
@@ -253,8 +253,24 @@ pub(super) fn render_token(
             _ => None,
         })
         .collect::<Vec<_>>();
-    let standard_derive =
-        (!standard_derives.is_empty()).then(|| quote!(#[derive(#(#standard_derives),*)]));
+    // Authored Nodes may use ordinary Rust derives independently of Recursa's configured-trait
+    // plan. Generated token types are string-like values, so keep their structurally valid value
+    // traits available to those downstream derives without requiring a grammar-wide recipe.
+    for recipe in INTRINSIC_CONTENT_TOKEN_VALUE_TRAITS {
+        if !token.configured_traits.contains(&recipe) {
+            standard_derives.push(match recipe {
+                ConfiguredTraitRecipe::Debug => quote!(Debug),
+                ConfiguredTraitRecipe::Clone => quote!(Clone),
+                ConfiguredTraitRecipe::PartialEq => quote!(PartialEq),
+                ConfiguredTraitRecipe::Eq => quote!(Eq),
+                ConfiguredTraitRecipe::PartialOrd => quote!(PartialOrd),
+                ConfiguredTraitRecipe::Ord => quote!(Ord),
+                ConfiguredTraitRecipe::Hash => quote!(Hash),
+                _ => unreachable!("the intrinsic content-token trait catalog is structural"),
+            });
+        }
+    }
+    let standard_derive = quote!(#[derive(#(#standard_derives),*)]);
     let visit_event = quote!(#module_anchor::__RecursaVisitEvent);
     let visit_event_mut = quote!(#module_anchor::__RecursaVisitEventMut);
     let visit_events = quote!(#module_anchor::__RecursaVisitEvents);
@@ -271,6 +287,46 @@ pub(super) fn render_token(
         |variant| quote!(#visit_event_mut::#variant(self)),
     );
     let exit_event_mut = enter_event_mut.clone();
+    let visit_with_impl = visit_family_enabled(plan, false).then(|| {
+        quote! {
+            impl<'input> #module_anchor::__RecursaVisitWith<'input> for #ident<'input> {
+                fn __recursa_visit_with<V>(
+                    &self,
+                    visitor: &mut V,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                where
+                    V: #facade::TotalVisitor<#visit_events<'input>>,
+                {
+                    match visitor.total_enter(#enter_event) {
+                        ::core::ops::ControlFlow::Continue(())
+                        | ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
+                        other => return other,
+                    }
+                    visitor.total_exit(#exit_event)
+                }
+            }
+        }
+    });
+    let visit_mut_with_impl = visit_family_enabled(plan, true).then(|| {
+        quote! {
+            impl<'input> #module_anchor::__RecursaVisitMutWith<'input> for #ident<'input> {
+                fn __recursa_visit_mut_with<V>(
+                    &mut self,
+                    visitor: &mut V,
+                ) -> ::core::ops::ControlFlow<#facade::VisitBreak<V::Error>>
+                where
+                    V: #facade::TotalVisitorMut<#visit_events_mut<'input>>,
+                {
+                    match visitor.total_enter_mut(#enter_event_mut) {
+                        ::core::ops::ControlFlow::Continue(())
+                        | ::core::ops::ControlFlow::Break(#facade::VisitBreak::SkipChildren) => {}
+                        other => return other,
+                    }
+                    visitor.total_exit_mut(#exit_event_mut)
+                }
+            }
+        }
+    });
     let visit_impl = token
         .configured_traits
         .contains(&ConfiguredTraitRecipe::Visit)
@@ -321,15 +377,29 @@ pub(super) fn render_token(
                 }
             }
         });
+    let pretty_body = |behavior| match behavior {
+        PrettyTokenBehavior::MatchedOrStoredText => quote! {
+            let matched = context.matched_text();
+            context.token(matched.as_deref().unwrap_or_else(|| self.text()))
+        },
+    };
+    let pretty_with_impl = content_token_pretty_helper_enabled(plan).then(|| {
+        let body = pretty_body(PrettyTokenBehavior::MatchedOrStoredText);
+        quote! {
+            impl<'input> #module_anchor::__RecursaPrettyWith for #ident<'input> {
+                fn __recursa_pretty_with(
+                    &self,
+                    context: &mut #facade::PrettyContext,
+                ) -> ::core::fmt::Result {
+                    #body
+                }
+            }
+        }
+    });
     let pretty_impl = plan.pretty.tokens[index].map(|behavior| {
         let max_width = plan.pretty_max_width;
         let indent = plan.pretty_indent;
-        let value = match behavior {
-            PrettyTokenBehavior::MatchedOrStoredText => quote! {
-                let matched = context.matched_text();
-                context.token(matched.as_deref().unwrap_or_else(|| self.text()))
-            },
-        };
+        let body = pretty_body(behavior);
         quote! {
             impl<'input> #facade::Pretty for #ident<'input> {
                 fn pretty(
@@ -337,7 +407,7 @@ pub(super) fn render_token(
                     context: &mut #facade::PrettyContext,
                 ) -> ::core::fmt::Result {
                     context.configure_defaults(#max_width, #indent);
-                    #value
+                    #body
                 }
             }
 
@@ -373,6 +443,25 @@ pub(super) fn render_token(
                 }
             }
         });
+    let arbitrary_with_impl =
+        content_token_support_required(plan, token.semantic, ConfiguredTraitRecipe::Arbitrary)
+            .then(|| {
+                let spelling = &token.arbitrary_spelling;
+                quote! {
+                    __recursa_if_arbitrary! {
+                        impl<'arbitrary, 'input> #module_anchor::__RecursaArbitraryWith<'arbitrary>
+                            for #ident<'input>
+                        {
+                            fn __recursa_arbitrary_with(
+                                input: &mut #facade::__private::arbitrary::Unstructured<'arbitrary>,
+                            ) -> #facade::__private::arbitrary::Result<Self> {
+                                let _ = input;
+                                Ok(Self::new(#spelling))
+                            }
+                        }
+                    }
+                }
+            });
     let serialize_impl = token
         .configured_traits
         .contains(&ConfiguredTraitRecipe::Serialize)
@@ -407,6 +496,47 @@ pub(super) fn render_token(
                 }
             }
         });
+    let serialize_with_impl =
+        content_token_support_required(plan, token.semantic, ConfiguredTraitRecipe::Serialize)
+            .then(|| {
+                quote! {
+                    __recursa_if_serde! {
+                        impl<'input> #module_anchor::__RecursaSerializeWith for #ident<'input> {
+                            fn __recursa_serialize_with<S>(
+                                &self,
+                                serializer: S,
+                            ) -> Result<S::Ok, S::Error>
+                            where
+                                S: #facade::__private::serde::Serializer,
+                            {
+                                serializer.serialize_str(self.text())
+                            }
+                        }
+                    }
+                }
+            });
+    let deserialize_with_impl = content_token_support_required(
+        plan,
+        token.semantic,
+        ConfiguredTraitRecipe::Deserialize,
+    )
+    .then(|| {
+        quote! {
+            __recursa_if_serde! {
+                impl<'de, 'input> #module_anchor::__RecursaDeserializeWith<'de> for #ident<'input> {
+                    fn __recursa_deserialize_with<D>(
+                        deserializer: D,
+                    ) -> Result<Self, D::Error>
+                    where
+                        D: #facade::__private::serde::Deserializer<'de>,
+                    {
+                        let text = <String as #facade::__private::serde::Deserialize>::deserialize(deserializer)?;
+                        Ok(Self::new(text))
+                    }
+                }
+            }
+        }
+    });
     let explorer_impl = plan
         .explorer
         .as_ref()
@@ -454,7 +584,9 @@ pub(super) fn render_token(
             fn view<'view>(
                 &'view self,
                 cursor: #facade::__private::ViewCursor<'view>,
-            ) -> Self::View<'view> { #view { value: self, cursor } }
+            ) -> <Self as #facade::__private::NodeViewFactory>::View<'view> {
+                #view { value: self, cursor }
+            }
         }
         impl<'input, A> #facade::__private::Parse<'input, A> for #ident<'input> {
             const CAPTURE_POLICY: #facade::__private::CapturePolicy = #capture;
@@ -468,10 +600,10 @@ pub(super) fn render_token(
                 context: &mut #facade::__private::ParseContext<'_, 'input, A>,
             ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
                 let Some(record) = context.peek(0) else {
-                    return Err(context.unexpected(&#module_anchor::#expected));
+                    return Err(context.unexpected(&#expected));
                 };
-                if !#module_anchor::#expected.contains(record.kind) {
-                    return Err(context.unexpected(&#module_anchor::#expected));
+                if !#expected.contains(record.kind) {
+                    return Err(context.unexpected(&#expected));
                 }
                 context.advance();
                 let text = context.matched_text(record)?;
@@ -490,12 +622,18 @@ pub(super) fn render_token(
             }
         }
 
+        #visit_with_impl
+        #visit_mut_with_impl
         #visit_impl
         #visit_mut_impl
+        #pretty_with_impl
         #pretty_impl
         #arbitrary_impl
+        #arbitrary_with_impl
         #serialize_impl
         #deserialize_impl
+        #serialize_with_impl
+        #deserialize_with_impl
         #explorer_impl
     }
 }

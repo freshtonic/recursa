@@ -14,14 +14,47 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use crate::analysis::{FirstFacts, FirstSequenceAnalysis};
 use crate::ir::RepeatSeparator;
-use crate::text_partition::{TextPartition, partition_by_residual};
+use crate::text_partition::{TextPartition, partition_by_kind_residual};
 use crate::{
     DeclId, FirstPosition, FirstSequence, GrammarDescription, KindId, KindSet, PrattPosition,
-    SiteId, TextPredicate, TypeId, TypeShape,
+    SiteId, TextPredicate, TextPredicateId, TypeId, TypeShape,
 };
+
+#[cfg(test)]
+std::thread_local! {
+    /// Counts independent decision validations that reconstruct FIRST-language support.
+    static INDEPENDENT_DECISION_VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Counts complete decision-plan constructions on the current test thread.
+    static DECISION_PLAN_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+/// Resets the per-test count of independent decision validations.
+pub(crate) fn reset_independent_decision_validations_for_test() {
+    INDEPENDENT_DECISION_VALIDATIONS.set(0);
+}
+
+#[cfg(test)]
+/// Returns the per-test count of independent decision validations.
+pub(crate) fn independent_decision_validations_for_test() -> usize {
+    INDEPENDENT_DECISION_VALIDATIONS.get()
+}
+
+#[cfg(test)]
+/// Resets the per-test count of complete decision-plan constructions.
+pub(crate) fn reset_decision_plan_constructions_for_test() {
+    DECISION_PLAN_CONSTRUCTIONS.set(0);
+}
+
+#[cfg(test)]
+/// Returns the per-test count of complete decision-plan constructions.
+pub(crate) fn decision_plan_constructions_for_test() -> usize {
+    DECISION_PLAN_CONSTRUCTIONS.get()
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Supplies the grammar construct controlled by a dispatch plan consumed when generation replays this decision.
@@ -56,7 +89,7 @@ impl DispatchSequence {
 }
 
 /// One terminal choice in a frozen dispatch trie.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DispatchTerminal {
     /// Declaration selected at this terminal.
     declaration: DeclId,
@@ -124,7 +157,7 @@ pub struct DispatchTrieNode {
     /// Optional decision when the consumed prefix ends here.
     terminal: Option<DispatchTerminal>,
     /// Already-discriminated outgoing token predicates.
-    edges: Vec<DispatchTrieEdge>,
+    edges: Arc<[DispatchTrieEdge]>,
 }
 
 impl DispatchTrieNode {
@@ -182,6 +215,36 @@ pub struct DispatchPlan {
     on_caller_follow: Option<DeclId>,
     /// Supplies the trie consumed when generation replays this decision.
     trie: DispatchTrieNode,
+    /// Optional balanced-delimiter cut used before the bounded trie.
+    balanced: Option<BalancedDispatch>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One structurally matched delimiter region followed by an ordinary residual dispatch.
+pub struct BalancedDispatch {
+    /// Fixed opening kind that starts the nesting scan.
+    open: KindId,
+    /// Fixed closing kind that ends the scan at nesting depth zero.
+    close: KindId,
+    /// Frozen branch selection beginning immediately after the matching close.
+    after_close: DispatchTrieNode,
+}
+
+impl BalancedDispatch {
+    /// Returns the fixed opening token kind.
+    pub const fn open(&self) -> KindId {
+        self.open
+    }
+
+    /// Returns the fixed closing token kind.
+    pub const fn close(&self) -> KindId {
+        self.close
+    }
+
+    /// Returns the frozen residual dispatch evaluated after the matching close.
+    pub const fn after_close(&self) -> &DispatchTrieNode {
+        &self.after_close
+    }
 }
 
 impl DispatchPlan {
@@ -215,6 +278,11 @@ impl DispatchPlan {
         &self.trie
     }
 
+    /// Returns the structural delimiter strategy used for an unresolved opener edge.
+    pub const fn balanced(&self) -> Option<&BalancedDispatch> {
+        self.balanced.as_ref()
+    }
+
     /// Renders facts in canonical order.
     pub fn canonical_facts(&self, grammar: &GrammarDescription) -> String {
         let mut output = format!(
@@ -226,6 +294,16 @@ impl DispatchPlan {
                 grammar.declarations[declaration.index()].name.as_str()
             }),
         );
+        if let Some(balanced) = &self.balanced {
+            write!(
+                output,
+                "\n  balanced open={} close={} after-close=",
+                grammar.kinds[balanced.open.index()].name,
+                grammar.kinds[balanced.close.index()].name,
+            )
+            .expect("writing to a String cannot fail");
+            render_dispatch_trie(&balanced.after_close, grammar, &mut output);
+        }
         for branch in &self.branches {
             let declaration = &grammar.declarations[branch.declaration.index()].name;
             write!(
@@ -560,23 +638,21 @@ impl DecisionProducts {
         output
     }
 
-    /// Validates every decision against the grammar and computed FIRST facts.
+    #[cfg(test)]
+    /// Independently validates every decision against the grammar and computed FIRST facts.
     pub(crate) fn validate(
         &self,
         grammar: &GrammarDescription,
         semantic: &[FirstFacts],
     ) -> Result<(), DecisionInvariant> {
+        INDEPENDENT_DECISION_VALIDATIONS
+            .set(INDEPENDENT_DECISION_VALIDATIONS.get().saturating_add(1));
         let first_sequences = FirstSequenceAnalysis::for_grammar(grammar);
         self.validate_with_first_sequences(grammar, semantic, &first_sequences)
     }
 
-    /// Validates decisions while reusing the originating analysis-run FIRST support.
-    pub(crate) fn validate_with_first_sequences(
-        &self,
-        grammar: &GrammarDescription,
-        semantic: &[FirstFacts],
-        first_sequences: &FirstSequenceAnalysis<'_>,
-    ) -> Result<(), DecisionInvariant> {
+    /// Validates cross-table identities that are independent of decision reconstruction.
+    fn validate_structure(&self, grammar: &GrammarDescription) -> Result<(), DecisionInvariant> {
         // Validate every cross-table identity before generation can trust this frozen product as executable authority.
         if self.follow_recipes_by_site.len() != grammar.sites.len()
             || self.container_machines.len() != grammar.sites.len()
@@ -691,17 +767,6 @@ impl DecisionProducts {
             {
                 return Err(DecisionInvariant::MultipleCallerFallbacks);
             }
-            for (left_index, left) in dispatch.branches.iter().enumerate() {
-                for right in &dispatch.branches[left_index + 1..] {
-                    if left.sequences.iter().any(|left_sequence| {
-                        right.sequences.iter().any(|right_sequence| {
-                            sequences_overlap(left_sequence, right_sequence, grammar)
-                        })
-                    }) {
-                        return Err(DecisionInvariant::OverlappingDispatch);
-                    }
-                }
-            }
         }
         let mut failure_keys = self
             .failure_edges
@@ -714,11 +779,36 @@ impl DecisionProducts {
         if failure_keys.len() != failure_count {
             return Err(DecisionInvariant::DuplicateFailureEdge);
         }
-        let expected = plan_decisions(grammar, semantic, first_sequences);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    /// Independently validates decisions while reusing supplied FIRST-language support.
+    fn validate_with_first_sequences(
+        &self,
+        grammar: &GrammarDescription,
+        semantic: &[FirstFacts],
+        first_sequences: &FirstSequenceAnalysis<'_>,
+    ) -> Result<(), DecisionInvariant> {
+        self.validate_structure(grammar)?;
+        let expected = plan_decisions(grammar, semantic, first_sequences).0;
         if self.follow_recipes_by_site != expected.follow_recipes_by_site {
             return Err(DecisionInvariant::FollowRecipeMismatch);
         }
         if self.dispatches != expected.dispatches {
+            for dispatch in &self.dispatches {
+                for (left_index, left) in dispatch.branches.iter().enumerate() {
+                    for right in &dispatch.branches[left_index + 1..] {
+                        if left.sequences.iter().any(|left_sequence| {
+                            right.sequences.iter().any(|right_sequence| {
+                                sequences_overlap(left_sequence, right_sequence, grammar)
+                            })
+                        }) {
+                            return Err(DecisionInvariant::OverlappingDispatch);
+                        }
+                    }
+                }
+            }
             return Err(DecisionInvariant::DispatchProductMismatch);
         }
         if self.container_machines != expected.container_machines {
@@ -731,6 +821,27 @@ impl DecisionProducts {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Decision products returned directly by the private canonical constructor.
+pub(crate) struct ConstructedDecisionProducts(DecisionProducts);
+
+impl ConstructedDecisionProducts {
+    /// Checks construction-independent identities and yields publishable products.
+    pub(crate) fn validate_for_publication(
+        self,
+        grammar: &GrammarDescription,
+    ) -> Result<DecisionProducts, DecisionInvariant> {
+        self.0.validate_structure(grammar)?;
+        Ok(self.0)
+    }
+
+    #[cfg(test)]
+    /// Corrupts one site product before the publication-boundary regression check.
+    pub(crate) fn corrupt_site_product_for_test(&mut self) {
+        self.0.corrupt_site_product_for_test();
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Classifies the decision invariant alternatives frozen into the decision plan.
 pub(crate) enum DecisionInvariant {
@@ -738,6 +849,7 @@ pub(crate) enum DecisionInvariant {
     MissingSiteProduct,
     /// Selects the missing dispatch decision for generation.
     MissingDispatch,
+    #[cfg(test)]
     /// Selects the overlapping dispatch decision for generation.
     OverlappingDispatch,
     /// Selects the empty expected recipe decision for generation.
@@ -752,12 +864,16 @@ pub(crate) enum DecisionInvariant {
     MultipleCallerFallbacks,
     /// Selects the duplicate failure edge decision for generation.
     DuplicateFailureEdge,
+    #[cfg(test)]
     /// Selects the follow recipe mismatch decision for generation.
     FollowRecipeMismatch,
+    #[cfg(test)]
     /// Selects the dispatch product mismatch decision for generation.
     DispatchProductMismatch,
+    #[cfg(test)]
     /// Selects the container product mismatch decision for generation.
     ContainerProductMismatch,
+    #[cfg(test)]
     /// Selects the failure product mismatch decision for generation.
     FailureProductMismatch,
 }
@@ -773,7 +889,9 @@ pub(crate) fn plan_decisions(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
     first_sequences: &FirstSequenceAnalysis<'_>,
-) -> DecisionProducts {
+) -> ConstructedDecisionProducts {
+    #[cfg(test)]
+    DECISION_PLAN_CONSTRUCTIONS.set(DECISION_PLAN_CONSTRUCTIONS.get().saturating_add(1));
     // Build dispatch, container, Pratt, and failure products from the same semantic snapshot to prevent phase drift.
     let mut follow_recipes_by_site = vec![FollowRecipe::Caller; grammar.sites.len()];
     let mut dispatches = Vec::new();
@@ -902,12 +1020,12 @@ pub(crate) fn plan_decisions(
         })
         .collect::<Vec<_>>();
     let failure_edges = plan_failure_edges(grammar, semantic, &dispatches, &follow_recipes_by_site);
-    DecisionProducts {
+    ConstructedDecisionProducts(DecisionProducts {
         dispatches,
         follow_recipes_by_site,
         container_machines,
         failure_edges,
-    }
+    })
 }
 
 /// Derives the canonical container transitions recorded in the immutable decision plan.
@@ -976,8 +1094,8 @@ fn plan_follow_for_sites(
     first_sequences: &FirstSequenceAnalysis<'_>,
     recipes: &mut [FollowRecipe],
 ) {
-    for (index, site) in sites.iter().enumerate() {
-        let suffix = first_sequences.sequences(&sites[index + 1..]);
+    let suffixes = first_sequences.first_batch((0..sites.len()).map(|index| &sites[index + 1..]));
+    for (site, suffix) in sites.iter().zip(suffixes) {
         recipes[site.index()] = follow_recipe(&suffix);
     }
 }
@@ -1007,30 +1125,81 @@ fn dispatch_plan<'a>(
     grammar: &GrammarDescription,
     first_sequences: &FirstSequenceAnalysis<'_>,
 ) -> DispatchPlan {
-    let mut branches = alternatives
-        .into_iter()
-        .map(|(declaration, position, sites)| DispatchBranch {
-            declaration,
-            position,
-            sequences: first_sequences
-                .sequences(sites)
-                .into_iter()
-                .map(|sequence| {
-                    let on_caller_follow = sequence.ends();
-                    DispatchSequence {
+    let alternatives = alternatives.into_iter().collect::<Vec<_>>();
+    let maximum_depth = grammar.max_lookahead;
+    let depths = if kind == DispatchKind::PrattLed || maximum_depth == 0 {
+        vec![maximum_depth]
+    } else {
+        (1..=maximum_depth).collect()
+    };
+    let bounded = depths.into_iter().find_map(|depth| {
+        let sequences = first_sequences
+            .sequences_batch_at_depth(alternatives.iter().map(|(_, _, sites)| *sites), depth);
+        let mut branches = alternatives
+            .iter()
+            .zip(sequences)
+            .map(|((declaration, position, _), sequences)| DispatchBranch {
+                declaration: *declaration,
+                position: *position,
+                sequences: sequences
+                    .into_iter()
+                    .map(|sequence| DispatchSequence {
+                        on_caller_follow: sequence.ends(),
                         positions: sequence.positions,
-                        on_caller_follow,
-                    }
-                })
-                .collect(),
-        })
-        .collect::<Vec<_>>();
-    branches.sort_by(|left, right| {
-        grammar.declarations[left.declaration.index()]
-            .name
-            .cmp(&grammar.declarations[right.declaration.index()].name)
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        branches.sort_by(|left, right| {
+            grammar.declarations[left.declaration.index()]
+                .name
+                .cmp(&grammar.declarations[right.declaration.index()].name)
+        });
+        try_freeze_dispatch_trie(&branches, grammar, kind == DispatchKind::PrattNud)
+            .map(|(trie, required)| (branches, trie, required))
     });
-    let required_lookahead = required_dispatch_lookahead(&branches, grammar);
+    let (branches, trie, required_lookahead, balanced) =
+        if let Some((branches, trie, required_lookahead)) = bounded {
+            (branches, trie, required_lookahead, None)
+        } else {
+            let sequences = first_sequences.sequences_batch_at_depth(
+                alternatives.iter().map(|(_, _, sites)| *sites),
+                maximum_depth,
+            );
+            let mut branches = alternatives
+                .iter()
+                .zip(sequences)
+                .map(|((declaration, position, _), sequences)| DispatchBranch {
+                    declaration: *declaration,
+                    position: *position,
+                    sequences: sequences
+                        .into_iter()
+                        .map(|sequence| DispatchSequence {
+                            on_caller_follow: sequence.ends(),
+                            positions: sequence.positions,
+                        })
+                        .collect(),
+                })
+                .collect::<Vec<_>>();
+            branches.sort_by(|left, right| {
+                grammar.declarations[left.declaration.index()]
+                    .name
+                    .cmp(&grammar.declarations[right.declaration.index()].name)
+            });
+            let balanced =
+                try_balanced_dispatch(&alternatives, &branches, grammar, first_sequences)
+                    .expect("validated structural dispatch resolves the unbounded shared prefix");
+            let bounded_branches =
+                ordinary_branches_without_balanced_opener(&branches, balanced.open, grammar)
+                    .expect("validated structural dispatch partitions every opener route exactly");
+            let (trie, required_lookahead) = try_freeze_dispatch_trie(
+                &bounded_branches,
+                grammar,
+                kind == DispatchKind::PrattNud,
+            )
+            .expect("validated structural dispatch resolves every non-opener route");
+            (branches, trie, required_lookahead, Some(balanced))
+        };
     let on_caller_follow = branches.iter().find_map(|branch| {
         branch
             .sequences
@@ -1038,7 +1207,6 @@ fn dispatch_plan<'a>(
             .any(|sequence| sequence.positions.is_empty() && sequence.on_caller_follow)
             .then_some(branch.declaration)
     });
-    let trie = freeze_dispatch_trie(&branches, grammar);
     DispatchPlan {
         owner,
         kind,
@@ -1046,147 +1214,408 @@ fn dispatch_plan<'a>(
         required_lookahead,
         on_caller_follow,
         trie,
+        balanced,
     }
 }
 
-/// One immutable complete sequence used while partitioning a dispatch trie.
-#[derive(Clone, Debug)]
-struct DispatchPath {
-    /// Terminal selected after all positions have matched.
-    terminal: DispatchTerminal,
-    /// Complete symbolic positions in this path.
-    positions: Vec<FirstPosition>,
-}
-
-/// One residual path position in a symbolic dispatch state.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct DispatchCursor {
-    /// Index into the immutable complete path table.
-    path: usize,
-    /// Next position to match in that path.
-    offset: usize,
-}
-
-/// Derives the canonical frozen dispatch trie from exact symbolic language partitions.
-fn freeze_dispatch_trie(
+/// Builds one balanced-delimiter cut and freezes its post-close residual languages.
+fn try_balanced_dispatch(
+    alternatives: &[(DeclId, Option<PrattPosition>, &[SiteId])],
     branches: &[DispatchBranch],
     grammar: &GrammarDescription,
-) -> DispatchTrieNode {
-    let paths = branches
+    first_sequences: &FirstSequenceAnalysis<'_>,
+) -> Option<BalancedDispatch> {
+    if alternatives
         .iter()
-        .flat_map(|branch| {
-            branch.sequences.iter().map(|sequence| DispatchPath {
-                terminal: DispatchTerminal {
-                    declaration: branch.declaration,
-                    on_caller_follow: sequence.on_caller_follow,
-                },
-                positions: sequence.positions.clone(),
-            })
+        .any(|(_, position, _)| position.is_some())
+    {
+        return None;
+    }
+    let sites = alternatives
+        .iter()
+        .map(|(declaration, _, sites)| (*declaration, *sites))
+        .collect::<Vec<_>>();
+    let resolution = crate::analysis::balanced_dispatch_resolution(&sites, first_sequences)?;
+    let non_open_branches =
+        ordinary_branches_without_balanced_opener(branches, resolution.open, grammar)?;
+    // The balanced plan replaces only routes that begin with the exact opener.
+    // Every other route still uses the ordinary trie and must independently
+    // freeze without ambiguity. An empty non-opener language is valid.
+    try_freeze_dispatch_trie(&non_open_branches, grammar, false)?;
+    let residual_branches = resolution
+        .branches
+        .into_iter()
+        .map(|branch| DispatchBranch {
+            declaration: branch.declaration,
+            position: None,
+            sequences: branch
+                .sequences
+                .into_iter()
+                .map(|sequence| DispatchSequence {
+                    on_caller_follow: sequence.ends(),
+                    positions: sequence.positions,
+                })
+                .collect(),
         })
         .collect::<Vec<_>>();
-    let state = (0..paths.len())
-        .map(|path| DispatchCursor { path, offset: 0 })
+    let (after_close, _) = try_freeze_dispatch_trie(&residual_branches, grammar, false)?;
+    Some(BalancedDispatch {
+        open: resolution.open,
+        close: resolution.close,
+        after_close,
+    })
+}
+
+/// Removes the exact balanced-opener route while preserving every ordinary kind in mixed cells.
+///
+/// FIRST-language rectangle compaction may combine the opener with other
+/// kinds when their bounded suffix is identical. The structural scanner owns
+/// only the opener kind; the ordinary trie retains the set difference. A text
+/// predicate over a mixed opener cell cannot be split soundly by kind alone,
+/// so that shape remains unsupported.
+fn ordinary_branches_without_balanced_opener(
+    branches: &[DispatchBranch],
+    open: KindId,
+    grammar: &GrammarDescription,
+) -> Option<Vec<DispatchBranch>> {
+    let opener = KindSet::singleton(grammar.kinds.len(), open).ok()?;
+    let mut ordinary = branches.to_vec();
+    for branch in &mut ordinary {
+        let mut sequences = Vec::with_capacity(branch.sequences.len());
+        for source in &branch.sequences {
+            let mut sequence = source.clone();
+            if let Some(position) = sequence.positions.first_mut()
+                && position.kinds.contains(open)
+            {
+                if position.text_predicate.is_some() {
+                    return None;
+                }
+                position.kinds = position.kinds.difference(&opener).ok()?;
+                if position.kinds.is_empty() {
+                    continue;
+                }
+            }
+            sequences.push(sequence);
+        }
+        branch.sequences = sequences;
+    }
+    Some(ordinary)
+}
+
+/// Reports whether the exact structural strategy can replace one enum conflict diagnostic.
+pub(crate) fn balanced_dispatch_is_supported(
+    alternatives: &[&crate::Alternative],
+    grammar: &GrammarDescription,
+    first_sequences: &FirstSequenceAnalysis<'_>,
+) -> bool {
+    let alternatives = alternatives
+        .iter()
+        .map(|alternative| (alternative.declaration, None, alternative.sites.as_slice()))
         .collect::<Vec<_>>();
+    let sequences = first_sequences.sequences_batch_at_depth(
+        alternatives.iter().map(|(_, _, sites)| *sites),
+        grammar.max_lookahead,
+    );
+    let branches = alternatives
+        .iter()
+        .zip(sequences)
+        .map(|((declaration, position, _), sequences)| DispatchBranch {
+            declaration: *declaration,
+            position: *position,
+            sequences: sequences
+                .into_iter()
+                .map(|sequence| DispatchSequence {
+                    on_caller_follow: sequence.ends(),
+                    positions: sequence.positions,
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    try_balanced_dispatch(&alternatives, &branches, grammar, first_sequences).is_some()
+}
+
+/// Dense identity of one canonical dispatch-language suffix.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct DispatchSuffixId(usize);
+
+impl DispatchSuffixId {
+    /// Returns the arena index for this suffix.
+    const fn index(self) -> usize {
+        self.0
+    }
+}
+
+/// One immutable canonical suffix used while partitioning a dispatch trie.
+#[derive(Clone, Debug)]
+struct DispatchSuffix {
+    /// Terminal reached after every remaining position has matched.
+    terminal: DispatchTerminal,
+    /// Current symbolic position, absent only at the terminal suffix.
+    position: Option<FirstPosition>,
+    /// Canonical residual after consuming the current position.
+    next: Option<DispatchSuffixId>,
+}
+
+/// Structural identity used to hash-cons equivalent dispatch suffixes.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct DispatchSuffixKey {
+    /// Terminal reached by the suffix.
+    terminal: DispatchTerminal,
+    /// Packed current token kinds and optional text predicate.
+    position: Option<(Vec<u64>, Option<TextPredicateId>)>,
+    /// Canonical successor suffix, absent at the terminal.
+    next: Option<DispatchSuffixId>,
+}
+
+/// One memoized trie state and the relative depth needed to distinguish its declarations.
+#[derive(Clone, Debug)]
+struct FrozenDispatchState {
+    /// Immutable dispatch node for this residual language.
+    node: DispatchTrieNode,
+    /// Additional token positions needed while more than one declaration remains.
+    relative_required_lookahead: usize,
+}
+
+/// Attempts to freeze a dispatch at the supplied bounded-language depth.
+fn try_freeze_dispatch_trie(
+    branches: &[DispatchBranch],
+    grammar: &GrammarDescription,
+    cut_off_unique_pratt_branch: bool,
+) -> Option<(DispatchTrieNode, usize)> {
+    try_freeze_dispatch_trie_with_observer(branches, grammar, cut_off_unique_pratt_branch, |_| {})
+}
+
+/// Freezes dispatch while exposing each unique residual state to performance regressions.
+#[cfg(test)]
+fn freeze_dispatch_trie_with_observer(
+    branches: &[DispatchBranch],
+    grammar: &GrammarDescription,
+    mut observe_state: impl FnMut(&[DispatchSuffixId]),
+) -> (DispatchTrieNode, usize) {
+    try_freeze_dispatch_trie_with_observer(branches, grammar, true, &mut observe_state)
+        .expect("validated dispatch resolves within supplied lookahead")
+}
+
+/// Attempts to freeze dispatch while exposing each unique residual state.
+fn try_freeze_dispatch_trie_with_observer(
+    branches: &[DispatchBranch],
+    grammar: &GrammarDescription,
+    cut_off_unique_pratt_branch: bool,
+    mut observe_state: impl FnMut(&[DispatchSuffixId]),
+) -> Option<(DispatchTrieNode, usize)> {
+    let mut suffixes = Vec::<DispatchSuffix>::new();
+    let mut suffix_ids = BTreeMap::<DispatchSuffixKey, DispatchSuffixId>::new();
+    let mut state = Vec::new();
+    for branch in branches {
+        for sequence in &branch.sequences {
+            let terminal = DispatchTerminal {
+                declaration: branch.declaration,
+                on_caller_follow: sequence.on_caller_follow,
+            };
+            let terminal_key = DispatchSuffixKey {
+                terminal,
+                position: None,
+                next: None,
+            };
+            let mut suffix = *suffix_ids.entry(terminal_key).or_insert_with(|| {
+                let id = DispatchSuffixId(suffixes.len());
+                suffixes.push(DispatchSuffix {
+                    terminal,
+                    position: None,
+                    next: None,
+                });
+                id
+            });
+            for position in sequence.positions.iter().rev() {
+                let key = DispatchSuffixKey {
+                    terminal,
+                    position: Some((position.kinds.words().to_vec(), position.text_predicate)),
+                    next: Some(suffix),
+                };
+                suffix = *suffix_ids.entry(key).or_insert_with(|| {
+                    let id = DispatchSuffixId(suffixes.len());
+                    suffixes.push(DispatchSuffix {
+                        terminal,
+                        position: Some(position.clone()),
+                        next: Some(suffix),
+                    });
+                    id
+                });
+            }
+            state.push(suffix);
+        }
+    }
+    state.sort_unstable();
+    state.dedup();
     let mut memo = BTreeMap::new();
-    let root = freeze_dispatch_state(&paths, &state, grammar, &mut memo);
-    assert!(dispatch_edges_are_disjoint(&root, grammar));
-    root
+    let frozen = freeze_dispatch_state(
+        &suffixes,
+        &state,
+        false,
+        cut_off_unique_pratt_branch,
+        grammar,
+        &mut memo,
+        &mut observe_state,
+    )?;
+    assert!(dispatch_edges_are_disjoint(&frozen.node, grammar));
+    let required_lookahead = usize::from(!branches.is_empty())
+        .max(frozen.relative_required_lookahead)
+        .min(grammar.max_lookahead);
+    Some((frozen.node, required_lookahead))
 }
 
 /// Freezes one residual-language state and memoizes equivalent suffix states.
 fn freeze_dispatch_state(
-    paths: &[DispatchPath],
-    state: &[DispatchCursor],
+    suffixes: &[DispatchSuffix],
+    state: &[DispatchSuffixId],
+    matched_prefix: bool,
+    cut_off_unique_pratt_branch: bool,
     grammar: &GrammarDescription,
-    memo: &mut BTreeMap<Vec<DispatchCursor>, DispatchTrieNode>,
-) -> DispatchTrieNode {
-    if let Some(node) = memo.get(state) {
-        return node.clone();
+    memo: &mut BTreeMap<(bool, Vec<DispatchSuffixId>), Option<FrozenDispatchState>>,
+    observe_state: &mut impl FnMut(&[DispatchSuffixId]),
+) -> Option<FrozenDispatchState> {
+    let memo_key = (matched_prefix, state.to_vec());
+    if let Some(frozen) = memo.get(&memo_key) {
+        return frozen.clone();
     }
+    observe_state(state);
+
+    let has_multiple_declarations = state.first().is_some_and(|first| {
+        let declaration = suffixes[first.index()].terminal.declaration;
+        state
+            .iter()
+            .skip(1)
+            .any(|suffix| suffixes[suffix.index()].terminal.declaration != declaration)
+    });
 
     let terminals = state
         .iter()
-        .filter_map(|cursor| {
-            (cursor.offset == paths[cursor.path].positions.len())
-                .then_some(paths[cursor.path].terminal)
+        .filter_map(|suffix| {
+            suffixes[suffix.index()]
+                .position
+                .is_none()
+                .then_some(suffixes[suffix.index()].terminal)
         })
         .collect::<Vec<_>>();
+    if cut_off_unique_pratt_branch
+        && matched_prefix
+        && !has_multiple_declarations
+        && terminals.is_empty()
+    {
+        let terminal = suffixes[state.first()?.index()].terminal;
+        let frozen = FrozenDispatchState {
+            node: DispatchTrieNode {
+                terminal: Some(DispatchTerminal {
+                    declaration: terminal.declaration,
+                    on_caller_follow: false,
+                }),
+                edges: Arc::default(),
+            },
+            relative_required_lookahead: 0,
+        };
+        memo.insert(memo_key, Some(frozen.clone()));
+        return Some(frozen);
+    }
     let terminal = terminals.first().copied();
     if let Some(first) = terminal {
-        assert!(
-            terminals
-                .iter()
-                .all(|candidate| candidate.declaration == first.declaration),
-            "validated dispatch cannot map one prefix to two terminals"
-        );
+        if terminals
+            .iter()
+            .any(|candidate| candidate.declaration != first.declaration)
+        {
+            memo.insert(memo_key, None);
+            return None;
+        }
         if terminals
             .iter()
             .any(|candidate| !candidate.on_caller_follow)
         {
-            assert!(
-                state
-                    .iter()
-                    .all(|cursor| { paths[cursor.path].terminal.declaration == first.declaration }),
-                "validated dispatch cannot shadow another branch"
-            );
-            let node = DispatchTrieNode {
-                terminal: Some(DispatchTerminal {
-                    declaration: first.declaration,
-                    on_caller_follow: false,
-                }),
-                edges: Vec::new(),
+            if state
+                .iter()
+                .any(|suffix| suffixes[suffix.index()].terminal.declaration != first.declaration)
+            {
+                memo.insert(memo_key, None);
+                return None;
+            }
+            let frozen = FrozenDispatchState {
+                node: DispatchTrieNode {
+                    terminal: Some(DispatchTerminal {
+                        declaration: first.declaration,
+                        on_caller_follow: false,
+                    }),
+                    edges: Arc::default(),
+                },
+                relative_required_lookahead: 0,
             };
-            memo.insert(state.to_vec(), node.clone());
-            return node;
+            memo.insert(memo_key, Some(frozen.clone()));
+            return Some(frozen);
         }
     }
 
-    let mut partitions = BTreeMap::<(TextPartition, Vec<DispatchCursor>), KindSet>::new();
-    for kind_index in 0..grammar.kinds.len() {
-        let kind = KindId::new(kind_index.try_into().expect("validated kind width"));
-        let candidates = state
-            .iter()
-            .copied()
-            .filter(|cursor| {
-                paths[cursor.path]
-                    .positions
-                    .get(cursor.offset)
-                    .is_some_and(|position| position.kinds.contains(kind))
-            })
-            .collect::<Vec<_>>();
-        if candidates.is_empty() {
-            continue;
-        }
-        for (text, residual) in partition_by_residual(
-            &candidates,
+    let candidates = state
+        .iter()
+        .copied()
+        .filter(|suffix| suffixes[suffix.index()].position.is_some())
+        .collect::<Vec<_>>();
+    let partitions = partition_by_kind_residual(
+        &candidates,
+        grammar,
+        |suffix| {
+            suffixes[suffix.index()]
+                .position
+                .as_ref()
+                .expect("candidate suffix has a position")
+                .text_predicate
+        },
+        |suffix| {
+            &suffixes[suffix.index()]
+                .position
+                .as_ref()
+                .expect("candidate suffix has a position")
+                .kinds
+        },
+        |suffix| {
+            suffixes[suffix.index()]
+                .next
+                .expect("candidate suffix has a residual")
+        },
+    );
+
+    let mut edges = Vec::with_capacity(partitions.len());
+    let mut maximum_child_lookahead = 0;
+    for (text, residual, kinds) in partitions {
+        let next = freeze_dispatch_state(
+            suffixes,
+            &residual,
+            true,
+            cut_off_unique_pratt_branch,
             grammar,
-            |cursor| paths[cursor.path].positions[cursor.offset].text_predicate,
-            |cursor| DispatchCursor {
-                path: cursor.path,
-                offset: cursor.offset + 1,
-            },
-        ) {
-            let kinds = partitions
-                .entry((text, residual))
-                .or_insert_with(|| KindSet::empty(grammar.kinds.len()));
-            kinds.insert(kind).expect("kind belongs to grammar width");
-        }
-    }
-
-    let mut edges = partitions
-        .into_iter()
-        .map(|((text, residual), kinds)| DispatchTrieEdge {
+            memo,
+            observe_state,
+        )?;
+        maximum_child_lookahead = maximum_child_lookahead.max(next.relative_required_lookahead);
+        edges.push(DispatchTrieEdge {
             position: DispatchPosition {
                 kinds,
                 text_predicate: text.into_predicate(),
             },
-            next: freeze_dispatch_state(paths, &residual, grammar, memo),
-        })
-        .collect::<Vec<_>>();
+            next: next.node,
+        });
+    }
     edges.sort_by(compare_dispatch_edges);
-    let node = DispatchTrieNode { terminal, edges };
-    memo.insert(state.to_vec(), node.clone());
-    node
+    let relative_required_lookahead = if has_multiple_declarations {
+        maximum_child_lookahead.saturating_add(1)
+    } else {
+        0
+    };
+    let frozen = FrozenDispatchState {
+        node: DispatchTrieNode {
+            terminal,
+            edges: edges.into(),
+        },
+        relative_required_lookahead,
+    };
+    memo.insert(memo_key, Some(frozen.clone()));
+    Some(frozen)
 }
 
 /// Orders disjoint outgoing edges independently of declaration construction order.
@@ -1206,12 +1635,11 @@ fn compare_dispatch_edges(left: &DispatchTrieEdge, right: &DispatchTrieEdge) -> 
 fn dispatch_edges_are_disjoint(node: &DispatchTrieNode, grammar: &GrammarDescription) -> bool {
     for (index, left) in node.edges.iter().enumerate() {
         for right in &node.edges[index + 1..] {
-            let kinds_overlap = !left
+            let kinds_overlap = left
                 .position
                 .kinds
-                .intersection(&right.position.kinds)
-                .expect("dispatch edges share the grammar width")
-                .is_empty();
+                .intersects(&right.position.kinds)
+                .expect("dispatch edges share the grammar width");
             if kinds_overlap
                 && TextPartition::from_predicate(left.position.text_predicate.as_ref()).overlaps(
                     &TextPartition::from_predicate(right.position.text_predicate.as_ref()),
@@ -1221,56 +1649,39 @@ fn dispatch_edges_are_disjoint(node: &DispatchTrieNode, grammar: &GrammarDescrip
                 return false;
             }
         }
-        if !dispatch_edges_are_disjoint(&left.next, grammar) {
+        if !dispatch_edges_are_disjoint(left.next(), grammar) {
             return false;
         }
     }
     true
 }
 
-/// Derives the canonical required dispatch lookahead recorded in the immutable decision plan.
-fn required_dispatch_lookahead(branches: &[DispatchBranch], grammar: &GrammarDescription) -> usize {
+/// Derives required dispatch lookahead using the supplied pairwise discriminator.
+#[cfg(test)]
+fn required_dispatch_lookahead_with(
+    branches: &[DispatchBranch],
+    max_lookahead: usize,
+    mut discrimination_depth: impl FnMut(&DispatchSequence, &DispatchSequence) -> Option<usize>,
+) -> usize {
     let mut required = usize::from(!branches.is_empty());
+    if required >= max_lookahead {
+        return max_lookahead;
+    }
     for (left_index, left) in branches.iter().enumerate() {
         for right in &branches[left_index + 1..] {
             for left_sequence in &left.sequences {
                 for right_sequence in &right.sequences {
-                    let depth =
-                        sequence_discrimination_depth(left_sequence, right_sequence, grammar)
-                            .unwrap_or(grammar.max_lookahead);
+                    let depth = discrimination_depth(left_sequence, right_sequence)
+                        .unwrap_or(max_lookahead);
                     required = required.max(depth);
+                    if required >= max_lookahead {
+                        return max_lookahead;
+                    }
                 }
             }
         }
     }
-    required.min(grammar.max_lookahead)
-}
-
-/// Derives the canonical sequence discrimination depth recorded in the immutable decision plan.
-fn sequence_discrimination_depth(
-    left: &DispatchSequence,
-    right: &DispatchSequence,
-    grammar: &GrammarDescription,
-) -> Option<usize> {
-    for (index, (left, right)) in left.positions.iter().zip(&right.positions).enumerate() {
-        let kinds_overlap = !left
-            .kinds
-            .intersection(&right.kinds)
-            .expect("decision positions share the grammar kind width")
-            .is_empty();
-        if !kinds_overlap
-            || !crate::analysis::predicates_overlap(
-                left.text_predicate,
-                right.text_predicate,
-                &grammar.text_predicates,
-                grammar.text_equivalence,
-            )
-        {
-            return Some(index + 1);
-        }
-    }
-    (left.positions.len() != right.positions.len())
-        .then_some(left.positions.len().min(right.positions.len()) + 1)
+    required.min(max_lookahead)
 }
 
 /// Derives parser failure edges and expected-token recipes in canonical order.
@@ -1414,6 +1825,7 @@ fn expected_is_empty(expected: &ExpectedRecipe) -> bool {
 }
 
 /// Derives the canonical sequences overlap recorded in the immutable decision plan.
+#[cfg(test)]
 fn sequences_overlap(
     left: &DispatchSequence,
     right: &DispatchSequence,
@@ -1428,11 +1840,9 @@ fn sequences_overlap(
         .iter()
         .zip(&right.positions)
         .all(|(left, right)| {
-            !left
-                .kinds
-                .intersection(&right.kinds)
+            left.kinds
+                .intersects(&right.kinds)
                 .expect("decision positions share the grammar kind width")
-                .is_empty()
                 && crate::analysis::predicates_overlap(
                     left.text_predicate,
                     right.text_predicate,
@@ -1504,6 +1914,47 @@ fn render_position(position: &FirstPosition, grammar: &GrammarDescription) -> St
     position.text_predicate.map_or(kinds.clone(), |predicate| {
         format!("{kinds}@{:?}", grammar.text_predicates[predicate.index()])
     })
+}
+
+/// Renders every terminal and edge in one frozen dispatch trie without assigning incidental IDs.
+fn render_dispatch_trie(
+    node: &DispatchTrieNode,
+    grammar: &GrammarDescription,
+    output: &mut String,
+) {
+    output.push_str("(terminal=");
+    if let Some(terminal) = node.terminal {
+        output.push_str(&grammar.declarations[terminal.declaration.index()].name);
+        if terminal.on_caller_follow {
+            output.push_str("@caller-follow");
+        }
+    } else {
+        output.push('-');
+    }
+    output.push_str(" edges=[");
+    for (index, edge) in node.edges.iter().enumerate() {
+        if index != 0 {
+            output.push(',');
+        }
+        output.push_str(&render_dispatch_position(&edge.position, grammar));
+        output.push_str("=>");
+        render_dispatch_trie(&edge.next, grammar, output);
+    }
+    output.push_str("])");
+}
+
+/// Renders one owned frozen-trie position using grammar-local names and text semantics.
+fn render_dispatch_position(position: &DispatchPosition, grammar: &GrammarDescription) -> String {
+    let kinds = position
+        .kinds
+        .iter()
+        .map(|kind| grammar.kinds[kind.index()].name.as_str())
+        .collect::<Vec<_>>()
+        .join("|");
+    position
+        .text_predicate
+        .as_ref()
+        .map_or(kinds.clone(), |predicate| format!("{kinds}@{predicate:?}"))
 }
 
 /// Derives the canonical dispatch name recorded in the immutable decision plan.
@@ -1673,6 +2124,168 @@ mod tests {
     }
 
     #[test]
+    fn canonical_facts_expose_balanced_dispatch_and_post_close_mutations() {
+        let grammar = pratt_and_repeat_grammar();
+        let post_close = DispatchTrieNode {
+            terminal: None,
+            edges: vec![DispatchTrieEdge {
+                position: DispatchPosition {
+                    kinds: KindSet::singleton(grammar.kind_count, KindId::new(2)).unwrap(),
+                    text_predicate: None,
+                },
+                next: DispatchTrieNode {
+                    terminal: Some(DispatchTerminal {
+                        declaration: DeclId::new(0),
+                        on_caller_follow: false,
+                    }),
+                    edges: Arc::default(),
+                },
+            }]
+            .into(),
+        };
+        let mut products = DecisionProducts {
+            dispatches: vec![DispatchPlan {
+                owner: TypeId::new(0),
+                kind: DispatchKind::Enum,
+                branches: Vec::new(),
+                required_lookahead: 0,
+                on_caller_follow: None,
+                trie: DispatchTrieNode::default(),
+                balanced: Some(BalancedDispatch {
+                    open: KindId::new(0),
+                    close: KindId::new(1),
+                    after_close: post_close,
+                }),
+            }],
+            follow_recipes_by_site: Vec::new(),
+            container_machines: Vec::new(),
+            failure_edges: Vec::new(),
+        };
+
+        let original = products.canonical_facts(&grammar);
+        assert!(
+            original.contains(
+                "balanced open=NUMBER close=MINUS after-close=(terminal=- edges=[PLUS=>(terminal=NUMBER edges=[])])"
+            ),
+            "canonical facts must expose the complete balanced decision:\n{original}",
+        );
+
+        let balanced = products.dispatches[0]
+            .balanced
+            .as_mut()
+            .expect("fixture has balanced dispatch");
+        let mut edges = balanced.after_close.edges.to_vec();
+        edges[0].next.terminal = Some(DispatchTerminal {
+            declaration: DeclId::new(1),
+            on_caller_follow: true,
+        });
+        balanced.after_close.edges = edges.into();
+
+        let mutated = products.canonical_facts(&grammar);
+        assert_ne!(
+            mutated, original,
+            "post-close trie changes must remain visible to semantic projections",
+        );
+        assert!(mutated.contains("terminal=MINUS@caller-follow"));
+    }
+
+    #[test]
+    fn required_lookahead_stops_after_reaching_the_configured_maximum() {
+        let sequence = DispatchSequence {
+            positions: Vec::new(),
+            on_caller_follow: false,
+        };
+        let branches = [
+            DispatchBranch {
+                declaration: DeclId::new(0),
+                position: None,
+                sequences: vec![sequence.clone(), sequence.clone()],
+            },
+            DispatchBranch {
+                declaration: DeclId::new(1),
+                position: None,
+                sequences: vec![sequence.clone(), sequence],
+            },
+        ];
+        let mut comparisons = 0;
+
+        let required = required_dispatch_lookahead_with(&branches, 4, |_, _| {
+            comparisons += 1;
+            assert_eq!(comparisons, 1, "saturated comparisons must stop");
+            Some(4)
+        });
+
+        assert_eq!(required, 4);
+        assert_eq!(comparisons, 1);
+    }
+
+    #[test]
+    fn predicated_mixed_opener_cell_remains_unsupported() {
+        let grammar = pratt_and_repeat_grammar();
+        let open = KindId::new(0);
+        let mixed = FirstPosition {
+            kinds: KindSet::from_kinds(grammar.kinds.len(), [open, KindId::new(1)]).unwrap(),
+            text_predicate: Some(TextPredicateId::new(0)),
+        };
+        let branches = [DispatchBranch {
+            declaration: DeclId::new(0),
+            position: None,
+            sequences: vec![DispatchSequence {
+                positions: vec![mixed],
+                on_caller_follow: false,
+            }],
+        }];
+
+        assert!(
+            ordinary_branches_without_balanced_opener(&branches, open, &grammar).is_none(),
+            "a text predicate over a mixed opener cell cannot be split by kind alone",
+        );
+    }
+
+    #[test]
+    fn required_lookahead_follows_partitioned_states_instead_of_sequence_pairs() {
+        let grammar = pratt_and_repeat_grammar();
+        let position = |kind| FirstPosition {
+            kinds: KindSet::singleton(grammar.kinds.len(), KindId::new(kind)).unwrap(),
+            text_predicate: None,
+        };
+        let left = DispatchSequence {
+            positions: vec![position(0), position(1)],
+            on_caller_follow: false,
+        };
+        let right = DispatchSequence {
+            positions: vec![position(0), position(2)],
+            on_caller_follow: false,
+        };
+        let branches = [
+            DispatchBranch {
+                declaration: DeclId::new(0),
+                position: None,
+                sequences: vec![left; 64],
+            },
+            DispatchBranch {
+                declaration: DeclId::new(1),
+                position: None,
+                sequences: vec![right; 64],
+            },
+        ];
+        let mut states = 0;
+        let mut maximum_state_width = 0;
+
+        let (_, required) = freeze_dispatch_trie_with_observer(&branches, &grammar, |state| {
+            states += 1;
+            maximum_state_width = maximum_state_width.max(state.len());
+        });
+
+        assert_eq!(required, 2);
+        assert!(states <= 4, "partitioning visited {states} residual states");
+        assert!(
+            maximum_state_width <= 2,
+            "equivalent dispatch suffixes must share one residual identity; width={maximum_state_width}",
+        );
+    }
+
+    #[test]
     fn products_retain_pratt_and_container_execution_and_reject_mutations() {
         let grammar = pratt_and_repeat_grammar();
         let report = crate::analyze(&grammar);
@@ -1789,7 +2402,14 @@ mod tests {
         );
 
         let mut wrong_trie = products.clone();
-        wrong_trie.dispatches[0].trie.edges.pop();
+        let mut edges = wrong_trie.dispatches[0]
+            .trie
+            .edges
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        edges.pop();
+        wrong_trie.dispatches[0].trie.edges = edges.into();
         assert_eq!(
             wrong_trie.validate(&grammar, output.first_by_type()),
             Err(DecisionInvariant::DispatchProductMismatch),

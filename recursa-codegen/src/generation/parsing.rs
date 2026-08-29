@@ -9,6 +9,9 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::super::test_support;
+    use super::{
+        PlannedTextPredicate, TextEquivalence, encode_dispatch_positions, render_position_dispatch,
+    };
     macro_rules! focused_case {
         ($name:ident) => {
             #[test]
@@ -18,9 +21,235 @@ mod tests {
         };
     }
     focused_case!(predictive_compilation_rejects_missing_and_conflicting_frozen_products);
+    focused_case!(large_predictive_selection_emits_each_position_matcher_once);
+    focused_case!(pratt_branches_are_typechecked_in_isolated_helpers);
+    focused_case!(predictive_variants_are_typechecked_in_isolated_helpers);
+    focused_case!(large_ordinary_predictive_dispatch_uses_compact_tables);
+    focused_case!(single_digit_packed_dispatch_is_clippy_clean);
+    focused_case!(large_expected_set_batch_uses_canonical_atom_index);
+    focused_case!(grammar_wide_expected_set_pool_is_canonical);
+    focused_case!(stale_grammar_wide_expected_set_pool_fails_before_rendering);
+    focused_case!(balanced_root_failure_belongs_to_grammar_wide_expected_set_pool);
+    focused_case!(overlapping_rectangles_preserve_full_ordinary_routes);
     focused_case!(corrupted_joined_dispatch_fails_before_publication_with_rca9105);
     focused_case!(corrupted_pratt_branch_follow_and_failure_identities_fail_before_publication);
     focused_case!(corrupted_real_plan_family_content_fails_before_publication);
+
+    #[test]
+    fn large_position_dispatch_uses_one_packed_matcher() {
+        let positions = (0..1_520)
+            .map(|position| {
+                let predicate = match position % 4 {
+                    0 => None,
+                    1 => Some(PlannedTextPredicate::Exact(format!("exact-{position}"))),
+                    2 => Some(PlannedTextPredicate::OneOf(vec![
+                        format!("one-{position}"),
+                        format!("two-{position}"),
+                    ])),
+                    _ => Some(PlannedTextPredicate::NotIn(vec![format!("not-{position}")])),
+                };
+                (position, predicate)
+            })
+            .collect::<Vec<_>>();
+        let encoded = encode_dispatch_positions(TextEquivalence::AsciiInsensitive, &positions);
+        assert_eq!(encoded.table.len(), positions.len() * 4);
+        assert_eq!(
+            &encoded.table[..16],
+            &[0, 0, 0, 0, 1, 4, 0, 1, 2, 5, 1, 2, 3, 6, 3, 1]
+        );
+        assert_eq!(
+            &encoded.spellings[..4],
+            &["exact-1", "one-2", "two-2", "not-3"]
+        );
+
+        let facade = quote::format_ident!("recursa");
+        let module_anchor: syn::Path = syn::parse_quote!(crate::__recursa_generated);
+        let dispatcher = quote::format_ident!("__recursa_test_dispatch_position");
+        let decoder = quote::format_ident!("__recursa_test_decode");
+        let table = quote::format_ident!("__RECURSA_TEST_POSITIONS");
+        let spellings = quote::format_ident!("__RECURSA_TEST_SPELLINGS");
+        let (_, literal) = super::packed_table(&encoded.table);
+        let depth = quote::format_ident!("depth");
+        let (items, call) = render_position_dispatch(
+            &facade,
+            &module_anchor,
+            &dispatcher,
+            &decoder,
+            &table,
+            &spellings,
+            &literal,
+            2,
+            &encoded.spellings,
+            &depth,
+            "test dispatch reached an unknown position",
+        );
+        let items = items.to_string();
+        let call = call.to_string();
+
+        assert_eq!(
+            call,
+            "__recursa_test_dispatch_position (context . peek (depth) , context . source () , position)"
+        );
+        assert!(!call.contains("match"));
+        assert_eq!(
+            items.matches("fn __recursa_test_dispatch_position").count(),
+            1
+        );
+        assert!(items.contains("static __RECURSA_TEST_POSITIONS : & [u8]"));
+        assert!(items.contains("static __RECURSA_TEST_SPELLINGS : & [& str]"));
+        assert!(!items.contains("_position_0"));
+        assert!(!items.contains("_leaf_"));
+        assert!(!items.contains("_route_"));
+    }
+
+    #[test]
+    fn position_metadata_preserves_source_validating_any_predicates() {
+        let positions = vec![(0, None), (1, Some(PlannedTextPredicate::Any))];
+
+        let encoded = encode_dispatch_positions(TextEquivalence::Sensitive, &positions);
+
+        assert_eq!(encoded.table, [0, 0, 0, 0, 1, 7, 0, 0]);
+        assert!(encoded.spellings.is_empty());
+    }
+}
+
+/// Packed position metadata and its flattened canonical spelling pool.
+struct EncodedDispatchPositions {
+    /// Four cells per position: expected-set index, predicate mode, spelling start, spelling count.
+    table: Vec<usize>,
+    /// Canonical spellings referenced by the table ranges.
+    spellings: Vec<String>,
+}
+
+/// Encodes frozen dispatch positions without rediscovering token or spelling semantics.
+fn encode_dispatch_positions(
+    text_equivalence: TextEquivalence,
+    positions: &[(usize, Option<PlannedTextPredicate>)],
+) -> EncodedDispatchPositions {
+    let mut table = Vec::with_capacity(positions.len() * 4);
+    let mut spellings = Vec::new();
+    for (expected_index, predicate) in positions {
+        let spelling_start = spellings.len();
+        let predicate_mode = match predicate {
+            None => 0,
+            Some(PlannedTextPredicate::Any) => 7,
+            Some(PlannedTextPredicate::Exact(exact)) => {
+                spellings.push(exact.clone());
+                match text_equivalence {
+                    TextEquivalence::Sensitive => 1,
+                    TextEquivalence::AsciiInsensitive => 4,
+                }
+            }
+            Some(PlannedTextPredicate::OneOf(options)) => {
+                spellings.extend(options.iter().cloned());
+                match text_equivalence {
+                    TextEquivalence::Sensitive => 2,
+                    TextEquivalence::AsciiInsensitive => 5,
+                }
+            }
+            Some(PlannedTextPredicate::NotIn(options)) => {
+                spellings.extend(options.iter().cloned());
+                match text_equivalence {
+                    TextEquivalence::Sensitive => 3,
+                    TextEquivalence::AsciiInsensitive => 6,
+                }
+            }
+        };
+        table.extend([
+            *expected_index,
+            predicate_mode,
+            spelling_start,
+            spellings.len() - spelling_start,
+        ]);
+    }
+    EncodedDispatchPositions { table, spellings }
+}
+
+/// Emits one compact data-driven matcher and its immutable position tables.
+#[allow(clippy::too_many_arguments)]
+fn render_position_dispatch(
+    facade: &Ident,
+    module_anchor: &syn::Path,
+    dispatcher: &Ident,
+    decoder: &Ident,
+    table: &Ident,
+    spellings: &Ident,
+    table_literal: &proc_macro2::Literal,
+    packed_width: usize,
+    spelling_values: &[String],
+    depth: &Ident,
+    unknown_position: &str,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let row_end = render_packed_row_end(4, packed_width);
+    (
+        quote! {
+            fn #dispatcher(
+                record: Option<#facade::__private::TokenRecord>,
+                source: &str,
+                position: usize,
+            ) -> bool {
+                let slot = position
+                    .checked_mul(4)
+                    .filter(|slot| #row_end <= #table.len())
+                    .unwrap_or_else(|| unreachable!(#unknown_position));
+                let expected_index = #decoder(#table, slot);
+                let predicate_mode = #decoder(#table, slot + 1);
+                let spelling_start = #decoder(#table, slot + 2);
+                let spelling_count = #decoder(#table, slot + 3);
+                let spelling_end = spelling_start
+                    .checked_add(spelling_count)
+                    .filter(|end| *end <= #spellings.len())
+                    .unwrap_or_else(|| unreachable!(#unknown_position));
+                let expected = &#module_anchor::__RECURSA_EXPECTED_SETS[expected_index];
+                let options = &#spellings[spelling_start..spelling_end];
+                record.is_some_and(|record| {
+                    expected.contains(record.kind)
+                        && match predicate_mode {
+                            0 => true,
+                            1 | 2 => source
+                                .get(record.span.range())
+                                .is_some_and(|text| options.contains(&text)),
+                            3 => source
+                                .get(record.span.range())
+                                .is_some_and(|text| !options.contains(&text)),
+                            4 | 5 => source.get(record.span.range()).is_some_and(|text| {
+                                options
+                                    .iter()
+                                    .any(|option| text.eq_ignore_ascii_case(option))
+                            }),
+                            6 => source.get(record.span.range()).is_some_and(|text| {
+                                !options
+                                    .iter()
+                                    .any(|option| text.eq_ignore_ascii_case(option))
+                            }),
+                            7 => source.get(record.span.range()).is_some(),
+                            _ => unreachable!(#unknown_position),
+                        }
+                })
+            }
+            static #table: &[u8] = #table_literal;
+            static #spellings: &[&str] = &[#(#spelling_values),*];
+        },
+        quote!(#dispatcher(context.peek(#depth), context.source(), position)),
+    )
+}
+
+/// Renders the exclusive byte end for a fixed-cell table row without identity operations.
+fn render_packed_row_end(cells: usize, packed_width: usize) -> proc_macro2::TokenStream {
+    if packed_width == 1 {
+        quote!(slot + #cells)
+    } else {
+        quote!((slot + #cells) * #packed_width)
+    }
+}
+
+/// Renders the byte range for one fixed-width packed cell without identity operations.
+fn render_packed_cell_range(packed_width: usize) -> proc_macro2::TokenStream {
+    if packed_width == 1 {
+        quote!(slot..slot + 1)
+    } else {
+        quote!(slot * #packed_width..(slot + 1) * #packed_width)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -170,20 +399,58 @@ pub(super) struct VariantParsePlan {
 }
 
 #[derive(Clone, Debug)]
-/// Predictive trie plus the semantic identity used to validate it.
+/// Predictive graph plus the semantic identity used to validate it.
 pub(super) struct PredictiveDispatchPlan {
-    /// Root of the frozen predictive trie.
-    pub(super) root: DispatchTrieNodePlan,
+    /// Root state of the frozen predictive graph.
+    pub(super) root: DispatchStateId,
+    /// Canonical predictive states; shared suffixes occur once.
+    pub(super) states: Vec<DispatchTrieNodePlan>,
     /// Sequence count used to detect stale semantic products.
     pub(super) frozen_sequence_count: usize,
     /// Trie-node count used to detect incomplete reconstruction.
     pub(super) frozen_node_count: usize,
     /// Deterministic identity of the analyzed dispatch family.
     pub(super) frozen_identity: u64,
+    /// Optional delimiter scan replacing one recursively ambiguous opener edge.
+    pub(super) balanced: Option<BalancedDispatchPlan>,
+}
+
+#[derive(Clone, Debug)]
+/// Generated form of one frozen balanced-delimiter dispatch cut.
+pub(super) struct BalancedDispatchPlan {
+    /// Opening token kind expected at the current cursor.
+    pub(super) open: ExpectedSet,
+    /// Closing token kind that ends the scan at nesting depth zero.
+    pub(super) close: ExpectedSet,
+    /// Root of the residual graph evaluated after the matching close.
+    pub(super) after_close_root: DispatchStateId,
+    /// Residual graph evaluated after the matching close.
+    pub(super) after_close_states: Vec<DispatchTrieNodePlan>,
+    /// Frozen residual node count used to reject incomplete joins.
+    pub(super) frozen_node_count: usize,
+    /// Frozen residual identity used to reject mutated joins.
+    pub(super) frozen_identity: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Dense identity of one state in a frozen predictive graph.
+pub(super) struct DispatchStateId(usize);
+
+impl DispatchStateId {
+    /// Creates an arena identity for focused invariant tests.
+    #[cfg(test)]
+    pub(super) const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    /// Returns the dense arena index.
+    pub(super) const fn index(self) -> usize {
+        self.0
+    }
 }
 
 #[derive(Clone, Debug, Default)]
-/// One selectable state in the frozen predictive trie.
+/// One selectable state in the frozen predictive graph.
 pub(super) struct DispatchTrieNodePlan {
     /// Selection made when the consumed prefix ends here.
     pub(super) target: Option<DispatchTargetPlan>,
@@ -205,11 +472,11 @@ pub(super) struct DispatchTargetPlan {
 pub(super) struct DispatchTrieEdgePlan {
     /// Token/text condition labeling this trie edge.
     pub(super) position: DispatchPositionPlan,
-    /// Trie state reached after the position matches.
-    pub(super) next: DispatchTrieNodePlan,
+    /// Graph state reached after the position matches.
+    pub(super) next: DispatchStateId,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Token expectation and spelling refinement labeling a dispatch edge.
 pub(super) struct DispatchPositionPlan {
     /// Token-kind expectation tested at this position.
@@ -218,7 +485,7 @@ pub(super) struct DispatchPositionPlan {
     pub(super) text_predicate: Option<PlannedTextPredicate>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Frozen spelling constraint refining a token-kind match.
 pub(super) enum PlannedTextPredicate {
     /// Accepts every spelling admitted by the token kind.
@@ -444,13 +711,47 @@ pub(super) enum PlannedFollow {
     StaticAndCaller(ExpectedSet),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Runtime-width token expectations with optional atom refinements.
 pub(super) struct ExpectedSet {
     /// Dense token-kind bitset in runtime word order.
     pub(super) words: Vec<u64>,
     /// Sorted, deduplicated atom indices refining the kind set.
     pub(super) atoms: Vec<u32>,
+}
+
+#[derive(Clone, Debug)]
+/// Grammar-scoped direct lookup from token kinds to their canonical atom identities.
+pub(super) struct ExpectedAtomIndex {
+    /// First direct atom declared for each grammar-local token kind.
+    by_kind: Vec<Option<u32>>,
+}
+
+impl ExpectedAtomIndex {
+    /// Indexes direct kind atoms once while preserving the former first-match rule.
+    pub(super) fn from_grammar(grammar: &crate::GrammarDescription) -> Result<Self, String> {
+        let mut by_kind = vec![None; grammar.kind_count];
+        for (atom, description) in grammar.atoms.iter().enumerate() {
+            let AtomExpression::Kind(kind) = description.expression else {
+                continue;
+            };
+            let slot = by_kind
+                .get_mut(kind.index())
+                .ok_or_else(|| "generated expectation kind exceeds grammar width".to_owned())?;
+            if slot.is_none() {
+                *slot = Some(
+                    atom.try_into()
+                        .map_err(|_| "generated expectation atom exceeds runtime width")?,
+                );
+            }
+        }
+        Ok(Self { by_kind })
+    }
+
+    /// Returns the canonical direct atom for one validated token kind.
+    fn get(&self, kind: crate::KindId) -> Option<u32> {
+        self.by_kind.get(kind.index()).copied().flatten()
+    }
 }
 
 impl ExpectedSet {
@@ -475,7 +776,7 @@ impl ExpectedSet {
     /// Unions FIRST positions and records their sorted atom refinements.
     pub(super) fn from_positions(
         positions: &[FirstPosition],
-        grammar: &crate::GrammarDescription,
+        atom_index: &ExpectedAtomIndex,
         kind_count: usize,
     ) -> Result<Self, String> {
         let mut value = Self::empty(kind_count);
@@ -484,13 +785,8 @@ impl ExpectedSet {
                 *left |= *right;
             }
             for kind in position.kinds.iter() {
-                if let Some(atom) = grammar.atoms.iter().position(|atom| {
-                    matches!(atom.expression, AtomExpression::Kind(candidate) if candidate == kind)
-                }) {
-                    value.atoms.push(
-                        atom.try_into()
-                            .map_err(|_| "generated expectation atom exceeds runtime width")?,
-                    );
+                if let Some(atom) = atom_index.get(kind) {
+                    value.atoms.push(atom);
                 }
             }
         }
@@ -607,6 +903,307 @@ impl PrattParsePlan {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Canonical grammar-wide storage identities for emitted static expectations.
+pub(super) struct ExpectedSetPool {
+    /// Strictly sorted unique expectations addressed by generated parsers.
+    values: Vec<ExpectedSet>,
+}
+
+impl ExpectedSetPool {
+    /// Canonicalizes one stream of emitted static expectations.
+    pub(super) fn from_values(values: impl IntoIterator<Item = ExpectedSet>) -> Self {
+        Self {
+            values: values
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// Collects every static expectation consumed by generated token and Node parsers.
+    pub(super) fn from_plans(
+        nodes: &[NodeParsePlan],
+        tokens: &[TokenParsePlan],
+        kind_count: usize,
+    ) -> Self {
+        let mut values = BTreeSet::new();
+        values.extend(tokens.iter().map(|token| token.expected.clone()));
+        for application in nodes.iter().flat_map(|node| &node.parse_applications) {
+            collect_body_expected_sets(&application.body, kind_count, &mut values);
+        }
+        Self::from_values(values)
+    }
+
+    /// Returns the canonical expectation values in their generated index order.
+    pub(super) fn values(&self) -> &[ExpectedSet] {
+        &self.values
+    }
+
+    /// Resolves one expectation to its stable grammar-local storage index.
+    pub(super) fn id(&self, expected: &ExpectedSet) -> Option<usize> {
+        self.values.binary_search(expected).ok()
+    }
+
+    /// Rejects stale, non-canonical, or runtime-invalid grammar-wide storage.
+    pub(super) fn validate(
+        &self,
+        nodes: &[NodeParsePlan],
+        tokens: &[TokenParsePlan],
+        kind_count: usize,
+        atom_count: usize,
+    ) -> Result<(), String> {
+        let expected_words = kind_count.div_ceil(64);
+        let tail_bits = kind_count % 64;
+        let tail_mask = (tail_bits != 0).then(|| (1_u64 << tail_bits) - 1);
+        if self.values.iter().any(|expected| {
+            expected.words.len() != expected_words
+                || tail_mask
+                    .is_some_and(|mask| expected.words.last().is_some_and(|word| word & !mask != 0))
+                || expected
+                    .atoms
+                    .iter()
+                    .any(|atom| *atom as usize >= atom_count)
+                || expected.atoms.windows(2).any(|pair| pair[0] >= pair[1])
+        }) {
+            return Err("the grammar-wide expectation pool contains an invalid set".to_owned());
+        }
+        if *self != Self::from_plans(nodes, tokens, kind_count) {
+            return Err(
+                "the grammar-wide expectation pool diverges from emitted parser plans".to_owned(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Adds the static component of one frozen FOLLOW policy to a generated expectation pool.
+fn collect_follow_expected_set(follow: &PlannedFollow, values: &mut BTreeSet<ExpectedSet>) {
+    match follow {
+        PlannedFollow::Caller => {}
+        PlannedFollow::Static(expected) | PlannedFollow::StaticAndCaller(expected) => {
+            values.insert(expected.clone());
+        }
+    }
+}
+
+/// Adds every expectation emitted for one required or optional fixed-syntax envelope.
+fn collect_fixed_syntax_expected_sets(
+    syntax: &[AttachedFixedSyntaxParsePlan],
+    values: &mut BTreeSet<ExpectedSet>,
+) {
+    for syntax in syntax {
+        match syntax {
+            AttachedFixedSyntaxParsePlan::Required(fixed) => {
+                values.insert(fixed.expected.clone());
+            }
+            AttachedFixedSyntaxParsePlan::Optional(tokens) => {
+                values.extend(tokens.iter().map(|fixed| fixed.expected.clone()));
+            }
+        }
+    }
+}
+
+/// Adds every expectation emitted while parsing one semantic container.
+fn collect_container_expected_sets(
+    container: &PlannedContainer,
+    values: &mut BTreeSet<ExpectedSet>,
+) {
+    match container {
+        PlannedContainer::Direct {
+            child_follow,
+            required_failure,
+        } => {
+            collect_follow_expected_set(child_follow, values);
+            collect_follow_expected_set(required_failure, values);
+        }
+        PlannedContainer::Optional {
+            selector,
+            child_follow,
+        } => {
+            values.insert(selector.clone());
+            collect_follow_expected_set(child_follow, values);
+        }
+        PlannedContainer::Repeated {
+            element_selector,
+            separator_selector,
+            stop,
+            child_follow,
+            minimum_failure,
+            continuation_failure,
+            after_separator_failure,
+            ..
+        } => {
+            values.insert(element_selector.clone());
+            values.extend(separator_selector.iter().cloned());
+            collect_follow_expected_set(stop, values);
+            collect_follow_expected_set(child_follow, values);
+            if let Some(failure) = minimum_failure {
+                collect_follow_expected_set(failure, values);
+            }
+            collect_follow_expected_set(continuation_failure, values);
+            if let Some(failure) = after_separator_failure {
+                collect_follow_expected_set(failure, values);
+            }
+        }
+    }
+}
+
+/// Adds every expectation emitted around one attached semantic child.
+fn collect_attachment_expected_sets(
+    attachment: &FixedAttachmentParsePlan,
+    values: &mut BTreeSet<ExpectedSet>,
+) {
+    collect_fixed_syntax_expected_sets(&attachment.before, values);
+    collect_container_expected_sets(&attachment.semantic, values);
+    collect_fixed_syntax_expected_sets(&attachment.after, values);
+}
+
+/// Adds every expectation emitted for one structural element sequence.
+fn collect_element_expected_sets(
+    elements: &[ElementParsePlan],
+    values: &mut BTreeSet<ExpectedSet>,
+) {
+    for element in elements {
+        match &element.kind {
+            ElementParseKind::Fixed { expected, .. } => {
+                values.insert(expected.clone());
+            }
+            ElementParseKind::OptionalFixedTokenGroup { tokens, .. } => {
+                values.extend(tokens.iter().map(|fixed| fixed.expected.clone()));
+            }
+            ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
+                SemanticParseProjection::FixedPresence {
+                    before,
+                    sequence,
+                    after,
+                    ..
+                } => {
+                    collect_fixed_syntax_expected_sets(before, values);
+                    values.extend(sequence.iter().map(|fixed| fixed.expected.clone()));
+                    collect_fixed_syntax_expected_sets(after, values);
+                }
+                SemanticParseProjection::Direct {
+                    container,
+                    attachment,
+                    ..
+                } => {
+                    collect_container_expected_sets(container, values);
+                    if let Some(attachment) = attachment {
+                        collect_attachment_expected_sets(attachment, values);
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// Reconstructs the frozen failure expectation rendered for one predictive graph state.
+fn dispatch_state_expected_set(
+    state: &DispatchTrieNodePlan,
+    root_extra: Option<&ExpectedSet>,
+    kind_count: usize,
+) -> ExpectedSet {
+    let mut expected = ExpectedSet::empty(kind_count);
+    for edge in &state.edges {
+        expected.union_assign(&edge.position.expected);
+    }
+    if let Some(additional) = root_extra {
+        expected.union_assign(additional);
+    }
+    expected
+}
+
+/// Adds edge tests and state failures emitted by ordinary enum dispatch.
+fn collect_failing_dispatch_expected_sets(
+    dispatch: &PredictiveDispatchPlan,
+    kind_count: usize,
+    values: &mut BTreeSet<ExpectedSet>,
+) {
+    for (index, state) in dispatch.states.iter().enumerate() {
+        values.extend(
+            state
+                .edges
+                .iter()
+                .map(|edge| edge.position.expected.clone()),
+        );
+        values.insert(dispatch_state_expected_set(
+            state,
+            (index == dispatch.root.index())
+                .then_some(dispatch.balanced.as_ref())
+                .flatten()
+                .map(|balanced| &balanced.open),
+            kind_count,
+        ));
+    }
+    if let Some(balanced) = &dispatch.balanced {
+        values.insert(balanced.open.clone());
+        values.insert(balanced.close.clone());
+        for state in &balanced.after_close_states {
+            values.extend(
+                state
+                    .edges
+                    .iter()
+                    .map(|edge| edge.position.expected.clone()),
+            );
+            values.insert(dispatch_state_expected_set(state, None, kind_count));
+        }
+    }
+}
+
+/// Adds edge tests emitted by a non-failing Pratt predictive selector.
+fn collect_selection_dispatch_expected_sets(
+    dispatch: &PredictiveDispatchPlan,
+    values: &mut BTreeSet<ExpectedSet>,
+) {
+    values.extend(
+        dispatch
+            .states
+            .iter()
+            .flat_map(|state| &state.edges)
+            .map(|edge| edge.position.expected.clone()),
+    );
+}
+
+/// Adds every static expectation emitted for one materialized Node parser body.
+fn collect_body_expected_sets(
+    body: &NodeBodyPlan,
+    kind_count: usize,
+    values: &mut BTreeSet<ExpectedSet>,
+) {
+    match body {
+        NodeBodyPlan::Struct { elements, .. } => collect_element_expected_sets(elements, values),
+        NodeBodyPlan::Enum { variants, dispatch } => {
+            for variant in variants {
+                collect_element_expected_sets(&variant.elements, values);
+            }
+            collect_failing_dispatch_expected_sets(dispatch, kind_count, values);
+        }
+        NodeBodyPlan::Pratt(pratt) => {
+            for branch in &pratt.nud {
+                collect_element_expected_sets(&branch.variant.elements, values);
+            }
+            for branch in &pratt.led {
+                collect_element_expected_sets(&branch.variant.elements, values);
+            }
+            collect_selection_dispatch_expected_sets(&pratt.nud_dispatch, values);
+            if let Some(dispatch) = &pratt.led_dispatch {
+                collect_selection_dispatch_expected_sets(dispatch, values);
+            }
+            collect_follow_expected_set(&pratt.nud_failure, values);
+            values.insert(pratt.nud_selection_follow.clone());
+            values.extend(
+                pratt
+                    .caller_follow_guard
+                    .iter()
+                    .flatten()
+                    .map(|branch| branch.expected.clone()),
+            );
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Source-capture policy after inheritance has been resolved or retained.
 pub(super) enum PlannedCapturePolicy {
@@ -655,7 +1252,7 @@ impl From<CaptureMode> for PlannedCapturePolicy {
 /// Converts one analyzed FIRST position into a runtime dispatch condition.
 pub(super) fn planned_dispatch_position(
     position: &crate::DispatchPosition,
-    grammar: &crate::GrammarDescription,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
 ) -> Result<DispatchPositionPlan, String> {
     let text_predicate = position.text_predicate().map(|predicate| match predicate {
@@ -671,57 +1268,85 @@ pub(super) fn planned_dispatch_position(
     Ok(DispatchPositionPlan {
         expected: ExpectedSet::from_positions(
             std::slice::from_ref(&first_position),
-            grammar,
+            atom_index,
             kind_count,
         )?,
         text_predicate,
     })
 }
 
-/// Reconstructs a frozen predictive subtree while preserving edge order and identity.
-pub(super) fn plan_predictive_dispatch_node(
+/// Reconstructs a frozen predictive graph while preserving shared suffix states.
+pub(super) fn plan_predictive_dispatch(
     frozen: &crate::DispatchTrieNode,
     variants: &[(crate::DeclId, usize)],
-    grammar: &crate::GrammarDescription,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
     instrumentation: &mut EmissionInstrumentation,
-) -> Result<DispatchTrieNodePlan, String> {
-    instrumentation.frozen_dispatch_nodes_consumed += 1;
-    let target = frozen
-        .terminal()
-        .map(|terminal| {
-            variants
-                .iter()
-                .find(|(declaration, _)| *declaration == terminal.declaration())
-                .map(|(_, variant)| DispatchTargetPlan {
-                    variant: *variant,
-                    on_caller_follow: terminal.on_caller_follow(),
-                })
-                .ok_or_else(|| "frozen dispatch terminal lacks a source variant".to_owned())
-        })
-        .transpose()?;
-    let edges = frozen
-        .edges()
-        .iter()
-        .map(|edge| {
-            Ok(DispatchTrieEdgePlan {
-                position: planned_dispatch_position(edge.position(), grammar, kind_count)?,
-                next: plan_predictive_dispatch_node(
-                    edge.next(),
-                    variants,
-                    grammar,
-                    kind_count,
-                    instrumentation,
-                )?,
+) -> Result<(DispatchStateId, Vec<DispatchTrieNodePlan>), String> {
+    fn intern(
+        frozen: &crate::DispatchTrieNode,
+        variants: &[(crate::DeclId, usize)],
+        atom_index: &ExpectedAtomIndex,
+        kind_count: usize,
+        states: &mut Vec<DispatchTrieNodePlan>,
+        memo: &mut BTreeMap<(Option<crate::DispatchTerminal>, usize, usize), DispatchStateId>,
+    ) -> Result<DispatchStateId, String> {
+        let key = (
+            frozen.terminal(),
+            frozen.edges().as_ptr() as usize,
+            frozen.edges().len(),
+        );
+        if let Some(state) = memo.get(&key) {
+            return Ok(*state);
+        }
+        let target = frozen
+            .terminal()
+            .map(|terminal| {
+                variants
+                    .iter()
+                    .find(|(declaration, _)| *declaration == terminal.declaration())
+                    .map(|(_, variant)| DispatchTargetPlan {
+                        variant: *variant,
+                        on_caller_follow: terminal.on_caller_follow(),
+                    })
+                    .ok_or_else(|| "frozen dispatch terminal lacks a source variant".to_owned())
             })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    Ok(DispatchTrieNodePlan { target, edges })
+            .transpose()?;
+        let edges = frozen
+            .edges()
+            .iter()
+            .map(|edge| {
+                Ok(DispatchTrieEdgePlan {
+                    position: planned_dispatch_position(edge.position(), atom_index, kind_count)?,
+                    next: intern(edge.next(), variants, atom_index, kind_count, states, memo)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let state = DispatchStateId(states.len());
+        states.push(DispatchTrieNodePlan { target, edges });
+        memo.insert(key, state);
+        Ok(state)
+    }
+
+    let mut states = Vec::new();
+    let root = intern(
+        frozen,
+        variants,
+        atom_index,
+        kind_count,
+        &mut states,
+        &mut BTreeMap::new(),
+    )?;
+    instrumentation.frozen_dispatch_nodes_consumed += states.len();
+    Ok((root, states))
 }
 
-/// Computes the deterministic identity used to validate a predictive trie.
-pub(super) fn predictive_dispatch_identity(root: &DispatchTrieNodePlan) -> u64 {
-    stable_hash(format!("{root:?}").as_bytes())
+/// Computes the deterministic identity used to validate a predictive graph.
+pub(super) fn predictive_dispatch_identity(
+    root: DispatchStateId,
+    states: &[DispatchTrieNodePlan],
+) -> u64 {
+    stable_hash(format!("{root:?}:{states:?}").as_bytes())
 }
 
 /// Rejects dispatch plans whose shape or identity differs from semantic analysis.
@@ -729,8 +1354,20 @@ pub(super) fn validate_predictive_dispatch(
     dispatch: &PredictiveDispatchPlan,
     variants: usize,
 ) -> Result<usize, String> {
-    fn validate_node(node: &DispatchTrieNodePlan, variants: usize) -> Result<usize, String> {
-        if node.target.is_none() && node.edges.is_empty() {
+    fn validate_node(
+        state: DispatchStateId,
+        states: &[DispatchTrieNodePlan],
+        variants: usize,
+        visited: &mut BTreeSet<DispatchStateId>,
+        allow_empty_root: bool,
+    ) -> Result<usize, String> {
+        let Some(node) = states.get(state.index()) else {
+            return Err("frozen predictive dispatch references an unknown state".to_owned());
+        };
+        if !visited.insert(state) {
+            return Ok(0);
+        }
+        if node.target.is_none() && node.edges.is_empty() && !allow_empty_root {
             return Err("frozen predictive dispatch contains an empty node".to_owned());
         }
         if node.target.is_some_and(|target| target.variant >= variants) {
@@ -751,18 +1388,49 @@ pub(super) fn validate_predictive_dispatch(
         }
         let mut count = 1;
         for edge in &node.edges {
-            count += validate_node(&edge.next, variants)?;
+            count += validate_node(edge.next, states, variants, visited, false)?;
         }
         Ok(count)
     }
 
-    let count = validate_node(&dispatch.root, variants)?;
+    let count = validate_node(
+        dispatch.root,
+        &dispatch.states,
+        variants,
+        &mut BTreeSet::new(),
+        dispatch.balanced.is_some(),
+    )?;
     if count != dispatch.frozen_node_count
-        || predictive_dispatch_identity(&dispatch.root) != dispatch.frozen_identity
+        || count != dispatch.states.len()
+        || predictive_dispatch_identity(dispatch.root, &dispatch.states) != dispatch.frozen_identity
     {
         return Err("the joined predictive plan diverges from its frozen identity".to_owned());
     }
-    Ok(count)
+    let mut total = count;
+    if let Some(balanced) = &dispatch.balanced {
+        if balanced.open.is_empty() || balanced.close.is_empty() || balanced.open == balanced.close
+        {
+            return Err("balanced dispatch has invalid delimiter expectations".to_owned());
+        }
+        let balanced_count = validate_node(
+            balanced.after_close_root,
+            &balanced.after_close_states,
+            variants,
+            &mut BTreeSet::new(),
+            false,
+        )?;
+        if balanced_count != balanced.frozen_node_count
+            || balanced_count != balanced.after_close_states.len()
+            || predictive_dispatch_identity(balanced.after_close_root, &balanced.after_close_states)
+                != balanced.frozen_identity
+        {
+            return Err(
+                "the joined balanced residual diverges from its frozen identity".to_owned(),
+            );
+        }
+        total += balanced_count;
+    }
+    Ok(total)
 }
 
 /// Freezes all parse applications and body decisions for one resolved node.
@@ -777,6 +1445,7 @@ pub(super) fn plan_node(
     application: &MaterializedNodeApplication,
     lowered: &crate::materialization::LoweredGrammar,
     decisions: &crate::DecisionProducts,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
     instrumentation: &mut EmissionInstrumentation,
 ) -> Result<NodeParsePlan, String> {
@@ -823,6 +1492,7 @@ pub(super) fn plan_node(
                 sites,
                 lowered,
                 decisions,
+                atom_index,
                 kind_count,
                 &input_lifetime,
                 None,
@@ -864,7 +1534,7 @@ pub(super) fn plan_node(
                 }
             };
             let failure_expected =
-                ExpectedSet::from_positions(failure_expected, &lowered.grammar, kind_count)?;
+                ExpectedSet::from_positions(failure_expected, atom_index, kind_count)?;
             let mut planned = Vec::new();
             let mut variants_by_declaration = Vec::new();
             for variant in variants {
@@ -912,6 +1582,7 @@ pub(super) fn plan_node(
                         &alternative.sites,
                         lowered,
                         decisions,
+                        atom_index,
                         kind_count,
                         &input_lifetime,
                         None,
@@ -921,29 +1592,20 @@ pub(super) fn plan_node(
                 });
             }
             let frozen_branch_count = dispatch.branches().len();
-            let frozen_sequence_count = dispatch
-                .branches()
-                .iter()
-                .map(|branch| branch.sequences().len())
-                .sum();
-            let nodes_before = instrumentation.frozen_dispatch_nodes_consumed;
-            let root = plan_predictive_dispatch_node(
-                dispatch.trie(),
+            let dispatch = plan_joined_dispatch(
+                dispatch,
                 &variants_by_declaration,
-                &lowered.grammar,
+                lowered,
+                atom_index,
                 kind_count,
                 instrumentation,
             )?;
-            let frozen_node_count = instrumentation.frozen_dispatch_nodes_consumed - nodes_before;
-            let dispatch = PredictiveDispatchPlan {
-                frozen_identity: predictive_dispatch_identity(&root),
-                root,
-                frozen_sequence_count,
-                frozen_node_count,
-            };
             let mut root_expected = ExpectedSet::empty(kind_count);
-            for edge in &dispatch.root.edges {
+            for edge in &dispatch.states[dispatch.root.index()].edges {
                 root_expected.union_assign(&edge.position.expected);
+            }
+            if let Some(balanced) = &dispatch.balanced {
+                root_expected.union_assign(&balanced.open);
             }
             if root_expected != failure_expected {
                 return Err(format!(
@@ -951,8 +1613,7 @@ pub(super) fn plan_node(
                     node.ident
                 ));
             }
-            let root_uses_caller = dispatch
-                .root
+            let root_uses_caller = dispatch.states[dispatch.root.index()]
                 .target
                 .is_some_and(|target| target.on_caller_follow);
             if root_uses_caller != failure_uses_caller {
@@ -987,6 +1648,7 @@ pub(super) fn plan_node(
             semantic,
             lowered,
             decisions,
+            atom_index,
             kind_count,
             &input_lifetime,
             instrumentation,
@@ -1164,12 +1826,15 @@ pub(super) fn structural_body(
 
 /// Creates the canonical dispatch plan for an enum with no selectable variants.
 pub(super) fn empty_declaration_dispatch() -> PredictiveDispatchPlan {
-    let root = DispatchTrieNodePlan::default();
+    let root = DispatchStateId(0);
+    let states = vec![DispatchTrieNodePlan::default()];
     PredictiveDispatchPlan {
-        frozen_identity: predictive_dispatch_identity(&root),
+        frozen_identity: predictive_dispatch_identity(root, &states),
         root,
+        states,
         frozen_sequence_count: 0,
-        frozen_node_count: 0,
+        frozen_node_count: 1,
+        balanced: None,
     }
 }
 
@@ -2035,6 +2700,7 @@ pub(super) fn plan_pratt_node(
     semantic_variants: &[crate::PrattVariant],
     lowered: &crate::materialization::LoweredGrammar,
     decisions: &crate::DecisionProducts,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
     input_lifetime: &syn::Lifetime,
     instrumentation: &mut EmissionInstrumentation,
@@ -2057,8 +2723,7 @@ pub(super) fn plan_pratt_node(
             edge.owner() == application_type && edge.kind() == FailureEdgeKind::PrattNudDispatch
         })
         .ok_or_else(|| format!("Pratt Node `{}` lacks its nud failure edge", node.ident))?;
-    let nud_failure =
-        planned_expected_recipe(nud_failure.expected(), &lowered.grammar, kind_count)?;
+    let nud_failure = planned_expected_recipe(nud_failure.expected(), atom_index, kind_count)?;
     let guard = decisions.failure_edges().iter().find(|edge| {
         edge.owner() == application_type && edge.kind() == FailureEdgeKind::PrattCallerFollowGuard
     });
@@ -2131,6 +2796,7 @@ pub(super) fn plan_pratt_node(
                             &semantic.sites,
                             lowered,
                             decisions,
+                            atom_index,
                             kind_count,
                             input_lifetime,
                             operand,
@@ -2181,6 +2847,7 @@ pub(super) fn plan_pratt_node(
                             &semantic.sites,
                             lowered,
                             decisions,
+                            atom_index,
                             kind_count,
                             input_lifetime,
                             operand,
@@ -2199,6 +2866,7 @@ pub(super) fn plan_pratt_node(
         nud_dispatch,
         &nud_by_declaration,
         lowered,
+        atom_index,
         kind_count,
         instrumentation,
     )?;
@@ -2208,13 +2876,15 @@ pub(super) fn plan_pratt_node(
                 dispatch,
                 &led_by_declaration,
                 lowered,
+                atom_index,
                 kind_count,
                 instrumentation,
             )
         })
         .transpose()?;
+    let nud_dispatch_root = &nud_dispatch.states[nud_dispatch.root.index()];
     let mut nud_dispatch_expected = ExpectedSet::empty(kind_count);
-    for edge in &nud_dispatch.root.edges {
+    for edge in &nud_dispatch_root.edges {
         nud_dispatch_expected.union_assign(&edge.position.expected);
     }
     let (nud_failure_expected, nud_failure_uses_caller) = match &nud_failure {
@@ -2223,8 +2893,7 @@ pub(super) fn plan_pratt_node(
         PlannedFollow::StaticAndCaller(expected) => (expected.clone(), true),
     };
     if nud_dispatch_expected != nud_failure_expected
-        || nud_dispatch
-            .root
+        || nud_dispatch.states[nud_dispatch.root.index()]
             .target
             .is_some_and(|target| target.on_caller_follow)
             != nud_failure_uses_caller
@@ -2257,8 +2926,7 @@ pub(super) fn plan_pratt_node(
                             .iter()
                             .filter_map(|sequence| sequence.positions().first().cloned())
                             .collect::<Vec<_>>();
-                        let expected =
-                            ExpectedSet::from_positions(&first, &lowered.grammar, kind_count)?;
+                        let expected = ExpectedSet::from_positions(&first, atom_index, kind_count)?;
                         if expected.is_empty() {
                             return Err("a frozen Pratt guard branch is empty".to_owned());
                         }
@@ -2310,26 +2978,71 @@ pub(super) fn plan_joined_dispatch(
     dispatch: &crate::DispatchPlan,
     variants: &[(crate::DeclId, usize)],
     lowered: &crate::materialization::LoweredGrammar,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
     instrumentation: &mut EmissionInstrumentation,
 ) -> Result<PredictiveDispatchPlan, String> {
-    let nodes_before = instrumentation.frozen_dispatch_nodes_consumed;
-    let root = plan_predictive_dispatch_node(
+    let (root, states) = plan_predictive_dispatch(
         dispatch.trie(),
         variants,
-        &lowered.grammar,
+        atom_index,
         kind_count,
         instrumentation,
     )?;
+    let frozen_node_count = states.len();
+    let balanced = dispatch
+        .balanced()
+        .map(|balanced| {
+            let (after_close_root, after_close_states) = plan_predictive_dispatch(
+                balanced.after_close(),
+                variants,
+                atom_index,
+                kind_count,
+                instrumentation,
+            )?;
+            let open = ExpectedSet::from_positions(
+                &[FirstPosition {
+                    kinds: KindSet::singleton(lowered.grammar.kind_count, balanced.open())
+                        .map_err(|error| error.to_string())?,
+                    text_predicate: None,
+                }],
+                atom_index,
+                kind_count,
+            )?;
+            let close = ExpectedSet::from_positions(
+                &[FirstPosition {
+                    kinds: KindSet::singleton(lowered.grammar.kind_count, balanced.close())
+                        .map_err(|error| error.to_string())?,
+                    text_predicate: None,
+                }],
+                atom_index,
+                kind_count,
+            )?;
+            let frozen_node_count = after_close_states.len();
+            Ok::<BalancedDispatchPlan, String>(BalancedDispatchPlan {
+                open,
+                close,
+                after_close_root,
+                frozen_identity: predictive_dispatch_identity(
+                    after_close_root,
+                    &after_close_states,
+                ),
+                after_close_states,
+                frozen_node_count,
+            })
+        })
+        .transpose()?;
     Ok(PredictiveDispatchPlan {
-        frozen_identity: predictive_dispatch_identity(&root),
+        frozen_identity: predictive_dispatch_identity(root, &states),
         root,
+        states,
         frozen_sequence_count: dispatch
             .branches()
             .iter()
             .map(|branch| branch.sequences().len())
             .sum(),
-        frozen_node_count: instrumentation.frozen_dispatch_nodes_consumed - nodes_before,
+        frozen_node_count,
+        balanced,
     })
 }
 
@@ -2448,6 +3161,7 @@ pub(super) fn plan_elements(
     sites: &[SiteId],
     lowered: &crate::materialization::LoweredGrammar,
     decisions: &crate::DecisionProducts,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
     input_lifetime: &syn::Lifetime,
     pratt_operand: Option<(crate::TypeId, u8)>,
@@ -2489,7 +3203,7 @@ pub(super) fn plan_elements(
                     decisions,
                     *site,
                     FailureEdgeKind::RequiredSite,
-                    &lowered.grammar,
+                    atom_index,
                     kind_count,
                 )?
                 else {
@@ -2566,7 +3280,7 @@ pub(super) fn plan_elements(
                             decisions,
                             *token_site,
                             FailureEdgeKind::RequiredSite,
-                            &lowered.grammar,
+                            atom_index,
                             kind_count,
                         )? else {
                             return Err("an optional group token has a dynamic failure recipe".to_owned());
@@ -2677,7 +3391,7 @@ pub(super) fn plan_elements(
                         decisions,
                         site,
                         FailureEdgeKind::RequiredSite,
-                        &lowered.grammar,
+                        atom_index,
                         kind_count,
                     )?
                     else {
@@ -2702,6 +3416,7 @@ pub(super) fn plan_elements(
                             *site,
                             lowered,
                             decisions,
+                            atom_index,
                             kind_count,
                             capture,
                         )
@@ -2721,6 +3436,7 @@ pub(super) fn plan_elements(
                             *site,
                             lowered,
                             decisions,
+                            atom_index,
                             kind_count,
                             capture,
                         )
@@ -2824,7 +3540,7 @@ pub(super) fn plan_elements(
                 let mut container = planned_container(
                     machine,
                     decisions,
-                    &lowered.grammar,
+                    atom_index,
                     kind_count,
                 )?;
                 let pratt_min_bp = pratt_operand
@@ -2834,7 +3550,7 @@ pub(super) fn plan_elements(
                     let inactive = planned_pratt_extenders(
                         decisions,
                         owner,
-                        &lowered.grammar,
+                        atom_index,
                         kind_count,
                         |position| pratt_led_lbp(position) < min_bp,
                     )?;
@@ -2926,6 +3642,7 @@ pub(super) fn plan_elements(
                                         *site,
                                         lowered,
                                         decisions,
+                                        atom_index,
                                         kind_count,
                                         variant_capture,
                                     )
@@ -2967,6 +3684,7 @@ fn plan_materialized_attached_syntax(
     outer_site: SiteId,
     lowered: &crate::materialization::LoweredGrammar,
     decisions: &crate::DecisionProducts,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
     capture: PlannedCapturePolicy,
 ) -> Result<AttachedFixedSyntaxParsePlan, String> {
@@ -2984,7 +3702,7 @@ fn plan_materialized_attached_syntax(
             decisions,
             site,
             FailureEdgeKind::RequiredSite,
-            grammar,
+            atom_index,
             kind_count,
         )?
         else {
@@ -3035,10 +3753,10 @@ pub(super) fn plan_fixed_attachment(
     outer_site: SiteId,
     lowered: &crate::materialization::LoweredGrammar,
     decisions: &crate::DecisionProducts,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
     variant_capture: PlannedCapturePolicy,
 ) -> Result<FixedAttachmentParsePlan, String> {
-    let grammar = &lowered.grammar;
     let correlation = lowered
         .lowering_map
         .attachments
@@ -3060,7 +3778,7 @@ pub(super) fn plan_fixed_attachment(
         .zip(&correlation.sites)
         .map(|(syntax, site)| {
             plan_materialized_attached_syntax(
-                syntax, *site, lowered, decisions, kind_count, capture,
+                syntax, *site, lowered, decisions, atom_index, kind_count, capture,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -3075,7 +3793,9 @@ pub(super) fn plan_fixed_attachment(
     if machine.operation() != ContainerOperation::Direct {
         return Err("an attachment semantic site is not a direct frozen container".to_owned());
     }
-    let semantic = Box::new(planned_container(machine, decisions, grammar, kind_count)?);
+    let semantic = Box::new(planned_container(
+        machine, decisions, atom_index, kind_count,
+    )?);
     let after_start = correlation.semantic_index + 1;
     let after = attachment
         .after
@@ -3083,7 +3803,7 @@ pub(super) fn plan_fixed_attachment(
         .zip(&correlation.sites[after_start..])
         .map(|(syntax, site)| {
             plan_materialized_attached_syntax(
-                syntax, *site, lowered, decisions, kind_count, capture,
+                syntax, *site, lowered, decisions, atom_index, kind_count, capture,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -3098,7 +3818,7 @@ pub(super) fn plan_fixed_attachment(
 pub(super) fn planned_pratt_extenders(
     decisions: &crate::DecisionProducts,
     owner: crate::TypeId,
-    grammar: &crate::GrammarDescription,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
     include: impl Fn(PrattPosition) -> bool,
 ) -> Result<ExpectedSet, String> {
@@ -3118,7 +3838,7 @@ pub(super) fn planned_pratt_extenders(
         .flat_map(|branch| branch.sequences())
         .filter_map(|sequence| sequence.positions().first().cloned())
         .collect::<Vec<_>>();
-    ExpectedSet::from_positions(&first, grammar, kind_count)
+    ExpectedSet::from_positions(&first, atom_index, kind_count)
 }
 
 /// Derives child capture policy from the resolved terminal node.
@@ -3311,12 +4031,12 @@ pub(super) fn validate_container_wrappers(
 pub(super) fn planned_container(
     machine: &crate::ContainerMachine,
     decisions: &crate::DecisionProducts,
-    grammar: &crate::GrammarDescription,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
 ) -> Result<PlannedContainer, String> {
-    let stop = planned_follow(machine.stop(), grammar, kind_count)?;
+    let stop = planned_follow(machine.stop(), atom_index, kind_count)?;
     let element_selector =
-        ExpectedSet::from_positions(machine.element_first(), grammar, kind_count)?;
+        ExpectedSet::from_positions(machine.element_first(), atom_index, kind_count)?;
     Ok(match machine.operation() {
         ContainerOperation::Direct => PlannedContainer::Direct {
             child_follow: stop,
@@ -3324,7 +4044,7 @@ pub(super) fn planned_container(
                 decisions,
                 machine.site(),
                 FailureEdgeKind::RequiredSite,
-                grammar,
+                atom_index,
                 kind_count,
             )?,
         },
@@ -3338,7 +4058,7 @@ pub(super) fn planned_container(
             let separator_selector = if machine.separator().is_some() {
                 Some(ExpectedSet::from_positions(
                     machine.separator_first(),
-                    grammar,
+                    atom_index,
                     kind_count,
                 )?)
             } else {
@@ -3365,7 +4085,7 @@ pub(super) fn planned_container(
                         decisions,
                         machine.site(),
                         FailureEdgeKind::ContainerMinimum,
-                        grammar,
+                        atom_index,
                         kind_count,
                     )
                 })
@@ -3375,7 +4095,7 @@ pub(super) fn planned_container(
                     decisions,
                     machine.site(),
                     FailureEdgeKind::ContainerContinuation,
-                    grammar,
+                    atom_index,
                     kind_count,
                 )?),
                 after_separator_failure: machine
@@ -3385,7 +4105,7 @@ pub(super) fn planned_container(
                             decisions,
                             machine.site(),
                             FailureEdgeKind::ContainerAfterSeparator,
-                            grammar,
+                            atom_index,
                             kind_count,
                         )
                     })
@@ -3401,7 +4121,7 @@ pub(super) fn planned_failure_edge(
     decisions: &crate::DecisionProducts,
     site: SiteId,
     kind: FailureEdgeKind,
-    grammar: &crate::GrammarDescription,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
 ) -> Result<PlannedFollow, String> {
     let edge = decisions
@@ -3414,23 +4134,23 @@ pub(super) fn planned_failure_edge(
                 site.index()
             )
         })?;
-    planned_expected_recipe(edge.expected(), grammar, kind_count)
+    planned_expected_recipe(edge.expected(), atom_index, kind_count)
 }
 
 /// Converts an expected-set recipe to the runtime-width representation.
 pub(super) fn planned_expected_recipe(
     expected: &ExpectedRecipe,
-    grammar: &crate::GrammarDescription,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
 ) -> Result<PlannedFollow, String> {
     match expected {
         ExpectedRecipe::Static(first) => Ok(PlannedFollow::Static(ExpectedSet::from_positions(
-            first, grammar, kind_count,
+            first, atom_index, kind_count,
         )?)),
-        ExpectedRecipe::Follow(follow) => planned_follow(follow, grammar, kind_count),
+        ExpectedRecipe::Follow(follow) => planned_follow(follow, atom_index, kind_count),
         ExpectedRecipe::ContinueOrStop { continuation, stop } => {
-            let stop = planned_follow(stop, grammar, kind_count)?;
-            let continuation = ExpectedSet::from_positions(continuation, grammar, kind_count)?;
+            let stop = planned_follow(stop, atom_index, kind_count)?;
+            let continuation = ExpectedSet::from_positions(continuation, atom_index, kind_count)?;
             Ok(follow_with_static(&stop, &continuation))
         }
         ExpectedRecipe::PrattExtendersAtOrAboveMinBp { .. } => {
@@ -3596,17 +4316,17 @@ pub(super) fn closed_type(
 /// Converts a frozen FOLLOW recipe into its emitted representation.
 pub(super) fn planned_follow(
     recipe: &FollowRecipe,
-    grammar: &crate::GrammarDescription,
+    atom_index: &ExpectedAtomIndex,
     kind_count: usize,
 ) -> Result<PlannedFollow, String> {
     Ok(match recipe {
         FollowRecipe::Caller => PlannedFollow::Caller,
         FollowRecipe::Static { first } => {
-            PlannedFollow::Static(ExpectedSet::from_positions(first, grammar, kind_count)?)
+            PlannedFollow::Static(ExpectedSet::from_positions(first, atom_index, kind_count)?)
         }
-        FollowRecipe::StaticAndCaller { first } => {
-            PlannedFollow::StaticAndCaller(ExpectedSet::from_positions(first, grammar, kind_count)?)
-        }
+        FollowRecipe::StaticAndCaller { first } => PlannedFollow::StaticAndCaller(
+            ExpectedSet::from_positions(first, atom_index, kind_count)?,
+        ),
     })
 }
 
@@ -3636,24 +4356,41 @@ pub(super) fn render_node_parse_body(
     node: &NodeParsePlan,
     node_index: usize,
     instrumentation: &mut RenderInstrumentation,
-) -> proc_macro2::TokenStream {
+) -> (
+    proc_macro2::TokenStream,
+    proc_macro2::TokenStream,
+    proc_macro2::TokenStream,
+) {
+    let helper_method_generics = if node.generics.lifetimes().next().is_some() {
+        quote!(<A>)
+    } else {
+        quote!(<'__recursa_input, A>)
+    };
     match &node.body {
-        NodeBodyPlan::Struct { style, elements } => {
-            render_sequence_parse(plan, node_index, None, *style, elements, None, None)
-        }
+        NodeBodyPlan::Struct { style, elements } => (
+            render_sequence_parse(plan, node_index, None, *style, elements, None, None),
+            quote!(),
+            quote!(),
+        ),
         NodeBodyPlan::Enum { variants, dispatch } => {
             let mut expected_index = 1_000_000;
             render_predictive_dispatch(
                 plan,
                 node_index,
                 variants,
-                &dispatch.root,
-                0,
+                dispatch,
                 &mut expected_index,
                 instrumentation,
+                &helper_method_generics,
             )
         }
-        NodeBodyPlan::Pratt(pratt) => render_pratt_parse(plan, node_index, pratt, instrumentation),
+        NodeBodyPlan::Pratt(pratt) => render_pratt_parse(
+            plan,
+            node_index,
+            pratt,
+            instrumentation,
+            &helper_method_generics,
+        ),
     }
 }
 
@@ -3668,203 +4405,485 @@ pub(super) fn render_predictive_dispatch(
     plan: &EmissionPlan,
     node_index: usize,
     variants: &[VariantParsePlan],
-    node: &DispatchTrieNodePlan,
-    depth: usize,
+    dispatch: &PredictiveDispatchPlan,
     expected_index: &mut usize,
     instrumentation: &mut RenderInstrumentation,
-) -> proc_macro2::TokenStream {
-    instrumentation.frozen_dispatch_nodes_rendered += 1;
-    if let Some(target) = node.target.filter(|target| !target.on_caller_follow) {
-        debug_assert!(node.edges.is_empty());
-        let variant = &variants[target.variant];
-        return render_sequence_parse(
+    helper_method_generics: &proc_macro2::TokenStream,
+) -> (
+    proc_macro2::TokenStream,
+    proc_macro2::TokenStream,
+    proc_macro2::TokenStream,
+) {
+    instrumentation.frozen_dispatch_nodes_rendered += dispatch.states.len()
+        + dispatch
+            .balanced
+            .as_ref()
+            .map_or(0, |balanced| balanced.after_close_states.len());
+    let (ordinary, ordinary_items) = render_predictive_graph_selection(
+        plan,
+        node_index,
+        dispatch.root,
+        &dispatch.states,
+        &quote!(0usize),
+        dispatch.balanced.as_ref().map(|balanced| &balanced.open),
+        expected_index,
+    );
+    let (selection, selection_items) = if let Some(balanced) = dispatch.balanced.as_ref() {
+        let open_expected = render_expected_set(plan, &balanced.open);
+        let close_expected = render_expected_set(plan, &balanced.close);
+        let after_depth = format_ident!("__recursa_balanced_after_depth");
+        let (after_close, after_close_items) = render_predictive_graph_selection(
             plan,
             node_index,
-            Some((target.variant, &variant.ident)),
-            variant.style,
-            &variant.elements,
-            variant.capture,
+            balanced.after_close_root,
+            &balanced.after_close_states,
+            &quote!(#after_depth),
             None,
+            expected_index,
         );
-    }
+        (
+            quote! {
+                if context
+                    .peek(0)
+                    .is_some_and(|record| #open_expected.contains(record.kind))
+                {
+                    let mut __recursa_balanced_depth = 0usize;
+                    let mut __recursa_balanced_nesting = 0usize;
+                    loop {
+                        let Some(__recursa_balanced_record) =
+                            context.peek(__recursa_balanced_depth)
+                        else {
+                            return Err(context.unexpected_at(
+                                __recursa_balanced_depth,
+                                &#close_expected,
+                            ));
+                        };
+                        if #open_expected.contains(__recursa_balanced_record.kind) {
+                            __recursa_balanced_nesting += 1;
+                        } else if #close_expected.contains(__recursa_balanced_record.kind) {
+                            __recursa_balanced_nesting -= 1;
+                            if __recursa_balanced_nesting == 0 {
+                                break;
+                            }
+                        }
+                        __recursa_balanced_depth += 1;
+                    }
+                    let #after_depth = __recursa_balanced_depth + 1;
+                    #after_close
+                } else {
+                    #ordinary
+                }
+            },
+            quote!(#ordinary_items #after_close_items),
+        )
+    } else {
+        (ordinary, ordinary_items)
+    };
     let facade = &plan.facade;
-    let mut expected = ExpectedSet::empty(plan.kind_count);
-    for edge in &node.edges {
-        expected.union_assign(&edge.position.expected);
-    }
-    let expected_name = expected_static(node_index, *expected_index, "dispatch");
-    *expected_index += 1;
-    let expected_definition = render_expected_static(&expected_name, &expected, plan, facade);
-
-    let target = node.target.map(|target| {
-        let variant = &variants[target.variant];
+    let mut helpers = Vec::with_capacity(variants.len());
+    let mut selections = Vec::with_capacity(variants.len());
+    for (variant_index, variant) in variants.iter().enumerate() {
         let body = render_sequence_parse(
             plan,
             node_index,
-            Some((target.variant, &variant.ident)),
+            Some((variant_index, &variant.ident)),
             variant.style,
             &variant.elements,
             variant.capture,
             None,
         );
-        debug_assert!(target.on_caller_follow);
-        quote! {
-            if context.peek(#depth).is_none()
-                || context
-                    .peek(#depth)
-                    .is_some_and(|record| context.follow().contains(record.kind))
-            {
-                return { #body };
+        let helper = format_ident!("__recursa_parse_variant_{node_index}_{variant_index}");
+        helpers.push(quote! {
+            fn #helper #helper_method_generics(
+                context: &mut #facade::__private::ParseContext<'_, '__recursa_input, A>,
+            ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
+                #body
             }
-        }
-    });
-
-    let edges = node.edges.iter().map(|edge| {
-        let position_name = expected_static(node_index, *expected_index, "position");
-        *expected_index += 1;
-        let position_definition =
-            render_expected_static(&position_name, &edge.position.expected, plan, facade);
-        let matches = render_dispatch_position_match(
-            plan,
-            &position_name,
-            &edge.position.text_predicate,
-            depth,
-        );
-        let next = render_predictive_dispatch(
-            plan,
-            node_index,
-            variants,
-            &edge.next,
-            depth + 1,
-            expected_index,
-            instrumentation,
-        );
-        quote! {
-            #position_definition
-            if #matches {
-                return { #next };
-            }
-        }
-    });
-
-    let failure = if node.target.is_some_and(|target| target.on_caller_follow) {
-        quote! {
-            let __recursa_dispatch_expected = #expected_name
-                .union(context.follow())
-                .expect("matching generated dispatch/FOLLOW widths");
-            Err(context.unexpected_at(#depth, &__recursa_dispatch_expected))
-        }
-    } else {
-        quote!(Err(context.unexpected_at(#depth, &#expected_name)))
-    };
-
-    quote! {
-        #expected_definition
-        #target
-        #(#edges)*
-        #failure
+        });
+        selections.push(quote!(#variant_index => Self::#helper(context)));
     }
+    (
+        quote! {
+            match { #selection } {
+                #(#selections,)*
+                _ => unreachable!("frozen dispatch selected an unknown branch"),
+            }
+        },
+        selection_items,
+        quote!(#(#helpers)*),
+    )
 }
 
-/// Emits the token-kind and optional spelling test for one trie edge.
-pub(super) fn render_dispatch_position_match(
+#[allow(clippy::too_many_arguments)]
+/// Emits one frozen predictive graph from an arbitrary lookahead origin.
+pub(super) fn render_predictive_graph_selection(
     plan: &EmissionPlan,
-    expected: &Ident,
-    predicate: &Option<PlannedTextPredicate>,
-    depth: usize,
-) -> proc_macro2::TokenStream {
-    let predicate = predicate.as_ref().map(|predicate| {
-        let matches = match predicate {
-            PlannedTextPredicate::Any => quote!(true),
-            PlannedTextPredicate::Exact(exact) => match plan.text_equivalence {
-                TextEquivalence::Sensitive => quote!(text == #exact),
-                TextEquivalence::AsciiInsensitive => quote!(text.eq_ignore_ascii_case(#exact)),
-            },
-            PlannedTextPredicate::OneOf(options) => match plan.text_equivalence {
-                TextEquivalence::Sensitive => quote!([#(#options),*].contains(&text)),
-                TextEquivalence::AsciiInsensitive => {
-                    quote!([#(#options),*].iter().any(|option| text.eq_ignore_ascii_case(option)))
-                }
-            },
-            PlannedTextPredicate::NotIn(options) => match plan.text_equivalence {
-                TextEquivalence::Sensitive => quote!(![#(#options),*].contains(&text)),
-                TextEquivalence::AsciiInsensitive => {
-                    quote!(![#(#options),*].iter().any(|option| text.eq_ignore_ascii_case(option)))
-                }
-            },
-        };
+    node_index: usize,
+    root: DispatchStateId,
+    states: &[DispatchTrieNodePlan],
+    initial_depth: &proc_macro2::TokenStream,
+    root_failure_extra: Option<&ExpectedSet>,
+    expected_index: &mut usize,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let facade = &plan.facade;
+    let state = format_ident!("__recursa_dispatch_state");
+    let depth = format_ident!("__recursa_dispatch_depth");
+    let root_index = root.index();
+    let table_index = *expected_index;
+    *expected_index += 1;
+    let module_anchor = &plan.module_anchor;
+    let states_name = format_ident!("__RECURSA_DISPATCH_STATES_{node_index}_{table_index}");
+    let edges_name = format_ident!("__RECURSA_DISPATCH_EDGES_{node_index}_{table_index}");
+    let decoder_name = format_ident!("__recursa_decode_dispatch_{node_index}_{table_index}");
+    let mut position_registry = BTreeMap::<DispatchPositionPlan, usize>::new();
+    let mut positions = Vec::new();
+    let mut edge_values = Vec::new();
+    let mut state_values = Vec::with_capacity(states.len() * 4);
+    for (state_index, node) in states.iter().enumerate() {
+        debug_assert!(
+            !node.target.is_some_and(|target| !target.on_caller_follow) || node.edges.is_empty()
+        );
+        let edge_start = edge_values.len() / 2;
+        for edge in &node.edges {
+            let position = if let Some(position) = position_registry.get(&edge.position) {
+                *position
+            } else {
+                let position = positions.len();
+                let expected_index = plan
+                    .expected_sets
+                    .id(&edge.position.expected)
+                    .expect("validated dispatch expectation belongs to the grammar-wide pool");
+                positions.push((edge.position.clone(), expected_index));
+                position_registry.insert(edge.position.clone(), position);
+                position
+            };
+            edge_values.extend([position, edge.next.index()]);
+        }
+        let expected = dispatch_state_expected_set(
+            node,
+            (state_index == root_index)
+                .then_some(root_failure_extra)
+                .flatten(),
+            plan.kind_count,
+        );
+        let expected_index = plan
+            .expected_sets
+            .id(&expected)
+            .expect("validated dispatch expectation belongs to the grammar-wide pool");
+        let target = node.target.map_or(0, |target| {
+            target
+                .variant
+                .checked_mul(2)
+                .and_then(|variant| variant.checked_add(usize::from(target.on_caller_follow)))
+                .and_then(|target| target.checked_add(1))
+                .expect("frozen dispatch target encoding fits usize")
+        });
+        let edge_end = edge_values.len() / 2;
+        let edge_count = edge_end - edge_start;
+        state_values.extend([target, edge_start, edge_count, expected_index]);
+    }
+    let encoded_positions = encode_dispatch_positions(
+        plan.text_equivalence,
+        &positions
+            .iter()
+            .map(|(position, expected_index)| (*expected_index, position.text_predicate.clone()))
+            .collect::<Vec<_>>(),
+    );
+    let mut packed_values = state_values.clone();
+    packed_values.extend(&edge_values);
+    packed_values.extend(&encoded_positions.table);
+    let (packed_width, _) = packed_table(&packed_values);
+    let (_, states_literal) = packed_table_with_width(&state_values, packed_width);
+    let (_, edges_literal) = packed_table_with_width(&edge_values, packed_width);
+    let (_, positions_literal) = packed_table_with_width(&encoded_positions.table, packed_width);
+    let position_dispatcher =
+        format_ident!("__recursa_dispatch_match_position_{node_index}_{table_index}");
+    let positions_name = format_ident!("__RECURSA_DISPATCH_POSITIONS_{node_index}_{table_index}");
+    let spellings_name = format_ident!("__RECURSA_DISPATCH_SPELLINGS_{node_index}_{table_index}");
+    let (position_dispatch_items, position_dispatch_call) = render_position_dispatch(
+        facade,
+        module_anchor,
+        &position_dispatcher,
+        &decoder_name,
+        &positions_name,
+        &spellings_name,
+        &positions_literal,
+        packed_width,
+        &encoded_positions.spellings,
+        &depth,
+        "frozen dispatch reached an unknown position",
+    );
+    let unused_edges = positions
+        .is_empty()
+        .then(|| quote!(let _ = (edge_start, edge_count);));
+    let edge_traversal = (!positions.is_empty()).then(|| {
         quote! {
-            && context
-                .source()
-                .get(record.span.range())
-                .is_some_and(|text| #matches)
+            for edge in edge_start..edge_start + edge_count {
+                let position =
+                    #decoder_name(#edges_name, edge * 2);
+                let next =
+                    #decoder_name(#edges_name, edge * 2 + 1);
+                let matches = #position_dispatch_call;
+                if matches {
+                    #state = next;
+                    #depth += 1;
+                    continue '__recursa_dispatch;
+                }
+            }
         }
     });
-    quote! {
-        context.peek(#depth).is_some_and(|record| {
-            #expected.contains(record.kind) #predicate
-        })
-    }
+    let decoder_range = render_packed_cell_range(packed_width);
+    let state_row_end = render_packed_row_end(4, packed_width);
+    let items = quote! {
+            #position_dispatch_items
+            fn #decoder_name(table: &[u8], slot: usize) -> usize {
+                table[#decoder_range]
+                    .iter()
+                    .copied()
+                    .fold(0usize, |value, byte| {
+                        let digit = match byte {
+                            b'A'..=b'Z' => usize::from(byte - b'A'),
+                            b'a'..=b'z' => usize::from(byte - b'a') + 26,
+                            b'0'..=b'9' => usize::from(byte - b'0') + 52,
+                            b'-' => 62,
+                            b'_' => 63,
+                            _ => unreachable!("generated packed dispatch table is invalid"),
+                        };
+                        (value << 6) | digit
+                    })
+            }
+            static #states_name: &[u8] = #states_literal;
+            static #edges_name: &[u8] = #edges_literal;
+    };
+    let selection = quote! {
+        {
+            let mut #state = #root_index;
+            let mut #depth = #initial_depth;
+            '__recursa_dispatch: loop {
+                let state_slot = #state
+                    .checked_mul(4)
+                    .filter(|slot| #state_row_end <= #states_name.len())
+                    .unwrap_or_else(|| {
+                        unreachable!("frozen dispatch reached an unknown state")
+                    });
+                let encoded_target =
+                    #decoder_name(#states_name, state_slot);
+                let target = (encoded_target != 0).then(|| {
+                    let target = encoded_target - 1;
+                    (target / 2, target & 1 != 0)
+                });
+                let edge_start =
+                    #decoder_name(#states_name, state_slot + 1);
+                let edge_count =
+                    #decoder_name(#states_name, state_slot + 2);
+                let expected_index =
+                    #decoder_name(#states_name, state_slot + 3);
+                let expected = &#module_anchor::__RECURSA_EXPECTED_SETS[expected_index];
+                if let Some((variant, on_caller_follow)) = target {
+                    if !on_caller_follow
+                        || context.peek(#depth).is_none()
+                        || context
+                            .peek(#depth)
+                            .is_some_and(|record| context.follow().contains(record.kind))
+                    {
+                        break variant;
+                    }
+                }
+                #unused_edges
+                #edge_traversal
+                if target.is_some_and(|(_, on_caller_follow)| on_caller_follow) {
+                    let __recursa_dispatch_expected = expected
+                        .union(context.follow())
+                        .expect("matching generated dispatch/FOLLOW widths");
+                    return Err(context.unexpected_at(
+                        #depth,
+                        &__recursa_dispatch_expected,
+                    ));
+                }
+                return Err(context.unexpected_at(#depth, expected));
+            }
+        }
+    };
+    (selection, items)
 }
 
-/// Emits construction of the branch selected by predictive dispatch.
+/// Packs integer table cells into fixed-width URL-safe base64 digits.
+fn packed_table(values: &[usize]) -> (usize, proc_macro2::Literal) {
+    let max = values.iter().copied().max().unwrap_or(0);
+    let significant_bits = (usize::BITS - max.leading_zeros()) as usize;
+    let width = significant_bits.div_ceil(6).max(1);
+    packed_table_with_width(values, width)
+}
+
+/// Packs integer table cells with the caller-selected fixed digit width.
+fn packed_table_with_width(values: &[usize], width: usize) -> (usize, proc_macro2::Literal) {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut encoded = Vec::with_capacity(values.len() * width);
+    for value in values {
+        for digit in (0..width).rev() {
+            encoded.push(ALPHABET[(value >> (digit * 6)) & 0x3f]);
+        }
+    }
+    (width, proc_macro2::Literal::byte_string(&encoded))
+}
+
+/// Emits compact table-driven construction of the branch selected by predictive dispatch.
 pub(super) fn render_predictive_selection(
     plan: &EmissionPlan,
     node_index: usize,
-    node: &DispatchTrieNodePlan,
-    depth: usize,
+    dispatch: &PredictiveDispatchPlan,
     caller_follow: &proc_macro2::TokenStream,
     expected_index: &mut usize,
     instrumentation: &mut RenderInstrumentation,
-) -> proc_macro2::TokenStream {
-    instrumentation.frozen_dispatch_nodes_rendered += 1;
-    let fallback = node.target.map_or_else(
-        || quote!(None),
-        |target| {
-            let variant = target.variant;
-            if target.on_caller_follow {
-                quote! {
-                    if context.peek(#depth).is_none()
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    instrumentation.frozen_dispatch_nodes_rendered += dispatch.states.len();
+    let facade = &plan.facade;
+    let state = format_ident!("__recursa_pratt_dispatch_state");
+    let depth = format_ident!("__recursa_pratt_dispatch_depth");
+    let root = dispatch.root.index();
+    let table_index = *expected_index;
+    *expected_index += 1;
+    let states_name = format_ident!("__RECURSA_PRATT_STATES_{node_index}_{table_index}");
+    let edges_name = format_ident!("__RECURSA_PRATT_EDGES_{node_index}_{table_index}");
+    let decoder_name = format_ident!("__recursa_decode_pratt_{node_index}_{table_index}");
+    let mut position_registry = BTreeMap::<DispatchPositionPlan, usize>::new();
+    let mut positions = Vec::new();
+    let mut edge_values = Vec::new();
+    let mut state_values = Vec::new();
+    for node in &dispatch.states {
+        debug_assert!(
+            !node.target.is_some_and(|target| !target.on_caller_follow) || node.edges.is_empty()
+        );
+        let edge_start = edge_values.len() / 2;
+        for edge in &node.edges {
+            let position = if let Some(position) = position_registry.get(&edge.position) {
+                *position
+            } else {
+                let position = positions.len();
+                let expected_index = plan
+                    .expected_sets
+                    .id(&edge.position.expected)
+                    .expect("validated Pratt expectation belongs to the grammar-wide pool");
+                positions.push((edge.position.clone(), expected_index));
+                position_registry.insert(edge.position.clone(), position);
+                position
+            };
+            edge_values.extend([position, edge.next.index()]);
+        }
+        let target = node.target.map_or(0, |target| {
+            target
+                .variant
+                .checked_mul(2)
+                .and_then(|variant| variant.checked_add(usize::from(target.on_caller_follow)))
+                .and_then(|target| target.checked_add(1))
+                .expect("frozen Pratt target encoding fits usize")
+        });
+        let edge_end = edge_values.len() / 2;
+        let edge_count = edge_end - edge_start;
+        state_values.extend([target, edge_start, edge_count]);
+    }
+    let encoded_positions = encode_dispatch_positions(
+        plan.text_equivalence,
+        &positions
+            .iter()
+            .map(|(position, expected_index)| (*expected_index, position.text_predicate.clone()))
+            .collect::<Vec<_>>(),
+    );
+    let mut packed_values = state_values.clone();
+    packed_values.extend(&edge_values);
+    packed_values.extend(&encoded_positions.table);
+    let (packed_width, _) = packed_table(&packed_values);
+    let (_, states_literal) = packed_table_with_width(&state_values, packed_width);
+    let (_, edges_literal) = packed_table_with_width(&edge_values, packed_width);
+    let (_, positions_literal) = packed_table_with_width(&encoded_positions.table, packed_width);
+    let position_dispatcher =
+        format_ident!("__recursa_pratt_match_position_{node_index}_{table_index}");
+    let positions_name = format_ident!("__RECURSA_PRATT_POSITIONS_{node_index}_{table_index}");
+    let spellings_name = format_ident!("__RECURSA_PRATT_SPELLINGS_{node_index}_{table_index}");
+    let (position_dispatch_items, position_dispatch_call) = render_position_dispatch(
+        facade,
+        &plan.module_anchor,
+        &position_dispatcher,
+        &decoder_name,
+        &positions_name,
+        &spellings_name,
+        &positions_literal,
+        packed_width,
+        &encoded_positions.spellings,
+        &depth,
+        "frozen Pratt dispatch reached an unknown position",
+    );
+    let decoder_range = render_packed_cell_range(packed_width);
+    let state_row_end = render_packed_row_end(3, packed_width);
+    let items = quote! {
+            #position_dispatch_items
+            fn #decoder_name(table: &[u8], slot: usize) -> usize {
+                table[#decoder_range]
+                    .iter()
+                    .copied()
+                    .fold(0usize, |value, byte| {
+                        let digit = match byte {
+                            b'A'..=b'Z' => usize::from(byte - b'A'),
+                            b'a'..=b'z' => usize::from(byte - b'a') + 26,
+                            b'0'..=b'9' => usize::from(byte - b'0') + 52,
+                            b'-' => 62,
+                            b'_' => 63,
+                            _ => unreachable!("generated packed Pratt table is invalid"),
+                        };
+                        (value << 6) | digit
+                    })
+            }
+            static #states_name: &[u8] = #states_literal;
+            static #edges_name: &[u8] = #edges_literal;
+    };
+    let selection = quote! {
+        {
+            let mut #state = #root;
+            let mut #depth = 0usize;
+            '__recursa_pratt_dispatch: loop {
+                let state_slot = #state
+                    .checked_mul(3)
+                    .filter(|slot| #state_row_end <= #states_name.len())
+                    .unwrap_or_else(|| {
+                        unreachable!("frozen Pratt dispatch reached an unknown state")
+                    });
+                let encoded_target =
+                    #decoder_name(#states_name, state_slot);
+                let target = (encoded_target != 0).then(|| {
+                    let target = encoded_target - 1;
+                    (target / 2, target & 1 != 0)
+                });
+                let edge_start =
+                    #decoder_name(#states_name, state_slot + 1);
+                let edge_count =
+                    #decoder_name(#states_name, state_slot + 2);
+                for edge in edge_start..edge_start + edge_count {
+                    let position =
+                        #decoder_name(#edges_name, edge * 2);
+                    let next =
+                        #decoder_name(#edges_name, edge * 2 + 1);
+                    let matches = #position_dispatch_call;
+                    if matches {
+                        #state = next;
+                        #depth += 1;
+                        continue '__recursa_pratt_dispatch;
+                    }
+                }
+                if let Some((variant, on_caller_follow)) = target {
+                    if !on_caller_follow
+                        || context.peek(#depth).is_none()
                         || context
                             .peek(#depth)
                             .is_some_and(|record| #caller_follow.contains(record.kind))
                     {
-                        Some(#variant)
-                    } else {
-                        None
+                        break (Some(variant), #depth);
                     }
                 }
-            } else {
-                debug_assert!(node.edges.is_empty());
-                quote!(Some(#variant))
+                break (None, #depth);
             }
-        },
-    );
-    node.edges.iter().rev().fold(fallback, |otherwise, edge| {
-        let position_name = expected_static(node_index, *expected_index, "pratt_position");
-        *expected_index += 1;
-        let position_definition =
-            render_expected_static(&position_name, &edge.position.expected, plan, &plan.facade);
-        let matches = render_dispatch_position_match(
-            plan,
-            &position_name,
-            &edge.position.text_predicate,
-            depth,
-        );
-        let selected = render_predictive_selection(
-            plan,
-            node_index,
-            &edge.next,
-            depth + 1,
-            caller_follow,
-            expected_index,
-            instrumentation,
-        );
-        quote! {{
-            #position_definition
-            if #matches { #selected } else { #otherwise }
-        }}
-    })
+        }
+    };
+    (selection, items)
 }
 
 /// Emits the prefix parse and binding-power extender loop for a Pratt node.
@@ -3879,20 +4898,22 @@ pub(super) fn render_pratt_parse(
     node_index: usize,
     pratt: &PrattParsePlan,
     instrumentation: &mut RenderInstrumentation,
-) -> proc_macro2::TokenStream {
+    helper_method_generics: &proc_macro2::TokenStream,
+) -> (
+    proc_macro2::TokenStream,
+    proc_macro2::TokenStream,
+    proc_macro2::TokenStream,
+) {
     let facade = &plan.facade;
     let owner = quote!(Self);
     let expression_start = format_ident!("__recursa_expression_start");
     let mut expected_index = 2_000_000;
-    let nud_follow_name = expected_static(node_index, 3_200_000, "pratt_nud_follow");
-    let nud_follow_definition =
-        render_expected_static(&nud_follow_name, &pratt.nud_selection_follow, plan, facade);
+    let nud_follow = render_expected_set(plan, &pratt.nud_selection_follow);
     let nud_follow_value = format_ident!("__recursa_pratt_nud_follow");
-    let nud_selection = render_predictive_selection(
+    let (nud_selection, nud_selection_items) = render_predictive_selection(
         plan,
         node_index,
-        &pratt.nud_dispatch.root,
-        0,
+        &pratt.nud_dispatch,
         &quote!(#nud_follow_value),
         &mut expected_index,
         instrumentation,
@@ -3900,7 +4921,9 @@ pub(super) fn render_pratt_parse(
     let nud_failure_name = expected_static(node_index, 3_100_000, "pratt_nud_failure");
     let (nud_failure_definition, nud_failure_value) =
         render_follow_value(plan, &nud_failure_name, &pratt.nud_failure);
-    let nud_branches = pratt.nud.iter().enumerate().map(|(index, branch)| {
+    let mut helper_methods = Vec::with_capacity(pratt.nud.len() + pratt.led.len());
+    let mut nud_branches = Vec::with_capacity(pratt.nud.len());
+    for (index, branch) in pratt.nud.iter().enumerate() {
         let variant = &branch.variant;
         let body = render_sequence_parse(
             plan,
@@ -3911,37 +4934,50 @@ pub(super) fn render_pratt_parse(
             variant.capture,
             Some(&owner),
         );
-        quote!(Some(#index) => { #body? })
-    });
-
-    if pratt.led.is_empty() {
-        return quote! {
-            #nud_failure_definition
-            #nud_follow_definition
-            let _ = min_bp;
-            let #nud_follow_value = #nud_follow_name
-                .union(context.follow())
-                .expect("matching generated Pratt FOLLOW widths");
-            let #expression_start = context.cursor();
-            let parsed = match { #nud_selection } {
-                #(#nud_branches,)*
-                None => return Err(context.unexpected(&#nud_failure_value)),
-                Some(_) => unreachable!("frozen Pratt dispatch selected an unknown branch"),
-            };
-            let _ = #expression_start;
-            Ok(parsed)
-        };
+        let helper = format_ident!("__recursa_parse_pratt_nud_{node_index}_{index}");
+        helper_methods.push(quote! {
+            fn #helper #helper_method_generics(
+                context: &mut #facade::__private::ParseContext<'_, '__recursa_input, A>,
+            ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
+                #body
+            }
+        });
+        nud_branches.push(quote!((Some(#index), _) => Self::#helper(context)?));
     }
 
-    let led_selection = render_predictive_selection(
+    if pratt.led.is_empty() {
+        return (
+            quote! {
+                #nud_failure_definition
+                let _ = min_bp;
+                let #nud_follow_value = #nud_follow
+                    .union(context.follow())
+                    .expect("matching generated Pratt FOLLOW widths");
+                let #expression_start = context.cursor();
+                let parsed = match { #nud_selection } {
+                    #(#nud_branches,)*
+                    (None, failure_depth) => {
+                        return Err(context.unexpected_at(failure_depth, &#nud_failure_value));
+                    }
+                    (Some(_), _) => {
+                        unreachable!("frozen Pratt dispatch selected an unknown branch")
+                    }
+                };
+                let _ = #expression_start;
+                Ok(parsed)
+            },
+            nud_selection_items,
+            quote!(#(#helper_methods)*),
+        );
+    }
+
+    let (led_selection, led_selection_items) = render_predictive_selection(
         plan,
         node_index,
-        &pratt
+        pratt
             .led_dispatch
             .as_ref()
-            .expect("validated led plan has a frozen dispatch")
-            .root,
-        0,
+            .expect("validated led plan has a frozen dispatch"),
         &quote!(context.follow()),
         &mut expected_index,
         instrumentation,
@@ -3950,20 +4986,16 @@ pub(super) fn render_pratt_parse(
         .caller_follow_guard
         .as_ref()
         .expect("validated led plan has a caller-FOLLOW guard");
-    let guard_definitions = guard.iter().enumerate().map(|(index, branch)| {
-        let name = expected_static(node_index, 3_000_000 + index, "pratt_guard");
-        render_expected_static(&name, &branch.expected, plan, &plan.facade)
-    });
-    let guard_additions = guard.iter().enumerate().map(|(index, branch)| {
-        let name = expected_static(node_index, 3_000_000 + index, "pratt_guard");
+    let guard_additions = guard.iter().map(|branch| {
+        let expected_ref = render_expected_set(plan, &branch.expected);
         let bp = pratt_led_lbp(branch.position);
         quote! {
             if #bp >= min_bp {
                 __recursa_pratt_guard = Some(match __recursa_pratt_guard {
                     Some(expected) => expected
-                        .union(&#name)
+                        .union(&#expected_ref)
                         .expect("matching generated Pratt expectation widths"),
-                    None => #name.clone(),
+                    None => #expected_ref.clone(),
                 });
             }
         }
@@ -3981,8 +5013,18 @@ pub(super) fn render_pratt_parse(
             branch,
             &expression_start,
         );
+        let helper = format_ident!("__recursa_parse_pratt_led_{node_index}_{index}");
+        helper_methods.push(quote! {
+            fn #helper #helper_method_generics(
+                context: &mut #facade::__private::ParseContext<'_, '__recursa_input, A>,
+                lhs: #facade::__private::ParsedNode<Self>,
+                #expression_start: usize,
+            ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
+                Ok({ #body })
+            }
+        });
         led_branches.push(quote! {
-            Some(#index) => {
+            (Some(#index), _) => {
                 if #lbp < min_bp { break; }
                 if context.next_is(context.follow()) {
                     return Err(context.pratt_ambiguity(
@@ -3991,36 +5033,44 @@ pub(super) fn render_pratt_parse(
                             .expect("an active extender contributes an expectation"),
                     ));
                 }
-                lhs = { #body };
+                lhs = Self::#helper(context, lhs, #expression_start)?;
                 continue;
             }
         });
     }
 
-    quote! {
-        #nud_failure_definition
-        #nud_follow_definition
-        #(#guard_definitions)*
-        let #nud_follow_value = #nud_follow_name
-            .union(context.follow())
-            .expect("matching generated Pratt FOLLOW widths");
-        let #expression_start = context.cursor();
-        let mut lhs = match { #nud_selection } {
-            #(#nud_branches,)*
-            None => return Err(context.unexpected(&#nud_failure_value)),
-            Some(_) => unreachable!("frozen Pratt dispatch selected an unknown branch"),
-        };
-        let mut __recursa_pratt_guard: Option<#facade::__private::FollowSet> = None;
-        #(#guard_additions)*
-        loop {
-            match { #led_selection } {
-                #(#led_branches)*
-                None => break,
-                Some(_) => unreachable!("frozen Pratt dispatch selected an unknown branch"),
+    (
+        quote! {
+            #nud_failure_definition
+            let #nud_follow_value = #nud_follow
+                .union(context.follow())
+                .expect("matching generated Pratt FOLLOW widths");
+            let #expression_start = context.cursor();
+            let mut lhs = match { #nud_selection } {
+                #(#nud_branches,)*
+                (None, failure_depth) => {
+                    return Err(context.unexpected_at(failure_depth, &#nud_failure_value));
+                }
+                (Some(_), _) => {
+                    unreachable!("frozen Pratt dispatch selected an unknown branch")
+                }
+            };
+            let mut __recursa_pratt_guard: Option<#facade::__private::FollowSet> = None;
+            #(#guard_additions)*
+            loop {
+                match { #led_selection } {
+                    #(#led_branches)*
+                    (None, _) => break,
+                    (Some(_), _) => {
+                        unreachable!("frozen Pratt dispatch selected an unknown branch")
+                    }
+                }
             }
-        }
-        Ok(lhs)
-    }
+            Ok(lhs)
+        },
+        quote!(#nud_selection_items #led_selection_items),
+        quote!(#(#helper_methods)*),
+    )
 }
 
 /// Returns the left binding power encoded by an extender position.
@@ -4201,14 +5251,11 @@ fn render_element_parse(
         ElementParseKind::Fixed {
             expected, capture, ..
         } => {
-            let expected_name = expected_static(node_index, unique_index, "fixed");
-            let expected_definition =
-                render_expected_static(&expected_name, expected, plan, facade);
+            let expected = render_expected_set(plan, expected);
             let capture = capture.render(facade);
             (
                 quote! {
-                    #expected_definition
-                    let #occurrence = context.parse_fixed(&#expected_name, #capture)?;
+                    let #occurrence = context.parse_fixed(&#expected, #capture)?;
                 },
                 None,
             )
@@ -4308,17 +5355,11 @@ pub(super) fn render_fixed_token_presence_parse(
             .iter()
             .enumerate()
             .map(|(index, fixed)| {
-                let expected = expected_static(
-                    node_index,
-                    unique_index,
-                    &format!("presence_{role}_{index}"),
-                );
-                let definition = render_expected_static(&expected, &fixed.expected, plan, facade);
+                let expected = render_expected_set(plan, &fixed.expected);
                 let occurrence = format_ident!("__recursa_presence_{role}_{index}");
                 let capture = fixed.capture.render(facade);
                 (
                     expected.clone(),
-                    definition,
                     quote!(let #occurrence = context.parse_fixed(&#expected, #capture)?;),
                     occurrence,
                 )
@@ -4333,16 +5374,9 @@ pub(super) fn render_fixed_token_presence_parse(
                 let occurrence = format_ident!("__recursa_presence_{role}_{index}");
                 let statement = match syntax {
                     AttachedFixedSyntaxParsePlan::Required(fixed) => {
-                        let expected = expected_static(
-                            node_index,
-                            unique_index,
-                            &format!("presence_{role}_{index}"),
-                        );
-                        let definition =
-                            render_expected_static(&expected, &fixed.expected, plan, facade);
+                        let expected = render_expected_set(plan, &fixed.expected);
                         let capture = fixed.capture.render(facade);
                         quote! {
-                            #definition
                             let #occurrence = context.parse_fixed(&#expected, #capture)?;
                         }
                     }
@@ -4366,18 +5400,16 @@ pub(super) fn render_fixed_token_presence_parse(
     let after = render_syntax("after", after);
     let before_statements = before.iter().map(|(statement, _)| statement);
     let before_occurrences = before.iter().map(|(_, occurrence)| occurrence);
-    let sequence_definitions = sequence.iter().map(|(_, definition, _, _)| definition);
-    let sequence_matches = sequence.iter().enumerate().map(|(index, (expected, _, _, _))| {
+    let sequence_matches = sequence.iter().enumerate().map(|(index, (expected, _, _))| {
         quote!(context.peek(#index).is_some_and(|record| #expected.contains(record.kind)))
     });
-    let sequence_statements = sequence.iter().map(|(_, _, statement, _)| statement);
-    let sequence_occurrences = sequence.iter().map(|(_, _, _, occurrence)| occurrence);
+    let sequence_statements = sequence.iter().map(|(_, statement, _)| statement);
+    let sequence_occurrences = sequence.iter().map(|(_, _, occurrence)| occurrence);
     let after_statements = after.iter().map(|(statement, _)| statement);
     let after_occurrences = after.iter().map(|(_, occurrence)| occurrence);
     quote! {
         let __recursa_presence_start = context.cursor();
         #(#before_statements)*
-        #(#sequence_definitions)*
         let #value = true #(&& #sequence_matches)*;
         let __recursa_presence_occurrence = if #value {
             let __recursa_optional_start = context.cursor();
@@ -4404,8 +5436,8 @@ pub(super) fn render_fixed_token_presence_parse(
 /// Emits one erased fixed-token group only when its complete sequence is present.
 pub(super) fn render_optional_fixed_group_parse(
     plan: &EmissionPlan,
-    node_index: usize,
-    unique_index: usize,
+    _node_index: usize,
+    _unique_index: usize,
     occurrence: &Ident,
     tokens: &[AttachedFixedParsePlan],
     role: &str,
@@ -4416,26 +5448,22 @@ pub(super) fn render_optional_fixed_group_parse(
         .iter()
         .enumerate()
         .map(|(index, fixed)| {
-            let expected = expected_static(node_index, unique_index, &format!("{role}_{index}"));
-            let definition = render_expected_static(&expected, &fixed.expected, plan, facade);
+            let expected = render_expected_set(plan, &fixed.expected);
             let child = format_ident!("__recursa_{role}_{index}");
             let capture = fixed.capture.render(facade);
             (
                 expected.clone(),
-                definition,
                 quote!(let #child = context.parse_fixed(&#expected, #capture)?;),
                 child,
             )
         })
         .collect::<Vec<_>>();
-    let definitions = tokens.iter().map(|(_, definition, _, _)| definition);
-    let matches = tokens.iter().enumerate().map(|(index, (expected, _, _, _))| {
+    let matches = tokens.iter().enumerate().map(|(index, (expected, _, _))| {
         quote!(context.peek(#index).is_some_and(|record| #expected.contains(record.kind)))
     });
-    let statements = tokens.iter().map(|(_, _, statement, _)| statement);
-    let children = tokens.iter().map(|(_, _, _, child)| child);
+    let statements = tokens.iter().map(|(_, statement, _)| statement);
+    let children = tokens.iter().map(|(_, _, child)| child);
     quote! {
-        #(#definitions)*
         let #occurrence = if true #(&& #matches)* {
             let __recursa_optional_fixed_start = context.cursor();
             #(#statements)*
@@ -4547,9 +5575,7 @@ pub(super) fn render_semantic_parse(
             selector,
             child_follow,
         } => {
-            let selector_name = expected_static(node_index, unique_index, "optional");
-            let selector_definition =
-                render_expected_static(&selector_name, selector, plan, facade);
+            let selector = render_expected_set(plan, selector);
             let follow_name = expected_static(node_index, unique_index, "child_follow");
             let (follow_definition, follow_value) =
                 render_follow_value(plan, &follow_name, child_follow);
@@ -4576,9 +5602,8 @@ pub(super) fn render_semantic_parse(
                 },
             );
             quote! {
-                #selector_definition
                 #follow_definition
-                let (#value, #occurrence) = if context.next_is(&#selector_name) {
+                let (#value, #occurrence) = if context.next_is(&#selector) {
                     let element_start = context.cursor();
                     #attachment_definitions
                     let (parsed_value, child_occurrence) = #parse_child?.into_parts();
@@ -4681,17 +5706,11 @@ pub(super) fn render_attachment_child(
         let occurrence = format_ident!("__recursa_attachment_{role}_{index}");
         match syntax {
             AttachedFixedSyntaxParsePlan::Required(fixed) => {
-                let name = expected_static(
-                    node_index,
-                    unique_index,
-                    &format!("attachment_{role}_{index}"),
-                );
-                let definition = render_expected_static(&name, &fixed.expected, plan, facade);
+                let expected = render_expected_set(plan, &fixed.expected);
                 let capture = fixed.capture.render(facade);
                 (
                     quote! {
-                        #definition
-                        let #occurrence = context.parse_fixed(&#name, #capture)?;
+                        let #occurrence = context.parse_fixed(&#expected, #capture)?;
                     },
                     occurrence,
                 )
@@ -4800,8 +5819,7 @@ pub(super) fn render_repeated_parse(
     let repeated_wrapper = wrappers[repeat_index];
     let wrapped_item = render_wrapped_value(quote!(parsed_value), inner);
 
-    let element_name = expected_static(node_index, unique_index, "element");
-    let element_definition = render_expected_static(&element_name, element_selector, plan, facade);
+    let element_expected = render_expected_set(plan, element_selector);
     let stop_name = expected_static(node_index, unique_index, "stop");
     let (stop_definition, stop_value) = render_follow_value(plan, &stop_name, stop);
     let child_follow_name = expected_static(node_index, unique_index, "child_follow");
@@ -4847,14 +5865,14 @@ pub(super) fn render_repeated_parse(
     };
     let start = if operation == ContainerOperation::OneOrMore {
         quote! {
-            if !context.next_is(&#element_name) {
+            if !context.next_is(&#element_expected) {
                 return Err(context.unexpected(&#minimum_value));
             }
             #parse_item
         }
     } else if minimum_failure.is_some() {
         quote! {
-            if context.next_is(&#element_name) {
+            if context.next_is(&#element_expected) {
                 #parse_item
             } else if !context.is_eof() && !context.next_is(&#stop_value) {
                 return Err(context.unexpected(&#minimum_value));
@@ -4862,7 +5880,7 @@ pub(super) fn render_repeated_parse(
         }
     } else {
         quote! {
-            if context.next_is(&#element_name) {
+            if context.next_is(&#element_expected) {
                 #parse_item
             } else if !context.is_eof() && !context.next_is(&#stop_value) {
                 return Err(context.unexpected(&#continuation_value));
@@ -4871,9 +5889,7 @@ pub(super) fn render_repeated_parse(
     };
 
     let continuation = if let Some(separator_selector) = separator_selector {
-        let separator_name = expected_static(node_index, unique_index, "separator");
-        let separator_definition =
-            render_expected_static(&separator_name, separator_selector, plan, facade);
+        let separator_expected = render_expected_set(plan, separator_selector);
         let trailing = if optional_trailing {
             quote! {
                 if context.is_eof() || context.next_is(&#stop_value) {
@@ -4884,18 +5900,17 @@ pub(super) fn render_repeated_parse(
             quote! {}
         };
         quote! {
-            #separator_definition
             loop {
-                if !context.next_is(&#separator_name) {
+                if !context.next_is(&#separator_expected) {
                     if context.is_eof() || context.next_is(&#stop_value) {
                         break;
                     }
                     return Err(context.unexpected(&#continuation_value));
                 }
                 let separator_occurrence =
-                    context.parse_repetition_separator(&#separator_name)?;
+                    context.parse_repetition_separator(&#separator_expected)?;
                 separator_occurrences.push(separator_occurrence);
-                if context.next_is(&#element_name) {
+                if context.next_is(&#element_expected) {
                     #parse_item
                     continue;
                 }
@@ -4906,7 +5921,7 @@ pub(super) fn render_repeated_parse(
     } else {
         quote! {
             loop {
-                if context.next_is(&#element_name) {
+                if context.next_is(&#element_expected) {
                     #parse_item
                     continue;
                 }
@@ -4958,7 +5973,6 @@ pub(super) fn render_repeated_parse(
     };
 
     quote! {
-        #element_definition
         #stop_definition
         #child_follow_definition
         #minimum_definition
@@ -4991,7 +6005,6 @@ pub(super) fn render_follow_value(
     name: &Ident,
     follow: &PlannedFollow,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    let facade = &plan.facade;
     let value = format_ident!("{}_value", name.to_string().to_ascii_lowercase());
     match follow {
         PlannedFollow::Caller => (
@@ -4999,18 +6012,14 @@ pub(super) fn render_follow_value(
             quote!(#value),
         ),
         PlannedFollow::Static(expected) => {
-            let definition = render_expected_static(name, expected, plan, facade);
-            (
-                quote!(#definition let #value = #name.clone();),
-                quote!(#value),
-            )
+            let expected = render_expected_set(plan, expected);
+            (quote!(let #value = #expected.clone();), quote!(#value))
         }
         PlannedFollow::StaticAndCaller(expected) => {
-            let definition = render_expected_static(name, expected, plan, facade);
+            let expected = render_expected_set(plan, expected);
             (
                 quote! {
-                    #definition
-                    let #value = #name
+                    let #value = #expected
                         .union(context.follow())
                         .expect("matching generated FOLLOW widths");
                 },
@@ -5208,26 +6217,42 @@ pub(super) fn variant_pattern(
     }
 }
 
-/// Emits a stable static expected set in runtime representation.
-pub(super) fn render_expected_static(
-    name: &Ident,
+/// Emits one expected-set value in runtime representation.
+pub(super) fn render_expected_value(
     expected: &ExpectedSet,
     plan: &EmissionPlan,
     facade: &Ident,
 ) -> proc_macro2::TokenStream {
     let words = &expected.words;
-    let atoms = expected
+    let atom_count = expected.atoms.len();
+    let mut atom_words = expected
         .atoms
-        .iter()
-        .map(|atom| quote!(#facade::__private::ExpectedAtomId(#atom)));
+        .last()
+        .map_or_else(Vec::new, |atom| vec![0_u64; *atom as usize / 64 + 1]);
+    for atom in &expected.atoms {
+        atom_words[*atom as usize / 64] |= 1_u64 << (*atom as usize % 64);
+    }
     let kind_count = plan.kind_count;
     quote! {
-        static #name: #facade::__private::FollowSet = #facade::__private::follow_set(
+        #facade::__private::follow_set(
             #kind_count as u32,
             &[#(#words),*],
-            &[#(#atoms),*],
-        );
+            &#facade::__private::expected_atoms::<#atom_count>(&[#(#atom_words),*]),
+        )
     }
+}
+
+/// Emits one root-qualified place in the validated grammar-wide expectation pool.
+pub(super) fn render_expected_set(
+    plan: &EmissionPlan,
+    expected: &ExpectedSet,
+) -> proc_macro2::TokenStream {
+    let module_anchor = &plan.module_anchor;
+    let index = plan
+        .expected_sets
+        .id(expected)
+        .expect("validated emitted expectation belongs to the grammar-wide pool");
+    quote!(#module_anchor::__RECURSA_EXPECTED_SETS[#index])
 }
 
 /// Derives the collision-free identifier for generated metadata storage.
@@ -5238,7 +6263,7 @@ pub(super) fn metadata_static(node: usize, variant: Option<usize>) -> Ident {
     )
 }
 
-/// Derives the collision-free identifier for a generated expected set.
+/// Derives a collision-free seed for one generated local FOLLOW value.
 pub(super) fn expected_static(node: usize, element: usize, role: &str) -> Ident {
     format_ident!("__RECURSA_{}_{}_{}", role.to_uppercase(), node, element)
 }
@@ -5254,31 +6279,44 @@ pub(super) fn render_node_parse_application(
     let input_lifetime: syn::Lifetime = syn::parse_quote!('__recursa_input);
     let ty = &application.ty;
     let mut parse_generics = Generics::default();
+    let mut recursive_generics = Generics::default();
     let mut helper_generics = Generics::default();
     parse_generics
         .params
         .push(syn::parse_quote!(#input_lifetime));
-    helper_generics
+    recursive_generics
         .params
         .push(syn::parse_quote!(#input_lifetime));
+    recursive_generics.params.push(syn::parse_quote!(A));
+    if node.generics.lifetimes().next().is_some() {
+        helper_generics
+            .params
+            .push(syn::parse_quote!(#input_lifetime));
+    }
     parse_generics.params.push(syn::parse_quote!(A));
     let (parse_impl_generics, _, parse_where_clause) = parse_generics.split_for_impl();
+    let (recursive_impl_generics, _, recursive_where_clause) = recursive_generics.split_for_impl();
     let (helper_impl_generics, _, helper_where_clause) = helper_generics.split_for_impl();
     let node_capture = node.capture.render(facade);
     let mut application_node = node.clone();
     application_node.body = application.body.clone();
-    let planned_parse_body = render_node_parse_body(
+    let (planned_parse_body, parse_items, branch_helpers) = render_node_parse_body(
         plan,
         &application_node,
         application.parse_index,
         instrumentation,
     );
-    let (parse_body, pratt_helper) = if matches!(&application.body, NodeBodyPlan::Pratt(_)) {
-        (
+    let helper_method_generics = if node.generics.lifetimes().next().is_some() {
+        quote!(<A>)
+    } else {
+        quote!(<#input_lifetime, A>)
+    };
+    let (parse_body, generated_helpers) = match &application.body {
+        NodeBodyPlan::Pratt(_) => (
             quote!(Self::__recursa_parse_bp(context, 0)),
             quote! {
                 impl #helper_impl_generics #ty #helper_where_clause {
-                    fn __recursa_parse_bp<A>(
+                    fn __recursa_parse_bp #helper_method_generics(
                         context: &mut #facade::__private::ParseContext<'_, #input_lifetime, A>,
                         min_bp: u8,
                     ) -> Result<
@@ -5287,18 +6325,28 @@ pub(super) fn render_node_parse_application(
                     > {
                         #planned_parse_body
                     }
+
+                    #branch_helpers
                 }
             },
-        )
-    } else {
-        (planned_parse_body, quote!())
+        ),
+        NodeBodyPlan::Enum { .. } => (
+            planned_parse_body,
+            quote! {
+                impl #helper_impl_generics #ty #helper_where_clause {
+                    #branch_helpers
+                }
+            },
+        ),
+        NodeBodyPlan::Struct { .. } => (planned_parse_body, quote!()),
     };
 
     quote! {
-        #pratt_helper
+        #parse_items
+        #generated_helpers
 
-        impl #parse_impl_generics #facade::__private::Parse<#input_lifetime, A>
-            for #ty #parse_where_clause
+        impl #recursive_impl_generics #facade::__private::Parse<#input_lifetime, A>
+            for #ty #recursive_where_clause
         {
             const CAPTURE_POLICY: #facade::__private::CapturePolicy = #node_capture;
             fn grammar() -> &'static #facade::__private::GrammarInfo {

@@ -95,7 +95,10 @@ fn assert_pretty_pratt_parentheses() {
     );
 
     let left_nested_power = grammar::Expr::Power(
-        Box::new(grammar::Expr::Power(Box::new(name("a")), Box::new(name("b")))),
+        Box::new(grammar::Expr::Power(
+            Box::new(name("a")),
+            Box::new(name("b")),
+        )),
         Box::new(name("c")),
     );
     assert_eq!(
@@ -105,7 +108,10 @@ fn assert_pretty_pratt_parentheses() {
 
     let right_nested_power = grammar::Expr::Power(
         Box::new(name("a")),
-        Box::new(grammar::Expr::Power(Box::new(name("b")), Box::new(name("c")))),
+        Box::new(grammar::Expr::Power(
+            Box::new(name("b")),
+            Box::new(name("c")),
+        )),
     );
     assert_eq!(right_nested_power.render(), "a ^ b ^ c");
 
@@ -130,6 +136,22 @@ fn assert_pretty_multi_token_operators() {
     let formatted = parse("a IS NOT b").render();
     assert_eq!(formatted, "a IS NOT b");
     assert_eq!(parse(&formatted).render(), formatted);
+
+    let formatted = parse("a LIKE b ESCAPE marker").render();
+    assert_eq!(formatted, "a LIKE b ESCAPE marker");
+    assert_eq!(parse(&formatted).render(), formatted);
+    match parse(&formatted).into_ast() {
+        grammar::Expr::Like(_, _, Some(escape)) => {
+            assert_eq!(escape.value.value.text(), "marker");
+        }
+        _ => panic!("optional non-recursive Pratt attachment must be preserved"),
+    }
+    let formatted = parse("a LIKE b").render();
+    assert_eq!(formatted, "a LIKE b");
+    assert!(matches!(
+        parse(&formatted).into_ast(),
+        grammar::Expr::Like(_, _, None)
+    ));
 
     let formatted = parse("NEVER EXISTS a").render();
     assert_eq!(formatted, "NEVER EXISTS a");
@@ -180,7 +202,10 @@ fn main() {
     let mut traversal = TraversalCount(0);
     assert!(recursa::Visit::visit(&precedence, &mut traversal).is_continue());
     assert_eq!(traversal.0, 11, "Pratt lhs and rhs both participate");
-    assert_eq!(precedence.root().span(), Some(recursa::Span::new(0, 9).unwrap()));
+    assert_eq!(
+        precedence.root().span(),
+        Some(recursa::Span::new(0, 9).unwrap())
+    );
     let mut detached = precedence.into_ast();
     let cloned = detached.clone();
     assert_eq!(detached, cloned);
@@ -247,9 +272,15 @@ fn main() {
     let root = unary.root();
     assert_eq!(root.span(), Some(recursa::Span::new(0, 9).unwrap()));
     assert_eq!(root.span_elements().len(), 3);
-    assert_eq!(root.add_field_0().unwrap().span(), Some(recursa::Span::new(0, 3).unwrap()));
+    assert_eq!(
+        root.add_field_0().unwrap().span(),
+        Some(recursa::Span::new(0, 3).unwrap())
+    );
     assert_eq!(root.plus_span(), Some(recursa::Span::new(4, 5).unwrap()));
-    assert_eq!(root.add_field_1().unwrap().span(), Some(recursa::Span::new(6, 9).unwrap()));
+    assert_eq!(
+        root.add_field_1().unwrap().span(),
+        Some(recursa::Span::new(6, 9).unwrap())
+    );
     match unary.into_ast() {
         grammar::Expr::Add(lhs, rhs) => {
             assert!(matches!(*lhs, grammar::Expr::Neg(_)));
