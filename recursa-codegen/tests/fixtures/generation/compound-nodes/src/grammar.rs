@@ -2,7 +2,7 @@ recursa::grammar! {
     module = crate::grammar,
     derives(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Pretty, Visit, VisitMut, Arbitrary, serde::Serialize, serde::Deserialize),
     keyword_matching = ascii_insensitive,
-    max_lookahead = 1,
+    max_lookahead = 3,
 }
 
 recursa::tokens! {
@@ -13,9 +13,22 @@ recursa::tokens! {
         EMPTY => "empty",
         LEFT => "left",
         RIGHT => "right",
+        INDEX => "index",
+        CONCURRENTLY => "concurrently",
+        CREATE => "create",
+        UNLOGGED => "unlogged",
+        MATERIALIZED => "materialized",
+        VIEW => "view",
+        IS => "is",
+        NOT => "not",
+        JSON => "json",
+        OR => "or",
+        REPLACE => "replace",
+        WITH => "with",
     }
     punctuation {
         COLON => ":", spacing = tight,
+        BANG => "!", spacing = tight,
     }
 }
 
@@ -32,6 +45,122 @@ pub struct Record<'input> {
     #[tok(COLON)]
     pub label: Box<Box<Label<'input>>>,
     pub count: MaybeCount<'input>,
+}
+
+/// Required fixed syntax composes with an optional semantic presence value.
+#[derive(recursa::Node)]
+pub struct RequiredThenPresence<'input> {
+    #[tok(INDEX)]
+    #[presence(CONCURRENTLY)]
+    pub concurrently: bool,
+    pub label: Label<'input>,
+}
+
+/// Required syntax may wrap the optional presence at the same field boundary.
+#[derive(recursa::Node)]
+pub struct WrappedPresence<'input> {
+    #[tok(CREATE, this, MATERIALIZED, VIEW)]
+    #[presence(UNLOGGED)]
+    pub unlogged: bool,
+    pub label: Label<'input>,
+}
+
+/// A required suffix may follow an optional presence without making it conditional.
+#[derive(recursa::Node)]
+#[tok(IS, this)]
+pub struct SuffixedPresence<'input> {
+    #[tok(this, JSON)]
+    #[presence(NOT)]
+    pub not: bool,
+    pub label: Label<'input>,
+}
+
+/// A multi-token presence is selected atomically and may share its first token with the tail.
+#[derive(recursa::Node)]
+pub struct AtomicPresence<'input> {
+    #[presence(OR, REPLACE)]
+    pub replace: bool,
+    pub tail: PresenceTail<'input>,
+}
+
+#[derive(recursa::Node)]
+pub enum PresenceTail<'input> {
+    Or {
+        #[tok(OR)]
+        label: Label<'input>,
+    },
+    Label {
+        label: Label<'input>,
+    },
+}
+
+/// Punctuation participates in presence matching and canonical Pretty output.
+#[derive(recursa::Node)]
+pub struct PunctuationPresence<'input> {
+    #[presence(BANG)]
+    pub bang: bool,
+    pub label: Label<'input>,
+}
+
+/// Presence fields keep their authored bool shape inside enum variants.
+#[derive(recursa::Node)]
+pub enum EnumPresence<'input> {
+    Value {
+        #[presence(NOT)]
+        not: bool,
+        label: Label<'input>,
+    },
+}
+
+/// Erased fixed-token groups may occur independently before and after `this`.
+#[derive(recursa::Node)]
+#[tok(optional(RECORD), this, optional(PAIR))]
+pub struct OptionalFillers<'input> {
+    pub label: Label<'input>,
+}
+
+/// Optional groups preserve their exact position among required field attachments.
+#[derive(recursa::Node)]
+pub struct AttachedOptionalFillers<'input> {
+    #[tok(CREATE, optional(UNLOGGED), this, optional(VIEW), MATERIALIZED)]
+    pub label: Label<'input>,
+}
+
+/// An incomplete optional group leaves a shared-prefix semantic tail untouched.
+#[derive(recursa::Node)]
+pub struct AtomicOptionalAttachment<'input> {
+    #[tok(optional(OR, REPLACE), this)]
+    pub tail: PresenceTail<'input>,
+}
+
+/// An optional suffix stays outside the following nested optional container.
+#[derive(recursa::Node)]
+pub struct NestedWith<'input> {
+    #[tok(this, optional(WITH))]
+    pub name: Label<'input>,
+    pub options: Box<Option<Box<Pair<'input>>>>,
+}
+
+/// Erased optional groups compose with a boolean presence attachment.
+#[derive(recursa::Node)]
+pub struct PresenceWithFillers<'input> {
+    #[tok(CREATE, optional(OR), this, optional(VIEW), MATERIALIZED)]
+    #[presence(UNLOGGED)]
+    pub unlogged: bool,
+    pub label: Label<'input>,
+}
+
+/// Prediction distinguishes a complete optional prefix from a shorter fixed alternative.
+#[derive(recursa::Node)]
+pub enum OptionalPrefixPrediction<'input> {
+    WithReplace {
+        #[tok(optional(OR, REPLACE), this)]
+        label: Label<'input>,
+    },
+    Or {
+        #[tok(OR)]
+        label: Label<'input>,
+    },
 }
 
 pub type MaybeCount<'input> = Box<Option<Box<Count<'input>>>>;

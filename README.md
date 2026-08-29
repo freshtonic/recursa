@@ -76,6 +76,24 @@ The brackets and commas shape the syntax without becoming dead fields.
 `Option<Vec1<Value>>` says that an array is either empty or contains at least
 one value.
 
+Fixed-token options do not require marker nodes. Use `optional(TOKENS...)`
+inside the sole `#[tok(...)]` sequence for erased syntax, or store its presence
+in a plain `bool` with a separate `#[presence(TOKENS...)]` attribute:
+
+```rust,ignore
+#[derive(recursa::Node)]
+pub struct CreateIndex<'input> {
+    #[tok(CREATE, optional(OR, REPLACE), INDEX, this)]
+    #[presence(CONCURRENTLY)]
+    pub concurrently: bool,
+    pub name: Identifier<'input>,
+}
+```
+
+Both forms match the entire fixed-token sequence atomically. An incomplete
+optional sequence consumes nothing; synthetic Pretty output emits a presence
+sequence only when its boolean is true and omits erased optional groups.
+
 Generation adds grammar-local public lexing and parsing entry points. The
 [complete example](examples/json/src/lib.rs) checks lexical errors, parses a
 spanned value, rejects trailing input, and then extracts the semantic AST:
@@ -98,6 +116,15 @@ pub fn parse(source: &str) -> Result<grammar::Value<'_>, ParseFailure> {
     Ok(parsed.into_ast())
 }
 ```
+
+Languages with source-backed regions can use the closed matcher vocabulary in
+`tokens!`: same-delimiter and nested regions, next-scalar exclusions,
+configurable operator runs, and physical-line regions. Emitting declarations
+live in `matchers { ... }` and bind through `#[lex(matcher)]`; the same forms in
+`ignore { ... }` are non-emitting. Final match extent, exact fixed-token status,
+and explicit priority determine arbitration, never declaration order. See the
+[facade grammar guide](recursa/README.md) for the declaration forms and lexical
+error contract.
 
 Run both compiled examples from a checkout:
 

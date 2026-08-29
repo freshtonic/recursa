@@ -984,6 +984,15 @@ impl PrettyContext {
             .map(str::to_owned)
     }
 
+    /// Reports whether the active generated occurrence has a concrete source span.
+    #[doc(hidden)]
+    pub fn has_source_span(&self) -> bool {
+        self.provenance
+            .as_ref()
+            .and_then(|provenance| provenance.span)
+            .is_some()
+    }
+
     /// Temporarily replaces active provenance for one nested render operation.
     fn with_provenance<R>(
         &mut self,

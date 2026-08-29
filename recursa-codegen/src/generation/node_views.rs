@@ -14,6 +14,9 @@ pub(super) fn validate_accessor_names(
     let mut check = |element: &ElementParsePlan| -> Result<(), String> {
         let name = match &element.kind {
             ElementParseKind::Fixed { accessor, .. } => accessor.unraw().to_string(),
+            ElementParseKind::OptionalFixedTokenGroup { accessor, .. } => {
+                accessor.unraw().to_string()
+            }
             ElementParseKind::Semantic { field, .. } => {
                 let Some(accessor) = &field.accessor else {
                     return Ok(());
@@ -115,8 +118,12 @@ pub(super) fn render_metadata_entry(
 ) -> proc_macro2::TokenStream {
     let name = &element.metadata_name;
     let role = match element.kind {
-        ElementParseKind::Fixed { .. } => quote!(#facade::ElementRole::FixedToken),
-        ElementParseKind::Semantic { .. } => quote!(#facade::ElementRole::SemanticField),
+        ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
+            quote!(#facade::ElementRole::FixedToken)
+        }
+        ElementParseKind::Semantic { .. } => {
+            quote!(#facade::ElementRole::SemanticField)
+        }
     };
     quote!(#facade::__private::element_metadata(Some(#name), #role))
 }
@@ -248,7 +255,8 @@ pub(super) fn render_accessor(
     variant: Option<(&Ident, &Ident, ResolvedFieldStyle)>,
 ) -> Option<proc_macro2::TokenStream> {
     match &element.kind {
-        ElementParseKind::Fixed { accessor, .. } => {
+        ElementParseKind::Fixed { accessor, .. }
+        | ElementParseKind::OptionalFixedTokenGroup { accessor, .. } => {
             let method = accessor;
             let active = variant.map(|(node, variant, style)| {
                 let pattern = variant_pattern(node, variant, style);
@@ -263,129 +271,164 @@ pub(super) fn render_accessor(
                 }
             })
         }
-        ElementParseKind::Semantic {
-            field,
-            terminal,
-            wrappers,
-            attachment,
-            ..
-        } => {
-            let terminal =
-                if terminal_path_ident(terminal).is_some_and(|ident| ident.unraw() == "Self") {
-                    self_type
-                } else {
-                    terminal
-                };
-            let accessor = field.accessor.as_ref()?;
-            if let Some(repeat_index) = wrappers.iter().position(|wrapper| {
-                matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)
-            }) {
-                return Some(render_repeated_accessor(
-                    facade,
-                    accessor,
-                    field,
-                    terminal,
-                    wrappers,
-                    repeat_index,
-                    element_index,
-                    variant,
-                    attachment.as_deref(),
-                ));
-            }
-            let is_optional = wrappers
-                .iter()
-                .any(|wrapper| matches!(wrapper, FieldWrapper::Optional));
-            let semantic_child = attachment
-                .as_ref()
-                .map(|attachment| attachment.before.len());
-            let semantic_cursor = |cursor: proc_macro2::TokenStream| {
-                semantic_child.map_or(cursor.clone(), |child| quote!((#cursor).child(#child)))
-            };
-            if let Some((node, variant_ident, style)) = variant {
-                let binding = format_ident!("__recursa_field");
-                let active_pattern = field_binding_pattern(
-                    node,
-                    variant_ident,
-                    style,
-                    field.ident.as_ref(),
-                    field.index,
-                    &binding,
-                );
-                let value = if is_optional {
-                    let optional_reference =
-                        render_optional_view_reference(quote!(#binding), wrappers, true);
-                    let cursor =
-                        semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
-                    quote! {
-                        #optional_reference.map(|value| {
-                            #facade::__private::NodeViewFactory::view(
-                                value,
-                                #cursor,
-                            )
-                        })
-                    }
-                } else {
-                    let reference = render_terminal_reference(quote!(#binding), wrappers, true);
-                    let cursor =
-                        semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
-                    quote! {
-                        Some(#facade::__private::NodeViewFactory::view(
-                            #reference,
-                            #cursor,
-                        ))
-                    }
-                };
-                Some(quote! {
-                    pub fn #accessor(
-                        &self,
-                    ) -> Option<impl #facade::NodeView<Value = #terminal> + 'view>
-                    where
-                        #terminal: #facade::__private::NodeViewFactory,
-                    {
-                        match self.value {
-                            #active_pattern => #value,
-                            _ => None,
+        ElementParseKind::Semantic { field, projection } => match projection.as_ref() {
+            SemanticParseProjection::FixedPresence { .. } => {
+                let accessor = field.accessor.as_ref()?;
+                if let Some((node, variant_ident, style)) = variant {
+                    let binding = format_ident!("__recursa_presence");
+                    let active_pattern = field_binding_pattern(
+                        node,
+                        variant_ident,
+                        style,
+                        field.ident.as_ref(),
+                        field.index,
+                        &binding,
+                    );
+                    Some(quote! {
+                        pub fn #accessor(&self) -> Option<bool> {
+                            match self.value {
+                                #active_pattern => Some(*#binding),
+                                _ => None,
+                            }
                         }
-                    }
-                })
-            } else if is_optional {
-                let reference = field_access(quote!(self.value), field.ident.as_ref(), field.index);
-                let optional_reference = render_optional_view_reference(reference, wrappers, false);
-                let cursor = semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
-                Some(quote! {
-                    pub fn #accessor(
-                        &self,
-                    ) -> Option<impl #facade::NodeView<Value = #terminal> + 'view>
-                    where
-                        #terminal: #facade::__private::NodeViewFactory,
-                    {
-                        #optional_reference.map(|value| {
+                    })
+                } else {
+                    let value = field_access(quote!(self.value), field.ident.as_ref(), field.index);
+                    Some(quote! {
+                        pub fn #accessor(&self) -> bool {
+                            #value
+                        }
+                    })
+                }
+            }
+            SemanticParseProjection::Direct {
+                terminal,
+                wrappers,
+                attachment,
+                ..
+            } => {
+                let terminal =
+                    if terminal_path_ident(terminal).is_some_and(|ident| ident.unraw() == "Self") {
+                        self_type
+                    } else {
+                        terminal
+                    };
+                let accessor = field.accessor.as_ref()?;
+                if let Some(repeat_index) = wrappers.iter().position(|wrapper| {
+                    matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)
+                }) {
+                    return Some(render_repeated_accessor(
+                        facade,
+                        accessor,
+                        field,
+                        terminal,
+                        wrappers,
+                        repeat_index,
+                        element_index,
+                        variant,
+                        attachment.as_deref(),
+                    ));
+                }
+                let is_optional = wrappers
+                    .iter()
+                    .any(|wrapper| matches!(wrapper, FieldWrapper::Optional));
+                let semantic_child = attachment
+                    .as_ref()
+                    .map(|attachment| attachment.before.len());
+                let semantic_cursor = |cursor: proc_macro2::TokenStream| {
+                    semantic_child.map_or(cursor.clone(), |child| quote!((#cursor).child(#child)))
+                };
+                if let Some((node, variant_ident, style)) = variant {
+                    let binding = format_ident!("__recursa_field");
+                    let active_pattern = field_binding_pattern(
+                        node,
+                        variant_ident,
+                        style,
+                        field.ident.as_ref(),
+                        field.index,
+                        &binding,
+                    );
+                    let value = if is_optional {
+                        let optional_reference =
+                            render_optional_view_reference(quote!(#binding), wrappers, true);
+                        let cursor =
+                            semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
+                        quote! {
+                            #optional_reference.map(|value| {
+                                #facade::__private::NodeViewFactory::view(
+                                    value,
+                                    #cursor,
+                                )
+                            })
+                        }
+                    } else {
+                        let reference = render_terminal_reference(quote!(#binding), wrappers, true);
+                        let cursor =
+                            semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
+                        quote! {
+                            Some(#facade::__private::NodeViewFactory::view(
+                                #reference,
+                                #cursor,
+                            ))
+                        }
+                    };
+                    Some(quote! {
+                        pub fn #accessor(
+                            &self,
+                        ) -> Option<impl #facade::NodeView<Value = #terminal> + 'view>
+                        where
+                            #terminal: #facade::__private::NodeViewFactory,
+                        {
+                            match self.value {
+                                #active_pattern => #value,
+                                _ => None,
+                            }
+                        }
+                    })
+                } else if is_optional {
+                    let reference =
+                        field_access(quote!(self.value), field.ident.as_ref(), field.index);
+                    let optional_reference =
+                        render_optional_view_reference(reference, wrappers, false);
+                    let cursor =
+                        semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
+                    Some(quote! {
+                        pub fn #accessor(
+                            &self,
+                        ) -> Option<impl #facade::NodeView<Value = #terminal> + 'view>
+                        where
+                            #terminal: #facade::__private::NodeViewFactory,
+                        {
+                            #optional_reference.map(|value| {
+                                #facade::__private::NodeViewFactory::view(
+                                    value,
+                                    #cursor,
+                                )
+                            })
+                        }
+                    })
+                } else {
+                    let reference =
+                        field_access(quote!(self.value), field.ident.as_ref(), field.index);
+                    let reference = render_terminal_reference(reference, wrappers, false);
+                    let cursor =
+                        semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
+                    Some(quote! {
+                        pub fn #accessor(
+                            &self,
+                        ) -> impl #facade::NodeView<Value = #terminal> + 'view
+                        where
+                            #terminal: #facade::__private::NodeViewFactory,
+                        {
                             #facade::__private::NodeViewFactory::view(
-                                value,
+                                #reference,
                                 #cursor,
                             )
-                        })
-                    }
-                })
-            } else {
-                let reference = field_access(quote!(self.value), field.ident.as_ref(), field.index);
-                let reference = render_terminal_reference(reference, wrappers, false);
-                let cursor = semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
-                Some(quote! {
-                    pub fn #accessor(
-                        &self,
-                    ) -> impl #facade::NodeView<Value = #terminal> + 'view
-                    where
-                        #terminal: #facade::__private::NodeViewFactory,
-                    {
-                        #facade::__private::NodeViewFactory::view(
-                            #reference,
-                            #cursor,
-                        )
-                    }
-                })
+                        }
+                    })
+                }
             }
-        }
+        },
     }
 }
 

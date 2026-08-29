@@ -32,7 +32,7 @@ use crate::materialization::{
     ClosedType, MaterializedApplicationId, MaterializedElement, MaterializedFixedAttachment,
     MaterializedNodeApplication, MaterializedNodeBody, MaterializedPrattLed,
     MaterializedPrattLedPosition, MaterializedPrattNud, MaterializedPrattNudPosition,
-    MaterializedPrattVariant, MaterializedVariant,
+    MaterializedPrattVariant, MaterializedSemanticFieldProjection, MaterializedVariant,
 };
 use crate::resolution::{
     CatalogType, ContentTokenId, GenericParameterId, ResolvedFieldId, ResolvedFieldStyle,
@@ -43,9 +43,9 @@ use crate::source_analysis::{
     CargoOutput, SourceAnalysisInput, analyze_source_tree, internal_generate_error,
 };
 use crate::source_model::{
-    ConfiguredTraitRecipe, GrammarElement, Node as SourceNode, NodeBody as SourceNodeBody,
-    PrettyBreak, PrettyGroup, PrettyHints, PrettySeparatorPosition, PrettySpacing,
-    PrettyTrailingSeparator, SourcePrattPosition, TokenDefinitionKind,
+    ClosedMatcher, ConfiguredTraitRecipe, GrammarElement, Node as SourceNode,
+    NodeBody as SourceNodeBody, PrettyBreak, PrettyGroup, PrettyHints, PrettySeparatorPosition,
+    PrettySpacing, PrettyTrailingSeparator, SourcePrattPosition, TokenDefinitionKind,
 };
 use crate::source_syntax::{CaptureMode, CargoCfgSnapshot, span_range};
 use crate::{AtomExpression, FirstPosition, KindSet, SiteId, TextEquivalence, TextPredicate};

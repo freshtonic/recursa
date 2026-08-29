@@ -506,15 +506,21 @@ pub(super) fn corrupted_pratt_branch_follow_and_failure_identities_fail_before_p
         .iter_mut()
         .flat_map(|branch| &mut branch.variant.elements)
         .find_map(|element| match &mut element.kind {
-            ElementParseKind::Semantic {
-                container,
-                pratt_min_bp: Some(_),
-                ..
-            } => match container.as_mut() {
-                PlannedContainer::Direct { child_follow, .. } => Some(child_follow),
-                PlannedContainer::Optional { .. } | PlannedContainer::Repeated { .. } => None,
+            ElementParseKind::Semantic { projection, .. } => match projection.as_mut() {
+                SemanticParseProjection::Direct {
+                    container,
+                    pratt_min_bp: Some(_),
+                    ..
+                } => match container.as_mut() {
+                    PlannedContainer::Direct { child_follow, .. } => Some(child_follow),
+                    PlannedContainer::Optional { .. } | PlannedContainer::Repeated { .. } => None,
+                },
+                SemanticParseProjection::Direct { .. }
+                | SemanticParseProjection::FixedPresence { .. } => None,
             },
-            ElementParseKind::Fixed { .. } | ElementParseKind::Semantic { .. } => None,
+            ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
+                None
+            }
         })
         .expect("fixture contains a recursive Pratt operand FOLLOW");
     *follow = PlannedFollow::Caller;
@@ -565,14 +571,24 @@ pub(super) fn corrupted_real_plan_family_content_fails_before_publication() {
         .expect("the trait fixture contains Pretty behavior");
     match element {
         PrettyElementBehavior::Fixed { spelling, .. } => spelling.push_str("-corrupt"),
-        PrettyElementBehavior::Semantic { repetition, .. } => {
-            *repetition = Some(PrettyRepetitionBehavior {
-                separator: None,
-                trailing_separator: false,
-                hard_break: false,
-                leading_separator: false,
-                space_before_separator: false,
-            });
+        PrettyElementBehavior::Semantic { projection } => match projection {
+            PrettySemanticProjection::Direct { repetition, .. } => {
+                *repetition = Some(PrettyRepetitionBehavior {
+                    separator: None,
+                    trailing_separator: false,
+                    hard_break: false,
+                    leading_separator: false,
+                    space_before_separator: false,
+                });
+            }
+            PrettySemanticProjection::FixedPresence { .. } => {
+                panic!(
+                    "the selected fixture starts with ordinary syntax or a direct semantic field"
+                )
+            }
+        },
+        PrettyElementBehavior::OptionalFixedTokenGroup { .. } => {
+            panic!("the selected fixture starts with ordinary syntax or a semantic field")
         }
     }
     assert_plan_family_is_unselectable(package.path(), &pretty, "Pretty");
@@ -587,15 +603,20 @@ pub(super) fn corrupted_real_plan_family_content_fails_before_publication() {
         .flat_map(|variant| variant.iter_mut())
         .find_map(|element| match element {
             PrettyElementBehavior::Semantic {
-                attachment: Some(attachment),
-                ..
+                projection:
+                    PrettySemanticProjection::Direct {
+                        attachment: Some(attachment),
+                        ..
+                    },
             } => attachment.before.first_mut(),
             PrettyElementBehavior::Fixed { .. }
-            | PrettyElementBehavior::Semantic {
-                attachment: None, ..
-            } => None,
+            | PrettyElementBehavior::OptionalFixedTokenGroup { .. }
+            | PrettyElementBehavior::Semantic { .. } => None,
         })
         .expect("the Pratt fixture contains a fixed attachment");
+    let PrettyAttachedSyntaxBehavior::Required(fixed) = fixed else {
+        panic!("the Pratt fixture attachment is required")
+    };
     fixed.spelling.push_str("-corrupt");
     assert_plan_family_is_unselectable(package.path(), &attachment, "Pretty");
 
@@ -978,11 +999,14 @@ pub(super) fn authored_pretty_authority_rejects_emitted_declaration_corruption()
         })
         .find(|element| matches!(element.kind, ElementParseKind::Semantic { .. }))
         .expect("Pretty fixture contains a semantic declaration element");
-    let ElementParseKind::Semantic {
-        opaque_provenance, ..
-    } = &mut element.kind
-    else {
+    let ElementParseKind::Semantic { projection, .. } = &mut element.kind else {
         unreachable!("selected a semantic element")
+    };
+    let SemanticParseProjection::Direct {
+        opaque_provenance, ..
+    } = projection.as_mut()
+    else {
+        unreachable!("selected fixture semantic field is direct")
     };
     *opaque_provenance = !*opaque_provenance;
     plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens);
@@ -1220,7 +1244,10 @@ pub(super) fn every_typed_pretty_pratt_decision_is_part_of_family_authority() {
             .flatten()
             .find(|element| matches!(element, PrettyElementBehavior::Semantic { .. }))
             .expect("semantic Pretty element");
-        let PrettyElementBehavior::Semantic { provenance, .. } = semantic else {
+        let PrettyElementBehavior::Semantic {
+            projection: PrettySemanticProjection::Direct { provenance, .. },
+        } = semantic
+        else {
             unreachable!()
         };
         *provenance = PrettyProvenanceBehavior::Opaque;
@@ -1321,15 +1348,22 @@ pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
             .iter_mut()
             .flatten()
             .find_map(|element| match element {
-                PrettyElementBehavior::Semantic { .. } => Some(element),
-                PrettyElementBehavior::Fixed { .. } => None,
+                PrettyElementBehavior::Semantic {
+                    projection: PrettySemanticProjection::Direct { .. },
+                } => Some(element),
+                PrettyElementBehavior::Fixed { .. }
+                | PrettyElementBehavior::OptionalFixedTokenGroup { .. }
+                | PrettyElementBehavior::Semantic { .. } => None,
             })
             .expect("selected fixture node has a semantic field")
     }
     fn repetition_behavior(node: &mut PrettyNodeBehavior) -> &mut PrettyRepetitionBehavior {
         let PrettyElementBehavior::Semantic {
-            repetition: Some(repetition),
-            ..
+            projection:
+                PrettySemanticProjection::Direct {
+                    repetition: Some(repetition),
+                    ..
+                },
         } = semantic(node)
         else {
             panic!("selected fixture node has a repeated semantic field")
@@ -1347,8 +1381,9 @@ pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
     assert_plan_family_is_unselectable(package.path(), &variant_hint, "Pretty");
 
     let mut field_hint = plan.clone();
-    let PrettyElementBehavior::Semantic { pretty, .. } =
-        semantic(pretty_node(&mut field_hint, "AttachmentPretty"))
+    let PrettyElementBehavior::Semantic {
+        projection: PrettySemanticProjection::Direct { pretty, .. },
+    } = semantic(pretty_node(&mut field_hint, "AttachmentPretty"))
     else {
         unreachable!("semantic helper returns semantic behavior")
     };
@@ -1356,8 +1391,9 @@ pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
     assert_plan_family_is_unselectable(package.path(), &field_hint, "Pretty");
 
     let mut separator_policy = plan.clone();
-    let PrettyElementBehavior::Semantic { pretty, .. } =
-        semantic(pretty_node(&mut separator_policy, "LeadingPretty"))
+    let PrettyElementBehavior::Semantic {
+        projection: PrettySemanticProjection::Direct { pretty, .. },
+    } = semantic(pretty_node(&mut separator_policy, "LeadingPretty"))
     else {
         unreachable!("semantic helper returns semantic behavior")
     };
@@ -1382,7 +1418,8 @@ pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
         .flatten()
         .find_map(|element| match element {
             PrettyElementBehavior::Fixed { rendering, .. } => Some(rendering),
-            PrettyElementBehavior::Semantic { .. } => None,
+            PrettyElementBehavior::OptionalFixedTokenGroup { .. }
+            | PrettyElementBehavior::Semantic { .. } => None,
         })
         .expect("fixture has ordinary fixed syntax");
     assert_eq!(*rendering, PrettyFixedRendering::Word);
@@ -1391,8 +1428,11 @@ pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
 
     let mut attachment_layout = plan.clone();
     let PrettyElementBehavior::Semantic {
-        attachment: Some(attachment),
-        ..
+        projection:
+            PrettySemanticProjection::Direct {
+                attachment: Some(attachment),
+                ..
+            },
     } = semantic(pretty_node(&mut attachment_layout, "AttachedOptional"))
     else {
         panic!("fixture has an attached field")
@@ -1403,8 +1443,11 @@ pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
 
     let mut attached_fixed_rendering = plan.clone();
     let PrettyElementBehavior::Semantic {
-        attachment: Some(attachment),
-        ..
+        projection:
+            PrettySemanticProjection::Direct {
+                attachment: Some(attachment),
+                ..
+            },
     } = semantic(pretty_node(
         &mut attached_fixed_rendering,
         "AttachedOptional",
@@ -1412,7 +1455,10 @@ pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
     else {
         panic!("fixture has an attached field")
     };
-    let rendering = &mut attachment.before[0].rendering;
+    let PrettyAttachedSyntaxBehavior::Required(fixed) = &mut attachment.before[0] else {
+        panic!("fixture delimiter is required")
+    };
+    let rendering = &mut fixed.rendering;
     assert_eq!(*rendering, PrettyFixedRendering::Opening);
     *rendering = PrettyFixedRendering::Punctuation;
     assert_plan_family_is_unselectable(package.path(), &attached_fixed_rendering, "Pretty");
@@ -1456,14 +1502,16 @@ pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
         .flatten()
         .find_map(|element| match element {
             PrettyElementBehavior::Semantic {
-                attachment: Some(_),
-                presence,
-                ..
+                projection:
+                    PrettySemanticProjection::Direct {
+                        attachment: Some(_),
+                        presence,
+                        ..
+                    },
             } => Some(presence),
             PrettyElementBehavior::Fixed { .. }
-            | PrettyElementBehavior::Semantic {
-                attachment: None, ..
-            } => None,
+            | PrettyElementBehavior::OptionalFixedTokenGroup { .. }
+            | PrettyElementBehavior::Semantic { .. } => None,
         })
         .expect("fixture has a conditionally present attachment unit");
     assert_eq!(*presence, PrettyPresence::Optional);
@@ -1520,49 +1568,59 @@ pub(super) fn ascii_insensitive_word_separators_share_canonical_pretty_family_au
     let mut plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
         .expect("canonical word separator joins one Pretty family");
     assert_eq!(Some(plan.pretty.clone()), authority);
-    let application_separator = plan
-        .nodes
-        .iter()
-        .flat_map(|node| &node.parse_applications)
-        .flat_map(|application| match &application.body {
-            NodeBodyPlan::Struct { elements, .. } => elements.iter().collect::<Vec<_>>(),
-            NodeBodyPlan::Enum { variants, .. } => variants
-                .iter()
-                .flat_map(|variant| variant.elements.iter())
-                .collect(),
-            NodeBodyPlan::Pratt(_) => Vec::new(),
-        })
-        .find_map(|element| match &element.kind {
-            ElementParseKind::Semantic {
-                separator: Some(separator),
-                attachment: Some(_),
-                ..
-            } => Some(separator),
-            ElementParseKind::Fixed { .. } | ElementParseKind::Semantic { .. } => None,
-        })
-        .expect("fixture materializes an attached word-separated application");
+    let application_separator =
+        plan.nodes
+            .iter()
+            .flat_map(|node| &node.parse_applications)
+            .flat_map(|application| match &application.body {
+                NodeBodyPlan::Struct { elements, .. } => elements.iter().collect::<Vec<_>>(),
+                NodeBodyPlan::Enum { variants, .. } => variants
+                    .iter()
+                    .flat_map(|variant| variant.elements.iter())
+                    .collect(),
+                NodeBodyPlan::Pratt(_) => Vec::new(),
+            })
+            .find_map(|element| match &element.kind {
+                ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
+                    SemanticParseProjection::Direct {
+                        separator: Some(separator),
+                        attachment: Some(_),
+                        ..
+                    } => Some(separator),
+                    SemanticParseProjection::Direct { .. }
+                    | SemanticParseProjection::FixedPresence { .. } => None,
+                },
+                ElementParseKind::Fixed { .. }
+                | ElementParseKind::OptionalFixedTokenGroup { .. } => None,
+            })
+            .expect("fixture materializes an attached word-separated application");
     assert_eq!(application_separator, "AND");
 
-    let separator = plan
-        .nodes
-        .iter_mut()
-        .flat_map(|node| match &mut node.body {
-            NodeBodyPlan::Struct { elements, .. } => elements.iter_mut().collect::<Vec<_>>(),
-            NodeBodyPlan::Enum { variants, .. } => variants
-                .iter_mut()
-                .flat_map(|variant| variant.elements.iter_mut())
-                .collect(),
-            NodeBodyPlan::Pratt(_) => Vec::new(),
-        })
-        .find_map(|element| match &mut element.kind {
-            ElementParseKind::Semantic {
-                separator: Some(separator),
-                attachment: Some(_),
-                ..
-            } => Some(separator),
-            ElementParseKind::Fixed { .. } | ElementParseKind::Semantic { .. } => None,
-        })
-        .expect("fixture contains an attached word-separated repetition");
+    let separator =
+        plan.nodes
+            .iter_mut()
+            .flat_map(|node| match &mut node.body {
+                NodeBodyPlan::Struct { elements, .. } => elements.iter_mut().collect::<Vec<_>>(),
+                NodeBodyPlan::Enum { variants, .. } => variants
+                    .iter_mut()
+                    .flat_map(|variant| variant.elements.iter_mut())
+                    .collect(),
+                NodeBodyPlan::Pratt(_) => Vec::new(),
+            })
+            .find_map(|element| match &mut element.kind {
+                ElementParseKind::Semantic { projection, .. } => match projection.as_mut() {
+                    SemanticParseProjection::Direct {
+                        separator: Some(separator),
+                        attachment: Some(_),
+                        ..
+                    } => Some(separator),
+                    SemanticParseProjection::Direct { .. }
+                    | SemanticParseProjection::FixedPresence { .. } => None,
+                },
+                ElementParseKind::Fixed { .. }
+                | ElementParseKind::OptionalFixedTokenGroup { .. } => None,
+            })
+            .expect("fixture contains an attached word-separated repetition");
     assert_eq!(separator, "AND");
     *separator = "and".to_owned();
     plan.pretty = emitted_pretty_plan(&plan.nodes, &plan.tokens);
@@ -1641,11 +1699,14 @@ pub(super) fn generic_top_level_breaks_keep_typed_family_and_closed_application_
     let NodeBodyPlan::Struct { elements, .. } = &program.body else {
         panic!("Program is a struct declaration")
     };
-    let ElementParseKind::Semantic {
+    let ElementParseKind::Semantic { projection, .. } = &elements[0].kind else {
+        panic!("generic Program declaration keeps an application-independent enum-family break")
+    };
+    let SemanticParseProjection::Direct {
         repetition_break: PlannedRepetitionBreak::TopLevelStatementFamily(statement_family),
         terminal_application: None,
         ..
-    } = &elements[0].kind
+    } = projection.as_ref()
     else {
         panic!("generic Program declaration keeps an application-independent enum-family break")
     };
@@ -1657,11 +1718,14 @@ pub(super) fn generic_top_level_breaks_keep_typed_family_and_closed_application_
             let NodeBodyPlan::Struct { elements, .. } = &application.body else {
                 panic!("Program application is a struct")
             };
-            let ElementParseKind::Semantic {
+            let ElementParseKind::Semantic { projection, .. } = &elements[0].kind else {
+                panic!("closed Program application keeps an exact enum-application break")
+            };
+            let SemanticParseProjection::Direct {
                 terminal_application: Some(terminal_application),
                 repetition_break: PlannedRepetitionBreak::TopLevelStatement(break_application),
                 ..
-            } = &elements[0].kind
+            } = projection.as_ref()
             else {
                 panic!("closed Program application keeps an exact enum-application break")
             };

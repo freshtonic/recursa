@@ -6,9 +6,22 @@
 use super::*;
 
 /// Private loader protocol understood by generated roots and the facade.
-pub(super) const PRIVATE_PROTOCOL: u32 = 2;
+pub(super) const PRIVATE_PROTOCOL: u32 = 6;
 /// Stable emitter-format identity hashed into every generated family identity.
 pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v3";
+
+/// Returns the emitter, release, and protocol prefix that invalidates cached Generations.
+pub(super) fn generation_protocol_identity() -> String {
+    generation_protocol_identity_for(PRIVATE_PROTOCOL)
+}
+
+/// Renders one candidate protocol revision through the production cache-identity format.
+fn generation_protocol_identity_for(protocol: u32) -> String {
+    format!(
+        "{EMITTER_IDENTITY};release={};protocol={protocol}",
+        env!("CARGO_PKG_VERSION")
+    )
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Generator/facade compatibility handshake embedded into structural loaders.
@@ -214,4 +227,22 @@ pub(super) fn capability_plan_from_recipes(
         );
     }
     accepted_capabilities(requested_arbitrary, requested_serde, diagrams, explorer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PRIVATE_PROTOCOL, generation_protocol_identity, generation_protocol_identity_for};
+
+    #[test]
+    fn generated_public_shape_revision_changes_the_generation_cache_identity() {
+        assert_eq!(PRIVATE_PROTOCOL, 6);
+        assert_eq!(
+            generation_protocol_identity(),
+            generation_protocol_identity_for(6)
+        );
+        assert_ne!(
+            generation_protocol_identity(),
+            generation_protocol_identity_for(5)
+        );
+    }
 }

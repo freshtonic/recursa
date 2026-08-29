@@ -19,24 +19,20 @@ fn a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
-        "lexing-ok"
+        "lexing-ok RCA4000 RCA4001 RCA4002 RCA4004"
     );
 }
 
 #[test]
-fn grammar_hooks_cannot_bypass_generated_lexical_validation() {
+fn alternative_lexer_cannot_bypass_generated_lexical_validation() {
     let package = scaffold_fixture();
     let grammar_path = package.path().join("src/grammar.rs");
     let mut grammar = fs::read_to_string(&grammar_path).expect("read copied grammar fixture");
     grammar.push_str(
         r#"
 pub fn attempt_raw_mutation(
-    context: &mut LexContext<'_>,
-    editor: &mut LexEditor<'_>,
     builder: &mut LexBuilder<'_>,
 ) {
-    let _ = context.end;
-    editor.records.clear();
     builder.records.clear();
 }
 "#,
@@ -49,12 +45,10 @@ pub fn attempt_raw_mutation(
         "raw lexical mutation unexpectedly compiled"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    for field in ["end", "records"] {
-        assert!(
-            stderr.contains(&format!("field `{field}`")) && stderr.contains("private"),
-            "missing privacy error for `{field}`\nstderr:\n{stderr}",
-        );
-    }
+    assert!(
+        stderr.contains("field `records`") && stderr.contains("private"),
+        "missing privacy error for `records`\nstderr:\n{stderr}",
+    );
 }
 
 fn scaffold_fixture() -> TempDir {

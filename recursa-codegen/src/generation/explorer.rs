@@ -232,6 +232,8 @@ pub(super) enum ExplorerElementTargetPlan {
 pub(super) enum ExplorerElementSource {
     /// Originates from an authored fixed-token use.
     Fixed(TokenUseId),
+    /// Originates from an erased optional fixed-token group.
+    OptionalFixed(crate::lowering::ElementId),
     /// Originates from an ordinary semantic field.
     Semantic(ResolvedFieldId),
     /// Originates from a Pratt extender's left operand.
@@ -621,34 +623,60 @@ pub(super) fn emitted_explorer_element(element: &ElementParsePlan) -> ExplorerEl
             display: ExplorerDisplayPlan::Fixed(spelling.clone()),
             occurrence: ExplorerOccurrencePlan::Leaf,
         },
-        ElementParseKind::Semantic {
-            explorer_terminal,
-            wrappers,
-            attachment,
-            ..
-        } => ExplorerElementPlan {
+        ElementParseKind::OptionalFixedTokenGroup { .. } => ExplorerElementPlan {
             source: element.explorer_source,
             name: element.metadata_name.clone(),
-            role: ExplorerElementRolePlan::SemanticField,
-            cardinality: explorer_cardinality_plan(wrappers),
-            token_classification: matches!(explorer_terminal, ExplorerTerminalPlan::Content(_))
-                .then_some(ExplorerTokenClassificationPlan::Content),
-            target: Some(match explorer_terminal {
-                ExplorerTerminalPlan::Node(application) => {
-                    ExplorerElementTargetPlan::Node(*application)
-                }
-                ExplorerTerminalPlan::Content(token) => {
-                    ExplorerElementTargetPlan::ContentToken(*token)
-                }
-            }),
+            role: ExplorerElementRolePlan::FixedToken,
+            cardinality: ExplorerCardinalityPlan::Optional,
+            token_classification: Some(ExplorerTokenClassificationPlan::Fixed),
+            target: None,
             token_kind: None,
-            attachment_semantic_child: attachment
-                .as_ref()
-                .map(|attachment| attachment.before.len()),
+            attachment_semantic_child: None,
             display: ExplorerDisplayPlan::None,
-            occurrence: ExplorerOccurrencePlan::Children {
-                wrappers: wrappers.clone(),
-                terminal: *explorer_terminal,
+            occurrence: ExplorerOccurrencePlan::Leaf,
+        },
+        ElementParseKind::Semantic { projection, .. } => match projection.as_ref() {
+            SemanticParseProjection::FixedPresence { .. } => ExplorerElementPlan {
+                source: element.explorer_source,
+                name: element.metadata_name.clone(),
+                role: ExplorerElementRolePlan::SemanticField,
+                cardinality: ExplorerCardinalityPlan::One,
+                token_classification: None,
+                target: None,
+                token_kind: None,
+                attachment_semantic_child: None,
+                display: ExplorerDisplayPlan::None,
+                occurrence: ExplorerOccurrencePlan::Leaf,
+            },
+            SemanticParseProjection::Direct {
+                explorer_terminal,
+                wrappers,
+                attachment,
+                ..
+            } => ExplorerElementPlan {
+                source: element.explorer_source,
+                name: element.metadata_name.clone(),
+                role: ExplorerElementRolePlan::SemanticField,
+                cardinality: explorer_cardinality_plan(wrappers),
+                token_classification: matches!(explorer_terminal, ExplorerTerminalPlan::Content(_))
+                    .then_some(ExplorerTokenClassificationPlan::Content),
+                target: Some(match explorer_terminal {
+                    ExplorerTerminalPlan::Node(application) => {
+                        ExplorerElementTargetPlan::Node(*application)
+                    }
+                    ExplorerTerminalPlan::Content(token) => {
+                        ExplorerElementTargetPlan::ContentToken(*token)
+                    }
+                }),
+                token_kind: None,
+                attachment_semantic_child: attachment
+                    .as_ref()
+                    .map(|attachment| attachment.before.len()),
+                display: ExplorerDisplayPlan::None,
+                occurrence: ExplorerOccurrencePlan::Children {
+                    wrappers: wrappers.clone(),
+                    terminal: *explorer_terminal,
+                },
             },
         },
     }
@@ -841,9 +869,90 @@ pub(super) fn authoritative_explorer_element(
                 occurrence: ExplorerOccurrencePlan::Leaf,
             })
         }
+        MaterializedElement::OptionalFixedTokenGroup {
+            element, tokens, ..
+        } => {
+            let source = lowered.source_modeled.source_model();
+            let name = format!(
+                "optional_{}",
+                tokens
+                    .iter()
+                    .map(|token_use| {
+                        let usage = &source.token_uses[token_use.index()];
+                        snake_case(&source.token_definitions[usage.definition.index()].name)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("_")
+            );
+            Ok(ExplorerElementPlan {
+                source: ExplorerElementSource::OptionalFixed(*element),
+                name,
+                role: ExplorerElementRolePlan::FixedToken,
+                cardinality: ExplorerCardinalityPlan::Optional,
+                token_classification: Some(ExplorerTokenClassificationPlan::Fixed),
+                target: None,
+                token_kind: None,
+                attachment_semantic_child: None,
+                display: ExplorerDisplayPlan::None,
+                occurrence: ExplorerOccurrencePlan::Leaf,
+            })
+        }
         MaterializedElement::SemanticField {
             field,
-            ty,
+            projection: MaterializedSemanticFieldProjection::FixedPresence { .. },
+            ..
+        } => {
+            let resolved_field = node
+                .fields
+                .iter()
+                .find(|candidate| candidate.id == *field)
+                .ok_or_else(|| "an explorer presence occurrence lacks source syntax".to_owned())?;
+            let field_index = variant
+                .map_or_else(
+                    || {
+                        node.fields
+                            .iter()
+                            .position(|candidate| candidate.id == *field)
+                    },
+                    |variant| match &node.body {
+                        ResolvedNodeBody::Enum { variants } => variants
+                            .iter()
+                            .find(|candidate| candidate.id == variant)
+                            .and_then(|variant| {
+                                variant
+                                    .fields
+                                    .iter()
+                                    .position(|candidate| candidate == field)
+                            }),
+                        ResolvedNodeBody::Struct { .. } => None,
+                    },
+                )
+                .ok_or_else(|| "an explorer presence occurrence lacks its field slot".to_owned())?;
+            let field_name = resolved_field
+                .syntax
+                .ident
+                .as_ref()
+                .map(|ident| ident.unraw().to_string())
+                .unwrap_or_else(|| format!("field_{field_index}"));
+            Ok(ExplorerElementPlan {
+                source: ExplorerElementSource::Semantic(*field),
+                name: variant_name.map_or_else(
+                    || field_name.clone(),
+                    |variant| format!("{}_{}", snake_case(variant), field_name),
+                ),
+                role: ExplorerElementRolePlan::SemanticField,
+                cardinality: ExplorerCardinalityPlan::One,
+                token_classification: None,
+                target: None,
+                token_kind: None,
+                attachment_semantic_child: None,
+                display: ExplorerDisplayPlan::None,
+                occurrence: ExplorerOccurrencePlan::Leaf,
+            })
+        }
+        MaterializedElement::SemanticField {
+            field,
+            projection: MaterializedSemanticFieldProjection::Direct { ty, .. },
             attachment,
             ..
         } => {
@@ -1509,7 +1618,9 @@ pub(super) fn explorer_variant_pattern_and_bindings(
                 bindings[element_index] = Some(binding.clone());
                 Some((field, binding))
             }
-            ElementParseKind::Fixed { .. } => None,
+            ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
+                None
+            }
         })
         .collect::<Vec<_>>();
     let variant_ident = &variant.ident;
@@ -1590,6 +1701,7 @@ pub(super) fn render_node_application_explorer(
                 .iter()
                 .map(|element| match &element.kind {
                     ElementParseKind::Fixed { .. } => None,
+                    ElementParseKind::OptionalFixedTokenGroup { .. } => None,
                     ElementParseKind::Semantic { field, .. } => Some(field_access(
                         quote!(&self),
                         field.ident.as_ref(),

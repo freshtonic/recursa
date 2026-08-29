@@ -12,12 +12,22 @@ use syn::visit_mut::VisitMut as _;
 use syn::{DeriveInput, Type, parse_macro_input};
 
 /// Matching-version protocol expected by generated root and Node loaders.
-const PRIVATE_PROTOCOL: u32 = 2;
+const PRIVATE_PROTOCOL: u32 = 6;
 
 /// Marks a source declaration as a grammar Node and loads its generated body.
 ///
+/// Fixed syntax belongs in one `#[tok(...)]` sequence. Inside that sequence,
+/// `optional(TOKENS...)` denotes an erased atomic group: the complete fixed-token sequence is
+/// consumed when present, while an incomplete prefix consumes nothing. A plain `bool` field may
+/// separately use `#[presence(TOKENS...)]` to store whether one non-empty fixed-token sequence
+/// occurred. Its ordinary `#[tok(...)]` attachment remains independent and may place required or
+/// erased-optional syntax around `this`.
+///
 /// The derive deliberately interprets no fields or grammar helper attributes.
-#[proc_macro_derive(Node, attributes(lex, node, tok, sep, parse, pratt, spanned, pretty))]
+#[proc_macro_derive(
+    Node,
+    attributes(lex, node, tok, presence, sep, parse, pratt, spanned, pretty)
+)]
 pub fn node(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let ident = input.ident;
@@ -252,6 +262,20 @@ fn valid_node_file(name: &str) -> bool {
 /// membership in addition to its content kind. Legacy fixed-token names remain valid inside
 /// `admits(...)` while consumers migrate.
 ///
+/// Closed source-backed matchers are declared centrally in `matchers { ... }` and bound by a
+/// same-named content-token field using `#[lex(matcher)]`. The supported constructors are
+/// `same_delimiter(opener = r"...")`, `nested(opener = "...", closer = "...")`,
+/// `next_exclusion(pattern = r"...", excluded = r"...")`,
+/// `operator_run(characters = "...", fences = ["..."], trailing = "...", qualifying = "...")`,
+/// and `physical_line(prefix = r"...")`. `physical_line` includes the first LF, CRLF, or CR
+/// terminator after its prefix, or extends to EOF when no terminator remains. The same vocabulary
+/// is available as named non-emitting rules in `ignore { ... }`.
+///
+/// Each constructor accepts an optional `priority = N`. Selection compares final matched byte
+/// extent, then exact fixed-token status, then explicit priority; declaration order is never a
+/// tie-breaker. Equal unresolved priorities are rejected during source analysis. Unterminated
+/// delimited and nested matches become generated lexical errors spanning their opener through EOF
+/// and expose stable mechanism-specific codes and opener anchors.
 /// The analyzer validates the declaration and owns all generated bindings. This procedural macro
 /// intentionally emits no runtime items itself.
 #[proc_macro]

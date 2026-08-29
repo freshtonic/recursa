@@ -117,7 +117,7 @@ recursa::tokens! {
 
     // Nothing is forward-declared by requirement (see A1). The central
     // block exists for what benefits from centrality — bulk keyword
-    // tables, flags and classes, literals with scan callbacks — not
+    // tables, flags and classes, and named closed matchers — not
     // because declaration must precede use.
     flags { bare_label }
 
@@ -266,7 +266,7 @@ Rules that make this coherent across a large, many-file grammar:
   `#[tok(r"…" admits …)]` at one field is referenced elsewhere by just using
   the type name — definition site and use sites are symmetric, order-free.
 - **The central `tokens!` block is optional**, kept for what genuinely
-  benefits from centrality: `ignore` rules, literals with scan callbacks,
+  benefits from centrality: `ignore` rules, named closed matchers,
   `lexer_tokens`, flags/classes, and bulk keyword tables (pg-sql's ~450
   keywords read better as a table than scattered across 1300 types). Central
   and inline definitions unify into one token model; the same
@@ -313,7 +313,7 @@ emission detail (see the budget note in A4), invisible in the API.
 | `#[parse(prefix, bp = N)]` | Pratt variant | Prefix operator; operand field `Box<Self>`. |
 | `#[parse(infix, lbp = N, rbp = M)]` | Pratt variant | Infix; `rbp = lbp + 1` for left-assoc. Operand fields `(Box<Self>, Box<Self>)`. |
 | `#[parse(postfix, bp = N)]` | Pratt variant | Postfix. |
-| `#[parse(postcondition = path)]` | type | Post-parse predicate hook (carried over from current recursa). **Audit before the port**: kind-sets/targets (A3) absorbed much of its historical purpose — drop it (C6) unless pg-sql demonstrably still needs it. |
+| `#[parse(postcondition = path)]` | type | Unsupported legacy syntax; express token eligibility with a named admission set. |
 | `#[parse(skip)]` | type | Item is not a grammar type (helper struct, hand-owned parsing). Diagrams optional via `#[parse(skip, diagram)]`. |
 | `#[parse(lookahead = k)]` | enum | Raises dispatch lookahead for this type (grammar-wide max in the root configuration). |
 
@@ -488,26 +488,17 @@ What the M4 emitter generates per entry — note that under C4 the `keywords` an
   span (tokens stay payload-free; text is a slice of the source), plus the
   token's railroad diagram derived from its lexer pattern.
 - `targets`: a real named struct per target (see A3).
-- `lexer_tokens`: `TokenKind` variant + logos rule only — for tokens whose
-  *lexing* needs custom code but which surface through targets or
-  hand-owned types (block comments, custom operators).
+- `matchers` / matcher-form `ignore`: generated closed scanners for delimited,
+  nested, boundary-sensitive, operator-run, and physical-line input.
 - The flat `#[derive(Logos)] enum TokenKind`, `pub fn lex(&str) ->
   LexResult`, and the static `GrammarInfo` tables (kind names, display
   atoms) that error rendering consumes — all inside the module. No rules
   type or `Grammar` impl exists (A1, "No rules type").
 
-Retained lexer escape hatches, all declared in the DSL so they are part of
-the grammar description:
-
-- **Callbacks** — `DollarStringLit => r"\$…" with self::scan_dollar_string`
-  attaches a scan function for non-regular tokens (dollar-quoted strings,
-  nested block comments). See A5 for what type these functions are written
-  against.
-- **Post-lex pass** — current pg-sql wraps generated `lex()` in a
-  hand-written `pg_lex()` to patch two longest-match ambiguities. That
-  wrapper becomes a declared hook, `post_lex = self::fix_pseudo_vars,`, so
-  the generated `lex()` is the real, complete entry point and the surgery is
-  visible in the grammar definition.
+The lexical vocabulary is closed. Dollar strings, nested block comments,
+word-boundary exclusion, PostgreSQL operator runs, and physical psql lines
+are declarative matcher families. Authored callbacks and post-lex record
+mutation are rejected during source analysis.
 
 ### Automatic keyword/identifier lexing merge
 
@@ -756,7 +747,7 @@ per-pull-request test.
 
 ## A5 — Lexer visibility
 
-**Logos is an implementation detail with two acknowledged, fenced leaks.**
+**The lexer backend is an implementation detail with no authored-code leak.**
 
 Encapsulated surface (the 99% path): a grammar author writes the `tokens!`
 DSL and consumes `sql::lex(src) -> LexResult`, `TokenKind`, and the
@@ -767,26 +758,10 @@ u32 }`, `Input::new(src, &lexed)`), so the runtime/parse layer is
 lexer-agnostic — a hand-rolled or alternative lexer can produce a
 `LexResult` directly.
 
-The leaks, made deliberate:
-
-1. **Scan callbacks** (`with self::scan_dollar_string`) are functions over
-   the lexer state, and logos calls them with `&mut logos::Lexer<'_,
-   TokenKind>` — that signature cannot be newtyped away without a shim per
-   token. Instead recursa re-exports the needed types under its own path:
-   `recursa::lex::{RawLexer, Skip, Filter, …}` (type aliases / re-exports of
-   the logos items). Callback authors write against `recursa::lex`, version
-   alignment is guaranteed by the re-export, and no grammar crate depends on
-   logos directly. This is "encapsulated modulo type identity": swapping the
-   lexer backend would break callback bodies, and that is accepted —
-   callbacks are the advanced API, used exactly where the token language
-   stops being regular.
-2. **`post_lex` hooks** operate on `&mut LexResult` — recursa's own type, so
-   this one is fully within the abstraction.
-
-Policy: recursa may pin and re-export logos major versions as part of its
-own semver contract. The README's claim of full encapsulation should say
-exactly this — encapsulated for DSL users, `recursa::lex` for callback
-authors, never `logos::` in user code.
+Grammar authors use the closed matcher vocabulary. Alternative lexer
+implementations enter through `LexBuilder`, supplying only grammar-local
+kinds and checked source spans; they cannot invoke grammar-authored scanning
+or record-rewrite code.
 
 ## A6 — Spans
 
@@ -1403,7 +1378,8 @@ Not a migration plan — just the impact assessment for the biggest user:
 - The mechanical restructure: move `ast/**` + `tokens.rs` under one selected
   grammar root, add `Node` membership to grammar types, and delete the 1267
   per-item attribute stacks, `rules = SqlRules` args, `src/generated/`, the
-  `__firstset` prelude, the xtask targets, and `pg_lex` (→ `post_lex` hook).
+  `__firstset` prelude, the xtask targets, and `pg_lex` (replaced by closed
+  matchers and admissions).
 - The C4 rewrite is the large, grammar-wide edit: every keyword/punctuation
   field (`pub r#as: AS`, `pub lparen: punct::LParen`, `Surrounded<…>`
   spellings) becomes a `#[tok]`/`#[kwd]`/`#[sep]`/`#[surrounded]` attribute
