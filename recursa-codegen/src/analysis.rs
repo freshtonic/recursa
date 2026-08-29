@@ -9,10 +9,13 @@
 
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 
 use crate::ir::{ContainerCardinality, ContainerSemantics};
-use crate::text_partition::{TextPartition, partition_by_residual};
+use crate::text_partition::{
+    TextPartition, overlay_by_kind_residual, partition_by_kind_residual, partition_by_kind_summary,
+};
 use crate::{
     AtomExpression, AtomId, ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic,
     DiagnosticCode, GrammarDescription, KindId, KindSet, Location, PrattPosition, ProofArena,
@@ -1253,16 +1256,15 @@ fn populate_first_sequences(
     semantic: &mut [FirstFacts],
 ) {
     let mut language = FirstLanguageArena::new(grammar, atom_kinds);
-    let roots = (0..grammar.types.len())
-        .map(|index| {
-            language.build(
-                grammar.max_lookahead,
-                vec![DecisionState(vec![DecisionItem::Type(TypeId::new(
-                    index.try_into().expect("validated type width"),
-                ))])],
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut roots = Vec::with_capacity(grammar.types.len());
+    for index in 0..grammar.types.len() {
+        roots.push(language.build(
+            grammar.max_lookahead,
+            vec![DecisionState(vec![DecisionItem::Type(TypeId::new(
+                index.try_into().expect("validated type width"),
+            ))])],
+        ));
+    }
     for (facts, root) in semantic.iter_mut().zip(roots) {
         facts.sequences = language.materialize(root);
     }
@@ -1279,14 +1281,192 @@ impl FirstLanguageNodeId {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// Dense identity of one canonical semantic decision state.
+struct FirstLanguageDecisionStateId(u32);
+
+impl FirstLanguageDecisionStateId {
+    /// Returns the arena index for this decision state.
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// Dense identity of one canonical consuming token position.
+struct FirstLanguagePositionId(u32);
+
+impl FirstLanguagePositionId {
+    /// Returns the arena index for this token position.
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+/// Hash-cons key for one grammar-local consuming token position.
+struct FirstLanguagePositionKey {
+    /// Canonical packed token-kind membership.
+    kinds: Vec<u64>,
+    /// Optional exact-text refinement authored for the position.
+    text_predicate: Option<TextPredicateId>,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Memoization key for one bounded residual subset.
 struct FirstLanguageStateKey {
     /// Remaining token positions available in the bounded prefix.
     remaining: usize,
-    /// Canonical grammar residuals whose languages are unioned at this node.
-    residuals: Vec<DecisionState>,
+    /// Canonical residual precision required at this depth.
+    residuals: FirstLanguageStateResiduals,
 }
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Canonical residual identity at full or final-position precision.
+enum FirstLanguageStateResiduals {
+    /// Full semantic states required above the recursively projected tail.
+    Full(Vec<FirstLanguageDecisionStateId>),
+    /// Recursively projected bounded languages sufficient above the specialized tail.
+    Projected(Vec<FirstLanguageProjectedComponentId>),
+    /// Two-position projected languages sufficient when two positions remain.
+    DepthTwo(Vec<FirstLanguageDepthTwoFrontierId>),
+    /// Projected frontier languages sufficient at the final bounded position.
+    Cutoff(Vec<FirstLanguageCutoffFrontierId>),
+}
+
+impl FirstLanguageStateResiduals {
+    #[cfg(test)]
+    /// Counts compact residual identities retained by this state key.
+    fn len(&self) -> usize {
+        match self {
+            Self::Full(residuals) => residuals.len(),
+            Self::Projected(components) => components.len(),
+            Self::DepthTwo(frontiers) => frontiers.len(),
+            Self::Cutoff(frontiers) => frontiers.len(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One consuming transition whose semantic residual is already interned.
+struct FirstLanguageTransition {
+    /// Interned token position consumed by this transition.
+    position: FirstLanguagePositionId,
+    /// Canonical successor decision-state identity.
+    next: FirstLanguageDecisionStateId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One normalized consuming frontier cached by interned decision-state identity.
+struct FirstLanguageFrontier {
+    /// Whether the decision state can terminate without consuming another token.
+    can_end: bool,
+    /// Canonical consuming transitions whose successor states are already interned.
+    transitions: Vec<FirstLanguageTransition>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// One cutoff transition projected to the only observable successor facts.
+struct FirstLanguageCutoffTransition {
+    /// Interned token position consumed by this transition.
+    position: FirstLanguagePositionId,
+    /// Exact-end and continuation facts after the position is consumed.
+    summary: u8,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// One frontier projected at the final bounded lookahead position.
+struct FirstLanguageCutoffFrontier {
+    /// Whether the decision state can terminate without consuming another token.
+    can_end: bool,
+    /// Canonical consuming transitions with factored successor summaries.
+    transitions: Vec<FirstLanguageCutoffTransition>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// Dense identity of one canonical projected cutoff frontier.
+struct FirstLanguageCutoffFrontierId(u32);
+
+impl FirstLanguageCutoffFrontierId {
+    /// Returns the arena index for this projected frontier.
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// One two-position transition projected to its canonical cutoff suffix language.
+struct FirstLanguageDepthTwoTransition {
+    /// Interned token position consumed by this transition.
+    position: FirstLanguagePositionId,
+    /// Canonical one-position language after this position is consumed.
+    next: FirstLanguageCutoffFrontierId,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// One frontier projected to exactly two observable token positions.
+struct FirstLanguageDepthTwoFrontier {
+    /// Whether the decision state can terminate without consuming another token.
+    can_end: bool,
+    /// Canonical transitions with projected one-position suffixes.
+    transitions: Vec<FirstLanguageDepthTwoTransition>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// Dense identity of one canonical projected two-position frontier.
+struct FirstLanguageDepthTwoFrontierId(u32);
+
+impl FirstLanguageDepthTwoFrontierId {
+    /// Returns the arena index for this projected frontier.
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// One recursive bounded-language transition projected to its canonical suffix component.
+struct FirstLanguageProjectedTransition {
+    /// Interned token position consumed by this transition.
+    position: FirstLanguagePositionId,
+    /// Canonical bounded suffix component after this position is consumed.
+    next: FirstLanguageProjectedComponentId,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// One exact bounded-language component projected from a single decision state.
+struct FirstLanguageProjectedComponent {
+    /// Whether the component can end exactly at this prefix.
+    exact_end: bool,
+    /// Whether the component can continue beyond the bounded prefix.
+    cutoff: bool,
+    /// Canonical consuming transitions to shorter projected components.
+    transitions: Vec<FirstLanguageProjectedTransition>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// Dense identity of one canonical recursively projected bounded-language component.
+struct FirstLanguageProjectedComponentId(u32);
+
+impl FirstLanguageProjectedComponentId {
+    /// Returns the arena index for this projected component.
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One existing frontier cache entry at either its projected or full precision.
+enum FirstLanguageCachedFrontier {
+    /// Cutoff-only projection that retains no successor decision states.
+    Cutoff(FirstLanguageCutoffFrontierId),
+    /// Full within-bound frontier with semantic successor identities.
+    Full(FirstLanguageFrontier),
+}
+
+/// Bit recording that a bounded FIRST residual can end at the cutoff.
+const FIRST_LANGUAGE_CUTOFF_END: u8 = 1;
+/// Bit recording that a bounded FIRST residual can consume beyond the cutoff.
+const FIRST_LANGUAGE_CUTOFF_CONTINUES: u8 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One deterministic edge in the bounded symbolic FIRST language.
@@ -1366,12 +1546,45 @@ struct FirstLanguageArena<'a> {
     grammar: &'a GrammarDescription,
     /// Expanded token kinds indexed by atom identity.
     atom_kinds: &'a [KindSet],
+    /// Fixed-point end/continuation facts used only at the bounded cutoff.
+    decision_summary_facts: DecisionSummaryFacts,
+    /// Canonical semantic decision states indexed by dense identity.
+    decision_states: Vec<DecisionState>,
+    /// Dense identities interned by semantic decision-state value.
+    decision_state_ids: HashMap<DecisionState, FirstLanguageDecisionStateId>,
+    /// Canonical consuming token positions indexed by dense identity.
+    positions: Vec<FirstPosition>,
+    /// Dense position identities interned by grammar-local semantic value.
+    position_ids: HashMap<FirstLanguagePositionKey, FirstLanguagePositionId>,
+    /// Normalized consuming frontiers indexed by interned decision-state identity.
+    decision_frontiers: Vec<Option<FirstLanguageCachedFrontier>>,
+    /// Canonical projected cutoff frontiers indexed by dense identity.
+    cutoff_frontiers: Vec<FirstLanguageCutoffFrontier>,
+    /// Dense identity candidates indexed by compact semantic frontier hash.
+    cutoff_frontier_ids: HashMap<u64, Vec<FirstLanguageCutoffFrontierId>>,
+    /// Canonical projected two-position frontiers indexed by dense identity.
+    depth_two_frontiers: Vec<FirstLanguageDepthTwoFrontier>,
+    /// Dense two-position identities indexed by compact semantic frontier hash.
+    depth_two_frontier_ids: HashMap<u64, Vec<FirstLanguageDepthTwoFrontierId>>,
+    /// Two-position projection memoized by semantic decision-state identity.
+    depth_two_by_decision: Vec<Option<FirstLanguageDepthTwoFrontierId>>,
+    /// Canonical recursively projected bounded-language components.
+    projected_components: Vec<FirstLanguageProjectedComponent>,
+    /// Dense projected component identities indexed by compact semantic hash.
+    projected_component_ids: HashMap<u64, Vec<FirstLanguageProjectedComponentId>>,
+    /// Bounded component projection memoized by depth and decision-state identity.
+    projected_by_decision:
+        HashMap<(usize, FirstLanguageDecisionStateId), FirstLanguageProjectedComponentId>,
     /// Canonical completed nodes indexed by dense identity.
     nodes: Vec<FirstLanguageNode>,
     /// Residual subset memoization keyed by remaining lookahead.
     states: BTreeMap<FirstLanguageStateKey, FirstLanguageNodeId>,
+    /// Exact-end and continuation summaries indexed by decision-state identity.
+    cutoff_summaries: Vec<Option<u8>>,
     /// Structural node interner that merges semantically identical suffixes.
     interned: BTreeMap<FirstLanguageNodeKey, FirstLanguageNodeId>,
+    /// Exact commutative unions of deterministic language nodes.
+    unioned: BTreeMap<(FirstLanguageNodeId, FirstLanguageNodeId), FirstLanguageNodeId>,
     /// Lazily projected public sequences indexed by canonical node.
     materialized: Vec<Option<Vec<FirstSequence>>>,
 }
@@ -1382,46 +1595,135 @@ impl<'a> FirstLanguageArena<'a> {
         Self {
             grammar,
             atom_kinds,
+            decision_summary_facts: DecisionSummaryFacts::from_grammar(grammar),
+            decision_states: Vec::new(),
+            decision_state_ids: HashMap::new(),
+            positions: Vec::new(),
+            position_ids: HashMap::new(),
+            decision_frontiers: Vec::new(),
+            cutoff_frontiers: Vec::new(),
+            cutoff_frontier_ids: HashMap::new(),
+            depth_two_frontiers: Vec::new(),
+            depth_two_frontier_ids: HashMap::new(),
+            depth_two_by_decision: Vec::new(),
+            projected_components: Vec::new(),
+            projected_component_ids: HashMap::new(),
+            projected_by_decision: HashMap::new(),
             nodes: Vec::new(),
             states: BTreeMap::new(),
+            cutoff_summaries: Vec::new(),
             interned: BTreeMap::new(),
+            unioned: BTreeMap::new(),
             materialized: Vec::new(),
         }
     }
 
+    #[cfg(test)]
+    /// Counts distinct semantic positions retained by cached decision frontiers.
+    fn cached_frontier_position_count(&self) -> usize {
+        self.positions.len()
+    }
+
+    #[cfg(test)]
+    /// Counts token-kind words retained directly by cached decision frontier positions.
+    fn cached_frontier_kind_words(&self) -> usize {
+        self.positions
+            .iter()
+            .map(|position| position.kinds.words().len())
+            .sum()
+    }
+
+    #[cfg(test)]
+    /// Counts compact consuming arcs retained by cached decision frontiers.
+    fn cached_frontier_arc_count(&self) -> usize {
+        self.decision_frontiers
+            .iter()
+            .flatten()
+            .filter_map(|frontier| match frontier {
+                FirstLanguageCachedFrontier::Cutoff(_) => None,
+                FirstLanguageCachedFrontier::Full(frontier) => Some(frontier.transitions.len()),
+            })
+            .sum::<usize>()
+            + self
+                .cutoff_frontiers
+                .iter()
+                .map(|frontier| frontier.transitions.len())
+                .sum::<usize>()
+    }
+
+    #[cfg(test)]
+    /// Counts owned projected transition copies retained by the frontier store and its index.
+    fn retained_cutoff_frontier_component_copies(&self) -> usize {
+        self.cutoff_frontiers
+            .iter()
+            .map(|frontier| frontier.transitions.len())
+            .sum::<usize>()
+    }
+
     /// Builds or reuses the canonical node for one residual subset and depth.
-    fn build(
+    fn build(&mut self, remaining: usize, residuals: Vec<DecisionState>) -> FirstLanguageNodeId {
+        let residuals = residuals
+            .into_iter()
+            .map(|residual| self.intern_decision_state(residual))
+            .collect();
+        self.build_interned(remaining, residuals)
+    }
+
+    /// Builds or reuses one node from already-interned residual identities.
+    fn build_interned(
         &mut self,
         remaining: usize,
-        mut residuals: Vec<DecisionState>,
+        mut residuals: Vec<FirstLanguageDecisionStateId>,
     ) -> FirstLanguageNodeId {
         residuals.sort();
         residuals.dedup();
+        if remaining == 0 {
+            return self.build_cutoff(&residuals);
+        }
+        if remaining == 1 {
+            let mut frontiers = residuals
+                .into_iter()
+                .map(|residual| self.projected_decision_frontier(residual))
+                .collect::<Vec<_>>();
+            frontiers.sort();
+            frontiers.dedup();
+            return self.build_cutoff_state(frontiers);
+        }
+        if remaining == 2 {
+            let mut frontiers = residuals
+                .into_iter()
+                .map(|residual| self.projected_depth_two_frontier(residual))
+                .collect::<Vec<_>>();
+            frontiers.sort();
+            frontiers.dedup();
+            return self.build_depth_two_state(frontiers);
+        }
+        if remaining <= 4 {
+            let mut components = residuals
+                .into_iter()
+                .map(|residual| self.projected_component(remaining, residual))
+                .collect::<Vec<_>>();
+            components.sort();
+            components.dedup();
+            return self.build_projected_state(remaining, components);
+        }
         let key = FirstLanguageStateKey {
             remaining,
-            residuals,
+            residuals: FirstLanguageStateResiduals::Full(residuals),
         };
         if let Some(node) = self.states.get(&key) {
             return *node;
         }
-        #[cfg(test)]
-        FIRST_LANGUAGE_STATE_COUNT.set(FIRST_LANGUAGE_STATE_COUNT.get().saturating_add(1));
-
-        let (exact_end, transitions) = self.frontier(&key.residuals);
-        let node = if remaining == 0 {
-            FirstLanguageNode {
-                exact_end,
-                cutoff: !transitions.is_empty(),
-                cells: Vec::new(),
-                covers: Vec::new(),
-            }
-        } else {
-            FirstLanguageNode {
-                exact_end,
-                cutoff: false,
-                cells: self.build_cells(&transitions, remaining - 1),
-                covers: self.build_covers(&transitions, remaining - 1),
-            }
+        self.record_state_build(remaining);
+        let FirstLanguageStateResiduals::Full(residuals) = &key.residuals else {
+            unreachable!("outer bounded state retains full residual precision")
+        };
+        let (exact_end, transitions) = self.frontier(residuals);
+        let node = FirstLanguageNode {
+            exact_end,
+            cutoff: false,
+            cells: self.build_cells(&transitions, remaining - 1),
+            covers: self.build_covers(&transitions, remaining - 1),
         };
         debug_assert!(first_language_cells_are_disjoint(&node.cells, self.grammar));
         let node_id = self.intern_node(node);
@@ -1429,18 +1731,671 @@ impl<'a> FirstLanguageArena<'a> {
         node_id
     }
 
+    /// Builds or reuses one recursive state from canonical projected components.
+    fn build_projected_state(
+        &mut self,
+        remaining: usize,
+        mut components: Vec<FirstLanguageProjectedComponentId>,
+    ) -> FirstLanguageNodeId {
+        components.sort();
+        components.dedup();
+        if remaining == 0 {
+            let mut exact_end = false;
+            let mut cutoff = false;
+            for component in components {
+                let component = &self.projected_components[component.index()];
+                exact_end |= component.exact_end;
+                cutoff |= component.cutoff;
+                debug_assert!(component.transitions.is_empty());
+            }
+            return self.intern_node(FirstLanguageNode {
+                exact_end,
+                cutoff,
+                cells: Vec::new(),
+                covers: Vec::new(),
+            });
+        }
+        let key = FirstLanguageStateKey {
+            remaining,
+            residuals: FirstLanguageStateResiduals::Projected(components),
+        };
+        if let Some(node) = self.states.get(&key) {
+            return *node;
+        }
+        self.record_state_build(remaining);
+        let FirstLanguageStateResiduals::Projected(components) = &key.residuals else {
+            unreachable!("recursive bounded state retains projected components")
+        };
+        if components.len() > 1 {
+            let components = components.clone();
+            let mut level = components
+                .iter()
+                .copied()
+                .map(|component| self.build_projected_state(remaining, vec![component]))
+                .collect::<Vec<_>>();
+            while level.len() > 1 {
+                let mut next = Vec::with_capacity(level.len().div_ceil(2));
+                for pair in level.chunks(2) {
+                    next.push(if let [left, right] = pair {
+                        self.union_nodes(*left, *right)
+                    } else {
+                        pair[0]
+                    });
+                }
+                level = next;
+            }
+            let node = level[0];
+            self.states.insert(key, node);
+            return node;
+        }
+        let FirstLanguageStateResiduals::Projected(components) = &key.residuals else {
+            unreachable!("recursive bounded state retains projected components")
+        };
+        let mut exact_end = false;
+        let mut transitions = Vec::new();
+        for component in components {
+            let component = &self.projected_components[component.index()];
+            exact_end |= component.exact_end;
+            debug_assert!(!component.cutoff);
+            transitions.extend_from_slice(&component.transitions);
+        }
+        self.sort_dedup_projected_transitions(&mut transitions);
+        let node = FirstLanguageNode {
+            exact_end,
+            cutoff: false,
+            cells: self.build_projected_cells(&transitions, remaining - 1),
+            covers: self.build_projected_covers(&transitions, remaining - 1),
+        };
+        debug_assert!(first_language_cells_are_disjoint(&node.cells, self.grammar));
+        let node_id = self.intern_node(node);
+        self.states.insert(key, node_id);
+        node_id
+    }
+
+    /// Builds or reuses a two-position node from canonical projected frontiers.
+    fn build_depth_two_state(
+        &mut self,
+        frontiers: Vec<FirstLanguageDepthTwoFrontierId>,
+    ) -> FirstLanguageNodeId {
+        let key = FirstLanguageStateKey {
+            remaining: 2,
+            residuals: FirstLanguageStateResiduals::DepthTwo(frontiers),
+        };
+        if let Some(node) = self.states.get(&key) {
+            return *node;
+        }
+        self.record_state_build(2);
+
+        let FirstLanguageStateResiduals::DepthTwo(frontiers) = &key.residuals else {
+            unreachable!("two-position state retains projected frontier precision")
+        };
+        let (exact_end, transitions) = self.depth_two_frontier(frontiers);
+        let node = FirstLanguageNode {
+            exact_end,
+            cutoff: false,
+            cells: self.build_depth_two_cells(&transitions),
+            covers: self.build_depth_two_covers(&transitions),
+        };
+        debug_assert!(first_language_cells_are_disjoint(&node.cells, self.grammar));
+        let node_id = self.intern_node(node);
+        self.states.insert(key, node_id);
+        node_id
+    }
+
+    /// Builds or reuses a final-position node from canonical projected frontiers.
+    fn build_cutoff_state(
+        &mut self,
+        frontiers: Vec<FirstLanguageCutoffFrontierId>,
+    ) -> FirstLanguageNodeId {
+        let key = FirstLanguageStateKey {
+            remaining: 1,
+            residuals: FirstLanguageStateResiduals::Cutoff(frontiers),
+        };
+        if let Some(node) = self.states.get(&key) {
+            return *node;
+        }
+        self.record_state_build(1);
+
+        let FirstLanguageStateResiduals::Cutoff(frontiers) = &key.residuals else {
+            unreachable!("final-position state retains projected frontier precision")
+        };
+        let (exact_end, transitions) = self.cutoff_frontier(frontiers);
+        let node = FirstLanguageNode {
+            exact_end,
+            cutoff: false,
+            cells: self.build_cutoff_cells(&transitions),
+            covers: self.build_cutoff_covers(&transitions),
+        };
+        debug_assert!(first_language_cells_are_disjoint(&node.cells, self.grammar));
+        let node_id = self.intern_node(node);
+        self.states.insert(key, node_id);
+        node_id
+    }
+
+    /// Records one unique bounded-state construction for structural tests.
+    fn record_state_build(&mut self, _remaining: usize) {
+        #[cfg(test)]
+        FIRST_LANGUAGE_STATE_COUNT.set(FIRST_LANGUAGE_STATE_COUNT.get().saturating_add(1));
+    }
+
+    /// Interns one semantic decision state and returns its dense arena identity.
+    fn intern_decision_state(&mut self, state: DecisionState) -> FirstLanguageDecisionStateId {
+        if let Some(id) = self.decision_state_ids.get(&state) {
+            return *id;
+        }
+        let id = FirstLanguageDecisionStateId(
+            self.decision_states
+                .len()
+                .try_into()
+                .expect("bounded FIRST decision-state identity overflow"),
+        );
+        self.decision_states.push(state.clone());
+        self.decision_frontiers.push(None);
+        self.depth_two_by_decision.push(None);
+        self.cutoff_summaries.push(None);
+        self.decision_state_ids.insert(state, id);
+        id
+    }
+
+    /// Interns one consuming position and returns its compact arena identity.
+    fn intern_position(&mut self, position: FirstPosition) -> FirstLanguagePositionId {
+        let key = FirstLanguagePositionKey {
+            kinds: position.kinds.words().to_vec(),
+            text_predicate: position.text_predicate,
+        };
+        if let Some(id) = self.position_ids.get(&key) {
+            return *id;
+        }
+        let id = FirstLanguagePositionId(
+            self.positions
+                .len()
+                .try_into()
+                .expect("bounded FIRST position identity overflow"),
+        );
+        self.positions.push(position);
+        self.position_ids.insert(key, id);
+        id
+    }
+
+    /// Interns one complete projected cutoff frontier by semantic value.
+    fn intern_cutoff_frontier(
+        &mut self,
+        frontier: FirstLanguageCutoffFrontier,
+    ) -> FirstLanguageCutoffFrontierId {
+        let mut hasher = DefaultHasher::new();
+        frontier.hash(&mut hasher);
+        let hash = hasher.finish();
+        if let Some(id) = self.cutoff_frontier_ids.get(&hash).and_then(|candidates| {
+            candidates
+                .iter()
+                .copied()
+                .find(|candidate| self.cutoff_frontiers[candidate.index()] == frontier)
+        }) {
+            return id;
+        }
+        let id = FirstLanguageCutoffFrontierId(
+            self.cutoff_frontiers
+                .len()
+                .try_into()
+                .expect("bounded FIRST cutoff-frontier identity overflow"),
+        );
+        self.cutoff_frontiers.push(frontier);
+        self.cutoff_frontier_ids.entry(hash).or_default().push(id);
+        id
+    }
+
+    /// Interns one complete projected two-position frontier by semantic value.
+    fn intern_depth_two_frontier(
+        &mut self,
+        frontier: FirstLanguageDepthTwoFrontier,
+    ) -> FirstLanguageDepthTwoFrontierId {
+        let mut hasher = DefaultHasher::new();
+        frontier.hash(&mut hasher);
+        let hash = hasher.finish();
+        if let Some(id) = self
+            .depth_two_frontier_ids
+            .get(&hash)
+            .and_then(|candidates| {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|candidate| self.depth_two_frontiers[candidate.index()] == frontier)
+            })
+        {
+            return id;
+        }
+        let id = FirstLanguageDepthTwoFrontierId(
+            self.depth_two_frontiers
+                .len()
+                .try_into()
+                .expect("bounded FIRST depth-two frontier identity overflow"),
+        );
+        self.depth_two_frontiers.push(frontier);
+        self.depth_two_frontier_ids
+            .entry(hash)
+            .or_default()
+            .push(id);
+        id
+    }
+
+    /// Interns one recursively projected bounded-language component by semantic value.
+    fn intern_projected_component(
+        &mut self,
+        component: FirstLanguageProjectedComponent,
+    ) -> FirstLanguageProjectedComponentId {
+        let mut hasher = DefaultHasher::new();
+        component.hash(&mut hasher);
+        let hash = hasher.finish();
+        if let Some(id) = self
+            .projected_component_ids
+            .get(&hash)
+            .and_then(|candidates| {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|candidate| self.projected_components[candidate.index()] == component)
+            })
+        {
+            return id;
+        }
+        let id = FirstLanguageProjectedComponentId(
+            self.projected_components
+                .len()
+                .try_into()
+                .expect("bounded FIRST projected-component identity overflow"),
+        );
+        self.projected_components.push(component);
+        self.projected_component_ids
+            .entry(hash)
+            .or_default()
+            .push(id);
+        id
+    }
+
+    /// Collapses cutoff subsets through cached individual end/continuation summaries.
+    fn build_cutoff(&mut self, residuals: &[FirstLanguageDecisionStateId]) -> FirstLanguageNodeId {
+        let mut summary = 0_u8;
+        for residual in residuals {
+            #[cfg(test)]
+            FIRST_LANGUAGE_CUTOFF_RESIDUAL_VISITS.set(
+                FIRST_LANGUAGE_CUTOFF_RESIDUAL_VISITS
+                    .get()
+                    .saturating_add(1),
+            );
+            summary |= self.cutoff_summary(*residual);
+        }
+        self.intern_cutoff_node(summary)
+    }
+
+    /// Computes or reuses the two-bit cutoff summary for one interned residual.
+    fn cutoff_summary(&mut self, residual: FirstLanguageDecisionStateId) -> u8 {
+        if let Some(summary) = self.cutoff_summaries[residual.index()] {
+            return summary;
+        }
+        let summary = if let Some(frontier) = &self.decision_frontiers[residual.index()] {
+            let (can_end, continues) = match frontier {
+                FirstLanguageCachedFrontier::Cutoff(frontier) => {
+                    let frontier = &self.cutoff_frontiers[frontier.index()];
+                    (frontier.can_end, !frontier.transitions.is_empty())
+                }
+                FirstLanguageCachedFrontier::Full(frontier) => {
+                    (frontier.can_end, !frontier.transitions.is_empty())
+                }
+            };
+            (u8::from(can_end) * FIRST_LANGUAGE_CUTOFF_END)
+                | (u8::from(continues) * FIRST_LANGUAGE_CUTOFF_CONTINUES)
+        } else {
+            #[cfg(test)]
+            {
+                FIRST_LANGUAGE_FRONTIER_EXPANSIONS
+                    .set(FIRST_LANGUAGE_FRONTIER_EXPANSIONS.get().saturating_add(1));
+                FIRST_LANGUAGE_CUTOFF_SUMMARY_COMPUTATIONS.set(
+                    FIRST_LANGUAGE_CUTOFF_SUMMARY_COMPUTATIONS
+                        .get()
+                        .saturating_add(1),
+                );
+            }
+            decision_cutoff_summary(
+                &self.decision_states[residual.index()],
+                &self.decision_summary_facts,
+            )
+        };
+        self.cutoff_summaries[residual.index()] = Some(summary);
+        summary
+    }
+
+    /// Derives and interns one reachable decision state's normalized frontier once.
+    fn ensure_decision_frontier(&mut self, residual: FirstLanguageDecisionStateId) {
+        if matches!(
+            self.decision_frontiers[residual.index()],
+            Some(FirstLanguageCachedFrontier::Full(_))
+        ) {
+            return;
+        }
+        #[cfg(test)]
+        FIRST_LANGUAGE_FRONTIER_EXPANSIONS
+            .set(FIRST_LANGUAGE_FRONTIER_EXPANSIONS.get().saturating_add(1));
+        #[cfg(test)]
+        FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.set(
+            FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS
+                .get()
+                .saturating_add(1),
+        );
+        let frontier = decision_frontier(
+            &self.decision_states[residual.index()],
+            self.grammar,
+            self.atom_kinds,
+        );
+        let can_end = frontier.can_end;
+        let mut transitions = Vec::with_capacity(frontier.transitions.len());
+        for transition in frontier.transitions {
+            let next = self.intern_decision_state(transition.next);
+            let position = self.intern_position(transition.position);
+            transitions.push(FirstLanguageTransition { position, next });
+        }
+        self.decision_frontiers[residual.index()] =
+            Some(FirstLanguageCachedFrontier::Full(FirstLanguageFrontier {
+                can_end,
+                transitions,
+            }));
+    }
+
+    /// Projects or derives one decision frontier at cutoff precision without interning successors.
+    fn projected_decision_frontier(
+        &mut self,
+        residual: FirstLanguageDecisionStateId,
+    ) -> FirstLanguageCutoffFrontierId {
+        match self.decision_frontiers[residual.index()].clone() {
+            Some(FirstLanguageCachedFrontier::Cutoff(frontier)) => return frontier,
+            Some(FirstLanguageCachedFrontier::Full(frontier)) => {
+                let transitions = self.project_full_cutoff_transitions(&frontier.transitions);
+                return self.intern_cutoff_frontier(FirstLanguageCutoffFrontier {
+                    can_end: frontier.can_end,
+                    transitions,
+                });
+            }
+            None => {}
+        }
+
+        #[cfg(test)]
+        FIRST_LANGUAGE_FRONTIER_EXPANSIONS
+            .set(FIRST_LANGUAGE_FRONTIER_EXPANSIONS.get().saturating_add(1));
+        let frontier = decision_frontier(
+            &self.decision_states[residual.index()],
+            self.grammar,
+            self.atom_kinds,
+        );
+        let mut transitions = Vec::with_capacity(frontier.transitions.len());
+        for transition in frontier.transitions {
+            #[cfg(test)]
+            FIRST_LANGUAGE_CUTOFF_SUMMARY_READS
+                .set(FIRST_LANGUAGE_CUTOFF_SUMMARY_READS.get().saturating_add(1));
+            let summary = decision_cutoff_summary(&transition.next, &self.decision_summary_facts);
+            let position = self.intern_position(transition.position);
+            transitions.push(FirstLanguageCutoffTransition { position, summary });
+        }
+        self.sort_dedup_cutoff_transitions(&mut transitions);
+        let frontier = FirstLanguageCutoffFrontier {
+            can_end: frontier.can_end,
+            transitions,
+        };
+        let frontier = self.intern_cutoff_frontier(frontier);
+        self.decision_frontiers[residual.index()] =
+            Some(FirstLanguageCachedFrontier::Cutoff(frontier));
+        frontier
+    }
+
+    /// Projects one decision state to its exact two-position bounded frontier.
+    fn projected_depth_two_frontier(
+        &mut self,
+        residual: FirstLanguageDecisionStateId,
+    ) -> FirstLanguageDepthTwoFrontierId {
+        if let Some(frontier) = self.depth_two_by_decision[residual.index()] {
+            return frontier;
+        }
+        self.ensure_decision_frontier(residual);
+        let frontier = match self.decision_frontiers[residual.index()]
+            .as_ref()
+            .expect("decision frontier is cached after derivation")
+        {
+            FirstLanguageCachedFrontier::Full(frontier) => frontier.clone(),
+            FirstLanguageCachedFrontier::Cutoff(_) => {
+                unreachable!("two-position projection upgrades a cutoff frontier")
+            }
+        };
+        let mut transitions = Vec::with_capacity(frontier.transitions.len());
+        for transition in frontier.transitions {
+            transitions.push(FirstLanguageDepthTwoTransition {
+                position: transition.position,
+                next: self.projected_decision_frontier(transition.next),
+            });
+        }
+        self.sort_dedup_depth_two_transitions(&mut transitions);
+        let frontier = self.intern_depth_two_frontier(FirstLanguageDepthTwoFrontier {
+            can_end: frontier.can_end,
+            transitions,
+        });
+        self.depth_two_by_decision[residual.index()] = Some(frontier);
+        frontier
+    }
+
+    /// Canonicalizes two-position transitions by semantic position and suffix language.
+    fn sort_dedup_depth_two_transitions(
+        &self,
+        transitions: &mut Vec<FirstLanguageDepthTwoTransition>,
+    ) {
+        transitions.sort_by(|left, right| {
+            compare_first_positions(
+                &self.positions[left.position.index()],
+                &self.positions[right.position.index()],
+            )
+            .then_with(|| left.next.cmp(&right.next))
+        });
+        transitions.dedup();
+    }
+
+    /// Unions projected two-position frontiers before deterministic partitioning.
+    fn depth_two_frontier(
+        &self,
+        frontier_ids: &[FirstLanguageDepthTwoFrontierId],
+    ) -> (bool, Vec<FirstLanguageDepthTwoTransition>) {
+        let mut exact_end = false;
+        let mut transitions = Vec::new();
+        for frontier in frontier_ids {
+            let frontier = &self.depth_two_frontiers[frontier.index()];
+            exact_end |= frontier.can_end;
+            transitions.extend_from_slice(&frontier.transitions);
+        }
+        self.sort_dedup_depth_two_transitions(&mut transitions);
+        (exact_end, transitions)
+    }
+
+    /// Projects one decision state to an exact recursively factored bounded language.
+    fn projected_component(
+        &mut self,
+        remaining: usize,
+        residual: FirstLanguageDecisionStateId,
+    ) -> FirstLanguageProjectedComponentId {
+        if let Some(component) = self
+            .projected_by_decision
+            .get(&(remaining, residual))
+            .copied()
+        {
+            return component;
+        }
+        #[cfg(test)]
+        FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(
+            FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS
+                .get()
+                .saturating_add(1),
+        );
+        let component = if remaining == 0 {
+            let summary = self.cutoff_summary(residual);
+            FirstLanguageProjectedComponent {
+                exact_end: summary & FIRST_LANGUAGE_CUTOFF_END != 0,
+                cutoff: summary & FIRST_LANGUAGE_CUTOFF_CONTINUES != 0,
+                transitions: Vec::new(),
+            }
+        } else if remaining == 1 {
+            let frontier = self.projected_decision_frontier(residual);
+            let frontier = self.cutoff_frontiers[frontier.index()].clone();
+            let mut transitions = Vec::with_capacity(frontier.transitions.len());
+            for transition in frontier.transitions {
+                let next = self.intern_projected_component(FirstLanguageProjectedComponent {
+                    exact_end: transition.summary & FIRST_LANGUAGE_CUTOFF_END != 0,
+                    cutoff: transition.summary & FIRST_LANGUAGE_CUTOFF_CONTINUES != 0,
+                    transitions: Vec::new(),
+                });
+                transitions.push(FirstLanguageProjectedTransition {
+                    position: transition.position,
+                    next,
+                });
+            }
+            self.sort_dedup_projected_transitions(&mut transitions);
+            FirstLanguageProjectedComponent {
+                exact_end: frontier.can_end,
+                cutoff: false,
+                transitions,
+            }
+        } else {
+            self.ensure_decision_frontier(residual);
+            let frontier = match self.decision_frontiers[residual.index()]
+                .as_ref()
+                .expect("decision frontier is cached after derivation")
+            {
+                FirstLanguageCachedFrontier::Full(frontier) => frontier.clone(),
+                FirstLanguageCachedFrontier::Cutoff(_) => {
+                    unreachable!("recursive projection upgrades a cutoff frontier")
+                }
+            };
+            let mut transitions = Vec::with_capacity(frontier.transitions.len());
+            for transition in frontier.transitions {
+                transitions.push(FirstLanguageProjectedTransition {
+                    position: transition.position,
+                    next: self.projected_component(remaining - 1, transition.next),
+                });
+            }
+            self.sort_dedup_projected_transitions(&mut transitions);
+            FirstLanguageProjectedComponent {
+                exact_end: frontier.can_end,
+                cutoff: false,
+                transitions,
+            }
+        };
+        let component = self.intern_projected_component(component);
+        self.projected_by_decision
+            .insert((remaining, residual), component);
+        component
+    }
+
+    /// Canonicalizes recursive transitions by semantic position and suffix component.
+    fn sort_dedup_projected_transitions(
+        &self,
+        transitions: &mut Vec<FirstLanguageProjectedTransition>,
+    ) {
+        transitions.sort_by(|left, right| {
+            compare_first_positions(
+                &self.positions[left.position.index()],
+                &self.positions[right.position.index()],
+            )
+            .then_with(|| left.next.cmp(&right.next))
+        });
+        transitions.dedup();
+    }
+
+    /// Projects cached full successor identities to their observable cutoff facts.
+    fn project_full_cutoff_transitions(
+        &mut self,
+        transitions: &[FirstLanguageTransition],
+    ) -> Vec<FirstLanguageCutoffTransition> {
+        let mut projected = Vec::with_capacity(transitions.len());
+        for transition in transitions {
+            #[cfg(test)]
+            FIRST_LANGUAGE_CUTOFF_SUMMARY_READS
+                .set(FIRST_LANGUAGE_CUTOFF_SUMMARY_READS.get().saturating_add(1));
+            projected.push(FirstLanguageCutoffTransition {
+                position: transition.position,
+                summary: self.cutoff_summary(transition.next),
+            });
+        }
+        self.sort_dedup_cutoff_transitions(&mut projected);
+        projected
+    }
+
+    /// Canonicalizes projected transitions by semantic position and two-bit successor facts.
+    fn sort_dedup_cutoff_transitions(&self, transitions: &mut Vec<FirstLanguageCutoffTransition>) {
+        transitions.sort_by(|left, right| {
+            compare_first_positions(
+                &self.positions[left.position.index()],
+                &self.positions[right.position.index()],
+            )
+            .then_with(|| left.summary.cmp(&right.summary))
+        });
+        transitions.dedup();
+    }
+
+    /// Unions projected decision frontiers without retaining unobservable successor identities.
+    fn cutoff_frontier(
+        &mut self,
+        frontier_ids: &[FirstLanguageCutoffFrontierId],
+    ) -> (bool, Vec<FirstLanguageCutoffTransition>) {
+        let mut exact_end = false;
+        let mut transitions = Vec::new();
+        for frontier in frontier_ids {
+            let frontier = &self.cutoff_frontiers[frontier.index()];
+            exact_end |= frontier.can_end;
+            #[cfg(test)]
+            FIRST_LANGUAGE_CUTOFF_COMPONENT_MEMBERSHIPS.set(
+                FIRST_LANGUAGE_CUTOFF_COMPONENT_MEMBERSHIPS
+                    .get()
+                    .saturating_add(frontier.transitions.len()),
+            );
+            transitions.extend_from_slice(&frontier.transitions);
+        }
+        self.sort_dedup_cutoff_transitions(&mut transitions);
+        #[cfg(test)]
+        FIRST_LANGUAGE_TRANSITION_OPERATIONS.set(
+            FIRST_LANGUAGE_TRANSITION_OPERATIONS
+                .get()
+                .saturating_add(transitions.len()),
+        );
+        (exact_end, transitions)
+    }
+
+    /// Interns one of the four structural cutoff outcomes.
+    fn intern_cutoff_node(&mut self, summary: u8) -> FirstLanguageNodeId {
+        self.intern_node(FirstLanguageNode {
+            exact_end: summary & FIRST_LANGUAGE_CUTOFF_END != 0,
+            cutoff: summary & FIRST_LANGUAGE_CUTOFF_CONTINUES != 0,
+            cells: Vec::new(),
+            covers: Vec::new(),
+        })
+    }
+
     /// Computes the consuming frontier for a canonical residual subset.
-    fn frontier(&self, residuals: &[DecisionState]) -> (bool, Vec<DecisionTransition>) {
+    fn frontier(
+        &mut self,
+        residuals: &[FirstLanguageDecisionStateId],
+    ) -> (bool, Vec<FirstLanguageTransition>) {
         let mut exact_end = false;
         let mut transitions = Vec::new();
         for residual in residuals {
-            let frontier = decision_frontier(residual, self.grammar, self.atom_kinds);
+            self.ensure_decision_frontier(*residual);
+            let frontier = self.decision_frontiers[residual.index()]
+                .as_ref()
+                .expect("decision frontier is cached after derivation");
+            let FirstLanguageCachedFrontier::Full(frontier) = frontier else {
+                unreachable!("full frontier request upgrades a cutoff projection")
+            };
             exact_end |= frontier.can_end;
-            transitions.extend(frontier.transitions);
+            transitions.extend(frontier.transitions.iter().copied());
         }
         transitions.sort_by(|left, right| {
-            compare_first_positions(&left.position, &right.position)
-                .then_with(|| left.next.cmp(&right.next))
+            compare_first_positions(
+                &self.positions[left.position.index()],
+                &self.positions[right.position.index()],
+            )
+            .then_with(|| left.next.cmp(&right.next))
         });
         transitions
             .dedup_by(|left, right| left.position == right.position && left.next == right.next);
@@ -1456,40 +2411,19 @@ impl<'a> FirstLanguageArena<'a> {
     /// Builds deterministic disjoint token/text cells and coalesces equal suffixes.
     fn build_cells(
         &mut self,
-        transitions: &[DecisionTransition],
+        transitions: &[FirstLanguageTransition],
         remaining: usize,
     ) -> Vec<FirstLanguageCell> {
-        let mut by_kind = vec![Vec::new(); self.grammar.kinds.len()];
-        for transition in transitions {
-            for kind in transition.position.kinds.iter() {
-                by_kind[kind.index()].push(transition);
-            }
-        }
-        let mut partitions = BTreeMap::<(TextPartition, Vec<DecisionState>), KindSet>::new();
-        for (kind_index, candidates) in by_kind.into_iter().enumerate() {
-            if candidates.is_empty() {
-                continue;
-            }
-            for (text, residuals) in partition_by_residual(
-                &candidates,
-                self.grammar,
-                |candidate| candidate.position.text_predicate,
-                |candidate| candidate.next.clone(),
-            ) {
-                let kinds = partitions
-                    .entry((text, residuals))
-                    .or_insert_with(|| KindSet::empty(self.grammar.kinds.len()));
-                kinds
-                    .insert(KindId::new(
-                        kind_index.try_into().expect("validated kind width"),
-                    ))
-                    .expect("kind belongs to grammar width");
-            }
-        }
-
+        debug_assert!(remaining > 0);
         let mut coalesced = BTreeMap::<(TextPartition, FirstLanguageNodeId), KindSet>::new();
-        for ((text, residuals), kinds) in partitions {
-            let next = self.build(remaining, residuals);
+        for (text, residuals, kinds) in partition_by_kind_residual(
+            transitions,
+            self.grammar,
+            |candidate| self.positions[candidate.position.index()].text_predicate,
+            |candidate| &self.positions[candidate.position.index()].kinds,
+            |candidate| candidate.next,
+        ) {
+            let next = self.build_interned(remaining, residuals);
             coalesced
                 .entry((text, next))
                 .and_modify(|merged| merged.union_assign(&kinds))
@@ -1501,20 +2435,119 @@ impl<'a> FirstLanguageArena<'a> {
             .collect()
     }
 
+    /// Builds deterministic cells from exact projected two-position transitions.
+    fn build_depth_two_cells(
+        &mut self,
+        transitions: &[FirstLanguageDepthTwoTransition],
+    ) -> Vec<FirstLanguageCell> {
+        let mut coalesced = BTreeMap::<(TextPartition, FirstLanguageNodeId), KindSet>::new();
+        for (text, frontiers, kinds) in partition_by_kind_residual(
+            transitions,
+            self.grammar,
+            |candidate| self.positions[candidate.position.index()].text_predicate,
+            |candidate| &self.positions[candidate.position.index()].kinds,
+            |candidate| candidate.next,
+        ) {
+            let next = self.build_cutoff_state(frontiers);
+            coalesced
+                .entry((text, next))
+                .and_modify(|merged| merged.union_assign(&kinds))
+                .or_insert(kinds);
+        }
+        coalesced
+            .into_iter()
+            .map(|((text, next), kinds)| FirstLanguageCell { kinds, text, next })
+            .collect()
+    }
+
+    /// Builds deterministic cells from recursively projected transitions.
+    fn build_projected_cells(
+        &mut self,
+        transitions: &[FirstLanguageProjectedTransition],
+        remaining: usize,
+    ) -> Vec<FirstLanguageCell> {
+        #[cfg(test)]
+        FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.set(
+            FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS
+                .get()
+                .saturating_add(transitions.len()),
+        );
+
+        let mut coalesced = BTreeMap::<(TextPartition, FirstLanguageNodeId), KindSet>::new();
+        for (text, components, kinds) in partition_by_kind_residual(
+            transitions,
+            self.grammar,
+            |candidate| self.positions[candidate.position.index()].text_predicate,
+            |candidate| &self.positions[candidate.position.index()].kinds,
+            |candidate| candidate.next,
+        ) {
+            let next = self.build_projected_state(remaining, components);
+            coalesced
+                .entry((text, next))
+                .and_modify(|merged| merged.union_assign(&kinds))
+                .or_insert(kinds);
+        }
+        coalesced
+            .into_iter()
+            .map(|((text, next), kinds)| FirstLanguageCell { kinds, text, next })
+            .collect()
+    }
+
+    /// Builds cutoff cells by folding two-bit summaries during text partitioning.
+    fn build_cutoff_cells(
+        &mut self,
+        transitions: &[FirstLanguageCutoffTransition],
+    ) -> Vec<FirstLanguageCell> {
+        let mut factored = BTreeMap::<(Option<TextPredicateId>, u8), KindSet>::new();
+        for transition in transitions {
+            #[cfg(test)]
+            FIRST_LANGUAGE_CUTOFF_PARTITION_INPUTS.set(
+                FIRST_LANGUAGE_CUTOFF_PARTITION_INPUTS
+                    .get()
+                    .saturating_add(1),
+            );
+            let position = &self.positions[transition.position.index()];
+            factored
+                .entry((position.text_predicate, transition.summary))
+                .and_modify(|kinds| kinds.union_assign(&position.kinds))
+                .or_insert_with(|| position.kinds.clone());
+        }
+        let factored = factored
+            .into_iter()
+            .map(|((text_predicate, summary), kinds)| (text_predicate, summary, kinds))
+            .collect::<Vec<_>>();
+        partition_by_kind_summary(
+            &factored,
+            self.grammar,
+            |candidate| candidate.0,
+            |candidate| &candidate.2,
+            |candidate| candidate.1,
+        )
+        .into_iter()
+        .map(|(text, summary, kinds)| FirstLanguageCell {
+            kinds,
+            text,
+            next: self.intern_cutoff_node(summary),
+        })
+        .collect()
+    }
+
     /// Builds a compact exact cover using only authored predicate identities.
     fn build_covers(
         &mut self,
-        transitions: &[DecisionTransition],
+        transitions: &[FirstLanguageTransition],
         remaining: usize,
     ) -> Vec<FirstLanguageCover> {
+        debug_assert!(remaining > 0);
         let mut coalesced =
             BTreeMap::<(Option<TextPredicateId>, FirstLanguageNodeId), KindSet>::new();
         for transition in transitions {
-            let next = self.build(remaining, vec![transition.next.clone()]);
+            let position = self.positions[transition.position.index()].clone();
+            let next = self.build_interned(remaining, vec![transition.next]);
             coalesced
-                .entry((transition.position.text_predicate, next))
-                .and_modify(|merged| merged.union_assign(&transition.position.kinds))
-                .or_insert_with(|| transition.position.kinds.clone());
+                .entry((position.text_predicate, next))
+                .and_modify(|merged| merged.union_assign(&position.kinds))
+                .or_insert(position.kinds);
         }
         coalesced
             .into_iter()
@@ -1526,6 +2559,168 @@ impl<'a> FirstLanguageArena<'a> {
                 next,
             })
             .collect()
+    }
+
+    /// Builds the authored-predicate cover for projected two-position transitions.
+    fn build_depth_two_covers(
+        &mut self,
+        transitions: &[FirstLanguageDepthTwoTransition],
+    ) -> Vec<FirstLanguageCover> {
+        let mut coalesced =
+            BTreeMap::<(Option<TextPredicateId>, FirstLanguageNodeId), KindSet>::new();
+        for transition in transitions {
+            let position = self.positions[transition.position.index()].clone();
+            let next = self.build_cutoff_state(vec![transition.next]);
+            coalesced
+                .entry((position.text_predicate, next))
+                .and_modify(|merged| merged.union_assign(&position.kinds))
+                .or_insert(position.kinds);
+        }
+        coalesced
+            .into_iter()
+            .map(|((text_predicate, next), kinds)| FirstLanguageCover {
+                position: FirstPosition {
+                    kinds,
+                    text_predicate,
+                },
+                next,
+            })
+            .collect()
+    }
+
+    /// Builds the authored-predicate cover for recursively projected transitions.
+    fn build_projected_covers(
+        &mut self,
+        transitions: &[FirstLanguageProjectedTransition],
+        remaining: usize,
+    ) -> Vec<FirstLanguageCover> {
+        let mut coalesced =
+            BTreeMap::<(Option<TextPredicateId>, FirstLanguageNodeId), KindSet>::new();
+        for transition in transitions {
+            let position = self.positions[transition.position.index()].clone();
+            let next = self.build_projected_state(remaining, vec![transition.next]);
+            coalesced
+                .entry((position.text_predicate, next))
+                .and_modify(|merged| merged.union_assign(&position.kinds))
+                .or_insert(position.kinds);
+        }
+        coalesced
+            .into_iter()
+            .map(|((text_predicate, next), kinds)| FirstLanguageCover {
+                position: FirstPosition {
+                    kinds,
+                    text_predicate,
+                },
+                next,
+            })
+            .collect()
+    }
+
+    /// Builds the final-position cover from factored successor summaries.
+    fn build_cutoff_covers(
+        &mut self,
+        transitions: &[FirstLanguageCutoffTransition],
+    ) -> Vec<FirstLanguageCover> {
+        let mut coalesced =
+            BTreeMap::<(Option<TextPredicateId>, FirstLanguageNodeId), KindSet>::new();
+        for transition in transitions {
+            let position = self.positions[transition.position.index()].clone();
+            let next = self.intern_cutoff_node(transition.summary);
+            coalesced
+                .entry((position.text_predicate, next))
+                .and_modify(|merged| merged.union_assign(&position.kinds))
+                .or_insert(position.kinds);
+        }
+        coalesced
+            .into_iter()
+            .map(|((text_predicate, next), kinds)| FirstLanguageCover {
+                position: FirstPosition {
+                    kinds,
+                    text_predicate,
+                },
+                next,
+            })
+            .collect()
+    }
+
+    /// Computes or reuses the exact commutative union of two deterministic
+    /// bounded-language nodes.
+    fn union_nodes(
+        &mut self,
+        left: FirstLanguageNodeId,
+        right: FirstLanguageNodeId,
+    ) -> FirstLanguageNodeId {
+        if left == right {
+            return left;
+        }
+        let key = if left < right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        if let Some(union) = self.unioned.get(&key) {
+            return *union;
+        }
+        #[cfg(test)]
+        FIRST_LANGUAGE_NODE_UNION_MISSES
+            .set(FIRST_LANGUAGE_NODE_UNION_MISSES.get().saturating_add(1));
+
+        let left = self.nodes[key.0.index()].clone();
+        let right = self.nodes[key.1.index()].clone();
+        let mut candidates = left.cells.clone();
+        candidates.extend(right.cells.iter().cloned());
+        let mut cells = Vec::new();
+        for (text, residuals, kinds) in overlay_by_kind_residual(
+            &candidates,
+            |candidate| &candidate.text,
+            |candidate| &candidate.kinds,
+            |candidate| candidate.next,
+        ) {
+            let mut residuals = residuals.into_iter();
+            let Some(mut next) = residuals.next() else {
+                continue;
+            };
+            for residual in residuals {
+                next = self.union_nodes(next, residual);
+            }
+            cells.push(FirstLanguageCell { kinds, text, next });
+        }
+        cells.sort_by(|left, right| {
+            left.text
+                .cmp(&right.text)
+                .then_with(|| left.next.cmp(&right.next))
+                .then_with(|| left.kinds.words().cmp(right.kinds.words()))
+        });
+
+        let mut covers = BTreeMap::<(Option<TextPredicateId>, FirstLanguageNodeId), KindSet>::new();
+        for cover in left.covers.into_iter().chain(right.covers) {
+            covers
+                .entry((cover.position.text_predicate, cover.next))
+                .and_modify(|known| known.union_assign(&cover.position.kinds))
+                .or_insert(cover.position.kinds);
+        }
+        let covers = covers
+            .into_iter()
+            .map(|((text_predicate, next), kinds)| FirstLanguageCover {
+                position: FirstPosition {
+                    kinds,
+                    text_predicate,
+                },
+                next,
+            })
+            .collect();
+        let node = self.intern_node(FirstLanguageNode {
+            exact_end: left.exact_end || right.exact_end,
+            cutoff: left.cutoff || right.cutoff,
+            cells,
+            covers,
+        });
+        debug_assert!(first_language_cells_are_disjoint(
+            &self.nodes[node.index()].cells,
+            self.grammar,
+        ));
+        self.unioned.insert(key, node);
+        node
     }
 
     /// Interns one completed structural node and returns its canonical identity.
@@ -1647,6 +2842,34 @@ thread_local! {
     static FIRST_LANGUAGE_STATE_COUNT: Cell<usize> = const { Cell::new(0) };
     /// Counts consuming grammar transitions visited by symbolic FIRST states.
     static FIRST_LANGUAGE_TRANSITION_OPERATIONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts raw individual grammar residual frontier expansions.
+    static FIRST_LANGUAGE_FRONTIER_EXPANSIONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts full semantic decision-state clones during bounded FIRST construction.
+    static FIRST_LANGUAGE_DECISION_STATE_CLONES: Cell<usize> = const { Cell::new(0) };
+    /// Counts full semantic decision-state ordering comparisons during bounded FIRST construction.
+    static FIRST_LANGUAGE_DECISION_STATE_COMPARISONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts residual identities rescanned after a cutoff cell has already been partitioned.
+    static FIRST_LANGUAGE_CUTOFF_RESIDUAL_VISITS: Cell<usize> = const { Cell::new(0) };
+    /// Counts candidate summaries folded while constructing cutoff cells.
+    static FIRST_LANGUAGE_CUTOFF_SUMMARY_READS: Cell<usize> = const { Cell::new(0) };
+    /// Counts cutoff transition-to-kind candidates expanded before exact text partitioning.
+    static FIRST_LANGUAGE_CUTOFF_PARTITION_INPUTS: Cell<usize> = const { Cell::new(0) };
+    /// Counts projected cutoff components scanned while unioning residual frontiers.
+    static FIRST_LANGUAGE_CUTOFF_COMPONENT_MEMBERSHIPS: Cell<usize> = const { Cell::new(0) };
+    /// Counts full semantic frontier derivations requested by bounded FIRST construction.
+    static FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts summary-only frontier derivations for residuals at the lookahead boundary.
+    static FIRST_LANGUAGE_CUTOFF_SUMMARY_COMPUTATIONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts normalized consuming transitions materialized by full frontier derivation.
+    static FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts full non-consuming closure states visited by decision-frontier traversal.
+    static FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS: Cell<usize> = const { Cell::new(0) };
+    /// Counts raw decision-state projections into recursively factored tail components.
+    static FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS: Cell<usize> = const { Cell::new(0) };
+    /// Counts projected transitions expanded into token-kind partition candidates.
+    static FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS: Cell<usize> = const { Cell::new(0) };
+    /// Counts distinct commutative deterministic node overlays.
+    static FIRST_LANGUAGE_NODE_UNION_MISSES: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Interns each wide FIRST position once and returns compact row identities.
@@ -3160,7 +4383,7 @@ const fn is_pratt_led(position: PrattPosition) -> bool {
     )
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// Classifies the decision item alternatives whose semantics affect the derived facts.
 enum DecisionItem {
     /// Selects the type alternative for semantic analysis.
@@ -3176,9 +4399,42 @@ enum DecisionItem {
     },
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Debug, Eq, PartialEq)]
 /// Carries the decision state consumed while deriving source-independent grammar facts.
 struct DecisionState(Vec<DecisionItem>);
+
+impl Clone for DecisionState {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        FIRST_LANGUAGE_DECISION_STATE_CLONES
+            .set(FIRST_LANGUAGE_DECISION_STATE_CLONES.get().saturating_add(1));
+        Self(self.0.clone())
+    }
+}
+
+impl Ord for DecisionState {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        #[cfg(test)]
+        FIRST_LANGUAGE_DECISION_STATE_COMPARISONS.set(
+            FIRST_LANGUAGE_DECISION_STATE_COMPARISONS
+                .get()
+                .saturating_add(1),
+        );
+        self.0.cmp(&other.0)
+    }
+}
+
+impl PartialOrd for DecisionState {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for DecisionState {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.0, state);
+    }
+}
 
 impl DecisionState {
     /// Seeds a decision state from grammar positions in source order.
@@ -3203,6 +4459,127 @@ impl DecisionState {
         items.extend(tail.iter().copied().map(DecisionItem::Site));
         Self(items)
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Grammar-wide least-fixed-point facts needed to summarize cutoff residuals compositionally.
+struct DecisionSummaryFacts {
+    /// Exact-end and continuation facts indexed by type identity.
+    by_type: Vec<u8>,
+    /// Exact-end and continuation facts indexed by parse-site identity.
+    by_site: Vec<u8>,
+}
+
+impl DecisionSummaryFacts {
+    /// Solves the monotone two-bit grammar equations without optimistic recursion defaults.
+    fn from_grammar(grammar: &GrammarDescription) -> Self {
+        let mut by_type = vec![0_u8; grammar.types.len()];
+        loop {
+            let by_site = grammar
+                .sites
+                .iter()
+                .map(|site| decision_site_summary(site, &by_type))
+                .collect::<Vec<_>>();
+            let next = grammar
+                .types
+                .iter()
+                .map(|description| match &description.shape {
+                    TypeShape::Token { .. } => FIRST_LANGUAGE_CUTOFF_CONTINUES,
+                    TypeShape::Alias { site } => by_site[site.index()],
+                    TypeShape::Sequence { sites } => {
+                        decision_sequence_summary(sites.iter().map(|site| by_site[site.index()]))
+                    }
+                    TypeShape::Enum { alternatives } => alternatives
+                        .iter()
+                        .map(|alternative| {
+                            decision_sequence_summary(
+                                alternative.sites.iter().map(|site| by_site[site.index()]),
+                            )
+                        })
+                        .fold(0_u8, std::ops::BitOr::bitor),
+                    TypeShape::Pratt { variants } => variants
+                        .iter()
+                        .filter(|variant| is_pratt_nud(variant.position))
+                        .map(|variant| {
+                            decision_sequence_summary(
+                                variant.sites.iter().map(|site| by_site[site.index()]),
+                            )
+                        })
+                        .fold(0_u8, std::ops::BitOr::bitor),
+                })
+                .collect::<Vec<_>>();
+            debug_assert!(
+                next.iter()
+                    .zip(&by_type)
+                    .all(|(next, previous)| next | previous == *next)
+            );
+            if next == by_type {
+                return Self { by_type, by_site };
+            }
+            by_type = next;
+        }
+    }
+
+    /// Composes one semantic decision state from already-solved item facts.
+    fn summarize_state(&self, state: &DecisionState) -> u8 {
+        decision_sequence_summary(state.0.iter().map(|item| self.summarize_item(item)))
+    }
+
+    /// Returns the solved facts for one semantic stack item.
+    fn summarize_item(&self, item: &DecisionItem) -> u8 {
+        match item {
+            DecisionItem::Type(type_id) => self.by_type[type_id.index()],
+            DecisionItem::Site(site_id) => self.by_site[site_id.index()],
+            DecisionItem::RepeatTail { target, separator } => {
+                decision_repeat_tail_summary(*target, *separator, &self.by_type)
+            }
+        }
+    }
+}
+
+/// Composes exact-end and continuation facts for an ordered semantic sequence.
+fn decision_sequence_summary(summaries: impl IntoIterator<Item = u8>) -> u8 {
+    let mut can_end = true;
+    let mut continues = false;
+    for summary in summaries {
+        continues |= can_end && summary & FIRST_LANGUAGE_CUTOFF_CONTINUES != 0;
+        can_end &= summary & FIRST_LANGUAGE_CUTOFF_END != 0;
+        if continues && !can_end {
+            break;
+        }
+    }
+    (u8::from(can_end) * FIRST_LANGUAGE_CUTOFF_END)
+        | (u8::from(continues) * FIRST_LANGUAGE_CUTOFF_CONTINUES)
+}
+
+/// Summarizes one parse-site container from the current type fixed-point facts.
+fn decision_site_summary(site: &crate::ParseSite, by_type: &[u8]) -> u8 {
+    let target = by_type[site.target.index()];
+    let semantics = container_semantics(site);
+    match semantics.cardinality {
+        ContainerCardinality::One => target,
+        ContainerCardinality::Optional => target | FIRST_LANGUAGE_CUTOFF_END,
+        ContainerCardinality::ZeroOrMore | ContainerCardinality::OptionalOneOrMore => {
+            decision_sequence_summary([
+                target,
+                decision_repeat_tail_summary(site.target, semantics.separator_type(), by_type),
+            ]) | FIRST_LANGUAGE_CUTOFF_END
+        }
+        ContainerCardinality::OneOrMore => decision_sequence_summary([
+            target,
+            decision_repeat_tail_summary(site.target, semantics.separator_type(), by_type),
+        ]),
+    }
+}
+
+/// Solves the least fixed point for one repeat-tail item's epsilon-or-continuation language.
+fn decision_repeat_tail_summary(target: TypeId, separator: Option<TypeId>, by_type: &[u8]) -> u8 {
+    let continuation = if let Some(separator) = separator {
+        decision_sequence_summary([by_type[separator.index()], by_type[target.index()]])
+    } else {
+        by_type[target.index()]
+    };
+    FIRST_LANGUAGE_CUTOFF_END | (continuation & FIRST_LANGUAGE_CUTOFF_CONTINUES)
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -3241,6 +4618,24 @@ struct DecisionFrontier {
     can_end: bool,
     /// Supplies the transitions consumed by semantic analysis.
     transitions: Vec<DecisionTransition>,
+}
+
+#[derive(Clone, Copy)]
+/// One semantic event emitted while traversing a decision state's non-consuming closure.
+enum DecisionFrontierEvent<'a> {
+    /// The decision state can terminate without consuming another token.
+    End,
+    /// The decision state can consume one token and leave `rest` as its residual.
+    Transition {
+        /// Token atom consumed by this edge.
+        atom: AtomId,
+        /// Optional exact-text restriction on the consumed token.
+        text_predicate: Option<TextPredicateId>,
+        /// Semantic residual after the token is consumed.
+        rest: &'a [DecisionItem],
+        /// Minimum semantic stack depth seen before this token is consumed.
+        minimum_stack_depth: usize,
+    },
 }
 
 /// Carries the decision outcome consumed while deriving source-independent grammar facts.
@@ -3553,21 +4948,28 @@ fn decision_items_equivalent(
 }
 
 /// Derives the decision frontier from normalized grammar structure and previously established semantic facts.
-fn decision_frontier(
+fn walk_decision_frontier(
     start: &DecisionState,
     grammar: &GrammarDescription,
-    atom_kinds: &[KindSet],
-) -> DecisionFrontier {
+    mut visit: impl FnMut(DecisionFrontierEvent<'_>) -> bool,
+) {
     // Explore the bounded lookahead product while deduplicating frontier states to terminate recursive shared prefixes.
-    let mut frontier = DecisionFrontier::default();
     let mut best_minimum_depth = BTreeMap::from([(start.clone(), start.0.len())]);
     let mut queue = VecDeque::from([(start.clone(), start.0.len())]);
     while let Some((state, minimum_stack_depth)) = queue.pop_front() {
+        #[cfg(test)]
+        FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.set(
+            FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS
+                .get()
+                .saturating_add(1),
+        );
         if best_minimum_depth.get(&state) != Some(&minimum_stack_depth) {
             continue;
         }
         let Some((first, rest)) = state.0.split_first() else {
-            frontier.can_end = true;
+            if !visit(DecisionFrontierEvent::End) {
+                return;
+            }
             continue;
         };
         match first {
@@ -3577,14 +4979,16 @@ fn decision_frontier(
                     TypeShape::Token {
                         atom,
                         text_predicate,
-                    } => frontier.transitions.push(DecisionTransition {
-                        position: FirstPosition {
-                            kinds: atom_kinds[atom.index()].clone(),
+                    } => {
+                        if !visit(DecisionFrontierEvent::Transition {
+                            atom: *atom,
                             text_predicate: *text_predicate,
-                        },
-                        next: DecisionState(rest.to_vec()),
-                        minimum_stack_depth,
-                    }),
+                            rest,
+                            minimum_stack_depth,
+                        }) {
+                            return;
+                        }
+                    }
                     TypeShape::Alias { site } => queue_decision_expansion(
                         vec![DecisionItem::Site(*site)],
                         rest,
@@ -3726,6 +5130,42 @@ fn decision_frontier(
             }
         }
     }
+}
+
+/// Derives the decision frontier from normalized grammar structure and previously established semantic facts.
+fn decision_frontier(
+    start: &DecisionState,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+) -> DecisionFrontier {
+    let mut frontier = DecisionFrontier::default();
+    walk_decision_frontier(start, grammar, |event| {
+        match event {
+            DecisionFrontierEvent::End => frontier.can_end = true,
+            DecisionFrontierEvent::Transition {
+                atom,
+                text_predicate,
+                rest,
+                minimum_stack_depth,
+            } => {
+                #[cfg(test)]
+                FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(
+                    FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS
+                        .get()
+                        .saturating_add(1),
+                );
+                frontier.transitions.push(DecisionTransition {
+                    position: FirstPosition {
+                        kinds: atom_kinds[atom.index()].clone(),
+                        text_predicate,
+                    },
+                    next: DecisionState(rest.to_vec()),
+                    minimum_stack_depth,
+                });
+            }
+        }
+        true
+    });
     frontier.transitions.sort_by(|left, right| {
         compare_first_positions(&left.position, &right.position)
             .then_with(|| left.next.cmp(&right.next))
@@ -3735,6 +5175,11 @@ fn decision_frontier(
         .transitions
         .dedup_by(|left, right| left.position == right.position && left.next == right.next);
     frontier
+}
+
+/// Derives only the exact-end and continuation facts required at the lookahead cutoff.
+fn decision_cutoff_summary(start: &DecisionState, facts: &DecisionSummaryFacts) -> u8 {
+    facts.summarize_state(start)
 }
 
 /// Derives the queue decision expansion from normalized grammar structure and previously established semantic facts.
@@ -4718,6 +6163,255 @@ mod decision_product_tests {
         grammar.push_declaration(crate::Declaration::new(name, location))
     }
 
+    /// Builds one small grammar covering every decision-closure branch.
+    fn cutoff_summary_equivalence_grammar() -> (GrammarDescription, Vec<DecisionItem>) {
+        fn push_token(grammar: &mut GrammarDescription, next_byte: &mut u32, name: &str) -> TypeId {
+            let declaration = test_declaration(grammar, next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ))
+        }
+
+        let mut grammar = GrammarDescription::new(
+            "cutoff-summary-equivalence",
+            2,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let token_a = push_token(&mut grammar, &mut next_byte, "A");
+        let token_b = push_token(&mut grammar, &mut next_byte, "B");
+
+        let empty_declaration = test_declaration(&mut grammar, &mut next_byte, "Empty");
+        let empty = grammar.push_type(crate::TypeDescription::new(
+            "Empty",
+            empty_declaration,
+            TypeShape::Sequence { sites: Vec::new() },
+        ));
+
+        let alias = grammar.next_type_id();
+        let alias_declaration = test_declaration(&mut grammar, &mut next_byte, "OptionalAlias");
+        let alias_site_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "OptionalAlias::value");
+        let optional_alias_site = grammar.push_site(crate::ParseSite::new(
+            alias,
+            token_a,
+            alias_site_declaration,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "OptionalAlias",
+                alias_declaration,
+                TypeShape::Alias {
+                    site: optional_alias_site,
+                },
+            )),
+            alias,
+        );
+
+        let sequence = grammar.next_type_id();
+        let sequence_declaration = test_declaration(&mut grammar, &mut next_byte, "Containers");
+        let container_shapes = [
+            crate::ContainerShape::Direct,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+            crate::ContainerShape::zero_or_more(crate::ContainerShape::Direct, Some(token_b)),
+            crate::ContainerShape::one_or_more(crate::ContainerShape::Direct, None),
+            crate::ContainerShape::optional(crate::ContainerShape::one_or_more(
+                crate::ContainerShape::Direct,
+                Some(token_b),
+            )),
+        ];
+        let container_sites = container_shapes
+            .into_iter()
+            .enumerate()
+            .map(|(index, shape)| {
+                let declaration = test_declaration(
+                    &mut grammar,
+                    &mut next_byte,
+                    &format!("Containers::{index}"),
+                );
+                grammar.push_site(crate::ParseSite::new(
+                    sequence,
+                    if index == 1 { empty } else { token_a },
+                    declaration,
+                    shape,
+                ))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Containers",
+                sequence_declaration,
+                TypeShape::Sequence {
+                    sites: container_sites,
+                },
+            )),
+            sequence,
+        );
+
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let choice_alternatives = [("Token", token_a), ("Empty", empty)]
+            .into_iter()
+            .map(|(name, target)| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("Choice::{name}"));
+                let site = grammar.push_site(crate::ParseSite::new(
+                    choice,
+                    target,
+                    declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                crate::Alternative {
+                    declaration,
+                    sites: vec![site],
+                }
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: choice_alternatives,
+                },
+            )),
+            choice,
+        );
+
+        let pratt = grammar.next_type_id();
+        let pratt_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr");
+        let pratt_variants = [
+            ("Atom", PrattPosition::Atom, vec![token_a]),
+            (
+                "Prefix",
+                PrattPosition::Prefix { bp: 20 },
+                vec![token_b, token_a],
+            ),
+            (
+                "Infix",
+                PrattPosition::Infix { lbp: 10, rbp: 11 },
+                vec![token_b, token_a],
+            ),
+        ]
+        .into_iter()
+        .map(|(name, position, targets)| {
+            let declaration =
+                test_declaration(&mut grammar, &mut next_byte, &format!("Expr::{name}"));
+            let sites = targets
+                .into_iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    let site_declaration = test_declaration(
+                        &mut grammar,
+                        &mut next_byte,
+                        &format!("Expr::{name}::{index}"),
+                    );
+                    grammar.push_site(crate::ParseSite::new(
+                        pratt,
+                        target,
+                        site_declaration,
+                        crate::ContainerShape::Direct,
+                    ))
+                })
+                .collect();
+            crate::PrattVariant {
+                declaration,
+                position,
+                sites,
+            }
+        })
+        .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Expr",
+                pratt_declaration,
+                TypeShape::Pratt {
+                    variants: pratt_variants,
+                },
+            )),
+            pratt,
+        );
+
+        let cycle_a = grammar.next_type_id();
+        let cycle_b = TypeId::new(cycle_a.get() + 1);
+        let cycle_a_declaration = test_declaration(&mut grammar, &mut next_byte, "CycleA");
+        let cycle_a_site_declaration = test_declaration(&mut grammar, &mut next_byte, "CycleA::b");
+        let cycle_a_site = grammar.push_site(crate::ParseSite::new(
+            cycle_a,
+            cycle_b,
+            cycle_a_site_declaration,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "CycleA",
+                cycle_a_declaration,
+                TypeShape::Alias { site: cycle_a_site },
+            )),
+            cycle_a,
+        );
+        let cycle_b_declaration = test_declaration(&mut grammar, &mut next_byte, "CycleB");
+        let cycle_b_alternatives = [("Cycle", cycle_a), ("Token", token_b)]
+            .into_iter()
+            .map(|(name, target)| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("CycleB::{name}"));
+                let site = grammar.push_site(crate::ParseSite::new(
+                    cycle_b,
+                    target,
+                    declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                crate::Alternative {
+                    declaration,
+                    sites: vec![site],
+                }
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "CycleB",
+                cycle_b_declaration,
+                TypeShape::Enum {
+                    alternatives: cycle_b_alternatives,
+                },
+            )),
+            cycle_b,
+        );
+
+        let mut items = (0..grammar.types.len())
+            .map(|index| {
+                DecisionItem::Type(TypeId::new(
+                    index.try_into().expect("test type identity width"),
+                ))
+            })
+            .collect::<Vec<_>>();
+        items.extend((0..grammar.sites.len()).map(|index| {
+            DecisionItem::Site(crate::SiteId::new(
+                index.try_into().expect("test site identity width"),
+            ))
+        }));
+        for target in [token_a, empty] {
+            for separator in [None, Some(token_b)] {
+                items.push(DecisionItem::RepeatTail { target, separator });
+            }
+        }
+        (grammar, items)
+    }
+
     /// Builds a diagonal pair choice repeated three times at bounded depth five.
     fn correlated_pair_grammar(branch_count: usize) -> (GrammarDescription, TypeId) {
         let mut grammar = GrammarDescription::new(
@@ -4832,12 +6526,131 @@ mod decision_product_tests {
         (grammar, root)
     }
 
+    /// Builds repeated correlated choices whose text predicates overlap on one spelling.
+    fn overlapping_text_pair_grammar(branch_count: usize) -> (GrammarDescription, TypeId) {
+        let mut grammar = GrammarDescription::new(
+            "overlapping-text-first",
+            1,
+            5,
+            TextEquivalence::AsciiInsensitive,
+        );
+        let mut next_byte = 0;
+        let kind_declaration = test_declaration(&mut grammar, &mut next_byte, "Word");
+        let kind = grammar.push_kind(crate::KindDescription::new("Word", kind_declaration));
+        let atom_declaration = test_declaration(&mut grammar, &mut next_byte, "WordAtom");
+        let atom = grammar.push_atom(crate::AtomDescription::new(
+            "WordAtom",
+            atom_declaration,
+            AtomExpression::Kind(kind),
+        ));
+        let mut tokens = Vec::new();
+        for index in 0..branch_count {
+            let name = format!("Token{index}");
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+            let text_predicate = grammar.push_text_predicate(TextPredicate::OneOf(vec![
+                "common".to_owned(),
+                format!("branch{index}"),
+            ]));
+            tokens.push(grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: Some(text_predicate),
+                },
+            )));
+        }
+
+        let mut pairs = Vec::new();
+        for (index, token) in tokens.into_iter().enumerate() {
+            let name = format!("Pair{index}");
+            let owner = grammar.next_type_id();
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+            let sites = (0..2)
+                .map(|site_index| {
+                    let site_name = format!("{name}::{site_index}");
+                    let site_declaration =
+                        test_declaration(&mut grammar, &mut next_byte, &site_name);
+                    grammar.push_site(crate::ParseSite::new(
+                        owner,
+                        token,
+                        site_declaration,
+                        crate::ContainerShape::Direct,
+                    ))
+                })
+                .collect();
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Sequence { sites },
+                )),
+                owner,
+            );
+            pairs.push(owner);
+        }
+
+        let choice = grammar.next_type_id();
+        let declaration = test_declaration(&mut grammar, &mut next_byte, "OverlappingPair");
+        let alternatives = pairs
+            .into_iter()
+            .enumerate()
+            .map(|(index, pair)| {
+                let name = format!("OverlappingPair::{index}");
+                let alternative = test_declaration(&mut grammar, &mut next_byte, &name);
+                let site = grammar.push_site(crate::ParseSite::new(
+                    choice,
+                    pair,
+                    alternative,
+                    crate::ContainerShape::Direct,
+                ));
+                crate::Alternative {
+                    declaration: alternative,
+                    sites: vec![site],
+                }
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "OverlappingPair",
+                declaration,
+                TypeShape::Enum { alternatives },
+            )),
+            choice,
+        );
+
+        let root = grammar.next_type_id();
+        let declaration = test_declaration(&mut grammar, &mut next_byte, "OverlappingRoot");
+        let sites = (0..3)
+            .map(|index| {
+                let name = format!("OverlappingRoot::{index}");
+                let site_declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+                grammar.push_site(crate::ParseSite::new(
+                    root,
+                    choice,
+                    site_declaration,
+                    crate::ContainerShape::Direct,
+                ))
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "OverlappingRoot",
+                declaration,
+                TypeShape::Sequence { sites },
+            )),
+            root,
+        );
+        (grammar, root)
+    }
+
     #[test]
     fn correlated_prefixes_bound_working_first_states_before_projection() {
         const BRANCH_COUNT: usize = 32;
         FIRST_SEQUENCE_PEAK_ROWS.set(0);
         FIRST_LANGUAGE_STATE_COUNT.set(0);
         FIRST_LANGUAGE_TRANSITION_OPERATIONS.set(0);
+        FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.set(0);
         let (grammar, root) = correlated_pair_grammar(BRANCH_COUNT);
         let atom_kinds = expand_atoms(&grammar);
         let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
@@ -4860,6 +6673,1291 @@ mod decision_product_tests {
             FIRST_LANGUAGE_TRANSITION_OPERATIONS.get() <= 4_096,
             "bounded symbolic composition must not visit the Cartesian row product",
         );
+        assert!(
+            FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.get() <= BRANCH_COUNT * 4,
+            "projected transition work must stay proportional to structural arcs, not kind width; inputs={}",
+            FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.get(),
+        );
+    }
+
+    #[test]
+    fn cutoff_subsets_reuse_individual_residual_summaries() {
+        const RESIDUAL_COUNT: usize = 12;
+        FIRST_LANGUAGE_FRONTIER_EXPANSIONS.set(0);
+        let (grammar, _) = correlated_pair_grammar(RESIDUAL_COUNT);
+        let atom_kinds = expand_atoms(&grammar);
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+
+        for mask in 1_usize..(1_usize << RESIDUAL_COUNT) {
+            let residuals = (0..RESIDUAL_COUNT)
+                .filter(|index| mask & (1 << index) != 0)
+                .map(|index| {
+                    DecisionState(vec![DecisionItem::Type(TypeId::new(
+                        index.try_into().expect("test type width"),
+                    ))])
+                })
+                .collect();
+            arena.build(0, residuals);
+        }
+
+        assert!(
+            FIRST_LANGUAGE_FRONTIER_EXPANSIONS.get() <= RESIDUAL_COUNT,
+            "each individual cutoff residual must be expanded once; expanded {}",
+            FIRST_LANGUAGE_FRONTIER_EXPANSIONS.get(),
+        );
+        assert!(
+            arena.states.len() <= RESIDUAL_COUNT,
+            "cutoff subsets must collapse before residual-set memoization; retained {} states",
+            arena.states.len(),
+        );
+    }
+
+    #[test]
+    fn cutoff_summary_does_not_retain_successors_beyond_the_bounded_language() {
+        FIRST_LANGUAGE_CUTOFF_SUMMARY_COMPUTATIONS.set(0);
+        FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.set(0);
+        let (grammar, _) = correlated_pair_grammar(2);
+        let atom_kinds = expand_atoms(&grammar);
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+
+        arena.build(
+            0,
+            vec![DecisionState(vec![
+                DecisionItem::Type(TypeId::new(0)),
+                DecisionItem::Type(TypeId::new(1)),
+            ])],
+        );
+
+        assert_eq!(
+            arena.decision_states.len(),
+            1,
+            "cutoff facts must not intern successor states beyond the configured prefix",
+        );
+        assert_eq!(
+            arena.decision_frontiers.iter().flatten().count(),
+            0,
+            "a cutoff-only residual must retain only its two-bit summary",
+        );
+
+        let residual = FirstLanguageDecisionStateId(0);
+        arena.ensure_decision_frontier(residual);
+        arena.ensure_decision_frontier(residual);
+        arena.cutoff_summary(residual);
+        assert_eq!(FIRST_LANGUAGE_CUTOFF_SUMMARY_COMPUTATIONS.get(), 1);
+        assert_eq!(FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.get(), 1);
+    }
+
+    #[test]
+    fn summary_only_frontier_matches_full_derivation_without_materializing_transitions() {
+        FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(0);
+        FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.set(0);
+        let (grammar, items) = cutoff_summary_equivalence_grammar();
+        let atom_kinds = expand_atoms(&grammar);
+        let mut states = vec![DecisionState(Vec::new())];
+        states.extend(items.iter().cloned().map(|item| DecisionState(vec![item])));
+        states.extend(items.iter().cloned().flat_map(|left| {
+            items
+                .iter()
+                .cloned()
+                .map(move |right| DecisionState(vec![left.clone(), right]))
+        }));
+        let expected = states
+            .iter()
+            .map(|state| {
+                let full = decision_frontier(state, &grammar, &atom_kinds);
+                (u8::from(full.can_end) * FIRST_LANGUAGE_CUTOFF_END)
+                    | (u8::from(!full.transitions.is_empty()) * FIRST_LANGUAGE_CUTOFF_CONTINUES)
+            })
+            .collect::<Vec<_>>();
+        let facts = DecisionSummaryFacts::from_grammar(&grammar);
+        FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(0);
+        FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.set(0);
+
+        for (state, expected) in states.iter().zip(expected) {
+            assert_eq!(
+                decision_cutoff_summary(state, &facts),
+                expected,
+                "summary mismatch for exhaustive state {state:?}",
+            );
+        }
+        assert_eq!(
+            FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.get(),
+            0,
+            "summary-only derivation must not construct normalized successor frontiers",
+        );
+        assert_eq!(
+            FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.get(),
+            0,
+            "summary-only derivation must compose interned item facts rather than revisit full epsilon closures",
+        );
+    }
+
+    #[test]
+    fn cutoff_language_matches_full_projection_without_interning_successors() {
+        let (grammar, items) = cutoff_summary_equivalence_grammar();
+        let atom_kinds = expand_atoms(&grammar);
+        let summary_facts = DecisionSummaryFacts::from_grammar(&grammar);
+        let mut states = vec![DecisionState(Vec::new())];
+        states.extend(items.into_iter().map(|item| DecisionState(vec![item])));
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+
+        for state in &states {
+            let full = decision_frontier(state, &grammar, &atom_kinds);
+            let mut expected = Vec::new();
+            if full.can_end {
+                expected.push(FirstSequence {
+                    positions: Vec::new(),
+                    ends: true,
+                });
+            }
+            for transition in full.transitions {
+                let summary = decision_cutoff_summary(&transition.next, &summary_facts);
+                if summary & FIRST_LANGUAGE_CUTOFF_END != 0 {
+                    expected.push(FirstSequence {
+                        positions: vec![transition.position.clone()],
+                        ends: true,
+                    });
+                }
+                if summary & FIRST_LANGUAGE_CUTOFF_CONTINUES != 0 {
+                    expected.push(FirstSequence {
+                        positions: vec![transition.position],
+                        ends: false,
+                    });
+                }
+            }
+            sort_dedup_first_sequences(&mut expected);
+
+            let root = arena.build(1, vec![state.clone()]);
+            assert_eq!(
+                arena.materialize(root),
+                expected,
+                "cutoff projection mismatch for {state:?}",
+            );
+        }
+        assert!(
+            arena.decision_states.len() <= states.len(),
+            "cutoff projection must not intern semantically unobservable successor states; inputs={} retained={}",
+            states.len(),
+            arena.decision_states.len(),
+        );
+    }
+
+    #[test]
+    fn cutoff_residual_unions_are_bitwise_or_homomorphic() {
+        let (grammar, items) = cutoff_summary_equivalence_grammar();
+        let atom_kinds = expand_atoms(&grammar);
+        let mut states = vec![DecisionState(Vec::new())];
+        states.extend(items.iter().cloned().map(|item| DecisionState(vec![item])));
+        states.extend(items.iter().cloned().flat_map(|left| {
+            items
+                .iter()
+                .cloned()
+                .map(move |right| DecisionState(vec![left.clone(), right]))
+        }));
+        let expected = states
+            .iter()
+            .map(|state| {
+                let full = decision_frontier(state, &grammar, &atom_kinds);
+                (u8::from(full.can_end) * FIRST_LANGUAGE_CUTOFF_END)
+                    | (u8::from(!full.transitions.is_empty()) * FIRST_LANGUAGE_CUTOFF_CONTINUES)
+            })
+            .collect::<Vec<_>>();
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+        let residuals = states
+            .into_iter()
+            .map(|state| arena.intern_decision_state(state))
+            .collect::<Vec<_>>();
+
+        for (left_index, left) in residuals.iter().copied().enumerate() {
+            for (right_index, right) in residuals.iter().copied().enumerate() {
+                let node = arena.build_cutoff(&[left, right]);
+                let node = &arena.nodes[node.index()];
+                let actual = (u8::from(node.exact_end) * FIRST_LANGUAGE_CUTOFF_END)
+                    | (u8::from(node.cutoff) * FIRST_LANGUAGE_CUTOFF_CONTINUES);
+                assert_eq!(
+                    actual,
+                    expected[left_index] | expected[right_index],
+                    "cutoff residual union must preserve existential end/continuation facts",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn residual_subsets_reuse_one_interned_frontier_per_decision_state() {
+        const RESIDUAL_COUNT: usize = 8;
+        FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.set(0);
+        let (grammar, _) = correlated_pair_grammar(RESIDUAL_COUNT);
+        let atom_kinds = expand_atoms(&grammar);
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+
+        for mask in 1_usize..(1_usize << RESIDUAL_COUNT) {
+            let residuals = (0..RESIDUAL_COUNT)
+                .filter(|index| mask & (1 << index) != 0)
+                .map(|index| {
+                    DecisionState(vec![DecisionItem::Type(TypeId::new(
+                        index.try_into().expect("test type width"),
+                    ))])
+                })
+                .collect();
+            arena.build(1, residuals);
+        }
+
+        assert!(
+            FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.get() <= arena.decision_states.len(),
+            "each reachable interned decision state must derive its normalized frontier once; computations={} decision_states={}",
+            FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.get(),
+            arena.decision_states.len(),
+        );
+    }
+
+    #[test]
+    fn cutoff_residual_subsets_share_canonical_projected_frontiers() {
+        const RESIDUAL_COUNT: usize = 12;
+        FIRST_LANGUAGE_CUTOFF_COMPONENT_MEMBERSHIPS.set(0);
+        FIRST_LANGUAGE_CUTOFF_PARTITION_INPUTS.set(0);
+        let mut grammar =
+            GrammarDescription::new("shared-cutoff-frontiers", 1, 1, TextEquivalence::Sensitive);
+        let mut next_byte = 0;
+        let kind_declaration = test_declaration(&mut grammar, &mut next_byte, "Word");
+        let kind = grammar.push_kind(crate::KindDescription::new("Word", kind_declaration));
+        let atom_declaration = test_declaration(&mut grammar, &mut next_byte, "WordAtom");
+        let atom = grammar.push_atom(crate::AtomDescription::new(
+            "WordAtom",
+            atom_declaration,
+            AtomExpression::Kind(kind),
+        ));
+        let token_declaration = test_declaration(&mut grammar, &mut next_byte, "Token");
+        let token = grammar.push_type(crate::TypeDescription::new(
+            "Token",
+            token_declaration,
+            TypeShape::Token {
+                atom,
+                text_predicate: None,
+            },
+        ));
+        let aliases = (0..RESIDUAL_COUNT)
+            .map(|index| {
+                let alias = grammar.next_type_id();
+                let name = format!("Alias{index}");
+                let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+                let site_declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("{name}::0"));
+                let site = grammar.push_site(crate::ParseSite::new(
+                    alias,
+                    token,
+                    site_declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                assert_eq!(
+                    grammar.push_type(crate::TypeDescription::new(
+                        name,
+                        declaration,
+                        TypeShape::Alias { site },
+                    )),
+                    alias,
+                );
+                alias
+            })
+            .collect::<Vec<_>>();
+        let atom_kinds = expand_atoms(&grammar);
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+        let expected = vec![FirstSequence {
+            positions: vec![FirstPosition {
+                kinds: KindSet::singleton(grammar.kinds.len(), kind)
+                    .expect("test kind belongs to grammar"),
+                text_predicate: None,
+            }],
+            ends: true,
+        }];
+
+        for mask in 1_usize..(1_usize << RESIDUAL_COUNT) {
+            let residuals = aliases
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, alias)| DecisionState(vec![DecisionItem::Type(*alias)]))
+                .collect::<Vec<_>>();
+            let root = arena.build(1, residuals);
+            assert_eq!(
+                arena.materialize(root),
+                expected,
+                "shared projected frontier changed the exact bounded language for mask {mask}",
+            );
+        }
+
+        assert!(
+            FIRST_LANGUAGE_CUTOFF_COMPONENT_MEMBERSHIPS.get() <= 1,
+            "equivalent residual subsets must scan their shared projected frontier once; component_scans={}",
+            FIRST_LANGUAGE_CUTOFF_COMPONENT_MEMBERSHIPS.get(),
+        );
+        assert!(
+            FIRST_LANGUAGE_CUTOFF_PARTITION_INPUTS.get() <= 1,
+            "equivalent residual subsets must partition their shared transition once; partition_inputs={}",
+            FIRST_LANGUAGE_CUTOFF_PARTITION_INPUTS.get(),
+        );
+        assert_eq!(
+            arena.cutoff_frontiers.len(),
+            1,
+            "equivalent projected frontiers must share one canonical component structure",
+        );
+        assert!(
+            arena.states.len() <= 1,
+            "remaining-one states must use projected frontier identity rather than retain unobservable residual subsets; retained {} states",
+            arena.states.len(),
+        );
+        assert!(
+            arena.nodes.len() <= 2,
+            "identical cutoff languages must retain only the consuming node and its terminal suffix; retained {}",
+            arena.nodes.len(),
+        );
+        assert!(
+            arena.decision_states.len() <= RESIDUAL_COUNT,
+            "cutoff projection must not intern successors for shared residual subsets; retained {}",
+            arena.decision_states.len(),
+        );
+    }
+
+    #[test]
+    fn depth_two_residual_subsets_share_canonical_projected_languages() {
+        const RESIDUAL_COUNT: usize = 10;
+        let mut grammar = GrammarDescription::new(
+            "shared-depth-two-frontiers",
+            1,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let kind_declaration = test_declaration(&mut grammar, &mut next_byte, "Word");
+        let kind = grammar.push_kind(crate::KindDescription::new("Word", kind_declaration));
+        let atom_declaration = test_declaration(&mut grammar, &mut next_byte, "WordAtom");
+        let atom = grammar.push_atom(crate::AtomDescription::new(
+            "WordAtom",
+            atom_declaration,
+            AtomExpression::Kind(kind),
+        ));
+        let token_declaration = test_declaration(&mut grammar, &mut next_byte, "Token");
+        let token = grammar.push_type(crate::TypeDescription::new(
+            "Token",
+            token_declaration,
+            TypeShape::Token {
+                atom,
+                text_predicate: None,
+            },
+        ));
+        let pair = grammar.next_type_id();
+        let pair_declaration = test_declaration(&mut grammar, &mut next_byte, "Pair");
+        let pair_sites = (0..2)
+            .map(|index| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("Pair::{index}"));
+                grammar.push_site(crate::ParseSite::new(
+                    pair,
+                    token,
+                    declaration,
+                    crate::ContainerShape::Direct,
+                ))
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Pair",
+                pair_declaration,
+                TypeShape::Sequence { sites: pair_sites },
+            )),
+            pair,
+        );
+        let aliases = (0..RESIDUAL_COUNT)
+            .map(|index| {
+                let alias = grammar.next_type_id();
+                let name = format!("Alias{index}");
+                let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+                let site_declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("{name}::0"));
+                let site = grammar.push_site(crate::ParseSite::new(
+                    alias,
+                    pair,
+                    site_declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                assert_eq!(
+                    grammar.push_type(crate::TypeDescription::new(
+                        name,
+                        declaration,
+                        TypeShape::Alias { site },
+                    )),
+                    alias,
+                );
+                alias
+            })
+            .collect::<Vec<_>>();
+        let atom_kinds = expand_atoms(&grammar);
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+        let position = FirstPosition {
+            kinds: KindSet::singleton(grammar.kinds.len(), kind)
+                .expect("test kind belongs to grammar"),
+            text_predicate: None,
+        };
+        let expected = vec![FirstSequence {
+            positions: vec![position.clone(), position],
+            ends: true,
+        }];
+
+        for mask in 1_usize..(1_usize << RESIDUAL_COUNT) {
+            let residuals = aliases
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, alias)| DecisionState(vec![DecisionItem::Type(*alias)]))
+                .collect::<Vec<_>>();
+            let root = arena.build(2, residuals);
+            assert_eq!(
+                arena.materialize(root),
+                expected,
+                "shared projected depth-two language changed the exact bounded language for mask {mask}",
+            );
+        }
+
+        assert!(
+            arena.states.len() <= 2,
+            "depth-two states must use projected language identity rather than retain unobservable residual subsets; retained {} states",
+            arena.states.len(),
+        );
+        assert!(
+            arena.nodes.len() <= 3,
+            "identical depth-two languages must retain only their two consuming nodes and terminal suffix; retained {}",
+            arena.nodes.len(),
+        );
+    }
+
+    #[test]
+    fn deeper_residual_subsets_share_recursive_projected_languages() {
+        const RESIDUAL_COUNT: usize = 8;
+        FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(0);
+        let (mut grammar, root) = correlated_pair_grammar(1);
+        let mut next_byte = 10_000;
+        let aliases = (0..RESIDUAL_COUNT)
+            .map(|index| {
+                let alias = grammar.next_type_id();
+                let name = format!("DepthThreeAlias{index}");
+                let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+                let site_declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("{name}::0"));
+                let site = grammar.push_site(crate::ParseSite::new(
+                    alias,
+                    root,
+                    site_declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                assert_eq!(
+                    grammar.push_type(crate::TypeDescription::new(
+                        name,
+                        declaration,
+                        TypeShape::Alias { site },
+                    )),
+                    alias,
+                );
+                alias
+            })
+            .collect::<Vec<_>>();
+        let atom_kinds = expand_atoms(&grammar);
+        let position = FirstPosition {
+            kinds: KindSet::singleton(grammar.kinds.len(), KindId::new(0))
+                .expect("test kind belongs to grammar"),
+            text_predicate: None,
+        };
+        let expected = vec![FirstSequence {
+            positions: vec![position.clone(), position.clone(), position],
+            ends: false,
+        }];
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+
+        for mask in 1_usize..(1_usize << RESIDUAL_COUNT) {
+            let residuals = aliases
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, alias)| DecisionState(vec![DecisionItem::Type(*alias)]))
+                .collect::<Vec<_>>();
+            let root = arena.build(3, residuals);
+            assert_eq!(
+                arena.materialize(root),
+                expected,
+                "shared recursive projection changed the exact bounded language for mask {mask}",
+            );
+        }
+
+        assert!(
+            arena.states.len() <= 3,
+            "recursive projected states must retain language identities rather than raw residual subsets; retained {} states",
+            arena.states.len(),
+        );
+        assert!(
+            FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get() <= RESIDUAL_COUNT * 4,
+            "the projected tail must reuse successor components instead of eagerly walking every subset; component_builds={}",
+            FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get(),
+        );
+    }
+
+    #[test]
+    fn projected_language_identity_reaches_the_parent_of_the_factored_tail() {
+        const RESIDUAL_COUNT: usize = 8;
+        FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(0);
+        let (mut grammar, root) = correlated_pair_grammar(1);
+        let mut next_byte = 20_000;
+        let aliases = (0..RESIDUAL_COUNT)
+            .map(|index| {
+                let alias = grammar.next_type_id();
+                let name = format!("DepthFourAlias{index}");
+                let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+                let site_declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("{name}::0"));
+                let site = grammar.push_site(crate::ParseSite::new(
+                    alias,
+                    root,
+                    site_declaration,
+                    crate::ContainerShape::Direct,
+                ));
+                assert_eq!(
+                    grammar.push_type(crate::TypeDescription::new(
+                        name,
+                        declaration,
+                        TypeShape::Alias { site },
+                    )),
+                    alias,
+                );
+                alias
+            })
+            .collect::<Vec<_>>();
+        let atom_kinds = expand_atoms(&grammar);
+        let position = FirstPosition {
+            kinds: KindSet::singleton(grammar.kinds.len(), KindId::new(0))
+                .expect("test kind belongs to grammar"),
+            text_predicate: None,
+        };
+        let expected = vec![FirstSequence {
+            positions: vec![
+                position.clone(),
+                position.clone(),
+                position.clone(),
+                position,
+            ],
+            ends: false,
+        }];
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+
+        for mask in 1_usize..(1_usize << RESIDUAL_COUNT) {
+            let residuals = aliases
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, alias)| DecisionState(vec![DecisionItem::Type(*alias)]))
+                .collect::<Vec<_>>();
+            let root = arena.build(4, residuals);
+            assert_eq!(
+                arena.materialize(root),
+                expected,
+                "parent projection changed the exact bounded language for mask {mask}",
+            );
+        }
+
+        assert!(
+            arena.states.len() <= 4,
+            "the state above the specialized tail must use projected language identities; retained {} states",
+            arena.states.len(),
+        );
+        assert!(
+            FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get() <= RESIDUAL_COUNT * 5,
+            "the parent projection must reuse canonical successor components; component_builds={}",
+            FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get(),
+        );
+    }
+
+    #[test]
+    fn cutoff_frontier_index_retains_one_component_copy_per_unique_frontier() {
+        const FRONTIER_COUNT: usize = 64;
+        let mut grammar = GrammarDescription::new(
+            "cutoff-frontier-index",
+            FRONTIER_COUNT,
+            1,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        for index in 0..FRONTIER_COUNT {
+            let name = format!("K{index}");
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+            grammar.push_kind(crate::KindDescription::new(name, declaration));
+        }
+        let atom_kinds = Vec::new();
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+
+        for index in 0..FRONTIER_COUNT {
+            let position = arena.intern_position(FirstPosition {
+                kinds: KindSet::singleton(
+                    FRONTIER_COUNT,
+                    KindId::new(index.try_into().expect("test kind identity width")),
+                )
+                .expect("test kind belongs to grammar"),
+                text_predicate: None,
+            });
+            let frontier = FirstLanguageCutoffFrontier {
+                can_end: index % 2 == 0,
+                transitions: vec![FirstLanguageCutoffTransition {
+                    position,
+                    summary: if index % 3 == 0 {
+                        FIRST_LANGUAGE_CUTOFF_END
+                    } else {
+                        FIRST_LANGUAGE_CUTOFF_CONTINUES
+                    },
+                }],
+            };
+            let first = arena.intern_cutoff_frontier(frontier.clone());
+            let second = arena.intern_cutoff_frontier(frontier);
+            assert_eq!(first, second, "equivalent frontiers must share identity");
+        }
+
+        assert_eq!(arena.cutoff_frontiers.len(), FRONTIER_COUNT);
+        assert!(
+            arena.retained_cutoff_frontier_component_copies() <= FRONTIER_COUNT,
+            "the canonical index must reference arena-owned components rather than clone them; retained {} component copies for {FRONTIER_COUNT} unique frontiers",
+            arena.retained_cutoff_frontier_component_copies(),
+        );
+    }
+
+    #[test]
+    fn cached_frontiers_intern_repeated_positions_across_compact_arcs() {
+        const RESIDUAL_COUNT: usize = 64;
+        let (grammar, _) = correlated_pair_grammar(RESIDUAL_COUNT);
+        let atom_kinds = expand_atoms(&grammar);
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+
+        for tail in 0..RESIDUAL_COUNT {
+            let residual = arena.intern_decision_state(DecisionState(vec![
+                DecisionItem::Type(TypeId::new(0)),
+                DecisionItem::Type(TypeId::new(
+                    tail.try_into().expect("test type identity width"),
+                )),
+            ]));
+            arena.ensure_decision_frontier(residual);
+        }
+
+        assert_eq!(arena.cached_frontier_position_count(), 1);
+        assert_eq!(arena.cached_frontier_arc_count(), RESIDUAL_COUNT);
+        assert!(
+            arena.cached_frontier_kind_words() <= grammar.kind_count.div_ceil(64),
+            "cached arcs must retain one interned KindSet rather than one copy per arc; stored {} words",
+            arena.cached_frontier_kind_words(),
+        );
+    }
+
+    #[test]
+    fn recursive_overlapping_cells_reuse_interned_decision_states() {
+        const BRANCH_COUNT: usize = 24;
+        FIRST_LANGUAGE_DECISION_STATE_CLONES.set(0);
+        FIRST_LANGUAGE_DECISION_STATE_COMPARISONS.set(0);
+        let (grammar, root) = overlapping_text_pair_grammar(BRANCH_COUNT);
+        let atom_kinds = expand_atoms(&grammar);
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+
+        arena.build(
+            grammar.max_lookahead,
+            vec![DecisionState(vec![DecisionItem::Type(root)])],
+        );
+        let cells = arena
+            .nodes
+            .iter()
+            .map(|node| node.cells.len())
+            .sum::<usize>();
+        let residual_memberships = arena
+            .states
+            .keys()
+            .map(|state| state.residuals.len())
+            .sum::<usize>();
+
+        assert!(
+            FIRST_LANGUAGE_DECISION_STATE_CLONES.get() <= arena.decision_states.len() * 10,
+            "recursive cells must carry interned residual identities; clones={} comparisons={} decision_states={} states={} nodes={}",
+            FIRST_LANGUAGE_DECISION_STATE_CLONES.get(),
+            FIRST_LANGUAGE_DECISION_STATE_COMPARISONS.get(),
+            arena.decision_states.len(),
+            arena.states.len(),
+            arena.nodes.len(),
+        );
+        assert!(
+            FIRST_LANGUAGE_DECISION_STATE_COMPARISONS.get() <= BRANCH_COUNT * 320,
+            "recursive cells must compare compact residual identities; comparisons={} decision_states={} states={} nodes={} cells={} arcs={} residual_memberships={}",
+            FIRST_LANGUAGE_DECISION_STATE_COMPARISONS.get(),
+            arena.decision_states.len(),
+            arena.states.len(),
+            arena.nodes.len(),
+            cells,
+            arena.cached_frontier_arc_count(),
+            residual_memberships,
+        );
+        assert!(
+            arena.decision_states.len() <= BRANCH_COUNT * 2 + 3,
+            "final-position projection must not retain successor decision states; retained {}",
+            arena.decision_states.len(),
+        );
+        assert!(
+            arena.cached_frontier_arc_count() <= BRANCH_COUNT * 5,
+            "factored final-position frontiers must retain linear compact arcs; retained {}",
+            arena.cached_frontier_arc_count(),
+        );
+        assert!(
+            cells <= BRANCH_COUNT * 6 + 1,
+            "overlapping final-position partitions plus the canonical union root must retain linear cells; retained {cells}",
+        );
+        assert!(
+            residual_memberships <= BRANCH_COUNT * 5,
+            "factored suffix states must retain linearly bounded residual memberships; retained {residual_memberships}",
+        );
+        assert!(
+            arena.nodes.len() <= BRANCH_COUNT * BRANCH_COUNT,
+            "overlapping cells must stay proportional to their canonical structural nodes",
+        );
+    }
+
+    #[test]
+    fn dense_cutoff_cells_fold_two_bit_summaries_without_residual_rescans() {
+        const BRANCH_COUNT: usize = 48;
+        FIRST_LANGUAGE_CUTOFF_RESIDUAL_VISITS.set(0);
+        FIRST_LANGUAGE_CUTOFF_SUMMARY_READS.set(0);
+        let (grammar, root) = overlapping_text_pair_grammar(BRANCH_COUNT);
+        let atom_kinds = expand_atoms(&grammar);
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+
+        arena.build(
+            grammar.max_lookahead,
+            vec![DecisionState(vec![DecisionItem::Type(root)])],
+        );
+
+        let outcomes = arena
+            .nodes
+            .iter()
+            .filter(|node| node.cells.is_empty())
+            .map(|node| (node.exact_end, node.cutoff))
+            .collect::<BTreeSet<_>>();
+        assert!(
+            FIRST_LANGUAGE_CUTOFF_RESIDUAL_VISITS.get()
+                <= FIRST_LANGUAGE_CUTOFF_SUMMARY_READS.get(),
+            "cutoff cells must fold summaries while partitioning; residual_visits={} candidate_reads={} outcomes={}",
+            FIRST_LANGUAGE_CUTOFF_RESIDUAL_VISITS.get(),
+            FIRST_LANGUAGE_CUTOFF_SUMMARY_READS.get(),
+            outcomes.len(),
+        );
+        assert!(
+            outcomes.len() <= 4,
+            "two boolean cutoff facts admit only four structural outcomes",
+        );
+    }
+
+    #[test]
+    fn wide_kind_cutoff_transition_reuses_summary_before_partitioning() {
+        const KIND_COUNT: usize = 256;
+        FIRST_LANGUAGE_CUTOFF_SUMMARY_READS.set(0);
+        FIRST_LANGUAGE_FRONTIER_EXPANSIONS.set(0);
+        let mut grammar = GrammarDescription::new(
+            "wide-cutoff-transition",
+            KIND_COUNT,
+            1,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        for index in 0..KIND_COUNT {
+            let name = format!("K{index}");
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+            grammar.push_kind(crate::KindDescription::new(name, declaration));
+        }
+        let atom_kinds = Vec::new();
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+        let next = arena.intern_decision_state(DecisionState(Vec::new()));
+        let position = arena.intern_position(FirstPosition {
+            kinds: KindSet::from_kinds(
+                KIND_COUNT,
+                (0..KIND_COUNT)
+                    .map(|kind| KindId::new(kind.try_into().expect("test kind identity width"))),
+            )
+            .expect("test kinds belong to grammar"),
+            text_predicate: None,
+        });
+        let transitions =
+            arena.project_full_cutoff_transitions(&[FirstLanguageTransition { position, next }]);
+
+        let cells = (0..16)
+            .map(|_| arena.build_cutoff_cells(&transitions))
+            .last()
+            .expect("test performs cutoff builds");
+
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].kinds.iter().count(), KIND_COUNT);
+        assert!(
+            FIRST_LANGUAGE_CUTOFF_SUMMARY_READS.get() <= transitions.len(),
+            "each interned successor summary must be carried across repeated cutoff builds; read {} summaries for {} transitions across {KIND_COUNT} kinds",
+            FIRST_LANGUAGE_CUTOFF_SUMMARY_READS.get(),
+            transitions.len(),
+        );
+        assert!(
+            FIRST_LANGUAGE_FRONTIER_EXPANSIONS.get() <= arena.decision_states.len(),
+            "cutoff-summary computation must be bounded by unique interned decision states",
+        );
+    }
+
+    #[test]
+    fn cutoff_partition_factors_wide_kind_sets_before_text_cells() {
+        const KIND_COUNT: usize = 128;
+        FIRST_LANGUAGE_CUTOFF_PARTITION_INPUTS.set(0);
+        let mut grammar = GrammarDescription::new(
+            "wide-cutoff-partition",
+            KIND_COUNT,
+            1,
+            TextEquivalence::AsciiInsensitive,
+        );
+        let mut next_byte = 0;
+        for index in 0..KIND_COUNT {
+            let name = format!("K{index}");
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+            grammar.push_kind(crate::KindDescription::new(name, declaration));
+        }
+        let exact_a = grammar.push_text_predicate(TextPredicate::Exact("A".to_owned()));
+        let one_of_ab =
+            grammar.push_text_predicate(TextPredicate::OneOf(vec!["a".to_owned(), "B".to_owned()]));
+        let not_b = grammar.push_text_predicate(TextPredicate::NotIn(vec!["b".to_owned()]));
+        let atom_kinds = Vec::new();
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+        let specifications = [
+            ((0..96).collect::<Vec<_>>(), None, FIRST_LANGUAGE_CUTOFF_END),
+            (
+                (32..KIND_COUNT).collect::<Vec<_>>(),
+                Some(exact_a),
+                FIRST_LANGUAGE_CUTOFF_CONTINUES,
+            ),
+            (
+                (0..KIND_COUNT).step_by(2).collect::<Vec<_>>(),
+                Some(one_of_ab),
+                FIRST_LANGUAGE_CUTOFF_END,
+            ),
+            (
+                (1..KIND_COUNT).step_by(2).collect::<Vec<_>>(),
+                Some(not_b),
+                FIRST_LANGUAGE_CUTOFF_CONTINUES,
+            ),
+        ];
+        let transitions = specifications
+            .iter()
+            .map(|(kinds, text_predicate, summary)| {
+                let position = arena.intern_position(FirstPosition {
+                    kinds: KindSet::from_kinds(
+                        KIND_COUNT,
+                        kinds.iter().map(|kind| {
+                            KindId::new((*kind).try_into().expect("test kind identity width"))
+                        }),
+                    )
+                    .expect("test kinds belong to grammar"),
+                    text_predicate: *text_predicate,
+                });
+                FirstLanguageCutoffTransition {
+                    position,
+                    summary: *summary,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let cells = arena.build_cutoff_cells(&transitions);
+
+        for kind_index in 0..KIND_COUNT {
+            let kind = KindId::new(kind_index.try_into().expect("test kind identity width"));
+            for text in ["A", "b", "other"] {
+                let canonical = text.to_ascii_lowercase();
+                let expected = transitions.iter().fold(0_u8, |summary, transition| {
+                    let position = &arena.positions[transition.position.index()];
+                    let matches = position.kinds.contains(kind)
+                        && position.text_predicate.is_none_or(|predicate| {
+                            match &grammar.text_predicates[predicate.index()] {
+                                TextPredicate::Any => true,
+                                TextPredicate::Exact(value) => {
+                                    value.to_ascii_lowercase() == canonical
+                                }
+                                TextPredicate::OneOf(values) => values
+                                    .iter()
+                                    .any(|value| value.to_ascii_lowercase() == canonical),
+                                TextPredicate::NotIn(values) => values
+                                    .iter()
+                                    .all(|value| value.to_ascii_lowercase() != canonical),
+                            }
+                        });
+                    summary | if matches { transition.summary } else { 0 }
+                });
+                let matching = cells
+                    .iter()
+                    .filter(|cell| {
+                        cell.kinds.contains(kind)
+                            && match &cell.text {
+                                TextPartition::Any => true,
+                                TextPartition::Exact(value) => value == &canonical,
+                                TextPartition::OneOf(values) => values.contains(&canonical),
+                                TextPartition::NotIn(values) => !values.contains(&canonical),
+                            }
+                    })
+                    .collect::<Vec<_>>();
+                assert!(
+                    matching.len() <= 1,
+                    "cutoff cells must remain pairwise disjoint"
+                );
+                let actual = matching.first().map_or(0, |cell| {
+                    let node = &arena.nodes[cell.next.index()];
+                    (u8::from(node.exact_end) * FIRST_LANGUAGE_CUTOFF_END)
+                        | (u8::from(node.cutoff) * FIRST_LANGUAGE_CUTOFF_CONTINUES)
+                });
+                assert_eq!(actual, expected, "kind={kind_index} text={text}");
+            }
+        }
+        assert!(
+            FIRST_LANGUAGE_CUTOFF_PARTITION_INPUTS.get() <= transitions.len(),
+            "wide kind sets must remain symbolic before text partitioning; expanded {} transition-kind candidates from {} factored transitions",
+            FIRST_LANGUAGE_CUTOFF_PARTITION_INPUTS.get(),
+            transitions.len(),
+        );
+    }
+
+    #[test]
+    fn projected_partition_factors_wide_kind_sets_before_text_cells() {
+        const KIND_COUNT: usize = 128;
+        FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.set(0);
+        let mut grammar = GrammarDescription::new(
+            "wide-projected-partition",
+            KIND_COUNT,
+            2,
+            TextEquivalence::AsciiInsensitive,
+        );
+        let mut next_byte = 0;
+        for index in 0..KIND_COUNT {
+            let name = format!("K{index}");
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+            grammar.push_kind(crate::KindDescription::new(name, declaration));
+        }
+        let exact_a = grammar.push_text_predicate(TextPredicate::Exact("A".to_owned()));
+        let one_of_ab =
+            grammar.push_text_predicate(TextPredicate::OneOf(vec!["a".to_owned(), "B".to_owned()]));
+        let not_b = grammar.push_text_predicate(TextPredicate::NotIn(vec!["b".to_owned()]));
+        let atom_kinds = Vec::new();
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+        let summaries = [
+            FIRST_LANGUAGE_CUTOFF_END,
+            FIRST_LANGUAGE_CUTOFF_CONTINUES,
+            FIRST_LANGUAGE_CUTOFF_END | FIRST_LANGUAGE_CUTOFF_CONTINUES,
+            FIRST_LANGUAGE_CUTOFF_CONTINUES,
+        ];
+        let components = summaries.map(|summary| {
+            arena.intern_projected_component(FirstLanguageProjectedComponent {
+                exact_end: summary & FIRST_LANGUAGE_CUTOFF_END != 0,
+                cutoff: summary & FIRST_LANGUAGE_CUTOFF_CONTINUES != 0,
+                transitions: Vec::new(),
+            })
+        });
+        let specifications = [
+            ((0..96).collect::<Vec<_>>(), None, components[0]),
+            (
+                (32..KIND_COUNT).collect::<Vec<_>>(),
+                Some(exact_a),
+                components[1],
+            ),
+            (
+                (0..KIND_COUNT).step_by(2).collect::<Vec<_>>(),
+                Some(one_of_ab),
+                components[2],
+            ),
+            (
+                (1..KIND_COUNT).step_by(2).collect::<Vec<_>>(),
+                Some(not_b),
+                components[3],
+            ),
+        ];
+        let transitions = specifications
+            .iter()
+            .map(|(kinds, text_predicate, next)| {
+                let position = arena.intern_position(FirstPosition {
+                    kinds: KindSet::from_kinds(
+                        KIND_COUNT,
+                        kinds.iter().map(|kind| {
+                            KindId::new((*kind).try_into().expect("test kind identity width"))
+                        }),
+                    )
+                    .expect("test kinds belong to grammar"),
+                    text_predicate: *text_predicate,
+                });
+                FirstLanguageProjectedTransition {
+                    position,
+                    next: *next,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let cells = arena.build_projected_cells(&transitions, 0);
+
+        for kind_index in 0..KIND_COUNT {
+            let kind = KindId::new(kind_index.try_into().expect("test kind identity width"));
+            for text in ["A", "b", "other"] {
+                let canonical = text.to_ascii_lowercase();
+                let expected = transitions
+                    .iter()
+                    .filter(|transition| {
+                        let position = &arena.positions[transition.position.index()];
+                        position.kinds.contains(kind)
+                            && position.text_predicate.is_none_or(|predicate| {
+                                match &grammar.text_predicates[predicate.index()] {
+                                    TextPredicate::Any => true,
+                                    TextPredicate::Exact(value) => {
+                                        value.to_ascii_lowercase() == canonical
+                                    }
+                                    TextPredicate::OneOf(values) => values
+                                        .iter()
+                                        .any(|value| value.to_ascii_lowercase() == canonical),
+                                    TextPredicate::NotIn(values) => values
+                                        .iter()
+                                        .all(|value| value.to_ascii_lowercase() != canonical),
+                                }
+                            })
+                    })
+                    .fold(0_u8, |summary, transition| {
+                        let component = &arena.projected_components[transition.next.index()];
+                        summary
+                            | (u8::from(component.exact_end) * FIRST_LANGUAGE_CUTOFF_END)
+                            | (u8::from(component.cutoff) * FIRST_LANGUAGE_CUTOFF_CONTINUES)
+                    });
+                let matching = cells
+                    .iter()
+                    .filter(|cell| {
+                        cell.kinds.contains(kind)
+                            && match &cell.text {
+                                TextPartition::Any => true,
+                                TextPartition::Exact(value) => value == &canonical,
+                                TextPartition::OneOf(values) => values.contains(&canonical),
+                                TextPartition::NotIn(values) => !values.contains(&canonical),
+                            }
+                    })
+                    .collect::<Vec<_>>();
+                assert!(matching.len() <= 1, "projected cells must remain disjoint");
+                let actual = matching.first().map_or(0, |cell| {
+                    let node = &arena.nodes[cell.next.index()];
+                    (u8::from(node.exact_end) * FIRST_LANGUAGE_CUTOFF_END)
+                        | (u8::from(node.cutoff) * FIRST_LANGUAGE_CUTOFF_CONTINUES)
+                });
+                assert_eq!(actual, expected, "kind={kind_index} text={text}");
+            }
+        }
+        assert!(
+            FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.get() <= transitions.len(),
+            "projected wide kind sets must remain symbolic; expanded {} transition-kind candidates from {} transitions",
+            FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.get(),
+            transitions.len(),
+        );
+    }
+
+    #[test]
+    fn deterministic_node_union_reuses_nested_mixed_languages() {
+        const KIND_COUNT: usize = 128;
+        const LANGUAGE_COUNT: usize = 12;
+        let mut grammar = GrammarDescription::new(
+            "nested-node-unions",
+            KIND_COUNT,
+            2,
+            TextEquivalence::AsciiInsensitive,
+        );
+        let mut next_byte = 0;
+        for index in 0..KIND_COUNT {
+            let name = format!("K{index}");
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+            grammar.push_kind(crate::KindDescription::new(name, declaration));
+        }
+        let predicates = (0..LANGUAGE_COUNT)
+            .map(|index| {
+                grammar.push_text_predicate(match index % 4 {
+                    0 => TextPredicate::Any,
+                    1 => TextPredicate::Exact(format!("word{index}")),
+                    2 => {
+                        TextPredicate::OneOf(vec![format!("word{index}"), format!("alias{index}")])
+                    }
+                    _ => TextPredicate::NotIn(vec![format!("excluded{index}")]),
+                })
+            })
+            .collect::<Vec<_>>();
+        let atom_kinds = Vec::new();
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+        let terminal = arena.intern_node(FirstLanguageNode {
+            exact_end: true,
+            cutoff: false,
+            cells: Vec::new(),
+            covers: Vec::new(),
+        });
+        let mut atoms = Vec::new();
+        for (index, predicate) in predicates.iter().copied().enumerate() {
+            let kinds = KindSet::from_kinds(
+                KIND_COUNT,
+                (index * 7..KIND_COUNT)
+                    .map(|kind| KindId::new(kind.try_into().expect("test kind identity width"))),
+            )
+            .expect("test kinds belong to grammar");
+            atoms.push(arena.intern_node(FirstLanguageNode {
+                exact_end: false,
+                cutoff: false,
+                cells: vec![FirstLanguageCell {
+                    kinds: kinds.clone(),
+                    text: TextPartition::from_predicate(Some(
+                        &grammar.text_predicates[predicate.index()],
+                    )),
+                    next: terminal,
+                }],
+                covers: vec![FirstLanguageCover {
+                    position: FirstPosition {
+                        kinds,
+                        text_predicate: Some(predicate),
+                    },
+                    next: terminal,
+                }],
+            }));
+        }
+        let mut nested = Vec::new();
+        let mut accumulated = atoms[0];
+        nested.push(accumulated);
+        for atom in atoms.iter().copied().skip(1) {
+            accumulated = arena.union_nodes(accumulated, atom);
+            nested.push(accumulated);
+        }
+        let expected_materialized = nested
+            .iter()
+            .copied()
+            .map(|node| arena.materialize(node))
+            .collect::<Vec<_>>();
+        FIRST_LANGUAGE_NODE_UNION_MISSES.set(0);
+
+        for mask in 1_usize..(1_usize << LANGUAGE_COUNT) {
+            let selected = (0..LANGUAGE_COUNT)
+                .filter(|index| mask & (1 << index) != 0)
+                .collect::<Vec<_>>();
+            let expected_index = *selected.last().expect("mask is nonempty");
+            let mut forward = nested[selected[0]];
+            for index in selected.iter().copied().skip(1) {
+                forward = arena.union_nodes(forward, nested[index]);
+            }
+            let mut reverse = nested[expected_index];
+            for index in selected.iter().copied().rev().skip(1) {
+                reverse = arena.union_nodes(reverse, nested[index]);
+            }
+            assert_eq!(forward, nested[expected_index], "forward mask={mask}");
+            assert_eq!(reverse, nested[expected_index], "reverse mask={mask}");
+            assert_eq!(
+                arena.materialize(forward),
+                expected_materialized[expected_index],
+                "exact materialized union changed for mask={mask}",
+            );
+            assert!(first_language_cells_are_disjoint(
+                &arena.nodes[forward.index()].cells,
+                &grammar,
+            ));
+        }
+        assert!(
+            FIRST_LANGUAGE_NODE_UNION_MISSES.get() <= 78,
+            "nested unions must compute at most one unordered node overlay per language pair; misses={}",
+            FIRST_LANGUAGE_NODE_UNION_MISSES.get(),
+        );
+    }
+
+    #[test]
+    fn deterministic_node_union_preserves_correlated_suffixes() {
+        const COMPONENT_COUNT: usize = 8;
+        let mut grammar = GrammarDescription::new(
+            "correlated-node-unions",
+            COMPONENT_COUNT + 1,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        for index in 0..=COMPONENT_COUNT {
+            let name = format!("K{index}");
+            let declaration = test_declaration(&mut grammar, &mut next_byte, &name);
+            grammar.push_kind(crate::KindDescription::new(name, declaration));
+        }
+        let atom_kinds = Vec::new();
+        let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
+        let terminal = arena.intern_node(FirstLanguageNode {
+            exact_end: true,
+            cutoff: false,
+            cells: Vec::new(),
+            covers: Vec::new(),
+        });
+        let shared = KindSet::singleton(grammar.kinds.len(), KindId::new(0))
+            .expect("shared kind belongs to grammar");
+        let mut components = Vec::new();
+        for index in 0..COMPONENT_COUNT {
+            let suffix_kinds = KindSet::singleton(
+                grammar.kinds.len(),
+                KindId::new((index + 1).try_into().expect("test kind identity width")),
+            )
+            .expect("suffix kind belongs to grammar");
+            let suffix = arena.intern_node(FirstLanguageNode {
+                exact_end: false,
+                cutoff: false,
+                cells: vec![FirstLanguageCell {
+                    kinds: suffix_kinds.clone(),
+                    text: TextPartition::Any,
+                    next: terminal,
+                }],
+                covers: vec![FirstLanguageCover {
+                    position: FirstPosition {
+                        kinds: suffix_kinds,
+                        text_predicate: None,
+                    },
+                    next: terminal,
+                }],
+            });
+            components.push(arena.intern_node(FirstLanguageNode {
+                exact_end: false,
+                cutoff: false,
+                cells: vec![FirstLanguageCell {
+                    kinds: shared.clone(),
+                    text: TextPartition::Any,
+                    next: suffix,
+                }],
+                covers: vec![FirstLanguageCover {
+                    position: FirstPosition {
+                        kinds: shared.clone(),
+                        text_predicate: None,
+                    },
+                    next: suffix,
+                }],
+            }));
+        }
+        let component_languages = components
+            .iter()
+            .copied()
+            .map(|node| arena.materialize(node))
+            .collect::<Vec<_>>();
+
+        for mask in 1_usize..(1_usize << COMPONENT_COUNT) {
+            let selected = (0..COMPONENT_COUNT)
+                .filter(|index| mask & (1 << index) != 0)
+                .collect::<Vec<_>>();
+            let mut expected = selected
+                .iter()
+                .flat_map(|index| component_languages[*index].clone())
+                .collect::<Vec<_>>();
+            sort_dedup_first_sequences(&mut expected);
+            let mut forward = components[selected[0]];
+            for index in selected.iter().copied().skip(1) {
+                forward = arena.union_nodes(forward, components[index]);
+            }
+            let mut reverse = components[*selected.last().expect("mask is nonempty")];
+            for index in selected.iter().copied().rev().skip(1) {
+                reverse = arena.union_nodes(reverse, components[index]);
+            }
+            assert_eq!(arena.materialize(forward), expected, "forward mask={mask}");
+            assert_eq!(arena.materialize(reverse), expected, "reverse mask={mask}");
+            assert!(first_language_cells_are_disjoint(
+                &arena.nodes[forward.index()].cells,
+                &grammar,
+            ));
+        }
     }
 
     #[test]
