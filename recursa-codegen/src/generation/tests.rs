@@ -24,6 +24,45 @@ fn warnings_publish_one_complete_generation_and_remain_on_the_result() {
 }
 
 #[test]
+fn emission_lookup_index_bounds_work_and_caches_pratt_products() {
+    let package = tempfile::tempdir().expect("temporary generation-provenance fixture");
+    fs::write(
+        package.path().join("grammar.rs"),
+        include_str!("../../tests/fixtures/generation/pratt/src/grammar.rs"),
+    )
+    .expect("write generation-provenance fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze Pratt fixture for emission lookup work");
+    reset_emission_lookup_instrumentation();
+    EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join indexed Pratt emission plan");
+    let lookup_work = emission_lookup_instrumentation();
+    assert_eq!(
+        lookup_work.dispatch_candidates, 5,
+        "the optimization must preserve the small dispatch lookup path",
+    );
+    assert_eq!(
+        lookup_work.failure_edge_candidates, 0,
+        "failure-edge joins must use their dense semantic key",
+    );
+    assert_eq!(
+        lookup_work.container_machine_candidates, 0,
+        "container joins must use their dense site key",
+    );
+    assert!(
+        lookup_work.pratt_extender_builds <= 17,
+        "each distinct Pratt owner/threshold product must be built at most once",
+    );
+    assert!(
+        lookup_work.pratt_extender_branch_candidates <= 153,
+        "nine Pratt branches may be visited at most once for each distinct product",
+    );
+}
+
+#[test]
 fn transient_provenance_preserves_semantics_identity_and_generated_artifacts() {
     let package = tempfile::tempdir().expect("temporary generation-provenance fixture");
     fs::write(
