@@ -531,6 +531,14 @@ pub struct OptionalViabilityDecision {
     trie: OptionalViabilityDecisionNode,
     /// Bounded lookahead depth needed to reach every unambiguous action.
     required_lookahead: usize,
+    /// Caller-FOLLOW kinds this decision provably separates by element suffix.
+    ///
+    /// Non-empty only for suffix-proving decisions: the planner proved that
+    /// every one of these overlapping kinds is decided by matching the
+    /// element's own closed prefix language rather than by first-token
+    /// commitment. Diagnostics consume this proof to retire the corresponding
+    /// nullable-FOLLOW warnings; an empty set claims nothing.
+    separated_caller_kinds: KindSet,
 }
 
 impl OptionalViabilityDecision {
@@ -542,6 +550,11 @@ impl OptionalViabilityDecision {
     /// Returns the bounded lookahead depth required by this optional viability decision.
     pub const fn required_lookahead(&self) -> usize {
         self.required_lookahead
+    }
+
+    /// Returns the caller-FOLLOW kinds provably separated by element suffix.
+    pub const fn separated_caller_kinds(&self) -> &KindSet {
+        &self.separated_caller_kinds
     }
 }
 
@@ -1242,6 +1255,7 @@ pub(crate) fn plan_decisions(
         optional_viability_decisions_by_site[site_id.index()] = Some(OptionalViabilityDecision {
             trie: optional_viability_decision_from_compact(&resolution.root),
             required_lookahead: resolution.required_lookahead,
+            separated_caller_kinds: KindSet::empty(grammar.kind_count),
         });
     }
 
@@ -1351,9 +1365,42 @@ fn plan_nonoverlapping_optional_viability_for_site(
             let trie = freeze_optional_viability_decision(&consuming, &skipping, grammar, true);
             let required_lookahead =
                 optional_viability_decision_lookahead(&trie).min(grammar.max_lookahead);
+            // A kind is provably separated only when the frozen trie defers past
+            // it: every root edge covering the kind leads to a node without a
+            // depth-one Consume terminal, so commitment requires the element's
+            // own deeper suffix. An element that can fully end on the shared
+            // token keeps the greedy inherent-ambiguity commitment and keeps
+            // its warning.
+            let mut separated_caller_kinds = KindSet::empty(grammar.kind_count);
+            for element in element_first {
+                for caller in caller_first {
+                    if crate::analysis::predicates_overlap(
+                        element.text_predicate,
+                        caller.text_predicate,
+                        &grammar.text_predicates,
+                        grammar.text_equivalence,
+                    ) && let Ok(shared) = element.kinds.intersection(&caller.kinds)
+                    {
+                        separated_caller_kinds.union_assign(&shared);
+                    }
+                }
+            }
+            for edge in trie.edges() {
+                let concedes_at_depth_one = edge
+                    .next()
+                    .terminals()
+                    .iter()
+                    .any(|terminal| terminal.action() == OptionalAction::Consume);
+                if concedes_at_depth_one
+                    && let Ok(unproven) = separated_caller_kinds.difference(&edge.position().kinds)
+                {
+                    separated_caller_kinds = unproven;
+                }
+            }
             decisions[site_id.index()] = Some(OptionalViabilityDecision {
                 trie,
                 required_lookahead,
+                separated_caller_kinds,
             });
             return;
         }
@@ -1392,6 +1439,7 @@ fn plan_nonoverlapping_optional_viability_for_site(
     decisions[site_id.index()] = Some(OptionalViabilityDecision {
         trie,
         required_lookahead,
+        separated_caller_kinds: KindSet::empty(grammar.kind_count),
     });
 }
 
@@ -4121,11 +4169,12 @@ mod tests {
         let (grammar, optional) = suffix_proving_caller_overlap_optional_grammar();
         let report = crate::analyze(&grammar);
         assert!(
-            report
+            !report
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == crate::DiagnosticCode::NullableFollowOverlap),
-            "the caller overlap retains RCA0300 until the warning policy is revisited",
+            "a suffix-proving decision suppresses RCA0300 by consuming the frozen proof: {:?}",
+            report.diagnostics,
         );
         let output = report.output.unwrap_or_else(|| {
             panic!(
@@ -4198,12 +4247,19 @@ mod tests {
     fn open_element_languages_keep_the_greedy_legacy_selector() {
         let (grammar, optional) = caller_overlap_optional_grammar_at_lookahead(2);
         let report = crate::analyze(&grammar);
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == crate::DiagnosticCode::NullableFollowOverlap),
-            "the caller overlap still warns when no decision can prove the suffix",
+        let warning = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == crate::DiagnosticCode::NullableFollowOverlap)
+            .expect("the caller overlap still warns when no decision can prove the suffix");
+        let evidence = warning
+            .lookahead
+            .as_ref()
+            .expect("a retained warning states that no proof exists within bounds");
+        assert_eq!(evidence.configured_depth, grammar.max_lookahead);
+        assert_eq!(
+            evidence.sufficient_depth, None,
+            "an open element admits no separating depth within the configured bound",
         );
         let output = report.output.unwrap_or_else(|| {
             panic!(

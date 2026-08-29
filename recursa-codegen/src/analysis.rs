@@ -154,7 +154,9 @@ fn render_shared_prefix(
         witness.push("<end>".to_owned());
     }
     let witness = witness.join(" ");
-    writeln!(rendered, "  shared prefix: {witness}").expect("writing to a String cannot fail");
+    if !witness.is_empty() {
+        writeln!(rendered, "  shared prefix: {witness}").expect("writing to a String cannot fail");
+    }
     if let Some(depth) = evidence.sufficient_depth {
         writeln!(
             rendered,
@@ -742,6 +744,9 @@ fn analyze_with_publication_policy(
             }
         }
     };
+    if let Some(decisions) = &decisions {
+        reconcile_follow_warnings_with_decisions(&mut diagnostics, &decisions.0, grammar);
+    }
     if decisions.is_some() && policy.materialize_sequences {
         populate_first_sequences(&first_sequence_analysis, &mut first_by_type);
     }
@@ -787,6 +792,53 @@ fn analyze_with_publication_policy(
 }
 
 /// Derives the publish decisions from normalized grammar structure and previously established semantic facts.
+/// Retires nullable-FOLLOW warnings that frozen viability decisions provably resolve.
+///
+/// A warning survives only when no suffix-proving decision separates its complete
+/// overlap. Every surviving FOLLOW warning then records that no separating depth
+/// exists within the configured lookahead, mirroring the shared-prefix evidence
+/// static conflicts already carry. Consuming the published decision products keeps
+/// diagnostics from drifting away from generated parser behavior.
+fn reconcile_follow_warnings_with_decisions(
+    diagnostics: &mut Vec<Diagnostic>,
+    decisions: &crate::DecisionProducts,
+    grammar: &GrammarDescription,
+) {
+    let machines = decisions.container_machines();
+    diagnostics.retain_mut(|diagnostic| {
+        match diagnostic.conflict_remedy {
+            Some(crate::ConflictRemedy::ReviewNullableFollow { site }) => {
+                let proved = machines
+                    .iter()
+                    .find(|machine| machine.site() == site)
+                    .and_then(|machine| machine.optional_viability_decision())
+                    .is_some_and(|decision| {
+                        diagnostic.conflict.as_ref().is_some_and(|conflict| {
+                            conflict
+                                .overlap
+                                .difference(decision.separated_caller_kinds())
+                                .is_ok_and(|unproven| unproven.is_empty())
+                        })
+                    });
+                if proved {
+                    return false;
+                }
+            }
+            Some(crate::ConflictRemedy::ReviewPrattFollow { .. }) => {}
+            _ => return true,
+        }
+        if diagnostic.lookahead.is_none() {
+            diagnostic.lookahead = Some(crate::SharedPrefixEvidence {
+                configured_depth: grammar.max_lookahead,
+                sufficient_depth: None,
+                witness: Vec::new(),
+                end_of_alternative: false,
+            });
+        }
+        true
+    });
+}
+
 fn publish_decisions(
     grammar: &GrammarDescription,
     decisions: crate::decision_plan::ConstructedDecisionProducts,

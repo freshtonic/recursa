@@ -468,6 +468,7 @@ fn nested_nullable_tail_warning_is_predicate_aware_and_keeps_output() {
             "    - FIRST propagates through `After`\n",
             "    - text is refined by Exact(\"SELECT\")\n",
             "    - kind `Word` is declared by atom `Word`\n",
+            "  lookahead: no finite depth separates this shared prefix\n",
             "  remedy: make the use site required or separate it from its possible caller FOLLOW\n",
             "warning[RCA0300]: nullable use site in `Root` may consume a caller FOLLOW kind\n",
             "  primary source[0] 12..13: this nullable use site can consume the witness kind\n",
@@ -485,6 +486,7 @@ fn nested_nullable_tail_warning_is_predicate_aware_and_keeps_output() {
             "    - FIRST propagates through `After`\n",
             "    - text is refined by Exact(\"SELECT\")\n",
             "    - kind `Word` is declared by atom `Word`\n",
+            "  lookahead: no finite depth separates this shared prefix\n",
             "  remedy: make the use site required or separate it from its possible caller FOLLOW\n",
         )
     );
