@@ -18,7 +18,7 @@ fn a_downstream_arithmetic_grammar_parses_the_frozen_pratt_plan() {
 
 #[test]
 fn pratt_dispatch_regressions_share_one_downstream_fixture() {
-    let package = scaffold_nud_follow_overlap_fixture();
+    let package = scaffold_pratt_dispatch_overlap_fixture();
     let output = run_fixture(&package);
 
     assert_success(&output);
@@ -82,6 +82,7 @@ fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() 
             ("Power", 3),
             ("Multiply", 3),
             ("Add", 3),
+            ("Custom", 3),
             ("IsNot", 4),
             ("Like", 3),
             ("Cast", 3),
@@ -222,7 +223,7 @@ fn scaffold_fixture() -> TempDir {
     package
 }
 
-fn scaffold_nud_follow_overlap_fixture() -> TempDir {
+fn scaffold_pratt_dispatch_overlap_fixture() -> TempDir {
     let package = scaffold_fixture();
     fs::write(
         package.path().join("src/grammar.rs"),
@@ -246,12 +247,15 @@ recursa::tokens! {
         LEFT => "LEFT",
         RIGHT => "RIGHT",
         FROM => "FROM",
+        ANY => "ANY",
         WHEN => "WHEN",
         THEN => "THEN",
     }
     punctuation {
         PLUS => "+",
         GT => ">",
+        LPAREN => "(",
+        RPAREN => ")",
     }
 }
 
@@ -262,6 +266,17 @@ pub struct Integer<'input> {
 }
 
 #[derive(recursa::Node)]
+pub struct Name<'input> {
+    #[lex(pattern = r"[a-z]+")]
+    pub value: NameText<'input>,
+}
+
+#[derive(recursa::Node)]
+pub enum NameAtom<'input> {
+    Plain(Name<'input>),
+}
+
+#[derive(recursa::Node)]
 #[tok(BEGIN)]
 pub struct BeginAtom;
 
@@ -269,6 +284,7 @@ pub struct BeginAtom;
 #[pratt]
 pub enum Expr<'input> {
     Integer(Integer<'input>),
+    Name(NameAtom<'input>),
     BeginAtom(BeginAtom),
     MultiGroup(#[tok(BEGIN, GROUP, this, END, GROUP)] Box<Self>),
     Wrapped(#[tok(WRAP, GROUP, this, END)] Box<Self>),
@@ -287,6 +303,11 @@ pub enum Expr<'input> {
     Add(Box<Self>, Box<Self>),
     #[parse(infix, lbp = 5, rbp = 6)]
     Greater(Box<Self>, #[tok(GT, this)] Box<Self>),
+    #[parse(postfix, bp = 5)]
+    QuantifiedGreater(
+        Box<Self>,
+        #[tok(GT, ANY, LPAREN, this, RPAREN)] Integer<'input>,
+    ),
 }
 
 #[derive(recursa::Node)]
@@ -310,6 +331,18 @@ pub struct FollowedExpr<'input> {
 use recursa_generated_pratt::grammar;
 
 fn main() {
+    let lexed = grammar::lex("name + 1");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("a wrapped atom receives the Pratt NUD follow while parsing");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast(),
+        grammar::Expr::Add(lhs, rhs)
+            if matches!(*lhs, grammar::Expr::Name(grammar::NameAtom::Plain(_)))
+                && matches!(*rhs, grammar::Expr::Integer(_))
+    ));
+
     let lexed = grammar::lex("BEGIN GROUP 1 END GROUP GROUP 2");
     let mut input = lexed.input();
     let parsed = grammar::GroupFollowed::parse(&mut input)
@@ -343,6 +376,28 @@ fn main() {
     grammar::FollowedExpr::parse(&mut input)
         .expect("a uniquely selected infix validates its nested right operand");
     assert!(input.is_eof());
+
+    let lexed = grammar::lex("WHEN 1 > ANY (0) THEN");
+    let mut input = lexed.input();
+    let parsed = grammar::FollowedExpr::parse(&mut input)
+        .expect("the longer quantified LED parses instead of the ordinary infix");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast().expression,
+        grammar::Expr::QuantifiedGreater(_, _),
+    ));
+
+    let lexed = grammar::lex("WHEN 1 > 0 FROM THEN");
+    let mut input = lexed.input();
+    let error = match grammar::FollowedExpr::parse(&mut input) {
+        Ok(_) => panic!("the selected ordinary LED must preserve the deeper caller error"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), recursa::ParseErrorKind::UnexpectedToken);
+    assert_eq!(error.span(), recursa::Span::new(11, 15).unwrap());
+    assert_eq!(error.found(), Some("fixed:FROM"));
+    assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:THEN"]);
+    assert_eq!(input.cursor(), 0, "the public parse remains transactional");
     println!("pratt-dispatch-regressions-ok");
 }
 "#,
