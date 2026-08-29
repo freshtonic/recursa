@@ -39,14 +39,14 @@ fn diagrams_keep_fixed_attachments_inside_optional_and_repeated_containers() {
     let optional_diagram = diagram_svg(optional);
     assert!(
         optional_diagram.contains("class=\"optional\"")
-            && contains_text_sequence(optional_diagram, &["(", "grammar::Item", ")"]),
+            && contains_text_sequence(optional_diagram, &["(", "Item", "ItemText", ")"]),
         "the fixed unit must remain inside Option:\n{optional}",
     );
     let repeated = production("grammar/struct.AttachedMany.html");
     let repeated_diagram = diagram_svg(repeated);
     assert!(
         repeated_diagram.contains("class=\"repeat\"")
-            && contains_text_sequence(repeated_diagram, &["[", "grammar::Item", "]"]),
+            && contains_text_sequence(repeated_diagram, &["[", "Item", "ItemText", "]"]),
         "the fixed unit must remain inside Vec:\n{repeated}",
     );
     let nonempty = production("grammar/struct.AttachedNonEmpty.html");
@@ -54,7 +54,7 @@ fn diagrams_keep_fixed_attachments_inside_optional_and_repeated_containers() {
     assert!(
         nonempty_diagram.contains("class=\"optional\"")
             && nonempty_diagram.contains("class=\"repeat\"")
-            && contains_text_sequence(nonempty_diagram, &["{", "grammar::Item", "}"]),
+            && contains_text_sequence(nonempty_diagram, &["{", "Item", "ItemText", "}"]),
         "the fixed unit must remain inside Option<Vec1>:\n{nonempty}",
     );
     for source in [optional, repeated, nonempty] {
