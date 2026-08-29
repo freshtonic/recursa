@@ -279,6 +279,7 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA3127", Lowering, Error),
     diagnostic_spec!("RCA3128", Lowering, Error),
     diagnostic_spec!("RCA3129", Lowering, Error),
+    diagnostic_spec!("RCA3130", Lowering, Error),
     diagnostic_spec!("RCA3202", Lowering, Error),
     diagnostic_spec!("RCA3203", Lowering, Error),
     diagnostic_spec!("RCA3204", Lowering, Error),

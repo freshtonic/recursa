@@ -32,6 +32,10 @@ _Avoid_: Custom lexer callback, inline scanner
 The complete byte range proposed by a lexical matcher after applying its closed scanning rules. Arbitration compares final extent before fixed-token status and explicit priority, independently of declaration order.
 _Avoid_: Starter regex length, declaration precedence
 
+**Operator-fence eligibility**:
+An operator-shaped fixed candidate crossing a related operator run's interior configured fence is ineligible only when ordinary local arbitration selects diagnostic-free skip trivia covering that fence. A related operator run reaching the candidate's full extent keeps it eligible.
+_Avoid_: Global fence veto, comment special case
+
 **Reclaimable keyword**:
 A word-shaped fixed token whose concrete token kind is admitted as content by a target at selected grammar positions.
 _Avoid_: Soft keyword, context-sensitive keyword
@@ -310,7 +314,7 @@ The deterministic multiline plain-text representation of a structured Recursa di
 _Avoid_: Cargo warning, loader output, debug dump
 
 **Build diagnostic code registry**:
-The append-only assignment of stable generation and loader diagnostic codes to failure classes, stages, severities, locations, evidence, and remedies. Runtime lexical codes use a separate matching-version contract because they classify failures over user input rather than build failures.
+The append-only assignment of stable generation and loader diagnostic codes to failure classes, stages, severities, locations, evidence, and remedies. Runtime lexical and parse codes use separate matching-version contracts because they arise during runtime input recognition or matching-version boundary validation rather than generation or loading.
 _Avoid_: Message catalogue, enum ordering
 
 **Internal diagnostic**:

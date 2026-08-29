@@ -13,6 +13,7 @@ readme = "README.md"
 keywords = ["parser", "parser-generator", "grammar", "code-generation"]
 categories = ["parsing", "development-tools::build-utils"]
 include = [
+    "build.rs",
     "src/**",
     "!src/semantic_projection_tests.rs",
     "!src/source_analysis_contract_tests.rs",

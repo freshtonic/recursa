@@ -122,6 +122,47 @@ struct LexMatch {
     end: usize,
     /// Failure metadata when the matched extent must become an error record.
     diagnostic: Option<RelativeLexDiagnostic>,
+    /// First interior operator fence encountered while computing this match.
+    interior_operator_fence: Option<(usize, usize)>,
+}
+
+/// One operator-run family's decision at the current source offset.
+struct OperatorRunDecision {
+    /// ASCII alphabet that relates fixed candidates to this operator family.
+    characters: &'static str,
+    /// Final matcher extent after the family's fence and trailing rules.
+    final_extent: usize,
+    /// Interior fence offset and byte length before which this operator run stops.
+    interior_fence: Option<(usize, usize)>,
+    /// Whether ordinary local arbitration selects valid trivia over this fence.
+    fence_consumed: bool,
+}
+
+impl OperatorRunDecision {
+    /// Reports whether this family admits every byte of a fixed candidate.
+    fn admits(&self, candidate: &[u8]) -> bool {
+        candidate
+            .iter()
+            .all(|byte| self.characters.as_bytes().contains(byte))
+    }
+}
+
+/// Cached raw lexical arbitration at one interior operator-fence boundary.
+#[derive(Clone, Copy)]
+struct LocalLexDecision {
+    /// Boundary offset relative to the current root lexical position.
+    boundary: usize,
+    /// Winner under the ordinary final-extent, fixed-status, and priority ordering.
+    selected: Option<(LexMatch, LexRule)>,
+}
+
+impl LocalLexDecision {
+    /// Reports whether the local winner is valid trivia covering the complete fence.
+    fn consumes_trivia(&self, fence_length: usize) -> bool {
+        self.selected.is_some_and(|(found, rule)| {
+            rule.skip && found.diagnostic.is_none() && found.end >= fence_length
+        })
+    }
 }
 
 /// Compiled state reused while scanning one source.
@@ -212,6 +253,7 @@ impl CompiledLexMatcher {
             Self::Regex(matcher) => anchored(matcher).map(|found| LexMatch {
                 end: found.end(),
                 diagnostic: None,
+                interior_operator_fence: None,
             }),
             Self::SameDelimiter { opener } => {
                 let opened = anchored(opener)?;
@@ -225,11 +267,13 @@ impl CompiledLexMatcher {
                             anchor_start: 0,
                             anchor_end: opened.end(),
                         }),
+                        interior_operator_fence: None,
                     });
                 };
                 Some(LexMatch {
                     end: opened.end() + close + delimiter.len(),
                     diagnostic: None,
+                    interior_operator_fence: None,
                 })
             }
             Self::Nested { opener, closer } => {
@@ -245,6 +289,7 @@ impl CompiledLexMatcher {
                             return Some(LexMatch {
                                 end: cursor,
                                 diagnostic: None,
+                                interior_operator_fence: None,
                             });
                         }
                     } else if suffix.starts_with(opener) {
@@ -257,6 +302,7 @@ impl CompiledLexMatcher {
                                     anchor_start: 0,
                                     anchor_end: opener.len(),
                                 }),
+                                interior_operator_fence: None,
                             });
                         };
                         depth = incremented;
@@ -275,6 +321,7 @@ impl CompiledLexMatcher {
                         anchor_start: 0,
                         anchor_end: opener.len(),
                     }),
+                    interior_operator_fence: None,
                 })
             }
             Self::NextExclusion { pattern, excluded } => {
@@ -295,6 +342,7 @@ impl CompiledLexMatcher {
                         anchor_start: 0,
                         anchor_end: found.end(),
                     }),
+                    interior_operator_fence: None,
                 })
             }
             Self::OperatorRun {
@@ -304,13 +352,19 @@ impl CompiledLexMatcher {
                 qualifying,
             } => {
                 let admitted = characters.as_bytes();
+                let mut interior_fence = None;
                 let mut end = 0;
                 while let Some(&byte) = remaining.as_bytes().get(end) {
-                    if fences
+                    let fence_length = fences
                         .iter()
-                        .any(|fence| remaining[end..].starts_with(fence))
-                        || !admitted.contains(&byte)
-                    {
+                        .filter(|fence| remaining.as_bytes()[end..].starts_with(fence.as_bytes()))
+                        .map(|fence| fence.len())
+                        .min();
+                    if let Some(fence_length) = fence_length {
+                        interior_fence = (end > 0).then_some((end, fence_length));
+                        break;
+                    }
+                    if !admitted.contains(&byte) {
                         break;
                     }
                     end += 1;
@@ -333,6 +387,7 @@ impl CompiledLexMatcher {
                 Some(LexMatch {
                     end,
                     diagnostic: None,
+                    interior_operator_fence: interior_fence,
                 })
             }
             Self::PhysicalLine { prefix } => {
@@ -354,10 +409,42 @@ impl CompiledLexMatcher {
                 Some(LexMatch {
                     end,
                     diagnostic: None,
+                    interior_operator_fence: None,
                 })
             }
         }
     }
+}
+
+/// Selects one raw lexical winner without applying root operator-fence suppression.
+fn select_raw_lex_match(
+    remaining: &str,
+    compiled: &[(CompiledLexMatcher, LexRule)],
+) -> Option<(LexMatch, LexRule)> {
+    compiled
+        .iter()
+        .filter_map(|(matcher, rule)| matcher.matched(remaining).map(|found| (found, *rule)))
+        .max_by_key(|(found, rule)| (found.end, rule.fixed, rule.priority))
+}
+
+/// Reports whether valid trailing trivia makes an operator-shaped fixed candidate ineligible.
+fn fixed_candidate_crosses_consumed_fence(
+    candidate: &[u8],
+    operator_runs: &[OperatorRunDecision],
+) -> bool {
+    let mut related = operator_runs
+        .iter()
+        .filter(|operator_run| operator_run.admits(candidate));
+    let reaches_candidate = related
+        .clone()
+        .any(|operator_run| operator_run.final_extent >= candidate.len());
+    !reaches_candidate
+        && related.any(|operator_run| {
+            operator_run.fence_consumed
+                && operator_run
+                    .interior_fence
+                    .is_some_and(|(start, _)| start < candidate.len())
+        })
 }
 
 /// Advances the source-domain nesting counter without allowing an impossible wraparound.
@@ -379,13 +466,70 @@ pub fn lex<'input>(
         .iter()
         .map(|rule| (CompiledLexMatcher::new(rule.matcher), *rule))
         .collect::<Vec<_>>();
+    let mut root_matches = Vec::new();
+    let mut operator_decisions = Vec::new();
+    let mut relevant_boundaries = Vec::new();
+    let mut local_decisions = Vec::new();
     let mut records = Vec::new();
     let mut offset = 0;
     while offset < source.len() {
         let remaining = &source[offset..];
-        let selected = compiled
+        root_matches.clear();
+        operator_decisions.clear();
+        for (matcher, rule) in &compiled {
+            let Some(found) = matcher.matched(remaining) else {
+                continue;
+            };
+            root_matches.push((found, *rule));
+            if let CompiledLexMatcher::OperatorRun { characters, .. } = matcher {
+                operator_decisions.push(OperatorRunDecision {
+                    characters,
+                    final_extent: found.end,
+                    interior_fence: found.interior_operator_fence,
+                    fence_consumed: false,
+                });
+            }
+        }
+        relevant_boundaries.clear();
+        for (found, _) in root_matches.iter().filter(|(_, rule)| rule.fixed) {
+            let candidate = &remaining.as_bytes()[..found.end];
+            for operator_run in &operator_decisions {
+                let Some((boundary, _)) = operator_run.interior_fence else {
+                    continue;
+                };
+                if boundary < found.end && operator_run.admits(candidate) {
+                    relevant_boundaries.push(boundary);
+                }
+            }
+        }
+        relevant_boundaries.sort_unstable();
+        relevant_boundaries.dedup();
+        local_decisions.clear();
+        for &boundary in &relevant_boundaries {
+            local_decisions.push(LocalLexDecision {
+                boundary,
+                selected: select_raw_lex_match(&remaining[boundary..], &compiled),
+            });
+        }
+        for operator_run in &mut operator_decisions {
+            let Some((boundary, fence_length)) = operator_run.interior_fence else {
+                continue;
+            };
+            operator_run.fence_consumed = local_decisions
+                .binary_search_by_key(&boundary, |decision| decision.boundary)
+                .ok()
+                .is_some_and(|index| local_decisions[index].consumes_trivia(fence_length));
+        }
+        let selected = root_matches
             .iter()
-            .filter_map(|(matcher, rule)| matcher.matched(remaining).map(|found| (found, *rule)))
+            .copied()
+            .filter(|(found, rule)| {
+                !rule.fixed
+                    || !fixed_candidate_crosses_consumed_fence(
+                        &remaining.as_bytes()[..found.end],
+                        &operator_decisions,
+                    )
+            })
             .max_by_key(|(found, rule)| (found.end, rule.fixed, rule.priority));
 
         let (end, emitted_kind, diagnostic) = selected.map_or_else(

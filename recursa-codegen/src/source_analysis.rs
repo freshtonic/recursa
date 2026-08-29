@@ -661,6 +661,7 @@ pub(crate) const fn source_model_code(kind: SourceModelDiagnosticKind) -> &'stat
         SourceModelDiagnosticKind::InvalidFixedTokenPresence => "RCA3129",
         SourceModelDiagnosticKind::InvalidTokenPlacement => "RCA3114",
         SourceModelDiagnosticKind::InvalidPrattTokenPlacement => "RCA3115",
+        SourceModelDiagnosticKind::InvalidPrattExtensionFilter => "RCA3130",
         SourceModelDiagnosticKind::ConfiguredOrdinaryDeriveConflict => "RCA3116",
         SourceModelDiagnosticKind::InvalidPrettyHint => "RCA3118",
         SourceModelDiagnosticKind::DuplicateAdmissionMembership => "RCA3119",

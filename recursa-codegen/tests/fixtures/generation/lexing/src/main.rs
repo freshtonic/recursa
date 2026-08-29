@@ -316,7 +316,7 @@ fn main() {
             grammar::TokenKind::COLON,
             grammar::TokenKind::QuotedText,
             grammar::TokenKind::NOT_EQUAL,
-            grammar::TokenKind::OperatorText,
+            grammar::TokenKind::BANG_EQ_MINUS,
         ]
     );
     assert_eq!(
@@ -325,6 +325,48 @@ fn main() {
             ":", "NULL", ":", "true", ":", "FaLsE", ":", "'TRUE'", ":", "\"FALSE\"",
             "!=", "!=-",
         ]
+    );
+
+    let fixed_fences_without_trivia = grammar::lex("--\n??");
+    assert_eq!(fixed_fences_without_trivia.errors().count(), 0);
+    let fixed_fences_without_trivia = fixed_fences_without_trivia.tokens().collect::<Vec<_>>();
+    assert_eq!(
+        fixed_fences_without_trivia
+            .iter()
+            .map(|token| token.kind())
+            .collect::<Vec<_>>(),
+        [
+            grammar::TokenKind::DASH_DASH,
+            grammar::TokenKind::QUESTION_QUESTION,
+        ]
+    );
+    assert_eq!(
+        fixed_fences_without_trivia
+            .iter()
+            .map(|token| token.text())
+            .collect::<Vec<_>>(),
+        ["--", "??"]
+    );
+
+    let block_fence = grammar::lex("!/*block*/ !/");
+    assert_eq!(block_fence.errors().count(), 0);
+    let block_fence = block_fence.tokens().collect::<Vec<_>>();
+    assert_eq!(
+        block_fence
+            .iter()
+            .map(|token| token.kind())
+            .collect::<Vec<_>>(),
+        [
+            grammar::TokenKind::OperatorText,
+            grammar::TokenKind::BANG_SLASH,
+        ]
+    );
+    assert_eq!(
+        block_fence
+            .iter()
+            .map(|token| token.text())
+            .collect::<Vec<_>>(),
+        ["!", "!/"]
     );
 
     let declarative_eof_comment = grammar::lex("!=--comment @");
