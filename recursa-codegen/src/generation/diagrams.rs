@@ -689,6 +689,33 @@ fn shorten_label(label: &str) -> String {
 /// grammars stay below it, so their rendering is unchanged.
 const INLINE_EXPANSION_BUDGET: usize = 16;
 
+/// Largest shallow body, counted in leaves, that still expands inline.
+///
+/// pg-proto's protocol states are all small, so its strategy never states this
+/// bound; grammar productions are not. A large production (an expression enum
+/// with hundreds of alternatives) inlined into every referencing diagram is
+/// unreadable and multiplies railroad's per-render layout cost, so references
+/// to bodies above this size stay opaque linked boxes.
+const INLINE_BODY_LEAF_LIMIT: usize = 12;
+
+/// Counts presentation leaves to decide whether a body is small enough to inline.
+fn diagram_leaf_count(node: &DiagramNode) -> usize {
+    match node {
+        DiagramNode::Empty
+        | DiagramNode::Terminal(_)
+        | DiagramNode::NonTerminal { .. }
+        | DiagramNode::Comment(_) => 1,
+        DiagramNode::Inline { body, .. } => diagram_leaf_count(body),
+        DiagramNode::Sequence(nodes) | DiagramNode::Choice(nodes) => {
+            nodes.iter().map(diagram_leaf_count).sum()
+        }
+        DiagramNode::Optional(node) => diagram_leaf_count(node),
+        DiagramNode::Repeat { item, separator } => {
+            diagram_leaf_count(item) + diagram_leaf_count(separator)
+        }
+    }
+}
+
 /// Expands each first same-grammar Node reference in place, linking later ones.
 ///
 /// This ports pg-proto's railroad strategy: `expanded` starts with the diagram's
@@ -696,7 +723,8 @@ const INLINE_EXPANSION_BUDGET: usize = 16;
 /// expanded, and any reference already in the set stays an opaque linked box.
 /// The set therefore bounds each diagram to one expansion per application and
 /// terminates recursive grammars; `budget` additionally caps the total number
-/// of expansions per diagram in deterministic traversal order.
+/// of expansions per diagram in deterministic traversal order, and only bodies
+/// within [`INLINE_BODY_LEAF_LIMIT`] expand at all.
 fn inline_references(
     node: &DiagramNode,
     bodies: &BTreeMap<String, DiagramNode>,
@@ -709,7 +737,10 @@ fn inline_references(
             link,
             reference: Some(reference),
         } if bodies.contains_key(reference) => {
-            if *budget > 0 && expanded.insert(reference.clone()) {
+            if *budget > 0
+                && diagram_leaf_count(&bodies[reference]) <= INLINE_BODY_LEAF_LIMIT
+                && expanded.insert(reference.clone())
+            {
                 *budget -= 1;
                 DiagramNode::Inline {
                     label: label.clone(),
@@ -942,8 +973,73 @@ pub(super) fn render_token_diagram_document(token: &TokenDiagramPlan) -> String 
 /// Type-erased railroad node used while projecting the owned semantic topology.
 type RailroadNode = Box<dyn railroad::Node>;
 
+/// Caches railroad measurements so nested container layout stays linear.
+///
+/// Railroad containers re-measure children on every geometry query and again
+/// while drawing. Over deep inline trees those repeated queries compound
+/// multiplicatively, which made rendering a large grammar effectively hang;
+/// caching each node's three measurements restores one computation per node.
+struct CachedMeasure {
+    /// Wrapped railroad node supplying geometry and drawing.
+    inner: RailroadNode,
+    /// Entry height computed once on first query.
+    entry_height: std::cell::Cell<Option<i64>>,
+    /// Total height computed once on first query.
+    height: std::cell::Cell<Option<i64>>,
+    /// Total width computed once on first query.
+    width: std::cell::Cell<Option<i64>>,
+}
+
+impl CachedMeasure {
+    /// Wraps one railroad node so each measurement computes at most once.
+    fn wrap(inner: RailroadNode) -> RailroadNode {
+        Box::new(Self {
+            inner,
+            entry_height: std::cell::Cell::new(None),
+            height: std::cell::Cell::new(None),
+            width: std::cell::Cell::new(None),
+        })
+    }
+
+    /// Returns the cached measurement, computing and storing it on first use.
+    fn measure(cell: &std::cell::Cell<Option<i64>>, compute: impl FnOnce() -> i64) -> i64 {
+        match cell.get() {
+            Some(value) => value,
+            None => {
+                let value = compute();
+                cell.set(Some(value));
+                value
+            }
+        }
+    }
+}
+
+impl railroad::Node for CachedMeasure {
+    fn entry_height(&self) -> i64 {
+        Self::measure(&self.entry_height, || self.inner.entry_height())
+    }
+
+    fn height(&self) -> i64 {
+        Self::measure(&self.height, || self.inner.height())
+    }
+
+    fn width(&self) -> i64 {
+        Self::measure(&self.width, || self.inner.width())
+    }
+
+    fn draw(&self, x: i64, y: i64, h_dir: railroad::svg::HDir) -> railroad::svg::Element {
+        self.inner.draw(x, y, h_dir)
+    }
+}
+
 /// Projects semantic topology into railroad layout primitives.
 fn to_railroad(node: &DiagramNode, link_prefix: &str) -> RailroadNode {
+    let node = to_railroad_uncached(node, link_prefix);
+    CachedMeasure::wrap(node)
+}
+
+/// Builds the railroad node for one topology node with cached children.
+fn to_railroad_uncached(node: &DiagramNode, link_prefix: &str) -> RailroadNode {
     match node {
         DiagramNode::Empty => Box::new(railroad::Empty),
         DiagramNode::Terminal(label) => Box::new(railroad::Terminal::new(label.clone())),
