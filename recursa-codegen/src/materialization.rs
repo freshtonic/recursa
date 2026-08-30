@@ -33,10 +33,10 @@ use crate::resolution::{
 use crate::source_model::PrettyBoundaryProofCounts;
 use crate::source_model::{
     AttachedFixedSyntax, ConfiguredTraitRecipe, DeclaredRepetition, GrammarElement,
-    MaterializedPrettyBoundary, NodeBody, PrettyBoundaryProver, PrettyPatternCatalogId,
-    SemanticFieldProjection, Separator, SourceModel, SourceModeledGrammar, SourcePrattPosition,
-    SourcePrattVariant, TokenDefinitionKind, materialized_pretty_boundary_changes_lexing,
-    materialized_pretty_lexical_patterns,
+    MaterializedPrettyBoundary, NodeBody, PrattExtensionFilter, PrettyBoundaryProver,
+    PrettyPatternCatalogId, SemanticFieldProjection, Separator, SourceModel, SourceModeledGrammar,
+    SourcePrattPosition, SourcePrattVariant, TokenDefinitionKind,
+    materialized_pretty_boundary_changes_lexing, materialized_pretty_lexical_patterns,
 };
 use crate::{
     AtomDescription, AtomExpression, ContainerShape, DeclId, Declaration, GrammarDescription,
@@ -324,7 +324,7 @@ impl MaterializedNodeBody {
                         elements: &led.tail,
                         recursive_min_bp: match led.position {
                             MaterializedPrattLedPosition::Infix { rbp, .. } => rbp,
-                            MaterializedPrattLedPosition::Postfix { .. } => 0,
+                            MaterializedPrattLedPosition::Postfix { bp } => bp,
                         },
                     },
                 })
@@ -528,6 +528,8 @@ pub(crate) enum MaterializedSemanticFieldProjection {
         trace: MaterializationTrace,
         /// Supplies repetition-separator metadata.
         separator: Option<Separator>,
+        /// Restricts the Pratt extensions admitted while parsing this field.
+        pratt_extensions: Option<PrattExtensionFilter>,
         /// Counts standalone fixed syntax before the semantic element.
         attachment_before: usize,
         /// Counts standalone fixed syntax after the semantic element.
@@ -2215,6 +2217,7 @@ impl Materializer {
                     separator,
                     attachment_before,
                     attachment_after,
+                    ..
                 },
             attachment,
             pretty,
@@ -2317,6 +2320,7 @@ impl Materializer {
                     projection,
                     attachment,
                     separator,
+                    pratt_extensions,
                     pretty,
                     attachment_before,
                     attachment_after,
@@ -2422,6 +2426,7 @@ impl Materializer {
                                 steps: evaluated.trace,
                             },
                             separator: separator.clone(),
+                            pratt_extensions: pratt_extensions.clone(),
                             attachment_before: *attachment_before,
                             attachment_after: *attachment_after,
                         },
@@ -3172,7 +3177,7 @@ impl Materializer {
                                             (PrattPosition::Infix { lbp, rbp }, rbp)
                                         }
                                         MaterializedPrattLedPosition::Postfix { bp } => {
-                                            (PrattPosition::Postfix { bp }, 0)
+                                            (PrattPosition::Postfix { bp }, bp)
                                         }
                                     };
                                     crate::PrattVariant {

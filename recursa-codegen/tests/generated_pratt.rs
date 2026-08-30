@@ -248,11 +248,21 @@ recursa::tokens! {
         RIGHT => "RIGHT",
         FROM => "FROM",
         ANY => "ANY",
+        BETWEEN => "BETWEEN",
+        SIMILAR => "SIMILAR",
+        TO => "TO",
+        POSITION => "POSITION",
+        IN => "IN",
+        AND => "AND",
+        BOOL => "BOOL",
+        TEXT => "TEXT",
         WHEN => "WHEN",
         THEN => "THEN",
     }
     punctuation {
         PLUS => "+",
+        CONCAT => "||",
+        DOUBLE_COLON => "::", spacing = tight,
         GT => ">",
         LPAREN => "(",
         RPAREN => ")",
@@ -274,6 +284,14 @@ pub struct Name<'input> {
 #[derive(recursa::Node)]
 pub enum NameAtom<'input> {
     Plain(Name<'input>),
+}
+
+#[derive(recursa::Node)]
+pub enum TypeName {
+    #[tok(BOOL)]
+    Bool,
+    #[tok(TEXT)]
+    Text,
 }
 
 #[derive(recursa::Node)]
@@ -302,12 +320,30 @@ pub enum Expr<'input> {
     #[tok(PLUS)]
     Add(Box<Self>, Box<Self>),
     #[parse(infix, lbp = 5, rbp = 6)]
+    LowPlus(Box<Self>, #[tok(PLUS, OTHER, this)] Box<Self>),
+    #[parse(infix, lbp = 8, rbp = 9)]
+    Concat(Box<Self>, #[tok(CONCAT, this)] Box<Self>),
+    #[parse(infix, lbp = 5, rbp = 6)]
     Greater(Box<Self>, #[tok(GT, this)] Box<Self>),
     #[parse(postfix, bp = 5)]
     QuantifiedGreater(
         Box<Self>,
         #[tok(GT, ANY, LPAREN, this, RPAREN)] Integer<'input>,
     ),
+    #[parse(postfix, bp = 6)]
+    Between(
+        Box<Self>,
+        #[tok(BETWEEN, this)] Box<Self>,
+        #[tok(AND, this)] Box<Self>,
+    ),
+    #[parse(postfix, bp = 5)]
+    SimilarTo(Box<Self>, #[tok(SIMILAR, TO, this)] Box<Self>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    In(Box<Self>, #[tok(IN, this)] Box<Self>),
+    #[parse(infix, lbp = 2, rbp = 3)]
+    And(Box<Self>, #[tok(AND, this)] Box<Self>),
+    #[parse(postfix, bp = 20)]
+    Cast(Box<Self>, #[tok(DOUBLE_COLON, this)] TypeName),
 }
 
 #[derive(recursa::Node)]
@@ -321,6 +357,21 @@ pub struct GroupFollowed<'input> {
 pub struct FollowedExpr<'input> {
     #[tok(WHEN, this, THEN)]
     pub expression: Expr<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct SimilarDelimited<'input> {
+    #[tok(BEGIN, this, SIMILAR)]
+    pub source: Box<Expr<'input>>,
+    pub pattern: Box<Expr<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub struct RestrictedOperand<'input> {
+    #[parse(pratt(exclude(In, And)))]
+    #[tok(POSITION, this, IN)]
+    pub needle: Box<Expr<'input>>,
+    pub haystack: Box<Expr<'input>>,
 }
 "#,
     )
@@ -341,6 +392,70 @@ fn main() {
         grammar::Expr::Add(lhs, rhs)
             if matches!(*lhs, grammar::Expr::Name(grammar::NameAtom::Plain(_)))
                 && matches!(*rhs, grammar::Expr::Integer(_))
+    ));
+
+    let lexed = grammar::lex("name || name + 1");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("an active tighter LED is not mistaken for recursive-operand FOLLOW");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast(),
+        grammar::Expr::Concat(_, rhs)
+            if matches!(*rhs, grammar::Expr::Add(_, _))
+    ));
+
+    let lexed = grammar::lex("name BETWEEN 1 + 2 AND 3 + 4");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("a postfix recursive operand stops at a lower-binding delimiter");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast(),
+        grammar::Expr::Between(_, low, high)
+            if matches!(*low, grammar::Expr::Add(_, _))
+                && matches!(*high, grammar::Expr::Add(_, _))
+    ));
+
+    let lexed = grammar::lex("name::BOOL::TEXT");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("a completed postfix remains eligible for another postfix extender");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast(),
+        grammar::Expr::Cast(lhs, grammar::TypeName::Text)
+            if matches!(*lhs, grammar::Expr::Cast(_, grammar::TypeName::Bool))
+    ));
+
+    let lexed = grammar::lex("name SIMILAR TO name");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("a complete multi-token LED remains viable");
+    assert!(input.is_eof());
+    assert!(matches!(parsed.into_ast(), grammar::Expr::SimilarTo(_, _)));
+
+    let lexed = grammar::lex("BEGIN name SIMILAR name");
+    let mut input = lexed.input();
+    grammar::SimilarDelimited::parse(&mut input)
+        .expect("an incomplete multi-token LED yields to the caller delimiter");
+    assert!(input.is_eof());
+
+    let lexed = grammar::lex("name IN other");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("an excluded LED remains available to ordinary Pratt callers");
+    assert!(input.is_eof());
+    assert!(matches!(parsed.into_ast(), grammar::Expr::In(_, _)));
+
+    let lexed = grammar::lex("POSITION name + other IN target");
+    let mut input = lexed.input();
+    let parsed = grammar::RestrictedOperand::parse(&mut input)
+        .expect("a restricted Pratt operand yields its excluded LED to the caller delimiter");
+    assert!(input.is_eof());
+    assert!(matches!(
+        *parsed.into_ast().needle,
+        grammar::Expr::Add(_, rhs) if matches!(*rhs, grammar::Expr::Name(_))
     ));
 
     let lexed = grammar::lex("BEGIN GROUP 1 END GROUP GROUP 2");

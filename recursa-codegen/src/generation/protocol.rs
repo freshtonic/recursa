@@ -8,17 +8,19 @@ use super::*;
 /// Private loader protocol understood by generated roots and the facade.
 pub(super) const PRIVATE_PROTOCOL: u32 = 7;
 /// Stable emitter-format identity hashed into every generated family identity.
-pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v32";
+pub(super) const EMITTER_IDENTITY: &str = "recursa-generation-compound-v33";
+/// Fingerprint of the production generator sources compiled into this codegen build.
+const GENERATOR_SOURCE_FINGERPRINT: &str = env!("RECURSA_CODEGEN_SOURCE_FINGERPRINT");
 
 /// Returns the emitter, release, and protocol prefix that invalidates cached Generations.
 pub(super) fn generation_protocol_identity() -> String {
-    generation_protocol_identity_for(PRIVATE_PROTOCOL)
+    generation_protocol_identity_for(PRIVATE_PROTOCOL, GENERATOR_SOURCE_FINGERPRINT)
 }
 
 /// Renders one candidate protocol revision through the production cache-identity format.
-fn generation_protocol_identity_for(protocol: u32) -> String {
+fn generation_protocol_identity_for(protocol: u32, generator_fingerprint: &str) -> String {
     format!(
-        "{EMITTER_IDENTITY};release={};protocol={protocol}",
+        "{EMITTER_IDENTITY};release={};protocol={protocol};generator={generator_fingerprint}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -310,21 +312,35 @@ pub(super) fn capability_plan_from_recipes(
 #[cfg(test)]
 mod tests {
     use super::{
-        EMITTER_IDENTITY, PRIVATE_PROTOCOL, generation_protocol_identity,
-        generation_protocol_identity_for,
+        EMITTER_IDENTITY, GENERATOR_SOURCE_FINGERPRINT, PRIVATE_PROTOCOL,
+        generation_protocol_identity, generation_protocol_identity_for,
     };
 
     #[test]
     fn generated_public_shape_revision_changes_the_generation_cache_identity() {
         assert_eq!(PRIVATE_PROTOCOL, 7);
-        assert_eq!(EMITTER_IDENTITY, "recursa-generation-compound-v32");
+        assert_eq!(EMITTER_IDENTITY, "recursa-generation-compound-v33");
         assert_eq!(
             generation_protocol_identity(),
-            generation_protocol_identity_for(7)
+            generation_protocol_identity_for(7, GENERATOR_SOURCE_FINGERPRINT)
         );
         assert_ne!(
             generation_protocol_identity(),
-            generation_protocol_identity_for(5)
+            generation_protocol_identity_for(5, GENERATOR_SOURCE_FINGERPRINT)
+        );
+    }
+
+    #[test]
+    fn generator_source_fingerprint_changes_the_generation_cache_identity() {
+        assert_eq!(GENERATOR_SOURCE_FINGERPRINT.len(), 16);
+        assert!(
+            GENERATOR_SOURCE_FINGERPRINT
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        );
+        assert_ne!(
+            generation_protocol_identity_for(7, "1111111111111111"),
+            generation_protocol_identity_for(7, "2222222222222222")
         );
     }
 }

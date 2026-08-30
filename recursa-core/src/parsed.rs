@@ -1300,12 +1300,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lex::{LexDiagnostic, LexDiagnosticCode};
     use crate::{ExpectedAtomId, LexResult, ParseErrorKind};
 
     const WORD: u16 = 0;
     const LEXICAL_ERROR: u16 = 1;
     static GRAMMAR: GrammarInfo = GrammarInfo {
         name: "parsed-tests",
+        kind_names: &["word", "lexical error"],
+        atom_names: &["word"],
+        lexical_error_kind: LEXICAL_ERROR,
+    };
+    static OTHER_GRAMMAR: GrammarInfo = GrammarInfo {
+        name: "other-parsed-tests",
         kind_names: &["word", "lexical error"],
         atom_names: &["word"],
         lexical_error_kind: LEXICAL_ERROR,
@@ -1521,10 +1528,37 @@ mod tests {
         let error = parse_spanned::<OptionalToken<'_>, _>(&mut input).unwrap_err();
 
         assert_eq!(error.kind(), ParseErrorKind::InvalidTokenSpan);
+        assert_eq!(error.code(), "RCA4103");
+        assert_eq!(error.anchor(), Span::new(0, 2).unwrap());
     }
 
     #[test]
-    fn parse_errors_expose_symbolic_names_without_numeric_runtime_ids() {
+    fn lexical_parse_errors_preserve_mechanism_codes_and_primary_anchors() {
+        let lexed = LexResult::new(
+            "$x",
+            vec![TokenRecord {
+                kind: LEXICAL_ERROR,
+                span: Span::new(0, 2).unwrap(),
+                diagnostic: Some(LexDiagnostic {
+                    code: LexDiagnosticCode::UnterminatedSameDelimiter,
+                    anchor: Span::new(0, 1).unwrap(),
+                }),
+            }],
+        );
+        let mut input = lexed.input(&GRAMMAR);
+
+        let error = parse::<OptionalToken<'_>, _>(&mut input).unwrap_err();
+
+        assert_eq!(error.kind(), ParseErrorKind::LexicalError);
+        assert_eq!(error.code(), "RCA4001");
+        assert_eq!(error.span(), Span::new(0, 2).unwrap());
+        assert_eq!(error.anchor(), Span::new(0, 1).unwrap());
+        assert_eq!(error.found(), Some("lexical error"));
+        assert_eq!(error.expected().collect::<Vec<_>>(), vec!["word"]);
+    }
+
+    #[test]
+    fn unclassified_lexical_parse_errors_use_the_runtime_fallback_diagnostic() {
         let lexed = LexResult::new(
             "?",
             vec![TokenRecord {
@@ -1538,8 +1572,33 @@ mod tests {
         let error = parse::<OptionalToken<'_>, _>(&mut input).unwrap_err();
 
         assert_eq!(error.kind(), ParseErrorKind::LexicalError);
-        assert_eq!(error.found(), Some("lexical error"));
-        assert_eq!(error.expected().collect::<Vec<_>>(), vec!["word"]);
+        assert_eq!(error.code(), "RCA4000");
+        assert_eq!(error.anchor(), Span::new(0, 1).unwrap());
+    }
+
+    #[test]
+    fn grammar_mismatches_expose_the_runtime_code_at_the_failure_anchor() {
+        let lexed = one_word("word");
+        let mut input = lexed.input(&OTHER_GRAMMAR);
+
+        let error = parse::<OptionalToken<'_>, _>(&mut input).unwrap_err();
+
+        assert_eq!(error.kind(), ParseErrorKind::GrammarMismatch);
+        assert_eq!(error.code(), "RCA4104");
+        assert_eq!(error.anchor(), Span::new(0, 4).unwrap());
+    }
+
+    #[test]
+    fn pratt_ambiguities_expose_the_runtime_code_at_the_extender_anchor() {
+        let lexed = one_word("word");
+        let input = lexed.input(&GRAMMAR);
+
+        let error = ParseError::pratt_ambiguity(&input, &WORD_START);
+
+        assert_eq!(error.kind(), ParseErrorKind::PrattAmbiguity);
+        assert_eq!(error.code(), "RCA4102");
+        assert_eq!(error.span(), Span::new(0, 4).unwrap());
+        assert_eq!(error.anchor(), Span::new(0, 4).unwrap());
     }
 
     #[test]

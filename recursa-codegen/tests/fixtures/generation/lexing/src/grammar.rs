@@ -5,7 +5,7 @@ recursa::grammar! {
 }
 
 recursa::tokens! {
-    ignore = r"[ \t\n\r]+|--[^\n]*",
+    ignore = r"[ \t\n\r]+|--[^\n]+",
     categories { UNRESERVED, RESERVED }
     flags { bare_label }
     keywords {
@@ -32,6 +32,10 @@ recursa::tokens! {
     punctuation {
         COLON => ":",
         NOT_EQUAL => "!=",
+        BANG_EQ_MINUS => "!=-",
+        BANG_SLASH => "!/",
+        DASH_DASH => "--",
+        QUESTION_QUESTION => "??",
         DOLLAR_TAG => "$tag$",
     }
     matchers {
@@ -44,6 +48,13 @@ recursa::tokens! {
             trailing = "+-",
             qualifying = "!#%^&|?",
             priority = 3
+        ),
+        QuestionOperatorText => operator_run(
+            characters = "?~",
+            fences = ["??"],
+            trailing = "",
+            qualifying = "",
+            priority = 2
         ),
         PsqlLine => physical_line(prefix = r"\\[A-Za-z]+"),
         PriorityLow => physical_line(prefix = r"§", priority = 1),
@@ -118,6 +129,8 @@ pub struct ClosedMatcherDefinitions<'input> {
     pub number: BoundedNumber<'input>,
     #[lex(matcher)]
     pub operator: OperatorText<'input>,
+    #[lex(matcher)]
+    pub question_operator: QuestionOperatorText<'input>,
     #[lex(matcher)]
     pub line: PsqlLine<'input>,
     #[lex(matcher)]

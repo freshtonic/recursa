@@ -126,6 +126,12 @@ and explicit priority determine arbitration, never declaration order. See the
 [facade grammar guide](recursa/README.md) for the declaration forms and lexical
 error contract.
 
+Operator fences apply one narrow eligibility exception before that arbitration.
+An operator-shaped fixed candidate crossing a related operator run's interior
+configured fence is ineligible only when ordinary local arbitration at the
+fence selects diagnostic-free skip trivia covering the fence. The candidate
+remains eligible when another related operator run reaches its full extent.
+
 Run both compiled examples from a checkout:
 
 ```console

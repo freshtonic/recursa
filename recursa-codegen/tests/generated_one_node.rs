@@ -20,7 +20,7 @@ fn a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade() {
     let selected = find_selected_generation(&target_dir(&package));
     assert_eq!(
         String::from_utf8(initial.stdout).unwrap().trim(),
-        "one-node-ok"
+        "one-node-ok RCA4100 RCA4101"
     );
 
     fs::write(
@@ -60,7 +60,7 @@ fn a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade() {
     assert_success(&restored);
     assert_eq!(
         String::from_utf8(restored.stdout).unwrap().trim(),
-        "one-node-ok"
+        "one-node-ok RCA4100 RCA4101"
     );
 }
 
@@ -454,6 +454,137 @@ fn main() {
 
     assert_success(&run_fixture(&package));
     assert_no_public_optional_token_impls(&package);
+}
+
+#[test]
+fn generated_pretty_keeps_content_repetition_separators_and_closing_delimiters_tight() {
+    let package = scaffold_fixture();
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::r#type,
+    derives(Pretty),
+    keyword_matching = sensitive,
+    max_lookahead = 1,
+}
+
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    keywords {
+        LIST => "LIST",
+        TAIL => "TAIL",
+    }
+    punctuation {
+        COMMA => ",",
+        LPAREN => "(",
+        RPAREN => ")",
+        STAR => "*",
+    }
+}
+
+#[derive(recursa::Node)]
+pub struct Word<'input> {
+    #[lex(pattern = r"[A-Za-z]+")]
+    pub value: WordText<'input>,
+}
+
+#[derive(recursa::Node)]
+#[tok(LPAREN, this, RPAREN)]
+pub struct TextList<'input> {
+    #[sep(COMMA)]
+    pub values: recursa::Vec1<WordText<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub enum Open {
+    #[tok(LPAREN)]
+    Value,
+}
+
+#[derive(recursa::Node)]
+pub enum Star {
+    #[tok(STAR)]
+    Value,
+}
+
+#[derive(recursa::Node)]
+pub enum Close {
+    #[tok(RPAREN)]
+    Value,
+}
+
+#[derive(recursa::Node)]
+pub struct StarCall {
+    pub open: Open,
+    pub star: Star,
+    pub close: Close,
+}
+
+#[derive(recursa::Node)]
+#[tok(TAIL)]
+pub struct Tail;
+
+#[derive(recursa::Node)]
+pub struct WordWithOptionalStar<'input> {
+    pub word: Word<'input>,
+    #[presence(STAR)]
+    #[pretty(break_before = soft)]
+    pub star: bool,
+}
+
+#[derive(recursa::Node)]
+#[tok(LIST)]
+pub struct OptionalTailList<'input> {
+    #[sep(COMMA)]
+    pub values: recursa::Vec1<WordWithOptionalStar<'input>>,
+    pub tail: Option<Tail>,
+}
+"#,
+    )
+    .expect("write the Pretty boundary grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa::Pretty as _;
+use recursa_generated_one_node::r#type as grammar;
+
+fn main() {
+    let mut failures = Vec::new();
+
+    let lexed = grammar::lex("(alpha,beta)");
+    let mut input = lexed.input();
+    let list = grammar::TextList::parse(&mut input).expect("content list parses");
+    assert!(input.is_eof());
+    let rendered = list.render();
+    if rendered != "(alpha, beta)" {
+        failures.push(format!("content repetition rendered as {rendered:?}"));
+    }
+
+    let lexed = grammar::lex("(*)");
+    let mut input = lexed.input();
+    let call = grammar::StarCall::parse(&mut input).expect("star call parses");
+    assert!(input.is_eof());
+    let rendered = call.render();
+    if rendered != "(*)" {
+        failures.push(format!("star call rendered as {rendered:?}"));
+    }
+
+    let lexed = grammar::lex("LIST alpha,beta");
+    let mut input = lexed.input();
+    let list = grammar::OptionalTailList::parse(&mut input)
+        .expect("Node repetition followed by an absent optional tail parses");
+    assert!(input.is_eof());
+    let rendered = list.render();
+    if rendered != "LIST alpha, beta" {
+        failures.push(format!("optional-tail list rendered as {rendered:?}"));
+    }
+
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+"#,
+    )
+    .expect("write the Pretty boundary consumer");
+
+    assert_success(&run_fixture(&package));
 }
 
 #[test]
