@@ -11,13 +11,15 @@
 //! model retains opaque Rust fragments and precise sites so later resolution,
 //! materialization, and diagnostics share the same authored evidence.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use proc_macro2::Span;
-use regex_automata::dfa::{Automaton as _, dense};
-use regex_automata::{Anchored, Input};
+use regex_automata::dfa::{Automaton as _, StartKind, dense};
+use regex_automata::{Anchored, Input, MatchKind};
 use syn::ext::IdentExt as _;
 use syn::parse::{Parse, ParseStream, Parser as _};
 use syn::spanned::Spanned as _;
@@ -52,6 +54,12 @@ pub(crate) struct SourceModelReport {
     pub(crate) diagnostics: Vec<SourceModelDiagnostic>,
     /// Complete model, withheld when any blocking diagnostic was produced.
     pub(crate) source_modeled: Option<SourceModeledGrammar>,
+    /// Counts expanded Pretty boundary Nodes for deterministic complexity tests.
+    #[cfg(test)]
+    pretty_boundary_node_evaluations: usize,
+    /// Counts expanded Pretty soft-opportunity Nodes for deterministic complexity tests.
+    #[cfg(test)]
+    pretty_soft_node_evaluations: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -838,7 +846,7 @@ pub(crate) enum TokenUseRole {
     ContentAdmission,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 /// Carries the source site retained from authored source structure.
 pub(crate) struct SourceSite {
     /// Identifies the logical module that owns this source-model value.
@@ -965,9 +973,31 @@ pub(crate) struct SourceModelDiagnostic {
     pub(crate) message: String,
 }
 
+/// Indexes dense field identities without repeatedly scanning every resolved Node.
+fn resolved_field_positions(resolved: &ResolvedSourceGrammar) -> Vec<(usize, usize)> {
+    let field_count = resolved.nodes.iter().map(|node| node.fields.len()).sum();
+    let mut positions = vec![None; field_count];
+    for (node_index, node) in resolved.nodes.iter().enumerate() {
+        for (field_index, field) in node.fields.iter().enumerate() {
+            let slot = positions
+                .get_mut(field.id.index())
+                .expect("resolved field identities are dense");
+            assert!(
+                slot.replace((node_index, field_index)).is_none(),
+                "resolved field identities are unique"
+            );
+        }
+    }
+    positions
+        .into_iter()
+        .map(|position| position.expect("resolved field identities are contiguous"))
+        .collect()
+}
+
 /// Builds the source model from resolved declarations without publishing partial state.
 pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelReport {
     let semantic_facts = SemanticFacts::from_resolved(&input.resolved);
+    let resolved_field_positions = resolved_field_positions(&input.resolved);
     let mut diagnostics = Vec::new();
     let trait_planner = TraitPlanner::from_grammar(&input.resolved, &mut diagnostics);
     let mut tokens = TokenCatalog::default();
@@ -983,11 +1013,19 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         trait_planner,
         nodes: Vec::new(),
         tokens,
+        pretty_boundary_prover: RefCell::default(),
+        pretty_lexical_catalog: None,
+        pretty_non_fixed_lexical_catalog: None,
+        pretty_trivia_supports_breaks: OnceLock::new(),
+        pretty_boundary_analysis: RefCell::default(),
+        resolved_field_positions,
+        pretty_content_definitions: Vec::new(),
         diagnostics,
     };
     builder.reject_misplaced_content_declarations();
     builder.lower_central_content_definitions();
     builder.lower_nodes();
+    builder.index_pretty_content_definitions();
     builder.validate_pretty_spacing();
     builder.finish()
 }
@@ -1006,6 +1044,20 @@ struct SourceModelBuilder<'cfg> {
     nodes: Vec<Node>,
     /// Supplies the tokens used to correlate authored source with normalized grammar.
     tokens: TokenCatalog,
+    /// Reuses compiled lexical languages and boundary-product answers throughout Pretty validation.
+    pretty_boundary_prover: RefCell<PrettyBoundaryProver>,
+    /// Identifies the immutable source-ordered all-pattern catalog during Pretty validation.
+    pretty_lexical_catalog: Option<PrettyPatternCatalogId>,
+    /// Identifies non-fixed patterns after fixed/fixed crossings are checked directly.
+    pretty_non_fixed_lexical_catalog: Option<PrettyPatternCatalogId>,
+    /// Caches the grammar-wide ignored-trivia capability used by every Pretty boundary.
+    pretty_trivia_supports_breaks: OnceLock<bool>,
+    /// Reuses acyclic Pretty boundary summaries throughout the source graph.
+    pretty_boundary_analysis: RefCell<PrettyBoundaryAnalysis>,
+    /// Maps dense resolved field identities to their owning Node and field offsets.
+    resolved_field_positions: Vec<(usize, usize)>,
+    /// Maps content-token semantic identities to their first source-ordered definition.
+    pretty_content_definitions: Vec<Option<TokenDefinitionId>>,
     /// Supplies the diagnostics used to correlate authored source with normalized grammar.
     diagnostics: Vec<SourceModelDiagnostic>,
 }
@@ -1037,7 +1089,55 @@ struct LoweredFields {
     attachment_starts: Vec<usize>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Counts required fixed syntax on both sides of one recursive Pratt value.
+struct PrettyPrattGroupingBounds {
+    /// Number of required fixed tokens before the recursive value.
+    before: usize,
+    /// Number of required fixed tokens after the recursive value.
+    after: usize,
+    /// Whether the owner is reached through at least one authored helper Node.
+    delegated: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Summarizes empty and single-owner derivations used to prove authored Pratt grouping syntax.
+struct PrettyPrattGroupingProof {
+    /// Whether this syntax can contribute no rendered or parsed symbols.
+    empty: bool,
+    /// Distinct authored derivations containing exactly one owning Pratt value, capped at two.
+    witnesses: Vec<PrettyPrattGroupingBounds>,
+    /// Whether a non-owner helper cycle made the finite proof inconclusive.
+    cyclic: bool,
+}
+
+impl PrettyPrattGroupingProof {
+    /// Retains enough witnesses to distinguish a unique path from an ambiguous one.
+    fn push_witness(&mut self, witness: PrettyPrattGroupingBounds) {
+        if self.witnesses.len() < 2 {
+            self.witnesses.push(witness);
+        }
+    }
+}
+
+#[derive(Default)]
+/// Run-local memo and cycle state shared by every grouping atom in one Pratt family.
+struct PrettyPrattGroupingAnalysis {
+    /// Completed helper summaries keyed by owner and helper Node identities.
+    memo: BTreeMap<(usize, usize), PrettyPrattGroupingProof>,
+    /// Helper Nodes active in the current depth-first proof.
+    active_nodes: BTreeSet<usize>,
+    /// Type aliases active in the current depth-first proof.
+    active_aliases: BTreeSet<usize>,
+    /// Exact fixed-only helper lengths, including failed proofs.
+    fixed_memo: BTreeMap<usize, Option<usize>>,
+    /// Fixed-only helper Nodes active in the current depth-first proof.
+    active_fixed_nodes: BTreeSet<usize>,
+    /// Type aliases active in the current fixed-only proof.
+    active_fixed_aliases: BTreeSet<usize>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 /// Classifies the pretty boundary kind forms retained in the source model.
 enum PrettyBoundaryKind {
     /// Identifies the fixed authored-source form.
@@ -1055,7 +1155,7 @@ pub(crate) enum MaterializedPrettyBoundary {
     Regex(String),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 /// Carries the pretty boundary retained from authored source structure.
 struct PrettyBoundary {
     /// Classifies the source-model value without consulting normalized grammar.
@@ -1064,13 +1164,827 @@ struct PrettyBoundary {
     site: SourceSite,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+/// Retains a cached boundary site without binding caller-relative provenance too early.
+enum PrettyBoundaryTemplateSite {
+    /// Reuses the site supplied by the current Node reference.
+    Caller,
+    /// Retains an authored site reached inside the cached Node graph.
+    Authored(SourceSite),
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+/// Carries one cached Pretty boundary with caller-relative source provenance.
+struct PrettyBoundaryTemplate {
+    /// Classifies the cached boundary language.
+    kind: PrettyBoundaryKind,
+    /// Selects caller-relative or authored source provenance.
+    site: PrettyBoundaryTemplateSite,
+}
+
+impl PrettyBoundaryTemplate {
+    /// Creates a boundary whose provenance is supplied by the enclosing semantic field.
+    fn caller(kind: PrettyBoundaryKind) -> Self {
+        Self {
+            kind,
+            site: PrettyBoundaryTemplateSite::Caller,
+        }
+    }
+
+    /// Creates a boundary that reached an authored token or semantic field site.
+    fn authored(kind: PrettyBoundaryKind, site: SourceSite) -> Self {
+        Self {
+            kind,
+            site: PrettyBoundaryTemplateSite::Authored(site),
+        }
+    }
+
+    /// Binds caller-relative provenance at one authored semantic field.
+    fn bind(&self, caller: &SourceSite) -> Self {
+        Self {
+            kind: self.kind.clone(),
+            site: match &self.site {
+                PrettyBoundaryTemplateSite::Caller => {
+                    PrettyBoundaryTemplateSite::Authored(caller.clone())
+                }
+                PrettyBoundaryTemplateSite::Authored(site) => {
+                    PrettyBoundaryTemplateSite::Authored(site.clone())
+                }
+            },
+        }
+    }
+
+    /// Materializes cached provenance for the current Node reference.
+    fn materialize(&self, caller: &SourceSite) -> PrettyBoundary {
+        PrettyBoundary {
+            kind: self.kind.clone(),
+            site: match &self.site {
+                PrettyBoundaryTemplateSite::Caller => caller.clone(),
+                PrettyBoundaryTemplateSite::Authored(site) => site.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Classifies the pretty boundary side forms retained in the source model.
 enum PrettyBoundarySide {
     /// Identifies the first authored-source form.
     First,
     /// Identifies the last authored-source form.
     Last,
+}
+
+#[derive(Default)]
+/// Reuses boundary summaries whose reachable subgraph has no recursive fallback.
+struct PrettyBoundaryAnalysis {
+    /// Maps Node identity and boundary side to its source-ordered unique endpoints.
+    nodes: BTreeMap<(NodeId, PrettyBoundarySide), Vec<PrettyBoundaryTemplate>>,
+    /// Maps cycle-independent Node identities to their soft-opportunity result.
+    soft_nodes: BTreeMap<NodeId, bool>,
+    /// Counts expanded Nodes for deterministic complexity tests.
+    #[cfg(test)]
+    node_evaluations: usize,
+    /// Counts expanded soft-opportunity Nodes for deterministic complexity tests.
+    #[cfg(test)]
+    soft_node_evaluations: usize,
+}
+
+/// One anchored lexical language compiled for repeated Pretty-boundary proofs.
+struct PrettyPatternAutomaton {
+    /// Complete deterministic automaton for the authored pattern.
+    dfa: dense::DFA<Vec<u32>>,
+    /// Anchored forward start state, computed once with the automaton.
+    start: regex_automata::util::primitives::StateID,
+    /// Dense live transition graph, initialized only when a product needs this language.
+    reachable: OnceLock<Option<PrettyReachableDfa>>,
+}
+
+impl PrettyPatternAutomaton {
+    /// Retains one compiled language and lazily prepares its reusable live transition graph.
+    fn new(dfa: dense::DFA<Vec<u32>>, start: regex_automata::util::primitives::StateID) -> Self {
+        Self {
+            dfa,
+            start,
+            reachable: OnceLock::new(),
+        }
+    }
+
+    /// Returns the one dense live graph shared by every boundary product using this language.
+    fn reachable(&self, counts: &mut PrettyBoundaryProductCounts) -> Option<&PrettyReachableDfa> {
+        self.reachable
+            .get_or_init(|| PrettyReachableDfa::new(self, counts))
+            .as_ref()
+    }
+
+    /// Reports the retained heap owned by this compiled language and its lazy dense graph.
+    fn retained_bytes(&self) -> usize {
+        self.dfa.memory_usage().saturating_add(
+            self.reachable
+                .get()
+                .and_then(Option::as_ref)
+                .map_or(0, PrettyReachableDfa::retained_bytes),
+        )
+    }
+}
+
+/// Compiles one complete anchored lexical language or language union within the proof budget.
+fn compile_pretty_pattern_automaton<P: AsRef<str>>(
+    patterns: &[P],
+) -> Option<PrettyPatternAutomaton> {
+    if patterns.is_empty() {
+        return None;
+    }
+    let mut builder = dense::Builder::new();
+    builder.configure(
+        dense::DFA::config()
+            .match_kind(MatchKind::All)
+            .start_kind(StartKind::Anchored)
+            .dfa_size_limit(Some(PRETTY_BOUNDARY_DFA_SIZE_BUDGET))
+            .determinize_size_limit(Some(PRETTY_BOUNDARY_DFA_SIZE_BUDGET)),
+    );
+    builder.build_many(patterns).ok().and_then(|dfa| {
+        let input = Input::new(b"").anchored(Anchored::Yes);
+        let start = dfa.start_state_forward(&input).ok()?;
+        Some(PrettyPatternAutomaton::new(dfa, start))
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Identifies one immutable source-ordered catalog of Pretty lexical patterns.
+pub(crate) struct PrettyPatternCatalogId(usize);
+
+/// Carries one compiled union of an immutable Pretty lexical pattern catalog.
+struct PrettyPatternCatalog {
+    /// Retains members in source order for exact fallback after union compilation failure.
+    pattern_ids: Vec<usize>,
+    /// Retains member patterns in source order for lazy child-union compilation.
+    patterns: Vec<String>,
+    /// Matches the union of every catalog pattern; absent for empty or invalid catalogs.
+    automaton: Option<PrettyPatternAutomaton>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Identifies one contiguous source-ordered child of a Pretty lexical catalog.
+struct PrettyPatternCatalogNode {
+    /// Identifies the owning immutable lexical catalog.
+    catalog: PrettyPatternCatalogId,
+    /// Supplies the inclusive member offset.
+    start: usize,
+    /// Supplies the exclusive member offset.
+    end: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Counts deterministic Pretty-boundary proof work within one prover instance.
+pub(crate) struct PrettyBoundaryProofCounts {
+    /// Counts immutable ordered lexical catalogs built for the prover.
+    pub(crate) catalogs: usize,
+    /// Counts catalog queries, including cache hits.
+    pub(crate) catalog_queries: usize,
+    /// Counts distinct catalog products evaluated.
+    pub(crate) catalog_products: usize,
+}
+
+#[derive(Default)]
+/// Caches lexical languages and exact three-language boundary products for one analysis run.
+pub(crate) struct PrettyBoundaryProver {
+    /// Dense identity assigned once to each distinct regex pattern.
+    pattern_ids: BTreeMap<String, usize>,
+    /// Compiled patterns in dense identity order; `None` preserves fail-closed behavior.
+    automata: Vec<Option<PrettyPatternAutomaton>>,
+    /// Exact crossing answers keyed by left, right, and candidate lexical language.
+    products: BTreeMap<(usize, usize, usize), bool>,
+    /// Shared right-side viability products keyed independently of the left language.
+    right_products: BTreeMap<(usize, usize), Option<PrettyRightProduct>>,
+    /// Dense identities assigned to immutable ordered lexical pattern catalogs.
+    catalog_ids: BTreeMap<Vec<usize>, PrettyPatternCatalogId>,
+    /// Compiled catalog unions in dense identity order.
+    catalogs: Vec<PrettyPatternCatalog>,
+    /// Exact crossing answers keyed by left, right, and lexical catalog.
+    catalog_products: BTreeMap<(usize, usize, PrettyPatternCatalogId), bool>,
+    /// Shared catalog viability products keyed independently of the left language.
+    catalog_right_products: BTreeMap<(usize, PrettyPatternCatalogId), Option<PrettyRightProduct>>,
+    /// Records catalog-left pairs that have already used one distinct right language.
+    catalog_left_queries: BTreeSet<(usize, PrettyPatternCatalogId)>,
+    /// Shared accepted-boundary states keyed independently of the right language.
+    catalog_left_products: BTreeMap<(usize, PrettyPatternCatalogId), Option<PrettyLeftProduct>>,
+    /// Lazily compiled bounded unions for contiguous catalog children.
+    catalog_node_automata: BTreeMap<PrettyPatternCatalogNode, Option<PrettyPatternAutomaton>>,
+    /// Exact child answers retained independently of root catalog query accounting.
+    catalog_node_products: BTreeMap<(usize, usize, PrettyPatternCatalogNode), bool>,
+    /// Shared child viability products keyed independently of the left language.
+    catalog_node_right_products:
+        BTreeMap<(usize, PrettyPatternCatalogNode), Option<PrettyRightProduct>>,
+    /// Records child-union left languages that have already seen one distinct right language.
+    catalog_node_left_queries: BTreeSet<(usize, PrettyPatternCatalogNode)>,
+    /// Shared child-union accepted-boundary states keyed independently of the right language.
+    catalog_node_left_products:
+        BTreeMap<(usize, PrettyPatternCatalogNode), Option<PrettyLeftProduct>>,
+    /// Orders adaptive child nodes by first retention for deterministic constant-time eviction.
+    catalog_node_retention_order: VecDeque<PrettyPatternCatalogNode>,
+    /// Prevents duplicate entries in the adaptive-child retention order.
+    catalog_node_retained_nodes: BTreeSet<PrettyPatternCatalogNode>,
+    /// Accounts the retained DFA, reachable-graph, and viability-table heap for adaptive children.
+    catalog_node_retained_cache_bytes: usize,
+    /// Counts adaptive-child map entries so lightweight answers cannot grow without bound.
+    catalog_node_retained_cache_entries: usize,
+    /// Overrides the aggregate adaptive-child cache budget in deterministic unit tests.
+    #[cfg(test)]
+    catalog_node_retained_budget: Option<usize>,
+    /// Overrides the adaptive-child entry budget in deterministic unit tests.
+    #[cfg(test)]
+    catalog_node_retained_entry_budget: Option<usize>,
+    /// Counts individual-language right-product construction attempts for invariant tests.
+    #[cfg(test)]
+    right_product_builds: usize,
+    /// Counts catalog right-product construction attempts for invariant tests.
+    #[cfg(test)]
+    catalog_right_product_builds: usize,
+    /// Counts catalog left-product construction attempts for invariant tests.
+    #[cfg(test)]
+    catalog_left_product_builds: usize,
+    /// Counts adaptive-child left-product construction attempts for invariant tests.
+    #[cfg(test)]
+    catalog_node_left_product_builds: usize,
+    /// Counts catalog queries deterministically for focused invariant tests.
+    #[cfg(test)]
+    catalog_queries: usize,
+    /// Counts lazy child-union compilation attempts for invariant tests.
+    #[cfg(test)]
+    catalog_node_compilations: usize,
+    /// Counts inconclusive catalog nodes split into ordered children for invariant tests.
+    #[cfg(test)]
+    catalog_node_splits: usize,
+    /// Counts irreducible individual fallbacks for invariant tests.
+    #[cfg(test)]
+    catalog_leaf_fallbacks: usize,
+}
+
+impl PrettyBoundaryProver {
+    /// Reports whether concatenating `left` and `right` can enter `lexical_pattern` across their boundary.
+    pub(crate) fn patterns_cross(
+        &mut self,
+        left: &str,
+        right: &str,
+        lexical_pattern: &str,
+    ) -> bool {
+        let left = self.intern_pattern(left);
+        let right = self.intern_pattern(right);
+        let lexical = self.intern_pattern(lexical_pattern);
+        self.pattern_ids_cross(left, right, lexical)
+    }
+
+    /// Evaluates one cached exact product after every language has a dense identity.
+    fn pattern_ids_cross(&mut self, left: usize, right: usize, lexical: usize) -> bool {
+        let key = (left, right, lexical);
+        if let Some(result) = self.products.get(&key) {
+            return *result;
+        }
+        let right_key = (right, lexical);
+        if !self.right_products.contains_key(&right_key) {
+            #[cfg(test)]
+            {
+                self.right_product_builds += 1;
+            }
+            let product = match (&self.automata[right], &self.automata[lexical]) {
+                (Some(right), Some(lexical)) => build_pretty_right_product(
+                    right,
+                    lexical,
+                    &mut PrettyBoundaryProductCounts::new(),
+                ),
+                _ => None,
+            };
+            self.right_products.insert(right_key, product);
+        }
+        let result = match (
+            &self.automata[left],
+            &self.automata[lexical],
+            self.right_products.get(&right_key).and_then(Option::as_ref),
+        ) {
+            (Some(left), Some(lexical), Some(product)) => compiled_left_crosses(
+                left,
+                lexical,
+                product,
+                &mut PrettyBoundaryProductCounts::new(),
+            )
+            .unwrap_or(true),
+            _ => true,
+        };
+        self.products.insert(key, result);
+        result
+    }
+
+    /// Interns one immutable source-ordered lexical pattern catalog.
+    pub(crate) fn intern_catalog(&mut self, patterns: &[String]) -> PrettyPatternCatalogId {
+        let pattern_ids = patterns
+            .iter()
+            .map(|pattern| self.intern_pattern(pattern))
+            .collect::<Vec<_>>();
+        if let Some(id) = self.catalog_ids.get(&pattern_ids) {
+            return *id;
+        }
+
+        let automaton = compile_pretty_pattern_automaton(patterns);
+        let id = PrettyPatternCatalogId(self.catalogs.len());
+        self.catalogs.push(PrettyPatternCatalog {
+            pattern_ids: pattern_ids.clone(),
+            patterns: patterns.to_vec(),
+            automaton,
+        });
+        self.catalog_ids.insert(pattern_ids, id);
+        id
+    }
+
+    /// Reports whether a boundary can enter any language in an immutable lexical catalog.
+    pub(crate) fn patterns_cross_catalog(
+        &mut self,
+        left: &str,
+        right: &str,
+        catalog: PrettyPatternCatalogId,
+    ) -> bool {
+        #[cfg(test)]
+        {
+            self.catalog_queries += 1;
+        }
+        let left = self.intern_pattern(left);
+        let right = self.intern_pattern(right);
+        let key = (left, right, catalog);
+        if let Some(result) = self.catalog_products.get(&key) {
+            return *result;
+        }
+        let left_key = (left, catalog);
+        let repeated_left = !self.catalog_left_queries.insert(left_key);
+        let batched = if let Some(lexical) = &self.catalogs[catalog.0].automaton {
+            let right_key = (right, catalog);
+            if repeated_left && !self.catalog_right_products.contains_key(&right_key) {
+                if !self.catalog_left_products.contains_key(&left_key) {
+                    #[cfg(test)]
+                    {
+                        self.catalog_left_product_builds += 1;
+                    }
+                    let product = match &self.automata[left] {
+                        Some(left) => build_pretty_left_product(
+                            left,
+                            lexical,
+                            &mut PrettyBoundaryProductCounts::new(),
+                        ),
+                        None => None,
+                    };
+                    self.catalog_left_products.insert(left_key, product);
+                }
+                match (
+                    &self.automata[right],
+                    self.catalog_left_products
+                        .get(&left_key)
+                        .and_then(Option::as_ref),
+                ) {
+                    (Some(right), Some(product)) => compiled_right_crosses(
+                        right,
+                        lexical,
+                        product,
+                        &mut PrettyBoundaryProductCounts::new(),
+                    ),
+                    _ => None,
+                }
+            } else {
+                if !self.catalog_right_products.contains_key(&right_key) {
+                    #[cfg(test)]
+                    {
+                        self.catalog_right_product_builds += 1;
+                    }
+                    let product = match &self.automata[right] {
+                        Some(right) => build_pretty_right_product(
+                            right,
+                            lexical,
+                            &mut PrettyBoundaryProductCounts::new(),
+                        ),
+                        None => None,
+                    };
+                    self.catalog_right_products.insert(right_key, product);
+                }
+                match (
+                    &self.automata[left],
+                    self.catalog_right_products
+                        .get(&right_key)
+                        .and_then(Option::as_ref),
+                ) {
+                    (Some(left), Some(product)) => compiled_left_crosses(
+                        left,
+                        lexical,
+                        product,
+                        &mut PrettyBoundaryProductCounts::new(),
+                    ),
+                    _ => None,
+                }
+            }
+        } else {
+            None
+        };
+        let result =
+            batched.unwrap_or_else(|| self.catalog_root_fallback_cross(left, right, catalog));
+        self.catalog_products.insert(key, result);
+        result
+    }
+
+    /// Resolves one inconclusive root batch through contiguous source-ordered child unions.
+    fn catalog_root_fallback_cross(
+        &mut self,
+        left: usize,
+        right: usize,
+        catalog: PrettyPatternCatalogId,
+    ) -> bool {
+        let len = self.catalogs[catalog.0].pattern_ids.len();
+        match len {
+            0 => false,
+            1 => {
+                #[cfg(test)]
+                {
+                    self.catalog_leaf_fallbacks += 1;
+                }
+                let lexical = self.catalogs[catalog.0].pattern_ids[0];
+                self.pattern_ids_cross(left, right, lexical)
+            }
+            _ => {
+                #[cfg(test)]
+                {
+                    self.catalog_node_splits += 1;
+                }
+                let middle = len / 2;
+                let left_node = PrettyPatternCatalogNode {
+                    catalog,
+                    start: 0,
+                    end: middle,
+                };
+                let right_node = PrettyPatternCatalogNode {
+                    catalog,
+                    start: middle,
+                    end: len,
+                };
+                self.catalog_node_cross(left, right, left_node)
+                    || self.catalog_node_cross(left, right, right_node)
+            }
+        }
+    }
+
+    /// Resolves one bounded catalog child exactly, splitting only an inconclusive batch.
+    fn catalog_node_cross(
+        &mut self,
+        left: usize,
+        right: usize,
+        node: PrettyPatternCatalogNode,
+    ) -> bool {
+        self.retain_catalog_node(node);
+        let key = (left, right, node);
+        if let Some(result) = self.catalog_node_products.get(&key) {
+            return *result;
+        }
+        let len = node.end - node.start;
+        debug_assert!(len > 0, "catalog children are non-empty");
+        let result = if len == 1 {
+            #[cfg(test)]
+            {
+                self.catalog_leaf_fallbacks += 1;
+            }
+            let lexical = self.catalogs[node.catalog.0].pattern_ids[node.start];
+            self.pattern_ids_cross(left, right, lexical)
+        } else {
+            let batched = self.catalog_node_batch_cross(left, right, node);
+            if let Some(result) = batched {
+                result
+            } else {
+                // Do not let one inconclusive node remain retained throughout the recursive
+                // descent: each child gets the same aggregate cache budget independently.
+                self.trim_catalog_node_cache();
+                #[cfg(test)]
+                {
+                    self.catalog_node_splits += 1;
+                }
+                let middle = node.start + len / 2;
+                let left_node = PrettyPatternCatalogNode {
+                    end: middle,
+                    ..node
+                };
+                let right_node = PrettyPatternCatalogNode {
+                    start: middle,
+                    ..node
+                };
+                self.catalog_node_cross(left, right, left_node)
+                    || self.catalog_node_cross(left, right, right_node)
+            }
+        };
+        self.catalog_node_products.insert(key, result);
+        self.catalog_node_retained_cache_entries =
+            self.catalog_node_retained_cache_entries.saturating_add(1);
+        self.retain_catalog_node(node);
+        self.trim_catalog_node_cache();
+        result
+    }
+
+    /// Attempts one bounded child-union proof, returning `None` when any proof budget declines it.
+    fn catalog_node_batch_cross(
+        &mut self,
+        left: usize,
+        right: usize,
+        node: PrettyPatternCatalogNode,
+    ) -> Option<bool> {
+        if !self.catalog_node_automata.contains_key(&node) {
+            let patterns = self.catalogs[node.catalog.0].patterns[node.start..node.end].to_vec();
+            let automaton = compile_pretty_pattern_automaton(&patterns);
+            self.catalog_node_retained_cache_bytes =
+                self.catalog_node_retained_cache_bytes.saturating_add(
+                    automaton
+                        .as_ref()
+                        .map_or(0, PrettyPatternAutomaton::retained_bytes),
+                );
+            self.catalog_node_automata.insert(node, automaton);
+            self.catalog_node_retained_cache_entries =
+                self.catalog_node_retained_cache_entries.saturating_add(1);
+            #[cfg(test)]
+            {
+                self.catalog_node_compilations += 1;
+            }
+        }
+        let retained_before = self
+            .catalog_node_automata
+            .get(&node)?
+            .as_ref()?
+            .retained_bytes();
+        let lexical = self.catalog_node_automata.get(&node)?.as_ref()?;
+        let right_key = (right, node);
+        let left_key = (left, node);
+        let repeated_left = !self.catalog_node_left_queries.insert(left_key);
+        if !repeated_left {
+            self.catalog_node_retained_cache_entries =
+                self.catalog_node_retained_cache_entries.saturating_add(1);
+        }
+        let result = if repeated_left && !self.catalog_node_right_products.contains_key(&right_key)
+        {
+            if !self.catalog_node_left_products.contains_key(&left_key) {
+                #[cfg(test)]
+                {
+                    self.catalog_node_left_product_builds += 1;
+                }
+                let product = match &self.automata[left] {
+                    Some(left) => build_pretty_left_product(
+                        left,
+                        lexical,
+                        &mut PrettyBoundaryProductCounts::new(),
+                    ),
+                    None => None,
+                };
+                self.catalog_node_retained_cache_bytes =
+                    self.catalog_node_retained_cache_bytes.saturating_add(
+                        product
+                            .as_ref()
+                            .map_or(0, PrettyLeftProduct::retained_bytes),
+                    );
+                self.catalog_node_left_products.insert(left_key, product);
+                self.catalog_node_retained_cache_entries =
+                    self.catalog_node_retained_cache_entries.saturating_add(1);
+            }
+            match (
+                &self.automata[right],
+                self.catalog_node_left_products
+                    .get(&left_key)
+                    .and_then(Option::as_ref),
+            ) {
+                (Some(right), Some(product)) => compiled_right_crosses(
+                    right,
+                    lexical,
+                    product,
+                    &mut PrettyBoundaryProductCounts::new(),
+                ),
+                _ => None,
+            }
+        } else {
+            if !self.catalog_node_right_products.contains_key(&right_key) {
+                #[cfg(test)]
+                {
+                    self.catalog_right_product_builds += 1;
+                }
+                let product = match &self.automata[right] {
+                    Some(right) => build_pretty_right_product(
+                        right,
+                        lexical,
+                        &mut PrettyBoundaryProductCounts::new(),
+                    ),
+                    None => None,
+                };
+                self.catalog_node_retained_cache_bytes =
+                    self.catalog_node_retained_cache_bytes.saturating_add(
+                        product
+                            .as_ref()
+                            .map_or(0, PrettyRightProduct::retained_bytes),
+                    );
+                self.catalog_node_right_products.insert(right_key, product);
+                self.catalog_node_retained_cache_entries =
+                    self.catalog_node_retained_cache_entries.saturating_add(1);
+            }
+            match (
+                &self.automata[left],
+                self.catalog_node_right_products
+                    .get(&right_key)
+                    .and_then(Option::as_ref),
+            ) {
+                (Some(left), Some(product)) => compiled_left_crosses(
+                    left,
+                    lexical,
+                    product,
+                    &mut PrettyBoundaryProductCounts::new(),
+                ),
+                _ => None,
+            }
+        };
+        let retained_after = self
+            .catalog_node_automata
+            .get(&node)?
+            .as_ref()?
+            .retained_bytes();
+        self.catalog_node_retained_cache_bytes = self
+            .catalog_node_retained_cache_bytes
+            .saturating_add(retained_after.saturating_sub(retained_before));
+        result
+    }
+
+    /// Enqueues one newly retained adaptive child exactly once for deterministic FIFO eviction.
+    fn retain_catalog_node(&mut self, node: PrettyPatternCatalogNode) {
+        if self.catalog_node_retained_nodes.insert(node) {
+            self.catalog_node_retention_order.push_back(node);
+        }
+    }
+
+    /// Returns the aggregate heap budget for reusable adaptive catalog children.
+    fn catalog_node_retained_budget(&self) -> usize {
+        #[cfg(test)]
+        if let Some(budget) = self.catalog_node_retained_budget {
+            return budget;
+        }
+        PRETTY_BOUNDARY_CATALOG_NODE_RETAINED_BUDGET
+    }
+
+    /// Returns the maximum number of lightweight and heavyweight adaptive-child cache entries.
+    fn catalog_node_retained_entry_budget(&self) -> usize {
+        #[cfg(test)]
+        if let Some(budget) = self.catalog_node_retained_entry_budget {
+            return budget;
+        }
+        PRETTY_BOUNDARY_CATALOG_NODE_RETAINED_ENTRY_BUDGET
+    }
+
+    /// Evicts complete oldest-retained child nodes until the adaptive cache fits both budgets.
+    fn trim_catalog_node_cache(&mut self) {
+        let budget = self.catalog_node_retained_budget();
+        let entry_budget = self.catalog_node_retained_entry_budget();
+        while self.catalog_node_retained_cache_bytes > budget
+            || self.catalog_node_retained_cache_entries > entry_budget
+        {
+            let Some(node) = self.catalog_node_retention_order.pop_front() else {
+                debug_assert_eq!(self.catalog_node_retained_cache_bytes, 0);
+                debug_assert_eq!(self.catalog_node_retained_cache_entries, 0);
+                break;
+            };
+            self.catalog_node_retained_nodes.remove(&node);
+            if let Some(automaton) = self.catalog_node_automata.remove(&node) {
+                self.catalog_node_retained_cache_entries =
+                    self.catalog_node_retained_cache_entries.saturating_sub(1);
+                if let Some(automaton) = automaton {
+                    self.catalog_node_retained_cache_bytes = self
+                        .catalog_node_retained_cache_bytes
+                        .saturating_sub(automaton.retained_bytes());
+                }
+            }
+            let right_products_before = self.catalog_node_right_products.len();
+            self.catalog_node_right_products
+                .retain(|(_, candidate), product| {
+                    if *candidate != node {
+                        return true;
+                    }
+                    self.catalog_node_retained_cache_bytes =
+                        self.catalog_node_retained_cache_bytes.saturating_sub(
+                            product
+                                .as_ref()
+                                .map_or(0, PrettyRightProduct::retained_bytes),
+                        );
+                    false
+                });
+            self.catalog_node_retained_cache_entries =
+                self.catalog_node_retained_cache_entries.saturating_sub(
+                    right_products_before.saturating_sub(self.catalog_node_right_products.len()),
+                );
+            let left_products_before = self.catalog_node_left_products.len();
+            self.catalog_node_left_products
+                .retain(|(_, candidate), product| {
+                    if *candidate != node {
+                        return true;
+                    }
+                    self.catalog_node_retained_cache_bytes =
+                        self.catalog_node_retained_cache_bytes.saturating_sub(
+                            product
+                                .as_ref()
+                                .map_or(0, PrettyLeftProduct::retained_bytes),
+                        );
+                    false
+                });
+            self.catalog_node_retained_cache_entries =
+                self.catalog_node_retained_cache_entries.saturating_sub(
+                    left_products_before.saturating_sub(self.catalog_node_left_products.len()),
+                );
+            let left_queries_before = self.catalog_node_left_queries.len();
+            self.catalog_node_left_queries
+                .retain(|(_, candidate)| *candidate != node);
+            self.catalog_node_retained_cache_entries =
+                self.catalog_node_retained_cache_entries.saturating_sub(
+                    left_queries_before.saturating_sub(self.catalog_node_left_queries.len()),
+                );
+            let products_before = self.catalog_node_products.len();
+            self.catalog_node_products
+                .retain(|(_, _, candidate), _| *candidate != node);
+            self.catalog_node_retained_cache_entries = self
+                .catalog_node_retained_cache_entries
+                .saturating_sub(products_before.saturating_sub(self.catalog_node_products.len()));
+        }
+        debug_assert!(self.catalog_node_retained_cache_bytes <= budget);
+        debug_assert!(self.catalog_node_retained_cache_entries <= entry_budget);
+    }
+
+    /// Reports the accounted aggregate adaptive-child heap retained by the prover.
+    #[cfg(test)]
+    fn catalog_node_retained_bytes(&self) -> usize {
+        self.catalog_node_retained_cache_bytes
+    }
+
+    /// Reports the aggregate adaptive-child map entries retained by the prover.
+    #[cfg(test)]
+    fn catalog_node_retained_entries(&self) -> usize {
+        self.catalog_node_retained_cache_entries
+    }
+
+    /// Interns and compiles one anchored pattern exactly once for this analysis run.
+    fn intern_pattern(&mut self, pattern: &str) -> usize {
+        if let Some(id) = self.pattern_ids.get(pattern) {
+            return *id;
+        }
+        let id = self.automata.len();
+        let automaton = compile_pretty_pattern_automaton(&[pattern]);
+        self.pattern_ids.insert(pattern.to_owned(), id);
+        self.automata.push(automaton);
+        id
+    }
+
+    /// Returns the number of unique compiled or fail-closed patterns for invariant tests.
+    #[cfg(test)]
+    fn compiled_pattern_count(&self) -> usize {
+        self.automata.len()
+    }
+
+    /// Returns the number of exact language products evaluated for invariant tests.
+    #[cfg(test)]
+    fn evaluated_product_count(&self) -> usize {
+        self.products.len()
+    }
+
+    /// Returns the number of exact catalog language products evaluated for invariant tests.
+    #[cfg(test)]
+    fn evaluated_catalog_product_count(&self) -> usize {
+        self.catalog_products.len()
+    }
+
+    /// Returns separately keyed individual and catalog right-product counts for invariant tests.
+    #[cfg(test)]
+    fn right_product_counts(&self) -> (usize, usize) {
+        (self.right_product_builds, self.catalog_right_product_builds)
+    }
+
+    /// Returns root and adaptive-child left-product construction attempts for invariant tests.
+    #[cfg(test)]
+    fn catalog_left_product_counts(&self) -> (usize, usize) {
+        (
+            self.catalog_left_product_builds,
+            self.catalog_node_left_product_builds,
+        )
+    }
+
+    /// Returns adaptive catalog-tree work counts for invariant tests.
+    #[cfg(test)]
+    fn catalog_tree_counts(&self) -> (usize, usize, usize) {
+        (
+            self.catalog_node_compilations,
+            self.catalog_node_splits,
+            self.catalog_leaf_fallbacks,
+        )
+    }
+
+    /// Returns deterministic proof-work counts without process-global instrumentation.
+    #[cfg(test)]
+    pub(crate) fn proof_counts(&self) -> PrettyBoundaryProofCounts {
+        PrettyBoundaryProofCounts {
+            catalogs: self.catalogs.len(),
+            catalog_queries: self.catalog_queries,
+            catalog_products: self.catalog_products.len(),
+        }
+    }
 }
 
 /// Reports whether a fixed-token spelling follows Unicode identifier shape.
@@ -1092,6 +2006,35 @@ pub(crate) fn canonical_fixed_spelling(
     } else {
         spelling.to_owned()
     }
+}
+
+/// Reports whether one fixed token can begin in `left` and finish after entering `right`.
+fn fixed_spellings_cross(
+    left: &str,
+    right: &str,
+    candidate: &str,
+    equivalence: crate::TextEquivalence,
+) -> bool {
+    if candidate.len() <= left.len() || candidate.len() > left.len().saturating_add(right.len()) {
+        return false;
+    }
+    let left_folds =
+        equivalence == crate::TextEquivalence::AsciiInsensitive && is_word_shaped(left);
+    let right_folds =
+        equivalence == crate::TextEquivalence::AsciiInsensitive && is_word_shaped(right);
+    let candidate_folds =
+        equivalence == crate::TextEquivalence::AsciiInsensitive && is_word_shaped(candidate);
+    left.bytes()
+        .map(|byte| (byte, left_folds))
+        .chain(right.bytes().map(|byte| (byte, right_folds)))
+        .zip(candidate.bytes())
+        .all(|((rendered, rendered_folds), candidate)| {
+            rendered == candidate
+                || ((rendered_folds || candidate_folds)
+                    && rendered.is_ascii_alphabetic()
+                    && candidate.is_ascii_alphabetic()
+                    && rendered.eq_ignore_ascii_case(&candidate))
+        })
 }
 
 /// Derives the fixed lexical pattern from the retained source model and its correlations.
@@ -1131,40 +2074,569 @@ fn dfa_accepts_state(
     dfa.is_match_state(dfa.next_eoi_state(state))
 }
 
-/// Derives the patterns cross into pattern from the retained source model and its correlations.
-fn patterns_cross_into_pattern(left: &str, right: &str, lexical_pattern: &str) -> bool {
-    let (Ok(left_dfa), Ok(right_dfa), Ok(lexical_dfa)) = (
-        dense::DFA::new(left),
-        dense::DFA::new(right),
-        dense::DFA::new(lexical_pattern),
-    ) else {
-        return true;
-    };
-    let input = Input::new(b"").anchored(Anchored::Yes);
-    let (Ok(left_start), Ok(right_start), Ok(lexical_start)) = (
-        left_dfa.start_state_forward(&input),
-        right_dfa.start_state_forward(&input),
-        lexical_dfa.start_state_forward(&input),
-    ) else {
-        return true;
-    };
+/// Evaluates one exact crossing product over already compiled anchored languages.
+fn compiled_patterns_cross(
+    left: &PrettyPatternAutomaton,
+    right: &PrettyPatternAutomaton,
+    lexical: &PrettyPatternAutomaton,
+) -> bool {
+    let mut counts = PrettyBoundaryProductCounts::new();
+    compiled_patterns_cross_with_counts(left, right, lexical, &mut counts)
+}
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Counts the deterministic dense-product work for one compiled boundary proof.
+struct PrettyBoundaryProductCounts {
+    /// Counts dense reachable graphs initialized while evaluating this product.
+    #[cfg(test)]
+    reachable_graphs_built: usize,
+    /// Counts live right-language states reachable from its anchored start.
+    #[cfg(test)]
+    right_states: usize,
+    /// Counts live lexical-language states reachable from its anchored start.
+    #[cfg(test)]
+    lexical_states: usize,
+    /// Counts right-by-lexical states examined by the shared reverse proof.
+    #[cfg(test)]
+    right_product_states: usize,
+    /// Counts left-by-lexical states reached while looking up boundary viability.
+    #[cfg(test)]
+    left_product_states: usize,
+    /// Counts byte-labelled transitions examined across all dense traversals.
+    #[cfg(test)]
+    byte_transitions: usize,
+    /// Counts accepted left boundary states answered by the shared viability table.
+    #[cfg(test)]
+    boundary_lookups: usize,
+}
+
+impl PrettyBoundaryProductCounts {
+    /// Creates empty test instrumentation without affecting production traversal state.
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records one byte-labelled transition examination in test instrumentation.
+    fn inspect_byte(&mut self) {
+        #[cfg(test)]
+        {
+            self.byte_transitions += 1;
+        }
+    }
+
+    /// Records the sizes of the two right-side state spaces in test instrumentation.
+    fn record_right_spaces(&mut self, right_states: usize, lexical_states: usize) {
+        #[cfg(test)]
+        {
+            self.right_states = right_states;
+            self.lexical_states = lexical_states;
+        }
+        #[cfg(not(test))]
+        let _ = (right_states, lexical_states);
+    }
+
+    /// Records one right-by-lexical product state in test instrumentation.
+    fn visit_right_product_state(&mut self) {
+        #[cfg(test)]
+        {
+            self.right_product_states += 1;
+        }
+    }
+
+    /// Records one left-by-lexical product state in test instrumentation.
+    fn visit_left_product_state(&mut self) {
+        #[cfg(test)]
+        {
+            self.left_product_states += 1;
+        }
+    }
+
+    /// Records one accepted left boundary lookup in test instrumentation.
+    fn lookup_boundary(&mut self) {
+        #[cfg(test)]
+        {
+            self.boundary_lookups += 1;
+        }
+    }
+}
+
+/// Stores one DFA's dense live transition graph from its anchored start state.
+struct PrettyReachableDfa {
+    /// Stores one optional live target index for every state and byte.
+    transitions: Vec<Vec<Option<usize>>>,
+    /// Marks states whose end-of-input transition accepts the language.
+    accepts: Vec<bool>,
+}
+
+/// Retains right-by-lexical boundary viability independently of any left language.
+struct PrettyRightProduct {
+    /// Number of lexical states used to encode each product-table row.
+    lexical_states: usize,
+    /// Marks right-by-lexical states from which a crossing match can finish the right language.
+    viable: Vec<bool>,
+}
+
+/// Retains lexical states reachable exactly where one left language accepts.
+struct PrettyLeftProduct {
+    /// Number of lexical states used when the accepted boundaries were built.
+    lexical_states: usize,
+    /// Unique lexical states active at an accepted left-language boundary.
+    boundary_states: Vec<usize>,
+}
+
+impl PrettyLeftProduct {
+    /// Reports the retained heap owned by one cached accepted-boundary frontier.
+    fn retained_bytes(&self) -> usize {
+        self.boundary_states
+            .capacity()
+            .saturating_mul(std::mem::size_of::<usize>())
+    }
+}
+
+impl PrettyRightProduct {
+    /// Reports the retained heap owned by one cached viability table.
+    fn retained_bytes(&self) -> usize {
+        self.viable
+            .capacity()
+            .saturating_mul(std::mem::size_of::<bool>())
+    }
+}
+
+/// Maximum byte-labelled right-by-lexical transitions retained by one boundary proof.
+///
+/// Each product cell can contribute at most 256 predecessor entries. Bounding that complete
+/// transition space before allocating the Cartesian table keeps adversarial but valid regexes
+/// from amplifying into an unbounded allocation. Returning no product remains fail-closed: the
+/// caller reports that the boundary may cross a lexical language.
+const PRETTY_BOUNDARY_PRODUCT_TRANSITION_BUDGET: usize = 8 * 1024 * 1024;
+
+/// Maximum bytes permitted while determinizing or retaining one Pretty proof DFA.
+///
+/// Catalogs that exceed this bound are divided into contiguous source-ordered children. An
+/// individual pattern that exceeds it remains fail-closed through the leaf proof.
+const PRETTY_BOUNDARY_DFA_SIZE_BUDGET: usize = 8 * 1024 * 1024;
+
+/// Maximum aggregate heavy heap retained for reusable adaptive catalog children.
+///
+/// Root catalogs and individual languages are bounded separately by their small, authored
+/// cardinalities. Child unions can grow to a full binary catalog tree, so their compiled DFAs,
+/// expanded reachable graphs, and right-side viability tables share this deterministic cap.
+const PRETTY_BOUNDARY_CATALOG_NODE_RETAINED_BUDGET: usize = 32 * 1024 * 1024;
+
+/// Maximum adaptive-child cache entries retained in addition to the aggregate heavy-heap cap.
+const PRETTY_BOUNDARY_CATALOG_NODE_RETAINED_ENTRY_BUDGET: usize = 16 * 1024;
+
+/// Maximum byte-labelled left-by-lexical transitions explored by one boundary query.
+///
+/// The left traversal is query-specific and therefore remains sparse, but its visited set can
+/// otherwise grow to the full Cartesian product. Exceeding this deterministic work bound returns
+/// no answer so the caller preserves fail-closed behavior.
+const PRETTY_BOUNDARY_LEFT_TRANSITION_BUDGET: usize = 8 * 1024 * 1024;
+
+/// Maximum expanded byte transitions retained for one reusable reachable-language graph.
+///
+/// Regex automata compress equivalent byte classes, while the boundary product deliberately uses
+/// a direct 256-entry row. This cap is checked as each state is discovered so that expanding a
+/// valid but unusually large DFA cannot allocate without bound before the Cartesian-product cap.
+const PRETTY_BOUNDARY_REACHABLE_TRANSITION_BUDGET: usize = 256 * 1024;
+
+/// Checks one expanded reachable graph's complete row count before retaining another state.
+fn pretty_boundary_reachable_transition_len(states: usize) -> Option<usize> {
+    let byte_transitions = states.checked_mul(usize::from(u8::MAX) + 1)?;
+    (byte_transitions <= PRETTY_BOUNDARY_REACHABLE_TRANSITION_BUDGET).then_some(byte_transitions)
+}
+
+/// Checks the complete Cartesian work bound before allocating any product-indexed storage.
+fn pretty_boundary_product_len(right_states: usize, lexical_states: usize) -> Option<usize> {
+    let product_states = right_states.checked_mul(lexical_states)?;
+    let byte_transitions = product_states.checked_mul(usize::from(u8::MAX) + 1)?;
+    (byte_transitions <= PRETTY_BOUNDARY_PRODUCT_TRANSITION_BUDGET).then_some(product_states)
+}
+
+/// Checks the sparse left traversal's work bound before retaining another product state.
+fn pretty_boundary_left_transition_len(states: usize) -> Option<usize> {
+    let byte_transitions = states.checked_mul(usize::from(u8::MAX) + 1)?;
+    (byte_transitions <= PRETTY_BOUNDARY_LEFT_TRANSITION_BUDGET).then_some(byte_transitions)
+}
+
+impl PrettyReachableDfa {
+    /// Reports the retained heap owned by one expanded dense transition graph.
+    fn retained_bytes(&self) -> usize {
+        let rows = self
+            .transitions
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Vec<Option<usize>>>());
+        let transitions = self.transitions.iter().fold(0_usize, |bytes, row| {
+            bytes.saturating_add(
+                row.capacity()
+                    .saturating_mul(std::mem::size_of::<Option<usize>>()),
+            )
+        });
+        let accepts = self
+            .accepts
+            .capacity()
+            .saturating_mul(std::mem::size_of::<bool>());
+        rows.saturating_add(transitions).saturating_add(accepts)
+    }
+
+    /// Builds the complete live subgraph reachable from one anchored DFA state.
+    fn new(
+        automaton: &PrettyPatternAutomaton,
+        counts: &mut PrettyBoundaryProductCounts,
+    ) -> Option<Self> {
+        let mut states = vec![automaton.start];
+        let mut indices = BTreeMap::from([(automaton.start, 0)]);
+        let mut transitions = Vec::new();
+        let mut accepts = Vec::new();
+        let mut state_index = 0;
+        while state_index < states.len() {
+            pretty_boundary_reachable_transition_len(states.len())?;
+            let state = states[state_index];
+            accepts.push(dfa_accepts_state(&automaton.dfa, state));
+            let mut row = Vec::with_capacity(usize::from(u8::MAX) + 1);
+            for byte in u8::MIN..=u8::MAX {
+                counts.inspect_byte();
+                let next = automaton.dfa.next_state(state, byte);
+                if automaton.dfa.is_dead_state(next) || automaton.dfa.is_quit_state(next) {
+                    row.push(None);
+                    continue;
+                }
+                let next_index = if let Some(next_index) = indices.get(&next) {
+                    *next_index
+                } else {
+                    pretty_boundary_reachable_transition_len(states.len() + 1)?;
+                    let next_index = states.len();
+                    states.push(next);
+                    indices.insert(next, next_index);
+                    next_index
+                };
+                row.push(Some(next_index));
+            }
+            transitions.push(row);
+            state_index += 1;
+        }
+        #[cfg(test)]
+        {
+            counts.reachable_graphs_built += 1;
+        }
+        Some(Self {
+            transitions,
+            accepts,
+        })
+    }
+}
+
+/// Chooses one byte for each joint DFA equivalence class.
+fn pretty_boundary_joint_byte_representatives(
+    first: &PrettyPatternAutomaton,
+    second: &PrettyPatternAutomaton,
+) -> Vec<u8> {
+    let first_classes = first.dfa.byte_classes();
+    let second_classes = second.dfa.byte_classes();
+    let mut seen = BTreeSet::new();
+    let mut representatives = Vec::new();
+    for byte in u8::MIN..=u8::MAX {
+        if seen.insert((first_classes.get(byte), second_classes.get(byte))) {
+            representatives.push(byte);
+        }
+    }
+    representatives
+}
+
+/// Builds accepted left-boundary states once for reuse across distinct right languages.
+fn build_pretty_left_product(
+    left: &PrettyPatternAutomaton,
+    lexical: &PrettyPatternAutomaton,
+    counts: &mut PrettyBoundaryProductCounts,
+) -> Option<PrettyLeftProduct> {
+    let joint_bytes = pretty_boundary_joint_byte_representatives(left, lexical);
+    let lexical_graph = lexical.reachable(counts)?;
+    pretty_boundary_left_transition_len(1)?;
+    let lexical_start = 0;
+    let mut boundary_states = BTreeSet::new();
+    let mut seen = BTreeSet::from([(left.start, lexical_start)]);
+    let mut frontier = VecDeque::from([(left.start, lexical_start)]);
+    while let Some((left_state, lexical_state)) = frontier.pop_front() {
+        counts.visit_left_product_state();
+        if dfa_accepts_state(&left.dfa, left_state) {
+            counts.lookup_boundary();
+            boundary_states.insert(lexical_state);
+        }
+        for byte in &joint_bytes {
+            counts.inspect_byte();
+            let left_next = left.dfa.next_state(left_state, *byte);
+            let Some(lexical_next) = lexical_graph.transitions[lexical_state][usize::from(*byte)]
+            else {
+                continue;
+            };
+            if left.dfa.is_dead_state(left_next) || left.dfa.is_quit_state(left_next) {
+                continue;
+            }
+            let next = (left_next, lexical_next);
+            if seen.contains(&next) {
+                continue;
+            }
+            pretty_boundary_left_transition_len(seen.len() + 1)?;
+            seen.insert(next);
+            frontier.push_back(next);
+        }
+    }
+    Some(PrettyLeftProduct {
+        lexical_states: lexical_graph.transitions.len(),
+        boundary_states: boundary_states.into_iter().collect(),
+    })
+}
+
+/// Traverses one right-by-lexical product from cached accepted left-boundary states.
+fn compiled_right_crosses(
+    right: &PrettyPatternAutomaton,
+    lexical: &PrettyPatternAutomaton,
+    left_product: &PrettyLeftProduct,
+    counts: &mut PrettyBoundaryProductCounts,
+) -> Option<bool> {
+    let joint_bytes = pretty_boundary_joint_byte_representatives(right, lexical);
+    let right_graph = right.reachable(counts)?;
+    let lexical_graph = lexical.reachable(counts)?;
+    if lexical_graph.transitions.len() != left_product.lexical_states {
+        return None;
+    }
+    pretty_boundary_left_transition_len(left_product.boundary_states.len())?;
+    let mut seen = left_product
+        .boundary_states
+        .iter()
+        .map(|state| (0, Some(*state)))
+        .collect::<BTreeSet<_>>();
+    let mut frontier = seen.iter().copied().collect::<VecDeque<_>>();
+    while let Some((right_state, lexical_state)) = frontier.pop_front() {
+        counts.visit_right_product_state();
+        if lexical_state.is_none() && right_graph.accepts[right_state] {
+            return Some(true);
+        }
+        for byte in &joint_bytes {
+            counts.inspect_byte();
+            let Some(right_next) = right_graph.transitions[right_state][usize::from(*byte)] else {
+                continue;
+            };
+            let lexical_next = match lexical_state {
+                None => None,
+                Some(lexical_state) => {
+                    let Some(lexical_next) =
+                        lexical_graph.transitions[lexical_state][usize::from(*byte)]
+                    else {
+                        continue;
+                    };
+                    (!lexical_graph.accepts[lexical_next]).then_some(lexical_next)
+                }
+            };
+            let next = (right_next, lexical_next);
+            if seen.contains(&next) {
+                continue;
+            }
+            pretty_boundary_left_transition_len(seen.len() + 1)?;
+            seen.insert(next);
+            frontier.push_back(next);
+        }
+    }
+    Some(false)
+}
+
+/// Builds one reusable right-side viability table independently of the left language.
+fn build_pretty_right_product(
+    right: &PrettyPatternAutomaton,
+    lexical: &PrettyPatternAutomaton,
+    counts: &mut PrettyBoundaryProductCounts,
+) -> Option<PrettyRightProduct> {
+    let joint_bytes = pretty_boundary_joint_byte_representatives(right, lexical);
+    let right_bytes = right
+        .dfa
+        .byte_classes()
+        .representatives(..)
+        .filter_map(|unit| unit.as_u8())
+        .collect::<Vec<_>>();
+    let right_graph = right.reachable(counts)?;
+    let lexical_graph = lexical.reachable(counts)?;
+    let right_len = right_graph.transitions.len();
+    let lexical_len = lexical_graph.transitions.len();
+    counts.record_right_spaces(right_len, lexical_len);
+
+    let mut right_predecessors = vec![Vec::new(); right_len];
+    let mut right_edge_marks = vec![0; right_len];
+    for (source, transitions) in right_graph.transitions.iter().enumerate() {
+        for byte in &right_bytes {
+            let Some(target) = transitions[usize::from(*byte)] else {
+                continue;
+            };
+            let edge_mark = source + 1;
+            if right_edge_marks[target] != edge_mark {
+                right_edge_marks[target] = edge_mark;
+                right_predecessors[target].push(source);
+            }
+        }
+    }
+    let mut right_can_accept = right_graph.accepts.clone();
+    let mut frontier = right_can_accept
+        .iter()
+        .enumerate()
+        .filter_map(|(state, accepts)| accepts.then_some(state))
+        .collect::<VecDeque<_>>();
+    while let Some(state) = frontier.pop_front() {
+        for predecessor in &right_predecessors[state] {
+            if !right_can_accept[*predecessor] {
+                right_can_accept[*predecessor] = true;
+                frontier.push_back(*predecessor);
+            }
+        }
+    }
+
+    let product_len = pretty_boundary_product_len(right_len, lexical_len)?;
+    let product_index = |right_state, lexical_state| right_state * lexical_len + lexical_state;
+    let mut product_predecessors = vec![Vec::new(); product_len];
+    let mut product_edge_marks = vec![0; product_len];
+    let mut viable = vec![false; product_len];
+    for right_state in 0..right_len {
+        for lexical_state in 0..lexical_len {
+            counts.visit_right_product_state();
+            let source = product_index(right_state, lexical_state);
+            for byte in &joint_bytes {
+                counts.inspect_byte();
+                let Some(right_next) = right_graph.transitions[right_state][usize::from(*byte)]
+                else {
+                    continue;
+                };
+                let Some(lexical_next) =
+                    lexical_graph.transitions[lexical_state][usize::from(*byte)]
+                else {
+                    continue;
+                };
+                if lexical_graph.accepts[lexical_next] {
+                    viable[source] |= right_can_accept[right_next];
+                } else {
+                    let target = product_index(right_next, lexical_next);
+                    let edge_mark = source + 1;
+                    if product_edge_marks[target] != edge_mark {
+                        product_edge_marks[target] = edge_mark;
+                        product_predecessors[target].push(source);
+                    }
+                }
+            }
+        }
+    }
+    let mut frontier = viable
+        .iter()
+        .enumerate()
+        .filter_map(|(state, viable)| viable.then_some(state))
+        .collect::<VecDeque<_>>();
+    while let Some(state) = frontier.pop_front() {
+        for predecessor in &product_predecessors[state] {
+            if !viable[*predecessor] {
+                viable[*predecessor] = true;
+                frontier.push_back(*predecessor);
+            }
+        }
+    }
+
+    Some(PrettyRightProduct {
+        lexical_states: lexical_len,
+        viable,
+    })
+}
+
+/// Traverses one left-by-lexical product using a previously built right-side viability table.
+fn compiled_left_crosses(
+    left: &PrettyPatternAutomaton,
+    lexical: &PrettyPatternAutomaton,
+    right_product: &PrettyRightProduct,
+    counts: &mut PrettyBoundaryProductCounts,
+) -> Option<bool> {
+    let joint_bytes = pretty_boundary_joint_byte_representatives(left, lexical);
+    let lexical_graph = lexical.reachable(counts)?;
+    if lexical_graph.transitions.len() != right_product.lexical_states {
+        return None;
+    }
+    pretty_boundary_left_transition_len(1)?;
+    let product_index =
+        |right_state, lexical_state| right_state * right_product.lexical_states + lexical_state;
+    let lexical_start = 0;
+    let mut seen = BTreeSet::from([(left.start, lexical_start)]);
+    let mut frontier = VecDeque::from([(left.start, lexical_start)]);
+    while let Some((left_state, lexical_state)) = frontier.pop_front() {
+        counts.visit_left_product_state();
+        if dfa_accepts_state(&left.dfa, left_state) {
+            counts.lookup_boundary();
+            if right_product.viable[product_index(0, lexical_state)] {
+                return Some(true);
+            }
+        }
+        for byte in &joint_bytes {
+            counts.inspect_byte();
+            let left_next = left.dfa.next_state(left_state, *byte);
+            let Some(lexical_next) = lexical_graph.transitions[lexical_state][usize::from(*byte)]
+            else {
+                continue;
+            };
+            if left.dfa.is_dead_state(left_next) || left.dfa.is_quit_state(left_next) {
+                continue;
+            }
+            let next = (left_next, lexical_next);
+            if seen.contains(&next) {
+                continue;
+            }
+            pretty_boundary_left_transition_len(seen.len() + 1)?;
+            seen.insert(next);
+            frontier.push_back((left_next, lexical_next));
+        }
+    }
+    Some(false)
+}
+
+/// Computes exact crossing semantics while retaining deterministic work counts for tests.
+fn compiled_patterns_cross_with_counts(
+    left: &PrettyPatternAutomaton,
+    right: &PrettyPatternAutomaton,
+    lexical: &PrettyPatternAutomaton,
+    counts: &mut PrettyBoundaryProductCounts,
+) -> bool {
+    let Some(right_product) = build_pretty_right_product(right, lexical, counts) else {
+        return true;
+    };
+    compiled_left_crosses(left, lexical, &right_product, counts).unwrap_or(true)
+}
+
+/// Runs one compiled proof while retaining deterministic test-only work counts.
+#[cfg(test)]
+fn compiled_patterns_cross_counted(
+    left: &PrettyPatternAutomaton,
+    right: &PrettyPatternAutomaton,
+    lexical: &PrettyPatternAutomaton,
+) -> (bool, PrettyBoundaryProductCounts) {
+    let mut counts = PrettyBoundaryProductCounts::new();
+    let result = compiled_patterns_cross_with_counts(left, right, lexical, &mut counts);
+    (result, counts)
+}
+
+/// Retains the previous per-boundary-state search as an independent differential-test oracle.
+#[cfg(test)]
+fn compiled_patterns_cross_old_oracle(
+    left: &PrettyPatternAutomaton,
+    right: &PrettyPatternAutomaton,
+    lexical: &PrettyPatternAutomaton,
+) -> bool {
     let right_crosses = |lexical_start| {
         type BoundaryState = (
             regex_automata::util::primitives::StateID,
             Option<regex_automata::util::primitives::StateID>,
             bool,
         );
-        let start: BoundaryState = (right_start, Some(lexical_start), false);
+        let start: BoundaryState = (right.start, Some(lexical_start), false);
         let mut seen = BTreeSet::from([start]);
         let mut frontier = VecDeque::from([start]);
         while let Some((right_state, lexical_state, crossed_match)) = frontier.pop_front() {
-            if crossed_match && dfa_accepts_state(&right_dfa, right_state) {
+            if crossed_match && dfa_accepts_state(&right.dfa, right_state) {
                 return true;
             }
             for byte in u8::MIN..=u8::MAX {
-                let right_next = right_dfa.next_state(right_state, byte);
-                if right_dfa.is_dead_state(right_next) || right_dfa.is_quit_state(right_next) {
+                let right_next = right.dfa.next_state(right_state, byte);
+                if right.dfa.is_dead_state(right_next) || right.dfa.is_quit_state(right_next) {
                     continue;
                 }
                 let (lexical_next, crossed_match) = if crossed_match {
@@ -1173,13 +2645,13 @@ fn patterns_cross_into_pattern(left: &str, right: &str, lexical_pattern: &str) -
                     let Some(lexical_state) = lexical_state else {
                         continue;
                     };
-                    let lexical_next = lexical_dfa.next_state(lexical_state, byte);
-                    if lexical_dfa.is_dead_state(lexical_next)
-                        || lexical_dfa.is_quit_state(lexical_next)
+                    let lexical_next = lexical.dfa.next_state(lexical_state, byte);
+                    if lexical.dfa.is_dead_state(lexical_next)
+                        || lexical.dfa.is_quit_state(lexical_next)
                     {
                         continue;
                     }
-                    let crossed_match = dfa_accepts_state(&lexical_dfa, lexical_next);
+                    let crossed_match = dfa_accepts_state(&lexical.dfa, lexical_next);
                     ((!crossed_match).then_some(lexical_next), crossed_match)
                 };
                 let next = (right_next, lexical_next, crossed_match);
@@ -1192,10 +2664,10 @@ fn patterns_cross_into_pattern(left: &str, right: &str, lexical_pattern: &str) -
     };
 
     let mut right_results = BTreeMap::new();
-    let mut seen = BTreeSet::from([(left_start, lexical_start)]);
-    let mut frontier = VecDeque::from([(left_start, lexical_start)]);
+    let mut seen = BTreeSet::from([(left.start, lexical.start)]);
+    let mut frontier = VecDeque::from([(left.start, lexical.start)]);
     while let Some((left_state, lexical_state)) = frontier.pop_front() {
-        if dfa_accepts_state(&left_dfa, left_state)
+        if dfa_accepts_state(&left.dfa, left_state)
             && *right_results
                 .entry(lexical_state)
                 .or_insert_with(|| right_crosses(lexical_state))
@@ -1203,12 +2675,12 @@ fn patterns_cross_into_pattern(left: &str, right: &str, lexical_pattern: &str) -
             return true;
         }
         for byte in u8::MIN..=u8::MAX {
-            let left_next = left_dfa.next_state(left_state, byte);
-            let lexical_next = lexical_dfa.next_state(lexical_state, byte);
-            if left_dfa.is_dead_state(left_next)
-                || left_dfa.is_quit_state(left_next)
-                || lexical_dfa.is_dead_state(lexical_next)
-                || lexical_dfa.is_quit_state(lexical_next)
+            let left_next = left.dfa.next_state(left_state, byte);
+            let lexical_next = lexical.dfa.next_state(lexical_state, byte);
+            if left.dfa.is_dead_state(left_next)
+                || left.dfa.is_quit_state(left_next)
+                || lexical.dfa.is_dead_state(lexical_next)
+                || lexical.dfa.is_quit_state(lexical_next)
                 || !seen.insert((left_next, lexical_next))
             {
                 continue;
@@ -1217,6 +2689,11 @@ fn patterns_cross_into_pattern(left: &str, right: &str, lexical_pattern: &str) -
         }
     }
     false
+}
+
+/// Derives the patterns cross into pattern from the retained source model and its correlations.
+fn patterns_cross_into_pattern(left: &str, right: &str, lexical_pattern: &str) -> bool {
+    PrettyBoundaryProver::default().patterns_cross(left, right, lexical_pattern)
 }
 
 /// Derives the pattern then fixed intersects pattern from the retained source model and its correlations.
@@ -1253,12 +2730,38 @@ fn source_trivia_supports_breaks(source: &SourceModel) -> bool {
         .all(|required| source_trivia_supports(source, required))
 }
 
+/// Builds the immutable source-ordered lexical pattern catalog used during materialization.
+pub(crate) fn materialized_pretty_lexical_patterns(
+    source: &SourceModel,
+    equivalence: crate::TextEquivalence,
+) -> Vec<String> {
+    source
+        .token_definitions
+        .iter()
+        .map(|definition| match &definition.kind {
+            TokenDefinitionKind::Fixed(fixed) => {
+                fixed_lexical_pattern(&fixed.spelling, equivalence)
+            }
+            TokenDefinitionKind::Content(content) => content.pattern.clone(),
+            TokenDefinitionKind::LexicalBase(base) => base.pattern.clone(),
+        })
+        .chain(
+            source
+                .lexer_records
+                .iter()
+                .map(|record| record.pattern.clone()),
+        )
+        .collect()
+}
+
 /// Derives the materialized pretty boundary changes lexing from the retained source model and its correlations.
 pub(crate) fn materialized_pretty_boundary_changes_lexing(
     source: &SourceModel,
     equivalence: crate::TextEquivalence,
     left: &MaterializedPrettyBoundary,
     right: &MaterializedPrettyBoundary,
+    lexical_catalog: PrettyPatternCatalogId,
+    prover: &mut PrettyBoundaryProver,
 ) -> bool {
     let fixed = |boundary: &MaterializedPrettyBoundary| match boundary {
         MaterializedPrettyBoundary::Fixed(id) => {
@@ -1312,23 +2815,6 @@ pub(crate) fn materialized_pretty_boundary_changes_lexing(
         return !source_trivia_supports_breaks(source);
     }
 
-    let lexical_patterns = source
-        .token_definitions
-        .iter()
-        .map(|definition| match &definition.kind {
-            TokenDefinitionKind::Fixed(fixed) => {
-                fixed_lexical_pattern(&fixed.spelling, equivalence)
-            }
-            TokenDefinitionKind::Content(content) => content.pattern.clone(),
-            TokenDefinitionKind::LexicalBase(base) => base.pattern.clone(),
-        })
-        .chain(
-            source
-                .lexer_records
-                .iter()
-                .map(|record| record.pattern.clone()),
-        )
-        .collect::<Vec<_>>();
     let boundary_pattern = |boundary: &MaterializedPrettyBoundary| match boundary {
         MaterializedPrettyBoundary::Fixed(_) => fixed_pretty_pattern(
             fixed(boundary).expect("fixed boundary has a definition"),
@@ -1338,9 +2824,7 @@ pub(crate) fn materialized_pretty_boundary_changes_lexing(
     };
     let left_pattern = boundary_pattern(left);
     let right_pattern = boundary_pattern(right);
-    lexical_patterns.iter().any(|lexical_pattern| {
-        patterns_cross_into_pattern(&left_pattern, &right_pattern, lexical_pattern)
-    })
+    prover.patterns_cross_catalog(&left_pattern, &right_pattern, lexical_catalog)
 }
 
 /// Derives the hir matches single char from the retained source model and its correlations.
@@ -1551,8 +3035,37 @@ impl LoweredFields {
 }
 
 impl SourceModelBuilder<'_> {
+    /// Indexes the first source-ordered definition for each semantic content token.
+    fn index_pretty_content_definitions(&mut self) {
+        let mut definitions = vec![None; self.resolved.content_tokens.len()];
+        for definition in &self.tokens.definitions {
+            let TokenDefinitionKind::Content(content) = &definition.kind else {
+                continue;
+            };
+            let slot = definitions
+                .get_mut(content.semantic.index())
+                .expect("content token identities are dense");
+            if slot.is_none() {
+                *slot = Some(definition.id);
+            }
+        }
+        self.pretty_content_definitions = definitions;
+    }
+
     /// Diagnoses spacing hints that conflict with fixed-token lexical boundaries.
     fn validate_pretty_spacing(&mut self) {
+        let lexical_patterns = self.pretty_lexical_patterns(true);
+        let non_fixed_lexical_patterns = self.pretty_lexical_patterns(false);
+        let (lexical_catalog, non_fixed_lexical_catalog) = {
+            let mut prover = self.pretty_boundary_prover.borrow_mut();
+            (
+                prover.intern_catalog(&lexical_patterns),
+                prover.intern_catalog(&non_fixed_lexical_patterns),
+            )
+        };
+        self.pretty_lexical_catalog = Some(lexical_catalog);
+        self.pretty_non_fixed_lexical_catalog = Some(non_fixed_lexical_catalog);
+
         let mut diagnostics = Vec::new();
         for node in &self.nodes {
             let pretty_enabled = node
@@ -1608,10 +3121,23 @@ impl SourceModelBuilder<'_> {
                     let requires_grouping = variants
                         .iter()
                         .any(|variant| !matches!(variant.position, SourcePrattPosition::Atom));
-                    let has_grouping = variants.iter().any(|variant| {
-                        matches!(variant.position, SourcePrattPosition::Atom)
-                            && self.is_pretty_pratt_grouping(node.resolved_node, &variant.common)
-                    });
+                    let mut grouping_analysis = PrettyPrattGroupingAnalysis::default();
+                    let grouping_candidates = variants
+                        .iter()
+                        .filter_map(|variant| {
+                            matches!(variant.position, SourcePrattPosition::Atom)
+                                .then(|| {
+                                    self.pretty_pratt_grouping_is_delegated(
+                                        node.resolved_node,
+                                        &variant.common,
+                                        &mut grouping_analysis,
+                                    )
+                                })
+                                .flatten()
+                        })
+                        .collect::<Vec<_>>();
+                    let has_grouping = grouping_candidates.iter().any(|delegated| !delegated)
+                        || matches!(grouping_candidates.as_slice(), [true]);
                     if requires_grouping && !has_grouping {
                         diagnostics.push(SourceModelDiagnostic {
                             kind: SourceModelDiagnosticKind::InvalidConfiguration,
@@ -1704,9 +3230,11 @@ impl SourceModelBuilder<'_> {
         scope: &str,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
+        let needs_soft_opportunity = pretty.group.is_some() || pretty.indent;
         self.validate_pretty_scope_facts(
             pretty,
-            self.pretty_scope_has_soft_opportunity(elements, &mut Vec::new()),
+            needs_soft_opportunity
+                && self.pretty_scope_has_soft_opportunity(elements, &mut Vec::new()),
             scope,
             diagnostics,
         );
@@ -1762,8 +3290,9 @@ impl SourceModelBuilder<'_> {
         scope: &str,
         diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
-        let has_soft_opportunity = variants
-            .any(|elements| self.pretty_scope_has_soft_opportunity(elements, &mut Vec::new()));
+        let has_soft_opportunity = (pretty.group.is_some() || pretty.indent)
+            && variants
+                .any(|elements| self.pretty_scope_has_soft_opportunity(elements, &mut Vec::new()));
         self.validate_pretty_scope_facts(pretty, has_soft_opportunity, scope, diagnostics);
     }
 
@@ -1772,6 +3301,17 @@ impl SourceModelBuilder<'_> {
         &self,
         elements: &[GrammarElement],
         visiting: &mut Vec<NodeId>,
+    ) -> bool {
+        let mut cycle_dependent = false;
+        self.pretty_scope_has_soft_opportunity_inner(elements, visiting, &mut cycle_dependent)
+    }
+
+    /// Derives one soft-opportunity result while tracking recursive false fallbacks.
+    fn pretty_scope_has_soft_opportunity_inner(
+        &self,
+        elements: &[GrammarElement],
+        visiting: &mut Vec<NodeId>,
+        cycle_dependent: &mut bool,
     ) -> bool {
         if matches!(
             (elements.first(), elements.last()),
@@ -1802,6 +3342,7 @@ impl SourceModelBuilder<'_> {
                 || self.pretty_type_has_soft_opportunity(
                     &self.resolved_field(*resolved_field).ty,
                     visiting,
+                    cycle_dependent,
                 )
         }) {
             return true;
@@ -1827,6 +3368,7 @@ impl SourceModelBuilder<'_> {
         &self,
         ty: &ResolvedType,
         visiting: &mut Vec<NodeId>,
+        cycle_dependent: &mut bool,
     ) -> bool {
         match &ty.kind {
             ResolvedTypeKind::Semantic {
@@ -1834,37 +3376,70 @@ impl SourceModelBuilder<'_> {
             } => match target {
                 SemanticTarget::Node(node) => {
                     if visiting.contains(node) {
+                        *cycle_dependent = true;
                         return false;
                     }
+                    let cached = self
+                        .pretty_boundary_analysis
+                        .borrow()
+                        .soft_nodes
+                        .get(node)
+                        .copied();
+                    if let Some(result) = cached {
+                        return result;
+                    }
+                    #[cfg(test)]
+                    {
+                        let mut analysis = self.pretty_boundary_analysis.borrow_mut();
+                        analysis.soft_node_evaluations =
+                            analysis.soft_node_evaluations.saturating_add(1);
+                    }
                     visiting.push(*node);
+                    let mut node_cycle_dependent = false;
                     let result = self
                         .nodes
-                        .iter()
-                        .find(|candidate| candidate.resolved_node == *node)
+                        .get(node.index())
+                        .filter(|candidate| candidate.resolved_node == *node)
                         .is_some_and(|node| match &node.body {
-                            NodeBody::Struct(elements) | NodeBody::Presence(elements) => {
-                                self.pretty_scope_has_soft_opportunity(elements, visiting)
-                            }
+                            NodeBody::Struct(elements) | NodeBody::Presence(elements) => self
+                                .pretty_scope_has_soft_opportunity_inner(
+                                    elements,
+                                    visiting,
+                                    &mut node_cycle_dependent,
+                                ),
                             NodeBody::Enum(variants) => variants.iter().any(|variant| {
-                                self.pretty_scope_has_soft_opportunity(&variant.elements, visiting)
+                                self.pretty_scope_has_soft_opportunity_inner(
+                                    &variant.elements,
+                                    visiting,
+                                    &mut node_cycle_dependent,
+                                )
                             }),
                             NodeBody::Pratt(variants) => variants.iter().any(|variant| {
-                                self.pretty_scope_has_soft_opportunity(
+                                self.pretty_scope_has_soft_opportunity_inner(
                                     &variant.common.elements,
                                     visiting,
+                                    &mut node_cycle_dependent,
                                 )
                             }),
                         });
                     visiting.pop();
+                    if result || !node_cycle_dependent {
+                        self.pretty_boundary_analysis
+                            .borrow_mut()
+                            .soft_nodes
+                            .insert(*node, result);
+                    } else {
+                        *cycle_dependent = true;
+                    }
                     result
                 }
                 SemanticTarget::Catalog(CatalogType::Vec | CatalogType::Vec1) => true,
                 SemanticTarget::Catalog(CatalogType::Box | CatalogType::Option) => arguments
                     .iter()
                     .find_map(|argument| match argument {
-                        ResolvedGenericArgument::Type(inner) => {
-                            Some(self.pretty_type_has_soft_opportunity(inner, visiting))
-                        }
+                        ResolvedGenericArgument::Type(inner) => Some(
+                            self.pretty_type_has_soft_opportunity(inner, visiting, cycle_dependent),
+                        ),
                         ResolvedGenericArgument::Lifetime(_)
                         | ResolvedGenericArgument::Unsupported(_) => None,
                     })
@@ -1872,16 +3447,18 @@ impl SourceModelBuilder<'_> {
                 SemanticTarget::TypeAlias(alias) => self
                     .resolved
                     .type_aliases
-                    .iter()
-                    .find(|candidate| candidate.id == *alias)
+                    .get(alias.index())
+                    .filter(|candidate| candidate.id == *alias)
                     .and_then(|alias| alias.target.as_ref())
-                    .is_some_and(|target| self.pretty_type_has_soft_opportunity(target, visiting)),
+                    .is_some_and(|target| {
+                        self.pretty_type_has_soft_opportunity(target, visiting, cycle_dependent)
+                    }),
                 SemanticTarget::ContentToken(_) | SemanticTarget::GenericParameter(_) => false,
             },
             ResolvedTypeKind::Group(inner)
             | ResolvedTypeKind::Parenthesized(inner)
             | ResolvedTypeKind::Reference(inner) => {
-                self.pretty_type_has_soft_opportunity(inner, visiting)
+                self.pretty_type_has_soft_opportunity(inner, visiting, cycle_dependent)
             }
             ResolvedTypeKind::FixedTokenPresence
             | ResolvedTypeKind::Tuple(_)
@@ -1889,70 +3466,448 @@ impl SourceModelBuilder<'_> {
         }
     }
 
-    /// Reports whether this Pretty scope controls Pratt grouping syntax.
-    fn is_pretty_pratt_grouping(&self, node: NodeId, variant: &Variant) -> bool {
-        if let [
-            GrammarElement::SemanticField {
-                resolved_field,
-                attachment: Some(attachment),
-                ..
-            },
-        ] = variant.elements.as_slice()
-        {
-            return !attachment.before.is_empty()
-                && !attachment.after.is_empty()
-                && self
-                    .is_direct_recursive_operand(&self.resolved_field(*resolved_field).ty, node);
-        }
-        let [
-            GrammarElement::FixedToken { .. },
-            GrammarElement::SemanticField { resolved_field, .. },
-            GrammarElement::FixedToken { .. },
-        ] = variant.elements.as_slice()
-        else {
-            return false;
+    /// Reports whether a valid grouping path exists and whether it delegates through a helper.
+    fn pretty_pratt_grouping_is_delegated(
+        &self,
+        node: NodeId,
+        variant: &Variant,
+        analysis: &mut PrettyPrattGroupingAnalysis,
+    ) -> Option<bool> {
+        let proof = self.pretty_pratt_grouping_elements(node, &variant.elements, analysis);
+        let [witness] = proof.witnesses.as_slice() else {
+            return None;
         };
-        self.is_direct_recursive_operand(&self.resolved_field(*resolved_field).ty, node)
+        (!proof.cyclic
+            && if witness.delegated {
+                witness.before == 1 && witness.after == 1
+            } else {
+                witness.before > 0 && witness.after > 0
+            })
+        .then_some(witness.delegated)
     }
 
-    /// Reports whether this field directly carries the owning Pratt type.
-    fn is_direct_recursive_operand(&self, ty: &ResolvedType, node: NodeId) -> bool {
+    /// Derives empty and single-owner paths through one authored element sequence.
+    fn pretty_pratt_grouping_elements(
+        &self,
+        owner: NodeId,
+        elements: &[GrammarElement],
+        analysis: &mut PrettyPrattGroupingAnalysis,
+    ) -> PrettyPrattGroupingProof {
+        let empty = elements
+            .iter()
+            .all(|element| self.pretty_pratt_grouping_element_is_empty(owner, element, analysis));
+        let mut proof = PrettyPrattGroupingProof {
+            empty,
+            ..PrettyPrattGroupingProof::default()
+        };
+        for (index, element) in elements.iter().enumerate() {
+            let GrammarElement::SemanticField {
+                resolved_field,
+                projection: SemanticFieldProjection::Direct,
+                attachment,
+                ..
+            } = element
+            else {
+                continue;
+            };
+            let Some(context_before) =
+                self.pretty_pratt_grouping_fixed_context(owner, &elements[..index], analysis)
+            else {
+                continue;
+            };
+            let Some(context_after) =
+                self.pretty_pratt_grouping_fixed_context(owner, &elements[index + 1..], analysis)
+            else {
+                continue;
+            };
+            let Some((attached_before, attached_after)) =
+                attachment.as_ref().map_or(Some((0, 0)), |attachment| {
+                    Some((
+                        Self::required_pretty_attachment_len(&attachment.before)?,
+                        Self::required_pretty_attachment_len(&attachment.after)?,
+                    ))
+                })
+            else {
+                continue;
+            };
+            let before = context_before + attached_before;
+            let after = context_after + attached_after;
+            let nested = self.pretty_pratt_grouping_type(
+                owner,
+                &self.resolved_field(*resolved_field).ty,
+                analysis,
+            );
+            proof.cyclic |= nested.cyclic;
+            for witness in nested.witnesses {
+                let context_is_transparent = before == 0 && after == 0;
+                let context_is_enclosure = before > 0 && after > 0;
+                let witness_is_transparent = witness.before == 0 && witness.after == 0;
+                if context_is_transparent || (context_is_enclosure && witness_is_transparent) {
+                    proof.push_witness(PrettyPrattGroupingBounds {
+                        before: before + witness.before,
+                        after: after + witness.after,
+                        delegated: witness.delegated,
+                    });
+                }
+            }
+        }
+        proof
+    }
+
+    /// Counts required fixed syntax around an owner path.
+    ///
+    /// Optional grammar elements take their empty derivation. A required
+    /// semantic sibling is accepted only when it resolves to one exact,
+    /// non-empty fixed-only helper expansion.
+    fn pretty_pratt_grouping_fixed_context(
+        &self,
+        owner: NodeId,
+        elements: &[GrammarElement],
+        analysis: &mut PrettyPrattGroupingAnalysis,
+    ) -> Option<usize> {
+        let mut count = 0usize;
+        for element in elements {
+            match element {
+                GrammarElement::FixedToken { .. } => count = count.checked_add(1)?,
+                GrammarElement::OptionalFixedTokenGroup { .. } => {}
+                GrammarElement::SemanticField { .. }
+                    if self.pretty_pratt_grouping_element_is_empty(owner, element, analysis) => {}
+                GrammarElement::SemanticField {
+                    resolved_field,
+                    projection: SemanticFieldProjection::Direct,
+                    attachment,
+                    ..
+                } => {
+                    let attachment = attachment.as_ref();
+                    let before = attachment.map_or(Some(0), |attachment| {
+                        Self::required_pretty_attachment_len(&attachment.before)
+                    })?;
+                    let after = attachment.map_or(Some(0), |attachment| {
+                        Self::required_pretty_attachment_len(&attachment.after)
+                    })?;
+                    let fixed = self.pretty_pratt_fixed_only_type_len(
+                        &self.resolved_field(*resolved_field).ty,
+                        analysis,
+                    )?;
+                    if fixed == 0 {
+                        return None;
+                    }
+                    count = count
+                        .checked_add(before)?
+                        .checked_add(fixed)?
+                        .checked_add(after)?;
+                }
+                GrammarElement::SemanticField {
+                    projection: SemanticFieldProjection::FixedPresence { .. },
+                    ..
+                } => return None,
+            }
+        }
+        Some(count)
+    }
+
+    /// Proves the exact number of required fixed tokens stored by a type.
+    fn pretty_pratt_fixed_only_type_len(
+        &self,
+        ty: &ResolvedType,
+        analysis: &mut PrettyPrattGroupingAnalysis,
+    ) -> Option<usize> {
         match &ty.kind {
             ResolvedTypeKind::Semantic {
                 target, arguments, ..
             } => match target {
-                SemanticTarget::Node(candidate) => *candidate == node,
-                SemanticTarget::Catalog(CatalogType::Box) => {
+                SemanticTarget::Node(node) => {
+                    self.pretty_pratt_fixed_only_node_len(*node, analysis)
+                }
+                SemanticTarget::TypeAlias(alias) => {
+                    if !analysis.active_fixed_aliases.insert(alias.index()) {
+                        return None;
+                    }
+                    let fixed = self
+                        .resolved
+                        .type_aliases
+                        .get(alias.index())
+                        .filter(|candidate| candidate.id == *alias)
+                        .and_then(|alias| alias.target.as_ref())
+                        .and_then(|ty| self.pretty_pratt_fixed_only_type_len(ty, analysis));
+                    analysis.active_fixed_aliases.remove(&alias.index());
+                    fixed
+                }
+                SemanticTarget::Catalog(catalog) => {
+                    let mut types = arguments.iter().filter_map(|argument| match argument {
+                        ResolvedGenericArgument::Type(ty) => Some(ty),
+                        ResolvedGenericArgument::Lifetime(_)
+                        | ResolvedGenericArgument::Unsupported(_) => None,
+                    });
+                    let inner = types.next()?;
+                    if types.next().is_some() || !matches!(catalog, CatalogType::Box) {
+                        return None;
+                    }
+                    self.pretty_pratt_fixed_only_type_len(inner, analysis)
+                }
+                SemanticTarget::ContentToken(_) | SemanticTarget::GenericParameter(_) => None,
+            },
+            ResolvedTypeKind::Group(inner)
+            | ResolvedTypeKind::Parenthesized(inner)
+            | ResolvedTypeKind::Reference(inner) => {
+                self.pretty_pratt_fixed_only_type_len(inner, analysis)
+            }
+            ResolvedTypeKind::FixedTokenPresence
+            | ResolvedTypeKind::Tuple(_)
+            | ResolvedTypeKind::Unsupported => None,
+        }
+    }
+
+    /// Proves one non-recursive helper Node has exactly one fixed-only path.
+    fn pretty_pratt_fixed_only_node_len(
+        &self,
+        node: NodeId,
+        analysis: &mut PrettyPrattGroupingAnalysis,
+    ) -> Option<usize> {
+        if let Some(fixed) = analysis.fixed_memo.get(&node.index()) {
+            return *fixed;
+        }
+        if !analysis.active_fixed_nodes.insert(node.index()) {
+            return None;
+        }
+        let fixed = self
+            .nodes
+            .get(node.index())
+            .filter(|candidate| candidate.resolved_node == node)
+            .and_then(|node| match &node.body {
+                NodeBody::Struct(elements) | NodeBody::Presence(elements) => {
+                    self.pretty_pratt_fixed_only_elements_len(elements, analysis)
+                }
+                NodeBody::Enum(variants) if variants.len() == 1 => {
+                    self.pretty_pratt_fixed_only_elements_len(&variants[0].elements, analysis)
+                }
+                NodeBody::Enum(_) | NodeBody::Pratt(_) => None,
+            });
+        analysis.active_fixed_nodes.remove(&node.index());
+        analysis.fixed_memo.insert(node.index(), fixed);
+        fixed
+    }
+
+    /// Proves an authored helper sequence contains only exact fixed syntax.
+    fn pretty_pratt_fixed_only_elements_len(
+        &self,
+        elements: &[GrammarElement],
+        analysis: &mut PrettyPrattGroupingAnalysis,
+    ) -> Option<usize> {
+        let mut count = 0usize;
+        for element in elements {
+            match element {
+                GrammarElement::FixedToken { .. } => count = count.checked_add(1)?,
+                GrammarElement::SemanticField {
+                    resolved_field,
+                    projection: SemanticFieldProjection::Direct,
+                    attachment,
+                    ..
+                } => {
+                    let attachment = attachment.as_ref();
+                    let before = attachment.map_or(Some(0), |attachment| {
+                        Self::required_pretty_attachment_len(&attachment.before)
+                    })?;
+                    let after = attachment.map_or(Some(0), |attachment| {
+                        Self::required_pretty_attachment_len(&attachment.after)
+                    })?;
+                    let nested = self.pretty_pratt_fixed_only_type_len(
+                        &self.resolved_field(*resolved_field).ty,
+                        analysis,
+                    )?;
+                    count = count
+                        .checked_add(before)?
+                        .checked_add(nested)?
+                        .checked_add(after)?;
+                }
+                GrammarElement::OptionalFixedTokenGroup { .. }
+                | GrammarElement::SemanticField {
+                    projection: SemanticFieldProjection::FixedPresence { .. },
+                    ..
+                } => return None,
+            }
+        }
+        Some(count)
+    }
+
+    /// Reports whether an element can disappear from the selected grouping derivation.
+    fn pretty_pratt_grouping_element_is_empty(
+        &self,
+        owner: NodeId,
+        element: &GrammarElement,
+        analysis: &mut PrettyPrattGroupingAnalysis,
+    ) -> bool {
+        match element {
+            GrammarElement::OptionalFixedTokenGroup { .. } => true,
+            GrammarElement::SemanticField {
+                resolved_field,
+                projection: SemanticFieldProjection::Direct,
+                ..
+            } => {
+                let proof = self.pretty_pratt_grouping_type(
+                    owner,
+                    &self.resolved_field(*resolved_field).ty,
+                    analysis,
+                );
+                let attachment_is_empty = match element {
+                    GrammarElement::SemanticField { attachment, .. } => {
+                        attachment.as_ref().is_none_or(|attachment| {
+                            attachment.before.iter().all(|syntax| {
+                                matches!(syntax, AttachedFixedSyntax::Optional { .. })
+                            }) && attachment.after.iter().all(|syntax| {
+                                matches!(syntax, AttachedFixedSyntax::Optional { .. })
+                            })
+                        })
+                    }
+                    GrammarElement::FixedToken { .. }
+                    | GrammarElement::OptionalFixedTokenGroup { .. } => false,
+                };
+                !proof.cyclic && proof.empty && attachment_is_empty
+            }
+            GrammarElement::FixedToken { .. }
+            | GrammarElement::SemanticField {
+                projection: SemanticFieldProjection::FixedPresence { .. },
+                ..
+            } => false,
+        }
+    }
+
+    /// Counts required fixed tokens, rejecting optional syntax inside a grouping boundary.
+    fn required_pretty_attachment_len(syntax: &[AttachedFixedSyntax]) -> Option<usize> {
+        syntax
+            .iter()
+            .try_fold(0usize, |count, syntax| match syntax {
+                AttachedFixedSyntax::Required(_) => Some(count + 1),
+                AttachedFixedSyntax::Optional { .. } => None,
+            })
+    }
+
+    /// Derives grouping paths through storage wrappers and authored helper Nodes.
+    fn pretty_pratt_grouping_type(
+        &self,
+        owner: NodeId,
+        ty: &ResolvedType,
+        analysis: &mut PrettyPrattGroupingAnalysis,
+    ) -> PrettyPrattGroupingProof {
+        match &ty.kind {
+            ResolvedTypeKind::Semantic {
+                target, arguments, ..
+            } => match target {
+                SemanticTarget::Node(candidate) if *candidate == owner => {
+                    PrettyPrattGroupingProof {
+                        empty: false,
+                        witnesses: vec![PrettyPrattGroupingBounds::default()],
+                        cyclic: false,
+                    }
+                }
+                SemanticTarget::Node(candidate) => {
+                    self.pretty_pratt_grouping_node(owner, *candidate, analysis)
+                }
+                SemanticTarget::Catalog(catalog) => {
                     let mut types = arguments.iter().filter_map(|argument| match argument {
                         ResolvedGenericArgument::Type(ty) => Some(ty),
                         ResolvedGenericArgument::Lifetime(_)
                         | ResolvedGenericArgument::Unsupported(_) => None,
                     });
                     let Some(inner) = types.next() else {
-                        return false;
+                        return PrettyPrattGroupingProof::default();
                     };
-                    types.next().is_none() && self.is_direct_recursive_operand(inner, node)
+                    if types.next().is_some() {
+                        return PrettyPrattGroupingProof::default();
+                    }
+                    match catalog {
+                        CatalogType::Box | CatalogType::Vec1 => {
+                            self.pretty_pratt_grouping_type(owner, inner, analysis)
+                        }
+                        CatalogType::Option | CatalogType::Vec => PrettyPrattGroupingProof {
+                            empty: true,
+                            witnesses: Vec::new(),
+                            cyclic: false,
+                        },
+                    }
                 }
-                SemanticTarget::TypeAlias(alias) => self
-                    .resolved
-                    .type_aliases
-                    .iter()
-                    .find(|candidate| candidate.id == *alias)
-                    .and_then(|alias| alias.target.as_ref())
-                    .is_some_and(|ty| self.is_direct_recursive_operand(ty, node)),
-                SemanticTarget::Catalog(
-                    CatalogType::Option | CatalogType::Vec | CatalogType::Vec1,
-                )
-                | SemanticTarget::ContentToken(_)
-                | SemanticTarget::GenericParameter(_) => false,
+                SemanticTarget::TypeAlias(alias) => {
+                    if !analysis.active_aliases.insert(alias.index()) {
+                        return PrettyPrattGroupingProof {
+                            cyclic: true,
+                            ..PrettyPrattGroupingProof::default()
+                        };
+                    }
+                    let proof = self
+                        .resolved
+                        .type_aliases
+                        .get(alias.index())
+                        .filter(|candidate| candidate.id == *alias)
+                        .and_then(|alias| alias.target.as_ref())
+                        .map_or_else(PrettyPrattGroupingProof::default, |ty| {
+                            self.pretty_pratt_grouping_type(owner, ty, analysis)
+                        });
+                    analysis.active_aliases.remove(&alias.index());
+                    proof
+                }
+                SemanticTarget::ContentToken(_) | SemanticTarget::GenericParameter(_) => {
+                    PrettyPrattGroupingProof::default()
+                }
             },
             ResolvedTypeKind::Group(inner)
             | ResolvedTypeKind::Parenthesized(inner)
-            | ResolvedTypeKind::Reference(inner) => self.is_direct_recursive_operand(inner, node),
+            | ResolvedTypeKind::Reference(inner) => {
+                self.pretty_pratt_grouping_type(owner, inner, analysis)
+            }
             ResolvedTypeKind::FixedTokenPresence
             | ResolvedTypeKind::Tuple(_)
-            | ResolvedTypeKind::Unsupported => false,
+            | ResolvedTypeKind::Unsupported => PrettyPrattGroupingProof::default(),
         }
+    }
+
+    /// Derives grouping paths through one non-owning authored struct or enum helper.
+    fn pretty_pratt_grouping_node(
+        &self,
+        owner: NodeId,
+        node: NodeId,
+        analysis: &mut PrettyPrattGroupingAnalysis,
+    ) -> PrettyPrattGroupingProof {
+        let key = (owner.index(), node.index());
+        if let Some(proof) = analysis.memo.get(&key) {
+            return proof.clone();
+        }
+        if !analysis.active_nodes.insert(node.index()) {
+            return PrettyPrattGroupingProof {
+                cyclic: true,
+                ..PrettyPrattGroupingProof::default()
+            };
+        }
+        let mut proof = self
+            .nodes
+            .get(node.index())
+            .filter(|candidate| candidate.resolved_node == node)
+            .map_or_else(PrettyPrattGroupingProof::default, |node| match &node.body {
+                NodeBody::Struct(elements) | NodeBody::Presence(elements) => {
+                    self.pretty_pratt_grouping_elements(owner, elements, analysis)
+                }
+                NodeBody::Enum(variants) => {
+                    let mut proof = PrettyPrattGroupingProof::default();
+                    for variant in variants {
+                        let variant =
+                            self.pretty_pratt_grouping_elements(owner, &variant.elements, analysis);
+                        proof.empty |= variant.empty;
+                        proof.cyclic |= variant.cyclic;
+                        for witness in variant.witnesses {
+                            proof.push_witness(witness);
+                        }
+                    }
+                    proof
+                }
+                NodeBody::Pratt(_) => PrettyPrattGroupingProof::default(),
+            });
+        analysis.active_nodes.remove(&node.index());
+        for witness in &mut proof.witnesses {
+            witness.delegated = true;
+        }
+        if !proof.cyclic {
+            analysis.memo.insert(key, proof.clone());
+        }
+        proof
     }
 
     /// Validates pretty element boundaries.
@@ -1995,9 +3950,11 @@ impl SourceModelBuilder<'_> {
             }
             let attachment_start = index;
             let attachment_end = index;
-            let attachment_has_soft_opportunity = attachment.as_ref().is_some_and(|attachment| {
-                self.pretty_attachment_has_soft_opportunity(*resolved_field, attachment)
-            });
+            let needs_internal_break = pretty.group.is_some() || pretty.indent;
+            let attachment_has_soft_opportunity = needs_internal_break
+                && attachment.as_ref().is_some_and(|attachment| {
+                    self.pretty_attachment_has_soft_opportunity(*resolved_field, attachment)
+                });
             if let Some(attachment) = attachment {
                 self.validate_pretty_attachment_boundaries(
                     *resolved_field,
@@ -2005,11 +3962,14 @@ impl SourceModelBuilder<'_> {
                     diagnostics,
                 );
             }
-            let has_internal_break = separator.is_some()
-                || self.field_has_repetition(*resolved_field).unwrap_or(true)
-                || attachment_has_soft_opportunity
-                || self
-                    .pretty_scope_has_soft_opportunity(&elements[index..=index], &mut Vec::new());
+            let has_internal_break = needs_internal_break
+                && (separator.is_some()
+                    || self.field_has_repetition(*resolved_field).unwrap_or(true)
+                    || attachment_has_soft_opportunity
+                    || self.pretty_scope_has_soft_opportunity(
+                        &elements[index..=index],
+                        &mut Vec::new(),
+                    ));
             if pretty.group.is_some() && !has_internal_break {
                 diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InapplicablePrettyHint,
@@ -2053,12 +4013,14 @@ impl SourceModelBuilder<'_> {
                         .iter()
                         .any(|right| self.pretty_boundary_forces_tight_before(right))
             };
-            let tight_before = attachment_start.checked_sub(1).is_some_and(|before| {
-                boundary_is_tight(&elements[before], &elements[attachment_start])
-            });
-            let tight_after = elements
-                .get(attachment_end + 1)
-                .is_some_and(|after| boundary_is_tight(&elements[attachment_end], after));
+            let tight_before = pretty.break_before.is_some()
+                && attachment_start.checked_sub(1).is_some_and(|before| {
+                    boundary_is_tight(&elements[before], &elements[attachment_start])
+                });
+            let tight_after = pretty.break_after.is_some()
+                && elements
+                    .get(attachment_end + 1)
+                    .is_some_and(|after| boundary_is_tight(&elements[attachment_end], after));
             if (pretty.break_before.is_some() && tight_before)
                 || (pretty.break_after.is_some() && tight_after)
             {
@@ -2084,6 +4046,19 @@ impl SourceModelBuilder<'_> {
             let [left, right] = adjacent else {
                 unreachable!()
             };
+            let break_after = matches!(
+                left,
+                GrammarElement::SemanticField { pretty, .. }
+                    if pretty.break_after.is_some()
+            );
+            let break_before = matches!(
+                right,
+                GrammarElement::SemanticField { pretty, .. }
+                    if pretty.break_before.is_some()
+            );
+            if break_after || break_before {
+                continue;
+            }
             let left_boundaries =
                 self.pretty_element_boundaries(left, PrettyBoundarySide::Last, &mut Vec::new());
             let right_boundaries =
@@ -2212,9 +4187,11 @@ impl SourceModelBuilder<'_> {
 
     /// Derives the pretty trivia supports breaks from the retained source model and its correlations.
     fn pretty_trivia_supports_breaks(&self) -> bool {
-        [' ', '\n']
-            .into_iter()
-            .all(|required| self.pretty_trivia_supports(required))
+        *self.pretty_trivia_supports_breaks.get_or_init(|| {
+            [' ', '\n']
+                .into_iter()
+                .all(|required| self.pretty_trivia_supports(required))
+        })
     }
 
     /// Derives the pretty trivia supports from the retained source model and its correlations.
@@ -2246,8 +4223,8 @@ impl SourceModelBuilder<'_> {
                     SemanticTarget::TypeAlias(alias) => builder
                         .resolved
                         .type_aliases
-                        .iter()
-                        .find(|candidate| candidate.id == *alias)
+                        .get(alias.index())
+                        .filter(|candidate| candidate.id == *alias)
                         .and_then(|alias| alias.target.as_ref())
                         .and_then(|ty| repeated(builder, ty)),
                     SemanticTarget::Node(_) | SemanticTarget::ContentToken(_) => Some(false),
@@ -2264,18 +4241,18 @@ impl SourceModelBuilder<'_> {
         repeated(self, &self.resolved_field(field).ty)
     }
 
-    /// Derives the pretty lexical patterns from the retained source model and its correlations.
-    fn pretty_lexical_patterns(&self) -> Vec<String> {
+    /// Derives Pretty lexical patterns, optionally retaining fixed-token languages.
+    fn pretty_lexical_patterns(&self, include_fixed: bool) -> Vec<String> {
         let equivalence = self.resolved.configuration.syntax.text_equivalence;
         self.tokens
             .definitions
             .iter()
-            .map(|definition| match &definition.kind {
+            .filter_map(|definition| match &definition.kind {
                 TokenDefinitionKind::Fixed(fixed) => {
-                    fixed_lexical_pattern(&fixed.spelling, equivalence)
+                    include_fixed.then(|| fixed_lexical_pattern(&fixed.spelling, equivalence))
                 }
-                TokenDefinitionKind::Content(content) => content.pattern.clone(),
-                TokenDefinitionKind::LexicalBase(base) => base.pattern.clone(),
+                TokenDefinitionKind::Content(content) => Some(content.pattern.clone()),
+                TokenDefinitionKind::LexicalBase(base) => Some(base.pattern.clone()),
             })
             .chain(
                 self.tokens
@@ -2284,6 +4261,25 @@ impl SourceModelBuilder<'_> {
                     .map(|record| record.pattern.clone()),
             )
             .collect()
+    }
+
+    /// Reuses compiled languages and product answers for one Pretty-boundary proof.
+    fn pretty_patterns_cross(&self, left: &str, right: &str, lexical_pattern: &str) -> bool {
+        self.pretty_boundary_prover
+            .borrow_mut()
+            .patterns_cross(left, right, lexical_pattern)
+    }
+
+    /// Reuses one exact product against an immutable Pretty lexical pattern catalog.
+    fn pretty_catalog_patterns_cross(
+        &self,
+        left: &str,
+        right: &str,
+        catalog: PrettyPatternCatalogId,
+    ) -> bool {
+        self.pretty_boundary_prover
+            .borrow_mut()
+            .patterns_cross_catalog(left, right, catalog)
     }
 
     /// Diagnoses a Pretty boundary that would change token recognition.
@@ -2369,20 +4365,16 @@ impl SourceModelBuilder<'_> {
                     return;
                 }
                 let right_fixed = right_fixed.expect("fixed boundary");
-                if self
-                    .pretty_lexical_patterns()
-                    .iter()
-                    .any(|lexical_pattern| {
-                        patterns_cross_into_pattern(
-                            pattern,
-                            &fixed_pretty_pattern(
-                                right_fixed,
-                                self.resolved.configuration.syntax.text_equivalence,
-                            ),
-                            lexical_pattern,
-                        )
-                    })
-                {
+                let right_pattern = fixed_pretty_pattern(
+                    right_fixed,
+                    self.resolved.configuration.syntax.text_equivalence,
+                );
+                if self.pretty_catalog_patterns_cross(
+                    pattern,
+                    &right_pattern,
+                    self.pretty_lexical_catalog
+                        .expect("Pretty validation initialized its lexical catalog"),
+                ) {
                     diagnostics.push(SourceModelDiagnostic {
                             kind: SourceModelDiagnosticKind::InvalidConfiguration,
                             sites: vec![left.site.clone(), right.site.clone()],
@@ -2395,20 +4387,16 @@ impl SourceModelBuilder<'_> {
                     return;
                 }
                 let left_fixed = left_fixed.expect("fixed boundary");
-                if self
-                    .pretty_lexical_patterns()
-                    .iter()
-                    .any(|lexical_pattern| {
-                        patterns_cross_into_pattern(
-                            &fixed_pretty_pattern(
-                                left_fixed,
-                                self.resolved.configuration.syntax.text_equivalence,
-                            ),
-                            pattern,
-                            lexical_pattern,
-                        )
-                    })
-                {
+                let left_pattern = fixed_pretty_pattern(
+                    left_fixed,
+                    self.resolved.configuration.syntax.text_equivalence,
+                );
+                if self.pretty_catalog_patterns_cross(
+                    &left_pattern,
+                    pattern,
+                    self.pretty_lexical_catalog
+                        .expect("Pretty validation initialized its lexical catalog"),
+                ) {
                     diagnostics.push(SourceModelDiagnostic {
                             kind: SourceModelDiagnosticKind::InvalidConfiguration,
                             sites: vec![left.site.clone(), right.site.clone()],
@@ -2448,17 +4436,19 @@ impl SourceModelBuilder<'_> {
         let equivalence = self.resolved.configuration.syntax.text_equivalence;
         let left_pattern = fixed_pretty_pattern(left_fixed, equivalence);
         let right_pattern = fixed_pretty_pattern(right_fixed, equivalence);
-        if let Some(longer) = self.tokens.definitions.iter().find_map(|definition| {
+        let longer = self.tokens.definitions.iter().find_map(|definition| {
             let TokenDefinitionKind::Fixed(candidate) = &definition.kind else {
                 return None;
             };
-            patterns_cross_into_pattern(
-                &left_pattern,
-                &right_pattern,
-                &fixed_pretty_pattern(candidate, equivalence),
+            fixed_spellings_cross(
+                &left_fixed.spelling,
+                &right_fixed.spelling,
+                &candidate.spelling,
+                equivalence,
             )
             .then_some(candidate)
-        }) {
+        });
+        if let Some(longer) = longer {
             diagnostics.push(SourceModelDiagnostic {
                     kind: SourceModelDiagnosticKind::InvalidConfiguration,
                     sites: vec![left_site.clone(), right_site.clone()],
@@ -2470,10 +4460,19 @@ impl SourceModelBuilder<'_> {
             return;
         }
 
+        let lexical_catalog = self
+            .pretty_non_fixed_lexical_catalog
+            .expect("Pretty validation initialized its non-fixed lexical catalog");
         let pattern = self
-            .pretty_lexical_patterns()
-            .into_iter()
-            .find(|pattern| patterns_cross_into_pattern(&left_pattern, &right_pattern, pattern));
+            .pretty_catalog_patterns_cross(&left_pattern, &right_pattern, lexical_catalog)
+            .then(|| {
+                self.pretty_lexical_patterns(false)
+                    .into_iter()
+                    .find(|pattern| {
+                        self.pretty_patterns_cross(&left_pattern, &right_pattern, pattern)
+                    })
+            })
+            .flatten();
         if let Some(pattern) = pattern {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::InvalidConfiguration,
@@ -2586,25 +4585,45 @@ impl SourceModelBuilder<'_> {
         side: PrettyBoundarySide,
         visiting: &mut Vec<NodeId>,
     ) -> Vec<PrettyBoundary> {
+        let mut cycle_dependent = false;
+        let caller = match element {
+            GrammarElement::FixedToken { site, .. }
+            | GrammarElement::OptionalFixedTokenGroup { site, .. }
+            | GrammarElement::SemanticField { site, .. } => site,
+        };
+        self.pretty_element_boundary_templates(element, side, visiting, &mut cycle_dependent)
+            .iter()
+            .map(|boundary| boundary.materialize(caller))
+            .collect()
+    }
+
+    /// Derives element boundaries while reporting whether recursion supplied a fallback boundary.
+    fn pretty_element_boundary_templates(
+        &self,
+        element: &GrammarElement,
+        side: PrettyBoundarySide,
+        visiting: &mut Vec<NodeId>,
+        cycle_dependent: &mut bool,
+    ) -> Vec<PrettyBoundaryTemplate> {
         match element {
             GrammarElement::FixedToken {
                 token_use, site, ..
-            } => vec![PrettyBoundary {
-                kind: PrettyBoundaryKind::Fixed(self.tokens.uses[token_use.index()].definition),
-                site: site.clone(),
-            }],
+            } => vec![PrettyBoundaryTemplate::authored(
+                PrettyBoundaryKind::Fixed(self.tokens.uses[token_use.index()].definition),
+                site.clone(),
+            )],
             GrammarElement::OptionalFixedTokenGroup { tokens, .. } => {
                 let token = match side {
                     PrettyBoundarySide::First => tokens.first(),
                     PrettyBoundarySide::Last => tokens.last(),
                 };
                 token.map_or_else(Vec::new, |token| {
-                    vec![PrettyBoundary {
-                        kind: PrettyBoundaryKind::Fixed(
+                    vec![PrettyBoundaryTemplate::authored(
+                        PrettyBoundaryKind::Fixed(
                             self.tokens.uses[token.token_use.index()].definition,
                         ),
-                        site: token.site.clone(),
-                    }]
+                        token.site.clone(),
+                    )]
                 })
             }
             GrammarElement::SemanticField {
@@ -2624,32 +4643,36 @@ impl SourceModelBuilder<'_> {
                     }
                 });
                 if let Some(attached) = attached {
-                    vec![PrettyBoundary {
-                        kind: PrettyBoundaryKind::Fixed(
+                    vec![PrettyBoundaryTemplate::authored(
+                        PrettyBoundaryKind::Fixed(
                             self.tokens.uses[attached.token_use.index()].definition,
                         ),
-                        site: attached.site.clone(),
-                    }]
+                        attached.site.clone(),
+                    )]
                 } else {
                     match projection {
-                        SemanticFieldProjection::Direct => self.pretty_type_boundaries(
-                            &self.resolved_field(*resolved_field).ty,
-                            side,
-                            site,
-                            visiting,
-                        ),
+                        SemanticFieldProjection::Direct => self
+                            .pretty_type_boundary_templates(
+                                &self.resolved_field(*resolved_field).ty,
+                                side,
+                                visiting,
+                                cycle_dependent,
+                            )
+                            .iter()
+                            .map(|boundary| boundary.bind(site))
+                            .collect(),
                         SemanticFieldProjection::FixedPresence { tokens } => {
                             let token = match side {
                                 PrettyBoundarySide::First => tokens.first(),
                                 PrettyBoundarySide::Last => tokens.last(),
                             };
                             token.map_or_else(Vec::new, |token| {
-                                vec![PrettyBoundary {
-                                    kind: PrettyBoundaryKind::Fixed(
+                                vec![PrettyBoundaryTemplate::authored(
+                                    PrettyBoundaryKind::Fixed(
                                         self.tokens.uses[token.token_use.index()].definition,
                                     ),
-                                    site: token.site.clone(),
-                                }]
+                                    token.site.clone(),
+                                )]
                             })
                         }
                     }
@@ -2666,37 +4689,57 @@ impl SourceModelBuilder<'_> {
         site: &SourceSite,
         visiting: &mut Vec<NodeId>,
     ) -> Vec<PrettyBoundary> {
+        let mut cycle_dependent = false;
+        self.pretty_type_boundary_templates(ty, side, visiting, &mut cycle_dependent)
+            .iter()
+            .map(|boundary| boundary.materialize(site))
+            .collect()
+    }
+
+    /// Derives type boundaries while reporting whether recursion supplied a fallback boundary.
+    fn pretty_type_boundary_templates(
+        &self,
+        ty: &ResolvedType,
+        side: PrettyBoundarySide,
+        visiting: &mut Vec<NodeId>,
+        cycle_dependent: &mut bool,
+    ) -> Vec<PrettyBoundaryTemplate> {
         match &ty.kind {
             ResolvedTypeKind::Semantic {
                 target, arguments, ..
             } => match target {
                 SemanticTarget::Node(node) => {
-                    self.pretty_node_boundaries(*node, side, site, visiting)
+                    self.pretty_node_boundary_templates(*node, side, visiting, cycle_dependent)
                 }
                 SemanticTarget::ContentToken(content) => {
                     let pattern = self
-                        .tokens
-                        .definitions
-                        .iter()
-                        .find_map(|definition| match &definition.kind {
-                            TokenDefinitionKind::Content(candidate)
-                                if candidate.semantic == *content =>
-                            {
-                                Some(candidate.pattern.clone())
+                        .pretty_content_definitions
+                        .get(content.index())
+                        .and_then(|definition| *definition)
+                        .and_then(|definition| {
+                            match &self.tokens.definitions[definition.index()].kind {
+                                TokenDefinitionKind::Content(content) => {
+                                    Some(content.pattern.clone())
+                                }
+                                TokenDefinitionKind::Fixed(_)
+                                | TokenDefinitionKind::LexicalBase(_) => None,
                             }
-                            _ => None,
                         })
                         .unwrap_or_default();
-                    vec![PrettyBoundary {
-                        kind: PrettyBoundaryKind::Dynamic(pattern),
-                        site: site.clone(),
-                    }]
+                    vec![PrettyBoundaryTemplate::caller(PrettyBoundaryKind::Dynamic(
+                        pattern,
+                    ))]
                 }
                 SemanticTarget::Catalog(_) => arguments
                     .iter()
                     .find_map(|argument| match argument {
                         ResolvedGenericArgument::Type(inner) => {
-                            Some(self.pretty_type_boundaries(inner, side, site, visiting))
+                            Some(self.pretty_type_boundary_templates(
+                                inner,
+                                side,
+                                visiting,
+                                cycle_dependent,
+                            ))
                         }
                         ResolvedGenericArgument::Lifetime(_)
                         | ResolvedGenericArgument::Unsupported(_) => None,
@@ -2705,49 +4748,58 @@ impl SourceModelBuilder<'_> {
                 SemanticTarget::TypeAlias(alias) => self
                     .resolved
                     .type_aliases
-                    .iter()
-                    .find(|candidate| candidate.id == *alias)
+                    .get(alias.index())
+                    .filter(|candidate| candidate.id == *alias)
                     .and_then(|alias| alias.target.as_ref())
-                    .map(|target| self.pretty_type_boundaries(target, side, site, visiting))
+                    .map(|target| {
+                        self.pretty_type_boundary_templates(target, side, visiting, cycle_dependent)
+                    })
                     .unwrap_or_default(),
-                SemanticTarget::GenericParameter(_) => vec![PrettyBoundary {
-                    kind: PrettyBoundaryKind::Dynamic(String::new()),
-                    site: site.clone(),
-                }],
+                SemanticTarget::GenericParameter(_) => vec![PrettyBoundaryTemplate::caller(
+                    PrettyBoundaryKind::Dynamic(String::new()),
+                )],
             },
             ResolvedTypeKind::Group(inner)
             | ResolvedTypeKind::Parenthesized(inner)
             | ResolvedTypeKind::Reference(inner) => {
-                self.pretty_type_boundaries(inner, side, site, visiting)
+                self.pretty_type_boundary_templates(inner, side, visiting, cycle_dependent)
             }
             ResolvedTypeKind::FixedTokenPresence
             | ResolvedTypeKind::Tuple(_)
-            | ResolvedTypeKind::Unsupported => vec![PrettyBoundary {
-                kind: PrettyBoundaryKind::Dynamic(String::new()),
-                site: site.clone(),
-            }],
+            | ResolvedTypeKind::Unsupported => vec![PrettyBoundaryTemplate::caller(
+                PrettyBoundaryKind::Dynamic(String::new()),
+            )],
         }
     }
 
     /// Derives the pretty node boundaries from the retained source model and its correlations.
-    fn pretty_node_boundaries(
+    fn pretty_node_boundary_templates(
         &self,
         node: NodeId,
         side: PrettyBoundarySide,
-        site: &SourceSite,
         visiting: &mut Vec<NodeId>,
-    ) -> Vec<PrettyBoundary> {
+        cycle_dependent: &mut bool,
+    ) -> Vec<PrettyBoundaryTemplate> {
         if visiting.contains(&node) {
-            return vec![PrettyBoundary {
-                kind: PrettyBoundaryKind::Dynamic(String::new()),
-                site: site.clone(),
-            }];
+            *cycle_dependent = true;
+            return vec![PrettyBoundaryTemplate::caller(PrettyBoundaryKind::Dynamic(
+                String::new(),
+            ))];
+        }
+        let key = (node, side);
+        if let Some(boundaries) = self.pretty_boundary_analysis.borrow().nodes.get(&key) {
+            return boundaries.clone();
+        }
+        #[cfg(test)]
+        {
+            let mut analysis = self.pretty_boundary_analysis.borrow_mut();
+            analysis.node_evaluations = analysis.node_evaluations.saturating_add(1);
         }
         visiting.push(node);
         let Some(node) = self
             .nodes
-            .iter()
-            .find(|candidate| candidate.resolved_node == node)
+            .get(node.index())
+            .filter(|candidate| candidate.resolved_node == node)
         else {
             visiting.pop();
             return Vec::new();
@@ -2764,16 +4816,34 @@ impl SourceModelBuilder<'_> {
                 .collect(),
         };
         let mut boundaries = Vec::new();
+        let mut seen = HashSet::new();
+        let mut node_cycle_dependent = false;
         for elements in sequences {
             let element = match side {
                 PrettyBoundarySide::First => elements.first(),
                 PrettyBoundarySide::Last => elements.last(),
             };
             if let Some(element) = element {
-                boundaries.extend(self.pretty_element_boundaries(element, side, visiting));
+                for boundary in self.pretty_element_boundary_templates(
+                    element,
+                    side,
+                    visiting,
+                    &mut node_cycle_dependent,
+                ) {
+                    if seen.insert(boundary.clone()) {
+                        boundaries.push(boundary);
+                    }
+                }
             }
         }
         visiting.pop();
+        *cycle_dependent |= node_cycle_dependent;
+        if !node_cycle_dependent {
+            self.pretty_boundary_analysis
+                .borrow_mut()
+                .nodes
+                .insert(key, boundaries.clone());
+        }
         boundaries
     }
 
@@ -2823,6 +4893,12 @@ impl SourceModelBuilder<'_> {
 
     /// Publishes the source model only when all authored-source diagnostics are non-blocking.
     fn finish(mut self) -> SourceModelReport {
+        #[cfg(test)]
+        let pretty_boundary_node_evaluations =
+            self.pretty_boundary_analysis.borrow().node_evaluations;
+        #[cfg(test)]
+        let pretty_soft_node_evaluations =
+            self.pretty_boundary_analysis.borrow().soft_node_evaluations;
         normalize_source_order(&mut self.nodes, &mut self.tokens);
         let source_modeled = self
             .diagnostics
@@ -2841,6 +4917,10 @@ impl SourceModelBuilder<'_> {
         SourceModelReport {
             diagnostics: self.diagnostics,
             source_modeled,
+            #[cfg(test)]
+            pretty_boundary_node_evaluations,
+            #[cfg(test)]
+            pretty_soft_node_evaluations,
         }
     }
 
@@ -3239,12 +5319,13 @@ impl SourceModelBuilder<'_> {
 
     /// Derives the resolved field from the retained source model and its correlations.
     fn resolved_field(&self, id: ResolvedFieldId) -> &ResolvedNodeField {
-        self.resolved
-            .nodes
-            .iter()
-            .flat_map(|node| &node.fields)
-            .find(|field| field.id == id)
-            .expect("resolved Node body owns every field identity")
+        let &(node_index, field_index) = self
+            .resolved_field_positions
+            .get(id.index())
+            .expect("resolved Node body owns every field identity");
+        let field = &self.resolved.nodes[node_index].fields[field_index];
+        debug_assert_eq!(field.id, id);
+        field
     }
 
     /// Resolves inherited and local Pretty configuration for one Node.
@@ -6662,6 +8743,7 @@ fn assign_ordered_elements(
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
     use std::fs;
     use std::path::Path;
 
@@ -6670,10 +8752,17 @@ mod tests {
     use super::{
         CentralTokensSyntax, ClosedMatcherSyntax, ConfiguredTraitOwnership, ConfiguredTraitRecipe,
         ContentTextStorage, DeclaredRepetition, GrammarElement, GrammarElementKind, LexSyntax,
-        NodeBody, NodeShape, PrettySpacing, SourceModelDiagnosticKind, SourceModelInput,
-        SourcePrattPosition, TokenDefinitionKind, TokenUseRole,
+        NodeBody, NodeShape, PRETTY_BOUNDARY_LEFT_TRANSITION_BUDGET,
+        PRETTY_BOUNDARY_PRODUCT_TRANSITION_BUDGET, PRETTY_BOUNDARY_REACHABLE_TRANSITION_BUDGET,
+        PrettyBoundaryProductCounts, PrettyBoundaryProver, PrettyPatternAutomaton, PrettySpacing,
+        SourceModelDiagnosticKind, SourceModelInput, SourcePrattPosition, TokenDefinitionKind,
+        TokenUseRole, build_pretty_left_product, compiled_patterns_cross,
+        compiled_patterns_cross_counted, compiled_patterns_cross_old_oracle,
+        compiled_right_crosses, fixed_lexical_pattern, fixed_spellings_cross,
         fixed_then_pattern_intersects_pattern, lower_source_model,
-        pattern_then_fixed_intersects_pattern,
+        pattern_then_fixed_intersects_pattern, pretty_boundary_joint_byte_representatives,
+        pretty_boundary_left_transition_len, pretty_boundary_product_len,
+        pretty_boundary_reachable_transition_len,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
@@ -6681,6 +8770,70 @@ mod tests {
         ResolutionInput, ResolvedFieldStyle, ResolvedNodeBody, resolve_local_semantics,
     };
     use crate::source_syntax::CargoCfgSnapshot;
+
+    #[test]
+    fn fixed_spelling_crossing_is_exact_and_honors_ascii_word_equivalence() {
+        assert!(fixed_spellings_cross(
+            "<",
+            "=tail",
+            "<=",
+            crate::TextEquivalence::Sensitive,
+        ));
+        assert!(!fixed_spellings_cross(
+            "<",
+            "=tail",
+            "<",
+            crate::TextEquivalence::Sensitive,
+        ));
+        assert!(fixed_spellings_cross(
+            "word",
+            ":tail",
+            "WoRd:",
+            crate::TextEquivalence::AsciiInsensitive,
+        ));
+        assert!(!fixed_spellings_cross(
+            "word",
+            ":tail",
+            "other:",
+            crate::TextEquivalence::AsciiInsensitive,
+        ));
+    }
+
+    #[test]
+    fn fixed_spelling_crossing_matches_the_dfa_oracle_matrix() {
+        let compile = |pattern: &str| {
+            let dfa = regex_automata::dfa::dense::DFA::new(pattern).expect("a valid fixed pattern");
+            let input = regex_automata::Input::new(b"").anchored(regex_automata::Anchored::Yes);
+            let start = regex_automata::dfa::Automaton::start_state_forward(&dfa, &input)
+                .expect("an anchored start state");
+            PrettyPatternAutomaton::new(dfa, start)
+        };
+        let spellings = ["a", "A", "ab", ":", "a:", "<="];
+        for equivalence in [
+            crate::TextEquivalence::Sensitive,
+            crate::TextEquivalence::AsciiInsensitive,
+        ] {
+            for left in spellings {
+                for right in spellings {
+                    for candidate in spellings {
+                        let left_pattern = compile(&fixed_lexical_pattern(left, equivalence));
+                        let right_pattern = compile(&fixed_lexical_pattern(right, equivalence));
+                        let candidate_pattern =
+                            compile(&fixed_lexical_pattern(candidate, equivalence));
+                        assert_eq!(
+                            fixed_spellings_cross(left, right, candidate, equivalence),
+                            compiled_patterns_cross(
+                                &left_pattern,
+                                &right_pattern,
+                                &candidate_pattern,
+                            ),
+                            "left={left:?}, right={right:?}, candidate={candidate:?}, equivalence={equivalence:?}",
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn next_exclusion_requires_a_runtime_compilable_nonempty_whole_scalar_predicate() {
@@ -8610,6 +10763,482 @@ recursa::tokens! { punctuation { LPAREN => "(", RPAREN => ")", WHOLE => "()" } }
     }
 
     #[test]
+    fn pretty_boundary_prover_compiles_each_pattern_and_product_once() {
+        let mut prover = PrettyBoundaryProver::default();
+        for _ in 0..64 {
+            assert!(prover.patterns_cross("a", "bc", "ab"));
+            assert!(prover.patterns_cross("a", "bc", "abc"));
+        }
+
+        assert_eq!(prover.compiled_pattern_count(), 4);
+        assert_eq!(prover.evaluated_product_count(), 2);
+    }
+
+    #[test]
+    fn pretty_boundary_prover_reuses_right_products_across_distinct_left_languages() {
+        let mut prover = PrettyBoundaryProver::default();
+        let catalog = prover.intern_catalog(&["a+b+".to_owned(), "unrelated".to_owned()]);
+
+        let _ = prover.patterns_cross("a", "b+", "a+b+");
+        let _ = prover.patterns_cross("a+", "b+", "a+b+");
+        let _ = prover.patterns_cross_catalog("a", "b+", catalog);
+        let _ = prover.patterns_cross_catalog("a+", "b+", catalog);
+
+        assert_eq!(prover.right_product_counts(), (1, 1));
+        assert_eq!(prover.evaluated_product_count(), 2);
+        assert_eq!(prover.evaluated_catalog_product_count(), 2);
+    }
+
+    #[test]
+    fn pretty_boundary_catalog_reuses_one_left_language_across_distinct_rights() {
+        let mut patterns = (0..128)
+            .map(|index| format!("unrelated{index:03}"))
+            .collect::<Vec<_>>();
+        patterns.push(r"[a-z]+suffix017".to_owned());
+        let left = r"[a-z]+";
+        let rights = (0..128)
+            .map(|index| format!("suffix{index:03}"))
+            .collect::<Vec<_>>();
+        let mut prover = PrettyBoundaryProver::default();
+        let catalog = prover.intern_catalog(&patterns);
+
+        let actual = rights
+            .iter()
+            .map(|right| prover.patterns_cross_catalog(left, right, catalog))
+            .collect::<Vec<_>>();
+        let expected = (0..rights.len())
+            .map(|index| index == 17)
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected, "only the worked crossing may match");
+        assert_eq!(actual.iter().filter(|crosses| **crosses).count(), 1);
+        assert_eq!(
+            prover.right_product_counts().1,
+            1,
+            "one repeated left language must not build one catalog product per right language",
+        );
+        assert_eq!(prover.catalog_left_product_counts(), (1, 0));
+    }
+
+    #[test]
+    fn pretty_boundary_prover_batches_an_ordered_catalog_exactly() {
+        let mut prover = PrettyBoundaryProver::default();
+        let catalog =
+            prover.intern_catalog(&["unrelated".to_owned(), "ab".to_owned(), "abc".to_owned()]);
+
+        for _ in 0..64 {
+            assert!(prover.patterns_cross_catalog("a", "bc", catalog));
+        }
+        assert_eq!(prover.evaluated_catalog_product_count(), 1);
+        assert_eq!(prover.evaluated_product_count(), 0);
+
+        let empty = prover.intern_catalog(&[]);
+        assert!(!prover.patterns_cross_catalog("a", "bc", empty));
+        let invalid = prover.intern_catalog(&["(".to_owned()]);
+        assert!(prover.patterns_cross_catalog("a", "bc", invalid));
+
+        let fallback = prover.intern_catalog(&["unrelated".to_owned(), "ab".to_owned()]);
+        prover.catalogs[fallback.0].automaton = None;
+        assert!(prover.patterns_cross_catalog("a", "bc", fallback));
+        assert!(!prover.patterns_cross_catalog("x", "y", fallback));
+    }
+
+    #[test]
+    fn pretty_boundary_catalog_positive_requires_one_crossing_member() {
+        let left = r"[A-Za-z_][A-Za-z0-9_]*";
+        let right = r"\)";
+        let patterns = [left.to_owned(), right.to_owned()];
+        let mut prover = PrettyBoundaryProver::default();
+        let catalog = prover.intern_catalog(&patterns);
+
+        let individual = patterns
+            .iter()
+            .any(|pattern| prover.patterns_cross(left, right, pattern));
+        assert!(!individual, "neither member spans the authored boundary");
+        assert_eq!(
+            prover.patterns_cross_catalog(left, right, catalog),
+            individual,
+            "a catalog match cannot combine distinct member identities across the boundary",
+        );
+    }
+
+    #[test]
+    fn pretty_boundary_catalog_falls_back_when_batch_proof_is_inconclusive() {
+        let patterns = [
+            "ab".to_owned(),
+            "abc".to_owned(),
+            "xy".to_owned(),
+            "unrelated".to_owned(),
+        ];
+        let mut prover = PrettyBoundaryProver::default();
+        let catalog = prover.intern_catalog(&patterns);
+        assert!(
+            prover.catalogs[catalog.0]
+                .automaton
+                .as_ref()
+                .expect("the valid catalog compiles")
+                .reachable
+                .set(None)
+                .is_ok(),
+            "the batch reachable graph is initially uncomputed",
+        );
+
+        let cases = [("a", "b"), ("x", "y"), ("q", "r")];
+        let mut oracle = PrettyBoundaryProver::default();
+        let expected = cases.map(|(left, right)| {
+            patterns
+                .iter()
+                .any(|pattern| oracle.patterns_cross(left, right, pattern))
+        });
+        let actual = cases.map(|(left, right)| prover.patterns_cross_catalog(left, right, catalog));
+        assert_eq!(
+            actual, expected,
+            "the ordered tree matches its member oracle"
+        );
+
+        let counts = prover.catalog_tree_counts();
+        for (left, right) in cases {
+            let _ = prover.patterns_cross_catalog(left, right, catalog);
+        }
+        assert_eq!(
+            prover.catalog_tree_counts(),
+            counts,
+            "root and child answers are cached after one exact query",
+        );
+    }
+
+    #[test]
+    fn pretty_boundary_catalog_tree_prunes_a_large_false_catalog_before_leaves() {
+        let patterns = (0..128)
+            .map(|index| format!("token{index:03}"))
+            .collect::<Vec<_>>();
+        let mut prover = PrettyBoundaryProver::default();
+        let catalog = prover.intern_catalog(&patterns);
+        assert!(
+            prover.catalogs[catalog.0]
+                .automaton
+                .as_ref()
+                .expect("the valid catalog compiles")
+                .reachable
+                .set(None)
+                .is_ok(),
+            "force only the root batch to be inconclusive",
+        );
+
+        assert!(!prover.patterns_cross_catalog("x+", "y+", catalog));
+        let (compilations, splits, leaf_fallbacks) = prover.catalog_tree_counts();
+        assert_eq!(compilations, 2, "only the two half-catalogs are compiled");
+        assert_eq!(splits, 1, "only the inconclusive root is divided");
+        assert_eq!(
+            leaf_fallbacks, 0,
+            "conclusive child unions avoid all 128 individual products",
+        );
+    }
+
+    #[test]
+    fn pretty_boundary_catalog_tree_reuses_one_left_language_across_distinct_rights() {
+        let mut patterns = (0..128)
+            .map(|index| format!("unrelated{index:03}"))
+            .collect::<Vec<_>>();
+        patterns.push(r"[a-z]+suffix017".to_owned());
+        let left = r"[a-z]+";
+        let rights = (0..32)
+            .map(|index| format!("suffix{index:03}"))
+            .collect::<Vec<_>>();
+        let mut prover = PrettyBoundaryProver::default();
+        let catalog = prover.intern_catalog(&patterns);
+        assert!(
+            prover.catalogs[catalog.0]
+                .automaton
+                .as_ref()
+                .expect("the valid root catalog compiles")
+                .reachable
+                .set(None)
+                .is_ok(),
+            "force every query onto adaptive child unions",
+        );
+
+        let actual = rights
+            .iter()
+            .map(|right| prover.patterns_cross_catalog(left, right, catalog))
+            .collect::<Vec<_>>();
+        let expected = (0..rights.len())
+            .map(|index| index == 17)
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected, "only the worked crossing may match");
+        assert!(
+            prover.right_product_counts().1 <= 3,
+            "root fallback must reuse accepted left frontiers in both half catalogs: {:?}",
+            prover.right_product_counts(),
+        );
+        assert_eq!(prover.catalog_left_product_counts(), (1, 2));
+    }
+
+    #[test]
+    fn pretty_boundary_catalog_tree_caps_aggregate_retained_cache_memory() {
+        let patterns = (0..64)
+            .map(|index| format!("token{index:03}"))
+            .collect::<Vec<_>>();
+        let mut prover = PrettyBoundaryProver {
+            catalog_node_retained_budget: Some(0),
+            catalog_node_retained_entry_budget: Some(0),
+            ..PrettyBoundaryProver::default()
+        };
+        let catalog = prover.intern_catalog(&patterns);
+        assert!(
+            prover.catalogs[catalog.0]
+                .automaton
+                .as_ref()
+                .expect("the valid catalog compiles")
+                .reachable
+                .set(None)
+                .is_ok(),
+            "force the root batch onto adaptive child unions",
+        );
+
+        assert!(!prover.patterns_cross_catalog("x+", "y+", catalog));
+        assert_eq!(prover.catalog_node_retained_bytes(), 0);
+        assert_eq!(prover.catalog_node_retained_entries(), 0);
+        assert!(prover.catalog_node_automata.is_empty());
+        assert!(prover.catalog_node_right_products.is_empty());
+        assert!(prover.catalog_node_left_products.is_empty());
+        assert!(prover.catalog_node_left_queries.is_empty());
+        assert!(prover.catalog_node_products.is_empty());
+
+        assert!(
+            !prover.patterns_cross_catalog("q+", "r+", catalog),
+            "a distinct boundary remains exact after every child cache entry was evicted",
+        );
+        assert_eq!(prover.catalog_node_retained_bytes(), 0);
+        assert_eq!(prover.catalog_node_retained_entries(), 0);
+
+        let counts = prover.catalog_tree_counts();
+        assert!(
+            !prover.patterns_cross_catalog("x+", "y+", catalog),
+            "eviction cannot weaken the exact cached root answer",
+        );
+        assert_eq!(prover.catalog_tree_counts(), counts);
+    }
+
+    #[test]
+    fn pretty_boundary_individual_language_preserves_longer_alternation() {
+        let mut prover = PrettyBoundaryProver::default();
+
+        assert!(
+            prover.patterns_cross("a", "b", "a|ab"),
+            "the lexical language contains `ab` even when its shorter alternative is listed first",
+        );
+    }
+
+    #[test]
+    fn pretty_boundary_product_scans_each_joint_byte_class_once() {
+        let compile = |pattern| {
+            let dfa = regex_automata::dfa::dense::DFA::new(pattern).expect("a valid test pattern");
+            let input = regex_automata::Input::new(b"").anchored(regex_automata::Anchored::Yes);
+            let start = regex_automata::dfa::Automaton::start_state_forward(&dfa, &input)
+                .expect("an anchored start state");
+            PrettyPatternAutomaton::new(dfa, start)
+        };
+        let compile_catalog = |patterns: &[&str]| {
+            let mut builder = regex_automata::dfa::dense::Builder::new();
+            builder.configure(
+                regex_automata::dfa::dense::DFA::config()
+                    .match_kind(regex_automata::MatchKind::All)
+                    .start_kind(regex_automata::dfa::StartKind::Anchored),
+            );
+            let dfa = builder.build_many(patterns).expect("valid test patterns");
+            let input = regex_automata::Input::new(b"").anchored(regex_automata::Anchored::Yes);
+            let start = regex_automata::dfa::Automaton::start_state_forward(&dfa, &input)
+                .expect("an anchored start state");
+            PrettyPatternAutomaton::new(dfa, start)
+        };
+        let left = compile(r"a{1,8}");
+        let right = compile(r"b+");
+        let lexical = compile_catalog(&[r"unrelated", r"a{1,8}c", r"a{1,8}d"]);
+
+        let (_, counts) = compiled_patterns_cross_counted(&left, &right, &lexical);
+        let right_classes = pretty_boundary_joint_byte_representatives(&right, &lexical).len();
+        let left_classes = pretty_boundary_joint_byte_representatives(&left, &lexical).len();
+        let dense_byte_scan = (usize::from(u8::MAX) + 1)
+            * (counts.right_states
+                + counts.lexical_states
+                + counts.right_product_states
+                + counts.left_product_states);
+
+        assert_eq!(
+            counts.byte_transitions,
+            (usize::from(u8::MAX) + 1) * (counts.right_states + counts.lexical_states)
+                + right_classes * counts.right_product_states
+                + left_classes * counts.left_product_states
+        );
+        assert!(right_classes < usize::from(u8::MAX) + 1);
+        assert!(left_classes < usize::from(u8::MAX) + 1);
+        assert!(
+            counts.byte_transitions * 2 < dense_byte_scan,
+            "joint byte classes must materially reduce this representative product",
+        );
+        assert_eq!(
+            counts.right_product_states,
+            counts.right_states * counts.lexical_states
+        );
+        assert!(
+            counts.boundary_lookups > 1,
+            "exercise repeated boundary states"
+        );
+    }
+
+    #[test]
+    fn pretty_boundary_products_reuse_reachable_language_graphs() {
+        let compile = |pattern| {
+            let dfa = regex_automata::dfa::dense::DFA::new(pattern).expect("a valid test pattern");
+            let input = regex_automata::Input::new(b"").anchored(regex_automata::Anchored::Yes);
+            let start = regex_automata::dfa::Automaton::start_state_forward(&dfa, &input)
+                .expect("an anchored start state");
+            PrettyPatternAutomaton::new(dfa, start)
+        };
+        let left = compile("a+");
+        let right = compile("b+");
+        let lexical = compile("a+b+");
+
+        let (_, first) = compiled_patterns_cross_counted(&left, &right, &lexical);
+        let (_, second) = compiled_patterns_cross_counted(&left, &right, &lexical);
+
+        assert_eq!(first.reachable_graphs_built, 2);
+        assert_eq!(second.reachable_graphs_built, 0);
+    }
+
+    #[test]
+    fn pretty_boundary_product_budget_precedes_cartesian_allocation() {
+        let byte_width = usize::from(u8::MAX) + 1;
+        let maximum_product = PRETTY_BOUNDARY_PRODUCT_TRANSITION_BUDGET / byte_width;
+
+        assert_eq!(
+            pretty_boundary_product_len(1, maximum_product),
+            Some(maximum_product)
+        );
+        assert_eq!(pretty_boundary_product_len(1, maximum_product + 1), None);
+        assert_eq!(pretty_boundary_product_len(usize::MAX, 2), None);
+    }
+
+    #[test]
+    fn pretty_boundary_left_budget_precedes_sparse_product_growth() {
+        let byte_width = usize::from(u8::MAX) + 1;
+        let maximum_states = PRETTY_BOUNDARY_LEFT_TRANSITION_BUDGET / byte_width;
+
+        assert_eq!(
+            pretty_boundary_left_transition_len(maximum_states),
+            Some(PRETTY_BOUNDARY_LEFT_TRANSITION_BUDGET)
+        );
+        assert_eq!(
+            pretty_boundary_left_transition_len(maximum_states + 1),
+            None
+        );
+        assert_eq!(pretty_boundary_left_transition_len(usize::MAX), None);
+    }
+
+    #[test]
+    fn pretty_boundary_reachable_graph_budget_precedes_row_allocation() {
+        let byte_width = usize::from(u8::MAX) + 1;
+        let maximum_states = PRETTY_BOUNDARY_REACHABLE_TRANSITION_BUDGET / byte_width;
+
+        assert_eq!(
+            pretty_boundary_reachable_transition_len(maximum_states),
+            Some(PRETTY_BOUNDARY_REACHABLE_TRANSITION_BUDGET)
+        );
+        assert_eq!(
+            pretty_boundary_reachable_transition_len(maximum_states + 1),
+            None
+        );
+        assert_eq!(pretty_boundary_reachable_transition_len(usize::MAX), None);
+    }
+
+    #[test]
+    fn pretty_boundary_dense_product_matches_the_old_oracle_matrix() {
+        let compile = |pattern| {
+            let dfa = regex_automata::dfa::dense::DFA::new(pattern).expect("a valid test pattern");
+            let input = regex_automata::Input::new(b"").anchored(regex_automata::Anchored::Yes);
+            let start = regex_automata::dfa::Automaton::start_state_forward(&dfa, &input)
+                .expect("an anchored start state");
+            PrettyPatternAutomaton::new(dfa, start)
+        };
+        let patterns = ["", "a", "ab", r"a+", r"(?:ab|ac)", r"[a-c]{0,3}", "☃+"];
+        let lexical_catalogs: &[&[&str]] = &[
+            &[""],
+            &["a"],
+            &["ab"],
+            &[r"a+"],
+            &[r"(?:ab|ac)"],
+            &[r"[a-c]{0,3}"],
+            &["☃+", r"[\x00-\xFF]+"],
+            &["unrelated", "ab", "abc"],
+        ];
+
+        for left_pattern in patterns {
+            for right_pattern in patterns {
+                for lexical_catalog in lexical_catalogs {
+                    let left = compile(left_pattern);
+                    let right = compile(right_pattern);
+                    let mut builder = regex_automata::dfa::dense::Builder::new();
+                    builder.configure(
+                        regex_automata::dfa::dense::DFA::config()
+                            .match_kind(regex_automata::MatchKind::All)
+                            .start_kind(regex_automata::dfa::StartKind::Anchored),
+                    );
+                    let dfa = builder
+                        .build_many(lexical_catalog)
+                        .expect("valid catalog test patterns");
+                    let input =
+                        regex_automata::Input::new(b"").anchored(regex_automata::Anchored::Yes);
+                    let start = regex_automata::dfa::Automaton::start_state_forward(&dfa, &input)
+                        .expect("an anchored catalog start state");
+                    let lexical = PrettyPatternAutomaton::new(dfa, start);
+                    let expected = compiled_patterns_cross_old_oracle(&left, &right, &lexical);
+                    assert_eq!(
+                        compiled_patterns_cross(&left, &right, &lexical),
+                        expected,
+                        "left={left_pattern:?}, right={right_pattern:?}, lexical={lexical_catalog:?}"
+                    );
+                    let mut counts = PrettyBoundaryProductCounts::new();
+                    let adaptive = build_pretty_left_product(&left, &lexical, &mut counts)
+                        .and_then(|product| {
+                            compiled_right_crosses(&right, &lexical, &product, &mut counts)
+                        })
+                        .unwrap_or(true);
+                    assert_eq!(
+                        adaptive, expected,
+                        "adaptive left product: left={left_pattern:?}, right={right_pattern:?}, lexical={lexical_catalog:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pretty_boundary_catalog_preserves_first_source_order_diagnostic() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { PLUS => "+", spacing = tight, MINUS => "-" }
+    lexer_tokens { FIRST => r"\+-", SECOND => r"\+(?:-)" }
+}
+#[derive(recursa::Node)] #[tok(PLUS, MINUS)] struct Root;
+"#,
+        );
+
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                    && diagnostic.message.contains("lexical pattern")
+            })
+            .expect("a lexical Pretty boundary diagnostic");
+        assert!(diagnostic.message.contains(r"lexical pattern `\+-`"));
+    }
+
+    #[test]
     fn pretty_spacing_checks_explicit_tight_fixed_edges_against_regex_rules() {
         let report = model(
             r#"
@@ -8651,6 +11280,28 @@ struct Prefix<'input> { #[lex(pattern = "a")] value: PrefixText<'input> }
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
                 && diagnostic.message.contains("lexer boundary")
+        }));
+    }
+
+    #[test]
+    fn pretty_dynamic_boundary_retains_fixed_languages_in_the_full_catalog() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { COLON => ":", MERGED => "a:" }
+}
+#[derive(recursa::Node)]
+struct Prefix<'input> { #[lex(pattern = "a")] value: PrefixText<'input> }
+#[derive(recursa::Node)] #[tok(COLON)] struct Suffix;
+#[derive(recursa::Node)] struct Root<'input> { left: Prefix<'input>, right: Suffix }
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("regex-backed content")
         }));
     }
 
@@ -8870,6 +11521,117 @@ struct Root(Child);
     }
 
     #[test]
+    fn pretty_boundary_walk_reuses_shared_acyclic_dag_nodes() {
+        const DEPTH: usize = 14;
+
+        let mut source = String::from(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { COLON => ":", RPAREN => ")" }
+    ignore = r"\s+"
+}
+#[derive(recursa::Node)] #[tok(COLON)] struct Leaf;
+#[derive(recursa::Node)] #[tok(RPAREN)] struct Tail;
+"#,
+        );
+        for depth in 0..DEPTH {
+            let child = if depth == 0 {
+                "Leaf".to_owned()
+            } else {
+                format!("Layer{}", depth - 1)
+            };
+            writeln!(
+                source,
+                "#[derive(recursa::Node)] enum Layer{depth} {{ Left({child}), Right({child}) }}"
+            )
+            .unwrap();
+        }
+        writeln!(
+            source,
+            "#[derive(recursa::Node)] struct Root(Layer{}, Tail);",
+            DEPTH - 1
+        )
+        .unwrap();
+
+        let report = model(&source);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert_eq!(
+            report.pretty_boundary_node_evaluations, 16,
+            "each of the fifteen shared left-boundary Nodes and the Tail must expand once",
+        );
+        assert_eq!(
+            report.pretty_soft_node_evaluations, 0,
+            "hint-free scopes must not traverse the shared soft-opportunity DAG",
+        );
+    }
+
+    #[test]
+    fn pretty_soft_opportunity_walk_reuses_shared_acyclic_dag_nodes() {
+        const DEPTH: usize = 14;
+
+        let mut source = String::from(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { LPAREN => "(", RPAREN => ")" }
+    ignore = r"\s+"
+}
+#[derive(recursa::Node)] struct Leaf;
+#[derive(recursa::Node)] #[tok(LPAREN, RPAREN)] struct Breakable;
+"#,
+        );
+        for depth in 0..DEPTH {
+            let child = if depth == 0 {
+                "Leaf".to_owned()
+            } else {
+                format!("Layer{}", depth - 1)
+            };
+            writeln!(
+                source,
+                "#[derive(recursa::Node)] enum Layer{depth} {{ Left({child}), Right({child}) }}"
+            )
+            .unwrap();
+        }
+        writeln!(
+            source,
+            "#[derive(recursa::Node)] #[pretty(group = consistent)] struct Root(Layer{}, Breakable);",
+            DEPTH - 1
+        )
+        .unwrap();
+
+        let report = model(&source);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert_eq!(
+            report.pretty_soft_node_evaluations, 16,
+            "each of the fourteen shared DAG Nodes, Leaf, and Breakable must expand once",
+        );
+    }
+
+    #[test]
+    fn pretty_soft_opportunity_cycle_fallback_is_not_cached_as_false() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { LPAREN => "(", RPAREN => ")" }
+    ignore = r"\s+"
+}
+#[derive(recursa::Node)] struct Cycle { next: Option<Box<Cycle>> }
+#[derive(recursa::Node)] #[tok(LPAREN, RPAREN)] struct Breakable;
+#[derive(recursa::Node)] #[pretty(group = consistent)] struct First(Cycle, Breakable);
+#[derive(recursa::Node)] #[pretty(group = consistent)] struct Second(Cycle, Breakable);
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert_eq!(
+            report.pretty_soft_node_evaluations, 3,
+            "the recursive false fallback must be recomputed while the definitive true result is reused",
+        );
+    }
+
+    #[test]
     fn pretty_spacing_validates_internal_and_external_attachment_boundaries() {
         for source in [
             r#"
@@ -8944,6 +11706,145 @@ struct Root<'input> {
             diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
                 && diagnostic.message.contains("regex-backed")
         }));
+    }
+
+    #[test]
+    fn pretty_boundary_cache_preserves_each_dynamic_use_site() {
+        let source = r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { COLON => ":", spacing = tight } }
+
+#[derive(recursa::Node)]
+struct Dynamic<'input> {
+    #[lex(pattern = r"[A-Za-z:]+")]
+    value: DynamicText<'input>,
+}
+
+#[derive(recursa::Node)]
+struct Root<'input> {
+    #[tok(this, COLON)]
+    first: Dynamic<'input>,
+    #[tok(this, COLON)]
+    second: Dynamic<'input>,
+}
+"#;
+        let report = model(source);
+        let dynamic_site = source.find("value: DynamicText").unwrap() as u32;
+        let second_site = source.rfind("COLON").unwrap() as u32;
+
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                    && diagnostic.message.contains("regex-backed")
+                    && diagnostic.sites.len() == 2
+                    && diagnostic.sites[0].range.contains(&dynamic_site)
+                    && diagnostic.sites[1].range.start == second_site
+            }),
+            "{:?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn pretty_boundary_dedup_preserves_distinct_sites_in_source_order() {
+        let source = r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { COLON => ":", spacing = tight, DOUBLE_COLON => "::" }
+}
+#[derive(recursa::Node)]
+#[tok(COLON)]
+struct Left;
+#[derive(recursa::Node)]
+#[tok(COLON)]
+struct Right;
+#[derive(recursa::Node)]
+enum Choice { First(Left), Second(Right) }
+#[derive(recursa::Node)]
+struct Root(#[tok(this, COLON)] Choice);
+"#;
+        let report = model(source);
+        let left_site = source.find("#[tok(COLON)]\nstruct Left").unwrap() as u32 + 6;
+        let right_site = source.find("#[tok(COLON)]\nstruct Right").unwrap() as u32 + 6;
+        let primary_sites = report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.message.contains("longest match `::`"))
+            .map(|diagnostic| diagnostic.sites[0].range.start)
+            .collect::<Vec<_>>();
+
+        assert_eq!(primary_sites, [left_site, right_site]);
+    }
+
+    #[test]
+    fn pretty_boundary_cycles_keep_the_unknown_fallback_uncached() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { COLON => ":", spacing = tight, DOUBLE_COLON => "::" }
+}
+#[derive(recursa::Node)] #[tok(COLON)] struct Leaf;
+#[derive(recursa::Node)]
+enum Recursive { Recur(Box<Recursive>), End(Leaf) }
+#[derive(recursa::Node)]
+struct Root(#[tok(this, COLON)] Recursive);
+"#,
+        );
+        let longest_match = report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.message.contains("longest match `::`"))
+            .count();
+
+        assert_eq!(longest_match, 1);
+        assert!(report.diagnostics.iter().all(|diagnostic| {
+            !diagnostic
+                .message
+                .contains("unproved lexer boundary involving regex-backed content")
+        }));
+        assert!(
+            report.pretty_boundary_node_evaluations > 2,
+            "the cyclic Recursive boundary must not enter the acyclic memo"
+        );
+    }
+
+    #[test]
+    fn pretty_breaks_prove_neighboring_regex_boundaries_are_separated() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    punctuation { MINUS => "-" }
+    lexer_tokens { MERGED => r"(?:a-|-a)" }
+    ignore = r"\s+"
+}
+
+#[derive(recursa::Node)]
+struct Word<'input> {
+    #[lex(pattern = "a")]
+    text: WordText<'input>,
+}
+#[derive(recursa::Node)]
+#[tok(MINUS)]
+struct Minus;
+#[derive(recursa::Node)]
+struct BreakBefore<'input> {
+    left: Word<'input>,
+    #[pretty(break_before = soft)]
+    right: Minus,
+}
+#[derive(recursa::Node)]
+struct BreakAfter<'input> {
+    #[pretty(break_after = soft)]
+    left: Word<'input>,
+    right: Minus,
+}
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.source_modeled.is_some());
     }
 
     #[test]
@@ -9057,6 +11958,209 @@ enum Expr<'input> {
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         assert!(report.source_modeled.is_some());
+    }
+
+    #[test]
+    fn pretty_pratt_accepts_exact_fixed_only_grouping_markers() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" }
+}
+
+#[derive(recursa::Node)]
+enum Open { #[tok(OPEN)] Value }
+#[derive(recursa::Node)]
+enum Close { #[tok(CLOSE)] Value }
+#[derive(recursa::Node)]
+struct Integer<'input> { #[lex(pattern = r"[0-9]+")] value: IntegerText<'input> }
+#[derive(recursa::Node)]
+struct Group<'input> { open: Open, value: Box<Expr<'input>>, close: Close }
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    Group(Group<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.source_modeled.is_some());
+    }
+
+    #[test]
+    fn pretty_pratt_rejects_inexact_semantic_grouping_markers() {
+        for source in [
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" } }
+#[derive(recursa::Node)]
+struct Open<'input> { #[lex(pattern = r"[a-z]+\[")] text: OpenText<'input> }
+#[derive(recursa::Node)] enum Close { #[tok(CLOSE)] Value }
+#[derive(recursa::Node)] struct Integer<'input> { #[lex(pattern = r"[0-9]+")] value: IntegerText<'input> }
+#[derive(recursa::Node)] struct Group<'input> { open: Open<'input>, value: Box<Expr<'input>>, close: Close }
+#[derive(recursa::Node)] #[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>), Group(Group<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)] #[tok(PLUS)] Add(Box<Self>, Box<Self>),
+}
+"#,
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { OPEN => "(", ALT => "[", CLOSE => ")", PLUS => "+" } }
+#[derive(recursa::Node)] enum Open { #[tok(OPEN)] Round, #[tok(ALT)] Square }
+#[derive(recursa::Node)] enum Close { #[tok(CLOSE)] Value }
+#[derive(recursa::Node)] struct Integer<'input> { #[lex(pattern = r"[0-9]+")] value: IntegerText<'input> }
+#[derive(recursa::Node)] struct Group<'input> { open: Open, value: Box<Expr<'input>>, close: Close }
+#[derive(recursa::Node)] #[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>), Group(Group<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)] #[tok(PLUS)] Add(Box<Self>, Box<Self>),
+}
+"#,
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! { punctuation { OPEN => "(", CLOSE => ")", PLUS => "+" } }
+#[derive(recursa::Node)] enum Open { #[tok(OPEN)] Value }
+#[derive(recursa::Node)] enum Close { #[tok(CLOSE)] Value }
+#[derive(recursa::Node)] struct Integer<'input> { #[lex(pattern = r"[0-9]+")] value: IntegerText<'input> }
+#[derive(recursa::Node)] struct Group<'input> { open: recursa::Vec1<Open>, value: Box<Expr<'input>>, close: Close }
+#[derive(recursa::Node)] #[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>), Group(Group<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)] #[tok(PLUS)] Add(Box<Self>, Box<Self>),
+}
+"#,
+        ] {
+            let report = model(source);
+            assert!(report.source_modeled.is_none());
+            assert!(
+                report.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                        && diagnostic.message.contains("cannot repair precedence")
+                }),
+                "{:?}",
+                report.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn pretty_pratt_accepts_unique_grouping_through_authored_helpers() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    keywords { ANY => "any", QUERY => "query" }
+    punctuation { OPEN => "(", CLOSE => ")", COMMA => ",", DOT => ".", STAR => "*", PLUS => "+" }
+}
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+enum ParenthesizedSuffix {
+    #[tok(DOT, STAR)]
+    Star,
+}
+
+#[derive(recursa::Node)]
+#[tok(QUERY)]
+struct Query<'input> {
+    value: Box<Expr<'input>>,
+}
+
+#[derive(recursa::Node)]
+enum ParenthesizedContent<'input> {
+    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
+    Query(Query<'input>),
+}
+
+#[derive(recursa::Node)]
+struct ParenthesizedExpr<'input> {
+    #[tok(OPEN, this, CLOSE)]
+    content: ParenthesizedContent<'input>,
+    suffix: Option<ParenthesizedSuffix>,
+}
+
+#[derive(recursa::Node)]
+struct QuantifiedExpr<'input> {
+    #[tok(ANY, OPEN, this, CLOSE)]
+    content: ParenthesizedContent<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    Quantified(QuantifiedExpr<'input>),
+    Parenthesized(ParenthesizedExpr<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.source_modeled.is_some());
+    }
+
+    #[test]
+    fn pretty_pratt_rejects_ambiguous_grouping_through_authored_helpers() {
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    punctuation { OPEN => "(", CLOSE => ")", COMMA => ",", PLUS => "+" }
+}
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+enum ParenthesizedContent<'input> {
+    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
+    Single(Box<Expr<'input>>),
+}
+
+#[derive(recursa::Node)]
+struct ParenthesizedExpr<'input> {
+    #[tok(OPEN, this, CLOSE)]
+    content: ParenthesizedContent<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    Parenthesized(ParenthesizedExpr<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+        );
+
+        assert!(report.source_modeled.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == SourceModelDiagnosticKind::InvalidConfiguration
+                && diagnostic.message.contains("cannot repair precedence")
+        }));
     }
 
     #[test]

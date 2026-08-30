@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{GrammarDescription, KindSet, TextEquivalence, TextPredicate, TextPredicateId};
+use crate::{GrammarDescription, KindId, KindSet, TextEquivalence, TextPredicate, TextPredicateId};
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// One canonical spelling partition within a token kind.
@@ -278,42 +278,34 @@ fn exact_kind_regions<'a, C, K>(candidates: &'a [C], kinds_of: K) -> BTreeMap<Ve
 where
     K: Fn(&'a C) -> &'a KindSet,
 {
-    let mut regions = Vec::<(KindSet, Vec<usize>)>::new();
-    for (candidate_index, candidate) in candidates.iter().enumerate() {
-        let candidate_kinds = kinds_of(candidate);
-        let mut uncovered = candidate_kinds.clone();
-        let mut refined = Vec::new();
-        for (region_kinds, region_membership) in regions {
-            let overlap = region_kinds
-                .intersection(candidate_kinds)
-                .expect("kind regions share one width");
-            let remainder = region_kinds
-                .difference(candidate_kinds)
-                .expect("kind regions share one width");
-            uncovered = uncovered
-                .difference(&region_kinds)
-                .expect("kind regions share one width");
-            if !remainder.is_empty() {
-                refined.push((remainder, region_membership.clone()));
-            }
-            if !overlap.is_empty() {
-                let mut membership = region_membership;
-                membership.push(candidate_index);
-                refined.push((overlap, membership));
-            }
+    let kind_sets = candidates.iter().map(kinds_of).collect::<Vec<_>>();
+    let Some(first) = kind_sets.first() else {
+        return BTreeMap::new();
+    };
+    let kind_count = first.kind_count();
+    let mut membership_by_kind = vec![Vec::new(); kind_count];
+    for (candidate_index, kinds) in kind_sets.into_iter().enumerate() {
+        assert_eq!(
+            kinds.kind_count(),
+            kind_count,
+            "kind regions share one width"
+        );
+        for kind in kinds.iter() {
+            membership_by_kind[kind.index()].push(candidate_index);
         }
-        if !uncovered.is_empty() {
-            refined.push((uncovered, vec![candidate_index]));
-        }
-        regions = refined;
     }
 
     let mut canonical = BTreeMap::<Vec<usize>, KindSet>::new();
-    for (kinds, membership) in regions {
+    for (kind, membership) in membership_by_kind.into_iter().enumerate() {
+        if membership.is_empty() {
+            continue;
+        }
+        let kind = KindId::new(kind.try_into().expect("validated kind width"));
         canonical
             .entry(membership)
-            .and_modify(|known| known.union_assign(&kinds))
-            .or_insert(kinds);
+            .or_insert_with(|| KindSet::empty(kind_count))
+            .insert(kind)
+            .expect("kind comes from the validated grammar width");
     }
     canonical
 }

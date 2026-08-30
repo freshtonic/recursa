@@ -17,6 +17,18 @@ fn a_downstream_arithmetic_grammar_parses_the_frozen_pratt_plan() {
 }
 
 #[test]
+fn pratt_dispatch_regressions_share_one_downstream_fixture() {
+    let package = scaffold_nud_follow_overlap_fixture();
+    let output = run_fixture(&package);
+
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "pratt-dispatch-regressions-ok"
+    );
+}
+
+#[test]
 fn repeated_generation_of_the_pratt_grammar_is_deterministic() {
     let package = scaffold_fixture();
     assert_success(&run_fixture(&package));
@@ -71,6 +83,7 @@ fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() 
             ("Multiply", 3),
             ("Add", 3),
             ("IsNot", 4),
+            ("Like", 3),
             ("Cast", 3),
             ("IsNull", 3),
         ],
@@ -206,6 +219,135 @@ fn scaffold_fixture() -> TempDir {
         );
     fs::write(package.path().join("Cargo.toml"), manifest)
         .expect("write Pratt grammar fixture manifest");
+    package
+}
+
+fn scaffold_nud_follow_overlap_fixture() -> TempDir {
+    let package = scaffold_fixture();
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"
+recursa::grammar! {
+    module = crate::grammar,
+    max_lookahead = 4,
+}
+
+recursa::tokens! {
+    ignore = r"[ \t\n\r]+",
+    keywords {
+        BEGIN => "BEGIN",
+        WRAP => "WRAP",
+        GROUP => "GROUP",
+        OTHER => "OTHER",
+        END => "END",
+        DEEP => "DEEP",
+        ONE => "ONE",
+        TWO => "TWO",
+        LEFT => "LEFT",
+        RIGHT => "RIGHT",
+        FROM => "FROM",
+        WHEN => "WHEN",
+        THEN => "THEN",
+    }
+    punctuation {
+        PLUS => "+",
+        GT => ">",
+    }
+}
+
+#[derive(recursa::Node)]
+pub struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    pub value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+#[tok(BEGIN)]
+pub struct BeginAtom;
+
+#[derive(recursa::Node)]
+#[pratt]
+pub enum Expr<'input> {
+    Integer(Integer<'input>),
+    BeginAtom(BeginAtom),
+    MultiGroup(#[tok(BEGIN, GROUP, this, END, GROUP)] Box<Self>),
+    Wrapped(#[tok(WRAP, GROUP, this, END)] Box<Self>),
+    Rival(#[tok(WRAP, OTHER, this, END)] Integer<'input>),
+    #[tok(DEEP, ONE, TWO, LEFT)]
+    DeepLeft,
+    #[tok(DEEP, ONE, TWO, RIGHT)]
+    DeepRight,
+    #[tok(FROM, LEFT)]
+    FromLeft,
+    #[tok(FROM, RIGHT)]
+    FromRight,
+
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+    #[parse(infix, lbp = 5, rbp = 6)]
+    Greater(Box<Self>, #[tok(GT, this)] Box<Self>),
+}
+
+#[derive(recursa::Node)]
+pub struct GroupFollowed<'input> {
+    #[tok(this, GROUP)]
+    pub expression: Expr<'input>,
+    pub tail: Integer<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct FollowedExpr<'input> {
+    #[tok(WHEN, this, THEN)]
+    pub expression: Expr<'input>,
+}
+"#,
+    )
+    .expect("write caller-FOLLOW overlap grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"
+use recursa_generated_pratt::grammar;
+
+fn main() {
+    let lexed = grammar::lex("BEGIN GROUP 1 END GROUP GROUP 2");
+    let mut input = lexed.input();
+    let parsed = grammar::GroupFollowed::parse(&mut input)
+        .expect("the longer NUD suffix parses before caller-FOLLOW fallback");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast().expression,
+        grammar::Expr::MultiGroup(_),
+    ));
+
+    let lexed = grammar::lex("WRAP GROUP 1 + 2 END");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("the unique wrapper NUD admits an infix in its nested expression");
+    assert!(input.is_eof());
+    assert!(matches!(parsed.into_ast(), grammar::Expr::Wrapped(_)));
+
+    let lexed = grammar::lex("FROM");
+    let mut input = lexed.input();
+    let error = match grammar::Expr::parse(&mut input) {
+        Ok(_) => panic!("FROM requires a distinguishing suffix"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), recursa::ParseErrorKind::UnexpectedEof);
+    assert_eq!(error.span(), recursa::Span::new(4, 4).unwrap());
+    assert_eq!(error.found(), None);
+    assert_eq!(input.cursor(), 0, "the public parse remains transactional");
+
+    let lexed = grammar::lex("WHEN 1 > 0 THEN");
+    let mut input = lexed.input();
+    grammar::FollowedExpr::parse(&mut input)
+        .expect("a uniquely selected infix validates its nested right operand");
+    assert!(input.is_eof());
+    println!("pratt-dispatch-regressions-ok");
+}
+"#,
+    )
+    .expect("write shared Pratt dispatch regression consumer");
     package
 }
 

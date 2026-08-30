@@ -8,6 +8,24 @@ use crate::{
     AtomId, DeclId, KindId, KindSet, PrattPosition, ProofId, SiteId, TextPredicateId, TypeId,
 };
 
+#[cfg(test)]
+std::thread_local! {
+    /// Recursive proof comparisons performed on the current test thread.
+    static PROOF_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+/// Resets the recursive proof-comparison counter for the current test thread.
+fn reset_proof_comparisons_for_test() {
+    PROOF_COMPARISONS.set(0);
+}
+
+#[cfg(test)]
+/// Returns recursive proof comparisons performed on the current test thread.
+fn proof_comparisons_for_test() -> usize {
+    PROOF_COMPARISONS.get()
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// One typed derivation step in a canonical semantic proof chain.
 pub enum ProvenanceStep {
@@ -253,6 +271,8 @@ impl ProofArena {
 
     /// Compares proofs by rank, derivation step, then parent chain.
     pub(crate) fn compare(&self, left: ProofId, right: ProofId) -> std::cmp::Ordering {
+        #[cfg(test)]
+        PROOF_COMPARISONS.set(PROOF_COMPARISONS.get() + 1);
         let left_node = self.get(left).expect("valid proof ID");
         let right_node = self.get(right).expect("valid proof ID");
         left_node
@@ -279,29 +299,57 @@ impl ProofArena {
             }
         }
 
-        let mut retained = reachable
+        let max_hops = self
+            .nodes
             .iter()
-            .enumerate()
-            .filter_map(|(index, retained)| {
-                retained.then_some(ProofId::new(index.try_into().expect("proof ID overflow")))
-            })
-            .collect::<Vec<_>>();
-        retained.sort_by(|left, right| self.compare(*left, *right));
+            .zip(&reachable)
+            .filter_map(|(node, reachable)| reachable.then_some(node.rank.hops))
+            .max()
+            .unwrap_or(0);
+        let mut retained_by_hops = vec![Vec::new(); max_hops as usize + 1];
+        for (index, retained) in reachable.iter().copied().enumerate() {
+            if retained {
+                let proof = ProofId::new(index.try_into().expect("proof ID overflow"));
+                let hops = self
+                    .get(proof)
+                    .expect("reachable proof ID is valid")
+                    .rank
+                    .hops;
+                retained_by_hops[hops as usize].push(proof);
+            }
+        }
 
         let mut remap = ProofRemap {
             by_old_id: vec![None; self.nodes.len()],
         };
         let mut compact = Self::with_source_order(self.source_order_by_declaration.clone());
-        for old in retained {
-            let old_node = self.get(old).expect("reachable proof ID is valid");
-            let parent = old_node.parent.map(|parent| remap.get(parent));
-            let new = compact.intern(parent, old_node.step.clone());
-            assert_eq!(
-                compact.get(new).expect("compacted proof exists").rank,
-                old_node.rank,
-                "proof compaction preserves canonical rank",
-            );
-            remap.by_old_id[old.index()] = Some(new);
+        for mut retained in retained_by_hops {
+            retained.sort_unstable_by(|left, right| {
+                let left_node = self.get(*left).expect("reachable proof ID is valid");
+                let right_node = self.get(*right).expect("reachable proof ID is valid");
+                left_node
+                    .rank
+                    .source_order
+                    .cmp(&right_node.rank.source_order)
+                    .then_with(|| left_node.step.cmp(&right_node.step))
+                    .then_with(|| {
+                        left_node
+                            .parent
+                            .map(|parent| remap.get(parent))
+                            .cmp(&right_node.parent.map(|parent| remap.get(parent)))
+                    })
+            });
+            for old in retained {
+                let old_node = self.get(old).expect("reachable proof ID is valid");
+                let parent = old_node.parent.map(|parent| remap.get(parent));
+                let new = compact.intern(parent, old_node.step.clone());
+                assert_eq!(
+                    compact.get(new).expect("compacted proof exists").rank,
+                    old_node.rank,
+                    "proof compaction preserves canonical rank",
+                );
+                remap.by_old_id[old.index()] = Some(new);
+            }
         }
         *self = compact;
         remap
@@ -315,6 +363,72 @@ impl ProofArena {
             (None, Some(_)) => std::cmp::Ordering::Less,
             (Some(_), None) => std::cmp::Ordering::Greater,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates one declaration proof step with compact, distinct identities.
+    fn direct_step(identity: u32) -> ProvenanceStep {
+        ProvenanceStep::DirectDeclaration {
+            atom: AtomId::new(identity),
+            kind: KindId::new(identity.try_into().expect("fixture kind ID fits")),
+            declaration: DeclId::new(identity),
+        }
+    }
+
+    #[test]
+    fn reachable_compaction_preserves_recursive_canonical_order_without_recursive_comparisons() {
+        let mut arena = ProofArena::with_source_order(vec![3, 2, 1, 0]);
+        let roots = (0..4)
+            .rev()
+            .map(|identity| {
+                let direct = arena.intern(None, direct_step(identity));
+                let middle = arena.intern(
+                    Some(direct),
+                    ProvenanceStep::FirstPropagation {
+                        type_id: TypeId::new(identity),
+                        declaration: DeclId::new(identity),
+                    },
+                );
+                arena.intern(
+                    Some(middle),
+                    ProvenanceStep::TargetAdmission {
+                        target: AtomId::new(identity),
+                        declaration: DeclId::new(identity),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let mut expected = (0..arena.nodes().len())
+            .map(|index| ProofId::new(index.try_into().expect("fixture proof ID fits")))
+            .collect::<Vec<_>>();
+        expected.sort_by(|left, right| arena.compare(*left, *right));
+        let expected_steps = expected
+            .into_iter()
+            .map(|proof| arena.get(proof).expect("fixture proof exists").step.clone())
+            .collect::<Vec<_>>();
+
+        reset_proof_comparisons_for_test();
+        arena.retain_reachable(roots);
+
+        assert_eq!(
+            arena
+                .nodes()
+                .iter()
+                .map(|node| node.step.clone())
+                .collect::<Vec<_>>(),
+            expected_steps,
+            "iterative compaction must preserve the recursive canonical order",
+        );
+        assert_eq!(
+            proof_comparisons_for_test(),
+            0,
+            "compaction must not recursively compare already-ranked parent chains",
+        );
     }
 }
 

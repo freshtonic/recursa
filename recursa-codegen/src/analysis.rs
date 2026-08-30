@@ -378,6 +378,10 @@ fn render_label(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Decision products validated against the originating grammar, semantic facts, and FIRST support.
+struct ValidatedDecisionProducts(crate::DecisionProducts);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 /// Successful source-independent facts and executable parser decisions.
 ///
 /// All per-type and per-site slices use the dense IDs from the analyzed
@@ -397,7 +401,7 @@ pub struct AnalysisOutput {
     /// Supplies the follow by site consumed by semantic analysis.
     follow_by_site: Vec<FollowFacts>,
     /// Supplies the decisions consumed by semantic analysis.
-    decisions: crate::DecisionProducts,
+    decisions: ValidatedDecisionProducts,
 }
 
 impl AnalysisOutput {
@@ -462,7 +466,7 @@ impl AnalysisOutput {
 
     /// Returns the validated decisions consumed by generation.
     pub const fn decisions(&self) -> &crate::DecisionProducts {
-        &self.decisions
+        &self.decisions.0
     }
 
     /// Renders the stable summary of FIRST, nullability, and Pratt extenders.
@@ -579,6 +583,25 @@ impl FirstSequence {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Canonically ordered owned key used while preserving balanced-tail source order.
+struct BalancedTailSequenceKey(FirstSequence);
+
+impl Ord for BalancedTailSequenceKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        #[cfg(test)]
+        BALANCED_TAIL_DEDUP_COMPARISONS
+            .set(BALANCED_TAIL_DEDUP_COMPARISONS.get().saturating_add(1));
+        compare_first_sequences(&self.0, &other.0)
+    }
+}
+
+impl PartialOrd for BalancedTailSequenceKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Validates `grammar` and computes its complete semantic analysis.
 ///
 /// Validation and left-recursion failures stop dependent phases. Once the
@@ -587,6 +610,19 @@ impl FirstSequence {
 /// ordering is part of the diagnostic contract: downstream phases never
 /// manufacture findings from invalid upstream facts.
 pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
+    analyze_with_sequence_materialization(grammar, true)
+}
+
+/// Validates a grammar for parser generation without eagerly expanding reporting-only FIRST-k rows.
+pub(crate) fn analyze_for_generation(grammar: &GrammarDescription) -> AnalysisReport {
+    analyze_with_sequence_materialization(grammar, false)
+}
+
+/// Runs semantic analysis with an explicit reporting-materialization policy.
+fn analyze_with_sequence_materialization(
+    grammar: &GrammarDescription,
+    materialize_sequences: bool,
+) -> AnalysisReport {
     // Phase boundary: stop after invalid prerequisites so later facts are never derived from an incoherent grammar.
     let locations = grammar.locations.clone();
     let diagnostic_context = DiagnosticContext::from_grammar(grammar);
@@ -648,7 +684,7 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
     } else {
         let planned =
             crate::decision_plan::plan_decisions(grammar, &first_by_type, &first_sequence_analysis);
-        match publish_decisions(grammar, &first_by_type, &first_sequence_analysis, planned) {
+        match publish_decisions(grammar, planned) {
             Ok(decisions) => Some(decisions),
             Err(diagnostic) => {
                 diagnostics.push(*diagnostic);
@@ -656,8 +692,8 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
             }
         }
     };
-    if decisions.is_some() {
-        populate_first_sequences(grammar, &first_sequence_analysis, &mut first_by_type);
+    if decisions.is_some() && materialize_sequences {
+        populate_first_sequences(&first_sequence_analysis, &mut first_by_type);
     }
     let first_provenance_by_type = first_provenance
         .into_iter()
@@ -701,18 +737,16 @@ pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
 /// Derives the publish decisions from normalized grammar structure and previously established semantic facts.
 fn publish_decisions(
     grammar: &GrammarDescription,
-    semantic: &[FirstFacts],
-    first_sequences: &FirstSequenceAnalysis<'_>,
-    decisions: crate::DecisionProducts,
-) -> Result<crate::DecisionProducts, Box<Diagnostic>> {
+    decisions: crate::decision_plan::ConstructedDecisionProducts,
+) -> Result<ValidatedDecisionProducts, Box<Diagnostic>> {
     decisions
-        .validate_with_first_sequences(grammar, semantic, first_sequences)
+        .validate_for_publication(grammar)
         .map_err(|invariant| {
             Box::new(Diagnostic::internal_analysis_invariant(format!(
                 "invalid frozen decision product: {invariant}"
             )))
-        })?;
-    Ok(decisions)
+        })
+        .map(ValidatedDecisionProducts)
 }
 
 /// Identifies one canonical paired residual set and remaining witness depth.
@@ -721,22 +755,24 @@ type DecisionWitnessCacheKey = (Vec<PairedDecisionState>, usize);
 type DecisionWitnessCache = BTreeMap<DecisionWitnessCacheKey, Option<Vec<DecisionWitness>>>;
 
 /// Derives the first sequences for decision sites from normalized grammar structure and previously established semantic facts.
-/// Reuses immutable grammar-wide FIRST support while keeping each root analysis isolated.
+/// Reuses immutable FIRST support and one bounded-language arena throughout an analysis run.
 pub(crate) struct FirstSequenceAnalysis<'a> {
-    /// Grammar analyzed by each root-local arena.
+    /// Grammar analyzed by each bounded-language arena.
     grammar: &'a GrammarDescription,
-    /// Expanded token kinds shared by each root-local arena.
+    /// Expanded token kinds shared by every bounded-language operation.
     atom_kinds: Rc<[KindSet]>,
-    /// Fixed-point end/continuation facts shared by root-local arenas.
+    /// Fixed-point end/continuation facts shared by bounded-language operations.
     decision_summary_facts: Rc<DecisionSummaryFacts>,
-    /// Fixed-point one-position languages shared by root-local arenas.
+    /// Fixed-point one-position languages shared by bounded-language operations.
     decision_cutoff_facts: Rc<DecisionCutoffFacts>,
-    /// Canonical grammar sites shared by root-local arenas.
+    /// Canonical grammar sites shared by bounded-language operations.
     canonical_sites: Rc<[SiteId]>,
     /// Exact paired residual witnesses shared across conflict sites in this analysis run.
     decision_witnesses: RefCell<DecisionWitnessCache>,
     /// Normalized single-side decision frontiers shared across paired witness searches.
     decision_frontiers: RefCell<HashMap<DecisionState, Rc<DecisionFrontier>>>,
+    /// Hash-consed bounded languages shared across separate decision-planning calls.
+    decision_language: RefCell<Option<FirstLanguageArena<'a>>>,
 }
 
 impl<'a> FirstSequenceAnalysis<'a> {
@@ -776,15 +812,74 @@ impl<'a> FirstSequenceAnalysis<'a> {
             canonical_sites,
             decision_witnesses: RefCell::new(BTreeMap::new()),
             decision_frontiers: RefCell::new(HashMap::new()),
+            decision_language: RefCell::new(None),
         }
     }
 
     /// Derives one decision-site root with a fresh root-local arena.
+    #[cfg(test)]
     pub(crate) fn sequences(&self, sites: &[SiteId]) -> Vec<FirstSequence> {
         self.sequences_for_state(DecisionState::from_sites(sites))
     }
 
+    /// Derives decision-site roots in input order through the analysis-run language arena.
+    #[cfg(test)]
+    pub(crate) fn sequences_batch<'sites>(
+        &self,
+        roots: impl IntoIterator<Item = &'sites [SiteId]>,
+    ) -> Vec<Vec<FirstSequence>> {
+        self.sequences_batch_at_depth(roots, self.grammar.max_lookahead)
+    }
+
+    /// Derives only first-position and nullability facts for several decision-site roots.
+    pub(crate) fn first_batch<'sites>(
+        &self,
+        roots: impl IntoIterator<Item = &'sites [SiteId]>,
+    ) -> Vec<Vec<FirstSequence>> {
+        self.sequences_batch_at_depth(roots, self.grammar.max_lookahead.min(1))
+    }
+
+    /// Derives decision-site roots through the shared arena at one bounded depth.
+    pub(crate) fn sequences_batch_at_depth<'sites>(
+        &self,
+        roots: impl IntoIterator<Item = &'sites [SiteId]>,
+        depth: usize,
+    ) -> Vec<Vec<FirstSequence>> {
+        self.state_sequences_batch_at_depth(roots.into_iter().map(DecisionState::from_sites), depth)
+    }
+
+    /// Derives aggregate type roots through the same arena used by decision planning.
+    fn type_sequences_batch(
+        &self,
+        roots: impl IntoIterator<Item = TypeId>,
+    ) -> Vec<Vec<FirstSequence>> {
+        self.state_sequences_batch_at_depth(
+            roots
+                .into_iter()
+                .map(|root| DecisionState(vec![DecisionItem::Type(root)])),
+            self.grammar.max_lookahead,
+        )
+    }
+
+    /// Derives arbitrary semantic roots through the analysis-run language arena.
+    fn state_sequences_batch_at_depth(
+        &self,
+        roots: impl IntoIterator<Item = DecisionState>,
+        depth: usize,
+    ) -> Vec<Vec<FirstSequence>> {
+        let mut cached = self.decision_language.borrow_mut();
+        let language = cached.get_or_insert_with(|| FirstLanguageArena::from_analysis(self));
+        roots
+            .into_iter()
+            .map(|state| {
+                let root = language.build(depth, vec![state]);
+                language.materialize(root)
+            })
+            .collect()
+    }
+
     /// Derives one arbitrary semantic decision-state root with a fresh root-local arena.
+    #[cfg(test)]
     fn sequences_for_state(&self, state: DecisionState) -> Vec<FirstSequence> {
         let mut language = self.language();
         let root = language.build(self.grammar.max_lookahead, vec![state]);
@@ -844,6 +939,7 @@ impl<'a> FirstSequenceAnalysis<'a> {
     }
 
     /// Creates one fresh mutable language arena over shared immutable grammar facts.
+    #[cfg(test)]
     fn language(&self) -> FirstLanguageArena<'a> {
         FirstLanguageArena::from_analysis(self)
     }
@@ -923,6 +1019,21 @@ fn validate(grammar: &GrammarDescription) -> Vec<Diagnostic> {
             grammar.kind_count,
             grammar.kinds.len(),
         )));
+    }
+    for delimiter in &grammar.balanced_delimiters {
+        if delimiter.open == delimiter.close {
+            diagnostics.push(Diagnostic::invalid_grammar(
+                "balanced delimiter must use distinct opening and closing kinds",
+            ));
+        }
+        for (role, kind) in [("opening", delimiter.open), ("closing", delimiter.close)] {
+            if kind.index() >= grammar.kinds.len() {
+                diagnostics.push(Diagnostic::invalid_reference(format!(
+                    "balanced delimiter references missing {role} kind {}",
+                    kind.get(),
+                )));
+            }
+        }
     }
 
     for (index, location) in grammar.locations.iter().enumerate() {
@@ -1375,27 +1486,29 @@ fn first_facts(positions: Vec<FirstPosition>, nullable: bool, kind_count: usize)
 }
 
 /// Populates bounded FIRST sequences after left recursion has been rejected.
-fn populate_first_sequences(
-    grammar: &GrammarDescription,
-    analysis: &FirstSequenceAnalysis<'_>,
-    semantic: &mut [FirstFacts],
-) {
-    let mut language = analysis.language();
-    for (index, facts) in semantic.iter_mut().enumerate() {
+fn populate_first_sequences(analysis: &FirstSequenceAnalysis<'_>, semantic: &mut [FirstFacts]) {
+    let sequences = analysis.type_sequences_batch(
+        (0..semantic.len())
+            .map(|index| TypeId::new(index.try_into().expect("validated type width"))),
+    );
+    for (facts, sequences) in semantic.iter_mut().zip(sequences) {
         #[cfg(test)]
         FIRST_LANGUAGE_AGGREGATE_MATERIALIZATIONS.set(
             FIRST_LANGUAGE_AGGREGATE_MATERIALIZATIONS
                 .get()
                 .saturating_add(1),
         );
-        let root = language.build(
-            grammar.max_lookahead,
-            vec![DecisionState(vec![DecisionItem::Type(TypeId::new(
-                index.try_into().expect("validated type width"),
-            ))])],
-        );
-        facts.sequences = language.materialize(root);
+        facts.sequences = sequences;
     }
+}
+
+/// Materializes complete type FIRST-k rows for semantic reporting on demand.
+pub(crate) fn materialize_type_sequences(grammar: &GrammarDescription) -> Vec<Vec<FirstSequence>> {
+    let analysis = FirstSequenceAnalysis::for_grammar(grammar);
+    analysis.type_sequences_batch(
+        (0..grammar.types.len())
+            .map(|index| TypeId::new(index.try_into().expect("validated type width"))),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1685,7 +1798,7 @@ struct FirstLanguageArena<'a> {
     /// Canonical semantic decision states indexed by dense identity.
     decision_states: Vec<DecisionState>,
     /// Dense identities interned by semantic decision-state value.
-    decision_state_ids: HashMap<DecisionState, FirstLanguageDecisionStateId>,
+    decision_state_ids: HashMap<HashedDecisionState, FirstLanguageDecisionStateId>,
     /// Canonical consuming token positions indexed by dense identity.
     positions: Vec<FirstPosition>,
     /// Dense position identities interned by grammar-local semantic value.
@@ -1825,9 +1938,6 @@ impl<'a> FirstLanguageArena<'a> {
         if remaining == 0 {
             return self.build_cutoff(&residuals);
         }
-        if !self.build_deterministic_cells {
-            return self.build_cover_state(remaining, residuals);
-        }
         if remaining == 1 {
             let mut frontiers = residuals
                 .into_iter()
@@ -1854,6 +1964,9 @@ impl<'a> FirstLanguageArena<'a> {
             components.sort();
             components.dedup();
             return self.build_projected_state(remaining, components);
+        }
+        if !self.build_deterministic_cells {
+            return self.build_cover_state(remaining, residuals);
         }
         let key = FirstLanguageStateKey {
             remaining,
@@ -1898,6 +2011,12 @@ impl<'a> FirstLanguageArena<'a> {
         if let Some(node) = self.states.get(&key) {
             return *node;
         }
+        #[cfg(test)]
+        FIRST_LANGUAGE_FULL_COVER_STATE_BUILDS.set(
+            FIRST_LANGUAGE_FULL_COVER_STATE_BUILDS
+                .get()
+                .saturating_add(1),
+        );
         self.record_state_build(remaining);
         let FirstLanguageStateResiduals::Full(residuals) = &key.residuals else {
             unreachable!("cover-only state retains full residual precision")
@@ -2079,6 +2198,7 @@ impl<'a> FirstLanguageArena<'a> {
     /// Interns one semantic decision state and returns its dense arena identity.
     fn intern_decision_state(&mut self, state: DecisionState) -> FirstLanguageDecisionStateId {
         let state = canonicalize_decision_state(state, &self.canonical_sites);
+        let state = HashedDecisionState::new(state);
         if let Some(id) = self.decision_state_ids.get(&state) {
             return *id;
         }
@@ -2088,7 +2208,7 @@ impl<'a> FirstLanguageArena<'a> {
                 .try_into()
                 .expect("bounded FIRST decision-state identity overflow"),
         );
-        self.decision_states.push(state.clone());
+        self.decision_states.push(state.state.clone());
         self.decision_frontiers.push(None);
         self.depth_two_by_decision.push(None);
         self.cutoff_summaries.push(None);
@@ -3014,10 +3134,10 @@ fn first_language_cells_are_disjoint(
 ) -> bool {
     cells.iter().enumerate().all(|(index, left)| {
         cells[index + 1..].iter().all(|right| {
-            left.kinds
-                .intersection(&right.kinds)
+            !left
+                .kinds
+                .intersects(&right.kinds)
                 .expect("FIRST cells have the grammar width")
-                .is_empty()
                 || !left.text.overlaps(&right.text, grammar.text_equivalence)
         })
     })
@@ -3088,6 +3208,10 @@ thread_local! {
     static FIRST_LANGUAGE_DECISION_STATE_CLONES: Cell<usize> = const { Cell::new(0) };
     /// Counts full semantic decision-state ordering comparisons during bounded FIRST construction.
     static FIRST_LANGUAGE_DECISION_STATE_COMPARISONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts complete semantic decision-state hash computations during bounded FIRST construction.
+    static FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts decision items visited by complete semantic decision-state hash computations.
+    static FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS: Cell<usize> = const { Cell::new(0) };
     /// Counts residual identities rescanned after a cutoff cell has already been partitioned.
     static FIRST_LANGUAGE_CUTOFF_RESIDUAL_VISITS: Cell<usize> = const { Cell::new(0) };
     /// Counts candidate summaries folded while constructing cutoff cells.
@@ -3102,6 +3226,14 @@ thread_local! {
     static FIRST_LANGUAGE_CUTOFF_SUMMARY_COMPUTATIONS: Cell<usize> = const { Cell::new(0) };
     /// Counts normalized consuming transitions materialized by full frontier derivation.
     static FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts complete FOLLOW fact records cloned into provenance propagation snapshots.
+    static PROVENANCED_FOLLOW_SNAPSHOT_FACT_CLONES: Cell<usize> = const { Cell::new(0) };
+    /// Counts position records cloned into provenance propagation snapshots.
+    static PROVENANCED_FOLLOW_SNAPSHOT_POSITION_CLONES: Cell<usize> = const { Cell::new(0) };
+    /// Counts per-kind proof slots cloned into provenance propagation snapshots.
+    static PROVENANCED_FOLLOW_SNAPSHOT_PROOF_SLOT_CLONES: Cell<usize> = const { Cell::new(0) };
+    /// Counts complete type-body evaluations during FIRST provenance construction.
+    static FIRST_PROVENANCE_TYPE_EVALUATIONS: Cell<usize> = const { Cell::new(0) };
     /// Counts full non-consuming closure states visited by decision-frontier traversal.
     static FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS: Cell<usize> = const { Cell::new(0) };
     /// Counts raw decision-state projections into recursively factored tail components.
@@ -3114,6 +3246,12 @@ thread_local! {
     static FIRST_LANGUAGE_NODE_UNION_MISSES: Cell<usize> = const { Cell::new(0) };
     /// Counts grammar-wide per-type FIRST-k publications after successful analysis.
     static FIRST_LANGUAGE_AGGREGATE_MATERIALIZATIONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts canonical sequence comparisons used to deduplicate balanced post-close tails.
+    static BALANCED_TAIL_DEDUP_COMPARISONS: Cell<usize> = const { Cell::new(0) };
+    /// Counts materialized balanced post-close sequence rows before deduplication.
+    static BALANCED_TAIL_MATERIALIZED_ROWS: Cell<usize> = const { Cell::new(0) };
+    /// Counts cover-only nodes that retain full semantic residual identities.
+    static FIRST_LANGUAGE_FULL_COVER_STATE_BUILDS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Interns each wide FIRST position once and returns compact row identities.
@@ -3506,25 +3644,71 @@ fn compute_first_provenance(
         })
         .collect::<Vec<_>>();
 
-    let mut positions = vec![Vec::new(); grammar.types.len()];
-    loop {
-        let previous = positions.clone();
-        for (index, description) in grammar.types.iter().enumerate() {
-            positions[index] = first_for_shape_provenance(
-                TypeId::new(index as u32),
-                description,
-                grammar,
-                semantic,
-                &atom_provenance,
-                &previous,
-                &mut proofs,
-            )
-            .positions;
-        }
-        if positions == previous {
-            break;
+    // Left recursion was rejected before provenance replay, so the FIRST-corner
+    // dependency graph is acyclic. Evaluate every target before its owners once;
+    // replaying the semantic fixed point would rebuild all proof chains for every
+    // dependency-depth round.
+    let dependencies = grammar
+        .types
+        .iter()
+        .enumerate()
+        .map(|(index, description)| {
+            let owner = TypeId::new(index as u32);
+            let mut targets = first_corner_edges(owner, &description.shape, grammar, semantic)
+                .into_iter()
+                .map(|edge| edge.to.index())
+                .collect::<Vec<_>>();
+            targets.sort_unstable();
+            targets.dedup();
+            targets
+        })
+        .collect::<Vec<_>>();
+    let mut dependent_owners = vec![Vec::new(); grammar.types.len()];
+    let mut remaining_dependencies = Vec::with_capacity(grammar.types.len());
+    for (owner, targets) in dependencies.iter().enumerate() {
+        remaining_dependencies.push(targets.len());
+        for target in targets {
+            dependent_owners[*target].push(owner);
         }
     }
+    for owners in &mut dependent_owners {
+        owners.sort_unstable();
+        owners.dedup();
+    }
+    let mut ready = remaining_dependencies
+        .iter()
+        .enumerate()
+        .filter_map(|(index, remaining)| (*remaining == 0).then_some(index))
+        .collect::<BTreeSet<_>>();
+    let mut positions = vec![Vec::new(); grammar.types.len()];
+    let mut evaluated = 0_usize;
+    while let Some(index) = ready.pop_first() {
+        #[cfg(test)]
+        FIRST_PROVENANCE_TYPE_EVALUATIONS
+            .set(FIRST_PROVENANCE_TYPE_EVALUATIONS.get().saturating_add(1));
+        positions[index] = first_for_shape_provenance(
+            TypeId::new(index as u32),
+            &grammar.types[index],
+            grammar,
+            semantic,
+            &atom_provenance,
+            &positions,
+            &mut proofs,
+        )
+        .positions;
+        evaluated += 1;
+        for owner in dependent_owners[index].iter().copied() {
+            remaining_dependencies[owner] -= 1;
+            if remaining_dependencies[owner] == 0 {
+                ready.insert(owner);
+            }
+        }
+    }
+    assert_eq!(
+        evaluated,
+        grammar.types.len(),
+        "FIRST provenance requires the already-validated acyclic FIRST-corner graph",
+    );
 
     for (type_id, (semantic, provenanced)) in semantic.iter().zip(&positions).enumerate() {
         assert_eq!(
@@ -3541,6 +3725,316 @@ fn compute_first_provenance(
         }
     }
     (proofs, positions)
+}
+
+#[cfg(test)]
+mod first_provenance_tests {
+    use super::*;
+
+    /// Adds one deterministic declaration and source span to a unit-test grammar.
+    fn declaration(
+        grammar: &mut GrammarDescription,
+        next_byte: &mut u32,
+        name: &str,
+    ) -> crate::DeclId {
+        let start = *next_byte;
+        *next_byte += 2;
+        let location =
+            grammar.push_location(Location::new(crate::SourceId::new(0), start..start + 1));
+        grammar.push_declaration(crate::Declaration::new(name, location))
+    }
+
+    /// Replays the former whole-grammar Jacobi loop as a proof-semantic oracle.
+    fn compute_first_provenance_jacobi(
+        grammar: &GrammarDescription,
+        semantic: &[FirstFacts],
+    ) -> (ProofArena, Vec<Vec<ProvenancedPosition>>) {
+        let mut proofs = ProofArena::with_source_order(declaration_source_order(grammar));
+        let mut atom_cache = vec![None; grammar.atoms.len()];
+        let atom_provenance = (0..grammar.atoms.len())
+            .map(|index| {
+                expand_atom_provenance(
+                    AtomId::new(index as u32),
+                    grammar,
+                    &mut atom_cache,
+                    &mut proofs,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut positions = vec![Vec::new(); grammar.types.len()];
+        loop {
+            let previous = positions.clone();
+            for (index, description) in grammar.types.iter().enumerate() {
+                positions[index] = first_for_shape_provenance(
+                    TypeId::new(index as u32),
+                    description,
+                    grammar,
+                    semantic,
+                    &atom_provenance,
+                    &previous,
+                    &mut proofs,
+                )
+                .positions;
+            }
+            if positions == previous {
+                break;
+            }
+        }
+        (proofs, positions)
+    }
+
+    /// Compares observable proof-step chains while ignoring transient arena identities.
+    fn assert_same_first_proof_chains(
+        left_proofs: &ProofArena,
+        left: &[Vec<ProvenancedPosition>],
+        right_proofs: &ProofArena,
+        right: &[Vec<ProvenancedPosition>],
+    ) {
+        assert_eq!(left.len(), right.len());
+        for (type_index, (left_positions, right_positions)) in left.iter().zip(right).enumerate() {
+            assert_eq!(
+                left_positions.len(),
+                right_positions.len(),
+                "type {type_index} retained different FIRST positions",
+            );
+            for (position_index, (left_position, right_position)) in
+                left_positions.iter().zip(right_positions).enumerate()
+            {
+                assert_eq!(
+                    left_position.text_predicate, right_position.text_predicate,
+                    "type {type_index} position {position_index} retained a different predicate",
+                );
+                assert_eq!(
+                    left_position.kinds.kinds(),
+                    right_position.kinds.kinds(),
+                    "type {type_index} position {position_index} retained different kinds",
+                );
+                for kind in left_position.kinds.kinds().iter() {
+                    let left_chain = left_proofs
+                        .chain(
+                            left_position
+                                .kinds
+                                .proof(kind)
+                                .expect("left FIRST kind has a proof"),
+                        )
+                        .map(|node| node.step.clone())
+                        .collect::<Vec<_>>();
+                    let right_chain = right_proofs
+                        .chain(
+                            right_position
+                                .kinds
+                                .proof(kind)
+                                .expect("right FIRST kind has a proof"),
+                        )
+                        .map(|node| node.step.clone())
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        left_chain,
+                        right_chain,
+                        "type {type_index} position {position_index} kind {} retained a different proof chain",
+                        kind.get(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn acyclic_first_provenance_evaluates_each_type_once() {
+        const TYPE_COUNT: usize = 48;
+        let mut grammar =
+            GrammarDescription::new("acyclic-first-provenance", 1, 1, TextEquivalence::Sensitive);
+        let mut next_byte = 0;
+        for index in 0..TYPE_COUNT - 1 {
+            let owner = TypeId::new(index.try_into().expect("test type identity width"));
+            let target = TypeId::new((index + 1).try_into().expect("test type identity width"));
+            let site_declaration = declaration(
+                &mut grammar,
+                &mut next_byte,
+                &format!("Type{index}::target"),
+            );
+            let site = grammar.push_site(crate::ParseSite::new(
+                owner,
+                target,
+                site_declaration,
+                crate::ContainerShape::Direct,
+            ));
+            let type_declaration =
+                declaration(&mut grammar, &mut next_byte, &format!("Type{index}"));
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    format!("Type{index}"),
+                    type_declaration,
+                    TypeShape::Alias { site },
+                )),
+                owner,
+            );
+        }
+        let token_index = TYPE_COUNT - 1;
+        let token_declaration =
+            declaration(&mut grammar, &mut next_byte, &format!("Type{token_index}"));
+        let kind = grammar.push_kind(crate::KindDescription::new("TOKEN", token_declaration));
+        let atom = grammar.push_atom(crate::AtomDescription::new(
+            "TOKEN",
+            token_declaration,
+            AtomExpression::Kind(kind),
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                format!("Type{token_index}"),
+                token_declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            )),
+            TypeId::new(token_index.try_into().expect("test type identity width")),
+        );
+
+        let semantic = compute_first(&grammar, &expand_atoms(&grammar));
+        assert!(detect_left_recursion(&grammar, &semantic).is_empty());
+        FIRST_PROVENANCE_TYPE_EVALUATIONS.set(0);
+
+        let (_, positions) = compute_first_provenance(&grammar, &semantic);
+
+        assert!(positions.iter().all(|positions| !positions.is_empty()));
+        assert_eq!(
+            FIRST_PROVENANCE_TYPE_EVALUATIONS.get(),
+            TYPE_COUNT,
+            "acyclic provenance must evaluate each type exactly once",
+        );
+    }
+
+    #[test]
+    fn topological_first_provenance_matches_jacobi_proof_chains() {
+        let mut grammar = GrammarDescription::new(
+            "topological-first-provenance-equivalence",
+            1,
+            1,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let root = TypeId::new(0);
+        let sequence = TypeId::new(1);
+        let early_alias = TypeId::new(2);
+        let late_alias = TypeId::new(3);
+        let token = TypeId::new(4);
+
+        let root_declaration = declaration(&mut grammar, &mut next_byte, "Root");
+        let early_alternative = declaration(&mut grammar, &mut next_byte, "Root::Early");
+        let early_site = grammar.push_site(crate::ParseSite::new(
+            root,
+            early_alias,
+            early_alternative,
+            crate::ContainerShape::Direct,
+        ));
+        let late_alternative = declaration(&mut grammar, &mut next_byte, "Root::Late");
+        let late_site = grammar.push_site(crate::ParseSite::new(
+            root,
+            late_alias,
+            late_alternative,
+            crate::ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Root",
+                root_declaration,
+                TypeShape::Enum {
+                    // Deliberately oppose storage order and declaration source order.
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: late_alternative,
+                            sites: vec![late_site],
+                        },
+                        crate::Alternative {
+                            declaration: early_alternative,
+                            sites: vec![early_site],
+                        },
+                    ],
+                },
+            )),
+            root,
+        );
+
+        let sequence_declaration = declaration(&mut grammar, &mut next_byte, "Sequence");
+        let optional_declaration = declaration(&mut grammar, &mut next_byte, "Sequence::optional");
+        let optional = grammar.push_site(crate::ParseSite::new(
+            sequence,
+            early_alias,
+            optional_declaration,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+        ));
+        let required_declaration = declaration(&mut grammar, &mut next_byte, "Sequence::required");
+        let required = grammar.push_site(crate::ParseSite::new(
+            sequence,
+            token,
+            required_declaration,
+            crate::ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Sequence",
+                sequence_declaration,
+                TypeShape::Sequence {
+                    sites: vec![optional, required],
+                },
+            )),
+            sequence,
+        );
+
+        for (alias, name) in [(early_alias, "EarlyAlias"), (late_alias, "LateAlias")] {
+            let alias_declaration = declaration(&mut grammar, &mut next_byte, name);
+            let site_declaration =
+                declaration(&mut grammar, &mut next_byte, &format!("{name}::value"));
+            let site = grammar.push_site(crate::ParseSite::new(
+                alias,
+                token,
+                site_declaration,
+                crate::ContainerShape::Direct,
+            ));
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    alias_declaration,
+                    TypeShape::Alias { site },
+                )),
+                alias,
+            );
+        }
+
+        let token_declaration = declaration(&mut grammar, &mut next_byte, "Token");
+        let kind = grammar.push_kind(crate::KindDescription::new("TOKEN", token_declaration));
+        let atom = grammar.push_atom(crate::AtomDescription::new(
+            "TOKEN",
+            token_declaration,
+            AtomExpression::Kind(kind),
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Token",
+                token_declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            )),
+            token,
+        );
+
+        let semantic = compute_first(&grammar, &expand_atoms(&grammar));
+        assert!(detect_left_recursion(&grammar, &semantic).is_empty());
+        let (jacobi_proofs, jacobi_positions) =
+            compute_first_provenance_jacobi(&grammar, &semantic);
+        let (topological_proofs, topological_positions) =
+            compute_first_provenance(&grammar, &semantic);
+
+        assert_same_first_proof_chains(
+            &jacobi_proofs,
+            &jacobi_positions,
+            &topological_proofs,
+            &topological_positions,
+        );
+    }
 }
 
 /// Derives the declaration source order from normalized grammar structure and previously established semantic facts.
@@ -3908,6 +4402,38 @@ struct FollowEdge {
     declaration: crate::DeclId,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Internal and outgoing FOLLOW edges owned by one strongly connected component.
+struct FollowComponentEdges {
+    /// Edges whose source and target belong to this component.
+    internal: Vec<FollowEdge>,
+    /// Edges whose source belongs here and target belongs to a later component.
+    outgoing: Vec<FollowEdge>,
+}
+
+/// Partitions canonical FOLLOW edges once instead of rescanning them for every component round.
+fn follow_edges_by_component(
+    edges: &[FollowEdge],
+    component_of: &[usize],
+) -> Vec<FollowComponentEdges> {
+    let component_count = component_of
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |maximum| maximum + 1);
+    let mut by_component = vec![FollowComponentEdges::default(); component_count];
+    for edge in edges {
+        let from = component_of[edge.from.index()];
+        let target = if component_of[edge.to.index()] == from {
+            &mut by_component[from].internal
+        } else {
+            &mut by_component[from].outgoing
+        };
+        target.push(*edge);
+    }
+    by_component
+}
+
 /// Derives the site sequences from normalized grammar structure and previously established semantic facts.
 fn site_sequences<'a>(shape: &'a TypeShape, grammar: &GrammarDescription) -> Vec<&'a [SiteId]> {
     let mut sequences = match shape {
@@ -4182,46 +4708,78 @@ fn propagate_semantic_follow(
     by_site: &mut [SemanticFollow],
 ) {
     let (components, component_of) = follow_component_order(by_type.len(), edges);
+    let edges_by_component = follow_edges_by_component(edges, &component_of);
+    let mut local_index = vec![usize::MAX; by_type.len()];
     for component in components {
         let component_id = component_of[component[0]];
-        loop {
-            let previous = by_type.to_vec();
-            for edge in edges.iter().filter(|edge| {
-                component_of[edge.from.index()] == component_id
-                    && component_of[edge.to.index()] == component_id
-            }) {
-                apply_semantic_follow_edge(*edge, &previous, by_type, by_site);
-            }
-            if component
-                .iter()
-                .all(|member| by_type[*member] == previous[*member])
-            {
-                break;
+        let component_edges = &edges_by_component[component_id];
+        for (local, member) in component.iter().copied().enumerate() {
+            local_index[member] = local;
+        }
+        if !component_edges.internal.is_empty() {
+            loop {
+                let previous = component
+                    .iter()
+                    .map(|member| by_type[*member].clone())
+                    .collect::<Vec<_>>();
+                for edge in &component_edges.internal {
+                    apply_semantic_follow_source(
+                        *edge,
+                        &previous[local_index[edge.from.index()]],
+                        &mut by_type[edge.to.index()],
+                        by_site,
+                    );
+                }
+                if component
+                    .iter()
+                    .enumerate()
+                    .all(|(local, member)| by_type[*member] == previous[local])
+                {
+                    break;
+                }
             }
         }
-        let previous = by_type.to_vec();
-        for edge in edges.iter().filter(|edge| {
-            component_of[edge.from.index()] == component_id
-                && component_of[edge.to.index()] != component_id
-        }) {
-            apply_semantic_follow_edge(*edge, &previous, by_type, by_site);
+        for edge in &component_edges.outgoing {
+            apply_current_semantic_follow_edge(*edge, by_type, by_site);
         }
     }
 }
 
-/// Applies semantic follow edge.
-fn apply_semantic_follow_edge(
+/// Applies one semantic FOLLOW edge from an explicit immutable source fact.
+fn apply_semantic_follow_source(
     edge: FollowEdge,
-    source_facts: &[SemanticFollow],
-    by_type: &mut [SemanticFollow],
+    source: &SemanticFollow,
+    target: &mut SemanticFollow,
     by_site: &mut [SemanticFollow],
 ) {
-    let source = &source_facts[edge.from.index()];
-    by_type[edge.to.index()].kinds.union_assign(&source.kinds);
-    by_type[edge.to.index()].eof |= source.eof;
+    target.kinds.union_assign(&source.kinds);
+    target.eof |= source.eof;
     if let Some(site) = edge.site {
         by_site[site.index()].kinds.union_assign(&source.kinds);
         by_site[site.index()].eof |= source.eof;
+    }
+}
+
+/// Applies one cross-component semantic edge without cloning its completed source fact.
+fn apply_current_semantic_follow_edge(
+    edge: FollowEdge,
+    by_type: &mut [SemanticFollow],
+    by_site: &mut [SemanticFollow],
+) {
+    let from = edge.from.index();
+    let to = edge.to.index();
+    debug_assert_ne!(from, to);
+    if from < to {
+        let (before_target, target_and_after) = by_type.split_at_mut(to);
+        apply_semantic_follow_source(
+            edge,
+            &before_target[from],
+            &mut target_and_after[0],
+            by_site,
+        );
+    } else {
+        let (before_source, source_and_after) = by_type.split_at_mut(from);
+        apply_semantic_follow_source(edge, &source_and_after[0], &mut before_source[to], by_site);
     }
 }
 
@@ -4447,42 +5005,176 @@ fn propagate_provenanced_follow(
     proofs: &mut ProofArena,
 ) {
     let (components, component_of) = follow_component_order(by_type.len(), edges);
+    let edges_by_component = follow_edges_by_component(edges, &component_of);
+    let mut local_index = vec![usize::MAX; by_type.len()];
     for component in components {
         let component_id = component_of[component[0]];
-        loop {
-            let previous = by_type.to_vec();
-            for edge in edges.iter().filter(|edge| {
-                component_of[edge.from.index()] == component_id
-                    && component_of[edge.to.index()] == component_id
-            }) {
-                apply_provenanced_follow_edge(*edge, &previous, by_type, by_site, proofs);
-            }
-            if component
-                .iter()
-                .all(|member| by_type[*member] == previous[*member])
-            {
-                break;
+        let component_edges = &edges_by_component[component_id];
+        for (local, member) in component.iter().copied().enumerate() {
+            local_index[member] = local;
+        }
+        if !component_edges.internal.is_empty() {
+            loop {
+                let previous = provenanced_follow_snapshot(
+                    &component
+                        .iter()
+                        .map(|member| &by_type[*member])
+                        .collect::<Vec<_>>(),
+                );
+                for edge in &component_edges.internal {
+                    apply_provenanced_follow_source(
+                        *edge,
+                        &previous[local_index[edge.from.index()]],
+                        &mut by_type[edge.to.index()],
+                        by_site,
+                        proofs,
+                    );
+                }
+                if component
+                    .iter()
+                    .enumerate()
+                    .all(|(local, member)| by_type[*member] == previous[local])
+                {
+                    break;
+                }
             }
         }
-        let previous = by_type.to_vec();
-        for edge in edges.iter().filter(|edge| {
-            component_of[edge.from.index()] == component_id
-                && component_of[edge.to.index()] != component_id
-        }) {
-            apply_provenanced_follow_edge(*edge, &previous, by_type, by_site, proofs);
+        for edge in &component_edges.outgoing {
+            apply_current_provenanced_follow_edge(*edge, by_type, by_site, proofs);
         }
     }
 }
 
-/// Applies provenanced follow edge.
-fn apply_provenanced_follow_edge(
+/// Clones one provenance FOLLOW snapshot while exposing deterministic test work counters.
+fn provenanced_follow_snapshot(by_type: &[&ProvenancedFollow]) -> Vec<ProvenancedFollow> {
+    #[cfg(test)]
+    {
+        PROVENANCED_FOLLOW_SNAPSHOT_FACT_CLONES.set(
+            PROVENANCED_FOLLOW_SNAPSHOT_FACT_CLONES
+                .get()
+                .saturating_add(by_type.len()),
+        );
+        let positions = by_type
+            .iter()
+            .map(|follow| follow.positions.len())
+            .sum::<usize>();
+        PROVENANCED_FOLLOW_SNAPSHOT_POSITION_CLONES.set(
+            PROVENANCED_FOLLOW_SNAPSHOT_POSITION_CLONES
+                .get()
+                .saturating_add(positions),
+        );
+        let proof_slots = by_type
+            .iter()
+            .flat_map(|follow| &follow.positions)
+            .map(|position| position.kinds.kinds().kind_count())
+            .sum::<usize>();
+        PROVENANCED_FOLLOW_SNAPSHOT_PROOF_SLOT_CLONES.set(
+            PROVENANCED_FOLLOW_SNAPSHOT_PROOF_SLOT_CLONES
+                .get()
+                .saturating_add(proof_slots),
+        );
+    }
+    by_type.iter().map(|follow| (*follow).clone()).collect()
+}
+
+#[cfg(test)]
+mod follow_propagation_tests {
+    use super::*;
+
+    #[test]
+    fn fanout_after_a_follow_cycle_clones_only_component_local_provenance() {
+        const CYCLE_TYPES: usize = 3;
+        const LEAF_TYPES: usize = 32;
+        const POSITION_COUNT: usize = 4;
+        const KIND_COUNT: usize = 64;
+        let declaration = crate::DeclId::new(0);
+        let mut proofs = ProofArena::with_source_order(vec![0]);
+        let mut seed_positions = Vec::new();
+        for index in 0..POSITION_COUNT {
+            let kind = KindId::new(0);
+            let proof = proofs.intern(
+                None,
+                ProvenanceStep::DirectDeclaration {
+                    atom: AtomId::new(index.try_into().expect("test atom identity width")),
+                    kind,
+                    declaration,
+                },
+            );
+            let mut kinds = ProvenancedKindSet::empty(KIND_COUNT);
+            kinds.insert(kind, proof, &proofs);
+            seed_positions.push(ProvenancedPosition {
+                kinds,
+                text_predicate: Some(TextPredicateId::new(
+                    index.try_into().expect("test predicate identity width"),
+                )),
+            });
+        }
+        let type_count = CYCLE_TYPES + LEAF_TYPES;
+        let mut by_type = vec![empty_provenanced_follow(); type_count];
+        by_type[0].positions = seed_positions;
+        let mut edges = (0..CYCLE_TYPES)
+            .map(|index| FollowEdge {
+                from: TypeId::new(index.try_into().expect("test type identity width")),
+                to: TypeId::new(
+                    ((index + 1) % CYCLE_TYPES)
+                        .try_into()
+                        .expect("test type identity width"),
+                ),
+                site: None,
+                declaration,
+            })
+            .collect::<Vec<_>>();
+        edges.extend((CYCLE_TYPES..type_count).map(|index| {
+            FollowEdge {
+                from: TypeId::new(
+                    (CYCLE_TYPES - 1)
+                        .try_into()
+                        .expect("test type identity width"),
+                ),
+                to: TypeId::new(index.try_into().expect("test type identity width")),
+                site: None,
+                declaration,
+            }
+        }));
+        edges.sort_unstable();
+        PROVENANCED_FOLLOW_SNAPSHOT_FACT_CLONES.set(0);
+        PROVENANCED_FOLLOW_SNAPSHOT_POSITION_CLONES.set(0);
+        PROVENANCED_FOLLOW_SNAPSHOT_PROOF_SLOT_CLONES.set(0);
+
+        propagate_provenanced_follow(&edges, &mut by_type, &mut [], &mut proofs);
+
+        assert!(
+            by_type
+                .iter()
+                .all(|follow| follow.positions.len() == POSITION_COUNT),
+            "every cyclic and fanout target must receive every provenanced position",
+        );
+        let fact_clones = PROVENANCED_FOLLOW_SNAPSHOT_FACT_CLONES.get();
+        let position_clones = PROVENANCED_FOLLOW_SNAPSHOT_POSITION_CLONES.get();
+        let proof_slot_clones = PROVENANCED_FOLLOW_SNAPSHOT_PROOF_SLOT_CLONES.get();
+        assert_eq!(
+            fact_clones, 9,
+            "only the three cyclic members are snapshotted"
+        );
+        assert_eq!(
+            position_clones, 24,
+            "three synchronous cycle rounds clone only accumulated component positions",
+        );
+        assert_eq!(
+            proof_slot_clones, 1_536,
+            "proof-array cloning is bounded by cyclic component positions and kind width",
+        );
+    }
+}
+
+/// Applies one provenanced FOLLOW edge from an explicit immutable source fact.
+fn apply_provenanced_follow_source(
     edge: FollowEdge,
-    source_facts: &[ProvenancedFollow],
-    by_type: &mut [ProvenancedFollow],
+    source: &ProvenancedFollow,
+    target: &mut ProvenancedFollow,
     by_site: &mut [ProvenancedFollow],
     proofs: &mut ProofArena,
 ) {
-    let source = &source_facts[edge.from.index()];
     let propagated = wrap_follow_positions(
         &source.positions,
         |_, _| ProvenanceStep::FollowPropagation {
@@ -4493,7 +5185,7 @@ fn apply_provenanced_follow_edge(
         },
         proofs,
     );
-    merge_provenanced_positions(&mut by_type[edge.to.index()].positions, &propagated, proofs);
+    merge_provenanced_positions(&mut target.positions, &propagated, proofs);
     if let Some(site) = edge.site {
         merge_provenanced_positions(&mut by_site[site.index()].positions, &propagated, proofs);
     }
@@ -4507,10 +5199,41 @@ fn apply_provenanced_follow_edge(
                 declaration: edge.declaration,
             },
         );
-        merge_eof_proof(&mut by_type[edge.to.index()].eof_proof, proof, proofs);
+        merge_eof_proof(&mut target.eof_proof, proof, proofs);
         if let Some(site) = edge.site {
             merge_eof_proof(&mut by_site[site.index()].eof_proof, proof, proofs);
         }
+    }
+}
+
+/// Applies one cross-component provenanced edge without cloning its completed source fact.
+fn apply_current_provenanced_follow_edge(
+    edge: FollowEdge,
+    by_type: &mut [ProvenancedFollow],
+    by_site: &mut [ProvenancedFollow],
+    proofs: &mut ProofArena,
+) {
+    let from = edge.from.index();
+    let to = edge.to.index();
+    debug_assert_ne!(from, to);
+    if from < to {
+        let (before_target, target_and_after) = by_type.split_at_mut(to);
+        apply_provenanced_follow_source(
+            edge,
+            &before_target[from],
+            &mut target_and_after[0],
+            by_site,
+            proofs,
+        );
+    } else {
+        let (before_source, source_and_after) = by_type.split_at_mut(from);
+        apply_provenanced_follow_source(
+            edge,
+            &source_and_after[0],
+            &mut before_source[to],
+            by_site,
+            proofs,
+        );
     }
 }
 
@@ -4714,7 +5437,55 @@ impl PartialOrd for DecisionState {
 
 impl std::hash::Hash for DecisionState {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        #[cfg(test)]
+        {
+            FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.set(
+                FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS
+                    .get()
+                    .saturating_add(1),
+            );
+            FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.set(
+                FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS
+                    .get()
+                    .saturating_add(self.0.len()),
+            );
+        }
         std::hash::Hash::hash(&self.0, state);
+    }
+}
+
+#[derive(Clone, Debug)]
+/// Hash-table key for one exact decision state with its full-vector hash computed once.
+struct HashedDecisionState {
+    /// Exact residual stack retained for collision-safe equality.
+    state: DecisionState,
+    /// Cached full-stack hash used by every closure-table operation and rehash.
+    hash: u64,
+}
+
+impl HashedDecisionState {
+    /// Computes the full residual-stack hash once before the state enters a hash table.
+    fn new(state: DecisionState) -> Self {
+        let mut hasher = DefaultHasher::new();
+        state.hash(&mut hasher);
+        Self {
+            state,
+            hash: hasher.finish(),
+        }
+    }
+}
+
+impl PartialEq for HashedDecisionState {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash && self.state == other.state
+    }
+}
+
+impl Eq for HashedDecisionState {}
+
+impl std::hash::Hash for HashedDecisionState {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.hash.hash(state);
     }
 }
 
@@ -5564,6 +6335,26 @@ struct DecisionOutcome {
     end_of_alternative: bool,
 }
 
+#[derive(Clone, Debug)]
+/// One enum branch's residual language after a structurally matched delimiter closes.
+pub(crate) struct BalancedDispatchBranch {
+    /// Declaration selected by this residual language.
+    pub(crate) declaration: crate::DeclId,
+    /// Bounded residual prefixes consumed by the ordinary frozen dispatch machinery.
+    pub(crate) sequences: Vec<FirstSequence>,
+}
+
+#[derive(Clone, Debug)]
+/// A proven balanced-delimiter cut through an otherwise unbounded enum decision.
+pub(crate) struct BalancedDispatchResolution {
+    /// Fixed opening token kind that starts the structural scan.
+    pub(crate) open: KindId,
+    /// Fixed closing token kind that ends the structural scan at nesting depth zero.
+    pub(crate) close: KindId,
+    /// Branch languages beginning immediately after the matching close.
+    pub(crate) branches: Vec<BalancedDispatchBranch>,
+}
+
 /// Distinguishes a proven unbounded shared prefix from a finite decision product.
 enum DecisionProduct {
     /// A canonical back-edge proves that no finite lookahead separates the languages.
@@ -5683,6 +6474,709 @@ impl BoundedDecisionWitness {
     /// Reports that exact configured-depth languages have no shared prefix.
     fn is_disjoint(&self) -> bool {
         matches!(self, Self::Exact(None))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Classifies a normalized token type relative to one balanced delimiter pair.
+enum DelimiterRole {
+    /// The token opens one nested region.
+    Open,
+    /// The token closes one nested region.
+    Close,
+}
+
+/// Returns the target of one required, unseparated parse site.
+fn required_unseparated_target(site_id: SiteId, grammar: &GrammarDescription) -> Option<TypeId> {
+    let site = &grammar.sites[site_id.index()];
+    let semantics = container_semantics(site);
+    (semantics.cardinality == ContainerCardinality::One && semantics.separator.is_none())
+        .then_some(site.target)
+}
+
+/// Infers normalized types that transparently emit exactly one delimiter token.
+///
+/// Semantic marker wrappers are common around punctuation tokens. Treating only
+/// `TypeShape::Token` as a delimiter loses that authored structure and can make
+/// an otherwise balanced recursive language appear unbalanced. This least
+/// fixed point deliberately recognizes only transparent, required, unseparated
+/// wrappers, so optional/repeated or token-producing structure remains outside
+/// the structural-dispatch proof.
+fn delimiter_roles_for_types(
+    delimiter: crate::BalancedDelimiter,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+) -> Vec<Option<DelimiterRole>> {
+    fn transparent_site_role(
+        site_id: SiteId,
+        grammar: &GrammarDescription,
+        roles: &[Option<DelimiterRole>],
+    ) -> Option<DelimiterRole> {
+        let target = required_unseparated_target(site_id, grammar)?;
+        roles[target.index()]
+    }
+
+    fn transparent_sites_role(
+        sites: &[SiteId],
+        grammar: &GrammarDescription,
+        roles: &[Option<DelimiterRole>],
+    ) -> Option<DelimiterRole> {
+        let [site] = sites else {
+            return None;
+        };
+        transparent_site_role(*site, grammar, roles)
+    }
+
+    let mut roles = grammar
+        .types
+        .iter()
+        .map(|description| {
+            let TypeShape::Token {
+                atom,
+                text_predicate,
+            } = &description.shape
+            else {
+                return None;
+            };
+            if text_predicate.is_some() {
+                return None;
+            }
+            let kinds = &atom_kinds[atom.index()];
+            if kinds.iter().eq([delimiter.open]) {
+                Some(DelimiterRole::Open)
+            } else if kinds.iter().eq([delimiter.close]) {
+                Some(DelimiterRole::Close)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    loop {
+        let next = grammar
+            .types
+            .iter()
+            .enumerate()
+            .map(|(index, description)| {
+                roles[index].or_else(|| match &description.shape {
+                    TypeShape::Token { .. } => None,
+                    TypeShape::Alias { site } => transparent_site_role(*site, grammar, &roles),
+                    TypeShape::Sequence { sites } => transparent_sites_role(sites, grammar, &roles),
+                    TypeShape::Enum { alternatives } => {
+                        let mut alternatives = alternatives.iter();
+                        let first =
+                            transparent_sites_role(&alternatives.next()?.sites, grammar, &roles)?;
+                        alternatives
+                            .all(|alternative| {
+                                transparent_sites_role(&alternative.sites, grammar, &roles)
+                                    == Some(first)
+                            })
+                            .then_some(first)
+                    }
+                    // Pratt infix/postfix variants can repeat after the atom, so even
+                    // syntactically identical one-token variants do not prove that the
+                    // complete Pratt language emits exactly one delimiter.
+                    TypeShape::Pratt { .. } => None,
+                })
+            })
+            .collect::<Vec<_>>();
+        if next == roles {
+            return next;
+        }
+        roles = next;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Canonical unmatched delimiter prefix/suffix after reducing one token sequence.
+struct DelimiterEffect {
+    /// Closing delimiters that precede any matching opener in the sequence.
+    closes: usize,
+    /// Opening delimiters left unmatched at the end of the sequence.
+    opens: usize,
+}
+
+impl DelimiterEffect {
+    /// The balanced delimiter effect.
+    const BALANCED: Self = Self {
+        closes: 0,
+        opens: 0,
+    };
+
+    /// Composes two canonical effects in source order.
+    fn then(self, right: Self) -> Option<Self> {
+        let cancelled = self.opens.min(right.closes);
+        Some(Self {
+            closes: self
+                .closes
+                .checked_add(right.closes.checked_sub(cancelled)?)?,
+            opens: self
+                .opens
+                .checked_sub(cancelled)?
+                .checked_add(right.opens)?,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Finite least-fixed-point fact for one normalized delimiter language.
+enum DelimiterEffectSummary {
+    /// No productive derivation has been discovered.
+    Empty,
+    /// Every discovered derivation has this one exact reduced effect.
+    Exact(DelimiterEffect),
+    /// Multiple or conservatively unsupported effects are possible.
+    Unknown,
+}
+
+impl DelimiterEffectSummary {
+    /// Unions effects from alternative derivations without losing soundness.
+    fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Empty, other) | (other, Self::Empty) => other,
+            (Self::Exact(left), Self::Exact(right)) if left == right => Self::Exact(left),
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Concatenates two effect languages conservatively.
+    fn then(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Empty, _) | (_, Self::Empty) => Self::Empty,
+            (Self::Exact(left), Self::Exact(right)) => {
+                left.then(right).map_or(Self::Unknown, Self::Exact)
+            }
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Derives exact reduced delimiter effects through normalized semantic wrappers.
+fn delimiter_effects_for_types(
+    delimiter: crate::BalancedDelimiter,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+) -> Vec<DelimiterEffectSummary> {
+    fn site_effect(
+        site_id: SiteId,
+        grammar: &GrammarDescription,
+        effects: &[DelimiterEffectSummary],
+    ) -> DelimiterEffectSummary {
+        let site = &grammar.sites[site_id.index()];
+        let semantics = container_semantics(site);
+        let target = effects[site.target.index()];
+        let separator = semantics
+            .separator
+            .map_or(DelimiterEffectSummary::Empty, |separator| {
+                effects[separator.type_id.index()]
+            });
+        match semantics.cardinality {
+            ContainerCardinality::One => target,
+            ContainerCardinality::Optional => match target {
+                DelimiterEffectSummary::Empty
+                | DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED) => {
+                    DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED)
+                }
+                DelimiterEffectSummary::Exact(_) | DelimiterEffectSummary::Unknown => {
+                    DelimiterEffectSummary::Unknown
+                }
+            },
+            ContainerCardinality::ZeroOrMore
+            | ContainerCardinality::OneOrMore
+            | ContainerCardinality::OptionalOneOrMore => match target {
+                DelimiterEffectSummary::Empty => match semantics.cardinality {
+                    ContainerCardinality::OneOrMore => DelimiterEffectSummary::Empty,
+                    _ => DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+                },
+                DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED)
+                    if matches!(
+                        separator,
+                        DelimiterEffectSummary::Empty
+                            | DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED)
+                    ) =>
+                {
+                    DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED)
+                }
+                // Repetition can change every nonzero effect with its length. A
+                // richer closure analysis could recover special idempotent cases,
+                // but treating them as unknown keeps this authority conservative.
+                DelimiterEffectSummary::Exact(_) | DelimiterEffectSummary::Unknown => {
+                    DelimiterEffectSummary::Unknown
+                }
+            },
+        }
+    }
+
+    fn sites_effect(
+        sites: &[SiteId],
+        grammar: &GrammarDescription,
+        effects: &[DelimiterEffectSummary],
+    ) -> DelimiterEffectSummary {
+        sites.iter().fold(
+            DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+            |effect, site| effect.then(site_effect(*site, grammar, effects)),
+        )
+    }
+
+    let mut effects = vec![DelimiterEffectSummary::Empty; grammar.types.len()];
+    let mut rounds = 0usize;
+    loop {
+        rounds += 1;
+        let derived = grammar
+            .types
+            .iter()
+            .map(|description| match &description.shape {
+                TypeShape::Token {
+                    atom,
+                    text_predicate,
+                } => {
+                    let kinds = &atom_kinds[atom.index()];
+                    if !decision_token_is_viable(*atom, *text_predicate, grammar, atom_kinds) {
+                        return DelimiterEffectSummary::Empty;
+                    }
+                    match (
+                        kinds.contains(delimiter.open),
+                        kinds.contains(delimiter.close),
+                    ) {
+                        (false, false) => DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+                        (true, false) if kinds.iter().eq([delimiter.open]) => {
+                            DelimiterEffectSummary::Exact(DelimiterEffect {
+                                closes: 0,
+                                opens: 1,
+                            })
+                        }
+                        (false, true) if kinds.iter().eq([delimiter.close]) => {
+                            DelimiterEffectSummary::Exact(DelimiterEffect {
+                                closes: 1,
+                                opens: 0,
+                            })
+                        }
+                        _ => DelimiterEffectSummary::Unknown,
+                    }
+                }
+                TypeShape::Alias { site } => site_effect(*site, grammar, &effects),
+                TypeShape::Sequence { sites } => sites_effect(sites, grammar, &effects),
+                TypeShape::Enum { alternatives } => alternatives.iter().fold(
+                    DelimiterEffectSummary::Empty,
+                    |effect, alternative| {
+                        effect.union(sites_effect(&alternative.sites, grammar, &effects))
+                    },
+                ),
+                TypeShape::Pratt { variants } => {
+                    // A Pratt language is NUD followed by zero or more LED forms.
+                    // Only the neutral effect is closed under that repetition;
+                    // nonzero variants remain deliberately unsupported.
+                    let variant_effect = |variant: &crate::PrattVariant| {
+                        let effect = sites_effect(&variant.sites, grammar, &effects);
+                        match effect {
+                            DelimiterEffectSummary::Empty
+                            | DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED) => effect,
+                            DelimiterEffectSummary::Exact(_) | DelimiterEffectSummary::Unknown => {
+                                DelimiterEffectSummary::Unknown
+                            }
+                        }
+                    };
+                    let nud = variants
+                        .iter()
+                        .filter(|variant| is_pratt_nud(variant.position))
+                        .map(variant_effect)
+                        .fold(DelimiterEffectSummary::Empty, DelimiterEffectSummary::union);
+                    let led = variants
+                        .iter()
+                        .filter(|variant| is_pratt_led(variant.position))
+                        .map(variant_effect)
+                        .fold(DelimiterEffectSummary::Empty, DelimiterEffectSummary::union);
+                    match (nud, led) {
+                        (DelimiterEffectSummary::Empty, _) => DelimiterEffectSummary::Empty,
+                        (
+                            DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+                            DelimiterEffectSummary::Empty
+                            | DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+                        ) => DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+                        _ => DelimiterEffectSummary::Unknown,
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        let next = effects
+            .iter()
+            .zip(derived)
+            .map(|(previous, derived)| previous.union(derived))
+            .collect::<Vec<_>>();
+        debug_assert!(
+            effects.iter().zip(&next).all(|(previous, next)| matches!(
+                (previous, next),
+                (DelimiterEffectSummary::Empty, _)
+                    | (
+                        DelimiterEffectSummary::Exact(_),
+                        DelimiterEffectSummary::Exact(_)
+                    )
+                    | (
+                        DelimiterEffectSummary::Exact(_),
+                        DelimiterEffectSummary::Unknown
+                    )
+                    | (
+                        DelimiterEffectSummary::Unknown,
+                        DelimiterEffectSummary::Unknown
+                    )
+            )),
+            "delimiter-effect least fixed point must ascend monotonically",
+        );
+        if next == effects {
+            return next;
+        }
+        effects = next;
+        debug_assert!(
+            rounds <= grammar.types.len().saturating_mul(2).saturating_add(1),
+            "finite delimiter-effect lattice exceeded its convergence height",
+        );
+    }
+}
+
+/// Proves universally neutral recursive delimiter languages coinductively.
+///
+/// The least fixed point above preserves exact nonzero effects and
+/// productivity, but deliberately widens mutually recursive languages when a
+/// singleton effect cannot be established bottom-up. This descending proof
+/// starts only from productive zero-or-unknown types, treats a still-live
+/// unknown recursive reference as the neutral invariant being checked, and
+/// removes a candidate as soon as any productive derivation violates it.
+fn coinductively_balanced_types(
+    grammar: &GrammarDescription,
+    exact: &[DelimiterEffectSummary],
+) -> Vec<bool> {
+    fn target_effect(
+        target: TypeId,
+        exact: &[DelimiterEffectSummary],
+        candidates: &[bool],
+    ) -> DelimiterEffectSummary {
+        match exact[target.index()] {
+            DelimiterEffectSummary::Unknown if candidates[target.index()] => {
+                DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED)
+            }
+            effect => effect,
+        }
+    }
+
+    fn site_effect(
+        site_id: SiteId,
+        grammar: &GrammarDescription,
+        exact: &[DelimiterEffectSummary],
+        candidates: &[bool],
+    ) -> DelimiterEffectSummary {
+        let site = &grammar.sites[site_id.index()];
+        let semantics = container_semantics(site);
+        let target = target_effect(site.target, exact, candidates);
+        let separator = semantics
+            .separator
+            .map_or(DelimiterEffectSummary::Empty, |separator| {
+                target_effect(separator.type_id, exact, candidates)
+            });
+        match semantics.cardinality {
+            ContainerCardinality::One => target,
+            ContainerCardinality::Optional => match target {
+                DelimiterEffectSummary::Empty
+                | DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED) => {
+                    DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED)
+                }
+                DelimiterEffectSummary::Exact(_) | DelimiterEffectSummary::Unknown => {
+                    DelimiterEffectSummary::Unknown
+                }
+            },
+            ContainerCardinality::ZeroOrMore
+            | ContainerCardinality::OneOrMore
+            | ContainerCardinality::OptionalOneOrMore => match target {
+                DelimiterEffectSummary::Empty => match semantics.cardinality {
+                    ContainerCardinality::OneOrMore => DelimiterEffectSummary::Empty,
+                    _ => DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+                },
+                DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED)
+                    if matches!(
+                        separator,
+                        DelimiterEffectSummary::Empty
+                            | DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED)
+                    ) =>
+                {
+                    DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED)
+                }
+                DelimiterEffectSummary::Exact(_) | DelimiterEffectSummary::Unknown => {
+                    DelimiterEffectSummary::Unknown
+                }
+            },
+        }
+    }
+
+    fn sites_effect(
+        sites: &[SiteId],
+        grammar: &GrammarDescription,
+        exact: &[DelimiterEffectSummary],
+        candidates: &[bool],
+    ) -> DelimiterEffectSummary {
+        sites.iter().fold(
+            DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+            |effect, site| effect.then(site_effect(*site, grammar, exact, candidates)),
+        )
+    }
+
+    let mut candidates = exact
+        .iter()
+        .map(|effect| {
+            matches!(
+                effect,
+                DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED)
+                    | DelimiterEffectSummary::Unknown
+            )
+        })
+        .collect::<Vec<_>>();
+    loop {
+        let next = grammar
+            .types
+            .iter()
+            .enumerate()
+            .map(|(index, description)| {
+                if !candidates[index] {
+                    return false;
+                }
+                let derived = match &description.shape {
+                    // A token's exact lexical effect is authoritative; an
+                    // ambiguous token kind cannot become neutral by assumption.
+                    TypeShape::Token { .. } => exact[index],
+                    TypeShape::Alias { site } => site_effect(*site, grammar, exact, &candidates),
+                    TypeShape::Sequence { sites } => {
+                        sites_effect(sites, grammar, exact, &candidates)
+                    }
+                    TypeShape::Enum { alternatives } => alternatives.iter().fold(
+                        DelimiterEffectSummary::Empty,
+                        |effect, alternative| {
+                            effect.union(sites_effect(
+                                &alternative.sites,
+                                grammar,
+                                exact,
+                                &candidates,
+                            ))
+                        },
+                    ),
+                    TypeShape::Pratt { variants } => {
+                        let variant_effect = |variant: &crate::PrattVariant| {
+                            sites_effect(&variant.sites, grammar, exact, &candidates)
+                        };
+                        let nud = variants
+                            .iter()
+                            .filter(|variant| is_pratt_nud(variant.position))
+                            .map(variant_effect)
+                            .fold(DelimiterEffectSummary::Empty, DelimiterEffectSummary::union);
+                        let led = variants
+                            .iter()
+                            .filter(|variant| is_pratt_led(variant.position))
+                            .map(variant_effect)
+                            .fold(DelimiterEffectSummary::Empty, DelimiterEffectSummary::union);
+                        match (nud, led) {
+                            (
+                                DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+                                DelimiterEffectSummary::Empty
+                                | DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+                            ) => DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+                            (DelimiterEffectSummary::Empty, _) => DelimiterEffectSummary::Empty,
+                            _ => DelimiterEffectSummary::Unknown,
+                        }
+                    }
+                };
+                derived == DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED)
+            })
+            .collect::<Vec<_>>();
+        debug_assert!(
+            candidates
+                .iter()
+                .zip(&next)
+                .all(|(previous, next)| *previous || !*next),
+            "universal-balance proof must descend monotonically",
+        );
+        if next == candidates {
+            return next;
+        }
+        candidates = next;
+    }
+}
+
+/// Proves which normalized types emit only balanced occurrences of one delimiter pair.
+fn balanced_types_for_delimiter(
+    delimiter: crate::BalancedDelimiter,
+    grammar: &GrammarDescription,
+    atom_kinds: &[KindSet],
+    delimiter_roles: &[Option<DelimiterRole>],
+) -> Vec<bool> {
+    let effects = delimiter_effects_for_types(delimiter, grammar, atom_kinds);
+    let balanced = coinductively_balanced_types(grammar, &effects);
+    debug_assert!(
+        delimiter_roles
+            .iter()
+            .zip(&balanced)
+            .all(|(role, balanced)| role.is_none() || !*balanced),
+        "an exact delimiter role cannot also be a balanced language",
+    );
+    balanced
+}
+
+/// Returns an item's exact delimiter role when it is one required fixed-token site.
+fn decision_item_delimiter_role(
+    item: &DecisionItem,
+    grammar: &GrammarDescription,
+    delimiter_roles: &[Option<DelimiterRole>],
+) -> Option<DelimiterRole> {
+    let target = match item {
+        DecisionItem::Type(type_id) => *type_id,
+        DecisionItem::Site(site_id) => required_unseparated_target(*site_id, grammar)?,
+        DecisionItem::RepeatTail { .. } => return None,
+    };
+    delimiter_roles[target.index()]
+}
+
+/// Reports whether one residual item emits a balanced delimiter language.
+fn decision_item_is_balanced(
+    item: &DecisionItem,
+    balanced: &[bool],
+    grammar: &GrammarDescription,
+) -> bool {
+    match item {
+        DecisionItem::Type(type_id) => balanced[type_id.index()],
+        DecisionItem::Site(site_id) => {
+            let site = &grammar.sites[site_id.index()];
+            let semantics = container_semantics(site);
+            balanced[site.target.index()]
+                && semantics
+                    .separator
+                    .is_none_or(|separator| balanced[separator.type_id.index()])
+        }
+        DecisionItem::RepeatTail {
+            target, separator, ..
+        } => {
+            balanced[target.index()]
+                && separator.is_none_or(|separator| balanced[separator.index()])
+        }
+    }
+}
+
+/// Splits the residual after an opener into balanced interior, matching close, and tail.
+fn balanced_enclosure_tail(
+    residual: &DecisionState,
+    balanced: &[bool],
+    grammar: &GrammarDescription,
+    delimiter_roles: &[Option<DelimiterRole>],
+) -> Option<DecisionState> {
+    let mut nested_depth = 0usize;
+    for (index, item) in residual.0.iter().enumerate() {
+        match decision_item_delimiter_role(item, grammar, delimiter_roles) {
+            Some(DelimiterRole::Open) => {
+                nested_depth = nested_depth.checked_add(1)?;
+            }
+            Some(DelimiterRole::Close) if nested_depth == 0 => {
+                return Some(DecisionState(residual.0[index + 1..].to_vec()));
+            }
+            Some(DelimiterRole::Close) => nested_depth -= 1,
+            None if decision_item_is_balanced(item, balanced, grammar) => {}
+            None => return None,
+        }
+    }
+    None
+}
+
+/// Proves one branch begins with a fixed balanced enclosure and returns every post-close tail.
+fn balanced_branch_tails(
+    sites: &[SiteId],
+    delimiter: crate::BalancedDelimiter,
+    balanced: &[bool],
+    delimiter_roles: &[Option<DelimiterRole>],
+    first_sequences: &FirstSequenceAnalysis<'_>,
+) -> Option<Vec<DecisionState>> {
+    let grammar = first_sequences.grammar;
+    let frontier = first_sequences.decision_frontier(&DecisionState::from_sites(sites));
+    let mut tails = Vec::new();
+    let mut saw_open = false;
+    for transition in &frontier.transitions {
+        if !transition.position.kinds.contains(delimiter.open) {
+            continue;
+        }
+        saw_open = true;
+        if transition.position.text_predicate.is_some()
+            || !transition.position.kinds.iter().eq([delimiter.open])
+        {
+            return None;
+        }
+        tails.push(balanced_enclosure_tail(
+            &transition.next,
+            balanced,
+            grammar,
+            delimiter_roles,
+        )?);
+    }
+    saw_open.then_some(tails)
+}
+
+/// Infers a structural delimiter cut for an n-way enum whose bounded dispatch is cyclic.
+pub(crate) fn balanced_dispatch_resolution(
+    alternatives: &[(crate::DeclId, &[SiteId])],
+    first_sequences: &FirstSequenceAnalysis<'_>,
+) -> Option<BalancedDispatchResolution> {
+    if alternatives.len() < 2 {
+        return None;
+    }
+    let grammar = first_sequences.grammar;
+    let mut resolutions = Vec::new();
+    for delimiter in &grammar.balanced_delimiters {
+        let candidate = (|| {
+            let delimiter_roles =
+                delimiter_roles_for_types(*delimiter, grammar, &first_sequences.atom_kinds);
+            let balanced = balanced_types_for_delimiter(
+                *delimiter,
+                grammar,
+                &first_sequences.atom_kinds,
+                &delimiter_roles,
+            );
+            let mut branches = Vec::with_capacity(alternatives.len());
+            for (declaration, sites) in alternatives {
+                let tails = balanced_branch_tails(
+                    sites,
+                    *delimiter,
+                    &balanced,
+                    &delimiter_roles,
+                    first_sequences,
+                )?;
+                let mut sequences = first_sequences
+                    .state_sequences_batch_at_depth(tails, grammar.max_lookahead)
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                let mut deduplicated = Vec::with_capacity(sequences.len());
+                let mut seen = BTreeSet::new();
+                for sequence in sequences.drain(..) {
+                    #[cfg(test)]
+                    BALANCED_TAIL_MATERIALIZED_ROWS
+                        .set(BALANCED_TAIL_MATERIALIZED_ROWS.get().saturating_add(1));
+                    if seen.insert(BalancedTailSequenceKey(sequence.clone())) {
+                        deduplicated.push(sequence);
+                    }
+                }
+                if deduplicated.is_empty() {
+                    return None;
+                }
+                branches.push(BalancedDispatchBranch {
+                    declaration: *declaration,
+                    sequences: deduplicated,
+                });
+            }
+            Some(BalancedDispatchResolution {
+                open: delimiter.open,
+                close: delimiter.close,
+                branches,
+            })
+        })();
+        if let Some(candidate) = candidate {
+            resolutions.push(candidate);
+        }
+    }
+    match resolutions.as_slice() {
+        [resolution] => Some(resolution.clone()),
+        _ => None,
     }
 }
 
@@ -6227,8 +7721,10 @@ fn walk_decision_frontier(
     mut visit: impl FnMut(DecisionFrontierEvent<'_>) -> bool,
 ) {
     // Explore the bounded lookahead product while deduplicating frontier states to terminate recursive shared prefixes.
-    let mut best_minimum_depth = BTreeMap::from([(start.clone(), start.0.len())]);
-    let mut queue = VecDeque::from([(start.clone(), start.0.len())]);
+    let start = HashedDecisionState::new(start.clone());
+    let start_depth = start.state.0.len();
+    let mut best_minimum_depth = HashMap::from([(start.clone(), start_depth)]);
+    let mut queue = VecDeque::from([(start, start_depth)]);
     while let Some((state, minimum_stack_depth)) = queue.pop_front() {
         #[cfg(test)]
         FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.set(
@@ -6239,7 +7735,7 @@ fn walk_decision_frontier(
         if best_minimum_depth.get(&state) != Some(&minimum_stack_depth) {
             continue;
         }
-        let Some((first, rest)) = state.0.split_first() else {
+        let Some((first, rest)) = state.state.0.split_first() else {
             if !visit(DecisionFrontierEvent::End) {
                 return;
             }
@@ -6479,12 +7975,12 @@ fn queue_decision_expansion(
     mut expansion: Vec<DecisionItem>,
     rest: &[DecisionItem],
     minimum_stack_depth: usize,
-    best_minimum_depth: &mut BTreeMap<DecisionState, usize>,
-    queue: &mut VecDeque<(DecisionState, usize)>,
+    best_minimum_depth: &mut HashMap<HashedDecisionState, usize>,
+    queue: &mut VecDeque<(HashedDecisionState, usize)>,
 ) {
     expansion.extend_from_slice(rest);
-    let state = DecisionState(expansion);
-    let minimum_stack_depth = minimum_stack_depth.min(state.0.len());
+    let state = HashedDecisionState::new(DecisionState(expansion));
+    let minimum_stack_depth = minimum_stack_depth.min(state.state.0.len());
     if best_minimum_depth
         .get(&state)
         .is_none_or(|best| *best < minimum_stack_depth)
@@ -6679,6 +8175,7 @@ fn detect_conflicts(
             TypeShape::Enum { alternatives } => {
                 let mut alternatives = alternatives.iter().collect::<Vec<_>>();
                 alternatives.sort_by_key(|alternative| alternative.declaration);
+                let mut balanced_dispatch_supported = None;
                 for left_index in 0..alternatives.len() {
                     for right_index in left_index + 1..alternatives.len() {
                         let left = alternatives[left_index];
@@ -6727,6 +8224,15 @@ fn detect_conflicts(
                             .sufficient_depth
                             .is_some_and(|depth| depth <= grammar.max_lookahead)
                         {
+                            continue;
+                        }
+                        if *balanced_dispatch_supported.get_or_insert_with(|| {
+                            crate::decision_plan::balanced_dispatch_is_supported(
+                                &alternatives,
+                                grammar,
+                                first_sequences,
+                            )
+                        }) {
                             continue;
                         }
                         let sufficient_depth = decision.sufficient_depth;
@@ -7572,11 +9078,9 @@ fn first_sequences_overlap_within(
         .zip(&right.positions)
         .take(left_length)
         .all(|(left, right)| {
-            !left
-                .kinds
-                .intersection(&right.kinds)
+            left.kinds
+                .intersects(&right.kinds)
                 .expect("FIRST positions have the grammar width")
-                .is_empty()
                 && predicates_overlap(
                     left.text_predicate,
                     right.text_predicate,
@@ -11108,6 +12612,7 @@ mod decision_product_tests {
 
         FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.set(0);
         FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(0);
+        FIRST_LANGUAGE_FULL_COVER_STATE_BUILDS.set(0);
         let analysis = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
         let actual = analysis.sequences_for_state(state);
 
@@ -11118,9 +12623,13 @@ mod decision_product_tests {
             "public sequence materialization must not construct an unused deterministic product",
         );
         assert_eq!(
-            FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get(),
-            0,
-            "public sequence materialization must not precompute a duplicate projected graph",
+            FIRST_LANGUAGE_FULL_COVER_STATE_BUILDS.get(),
+            1,
+            "only the depth-five root requires full residual precision",
+        );
+        assert!(
+            FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get() > 0,
+            "the depth-four tail must use the exact projected graph in place of full cover states",
         );
     }
 
@@ -11202,6 +12711,1513 @@ mod decision_product_tests {
                 .any(|diagnostic| diagnostic.code == DiagnosticCode::EnumFirstOverlap)
         );
         assert_eq!(FIRST_LANGUAGE_AGGREGATE_MATERIALIZATIONS.get(), 0);
+    }
+
+    #[test]
+    #[ignore = "representative-scale balanced-tail complexity evidence; run the documented manual command"]
+    fn balanced_tail_deduplication_is_subquadratic_in_materialized_rows() {
+        const BODY_COUNT: usize = 1;
+        const TAIL_COUNT: usize = 2_304;
+
+        fn push_token(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            name: &str,
+        ) -> (TypeId, KindId) {
+            let declaration = test_declaration(grammar, next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            let ty = grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ));
+            (ty, kind)
+        }
+
+        fn push_site(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            owner: TypeId,
+            target: TypeId,
+            name: &str,
+        ) -> SiteId {
+            let declaration = test_declaration(grammar, next_byte, name);
+            grammar.push_site(crate::ParseSite::new(
+                owner,
+                target,
+                declaration,
+                crate::ContainerShape::Direct,
+            ))
+        }
+
+        let mut grammar = GrammarDescription::new(
+            "balanced-tail-deduplication",
+            2 + BODY_COUNT + 2 * TAIL_COUNT,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let (open, open_kind) = push_token(&mut grammar, &mut next_byte, "LPAREN");
+        let (close, close_kind) = push_token(&mut grammar, &mut next_byte, "RPAREN");
+        let bodies = (0..BODY_COUNT)
+            .map(|index| push_token(&mut grammar, &mut next_byte, &format!("BODY{index}")).0)
+            .collect::<Vec<_>>();
+        let tails = (0..TAIL_COUNT)
+            .map(|index| {
+                (
+                    push_token(&mut grammar, &mut next_byte, &format!("TAIL{index}A")).0,
+                    push_token(&mut grammar, &mut next_byte, &format!("TAIL{index}B")).0,
+                )
+            })
+            .collect::<Vec<_>>();
+        grammar.push_balanced_delimiter(open_kind, close_kind);
+
+        let tail = grammar.next_type_id();
+        let tail_declaration = test_declaration(&mut grammar, &mut next_byte, "Tail");
+        let tail_alternatives = tails
+            .iter()
+            .enumerate()
+            .map(|(index, (first, second))| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("Tail::{index}"));
+                crate::Alternative {
+                    declaration,
+                    sites: [*first, *second]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(site_index, target)| {
+                            push_site(
+                                &mut grammar,
+                                &mut next_byte,
+                                tail,
+                                target,
+                                &format!("Tail::{index}::{site_index}"),
+                            )
+                        })
+                        .collect(),
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Tail",
+                tail_declaration,
+                TypeShape::Enum {
+                    alternatives: tail_alternatives,
+                },
+            )),
+            tail,
+        );
+
+        let wrapper = grammar.next_type_id();
+        let wrapper_declaration = test_declaration(&mut grammar, &mut next_byte, "Wrapper");
+        let wrapper_alternatives = bodies
+            .iter()
+            .enumerate()
+            .map(|(index, body)| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("Wrapper::{index}"));
+                let sites = [open, *body, close, tail]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(site_index, target)| {
+                        push_site(
+                            &mut grammar,
+                            &mut next_byte,
+                            wrapper,
+                            target,
+                            &format!("Wrapper::{index}::{site_index}"),
+                        )
+                    })
+                    .collect();
+                crate::Alternative { declaration, sites }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Wrapper",
+                wrapper_declaration,
+                TypeShape::Enum {
+                    alternatives: wrapper_alternatives.clone(),
+                },
+            )),
+            wrapper,
+        );
+
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let alternatives = ["Left", "Right"]
+            .into_iter()
+            .map(|name| {
+                let declaration =
+                    test_declaration(&mut grammar, &mut next_byte, &format!("Choice::{name}"));
+                crate::Alternative {
+                    declaration,
+                    sites: vec![push_site(
+                        &mut grammar,
+                        &mut next_byte,
+                        choice,
+                        wrapper,
+                        &format!("Choice::{name}::wrapper"),
+                    )],
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: alternatives.clone(),
+                },
+            )),
+            choice,
+        );
+
+        BALANCED_TAIL_DEDUP_COMPARISONS.set(0);
+        BALANCED_TAIL_MATERIALIZED_ROWS.set(0);
+        let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let sites = alternatives
+            .iter()
+            .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
+            .collect::<Vec<_>>();
+        let resolution = balanced_dispatch_resolution(&sites, &first_sequences)
+            .expect("shared wrappers have a unique balanced delimiter cut");
+        let expected = first_sequences.sequences(&wrapper_alternatives[0].sites[3..]);
+
+        let retained = resolution
+            .branches
+            .iter()
+            .map(|branch| branch.sequences.len())
+            .collect::<Vec<_>>();
+        assert!(
+            resolution
+                .branches
+                .iter()
+                .all(|branch| branch.sequences == expected),
+            "set-backed membership must preserve the first materialized source order",
+        );
+        assert!(
+            retained.iter().all(|rows| *rows == TAIL_COUNT),
+            "each branch retains one canonical row per distinct tail: {retained:?}; materialized={}; comparisons={}",
+            BALANCED_TAIL_MATERIALIZED_ROWS.get(),
+            BALANCED_TAIL_DEDUP_COMPARISONS.get(),
+        );
+        let materialized = BALANCED_TAIL_MATERIALIZED_ROWS.get();
+        assert_eq!(materialized, 2 * BODY_COUNT * TAIL_COUNT);
+        let logarithmic = (usize::BITS - (TAIL_COUNT - 1).leading_zeros()) as usize;
+        let comparison_bound = materialized * (3 * logarithmic + 1);
+        assert!(
+            BALANCED_TAIL_DEDUP_COMPARISONS.get() <= comparison_bound,
+            "deduplication comparisons {} must stay within logarithmic bound {comparison_bound} for {materialized} rows",
+            BALANCED_TAIL_DEDUP_COMPARISONS.get(),
+        );
+    }
+
+    #[test]
+    fn balanced_delimiter_dispatch_resolves_recursive_shared_prefix() {
+        fn push_token(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            name: &str,
+        ) -> (TypeId, KindId) {
+            let declaration = test_declaration(grammar, next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            let ty = grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ));
+            (ty, kind)
+        }
+
+        fn push_site(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            owner: TypeId,
+            target: TypeId,
+            name: &str,
+        ) -> SiteId {
+            let declaration = test_declaration(grammar, next_byte, name);
+            grammar.push_site(crate::ParseSite::new(
+                owner,
+                target,
+                declaration,
+                crate::ContainerShape::Direct,
+            ))
+        }
+
+        fn push_delimiter_wrapper(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            token: TypeId,
+            name: &str,
+        ) -> TypeId {
+            let wrapper = grammar.next_type_id();
+            let declaration = test_declaration(grammar, next_byte, name);
+            let alternative = test_declaration(grammar, next_byte, &format!("{name}::Value"));
+            let value = push_site(
+                grammar,
+                next_byte,
+                wrapper,
+                token,
+                &format!("{name}::value"),
+            );
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Enum {
+                        alternatives: vec![crate::Alternative {
+                            declaration: alternative,
+                            sites: vec![value],
+                        }],
+                    },
+                )),
+                wrapper,
+            );
+            wrapper
+        }
+
+        let mut grammar = GrammarDescription::new(
+            "balanced-delimiter-dispatch",
+            5,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let (open, open_kind) = push_token(&mut grammar, &mut next_byte, "LPAREN");
+        let (close, close_kind) = push_token(&mut grammar, &mut next_byte, "RPAREN");
+        let (select, _) = push_token(&mut grammar, &mut next_byte, "SELECT");
+        let (union, _) = push_token(&mut grammar, &mut next_byte, "UNION");
+        let (end, _) = push_token(&mut grammar, &mut next_byte, "END");
+        grammar.push_balanced_delimiter(open_kind, close_kind);
+        let open_wrapper =
+            push_delimiter_wrapper(&mut grammar, &mut next_byte, open, "SelectLParen");
+        let close_wrapper =
+            push_delimiter_wrapper(&mut grammar, &mut next_byte, close, "SelectRParen");
+
+        let open_attachment = grammar.next_type_id();
+        let open_attachment_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "OpenAttachment");
+        let open_attachment_sites = [open_wrapper, select]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                push_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    open_attachment,
+                    target,
+                    &format!("OpenAttachment::{index}"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "OpenAttachment",
+                open_attachment_declaration,
+                TypeShape::Sequence {
+                    sites: open_attachment_sites,
+                },
+            )),
+            open_attachment,
+        );
+
+        let close_attachment = grammar.next_type_id();
+        let close_attachment_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "CloseAttachment");
+        let close_attachment_sites = [close_wrapper, select]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                push_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    close_attachment,
+                    target,
+                    &format!("CloseAttachment::{index}"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "CloseAttachment",
+                close_attachment_declaration,
+                TypeShape::Sequence {
+                    sites: close_attachment_sites,
+                },
+            )),
+            close_attachment,
+        );
+
+        let nested = grammar.next_type_id();
+        let nested_declaration = test_declaration(&mut grammar, &mut next_byte, "Nested");
+        let atom_declaration = test_declaration(&mut grammar, &mut next_byte, "Nested::Atom");
+        let atom = push_site(
+            &mut grammar,
+            &mut next_byte,
+            nested,
+            select,
+            "Nested::Atom::value",
+        );
+        let group_declaration = test_declaration(&mut grammar, &mut next_byte, "Nested::Group");
+        let group_open = push_site(
+            &mut grammar,
+            &mut next_byte,
+            nested,
+            open_attachment,
+            "Nested::Group::open",
+        );
+        let group_inner = push_site(
+            &mut grammar,
+            &mut next_byte,
+            nested,
+            nested,
+            "Nested::Group::inner",
+        );
+        let group_close = push_site(
+            &mut grammar,
+            &mut next_byte,
+            nested,
+            close_attachment,
+            "Nested::Group::close",
+        );
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Nested",
+                nested_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: atom_declaration,
+                            sites: vec![atom],
+                        },
+                        crate::Alternative {
+                            declaration: group_declaration,
+                            sites: vec![group_open, group_inner, group_close],
+                        },
+                    ],
+                },
+            )),
+            nested,
+        );
+
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let query_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice::Query");
+        let query_sites = [
+            open_wrapper,
+            open_wrapper,
+            nested,
+            close_wrapper,
+            close_wrapper,
+            union,
+            nested,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, target)| {
+            push_site(
+                &mut grammar,
+                &mut next_byte,
+                choice,
+                target,
+                &format!("Choice::Query::{index}"),
+            )
+        })
+        .collect();
+        let scalar_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice::Scalar");
+        let scalar_sites = [
+            open_wrapper,
+            open_wrapper,
+            nested,
+            close_wrapper,
+            close_wrapper,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, target)| {
+            push_site(
+                &mut grammar,
+                &mut next_byte,
+                choice,
+                target,
+                &format!("Choice::Scalar::{index}"),
+            )
+        })
+        .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: query_declaration,
+                            sites: query_sites,
+                        },
+                        crate::Alternative {
+                            declaration: scalar_declaration,
+                            sites: scalar_sites,
+                        },
+                    ],
+                },
+            )),
+            choice,
+        );
+        let root = grammar.next_type_id();
+        let root_declaration = test_declaration(&mut grammar, &mut next_byte, "Root");
+        let choice_site = push_site(&mut grammar, &mut next_byte, root, choice, "Root::choice");
+        let end_site = push_site(&mut grammar, &mut next_byte, root, end, "Root::end");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Root",
+                root_declaration,
+                TypeShape::Sequence {
+                    sites: vec![choice_site, end_site],
+                },
+            )),
+            root,
+        );
+        grammar.entry_types.push(root);
+
+        let report = analyze(&grammar);
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let output = report.output.expect("balanced dispatch is generatable");
+        let dispatch = output
+            .decisions()
+            .dispatches()
+            .iter()
+            .find(|dispatch| dispatch.owner() == choice)
+            .expect("choice dispatch");
+        assert!(dispatch.balanced().is_some());
+
+        let mut no_residual = grammar.clone();
+        no_residual.types[union.index()].shape = TypeShape::Enum {
+            alternatives: Vec::new(),
+        };
+        let atom_kinds = expand_atoms(&no_residual);
+        let first_sequences = FirstSequenceAnalysis::new(&no_residual, &atom_kinds);
+        let TypeShape::Enum { alternatives } = &no_residual.types[choice.index()].shape else {
+            unreachable!("choice is an enum")
+        };
+        let alternatives = alternatives
+            .iter()
+            .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
+            .collect::<Vec<_>>();
+        assert!(
+            balanced_dispatch_resolution(&alternatives, &first_sequences).is_none(),
+            "an empty post-close residual must not publish an invalid dispatch trie",
+        );
+
+        grammar
+            .balanced_delimiters
+            .push(grammar.balanced_delimiters[0]);
+        let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let TypeShape::Enum { alternatives } = &grammar.types[choice.index()].shape else {
+            unreachable!("choice is an enum")
+        };
+        let alternatives = alternatives
+            .iter()
+            .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
+            .collect::<Vec<_>>();
+        assert!(
+            balanced_dispatch_resolution(&alternatives, &first_sequences).is_none(),
+            "multiple structural candidates must be rejected rather than selected by order",
+        );
+
+        let repeated_close = grammar.next_type_id();
+        let repeated_close_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "RepeatedClose");
+        let atom_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "RepeatedClose::Atom");
+        let atom_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            repeated_close,
+            close_wrapper,
+            "RepeatedClose::Atom::close",
+        );
+        let postfix_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "RepeatedClose::Postfix");
+        let postfix_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            repeated_close,
+            close_wrapper,
+            "RepeatedClose::Postfix::close",
+        );
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "RepeatedClose",
+                repeated_close_declaration,
+                TypeShape::Pratt {
+                    variants: vec![
+                        crate::PrattVariant {
+                            declaration: atom_declaration,
+                            position: PrattPosition::Atom,
+                            sites: vec![atom_site],
+                        },
+                        crate::PrattVariant {
+                            declaration: postfix_declaration,
+                            position: PrattPosition::Postfix { bp: 1 },
+                            sites: vec![postfix_site],
+                        },
+                    ],
+                },
+            )),
+            repeated_close,
+        );
+        let atom_kinds = expand_atoms(&grammar);
+        let roles =
+            delimiter_roles_for_types(grammar.balanced_delimiters[0], &grammar, &atom_kinds);
+        assert_eq!(
+            roles[repeated_close.index()],
+            None,
+            "a Pratt postfix can repeat and must not be inferred as one delimiter",
+        );
+
+        let balanced_pratt = grammar.next_type_id();
+        let balanced_pratt_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "BalancedPratt");
+        let balanced_atom_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "BalancedPratt::Atom");
+        let balanced_atom_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            balanced_pratt,
+            select,
+            "BalancedPratt::Atom::value",
+        );
+        let balanced_postfix_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "BalancedPratt::Postfix");
+        let balanced_postfix_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            balanced_pratt,
+            select,
+            "BalancedPratt::Postfix::value",
+        );
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "BalancedPratt",
+                balanced_pratt_declaration,
+                TypeShape::Pratt {
+                    variants: vec![
+                        crate::PrattVariant {
+                            declaration: balanced_atom_declaration,
+                            position: PrattPosition::Atom,
+                            sites: vec![balanced_atom_site],
+                        },
+                        crate::PrattVariant {
+                            declaration: balanced_postfix_declaration,
+                            position: PrattPosition::Postfix { bp: 1 },
+                            sites: vec![balanced_postfix_site],
+                        },
+                    ],
+                },
+            )),
+            balanced_pratt,
+        );
+
+        let led_only_pratt = grammar.next_type_id();
+        let led_only_declaration = test_declaration(&mut grammar, &mut next_byte, "LedOnlyPratt");
+        let led_only_postfix_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "LedOnlyPratt::Postfix");
+        let led_only_postfix_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            led_only_pratt,
+            select,
+            "LedOnlyPratt::Postfix::value",
+        );
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "LedOnlyPratt",
+                led_only_declaration,
+                TypeShape::Pratt {
+                    variants: vec![crate::PrattVariant {
+                        declaration: led_only_postfix_declaration,
+                        position: PrattPosition::Postfix { bp: 1 },
+                        sites: vec![led_only_postfix_site],
+                    }],
+                },
+            )),
+            led_only_pratt,
+        );
+
+        let open_atom = match &grammar.types[open.index()].shape {
+            TypeShape::Token { atom, .. } => *atom,
+            _ => unreachable!("opening delimiter is a token"),
+        };
+        let empty_predicate = grammar.push_text_predicate(TextPredicate::OneOf(Vec::new()));
+        let unproductive_open = grammar.next_type_id();
+        let unproductive_open_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "UnproductiveOpen");
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "UnproductiveOpen",
+                unproductive_open_declaration,
+                TypeShape::Token {
+                    atom: open_atom,
+                    text_predicate: Some(empty_predicate),
+                },
+            )),
+            unproductive_open,
+        );
+
+        let optional_open = grammar.next_type_id();
+        let optional_open_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "OptionalOpen");
+        let optional_open_site_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "OptionalOpen::open");
+        let optional_open_site = grammar.push_site(crate::ParseSite::new(
+            optional_open,
+            open_wrapper,
+            optional_open_site_declaration,
+            crate::ContainerShape::optional(crate::ContainerShape::Direct),
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "OptionalOpen",
+                optional_open_declaration,
+                TypeShape::Alias {
+                    site: optional_open_site,
+                },
+            )),
+            optional_open,
+        );
+
+        let repeated_open = grammar.next_type_id();
+        let repeated_open_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "RepeatedOpen");
+        let repeated_open_site_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "RepeatedOpen::open");
+        let repeated_open_site = grammar.push_site(crate::ParseSite::new(
+            repeated_open,
+            open_wrapper,
+            repeated_open_site_declaration,
+            crate::ContainerShape::zero_or_more(crate::ContainerShape::Direct, None),
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "RepeatedOpen",
+                repeated_open_declaration,
+                TypeShape::Alias {
+                    site: repeated_open_site,
+                },
+            )),
+            repeated_open,
+        );
+
+        let mixed_role = grammar.next_type_id();
+        let mixed_role_declaration = test_declaration(&mut grammar, &mut next_byte, "MixedRole");
+        let mixed_open_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "MixedRole::Open");
+        let mixed_open_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            mixed_role,
+            open_wrapper,
+            "MixedRole::Open::value",
+        );
+        let mixed_close_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "MixedRole::Close");
+        let mixed_close_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            mixed_role,
+            close_wrapper,
+            "MixedRole::Close::value",
+        );
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "MixedRole",
+                mixed_role_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: mixed_open_declaration,
+                            sites: vec![mixed_open_site],
+                        },
+                        crate::Alternative {
+                            declaration: mixed_close_declaration,
+                            sites: vec![mixed_close_site],
+                        },
+                    ],
+                },
+            )),
+            mixed_role,
+        );
+
+        let delimited_separator = grammar.next_type_id();
+        let delimited_separator_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "DelimitedSeparator");
+        let delimited_separator_site_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "DelimitedSeparator::values");
+        let delimited_separator_site = grammar.push_site(crate::ParseSite::new(
+            delimited_separator,
+            select,
+            delimited_separator_site_declaration,
+            crate::ContainerShape::zero_or_more(crate::ContainerShape::Direct, Some(open_wrapper)),
+        ));
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "DelimitedSeparator",
+                delimited_separator_declaration,
+                TypeShape::Sequence {
+                    sites: vec![delimited_separator_site],
+                },
+            )),
+            delimited_separator,
+        );
+
+        // The open alternative becomes exact before the close hidden behind
+        // this forward alias chain. The monotone LFP must retain the earlier
+        // fact and join the delayed disagreement to Unknown.
+        let delayed_mixed = grammar.next_type_id();
+        let delayed_close_alias = TypeId::new(delayed_mixed.get() + 1);
+        let delayed_close_leaf = TypeId::new(delayed_mixed.get() + 2);
+        let delayed_mixed_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "DelayedMixed");
+        let delayed_open_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "DelayedMixed::Open");
+        let delayed_open_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            delayed_mixed,
+            open_wrapper,
+            "DelayedMixed::Open::value",
+        );
+        let delayed_close_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "DelayedMixed::Close");
+        let delayed_close_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            delayed_mixed,
+            delayed_close_alias,
+            "DelayedMixed::Close::value",
+        );
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "DelayedMixed",
+                delayed_mixed_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: delayed_open_declaration,
+                            sites: vec![delayed_open_site],
+                        },
+                        crate::Alternative {
+                            declaration: delayed_close_declaration,
+                            sites: vec![delayed_close_site],
+                        },
+                    ],
+                },
+            )),
+            delayed_mixed,
+        );
+        let delayed_close_alias_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "DelayedCloseAlias");
+        let delayed_close_alias_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            delayed_close_alias,
+            delayed_close_leaf,
+            "DelayedCloseAlias::value",
+        );
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "DelayedCloseAlias",
+                delayed_close_alias_declaration,
+                TypeShape::Alias {
+                    site: delayed_close_alias_site,
+                },
+            )),
+            delayed_close_alias,
+        );
+        let delayed_close_leaf_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "DelayedCloseLeaf");
+        let delayed_close_leaf_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            delayed_close_leaf,
+            close_wrapper,
+            "DelayedCloseLeaf::value",
+        );
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "DelayedCloseLeaf",
+                delayed_close_leaf_declaration,
+                TypeShape::Alias {
+                    site: delayed_close_leaf_site,
+                },
+            )),
+            delayed_close_leaf,
+        );
+
+        let atom_kinds = expand_atoms(&grammar);
+        let delimiter = grammar.balanced_delimiters[0];
+        let roles = delimiter_roles_for_types(delimiter, &grammar, &atom_kinds);
+        assert_eq!(roles[open_attachment.index()], None);
+        assert_eq!(roles[close_attachment.index()], None);
+        assert_eq!(roles[optional_open.index()], None);
+        assert_eq!(roles[repeated_open.index()], None);
+        assert_eq!(roles[mixed_role.index()], None);
+        let effects = delimiter_effects_for_types(delimiter, &grammar, &atom_kinds);
+        assert_eq!(
+            effects[open_attachment.index()],
+            DelimiterEffectSummary::Exact(DelimiterEffect {
+                closes: 0,
+                opens: 1,
+            }),
+        );
+        assert_eq!(
+            effects[close_attachment.index()],
+            DelimiterEffectSummary::Exact(DelimiterEffect {
+                closes: 1,
+                opens: 0,
+            }),
+        );
+        assert_eq!(
+            effects[led_only_pratt.index()],
+            DelimiterEffectSummary::Empty,
+            "a Pratt language without a productive NUD is empty",
+        );
+        assert_eq!(
+            effects[unproductive_open.index()],
+            DelimiterEffectSummary::Empty,
+            "an empty token predicate has no delimiter effect",
+        );
+        assert_eq!(
+            effects[delayed_mixed.index()],
+            DelimiterEffectSummary::Unknown,
+            "a later alias-chain disagreement must widen an earlier exact effect",
+        );
+        let balanced = balanced_types_for_delimiter(delimiter, &grammar, &atom_kinds, &roles);
+        assert!(balanced[nested.index()]);
+        assert!(balanced[balanced_pratt.index()]);
+        assert!(!balanced[led_only_pratt.index()]);
+        assert!(!balanced[unproductive_open.index()]);
+        assert!(!balanced[repeated_close.index()]);
+        assert!(!balanced[delimited_separator.index()]);
+        assert!(!balanced[open_wrapper.index()]);
+        assert!(
+            roles
+                .iter()
+                .zip(&balanced)
+                .all(|(role, balanced)| role.is_none() || !*balanced),
+            "every exact delimiter role is necessarily unbalanced",
+        );
+    }
+
+    #[test]
+    fn balanced_dispatch_accepts_recursive_pratt_and_subquery_interiors() {
+        fn push_token(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            name: &str,
+        ) -> (TypeId, KindId) {
+            let declaration = test_declaration(grammar, next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            let ty = grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ));
+            (ty, kind)
+        }
+
+        fn push_site(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            owner: TypeId,
+            target: TypeId,
+            name: &str,
+            container: crate::ContainerShape,
+        ) -> SiteId {
+            let declaration = test_declaration(grammar, next_byte, name);
+            grammar.push_site(crate::ParseSite::new(owner, target, declaration, container))
+        }
+
+        fn push_marker(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            token: TypeId,
+            name: &str,
+        ) -> TypeId {
+            let marker = grammar.next_type_id();
+            let declaration = test_declaration(grammar, next_byte, name);
+            let alternative = test_declaration(grammar, next_byte, &format!("{name}::Value"));
+            let site = push_site(
+                grammar,
+                next_byte,
+                marker,
+                token,
+                &format!("{name}::value"),
+                crate::ContainerShape::Direct,
+            );
+            assert_eq!(
+                grammar.push_type(crate::TypeDescription::new(
+                    name,
+                    declaration,
+                    TypeShape::Enum {
+                        alternatives: vec![crate::Alternative {
+                            declaration: alternative,
+                            sites: vec![site],
+                        }],
+                    },
+                )),
+                marker,
+            );
+            marker
+        }
+
+        let mut grammar = GrammarDescription::new(
+            "recursive-balanced-interiors",
+            7,
+            3,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let (open, open_kind) = push_token(&mut grammar, &mut next_byte, "LPAREN");
+        let (close, close_kind) = push_token(&mut grammar, &mut next_byte, "RPAREN");
+        let (select, _) = push_token(&mut grammar, &mut next_byte, "SELECT");
+        let (union, _) = push_token(&mut grammar, &mut next_byte, "UNION");
+        let (value, _) = push_token(&mut grammar, &mut next_byte, "VALUE");
+        let (comma, _) = push_token(&mut grammar, &mut next_byte, "COMMA");
+        let (minus, _) = push_token(&mut grammar, &mut next_byte, "MINUS");
+        grammar.push_balanced_delimiter(open_kind, close_kind);
+        let open = push_marker(&mut grammar, &mut next_byte, open, "Open");
+        let close = push_marker(&mut grammar, &mut next_byte, close, "Close");
+
+        let expr = grammar.next_type_id();
+        let expr_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr");
+        let value_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr::Value");
+        let value_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            expr,
+            value,
+            "Expr::Value::value",
+            crate::ContainerShape::Direct,
+        );
+        let group_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr::Group");
+        let group_sites = [open, expr, close]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                push_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    expr,
+                    target,
+                    &format!("Expr::Group::{index}"),
+                    crate::ContainerShape::Direct,
+                )
+            })
+            .collect();
+        let prefix_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr::Prefix");
+        let prefix_sites = [minus, expr]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                push_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    expr,
+                    target,
+                    &format!("Expr::Prefix::{index}"),
+                    crate::ContainerShape::Direct,
+                )
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Expr",
+                expr_declaration,
+                TypeShape::Pratt {
+                    variants: vec![
+                        crate::PrattVariant {
+                            declaration: value_declaration,
+                            position: PrattPosition::Atom,
+                            sites: vec![value_site],
+                        },
+                        crate::PrattVariant {
+                            declaration: group_declaration,
+                            position: PrattPosition::Atom,
+                            sites: group_sites,
+                        },
+                        crate::PrattVariant {
+                            declaration: prefix_declaration,
+                            position: PrattPosition::Atom,
+                            sites: prefix_sites,
+                        },
+                    ],
+                },
+            )),
+            expr,
+        );
+
+        let subquery = grammar.next_type_id();
+        let subquery_declaration = test_declaration(&mut grammar, &mut next_byte, "Subquery");
+        let select_declaration = test_declaration(&mut grammar, &mut next_byte, "Subquery::Select");
+        let select_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            subquery,
+            select,
+            "Subquery::Select::select",
+            crate::ContainerShape::Direct,
+        );
+        let set_declaration = test_declaration(&mut grammar, &mut next_byte, "Subquery::Set");
+        let set_sites = [open, subquery, close, union, subquery]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                push_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    subquery,
+                    target,
+                    &format!("Subquery::Set::{index}"),
+                    crate::ContainerShape::Direct,
+                )
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Subquery",
+                subquery_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: select_declaration,
+                            sites: vec![select_site],
+                        },
+                        crate::Alternative {
+                            declaration: set_declaration,
+                            sites: set_sites,
+                        },
+                    ],
+                },
+            )),
+            subquery,
+        );
+
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let exprs_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice::Exprs");
+        let exprs_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            choice,
+            expr,
+            "Choice::Exprs::exprs",
+            crate::ContainerShape::one_or_more(crate::ContainerShape::Direct, Some(comma)),
+        );
+        let query_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice::Query");
+        let query_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            choice,
+            subquery,
+            "Choice::Query::query",
+            crate::ContainerShape::Direct,
+        );
+        let alternatives = vec![
+            crate::Alternative {
+                declaration: exprs_declaration,
+                sites: vec![exprs_site],
+            },
+            crate::Alternative {
+                declaration: query_declaration,
+                sites: vec![query_site],
+            },
+        ];
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: alternatives.clone(),
+                },
+            )),
+            choice,
+        );
+
+        let atom_kinds = expand_atoms(&grammar);
+        let delimiter = grammar.balanced_delimiters[0];
+        let roles = delimiter_roles_for_types(delimiter, &grammar, &atom_kinds);
+        let effects = delimiter_effects_for_types(delimiter, &grammar, &atom_kinds);
+        assert_eq!(
+            effects[expr.index()],
+            DelimiterEffectSummary::Exact(DelimiterEffect::BALANCED),
+            "the reduced fixture has no unrelated widening source",
+        );
+        let mut widened_recursive_scc = effects.clone();
+        widened_recursive_scc[expr.index()] = DelimiterEffectSummary::Unknown;
+        assert!(
+            coinductively_balanced_types(&grammar, &widened_recursive_scc)[expr.index()],
+            "a productive recursive Pratt SCC with only neutral NUD and LED forms is universally balanced",
+        );
+        let balanced = balanced_types_for_delimiter(delimiter, &grammar, &atom_kinds, &roles);
+        assert!(
+            balanced[expr.index()],
+            "the descending proof must recover a universally neutral recursive Pratt language",
+        );
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let sites = alternatives
+            .iter()
+            .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
+            .collect::<Vec<_>>();
+        assert!(
+            balanced_dispatch_resolution(&sites, &first_sequences).is_some(),
+            "recursive neutral interiors must permit a structural cut after the nested close",
+        );
+    }
+
+    #[test]
+    fn balanced_dispatch_accepts_three_enclosed_alternatives() {
+        fn push_token(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            name: &str,
+        ) -> (TypeId, KindId) {
+            let declaration = test_declaration(grammar, next_byte, name);
+            let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+            let atom = grammar.push_atom(crate::AtomDescription::new(
+                name,
+                declaration,
+                AtomExpression::Kind(kind),
+            ));
+            let ty = grammar.push_type(crate::TypeDescription::new(
+                name,
+                declaration,
+                TypeShape::Token {
+                    atom,
+                    text_predicate: None,
+                },
+            ));
+            (ty, kind)
+        }
+
+        fn push_site(
+            grammar: &mut GrammarDescription,
+            next_byte: &mut u32,
+            owner: TypeId,
+            target: TypeId,
+            name: &str,
+        ) -> SiteId {
+            let declaration = test_declaration(grammar, next_byte, name);
+            grammar.push_site(crate::ParseSite::new(
+                owner,
+                target,
+                declaration,
+                crate::ContainerShape::Direct,
+            ))
+        }
+
+        let mut grammar = GrammarDescription::new(
+            "three-way-balanced-dispatch",
+            6,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let (open, open_kind) = push_token(&mut grammar, &mut next_byte, "LPAREN");
+        let (close, close_kind) = push_token(&mut grammar, &mut next_byte, "RPAREN");
+        let (body, _) = push_token(&mut grammar, &mut next_byte, "BODY");
+        let (literal, _) = push_token(&mut grammar, &mut next_byte, "STRING");
+        let (keyword, _) = push_token(&mut grammar, &mut next_byte, "WITHIN");
+        let (normal, _) = push_token(&mut grammar, &mut next_byte, "NORMAL");
+        grammar.push_balanced_delimiter(open_kind, close_kind);
+
+        // One branch also has a non-opener route. The ordinary dispatch trie
+        // must keep handling it while the structural cut handles only LPAREN.
+        let routed = grammar.next_type_id();
+        let routed_declaration = test_declaration(&mut grammar, &mut next_byte, "Routed");
+        let normal_declaration = test_declaration(&mut grammar, &mut next_byte, "Routed::Normal");
+        let normal_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            routed,
+            normal,
+            "Routed::Normal::token",
+        );
+        let enclosed_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "Routed::Enclosed");
+        let enclosed_sites = [open, body, close, literal]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                push_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    routed,
+                    target,
+                    &format!("Routed::Enclosed::{index}"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Routed",
+                routed_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: normal_declaration,
+                            sites: vec![normal_site],
+                        },
+                        crate::Alternative {
+                            declaration: enclosed_declaration,
+                            sites: enclosed_sites,
+                        },
+                    ],
+                },
+            )),
+            routed,
+        );
+
+        // A second routed language is used below to prove that the balanced
+        // cut cannot hide ambiguity on a shared non-opener path.
+        let ambiguous_routed = grammar.next_type_id();
+        let ambiguous_routed_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "AmbiguousRouted");
+        let ambiguous_normal_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "AmbiguousRouted::Normal");
+        let ambiguous_normal_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            ambiguous_routed,
+            normal,
+            "AmbiguousRouted::Normal::token",
+        );
+        let ambiguous_enclosed_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "AmbiguousRouted::Enclosed");
+        let ambiguous_enclosed_sites = [open, body, close, keyword]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                push_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    ambiguous_routed,
+                    target,
+                    &format!("AmbiguousRouted::Enclosed::{index}"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "AmbiguousRouted",
+                ambiguous_routed_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![
+                        crate::Alternative {
+                            declaration: ambiguous_normal_declaration,
+                            sites: vec![ambiguous_normal_site],
+                        },
+                        crate::Alternative {
+                            declaration: ambiguous_enclosed_declaration,
+                            sites: ambiguous_enclosed_sites,
+                        },
+                    ],
+                },
+            )),
+            ambiguous_routed,
+        );
+
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Tail");
+        let routed_branch = crate::Alternative {
+            declaration: test_declaration(&mut grammar, &mut next_byte, "Tail::Literal"),
+            sites: vec![push_site(
+                &mut grammar,
+                &mut next_byte,
+                choice,
+                routed,
+                "Tail::Literal::route",
+            )],
+        };
+        let keyword_branch = crate::Alternative {
+            declaration: test_declaration(&mut grammar, &mut next_byte, "Tail::Keyword"),
+            sites: [open, body, close, keyword]
+                .into_iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    push_site(
+                        &mut grammar,
+                        &mut next_byte,
+                        choice,
+                        target,
+                        &format!("Tail::Keyword::{index}"),
+                    )
+                })
+                .collect(),
+        };
+        let caller_follow_branch = crate::Alternative {
+            declaration: test_declaration(&mut grammar, &mut next_byte, "Tail::CallerFollow"),
+            sites: [open, body, close]
+                .into_iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    push_site(
+                        &mut grammar,
+                        &mut next_byte,
+                        choice,
+                        target,
+                        &format!("Tail::CallerFollow::{index}"),
+                    )
+                })
+                .collect(),
+        };
+        let alternatives = vec![routed_branch, keyword_branch, caller_follow_branch];
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Tail",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: alternatives.clone(),
+                },
+            )),
+            choice,
+        );
+        let ambiguous_choice = grammar.next_type_id();
+        let ambiguous_choice_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "AmbiguousTail");
+        let ambiguous_literal_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "AmbiguousTail::Literal");
+        let ambiguous_literal_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            ambiguous_choice,
+            routed,
+            "AmbiguousTail::Literal::route",
+        );
+        let ambiguous_keyword_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "AmbiguousTail::Keyword");
+        let ambiguous_keyword_site = push_site(
+            &mut grammar,
+            &mut next_byte,
+            ambiguous_choice,
+            ambiguous_routed,
+            "AmbiguousTail::Keyword::route",
+        );
+        let ambiguous_follow_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "AmbiguousTail::CallerFollow");
+        let ambiguous_follow_sites = [open, body, close]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                push_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    ambiguous_choice,
+                    target,
+                    &format!("AmbiguousTail::CallerFollow::{index}"),
+                )
+            })
+            .collect();
+        let ambiguous = vec![
+            crate::Alternative {
+                declaration: ambiguous_literal_declaration,
+                sites: vec![ambiguous_literal_site],
+            },
+            crate::Alternative {
+                declaration: ambiguous_keyword_declaration,
+                sites: vec![ambiguous_keyword_site],
+            },
+            crate::Alternative {
+                declaration: ambiguous_follow_declaration,
+                sites: ambiguous_follow_sites,
+            },
+        ];
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "AmbiguousTail",
+                ambiguous_choice_declaration,
+                TypeShape::Enum {
+                    alternatives: ambiguous.clone(),
+                },
+            )),
+            ambiguous_choice,
+        );
+        let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let sites = alternatives
+            .iter()
+            .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
+            .collect::<Vec<_>>();
+        assert!(
+            balanced_dispatch_resolution(&sites, &first_sequences).is_some(),
+            "literal, keyword, and caller-FOLLOW tails must all be representable",
+        );
+        let references = alternatives.iter().collect::<Vec<_>>();
+        assert!(
+            crate::decision_plan::balanced_dispatch_is_supported(
+                &references,
+                &grammar,
+                &first_sequences,
+            ),
+            "the ordinary non-opener route and the structural opener route must coexist",
+        );
+
+        let ambiguous_sites = ambiguous
+            .iter()
+            .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
+            .collect::<Vec<_>>();
+        assert!(
+            balanced_dispatch_resolution(&ambiguous_sites, &first_sequences).is_some(),
+            "post-close literal, keyword, and caller-FOLLOW tails remain distinct",
+        );
+        let ambiguous_references = ambiguous.iter().collect::<Vec<_>>();
+        assert!(
+            !crate::decision_plan::balanced_dispatch_is_supported(
+                &ambiguous_references,
+                &grammar,
+                &first_sequences,
+            ),
+            "a shared non-opener route must remain ambiguous even when post-close tails are distinct",
+        );
+        let report = analyze(&grammar);
+        assert!(report.output.is_none());
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::EnumFirstOverlap),
+            "the unresolved non-opener path must remain an RCA0200 analysis error",
+        );
     }
 
     #[test]
@@ -11382,6 +14398,9 @@ mod decision_product_tests {
         FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(0);
         FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.set(0);
         FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.set(0);
+        FIRST_LANGUAGE_DECISION_STATE_COMPARISONS.set(0);
+        FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.set(0);
+        FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.set(0);
         let mut arena = FirstLanguageArena::new(&grammar, &atom_kinds);
         let actual_root = arena.build(
             grammar.max_lookahead,
@@ -11407,6 +14426,120 @@ mod decision_product_tests {
             FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get(),
             FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.get(),
         );
+        assert!(
+            FIRST_LANGUAGE_DECISION_STATE_COMPARISONS.get() <= BRANCH_COUNT,
+            "decision-frontier closure membership must not perform ordered comparisons of residual stacks; comparisons={}",
+            FIRST_LANGUAGE_DECISION_STATE_COMPARISONS.get(),
+        );
+        assert!(
+            FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.get() <= BRANCH_COUNT * 64
+                && FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.get()
+                    <= BRANCH_COUNT * BRANCH_COUNT * 128,
+            "decision-frontier closure hashing must stay bounded by new residual states rather than hash-table operations: hashes={} item_visits={}",
+            FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.get(),
+            FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.get(),
+        );
+
+        let roots = match &grammar.types[expr.index()].shape {
+            TypeShape::Pratt { variants } => variants
+                .iter()
+                .filter(|variant| {
+                    matches!(
+                        variant.position,
+                        PrattPosition::Atom | PrattPosition::Prefix { .. }
+                    )
+                })
+                .map(|variant| variant.sites.as_slice())
+                .collect::<Vec<_>>(),
+            _ => unreachable!("the fixture expression is Pratt"),
+        };
+        let analysis = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.set(0);
+        FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.set(0);
+        FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.set(0);
+        let isolated = roots
+            .iter()
+            .map(|sites| analysis.sequences(sites))
+            .collect::<Vec<_>>();
+        let isolated_frontiers = FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.get();
+        let isolated_hashes = FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.get();
+        let isolated_hash_items = FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.get();
+
+        FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.set(0);
+        FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.set(0);
+        FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.set(0);
+        let batched = analysis.sequences_batch(roots.iter().copied());
+        let batched_frontiers = FIRST_LANGUAGE_DECISION_FRONTIER_COMPUTATIONS.get();
+        let batched_hashes = FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.get();
+        let batched_hash_items = FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.get();
+        assert_eq!(
+            batched, isolated,
+            "batching must preserve each exact FIRST language in input order"
+        );
+        assert!(
+            batched_frontiers * 3 <= isolated_frontiers
+                && batched_hashes * 2 <= isolated_hashes
+                && batched_hash_items * 2 <= isolated_hash_items,
+            "one dispatch-local arena must reuse recursive branch prefixes: isolated=({isolated_frontiers} frontiers, {isolated_hashes} hashes, {isolated_hash_items} hash items) batched=({batched_frontiers} frontiers, {batched_hashes} hashes, {batched_hash_items} hash items)",
+        );
+        FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(0);
+        FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.set(0);
+        FIRST_LANGUAGE_STATE_COUNT.set(0);
+        let repeated = analysis.sequences_batch(roots.iter().copied());
+        assert_eq!(repeated, batched);
+        assert_eq!(
+            FIRST_LANGUAGE_STATE_COUNT.get(),
+            0,
+            "separate planning calls must reuse already-built residual states",
+        );
+        assert_eq!(
+            FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get(),
+            0,
+            "separate planning calls must reuse the analysis-run language arena",
+        );
+        assert_eq!(
+            FIRST_LANGUAGE_PROJECTED_PARTITION_INPUTS.get(),
+            0,
+            "reused planning roots must not repartition projected components",
+        );
+
+        let aggregate = analysis.type_sequences_batch([expr, root]);
+        FIRST_LANGUAGE_STATE_COUNT.set(0);
+        let repeated_aggregate = analysis.type_sequences_batch([expr, root]);
+        assert_eq!(repeated_aggregate, aggregate);
+        assert_eq!(
+            FIRST_LANGUAGE_STATE_COUNT.get(),
+            0,
+            "aggregate FIRST roots must reuse the analysis-run language arena",
+        );
+    }
+
+    #[test]
+    fn cached_decision_state_hash_survives_table_growth_without_rehashing_the_stack() {
+        const STATE_COUNT: usize = 256;
+        const STACK_DEPTH: usize = 64;
+        FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.set(0);
+        FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.set(0);
+        let mut table = HashMap::new();
+        for unique in 0..STATE_COUNT {
+            let mut items = (0..STACK_DEPTH)
+                .map(|index| DecisionItem::Site(SiteId::new(index as u32)))
+                .collect::<Vec<_>>();
+            items.push(DecisionItem::Type(TypeId::new(unique as u32)));
+            table.insert(HashedDecisionState::new(DecisionState(items)), unique);
+        }
+        let hashes = FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.get();
+        let visits = FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.get();
+
+        table.reserve(STATE_COUNT * 8);
+
+        assert_eq!(hashes, STATE_COUNT);
+        assert_eq!(visits, STATE_COUNT * (STACK_DEPTH + 1));
+        assert_eq!(
+            FIRST_LANGUAGE_DECISION_STATE_HASH_COMPUTATIONS.get(),
+            hashes
+        );
+        assert_eq!(FIRST_LANGUAGE_DECISION_STATE_HASH_ITEM_VISITS.get(), visits);
     }
 
     #[test]
@@ -13121,7 +16254,7 @@ mod decision_product_tests {
         let mut decisions = crate::decision_plan::plan_decisions(&grammar, &[], &first_sequences);
         decisions.corrupt_site_product_for_test();
 
-        let diagnostic = publish_decisions(&grammar, &[], &first_sequences, decisions)
+        let diagnostic = publish_decisions(&grammar, decisions)
             .expect_err("invalid decisions cannot become AnalysisOutput");
         assert_eq!(diagnostic.code, DiagnosticCode::InternalAnalysisInvariant);
         assert_eq!(diagnostic.severity, crate::Severity::Error);

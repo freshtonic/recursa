@@ -60,10 +60,10 @@ pub use build_diagnostic::{
     RecursaDiagnosticCode, RecursaDiagnosticLabel,
 };
 pub use decision_plan::{
-    ContainerAction, ContainerMachine, ContainerOperation, ContainerState, ContainerTransition,
-    DecisionProducts, DispatchBranch, DispatchKind, DispatchPlan, DispatchPosition,
-    DispatchSequence, DispatchTerminal, DispatchTrieEdge, DispatchTrieNode, ExpectedRecipe,
-    FailureEdge, FailureEdgeKind, FollowRecipe,
+    BalancedDispatch, ContainerAction, ContainerMachine, ContainerOperation, ContainerState,
+    ContainerTransition, DecisionProducts, DispatchBranch, DispatchKind, DispatchPlan,
+    DispatchPosition, DispatchSequence, DispatchTerminal, DispatchTrieEdge, DispatchTrieNode,
+    ExpectedRecipe, FailureEdge, FailureEdgeKind, FollowRecipe,
 };
 pub use diagnostic::{
     ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic, DiagnosticCode, DiagnosticLabel,
@@ -74,9 +74,10 @@ pub use ids::{
     AtomId, DeclId, KindId, LocationId, ProofId, SiteId, SourceId, TextPredicateId, TypeId,
 };
 pub use ir::{
-    Alternative, AtomDescription, AtomExpression, ContainerShape, Declaration, GrammarDescription,
-    KindDescription, Location, ParseSite, PrattPosition, PrattVariant, RepeatSeparator,
-    RepetitionCardinality, TextEquivalence, TextPredicate, TypeDescription, TypeShape,
+    Alternative, AtomDescription, AtomExpression, BalancedDelimiter, ContainerShape, Declaration,
+    GrammarDescription, KindDescription, Location, ParseSite, PrattPosition, PrattVariant,
+    RepeatSeparator, RepetitionCardinality, TextEquivalence, TextPredicate, TypeDescription,
+    TypeShape,
 };
 pub use kind_set::{KindSet, KindSetError, KindSetIter};
 pub use provenance::{

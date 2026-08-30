@@ -19,6 +19,8 @@ mod tests {
     }
     focused_case!(authored_pretty_authority_rejects_emitted_declaration_corruption);
     focused_case!(pretty_pratt_recursion_uses_typed_node_identity_not_the_final_path_segment);
+    focused_case!(pretty_pratt_grouping_follows_a_unique_authored_helper_path);
+    focused_case!(pretty_pratt_variants_are_typechecked_in_isolated_helpers);
     focused_case!(every_typed_pretty_pratt_decision_is_part_of_family_authority);
     focused_case!(recursive_concrete_pretty_impls_do_not_publish_cyclic_child_bounds);
     focused_case!(every_local_pretty_hint_dimension_is_part_of_family_authority);
@@ -40,6 +42,85 @@ pub(super) struct PrettyEmissionPlan {
 pub(super) enum PrettyTokenBehavior {
     /// Uses matched source when present and the stored value otherwise.
     MatchedOrStoredText,
+}
+
+/// Reports whether locally configured Node rendering can require private token rendering.
+pub(super) fn content_token_pretty_helper_enabled(plan: &EmissionPlan) -> bool {
+    plan.pretty.nodes.iter().any(Option::is_some)
+}
+
+/// Renders private wrapper traversal for content tokens that intentionally omit public `Pretty`.
+pub(super) fn render_content_token_pretty_helper(plan: &EmissionPlan) -> proc_macro2::TokenStream {
+    if !content_token_pretty_helper_enabled(plan) {
+        return proc_macro2::TokenStream::new();
+    }
+    let facade = &plan.facade;
+    quote! {
+        #[doc(hidden)]
+        pub(crate) trait __RecursaPrettyWith {
+            fn __recursa_pretty_with(
+                &self,
+                context: &mut #facade::PrettyContext,
+            ) -> ::core::fmt::Result;
+        }
+
+        impl<T> __RecursaPrettyWith for Box<T>
+        where
+            T: __RecursaPrettyWith,
+        {
+            fn __recursa_pretty_with(
+                &self,
+                context: &mut #facade::PrettyContext,
+            ) -> ::core::fmt::Result {
+                (**self).__recursa_pretty_with(context)
+            }
+        }
+
+        impl<T> __RecursaPrettyWith for Option<T>
+        where
+            T: __RecursaPrettyWith,
+        {
+            fn __recursa_pretty_with(
+                &self,
+                context: &mut #facade::PrettyContext,
+            ) -> ::core::fmt::Result {
+                if let Some(value) = self {
+                    value.__recursa_pretty_with(context)?;
+                }
+                Ok(())
+            }
+        }
+
+        impl<T> __RecursaPrettyWith for Vec<T>
+        where
+            T: __RecursaPrettyWith,
+        {
+            fn __recursa_pretty_with(
+                &self,
+                context: &mut #facade::PrettyContext,
+            ) -> ::core::fmt::Result {
+                for value in self {
+                    value.__recursa_pretty_with(context)?;
+                }
+                Ok(())
+            }
+        }
+
+        impl<T> __RecursaPrettyWith for #facade::Vec1<T>
+        where
+            T: __RecursaPrettyWith,
+        {
+            fn __recursa_pretty_with(
+                &self,
+                context: &mut #facade::PrettyContext,
+            ) -> ::core::fmt::Result {
+                for value in self.iter() {
+                    value.__recursa_pretty_with(context)?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,6 +158,340 @@ pub(super) struct PrettyPrattGrouping {
     pub(super) before: Vec<PrettyAttachedFixedBehavior>,
     /// Fixed syntax rendered after the recursively grouped expression.
     pub(super) after: Vec<PrettyAttachedFixedBehavior>,
+}
+
+#[derive(Clone, Debug, Default)]
+/// Compact syntax graph used to prove an indirect authored Pratt grouping path.
+pub(super) struct PrettyPrattGroupingSyntax {
+    /// Structural helper bodies keyed by generated Node identity; Pratt bodies are absent.
+    nodes: BTreeMap<NodeId, Vec<Vec<PrettyPrattGroupingElement>>>,
+}
+
+#[derive(Clone, Debug)]
+/// One fixed, optional, or semantic step in a grouping-proof sequence.
+enum PrettyPrattGroupingElement {
+    /// Required fixed syntax retained in canonical Pretty form.
+    Fixed(PrettyAttachedFixedBehavior),
+    /// Syntax that can be omitted from the selected grouping derivation.
+    Optional,
+    /// A stored semantic value and its exact storage/attachment shape.
+    Semantic {
+        /// Generated terminal Node, when the field stores one.
+        terminal_node: Option<NodeId>,
+        /// Storage wrappers from the field outward to its terminal.
+        wrappers: Vec<FieldWrapper>,
+        /// Required fixed syntax before the value, absent when any entry is optional.
+        before: Option<Vec<PrettyAttachedFixedBehavior>>,
+        /// Required fixed syntax after the value, absent when any entry is optional.
+        after: Option<Vec<PrettyAttachedFixedBehavior>>,
+        /// Whether every attached entry can disappear with the semantic value.
+        attachment_can_be_empty: bool,
+    },
+    /// A required semantic projection that cannot transparently forward the owner.
+    Opaque,
+}
+
+#[derive(Clone, Debug, Default)]
+/// Empty and single-owner derivations for one grouping syntax fragment.
+struct PrettyPrattGroupingProof {
+    /// Whether the fragment can contribute no required syntax.
+    empty: bool,
+    /// Authored single-owner paths, capped at two to distinguish ambiguity.
+    witnesses: Vec<PrettyPrattGroupingWitness>,
+    /// Whether a non-owner helper cycle made the finite proof inconclusive.
+    cyclic: bool,
+}
+
+#[derive(Clone, Debug)]
+/// One grouping derivation and whether it traverses an authored helper Node.
+struct PrettyPrattGroupingWitness {
+    /// Fixed syntax synthesized around the precedence-sensitive expression.
+    grouping: PrettyPrattGrouping,
+    /// Whether the recursive owner is reached indirectly through a helper.
+    delegated: bool,
+}
+
+impl PrettyPrattGroupingProof {
+    /// Retains enough paths to distinguish a unique witness from ambiguity.
+    fn push_witness(&mut self, witness: PrettyPrattGroupingWitness) {
+        if self.witnesses.len() < 2 {
+            self.witnesses.push(witness);
+        }
+    }
+}
+
+/// Run-local, cycle-safe analyzer for one owning Pratt family.
+struct PrettyPrattGroupingAnalyzer<'a> {
+    /// Structural syntax graph independently projected from source or frozen parse plans.
+    syntax: &'a PrettyPrattGroupingSyntax,
+    /// Completed helper summaries keyed by owner and helper Node identities.
+    memo: BTreeMap<(NodeId, NodeId), PrettyPrattGroupingProof>,
+    /// Active helper Nodes used to reject context-dependent recursive proofs.
+    active: BTreeSet<NodeId>,
+    /// Exact fixed-only helper expansions, including failed proofs.
+    fixed_memo: BTreeMap<NodeId, Option<Vec<PrettyAttachedFixedBehavior>>>,
+    /// Fixed-only helper Nodes active in the current depth-first proof.
+    fixed_active: BTreeSet<NodeId>,
+}
+
+impl<'a> PrettyPrattGroupingAnalyzer<'a> {
+    /// Creates one analyzer whose memo is shared by every atom in a Pratt family.
+    fn new(syntax: &'a PrettyPrattGroupingSyntax) -> Self {
+        Self {
+            syntax,
+            memo: BTreeMap::new(),
+            active: BTreeSet::new(),
+            fixed_memo: BTreeMap::new(),
+            fixed_active: BTreeSet::new(),
+        }
+    }
+
+    /// Proves exactly one required, delimiter-bounded path through an atom sequence.
+    fn grouping(
+        &mut self,
+        owner: NodeId,
+        elements: &[PrettyPrattGroupingElement],
+    ) -> Option<PrettyPrattGroupingWitness> {
+        let proof = self.elements(owner, elements);
+        matches!(proof.witnesses.as_slice(), [witness]
+        if !proof.cyclic
+            && if witness.delegated {
+                witness.grouping.before.len() == 1 && witness.grouping.after.len() == 1
+            } else {
+                !witness.grouping.before.is_empty() && !witness.grouping.after.is_empty()
+            })
+        .then(|| proof.witnesses[0].clone())
+    }
+
+    /// Derives empty and single-owner paths through one element sequence.
+    fn elements(
+        &mut self,
+        owner: NodeId,
+        elements: &[PrettyPrattGroupingElement],
+    ) -> PrettyPrattGroupingProof {
+        let empty = elements
+            .iter()
+            .all(|element| self.element_is_empty(owner, element));
+        let mut proof = PrettyPrattGroupingProof {
+            empty,
+            ..PrettyPrattGroupingProof::default()
+        };
+        for (index, element) in elements.iter().enumerate() {
+            let PrettyPrattGroupingElement::Semantic {
+                terminal_node,
+                wrappers,
+                before: Some(attached_before),
+                after: Some(attached_after),
+                ..
+            } = element
+            else {
+                continue;
+            };
+            if wrappers
+                .iter()
+                .any(|wrapper| matches!(wrapper, FieldWrapper::Optional | FieldWrapper::ZeroOrMore))
+            {
+                continue;
+            }
+            let Some(fixed_before) = self.fixed(owner, &elements[..index]) else {
+                continue;
+            };
+            let Some(fixed_after) = self.fixed(owner, &elements[index + 1..]) else {
+                continue;
+            };
+            let mut nested =
+                terminal_node.map_or_else(PrettyPrattGroupingProof::default, |terminal| {
+                    if terminal == owner {
+                        PrettyPrattGroupingProof {
+                            witnesses: vec![PrettyPrattGroupingWitness {
+                                grouping: PrettyPrattGrouping {
+                                    before: Vec::new(),
+                                    after: Vec::new(),
+                                },
+                                delegated: false,
+                            }],
+                            ..PrettyPrattGroupingProof::default()
+                        }
+                    } else {
+                        self.node(owner, terminal)
+                    }
+                });
+            proof.cyclic |= nested.cyclic;
+            for witness in nested.witnesses.drain(..) {
+                let mut context_before = fixed_before.clone();
+                context_before.extend(attached_before.iter().cloned());
+                let mut context_after = attached_after.clone();
+                context_after.extend(fixed_after.iter().cloned());
+                let context_is_transparent = context_before.is_empty() && context_after.is_empty();
+                let context_is_enclosure = !context_before.is_empty() && !context_after.is_empty();
+                let witness_is_transparent =
+                    witness.grouping.before.is_empty() && witness.grouping.after.is_empty();
+                if context_is_transparent || (context_is_enclosure && witness_is_transparent) {
+                    context_before.extend(witness.grouping.before);
+                    let mut after = witness.grouping.after;
+                    after.extend(context_after);
+                    proof.push_witness(PrettyPrattGroupingWitness {
+                        grouping: PrettyPrattGrouping {
+                            before: context_before,
+                            after,
+                        },
+                        delegated: witness.delegated,
+                    });
+                }
+            }
+        }
+        proof
+    }
+
+    /// Extracts required fixed syntax while optional elements take their empty derivation.
+    fn fixed(
+        &mut self,
+        owner: NodeId,
+        elements: &[PrettyPrattGroupingElement],
+    ) -> Option<Vec<PrettyAttachedFixedBehavior>> {
+        let mut fixed = Vec::new();
+        for element in elements {
+            match element {
+                PrettyPrattGroupingElement::Fixed(token) => fixed.push(token.clone()),
+                PrettyPrattGroupingElement::Optional => {}
+                PrettyPrattGroupingElement::Semantic { .. }
+                    if self.element_is_empty(owner, element) => {}
+                PrettyPrattGroupingElement::Semantic { .. } => {
+                    let nested = self.fixed_only_element(element)?;
+                    if nested.is_empty() {
+                        return None;
+                    }
+                    fixed.extend(nested);
+                }
+                PrettyPrattGroupingElement::Opaque => return None,
+            }
+        }
+        Some(fixed)
+    }
+
+    /// Expands one required semantic marker into exact fixed Pretty syntax.
+    fn fixed_only_element(
+        &mut self,
+        element: &PrettyPrattGroupingElement,
+    ) -> Option<Vec<PrettyAttachedFixedBehavior>> {
+        let PrettyPrattGroupingElement::Semantic {
+            terminal_node: Some(terminal),
+            wrappers,
+            before: Some(before),
+            after: Some(after),
+            ..
+        } = element
+        else {
+            return None;
+        };
+        if wrappers
+            .iter()
+            .any(|wrapper| !matches!(wrapper, FieldWrapper::Boxed))
+        {
+            return None;
+        }
+        let mut fixed = before.clone();
+        fixed.extend(self.fixed_only_node(*terminal)?);
+        fixed.extend(after.iter().cloned());
+        Some(fixed)
+    }
+
+    /// Expands a single-path, non-recursive fixed-only helper Node.
+    fn fixed_only_node(&mut self, node: NodeId) -> Option<Vec<PrettyAttachedFixedBehavior>> {
+        if let Some(fixed) = self.fixed_memo.get(&node) {
+            return fixed.clone();
+        }
+        if !self.fixed_active.insert(node) {
+            return None;
+        }
+        let fixed = self
+            .syntax
+            .nodes
+            .get(&node)
+            .filter(|variants| variants.len() == 1)
+            .map(|variants| variants[0].clone())
+            .and_then(|elements| self.fixed_only_elements(&elements));
+        self.fixed_active.remove(&node);
+        self.fixed_memo.insert(node, fixed.clone());
+        fixed
+    }
+
+    /// Expands one helper sequence containing only required fixed syntax.
+    fn fixed_only_elements(
+        &mut self,
+        elements: &[PrettyPrattGroupingElement],
+    ) -> Option<Vec<PrettyAttachedFixedBehavior>> {
+        let mut fixed = Vec::new();
+        for element in elements {
+            match element {
+                PrettyPrattGroupingElement::Fixed(token) => fixed.push(token.clone()),
+                PrettyPrattGroupingElement::Semantic { .. } => {
+                    fixed.extend(self.fixed_only_element(element)?);
+                }
+                PrettyPrattGroupingElement::Optional | PrettyPrattGroupingElement::Opaque => {
+                    return None;
+                }
+            }
+        }
+        Some(fixed)
+    }
+
+    /// Reports whether one non-path element can disappear without required syntax.
+    fn element_is_empty(&mut self, owner: NodeId, element: &PrettyPrattGroupingElement) -> bool {
+        match element {
+            PrettyPrattGroupingElement::Optional => true,
+            PrettyPrattGroupingElement::Semantic {
+                terminal_node,
+                wrappers,
+                attachment_can_be_empty,
+                ..
+            } => {
+                *attachment_can_be_empty
+                    && (wrappers.iter().any(|wrapper| {
+                        matches!(wrapper, FieldWrapper::Optional | FieldWrapper::ZeroOrMore)
+                    }) || terminal_node.is_some_and(|terminal| {
+                        if terminal == owner {
+                            return false;
+                        }
+                        let proof = self.node(owner, terminal);
+                        !proof.cyclic && proof.empty
+                    }))
+            }
+            PrettyPrattGroupingElement::Fixed(_) | PrettyPrattGroupingElement::Opaque => false,
+        }
+    }
+
+    /// Derives and memoizes one structural helper Node summary.
+    fn node(&mut self, owner: NodeId, node: NodeId) -> PrettyPrattGroupingProof {
+        if let Some(proof) = self.memo.get(&(owner, node)) {
+            return proof.clone();
+        }
+        if !self.active.insert(node) {
+            return PrettyPrattGroupingProof {
+                cyclic: true,
+                ..PrettyPrattGroupingProof::default()
+            };
+        }
+        let mut proof = PrettyPrattGroupingProof::default();
+        if let Some(variants) = self.syntax.nodes.get(&node) {
+            for elements in variants {
+                let variant = self.elements(owner, elements);
+                proof.empty |= variant.empty;
+                proof.cyclic |= variant.cyclic;
+                for witness in variant.witnesses {
+                    proof.push_witness(witness);
+                }
+            }
+        }
+        self.active.remove(&node);
+        for witness in &mut proof.witnesses {
+            witness.delegated = true;
+        }
+        if !proof.cyclic {
+            self.memo.insert((owner, node), proof.clone());
+        }
+        proof
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -203,17 +618,6 @@ pub(super) enum PrettySemanticProjection {
     },
 }
 
-/// Returns the generated-node family directly parsed by a semantic element.
-fn semantic_terminal_node(element: &ElementParsePlan) -> Option<NodeId> {
-    let ElementParseKind::Semantic { projection, .. } = &element.kind else {
-        return None;
-    };
-    match projection.as_ref() {
-        SemanticParseProjection::Direct { terminal_node, .. } => *terminal_node,
-        SemanticParseProjection::FixedPresence { .. } => None,
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Separator and line-breaking rules for a repeated field.
 pub(super) struct PrettyRepetitionBehavior {
@@ -317,6 +721,7 @@ pub(super) fn emitted_pretty_plan(
     nodes: &[NodeParsePlan],
     tokens: &[TokenParsePlan],
 ) -> PrettyEmissionPlan {
+    let grouping_syntax = emitted_pretty_grouping_syntax(nodes);
     PrettyEmissionPlan {
         tokens: tokens
             .iter()
@@ -332,14 +737,109 @@ pub(super) fn emitted_pretty_plan(
             .map(|node| {
                 node.configured_traits
                     .contains(&ConfiguredTraitRecipe::Pretty)
-                    .then(|| emitted_pretty_node_behavior(node))
+                    .then(|| emitted_pretty_node_behavior(node, &grouping_syntax))
             })
             .collect(),
     }
 }
 
+/// Projects frozen parse plans into the compact syntax graph used for grouping proofs.
+fn emitted_pretty_grouping_syntax(nodes: &[NodeParsePlan]) -> PrettyPrattGroupingSyntax {
+    let nodes = nodes
+        .iter()
+        .filter_map(|node| {
+            let variants = match &node.body {
+                NodeBodyPlan::Struct { elements, .. } => vec![elements.as_slice()],
+                NodeBodyPlan::Enum { variants, .. } => variants
+                    .iter()
+                    .map(|variant| variant.elements.as_slice())
+                    .collect(),
+                NodeBodyPlan::Pratt(_) => return None,
+            };
+            let variants = variants
+                .into_iter()
+                .map(|elements| {
+                    let behaviors = emitted_pretty_elements(elements);
+                    elements
+                        .iter()
+                        .zip(&behaviors)
+                        .map(|(element, behavior)| {
+                            emitted_pretty_grouping_element(element, behavior)
+                        })
+                        .collect()
+                })
+                .collect();
+            Some((node.node, variants))
+        })
+        .collect();
+    PrettyPrattGroupingSyntax { nodes }
+}
+
+/// Projects one frozen parse element into grouping-proof syntax.
+fn emitted_pretty_grouping_element(
+    element: &ElementParsePlan,
+    behavior: &PrettyElementBehavior,
+) -> PrettyPrattGroupingElement {
+    match (&element.kind, behavior) {
+        (
+            ElementParseKind::Fixed { .. },
+            PrettyElementBehavior::Fixed {
+                spelling,
+                spacing,
+                rendering,
+                ..
+            },
+        ) => PrettyPrattGroupingElement::Fixed(PrettyAttachedFixedBehavior {
+            spelling: spelling.clone(),
+            spacing: *spacing,
+            rendering: *rendering,
+        }),
+        (
+            ElementParseKind::OptionalFixedTokenGroup { .. },
+            PrettyElementBehavior::OptionalFixedTokenGroup { .. },
+        ) => PrettyPrattGroupingElement::Optional,
+        (
+            ElementParseKind::Semantic { projection, .. },
+            PrettyElementBehavior::Semantic { projection: pretty },
+        ) => match (projection.as_ref(), pretty) {
+            (
+                SemanticParseProjection::Direct {
+                    terminal_node,
+                    wrappers,
+                    ..
+                },
+                PrettySemanticProjection::Direct { attachment, .. },
+            ) => PrettyPrattGroupingElement::Semantic {
+                terminal_node: *terminal_node,
+                wrappers: wrappers.clone(),
+                before: attachment.as_ref().map_or(Some(Vec::new()), |attachment| {
+                    required_pretty_syntax(&attachment.before)
+                }),
+                after: attachment.as_ref().map_or(Some(Vec::new()), |attachment| {
+                    required_pretty_syntax(&attachment.after)
+                }),
+                attachment_can_be_empty: attachment.as_ref().is_none_or(|attachment| {
+                    attachment
+                        .before
+                        .iter()
+                        .chain(&attachment.after)
+                        .all(|syntax| matches!(syntax, PrettyAttachedSyntaxBehavior::Optional(_)))
+                }),
+            },
+            (SemanticParseProjection::FixedPresence { .. }, _)
+            | (_, PrettySemanticProjection::FixedPresence { .. }) => {
+                PrettyPrattGroupingElement::Opaque
+            }
+        },
+        _ => PrettyPrattGroupingElement::Opaque,
+    }
+}
+
 /// Builds rendering behavior for one Node and all materialized applications.
-pub(super) fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBehavior {
+pub(super) fn emitted_pretty_node_behavior(
+    node: &NodeParsePlan,
+    grouping_syntax: &PrettyPrattGroupingSyntax,
+) -> PrettyNodeBehavior {
     let variant_pretty = match &node.body {
         NodeBodyPlan::Struct { .. } => vec![PrettyHints::default()],
         NodeBodyPlan::Enum { variants, .. } => variants
@@ -377,6 +877,7 @@ pub(super) fn emitted_pretty_node_behavior(node: &NodeParsePlan) -> PrettyNodeBe
             pratt,
             &applications,
             &mut variants,
+            grouping_syntax,
         )),
         NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
     };
@@ -397,6 +898,7 @@ pub(super) fn emitted_pretty_pratt_behavior(
     pratt: &PrattParsePlan,
     applications: &[MaterializedApplicationId],
     variants: &mut [Vec<PrettyElementBehavior>],
+    grouping_syntax: &PrettyPrattGroupingSyntax,
 ) -> PrettyPrattBehavior {
     let declaration_variants = trait_variants(&node.body);
     let mut positions = vec![None; declaration_variants.len()];
@@ -441,7 +943,13 @@ pub(super) fn emitted_pretty_pratt_behavior(
         })
         .collect();
     PrettyPrattBehavior {
-        grouping: pretty_pratt_grouping(node.node, &declaration_variants, variants, &positions),
+        grouping: pretty_pratt_grouping(
+            node.node,
+            &declaration_variants,
+            variants,
+            &positions,
+            grouping_syntax,
+        ),
         variants: variant_behaviors,
     }
 }
@@ -539,68 +1047,31 @@ pub(super) fn pretty_pratt_grouping(
     declaration_variants: &[VariantParsePlan],
     behaviors: &[Vec<PrettyElementBehavior>],
     positions: &[Option<PrattPosition>],
+    grouping_syntax: &PrettyPrattGroupingSyntax,
 ) -> Option<PrettyPrattGrouping> {
-    declaration_variants
+    let mut analyzer = PrettyPrattGroupingAnalyzer::new(grouping_syntax);
+    let candidates = declaration_variants
         .iter()
         .zip(behaviors)
         .zip(positions)
-        .find_map(|((variant, behavior), position)| {
-            if !matches!(position, Some(PrattPosition::Atom)) {
-                return None;
-            }
-            match (variant.elements.as_slice(), behavior.as_slice()) {
-                (
-                    [element],
-                    [
-                        PrettyElementBehavior::Semantic {
-                            projection:
-                                PrettySemanticProjection::Direct {
-                                    attachment: Some(attachment),
-                                    ..
-                                },
-                        },
-                    ],
-                ) if semantic_terminal_node(element) == Some(owner) => Some(PrettyPrattGrouping {
-                    before: required_pretty_syntax(&attachment.before)?,
-                    after: required_pretty_syntax(&attachment.after)?,
-                }),
-                (
-                    [open, semantic, close],
-                    [
-                        PrettyElementBehavior::Fixed {
-                            spelling: open_spelling,
-                            spacing: open_spacing,
-                            rendering: open_rendering,
-                            ..
-                        },
-                        PrettyElementBehavior::Semantic { .. },
-                        PrettyElementBehavior::Fixed {
-                            spelling: close_spelling,
-                            spacing: close_spacing,
-                            rendering: close_rendering,
-                            ..
-                        },
-                    ],
-                ) if semantic_terminal_node(semantic) == Some(owner)
-                    && matches!(open.kind, ElementParseKind::Fixed { .. })
-                    && matches!(close.kind, ElementParseKind::Fixed { .. }) =>
-                {
-                    Some(PrettyPrattGrouping {
-                        before: vec![PrettyAttachedFixedBehavior {
-                            spelling: open_spelling.clone(),
-                            spacing: *open_spacing,
-                            rendering: *open_rendering,
-                        }],
-                        after: vec![PrettyAttachedFixedBehavior {
-                            spelling: close_spelling.clone(),
-                            spacing: *close_spacing,
-                            rendering: *close_rendering,
-                        }],
-                    })
-                }
-                _ => None,
-            }
+        .filter(|(_, position)| matches!(position, Some(PrattPosition::Atom)))
+        .map(|((variant, behavior), _)| {
+            variant
+                .elements
+                .iter()
+                .zip(behavior)
+                .map(|(element, behavior)| emitted_pretty_grouping_element(element, behavior))
+                .collect::<Vec<_>>()
         })
+        .filter_map(|elements| analyzer.grouping(owner, &elements))
+        .collect::<Vec<_>>();
+    if let Some(direct) = candidates.iter().find(|candidate| !candidate.delegated) {
+        return Some(direct.grouping.clone());
+    }
+    let [delegated] = candidates.as_slice() else {
+        return None;
+    };
+    Some(delegated.grouping.clone())
 }
 
 /// Projects source-order parse elements into fixed and semantic rendering behavior.
@@ -820,12 +1291,129 @@ pub(super) fn pretty_presence(wrappers: &[FieldWrapper]) -> PrettyPresence {
     }
 }
 
+/// Projects authoritative source correlations into the compact grouping syntax graph.
+fn authoritative_pretty_grouping_syntax(
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Result<PrettyPrattGroupingSyntax, String> {
+    let source = lowered.source_modeled.source_model();
+    let resolved = lowered.source_modeled.resolved();
+    let mut nodes = BTreeMap::new();
+    for source_node in &source.nodes {
+        let resolved_node = &resolved.nodes[source_node.resolved_node.index()];
+        let variants = match &source_node.body {
+            SourceNodeBody::Struct(elements) | SourceNodeBody::Presence(elements) => {
+                vec![elements.as_slice()]
+            }
+            SourceNodeBody::Enum(variants) => variants
+                .iter()
+                .map(|variant| variant.elements.as_slice())
+                .collect(),
+            SourceNodeBody::Pratt(_) => continue,
+        };
+        let variants = variants
+            .into_iter()
+            .map(|elements| {
+                let behaviors = authoritative_pretty_elements(lowered, resolved_node, elements)?;
+                elements
+                    .iter()
+                    .zip(&behaviors)
+                    .map(|(element, behavior)| {
+                        authoritative_pretty_grouping_element(
+                            resolved_node,
+                            element,
+                            behavior,
+                            resolved,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        nodes.insert(source_node.resolved_node, variants);
+    }
+    Ok(PrettyPrattGroupingSyntax { nodes })
+}
+
+/// Projects one authoritative source element into grouping-proof syntax.
+fn authoritative_pretty_grouping_element(
+    resolved_node: &ResolvedNode,
+    element: &GrammarElement,
+    behavior: &PrettyElementBehavior,
+    resolved: &ResolvedSourceGrammar,
+) -> Result<PrettyPrattGroupingElement, String> {
+    match (element, behavior) {
+        (
+            GrammarElement::FixedToken { .. },
+            PrettyElementBehavior::Fixed {
+                spelling,
+                spacing,
+                rendering,
+                ..
+            },
+        ) => Ok(PrettyPrattGroupingElement::Fixed(
+            PrettyAttachedFixedBehavior {
+                spelling: spelling.clone(),
+                spacing: *spacing,
+                rendering: *rendering,
+            },
+        )),
+        (
+            GrammarElement::OptionalFixedTokenGroup { .. },
+            PrettyElementBehavior::OptionalFixedTokenGroup { .. },
+        ) => Ok(PrettyPrattGroupingElement::Optional),
+        (
+            GrammarElement::SemanticField {
+                resolved_field,
+                projection,
+                ..
+            },
+            PrettyElementBehavior::Semantic { projection: pretty },
+        ) => match (projection, pretty) {
+            (
+                crate::source_model::SemanticFieldProjection::Direct,
+                PrettySemanticProjection::Direct { attachment, .. },
+            ) => {
+                let field = resolved_node
+                    .fields
+                    .iter()
+                    .find(|field| field.id == *resolved_field)
+                    .ok_or_else(|| "a Pretty grouping field lacks resolved syntax".to_owned())?;
+                let projection = authored_projection(&field.ty, resolved)?;
+                Ok(PrettyPrattGroupingElement::Semantic {
+                    terminal_node: projection.terminal_node,
+                    wrappers: projection.wrappers,
+                    before: attachment.as_ref().map_or(Some(Vec::new()), |attachment| {
+                        required_pretty_syntax(&attachment.before)
+                    }),
+                    after: attachment.as_ref().map_or(Some(Vec::new()), |attachment| {
+                        required_pretty_syntax(&attachment.after)
+                    }),
+                    attachment_can_be_empty: attachment.as_ref().is_none_or(|attachment| {
+                        attachment
+                            .before
+                            .iter()
+                            .chain(&attachment.after)
+                            .all(|syntax| {
+                                matches!(syntax, PrettyAttachedSyntaxBehavior::Optional(_))
+                            })
+                    }),
+                })
+            }
+            (crate::source_model::SemanticFieldProjection::FixedPresence { .. }, _)
+            | (_, PrettySemanticProjection::FixedPresence { .. }) => {
+                Ok(PrettyPrattGroupingElement::Opaque)
+            }
+        },
+        _ => Ok(PrettyPrattGroupingElement::Opaque),
+    }
+}
+
 /// Reconstructs the Pretty plan from authored source for independent validation.
 pub(super) fn authoritative_pretty_plan(
     lowered: &crate::materialization::LoweredGrammar,
     resolved: &crate::resolution::ResolvedSourceGrammar,
 ) -> Result<Option<PrettyEmissionPlan>, String> {
     let source = lowered.source_modeled.source_model();
+    let grouping_syntax = authoritative_pretty_grouping_syntax(lowered)?;
     let tokens = resolved
         .content_tokens
         .iter()
@@ -873,7 +1461,13 @@ pub(super) fn authoritative_pretty_plan(
             {
                 return Ok(None);
             }
-            authoritative_pretty_node_behavior(lowered, resolved_node, source_node).map(Some)
+            authoritative_pretty_node_behavior(
+                lowered,
+                resolved_node,
+                source_node,
+                &grouping_syntax,
+            )
+            .map(Some)
         })
         .collect::<Result<Vec<_>, String>>()?;
     let plan = PrettyEmissionPlan { tokens, nodes };
@@ -885,6 +1479,7 @@ pub(super) fn authoritative_pretty_node_behavior(
     lowered: &crate::materialization::LoweredGrammar,
     resolved_node: &ResolvedNode,
     source_node: &SourceNode,
+    grouping_syntax: &PrettyPrattGroupingSyntax,
 ) -> Result<PrettyNodeBehavior, String> {
     let variant_pretty = match &source_node.body {
         SourceNodeBody::Struct(_) | SourceNodeBody::Presence(_) => vec![PrettyHints::default()],
@@ -933,6 +1528,7 @@ pub(super) fn authoritative_pretty_node_behavior(
             source_variants,
             &applications,
             &mut variants,
+            grouping_syntax,
         )?),
         SourceNodeBody::Struct(_) | SourceNodeBody::Presence(_) | SourceNodeBody::Enum(_) => None,
     };
@@ -954,6 +1550,7 @@ pub(super) fn authoritative_pretty_pratt_behavior(
     source_variants: &[crate::source_model::SourcePrattVariant],
     applications: &[MaterializedApplicationId],
     variants: &mut [Vec<PrettyElementBehavior>],
+    grouping_syntax: &PrettyPrattGroupingSyntax,
 ) -> Result<PrettyPrattBehavior, String> {
     let resolved = lowered.source_modeled.resolved();
     let positions = source_variants
@@ -1003,6 +1600,7 @@ pub(super) fn authoritative_pretty_pratt_behavior(
             variants,
             &positions,
             resolved,
+            grouping_syntax,
         )?,
         variants: planned,
     })
@@ -1052,88 +1650,34 @@ pub(super) fn authoritative_pretty_pratt_grouping(
     behaviors: &[Vec<PrettyElementBehavior>],
     positions: &[PrattPosition],
     resolved: &ResolvedSourceGrammar,
+    grouping_syntax: &PrettyPrattGroupingSyntax,
 ) -> Result<Option<PrettyPrattGrouping>, String> {
+    let mut analyzer = PrettyPrattGroupingAnalyzer::new(grouping_syntax);
+    let mut candidates = Vec::new();
     for ((variant, behavior), position) in source_variants.iter().zip(behaviors).zip(positions) {
         if !matches!(position, PrattPosition::Atom) {
             continue;
         }
-        let is_recursive = |element: &GrammarElement| -> Result<bool, String> {
-            let GrammarElement::SemanticField {
-                resolved_field,
-                projection: crate::source_model::SemanticFieldProjection::Direct,
-                ..
-            } = element
-            else {
-                return Ok(false);
-            };
-            let field = resolved_node
-                .fields
-                .iter()
-                .find(|field| field.id == *resolved_field)
-                .ok_or_else(|| "a Pratt grouping operand lacks resolved syntax".to_owned())?;
-            Ok(authored_projection(&field.ty, resolved)?.terminal_node == Some(resolved_node.id))
-        };
-        match (variant.common.elements.as_slice(), behavior.as_slice()) {
-            (
-                [semantic],
-                [
-                    PrettyElementBehavior::Semantic {
-                        projection:
-                            PrettySemanticProjection::Direct {
-                                attachment: Some(attachment),
-                                ..
-                            },
-                    },
-                ],
-            ) if is_recursive(semantic)? => {
-                return Ok(Some(PrettyPrattGrouping {
-                    before: required_pretty_syntax(&attachment.before).ok_or_else(|| {
-                        "a Pratt grouping attachment cannot contain optional syntax".to_owned()
-                    })?,
-                    after: required_pretty_syntax(&attachment.after).ok_or_else(|| {
-                        "a Pratt grouping attachment cannot contain optional syntax".to_owned()
-                    })?,
-                }));
-            }
-            (
-                [
-                    GrammarElement::FixedToken { .. },
-                    semantic,
-                    GrammarElement::FixedToken { .. },
-                ],
-                [
-                    PrettyElementBehavior::Fixed {
-                        spelling: open_spelling,
-                        spacing: open_spacing,
-                        rendering: open_rendering,
-                        ..
-                    },
-                    PrettyElementBehavior::Semantic { .. },
-                    PrettyElementBehavior::Fixed {
-                        spelling: close_spelling,
-                        spacing: close_spacing,
-                        rendering: close_rendering,
-                        ..
-                    },
-                ],
-            ) if is_recursive(semantic)? => {
-                return Ok(Some(PrettyPrattGrouping {
-                    before: vec![PrettyAttachedFixedBehavior {
-                        spelling: open_spelling.clone(),
-                        spacing: *open_spacing,
-                        rendering: *open_rendering,
-                    }],
-                    after: vec![PrettyAttachedFixedBehavior {
-                        spelling: close_spelling.clone(),
-                        spacing: *close_spacing,
-                        rendering: *close_rendering,
-                    }],
-                }));
-            }
-            _ => {}
+        let elements = variant
+            .common
+            .elements
+            .iter()
+            .zip(behavior)
+            .map(|(element, behavior)| {
+                authoritative_pretty_grouping_element(resolved_node, element, behavior, resolved)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if let Some(grouping) = analyzer.grouping(resolved_node.id, &elements) {
+            candidates.push(grouping);
         }
     }
-    Ok(None)
+    if let Some(direct) = candidates.iter().find(|candidate| !candidate.delegated) {
+        return Ok(Some(direct.grouping.clone()));
+    }
+    let [delegated] = candidates.as_slice() else {
+        return Ok(None);
+    };
+    Ok(Some(delegated.grouping.clone()))
 }
 
 /// Reconstructs ordered element rendering behavior from authored Node shapes.
@@ -1395,13 +1939,16 @@ pub(super) fn render_pratt_node_pretty(
         .expect("validated typed Pretty Pratt behavior");
     let (impl_generics, type_generics, where_clause) = pretty_impl_parts(facade, node);
     let variants = trait_variants(&node.body);
-    let arms = variants
+    let variant_count = variants.len();
+    let rendered_variants = variants
         .iter()
         .zip(&behavior.variant_layouts)
         .zip(&behavior.variants)
         .zip(&behavior.variant_pretty)
         .zip(&pratt_behavior.variants)
-        .map(|((((variant, layout), behavior), variant_pretty), pratt_variant)| {
+        .enumerate()
+        .map(
+            |(variant_index, ((((variant, layout), behavior), variant_pretty), pratt_variant))| {
             let (pattern, bindings) = variant_bound_pattern(&node.ident, variant, "pretty_pratt");
             let mut binding_index = 0_usize;
             let mut semantic_index = 0_usize;
@@ -1472,55 +2019,61 @@ pub(super) fn render_pratt_node_pretty(
                             ..
                         },
                     ) => {
-                        assert!(
-                            matches!(container.as_ref(), PlannedContainer::Direct { .. })
-                                && wrappers
-                                    .iter()
-                                    .all(|wrapper| matches!(wrapper, FieldWrapper::Boxed)),
-                            "validated Pratt operands are direct and may only use Box storage wrappers",
-                        );
-                    let binding = &bindings[binding_index];
-                    binding_index += 1;
-                    let operand = &pratt_variant.operands[semantic_index];
-                    semantic_index += 1;
-                    let semantic = if let PrettyPrattOperandBehavior::Recursive {
-                        minimum,
-                        next,
-                        ..
-                    } = operand
-                    {
-                        let minimum = render_pretty_pratt_minimum(*minimum);
-                        let next = render_pretty_pratt_next(*next);
-                        quote!((#binding).__recursa_pretty_pratt(context, #minimum, #next))
-                    } else {
-                        quote!(#facade::Pretty::pretty(#binding, context))
-                    };
-                    let rendered = if let Some(attachment) = attachment {
-                        let unit = render_pretty_attachment_unit(
-                            attachment,
-                            *provenance,
-                            semantic,
-                        );
-                        quote! {
-                            context.with_child(#index, |context| {
-                                context.with_child(0, |context| { #unit Ok(()) })
-                            })?;
+                        let binding = &bindings[binding_index];
+                        binding_index += 1;
+                        let operand = &pratt_variant.operands[semantic_index];
+                        semantic_index += 1;
+                        match operand {
+                            PrettyPrattOperandBehavior::Ordinary => {
+                                render_non_pratt_pretty_element(
+                                    plan,
+                                    index,
+                                    element,
+                                    behavior,
+                                    Some((quote!(#binding), true)),
+                                )
+                            }
+                            PrettyPrattOperandBehavior::Recursive { minimum, next, .. } => {
+                                assert!(
+                                    matches!(container.as_ref(), PlannedContainer::Direct { .. })
+                                        && wrappers.iter().all(|wrapper| {
+                                            matches!(wrapper, FieldWrapper::Boxed)
+                                        }),
+                                    "validated recursive Pratt operands are direct and may only use Box storage wrappers",
+                                );
+                                let minimum = render_pretty_pratt_minimum(*minimum);
+                                let next = render_pretty_pratt_next(*next);
+                                let semantic = quote!(
+                                    (#binding).__recursa_pretty_pratt(context, #minimum, #next)
+                                );
+                                let rendered = if let Some(attachment) = attachment {
+                                    let unit = render_pretty_attachment_unit(
+                                        attachment,
+                                        *provenance,
+                                        semantic,
+                                    );
+                                    quote! {
+                                        context.with_child(#index, |context| {
+                                            context.with_child(0, |context| { #unit Ok(()) })
+                                        })?;
+                                    }
+                                } else {
+                                    let child = pretty_provenance_child_method(*provenance);
+                                    quote! {
+                                        context.with_child(#index, |context| {
+                                            context.#child(0, |context| { #semantic })
+                                        })?;
+                                    }
+                                };
+                                render_pretty_presence(
+                                    pretty,
+                                    *presence,
+                                    wrappers,
+                                    quote!(#binding),
+                                    rendered,
+                                )
+                            }
                         }
-                    } else {
-                        let child = pretty_provenance_child_method(*provenance);
-                        quote! {
-                            context.with_child(#index, |context| {
-                                context.#child(0, |context| { #semantic })
-                            })?;
-                        }
-                    };
-                    render_pretty_presence(
-                        pretty,
-                        *presence,
-                        wrappers,
-                        quote!(#binding),
-                        rendered,
-                    )
                     }
                     _ => unreachable!("validated Pretty Pratt semantic projection"),
                 },
@@ -1557,8 +2110,7 @@ pub(super) fn render_pratt_node_pretty(
                     })
                     .collect::<proc_macro2::TokenStream>()
             });
-            quote! {
-                #pattern => {
+            let helper_body = quote! {
                     let __recursa_parenthesize = #entry_check
                         || next_lbp.is_some_and(|next| next >= #exit);
                     if __recursa_parenthesize {
@@ -1571,9 +2123,44 @@ pub(super) fn render_pratt_node_pretty(
                         #group_close
                     }
                     Ok(())
+            };
+            let helper = format_ident!(
+                "__recursa_pretty_pratt_variant_{node_index}_{variant_index}"
+            );
+            let helper_body = if variant_count == 1 {
+                quote! {
+                    let #pattern = self;
+                    #helper_body
                 }
-            }
-        });
+            } else {
+                quote! {
+                    match self {
+                        #pattern => { #helper_body }
+                        _ => unreachable!("Pratt Pretty dispatched to the wrong variant helper"),
+                    }
+                }
+            };
+            let variant_pattern = variant_pattern(node_ident, &variant.ident, variant.style);
+            (
+                quote! {
+                    #variant_pattern => self.#helper(context, min_bp, next_lbp)
+                },
+                quote! {
+                    fn #helper(
+                        &self,
+                        context: &mut #facade::PrettyContext,
+                        min_bp: u16,
+                        next_lbp: Option<u16>,
+                    ) -> ::core::fmt::Result {
+                        #helper_body
+                    }
+                },
+            )
+        },
+        )
+        .collect::<Vec<_>>();
+    let arms = rendered_variants.iter().map(|(arm, _)| arm);
+    let helper_methods = rendered_variants.iter().map(|(_, helper)| helper);
     let rendered_node = render_pretty_hints(
         &behavior.pretty,
         quote!(self.__recursa_pretty_pratt(context, 0, None)?;),
@@ -1588,6 +2175,8 @@ pub(super) fn render_pratt_node_pretty(
             ) -> ::core::fmt::Result {
                 match self { #(#arms),* }
             }
+
+            #(#helper_methods)*
         }
 
         impl #impl_generics #facade::Pretty for #node_ident #type_generics #where_clause {
@@ -1636,7 +2225,6 @@ fn render_non_pratt_pretty_element(
     behavior: &PrettyElementBehavior,
     semantic_value: Option<(proc_macro2::TokenStream, bool)>,
 ) -> proc_macro2::TokenStream {
-    let facade = &plan.facade;
     match (&element.kind, behavior) {
         (
             ElementParseKind::Fixed { .. },
@@ -1660,6 +2248,13 @@ fn render_non_pratt_pretty_element(
             },
         ) => {
             let (value, borrowed) = semantic_value.expect("semantic Pretty element has a value");
+            let content_token = matches!(
+                parse_projection.as_ref(),
+                SemanticParseProjection::Direct {
+                    explorer_terminal: ExplorerTerminalPlan::Content(_),
+                    ..
+                }
+            );
             match (parse_projection.as_ref(), pretty_projection) {
                 (
                     SemanticParseProjection::FixedPresence { .. },
@@ -1687,7 +2282,7 @@ fn render_non_pratt_pretty_element(
                 ) => {
                     let rendered = if let Some(attachment) = attachment {
                         render_pretty_attached_semantic(
-                            facade,
+                            plan,
                             index,
                             value.clone(),
                             borrowed,
@@ -1696,6 +2291,7 @@ fn render_non_pratt_pretty_element(
                             repetition.as_ref(),
                             *presence,
                             *provenance,
+                            content_token,
                         )
                     } else {
                         let reference = if borrowed {
@@ -1704,11 +2300,12 @@ fn render_non_pratt_pretty_element(
                             quote!(&#value)
                         };
                         render_pretty_semantic(
-                            facade,
+                            plan,
                             index,
                             reference,
                             repetition.as_ref(),
                             *provenance,
+                            content_token,
                         )
                     };
                     let reference = if borrowed { value } else { quote!(&#value) };
@@ -1833,12 +2430,23 @@ pub(super) fn render_node_pretty(
 
 /// Renders one semantic field with its presence, repetition, attachment, and provenance rules.
 pub(super) fn render_pretty_semantic(
-    facade: &Ident,
+    plan: &EmissionPlan,
     index: usize,
     value: proc_macro2::TokenStream,
     repetition: Option<&PrettyRepetitionBehavior>,
     provenance: PrettyProvenanceBehavior,
+    content_token: bool,
 ) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
+    let pretty = if content_token {
+        quote! {
+            <_ as #module_anchor::__RecursaPrettyWith>
+                ::__recursa_pretty_with(#value, context)
+        }
+    } else {
+        quote!(#facade::Pretty::pretty(#value, context))
+    };
     let render_value = if let Some(repetition) = repetition {
         let separator = repetition
             .separator
@@ -1850,11 +2458,11 @@ pub(super) fn render_pretty_semantic(
         let space_before_separator = repetition.space_before_separator;
         quote! {
             context.with_repetition_style(#separator, #trailing, #hard_break, #leading, #space_before_separator, |context| {
-                #facade::Pretty::pretty(#value, context)
+                #pretty
             })
         }
     } else {
-        quote!(#facade::Pretty::pretty(#value, context))
+        pretty
     };
     if repetition.is_some() {
         quote! {
@@ -2160,7 +2768,7 @@ pub(super) fn render_pretty_attachment_unit(
 #[allow(clippy::too_many_arguments)]
 /// Renders an attached semantic value while retaining its source-map child.
 pub(super) fn render_pretty_attached_semantic(
-    facade: &Ident,
+    plan: &EmissionPlan,
     element_index: usize,
     value: proc_macro2::TokenStream,
     value_is_reference: bool,
@@ -2169,9 +2777,19 @@ pub(super) fn render_pretty_attached_semantic(
     repetition: Option<&PrettyRepetitionBehavior>,
     presence: PrettyPresence,
     provenance: PrettyProvenanceBehavior,
+    content_token: bool,
 ) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
     let render_unit = |terminal: proc_macro2::TokenStream| {
-        let semantic = quote!(#facade::Pretty::pretty(#terminal, context));
+        let semantic = if content_token {
+            quote! {
+                <_ as #module_anchor::__RecursaPrettyWith>
+                    ::__recursa_pretty_with(#terminal, context)
+            }
+        } else {
+            quote!(#facade::Pretty::pretty(#terminal, context))
+        };
         render_pretty_attachment_unit(attachment, provenance, semantic)
     };
 

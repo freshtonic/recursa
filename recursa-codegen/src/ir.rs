@@ -26,6 +26,8 @@ pub struct GrammarDescription {
     pub max_lookahead: usize,
     /// Grammar-wide equivalence relation for exact-text predicates.
     pub text_equivalence: TextEquivalence,
+    /// Fixed token-kind pairs whose nesting may be scanned structurally during dispatch.
+    pub balanced_delimiters: Vec<BalancedDelimiter>,
     /// Number of source identities accepted by [`Location`] values.
     pub source_count: u32,
     /// Root types whose FOLLOW set is seeded with end-of-input.
@@ -59,6 +61,7 @@ impl GrammarDescription {
             kind_count,
             max_lookahead,
             text_equivalence,
+            balanced_delimiters: Vec::new(),
             source_count: 1,
             entry_types: Vec::new(),
             kinds: Vec::new(),
@@ -139,6 +142,24 @@ impl GrammarDescription {
         self.types.push(description);
         id
     }
+
+    /// Registers one fixed opening and closing token-kind pair for structural dispatch.
+    pub fn push_balanced_delimiter(&mut self, open: KindId, close: KindId) {
+        let delimiter = BalancedDelimiter { open, close };
+        if !self.balanced_delimiters.contains(&delimiter) {
+            self.balanced_delimiters.push(delimiter);
+            self.balanced_delimiters.sort_unstable();
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// One fixed delimiter pair whose nested occurrences have balanced structural meaning.
+pub struct BalancedDelimiter {
+    /// Opening token kind.
+    pub open: KindId,
+    /// Closing token kind.
+    pub close: KindId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

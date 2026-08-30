@@ -313,6 +313,59 @@ struct Root {
     }
 
     #[test]
+    fn source_analysis_reuses_published_decision_validation_but_corruption_checks_remain_available()
+    {
+        let package = fixture(
+            r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { keywords { SELECT => "select" } }
+
+#[derive(recursa::Node)]
+#[tok(SELECT)]
+struct Root;
+"#,
+        );
+        crate::decision_plan::reset_independent_decision_validations_for_test();
+        crate::decision_plan::reset_decision_plan_constructions_for_test();
+
+        let success = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("the source grammar is valid");
+
+        assert_eq!(
+            crate::decision_plan::independent_decision_validations_for_test(),
+            0,
+            "publication already validated the originating decision product",
+        );
+        assert_eq!(
+            crate::decision_plan::decision_plan_constructions_for_test(),
+            1,
+            "publication must validate the product without reconstructing it",
+        );
+
+        let output = success
+            .analyzed
+            .analysis
+            .output
+            .as_ref()
+            .expect("successful analysis output");
+        let mut corrupted = output.decisions().clone();
+        corrupted.corrupt_site_product_for_test();
+        assert!(
+            corrupted
+                .validate(&success.analyzed.lowered.grammar, output.first_by_type())
+                .is_err(),
+            "the independent validation seam must still reject corrupted products",
+        );
+        assert_eq!(
+            crate::decision_plan::independent_decision_validations_for_test(),
+            1,
+        );
+    }
+
+    #[test]
     fn malformed_full_pipeline_inputs_return_diagnostics_without_panicking() {
         let cases = [
             ("{{", "grammar.rs"),

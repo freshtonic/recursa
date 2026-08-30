@@ -14,6 +14,8 @@ recursa::tokens! {
         NEVER => "NEVER",
         EXISTS => "EXISTS",
         HAS => "HAS",
+        LIKE => "LIKE",
+        ESCAPE => "ESCAPE",
         NULL => "NULL",
         BEGIN => "BEGIN",
         GROUP => "GROUP",
@@ -41,6 +43,12 @@ pub struct Integer<'input> {
 pub struct Name<'input> {
     #[lex(pattern = r"[A-Za-z_][A-Za-z0-9_]*")]
     pub value: NameText<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct EscapeClause<'input> {
+    #[tok(ESCAPE, this)]
+    pub value: Name<'input>,
 }
 
 #[derive(recursa::Node)]
@@ -80,6 +88,13 @@ pub enum Expr<'input> {
     #[tok(IS, KW_NOT)]
     #[pretty(group = inconsistent)]
     IsNot(Box<Self>, #[pretty(break_before = soft)] Box<Self>),
+
+    #[parse(postfix, bp = 5)]
+    Like(
+        Box<Self>,
+        #[tok(LIKE, this)] Box<Self>,
+        Option<EscapeClause<'input>>,
+    ),
 
     #[parse(infix, lbp = 25, rbp = 26)]
     #[tok(DOUBLE_COLON)]
