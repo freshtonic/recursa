@@ -25,6 +25,13 @@ recursa::tokens! {
         B => "B",
         C => "C",
         D => "D",
+        SELECT => "SELECT",
+        UNION => "UNION",
+        END => "END",
+    }
+    punctuation {
+        LPAREN => "(",
+        RPAREN => ")",
     }
 }
 
@@ -238,3 +245,71 @@ pub struct TokenC;
 #[derive(recursa::Node)]
 #[tok(D)]
 pub struct TokenD;
+
+#[derive(recursa::Node)]
+pub enum BalancedNested {
+    #[tok(SELECT)]
+    Select,
+    Group(#[tok(LPAREN, this, RPAREN)] Box<Self>),
+}
+
+#[derive(recursa::Node)]
+pub enum BalancedChoice {
+    Query(BalancedQuery),
+    Scalar(BalancedScalar),
+}
+
+#[derive(recursa::Node)]
+pub struct BalancedQuery {
+    #[tok(LPAREN, this, RPAREN)]
+    pub left: BalancedNested,
+    #[tok(UNION)]
+    pub right: BalancedNested,
+}
+
+#[derive(recursa::Node)]
+pub struct BalancedScalar(#[tok(LPAREN, this, RPAREN)] pub BalancedNested);
+
+#[derive(recursa::Node)]
+pub struct BalancedRoot {
+    pub choice: BalancedChoice,
+    pub end: BalancedEnd,
+}
+
+#[derive(recursa::Node)]
+#[tok(END)]
+pub struct BalancedEnd;
+
+#[derive(recursa::Node)]
+pub struct BalancedOuterSet {
+    pub left: BalancedChoice,
+    #[tok(UNION)]
+    pub right: BalancedNested,
+    pub end: BalancedEnd,
+}
+
+/// Choice whose FIRST-2 language coalesces LPAREN with an ordinary starter.
+#[derive(recursa::Node)]
+pub enum MixedBalancedChoice {
+    Routed(MixedRouted),
+    Query(MixedEnclosedC),
+}
+
+/// One branch with both an ordinary route and a balanced-enclosure route.
+#[derive(recursa::Node)]
+pub enum MixedRouted {
+    Ordinary(MixedOrdinary),
+    Enclosed(MixedEnclosedB),
+}
+
+#[derive(recursa::Node)]
+#[tok(A, SELECT, D)]
+pub struct MixedOrdinary;
+
+#[derive(recursa::Node)]
+#[tok(LPAREN, SELECT, RPAREN, B)]
+pub struct MixedEnclosedB;
+
+#[derive(recursa::Node)]
+#[tok(LPAREN, SELECT, RPAREN, C)]
+pub struct MixedEnclosedC;

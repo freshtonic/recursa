@@ -52,6 +52,14 @@ cargo test -p recursa-codegen --lib --locked \
   --ignored --exact
 ```
 
+The representative balanced-tail deduplication complexity bound is likewise manual:
+
+```sh
+cargo test -p recursa-codegen --lib --locked \
+  analysis::decision_product_tests::balanced_tail_deduplication_is_subquadratic_in_materialized_rows -- \
+  --ignored --exact
+```
+
 Representative-scale and benchmark work associated with the deferred performance ticket remains
 manual until the user explicitly requests it. Correctness failures discovered by ordinary tests
 remain part of the default suite even when their fixture compilation is relatively slow.

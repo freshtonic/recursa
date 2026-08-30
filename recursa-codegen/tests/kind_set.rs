@@ -28,6 +28,8 @@ fn kind_set_algebra_rejects_width_mismatches_and_clears_tails() {
             .collect::<Vec<_>>(),
         [KindId::new(64)],
     );
+    assert_eq!(left.intersects(&right), Ok(true));
+    assert_eq!(left.intersects(&KindSet::empty(65)), Ok(false));
     assert_eq!(
         left.difference(&right).unwrap().iter().collect::<Vec<_>>(),
         [KindId::new(0)],
@@ -35,6 +37,13 @@ fn kind_set_algebra_rejects_width_mismatches_and_clears_tails() {
     assert!(KindSet::empty(65).is_empty());
     assert_eq!(
         left.union(&KindSet::empty(64)),
+        Err(KindSetError::WidthMismatch {
+            left: 65,
+            right: 64
+        }),
+    );
+    assert_eq!(
+        left.intersects(&KindSet::empty(64)),
         Err(KindSetError::WidthMismatch {
             left: 65,
             right: 64

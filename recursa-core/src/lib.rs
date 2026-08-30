@@ -122,7 +122,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        6,
+        7,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -132,6 +132,26 @@ pub mod __private {
         expected: &'static [ExpectedAtomId],
     ) -> FollowSet {
         FollowSet::from_static(kind_count, kinds, expected)
+    }
+
+    /// Expands a compact generated bitset into a promoted static expectation array.
+    pub const fn expected_atoms<const N: usize>(words: &[u64]) -> [ExpectedAtomId; N] {
+        let mut output = [ExpectedAtomId(0); N];
+        let mut output_index = 0;
+        let mut word_index = 0;
+        while word_index < words.len() {
+            let mut bits = words[word_index];
+            while bits != 0 {
+                assert!(output_index < N);
+                let bit = bits.trailing_zeros() as usize;
+                output[output_index] = ExpectedAtomId((word_index * 64 + bit) as u32);
+                output_index += 1;
+                bits &= bits - 1;
+            }
+            word_index += 1;
+        }
+        assert!(output_index == N);
+        output
     }
 
     /// Returns the source retained by a grammar-local generated lexing result.
@@ -148,10 +168,22 @@ pub mod __private {
 #[cfg(test)]
 mod compatibility_tests {
     #[test]
+    fn compact_expected_atoms_expand_in_sorted_identity_order() {
+        assert_eq!(
+            super::__private::expected_atoms::<3>(&[0b1001, 0b10]),
+            [
+                super::__private::ExpectedAtomId(0),
+                super::__private::ExpectedAtomId(3),
+                super::__private::ExpectedAtomId(65),
+            ]
+        );
+    }
+
+    #[test]
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            6,
+            7,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

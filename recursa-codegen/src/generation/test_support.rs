@@ -1,5 +1,57 @@
 use super::*;
 
+pub(super) fn validated_generation_is_not_revalidated_during_rendering() {
+    let package = tempfile::tempdir().expect("temporary validated rendering fixture");
+    fs::write(
+        package.path().join("grammar.rs"),
+        r#"
+recursa::grammar! { module = crate }
+
+#[derive(recursa::Node)]
+#[tok("root")]
+struct Root;
+"#,
+    )
+    .expect("write validated rendering fixture");
+    let success = analyze_source_tree(
+        SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect("analyze validated rendering fixture");
+
+    reset_emission_plan_validation_count();
+    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+        .expect("join a validated Emission plan");
+    assert_eq!(emission_plan_validation_count(), 1);
+
+    render(&plan).expect("render the already validated Emission plan");
+    assert_eq!(
+        emission_plan_validation_count(),
+        1,
+        "rendering must consume the validation proof established while joining",
+    );
+}
+
+pub(super) fn checked_rendering_retains_invalid_rust_diagnostics() {
+    let (_package, mut plan) = joined_pratt_fixture();
+    plan.module_anchor.segments[0].arguments =
+        PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+            colon2_token: None,
+            lt_token: Default::default(),
+            args: Default::default(),
+            gt_token: Default::default(),
+        });
+
+    let detail = match render(&plan) {
+        Err(detail) => detail,
+        Ok(_) => panic!("checked rendering must reject invalid generated Rust"),
+    };
+    assert!(
+        detail.starts_with("root rendering is invalid Rust:"),
+        "the syntax failure retains its stable rendering role: {detail}",
+    );
+}
+
 pub(super) fn debug_directory_environment_is_always_tracked_by_cargo() {
     let mut cargo = Vec::new();
     emit_debug_directory_invalidation(&mut cargo);
@@ -48,6 +100,13 @@ pub(super) fn debug_bundle_is_deterministic_formatted_complete_and_identity_neut
             .lines()
             .any(|line| line.starts_with("capability\tconfigured:")),
         "configured capability bodies are indexed"
+    );
+    assert!(
+        index.lines().any(|line| {
+            line.starts_with("capability\tintrinsic-token:")
+                && line.contains(":Debug+Clone+PartialEq+Eq+PartialOrd+Ord+Hash\t")
+        }),
+        "intrinsic content-token value traits are indexed separately from configured recipes",
     );
     for line in index.lines().skip(2) {
         let [_, _, private_name] = line.split('\t').collect::<Vec<_>>()[..] else {
@@ -264,39 +323,610 @@ pub(super) fn predictive_compilation_rejects_missing_and_conflicting_frozen_prod
         },
         text_predicate: None,
     };
-    let root = DispatchTrieNodePlan {
-        target: None,
-        edges: vec![DispatchTrieEdgePlan {
-            position,
-            next: DispatchTrieNodePlan {
-                target: Some(DispatchTargetPlan {
-                    variant: 0,
-                    on_caller_follow: false,
-                }),
-                edges: Vec::new(),
-            },
-        }],
-    };
+    let root = DispatchStateId::new(1);
+    let states = vec![
+        DispatchTrieNodePlan {
+            target: Some(DispatchTargetPlan {
+                variant: 0,
+                on_caller_follow: false,
+            }),
+            edges: Vec::new(),
+        },
+        DispatchTrieNodePlan {
+            target: None,
+            edges: vec![DispatchTrieEdgePlan {
+                position,
+                next: DispatchStateId::new(0),
+            }],
+        },
+    ];
     let mut dispatch = PredictiveDispatchPlan {
-        frozen_identity: predictive_dispatch_identity(&root),
+        frozen_identity: predictive_dispatch_identity(root, &states),
         root,
+        states,
         frozen_sequence_count: 1,
         frozen_node_count: 2,
+        balanced: None,
     };
     assert_eq!(validate_predictive_dispatch(&dispatch, 1).unwrap(), 2);
-    dispatch.root.edges[0].next.target.as_mut().unwrap().variant = 1;
+    dispatch.states[0].target.as_mut().unwrap().variant = 1;
     assert_eq!(
         validate_predictive_dispatch(&dispatch, 1).unwrap_err(),
         "frozen predictive dispatch references an unknown variant",
     );
 
-    dispatch.root.edges[0].next.target.as_mut().unwrap().variant = 0;
-    dispatch.root.edges[0].position.text_predicate =
-        Some(PlannedTextPredicate::Exact("corrupt".to_owned()));
+    dispatch.states[0].target.as_mut().unwrap().variant = 0;
+    dispatch.states[dispatch.root.index()].edges[0]
+        .position
+        .text_predicate = Some(PlannedTextPredicate::Exact("corrupt".to_owned()));
     assert_eq!(
         validate_predictive_dispatch(&dispatch, 1).unwrap_err(),
         "the joined predictive plan diverges from its frozen identity",
     );
+}
+
+pub(super) fn large_predictive_selection_emits_each_position_matcher_once() {
+    let (_package, mut plan) = joined_pratt_fixture();
+    let expected = |kind: usize| {
+        let mut expected = ExpectedSet::empty(plan.kind_count);
+        expected.words[kind / 64] |= 1 << (kind % 64);
+        expected
+    };
+    let positions = [
+        DispatchPositionPlan {
+            expected: expected(0),
+            text_predicate: Some(PlannedTextPredicate::Exact("SELECT".to_owned())),
+        },
+        DispatchPositionPlan {
+            expected: expected(0),
+            text_predicate: Some(PlannedTextPredicate::NotIn(vec!["SELECT".to_owned()])),
+        },
+        DispatchPositionPlan {
+            expected: expected(1),
+            text_predicate: Some(PlannedTextPredicate::OneOf(vec![
+                "FROM".to_owned(),
+                "WHERE".to_owned(),
+            ])),
+        },
+        DispatchPositionPlan {
+            expected: expected(1),
+            text_predicate: Some(PlannedTextPredicate::NotIn(vec![
+                "FROM".to_owned(),
+                "WHERE".to_owned(),
+            ])),
+        },
+    ];
+    let mut states = vec![DispatchTrieNodePlan {
+        target: Some(DispatchTargetPlan {
+            variant: 0,
+            on_caller_follow: false,
+        }),
+        edges: Vec::new(),
+    }];
+    for state in 1..=128 {
+        states.push(DispatchTrieNodePlan {
+            target: None,
+            edges: positions
+                .iter()
+                .cloned()
+                .map(|position| DispatchTrieEdgePlan {
+                    position,
+                    next: DispatchStateId::new(state - 1),
+                })
+                .collect(),
+        });
+    }
+    let root = DispatchStateId::new(states.len() - 1);
+    let dispatch = PredictiveDispatchPlan {
+        frozen_identity: predictive_dispatch_identity(root, &states),
+        root,
+        frozen_sequence_count: positions.len(),
+        frozen_node_count: states.len(),
+        states,
+        balanced: None,
+    };
+    assert_eq!(
+        validate_predictive_dispatch(&dispatch, 1).unwrap(),
+        dispatch.states.len(),
+    );
+    plan.expected_sets = ExpectedSetPool::from_values([expected(0), expected(1)]);
+
+    let mut expected_index = 2_000_000;
+    let mut instrumentation = RenderInstrumentation::default();
+    let (selection, items) = render_predictive_selection(
+        &plan,
+        9_000,
+        &dispatch,
+        &quote!(context.follow()),
+        &mut expected_index,
+        &mut instrumentation,
+    );
+    let rendered = quote!(#items #selection).to_string();
+
+    assert_eq!(instrumentation.frozen_dispatch_nodes_rendered, 129);
+    assert!(
+        rendered.contains("static __RECURSA_PRATT_STATES_9000_2000000 : & [u8] = b\""),
+        "large Pratt state tables must be one packed literal rather than one HIR tuple per row",
+    );
+    assert!(
+        rendered.contains("fn __recursa_decode_pratt_"),
+        "packed Pratt tables retain a generated fixed-width decoder",
+    );
+    assert!(
+        !rendered.contains("type __RecursaPrattStateRow"),
+        "packed Pratt tables must not reconstruct the tuple-row blowup",
+    );
+    assert_eq!(
+        rendered.matches("fn __recursa_pratt_position_").count(),
+        0,
+        "Pratt positions are data rows rather than separately typechecked functions",
+    );
+    assert_eq!(
+        rendered
+            .matches("fn __recursa_pratt_match_position_")
+            .count(),
+        1,
+        "one table-driven matcher handles every Pratt position",
+    );
+    assert!(rendered.contains("static __RECURSA_PRATT_POSITIONS_"));
+}
+
+pub(super) fn pratt_branches_are_typechecked_in_isolated_helpers() {
+    let (_package, plan) = joined_pratt_fixture();
+    let rendered = render(&plan).expect("the Pratt fixture renders");
+    let expr_index = plan
+        .nodes
+        .iter()
+        .position(|node| node.ident == "Expr")
+        .expect("the fixture contains its Pratt Expr");
+    let expr = &rendered.nodes[expr_index].1;
+    let pratt = plan.nodes[expr_index]
+        .parse_applications
+        .iter()
+        .find_map(|application| match &application.body {
+            NodeBodyPlan::Pratt(pratt) => Some(pratt),
+            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } => None,
+        })
+        .expect("Expr has one materialized Pratt application");
+
+    assert_eq!(
+        expr.matches("fn __recursa_parse_pratt_nud_").count(),
+        pratt.nud.len(),
+        "each Pratt nud branch has exactly one separately typechecked function item",
+    );
+    assert_eq!(
+        expr.matches("fn __recursa_parse_pratt_led_").count(),
+        pratt.led.len(),
+        "each Pratt led branch has exactly one separately typechecked function item",
+    );
+    assert_eq!(
+        expr.matches("Self :: __recursa_parse_pratt_nud_").count(),
+        pratt.nud.len(),
+        "the Pratt control loop calls each isolated nud helper exactly once",
+    );
+    assert_eq!(
+        expr.matches("Self :: __recursa_parse_pratt_led_").count(),
+        pratt.led.len(),
+        "the Pratt control loop calls each isolated led helper exactly once",
+    );
+    let dispatcher_start = expr
+        .find("fn __recursa_parse_bp")
+        .expect("the Pratt dispatcher is rendered");
+    let helper_start = expr[dispatcher_start..]
+        .find("fn __recursa_parse_pratt_nud_")
+        .map(|offset| dispatcher_start + offset)
+        .expect("the first isolated helper follows the dispatcher");
+    assert!(
+        helper_start - dispatcher_start < 20_000,
+        "the fixture Pratt dispatcher remains a bounded control function",
+    );
+}
+
+pub(super) fn predictive_variants_are_typechecked_in_isolated_helpers() {
+    let source = r#"
+recursa::grammar! { module = crate, max_lookahead = 1 }
+
+recursa::tokens! {
+    keywords { ALPHA => "ALPHA", BETA => "BETA" }
+}
+
+#[derive(recursa::Node)]
+enum Choice {
+    #[tok(ALPHA)]
+    Alpha,
+    #[tok(BETA)]
+    Beta,
+}
+"#;
+    let (_package, plan) = joined_pratt_fixture_from(source);
+    let rendered = render(&plan).expect("the predictive fixture renders");
+    let choice_index = plan
+        .nodes
+        .iter()
+        .position(|node| node.ident == "Choice")
+        .expect("the fixture contains Choice");
+    let choice = &rendered.nodes[choice_index].1;
+
+    assert_eq!(
+        choice.matches("fn __recursa_parse_variant_").count(),
+        2,
+        "each predictive variant has one separately typechecked function item",
+    );
+    assert_eq!(
+        choice.matches("Self :: __recursa_parse_variant_").count(),
+        2,
+        "predictive dispatch delegates to each isolated variant helper",
+    );
+}
+
+pub(super) fn large_ordinary_predictive_dispatch_uses_compact_tables() {
+    let (_package, mut plan) = joined_pratt_fixture();
+    let expected = |kind: usize| {
+        let mut expected = ExpectedSet::empty(plan.kind_count);
+        expected.words[kind / 64] |= 1 << (kind % 64);
+        expected
+    };
+    let positions = [
+        DispatchPositionPlan {
+            expected: expected(0),
+            text_predicate: Some(PlannedTextPredicate::Exact("SELECT".to_owned())),
+        },
+        DispatchPositionPlan {
+            expected: expected(0),
+            text_predicate: Some(PlannedTextPredicate::NotIn(vec!["SELECT".to_owned()])),
+        },
+        DispatchPositionPlan {
+            expected: expected(1),
+            text_predicate: Some(PlannedTextPredicate::OneOf(vec![
+                "FROM".to_owned(),
+                "WHERE".to_owned(),
+            ])),
+        },
+        DispatchPositionPlan {
+            expected: expected(1),
+            text_predicate: Some(PlannedTextPredicate::NotIn(vec![
+                "FROM".to_owned(),
+                "WHERE".to_owned(),
+            ])),
+        },
+    ];
+    let mut states = vec![DispatchTrieNodePlan {
+        target: Some(DispatchTargetPlan {
+            variant: 0,
+            on_caller_follow: false,
+        }),
+        edges: Vec::new(),
+    }];
+    for state in 1..=128 {
+        states.push(DispatchTrieNodePlan {
+            target: None,
+            edges: positions
+                .iter()
+                .cloned()
+                .map(|position| DispatchTrieEdgePlan {
+                    position,
+                    next: DispatchStateId::new(state - 1),
+                })
+                .collect(),
+        });
+    }
+    let root = DispatchStateId::new(states.len() - 1);
+    let root_extra = expected(2);
+    let mut all_edges = expected(0);
+    all_edges.union_assign(&expected(1));
+    let mut root_failure = all_edges.clone();
+    root_failure.union_assign(&root_extra);
+    plan.expected_sets = ExpectedSetPool::from_values([
+        ExpectedSet::empty(plan.kind_count),
+        expected(0),
+        expected(1),
+        all_edges,
+        root_extra.clone(),
+        root_failure,
+    ]);
+    let mut expected_index = 1_000_000;
+    let (selection, items) = render_predictive_graph_selection(
+        &plan,
+        9_001,
+        root,
+        &states,
+        &quote!(0usize),
+        Some(&root_extra),
+        &mut expected_index,
+    );
+    let rendered = quote!(#items #selection).to_string();
+    assert!(
+        rendered.contains("static __RECURSA_DISPATCH_STATES_9001_1000000 : & [u8] = b\""),
+        "ordinary dispatch must use one packed state literal; inline bytes={}",
+        rendered.len(),
+    );
+    assert!(
+        !rendered.contains("type __RecursaDispatchStateRow"),
+        "ordinary dispatch must not emit one HIR tuple per state",
+    );
+    assert!(
+        rendered.contains("static __RECURSA_DISPATCH_EDGES_9001_1000000"),
+        "ordinary dispatch must emit one compact edge table",
+    );
+    assert_eq!(
+        rendered.matches("fn __recursa_dispatch_position_").count(),
+        0,
+        "ordinary positions are data rows rather than separately typechecked functions",
+    );
+    assert_eq!(
+        rendered
+            .matches("fn __recursa_dispatch_match_position_")
+            .count(),
+        1,
+        "one table-driven matcher handles every ordinary position",
+    );
+    assert!(rendered.contains("static __RECURSA_DISPATCH_POSITIONS_"));
+    assert!(
+        rendered.len() < 40_000,
+        "a 129-state graph must remain compact; bytes={}",
+        rendered.len(),
+    );
+}
+
+pub(super) fn single_digit_packed_dispatch_is_clippy_clean() {
+    let (_package, mut plan) = joined_pratt_fixture();
+    plan.expected_sets = ExpectedSetPool::from_values([ExpectedSet::empty(plan.kind_count)]);
+    let states = vec![DispatchTrieNodePlan {
+        target: Some(DispatchTargetPlan {
+            variant: 0,
+            on_caller_follow: false,
+        }),
+        edges: Vec::new(),
+    }];
+    let mut expected_index = 3_000_000;
+    let (selection, items) = render_predictive_graph_selection(
+        &plan,
+        9_002,
+        DispatchStateId::new(0),
+        &states,
+        &quote!(0usize),
+        None,
+        &mut expected_index,
+    );
+    let rendered = quote!(#items #selection).to_string();
+
+    assert!(rendered.contains("table [slot .. slot + 1]"));
+    assert!(rendered.contains("target / 2 , target & 1 != 0"));
+    assert!(!rendered.contains("* 1usize"));
+    assert!(!rendered.contains("% 2"));
+}
+
+pub(super) fn grammar_wide_expected_set_pool_is_canonical() {
+    let (_package, plan) = joined_pratt_fixture();
+    let values = plan.expected_sets.values();
+    assert!(
+        values.windows(2).all(|pair| pair[0] < pair[1]),
+        "grammar-wide expectation identities must be strictly canonical",
+    );
+
+    let plus = plan
+        .nodes
+        .iter()
+        .flat_map(|node| &node.parse_applications)
+        .find_map(|application| {
+            let NodeBodyPlan::Pratt(pratt) = &application.body else {
+                return None;
+            };
+            pratt.led.iter().find_map(|branch| {
+                branch
+                    .variant
+                    .elements
+                    .iter()
+                    .find_map(|element| match &element.kind {
+                        ElementParseKind::Fixed {
+                            expected, spelling, ..
+                        } if spelling == "+" => Some(expected.clone()),
+                        _ => None,
+                    })
+            })
+        })
+        .expect("the Pratt fixture emits a PLUS expectation");
+    let plus_id = plan
+        .expected_sets
+        .id(&plus)
+        .expect("the emitted PLUS expectation belongs to the grammar-wide pool");
+    assert_eq!(values[plus_id], plus);
+}
+
+pub(super) fn stale_grammar_wide_expected_set_pool_fails_before_rendering() {
+    let (_package, mut plan) = joined_pratt_fixture();
+    plan.expected_sets = ExpectedSetPool::from_plans(&[], &[], plan.kind_count);
+
+    let detail = match render(&plan) {
+        Err(detail) => detail,
+        Ok(_) => panic!("a stale grammar-wide expectation pool cannot render"),
+    };
+    assert!(
+        detail.contains("grammar-wide expectation pool"),
+        "pool corruption must retain its invariant role: {detail}",
+    );
+}
+
+pub(super) fn balanced_root_failure_belongs_to_grammar_wide_expected_set_pool() {
+    let (_package, plan) = joined_pratt_fixture_from(include_str!(
+        "../../tests/fixtures/generation/predictive/src/grammar.rs"
+    ));
+    let dispatch = plan
+        .nodes
+        .iter()
+        .flat_map(|node| &node.parse_applications)
+        .find_map(|application| match &application.body {
+            NodeBodyPlan::Enum { dispatch, .. } if dispatch.balanced.is_some() => Some(dispatch),
+            NodeBodyPlan::Struct { .. } | NodeBodyPlan::Enum { .. } | NodeBodyPlan::Pratt(_) => {
+                None
+            }
+        })
+        .expect("the predictive fixture contains balanced enum dispatch");
+    let balanced = dispatch.balanced.as_ref().unwrap();
+    let mut ordinary_root = ExpectedSet::empty(plan.kind_count);
+    for edge in &dispatch.states[dispatch.root.index()].edges {
+        ordinary_root.union_assign(&edge.position.expected);
+    }
+    let mut balanced_root = ordinary_root.clone();
+    balanced_root.union_assign(&balanced.open);
+    assert_ne!(ordinary_root, balanced_root);
+    assert!(
+        plan.expected_sets.id(&balanced_root).is_some(),
+        "the failure set rendered at a balanced ordinary root must be pooled",
+    );
+    render(&plan).expect("every balanced dispatch expectation resolves through the pool");
+}
+
+pub(super) fn generated_expectations_use_one_grammar_wide_pool() {
+    let (_package, plan) = joined_pratt_fixture();
+    let rendered = render(&plan).expect("render the pooled-expectation fixture");
+    assert_eq!(
+        rendered
+            .root
+            .matches("static __RECURSA_EXPECTED_SETS")
+            .count(),
+        1,
+        "the generated root owns one grammar-wide expectation pool",
+    );
+    assert_eq!(
+        rendered.root.matches("__private :: follow_set").count(),
+        plan.expected_sets.values().len() + 1,
+        "the root emits one initializer per unique expectation plus root FOLLOW",
+    );
+    assert!(
+        !rendered.root.contains("__RECURSA_TOKEN_START"),
+        "content-token starts are addressed through the shared pool",
+    );
+    assert!(
+        rendered
+            .nodes
+            .iter()
+            .all(|(_, source)| !source.contains("__private :: follow_set")),
+        "Node shards contain references, not local expectation definitions",
+    );
+    let references = rendered.root.matches("__RECURSA_EXPECTED_SETS").count()
+        + rendered
+            .nodes
+            .iter()
+            .map(|(_, source)| source.matches("__RECURSA_EXPECTED_SETS").count())
+            .sum::<usize>();
+    assert!(
+        references > plan.expected_sets.values().len(),
+        "the fixture must exercise reuse across more sites than unique pooled values",
+    );
+}
+
+pub(super) fn large_expected_set_batch_uses_canonical_atom_index() {
+    const KIND_COUNT: usize = 2_048;
+    const POSITION_COUNT: usize = 4_096;
+
+    let mut grammar = crate::GrammarDescription::new(
+        "large expected-set lookup",
+        KIND_COUNT,
+        1,
+        TextEquivalence::Sensitive,
+    );
+    for index in 0..KIND_COUNT {
+        let declaration = crate::DeclId::new(index as u32);
+        let kind = grammar.push_kind(crate::KindDescription::new(
+            format!("K{index}"),
+            declaration,
+        ));
+        grammar.push_atom(crate::AtomDescription::new(
+            format!("A{index}"),
+            declaration,
+            AtomExpression::Kind(kind),
+        ));
+    }
+
+    let atom_index = ExpectedAtomIndex::from_grammar(&grammar)
+        .expect("the grammar's canonical atom identities fit the runtime width");
+    let last_kind = crate::KindId::new((KIND_COUNT - 1) as u16);
+    let mut kinds = KindSet::empty(KIND_COUNT);
+    kinds.insert(last_kind).unwrap();
+    let positions = [FirstPosition {
+        kinds,
+        text_predicate: None,
+    }];
+
+    let mut expected = ExpectedSet::empty(KIND_COUNT);
+    for _ in 0..POSITION_COUNT {
+        expected = ExpectedSet::from_positions(&positions, &atom_index, KIND_COUNT)
+            .expect("indexed expectation planning succeeds");
+    }
+    assert_eq!(expected.atoms, vec![(KIND_COUNT - 1) as u32]);
+
+    let legacy_atom_inspections = POSITION_COUNT * KIND_COUNT;
+    let indexed_operations = grammar.atoms.len() + POSITION_COUNT;
+    assert_eq!(legacy_atom_inspections, 8_388_608);
+    assert_eq!(indexed_operations, 6_144);
+    assert!(
+        legacy_atom_inspections / indexed_operations > 1_000,
+        "one grammar-wide build plus direct lookups must replace repeated linear atom scans",
+    );
+}
+
+pub(super) fn overlapping_rectangles_preserve_full_ordinary_routes() {
+    let (_package, plan) = joined_pratt_fixture_from(include_str!(
+        "../../tests/fixtures/generation/predictive/src/grammar.rs"
+    ));
+    let dispatch = plan
+        .nodes
+        .iter()
+        .find(|node| node.ident == "OverlappingRectangles")
+        .and_then(|node| {
+            node.parse_applications
+                .iter()
+                .find_map(|application| match &application.body {
+                    NodeBodyPlan::Enum { dispatch, .. } => Some(dispatch),
+                    NodeBodyPlan::Struct { .. } | NodeBodyPlan::Pratt(_) => None,
+                })
+        })
+        .expect("the predictive fixture contains OverlappingRectangles dispatch");
+
+    assert_eq!(dispatch.frozen_sequence_count, 2);
+    assert_eq!(dispatch.frozen_node_count, 6);
+    assert_eq!(dispatch.states.len(), 6);
+    assert_eq!(
+        validate_predictive_dispatch(dispatch, 2).unwrap(),
+        6,
+        "the four two-token paths have six unique states, not eight expanded occurrences",
+    );
+
+    let root = &dispatch.states[dispatch.root.index()];
+    assert!(root.target.is_none());
+    assert_eq!(root.edges.len(), 3);
+
+    let mut complete_routes = 0;
+    let mut terminal_variants = Vec::new();
+    let mut suffix_widths = Vec::new();
+    for edge in &root.edges {
+        let child = &dispatch.states[edge.next.index()];
+        assert_eq!(
+            child.target, None,
+            "ordinary enum dispatch must not commit before checking the complete route and caller FOLLOW",
+        );
+        suffix_widths.push(child.edges.len());
+        for suffix in &child.edges {
+            let terminal = &dispatch.states[suffix.next.index()];
+            let target = terminal
+                .target
+                .expect("every complete two-token rectangle route is terminal");
+            assert!(terminal.edges.is_empty());
+            assert!(
+                target.on_caller_follow,
+                "complete ordinary routes retain the caller-FOLLOW guard before selection",
+            );
+            complete_routes += 1;
+            terminal_variants.push(target.variant);
+        }
+    }
+
+    suffix_widths.sort_unstable();
+    terminal_variants.sort_unstable();
+    assert_eq!(suffix_widths, [1, 1, 2]);
+    assert_eq!(complete_routes, 4);
+    assert_eq!(terminal_variants, [0, 0, 1, 1]);
 }
 
 pub(super) fn corrupted_joined_dispatch_fails_before_publication_with_rca9105() {
@@ -325,7 +955,7 @@ struct B;
         &mut Vec::new(),
     )
     .expect("analyze predictive plan fixture");
-    let mut plan = EmissionPlan::join(&success.analyzed, &cfg)
+    let mut plan = EmissionPlan::join_for_test(&success.analyzed, &cfg)
         .expect("join a complete predictive Emission plan");
     assert!(plan.instrumentation.frozen_dispatch_nodes_consumed > 0);
     render(&plan).expect("the renderer consumes every frozen trie node");
@@ -339,8 +969,9 @@ struct B;
             NodeBodyPlan::Struct { .. } | NodeBodyPlan::Pratt(_) => None,
         })
         .expect("fixture contains one predictive dispatch");
-    dispatch.root.edges[0].position.text_predicate =
-        Some(PlannedTextPredicate::Exact("corrupt".to_owned()));
+    dispatch.states[dispatch.root.index()].edges[0]
+        .position
+        .text_predicate = Some(PlannedTextPredicate::Exact("corrupt".to_owned()));
 
     let detail = match render(&plan) {
         Err(detail) => detail,
@@ -435,7 +1066,7 @@ fn joined_pratt_fixture_from(source: &str) -> (tempfile::TempDir, EmissionPlan) 
         &mut Vec::new(),
     )
     .expect("analyze Pratt plan fixture");
-    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+    let plan = EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default())
         .expect("join a complete Pratt Emission plan");
     render(&plan).expect("a complete Pratt plan renders");
     (package, plan)
@@ -480,14 +1111,12 @@ pub(super) fn corrupted_pratt_branch_follow_and_failure_identities_fail_before_p
         })
         .expect("fixture contains a Pratt plan");
     let variant_count = pratt.nud.len();
-    let mut pending = vec![&mut pratt.nud_dispatch.root];
-    let target = loop {
-        let node = pending.pop().expect("nud dispatch contains a terminal");
-        if let Some(target) = &mut node.target {
-            break target;
-        }
-        pending.extend(node.edges.iter_mut().map(|edge| &mut edge.next));
-    };
+    let target = pratt
+        .nud_dispatch
+        .states
+        .iter_mut()
+        .find_map(|node| node.target.as_mut())
+        .expect("nud dispatch contains a terminal");
     target.variant = (target.variant + 1) % variant_count;
     assert_corrupt_pratt_plan_is_unselectable(package.path(), &branch_plan);
 
@@ -546,7 +1175,7 @@ pub(super) fn corrupted_real_plan_family_content_fails_before_publication() {
         .configured_traits
         .pop()
         .expect("the trait fixture configures recipes");
-    assert_plan_family_is_unselectable(package.path(), &traits, "configured-trait");
+    assert_plan_family_is_unselectable(package.path(), &traits, "trait-behavior");
 
     let (package, mut private_abi) = joined_pratt_fixture();
     private_abi.private_abi.protocol += 1;
@@ -974,7 +1603,7 @@ pub(super) fn authored_pretty_authority_rejects_emitted_declaration_corruption()
     let lowered = &success.analyzed.lowered;
     let authority = authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
         .expect("derive Pretty authority from source");
-    let mut plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+    let mut plan = EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default())
         .expect("join a complete Pretty plan");
     let element = plan
         .nodes
@@ -1111,6 +1740,136 @@ pub(super) fn pretty_pratt_recursion_uses_typed_node_identity_not_the_final_path
     assert!(
         pratt.grouping.is_some(),
         "typed Self atom supplies grouping"
+    );
+}
+
+pub(super) fn pretty_pratt_variants_are_typechecked_in_isolated_helpers() {
+    let (_package, plan) = joined_pratt_fixture();
+    let rendered = render(&plan).expect("the Pratt fixture renders");
+    let expr_index = plan
+        .nodes
+        .iter()
+        .position(|node| node.ident == "Expr")
+        .expect("the fixture contains its Pratt Expr");
+    let variant_count = plan.pretty.nodes[expr_index]
+        .as_ref()
+        .and_then(|behavior| behavior.pratt.as_ref())
+        .expect("Expr has typed Pratt Pretty behavior")
+        .variants
+        .len();
+    let expr = &rendered.nodes[expr_index].1;
+
+    assert_eq!(
+        expr.matches("fn __recursa_pretty_pratt_variant_").count(),
+        variant_count,
+        "each Pratt Pretty variant must have a separately typechecked function item",
+    );
+    assert_eq!(
+        expr.matches("self . __recursa_pretty_pratt_variant_")
+            .count(),
+        variant_count,
+        "the compact Pratt Pretty dispatcher must call every isolated variant helper",
+    );
+}
+
+pub(super) fn pretty_pratt_grouping_follows_a_unique_authored_helper_path() {
+    let (_package, plan) = joined_pratt_fixture_from(
+        r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    keywords { ANY => "any", QUERY => "query" }
+    punctuation { OPEN => "(", CLOSE => ")", COMMA => ",", DOT => ".", STAR => "*", PLUS => "+" }
+}
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+enum ParenthesizedSuffix {
+    #[tok(DOT, STAR)]
+    Star,
+}
+
+#[derive(recursa::Node)]
+enum ParenthesizedOpen {
+    #[tok(OPEN)]
+    Value,
+}
+
+#[derive(recursa::Node)]
+enum ParenthesizedClose {
+    #[tok(CLOSE)]
+    Value,
+}
+
+#[derive(recursa::Node)]
+#[tok(QUERY)]
+struct Query<'input> {
+    value: Box<Expr<'input>>,
+}
+
+#[derive(recursa::Node)]
+enum ParenthesizedContent<'input> {
+    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
+    Query(Query<'input>),
+}
+
+#[derive(recursa::Node)]
+struct ParenthesizedExpr<'input> {
+    open: ParenthesizedOpen,
+    content: ParenthesizedContent<'input>,
+    close: ParenthesizedClose,
+    suffix: Option<ParenthesizedSuffix>,
+}
+
+#[derive(recursa::Node)]
+struct QuantifiedExpr<'input> {
+    #[tok(ANY, OPEN, this, CLOSE)]
+    content: ParenthesizedContent<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    Quantified(QuantifiedExpr<'input>),
+    Parenthesized(ParenthesizedExpr<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+    );
+    let index = plan
+        .nodes
+        .iter()
+        .position(|node| node.semantic_key == "Expr")
+        .expect("fixture has the owning Pratt Expr");
+    let grouping = plan.pretty.nodes[index]
+        .as_ref()
+        .and_then(|behavior| behavior.pratt.as_ref())
+        .and_then(|pratt| pratt.grouping.as_ref())
+        .expect("the helper path supplies Pratt grouping syntax");
+
+    assert_eq!(
+        grouping
+            .before
+            .iter()
+            .map(|fixed| fixed.spelling.as_str())
+            .collect::<Vec<_>>(),
+        ["("]
+    );
+    assert_eq!(
+        grouping
+            .after
+            .iter()
+            .map(|fixed| fixed.spelling.as_str())
+            .collect::<Vec<_>>(),
+        [")"]
     );
 }
 
@@ -1319,6 +2078,57 @@ pub(super) fn recursive_concrete_visit_impls_do_not_publish_cyclic_child_bounds(
     }
 }
 
+pub(super) fn visit_bounds_only_cover_node_type_parameters() {
+    let source =
+        include_str!("../../tests/fixtures/generation/generic-applications/src/grammar.rs")
+            .replacen("    diagrams,\n", "", 1)
+            .replacen(
+                "PartialEq, Pretty, serde::Serialize",
+                "PartialEq, Pretty, Visit, VisitMut, serde::Serialize",
+                1,
+            )
+            .replacen(
+                "pub struct Pair<'left, 'right>",
+                "#[node(omit(Visit, VisitMut))]\npub struct Pair<'left, 'right>",
+                1,
+            );
+    let (_package, plan) = joined_pratt_fixture_from(&source);
+    let render_visit = |ident: &str| {
+        let node = plan
+            .nodes
+            .iter()
+            .find(|node| node.ident == ident)
+            .unwrap_or_else(|| panic!("generic fixture contains {ident}"));
+        format!(
+            "{}\n{}",
+            render_node_visit(&plan, node, false),
+            render_node_visit(&plan, node, true),
+        )
+    };
+    let generic = render_visit("LifetimeNode");
+    let concrete = render_visit("GenericKeywordRoot");
+    let pair = render_visit("Pair");
+    let audit = render_visit("AuditRoot");
+
+    assert!(concrete.contains("recursa :: Visit for GenericKeywordRoot"));
+    assert!(generic.contains("T : recursa :: Visit"));
+    assert!(generic.contains("T : recursa :: VisitMut"));
+    assert!(pair.contains("Name < 'right > : recursa :: Visit"));
+    assert!(pair.contains("Name < 'right > : recursa :: VisitMut"));
+    assert!(audit.contains("Pair < 'outer , 'outer > : recursa :: Visit"));
+    assert!(audit.contains("Pair < 'outer , 'outer > : recursa :: VisitMut"));
+    assert!(
+        !concrete
+            .contains("Wrap < crate :: grammar :: KeywordName < 'input > > : recursa :: Visit"),
+        "concrete lifetime-bearing child types resolve through their generated Visit impl",
+    );
+    assert!(
+        !concrete
+            .contains("Wrap < crate :: grammar :: KeywordName < 'input > > : recursa :: VisitMut"),
+        "concrete lifetime-bearing child types resolve through their generated VisitMut impl",
+    );
+}
+
 pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
     let source = include_str!("../../tests/fixtures/generation/repetitions/src/grammar.rs.in")
         .replace("__RECURSA_SPANS_MODE__", "off");
@@ -1330,7 +2140,7 @@ pub(super) fn every_local_pretty_hint_dimension_is_part_of_family_authority() {
         &mut Vec::new(),
     )
     .expect("analyze Pretty hint authority fixture");
-    let plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+    let plan = EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default())
         .expect("join a complete Pretty hint plan");
 
     fn pretty_node<'a>(plan: &'a mut EmissionPlan, ident: &str) -> &'a mut PrettyNodeBehavior {
@@ -1565,7 +2375,7 @@ pub(super) fn ascii_insensitive_word_separators_share_canonical_pretty_family_au
     let lowered = &success.analyzed.lowered;
     let authority = authoritative_pretty_plan(lowered, lowered.source_modeled.resolved())
         .expect("derive word-separator Pretty authority from source");
-    let mut plan = EmissionPlan::join(&success.analyzed, &CargoCfgSnapshot::default())
+    let mut plan = EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default())
         .expect("canonical word separator joins one Pretty family");
     assert_eq!(Some(plan.pretty.clone()), authority);
     let application_separator =

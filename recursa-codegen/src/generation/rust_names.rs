@@ -61,6 +61,20 @@ pub(super) fn emitted_crate_path(segments: &[String]) -> Result<syn::Path, Strin
     Ok(path)
 }
 
+/// Constructs a `crate`-relative path from a resolved `::`-separated semantic key.
+pub(super) fn emitted_semantic_path(semantic_key: &str) -> Result<syn::Path, String> {
+    let segments = semantic_key
+        .split("::")
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if segments.iter().any(String::is_empty) {
+        return Err(format!(
+            "cannot emit empty segment in semantic key `{semantic_key}`",
+        ));
+    }
+    emitted_crate_path(&segments)
+}
+
 /// Appends a generator-owned suffix to an authored identifier without retaining raw syntax.
 pub(super) fn sibling_ident(ident: &Ident, suffix: &str) -> Ident {
     Ident::new(

@@ -3,6 +3,18 @@ use recursa_generated_lexing::grammar;
 
 fn assert_token_kind_value<T: Copy + Eq + std::hash::Hash + std::fmt::Debug>() {}
 
+fn assert_content_token_value<T>()
+where
+    T: Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + PartialOrd
+        + Ord
+        + std::hash::Hash,
+{
+}
+
 fn downstream_error_code(code: grammar::LexErrorCode) -> &'static str {
     match code {
         grammar::LexErrorCode::Unrecognized => "RCA4000",
@@ -15,6 +27,7 @@ fn downstream_error_code(code: grammar::LexErrorCode) -> &'static str {
 
 fn main() {
     assert_token_kind_value::<grammar::TokenKind>();
+    assert_content_token_value::<grammar::WordText<'static>>();
 
     let source = String::from("MiXeD sElEcT @");
     let lexed: grammar::LexResult<'_> = grammar::lex(&source);

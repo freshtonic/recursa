@@ -32,6 +32,11 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
         .output
         .as_ref()
         .expect("an AnalyzedGrammar contains successful semantic analysis output");
+    let reporting_sequences = output
+        .first_by_type()
+        .iter()
+        .all(|facts| facts.sequences.is_empty())
+        .then(|| crate::analysis::materialize_type_sequences(grammar));
     let mut rendered = String::from("recursa-semantic-projection-v1\n");
     let build = &lowered.source_modeled.resolved().build_inputs;
     writeln!(
@@ -164,6 +169,11 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
     facts.sort_unstable();
     for (name, index) in facts {
         let first = &output.first_by_type()[index];
+        let sequences = reporting_sequences
+            .as_ref()
+            .map_or(first.sequences.as_slice(), |sequences| {
+                sequences[index].as_slice()
+            });
         let extenders = output.extenders_by_type()[index].as_ref().map_or_else(
             || "-".to_owned(),
             |facts| render_kinds(facts.kinds(), grammar),
@@ -176,7 +186,7 @@ pub(crate) fn canonical_semantic_projection(analyzed: &AnalyzedGrammar) -> Strin
             first.nullable,
             extenders,
             render_follow_facts(follow, grammar),
-            render_first_sequences(&first.sequences, grammar),
+            render_first_sequences(sequences, grammar),
         )
         .expect("writing to a String cannot fail");
     }

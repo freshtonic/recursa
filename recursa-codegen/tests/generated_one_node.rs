@@ -139,7 +139,7 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
     fs::write(&node, &node_rust).expect("restore generated Node body");
     let incompatible_root = String::from_utf8(root_rust.clone())
         .unwrap()
-        .replace("protocol_6", "protocol_999");
+        .replace("protocol_7", "protocol_999");
     assert_ne!(incompatible_root.as_bytes(), root_rust);
     fs::write(&root, incompatible_root).unwrap();
     force_consumer_recompile(&package, "protocol-mismatch");
@@ -200,6 +200,260 @@ fn structural_loaders_report_missing_output_without_cascades_or_fallbacks() {
     fs::write(&root, root_rust).expect("restore generated root after corruption");
     force_consumer_recompile(&package, "clean-recovery");
     assert_success(&run_fixture(&package));
+}
+
+#[test]
+fn a_view_variant_and_intrinsic_content_token_value_traits_compile_together() {
+    let package = scaffold_fixture();
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::r#type,
+    keyword_matching = sensitive,
+    max_lookahead = 1,
+}
+
+recursa::tokens! {}
+
+#[derive(recursa::Node, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Entry<'input> {
+    View(
+        #[lex(pattern = r"[A-Za-z]+")]
+        View<'input>,
+    ),
+}
+"#,
+    )
+    .expect("write the View collision grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa_generated_one_node::r#type as grammar;
+
+fn main() {
+    let lexed = grammar::lex("alpha");
+    let mut input = lexed.input();
+    let parsed = grammar::Entry::parse(&mut input).expect("the View variant parses");
+    let grammar::Entry::View(value) = parsed.into_ast();
+    assert_eq!(value.text(), "alpha");
+}
+"#,
+    )
+    .expect("write the View collision consumer");
+
+    assert_success(&run_fixture(&package));
+}
+
+#[test]
+fn local_visit_traits_traverse_content_tokens_without_changing_token_defaults() {
+    let package = scaffold_fixture();
+    enable_arbitrary_and_serde(&package);
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::r#type,
+    keyword_matching = sensitive,
+    max_lookahead = 1,
+}
+
+recursa::tokens! {}
+
+#[derive(recursa::Node)]
+#[node(derive(Pretty, Visit, VisitMut, Arbitrary, serde::Serialize, serde::Deserialize))]
+pub struct Entry<'input> {
+    #[lex(pattern = r"[A-Za-z]+")]
+    pub value: WordText<'input>,
+}
+
+#[derive(recursa::Node)]
+#[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
+pub struct Wrapped<'input> {
+    pub value: Box<WordText<'input>>,
+}
+
+pub mod nested {
+    #[derive(recursa::Node)]
+    #[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
+    pub struct Optional<'input> {
+        pub value: Option<Box<super::WordText<'input>>>,
+    }
+
+    #[derive(recursa::Node)]
+    #[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
+    pub struct Repeated<'input> {
+        pub value: Vec<super::WordText<'input>>,
+    }
+
+    #[derive(recursa::Node)]
+    #[node(derive(Arbitrary, serde::Serialize, serde::Deserialize))]
+    pub struct Nonempty<'input> {
+        pub value: recursa::Vec1<super::WordText<'input>>,
+    }
+}
+"#,
+    )
+    .expect("write the local Visit grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa_generated_one_node::r#type as grammar;
+
+#[derive(Default)]
+struct Count {
+    enters: usize,
+    exits: usize,
+}
+
+impl<'input> recursa::TotalVisitor<grammar::__RecursaVisitEvents<'input>> for Count {
+    type Error = ();
+
+    fn total_enter<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEvent<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEvents<'input>: 'visit,
+    {
+        self.enters += 1;
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn total_exit<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEvent<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEvents<'input>: 'visit,
+    {
+        self.exits += 1;
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+impl<'input> recursa::TotalVisitorMut<grammar::__RecursaVisitEventsMut<'input>> for Count {
+    type Error = ();
+
+    fn total_enter_mut<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEventMut<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEventsMut<'input>: 'visit,
+    {
+        self.enters += 1;
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn total_exit_mut<'visit>(
+        &mut self,
+        _event: grammar::__RecursaVisitEventMut<'visit, 'input>,
+    ) -> std::ops::ControlFlow<recursa::VisitBreak<Self::Error>>
+    where
+        grammar::__RecursaVisitEventsMut<'input>: 'visit,
+    {
+        self.exits += 1;
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+fn main() {
+    use recursa::Pretty as _;
+
+    let lexed = grammar::lex("alpha");
+    let mut input = lexed.input();
+    let mut value = grammar::Entry::parse(&mut input)
+        .expect("the local Visit Node parses")
+        .into_ast();
+    assert!(input.is_eof());
+
+    let mut immutable = Count::default();
+    assert!(recursa::Visit::visit(&value, &mut immutable).is_continue());
+    assert_eq!(immutable.enters, 2, "the Node and content token are entered");
+    assert_eq!(immutable.exits, 2, "the Node and content token are exited");
+
+    let mut mutable = Count::default();
+    assert!(recursa::VisitMut::visit_mut(&mut value, &mut mutable).is_continue());
+    assert_eq!(mutable.enters, 2, "the Node and content token are entered mutably");
+    assert_eq!(mutable.exits, 2, "the Node and content token are exited mutably");
+
+    assert_eq!(value.render(), "alpha", "the content token renders through local Pretty");
+
+    let encoded = serde_json::to_string(&value).expect("the local Serialize Node encodes");
+    let decoded: grammar::Entry<'static> =
+        serde_json::from_str(&encoded).expect("the local Deserialize Node decodes");
+    assert_eq!(decoded.value.text(), "alpha");
+
+    let mut bytes = recursa::__private::arbitrary::Unstructured::new(&[0]);
+    let generated = <grammar::Entry<'static> as recursa::Arbitrary>::arbitrary(&mut bytes)
+        .expect("the local Arbitrary Node constructs its content token");
+    assert!(!generated.value.text().is_empty());
+
+    let wrapped_lexed = grammar::lex("beta");
+    let mut wrapped_input = wrapped_lexed.input();
+    let wrapped = grammar::Wrapped::parse(&mut wrapped_input)
+        .expect("the wrapped token Node parses")
+        .into_ast();
+    let wrapped_json = serde_json::to_string(&wrapped).expect("the boxed token encodes");
+    let wrapped_decoded: grammar::Wrapped<'static> =
+        serde_json::from_str(&wrapped_json).expect("the boxed token decodes");
+    assert_eq!(wrapped_decoded.value.text(), "beta");
+
+    let mut wrapped_bytes = recursa::__private::arbitrary::Unstructured::new(&[0]);
+    let wrapped_generated =
+        <grammar::Wrapped<'static> as recursa::Arbitrary>::arbitrary(&mut wrapped_bytes)
+            .expect("the local Arbitrary Node constructs a boxed content token");
+    assert!(!wrapped_generated.value.text().is_empty());
+
+    let optional = grammar::nested::Optional {
+        value: Some(Box::new(grammar::WordText::new("gamma"))),
+    };
+    let optional_json = serde_json::to_string(&optional).expect("the optional token encodes");
+    let optional_decoded: grammar::nested::Optional<'static> =
+        serde_json::from_str(&optional_json).expect("the optional token decodes");
+    assert_eq!(optional_decoded.value.unwrap().text(), "gamma");
+
+    let repeated = grammar::nested::Repeated {
+        value: vec![grammar::WordText::new("delta")],
+    };
+    let repeated_json = serde_json::to_string(&repeated).expect("the repeated token encodes");
+    let repeated_decoded: grammar::nested::Repeated<'static> =
+        serde_json::from_str(&repeated_json).expect("the repeated token decodes");
+    assert_eq!(repeated_decoded.value[0].text(), "delta");
+
+    let nonempty = grammar::nested::Nonempty {
+        value: recursa::Vec1::new(grammar::WordText::new("epsilon")),
+    };
+    let nonempty_json = serde_json::to_string(&nonempty).expect("the nonempty token encodes");
+    let nonempty_decoded: grammar::nested::Nonempty<'static> =
+        serde_json::from_str(&nonempty_json).expect("the nonempty token decodes");
+    assert_eq!(nonempty_decoded.value.first().text(), "epsilon");
+
+    let mut wrapper_bytes = recursa::__private::arbitrary::Unstructured::new(&[0]);
+    assert!(
+        <grammar::nested::Optional<'static> as recursa::Arbitrary>::arbitrary(
+            &mut wrapper_bytes,
+        )
+        .is_ok()
+    );
+    let mut wrapper_bytes = recursa::__private::arbitrary::Unstructured::new(&[0]);
+    assert!(
+        <grammar::nested::Repeated<'static> as recursa::Arbitrary>::arbitrary(
+            &mut wrapper_bytes,
+        )
+        .is_ok()
+    );
+    let mut wrapper_bytes = recursa::__private::arbitrary::Unstructured::new(&[0]);
+    assert!(
+        <grammar::nested::Nonempty<'static> as recursa::Arbitrary>::arbitrary(
+            &mut wrapper_bytes,
+        )
+        .is_ok()
+    );
+}
+"#,
+    )
+    .expect("write the local Visit consumer");
+
+    assert_success(&run_fixture(&package));
+    assert_no_public_optional_token_impls(&package);
 }
 
 #[test]
@@ -327,11 +581,6 @@ fn configure_capabilities(package: &TempDir, diagrams: bool, explorer: bool) {
         features.push("\"diagrams\"");
     }
     if explorer {
-        source = source.replacen(
-            "    module = crate::grammar,\n",
-            "    module = crate::grammar,\n    derives(Visit),\n",
-            1,
-        );
         features.push("\"explorer\"");
     }
     if diagrams {
@@ -409,6 +658,88 @@ fn scaffold_fixture() -> TempDir {
     fs::write(package.path().join("Cargo.toml"), manifest)
         .expect("write generated grammar fixture manifest");
     package
+}
+
+fn assert_no_public_optional_token_impls(package: &TempDir) {
+    let selected = find_selected_generation(&target_dir(package));
+    let selector = fs::read_to_string(&selected).expect("read selected Generation");
+    let identity = selector
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("// recursa-generation:"))
+        .expect("selected Generation identity");
+    let root = selected
+        .parent()
+        .unwrap()
+        .join("recursa-generations")
+        .join(identity)
+        .join("root.rs");
+    let root = syn::parse_file(&fs::read_to_string(root).expect("read generated root"))
+        .expect("parse generated root");
+
+    #[derive(Default)]
+    struct PublicOptionalTokenImpls(Vec<String>);
+
+    impl<'ast> syn::visit::Visit<'ast> for PublicOptionalTokenImpls {
+        fn visit_item_impl(&mut self, implementation: &'ast syn::ItemImpl) {
+            if let syn::Type::Path(self_type) = implementation.self_ty.as_ref()
+                && let Some(self_ident) =
+                    self_type.path.segments.last().map(|segment| &segment.ident)
+                && let Some((_, trait_path, _)) = &implementation.trait_
+                && let Some(trait_ident) = trait_path.segments.last().map(|segment| &segment.ident)
+                && self_ident.to_string().starts_with("__RecursaContentToken")
+                && matches!(
+                    trait_ident.to_string().as_str(),
+                    "Arbitrary" | "Serialize" | "Deserialize"
+                )
+            {
+                self.0.push(trait_ident.to_string());
+            }
+            syn::visit::visit_item_impl(self, implementation);
+        }
+
+        fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+            if let Ok(nested) = syn::parse2::<syn::File>(item.mac.tokens.clone()) {
+                let mut nested_public = Self::default();
+                syn::visit::Visit::visit_file(&mut nested_public, &nested);
+                self.0.extend(nested_public.0);
+            }
+            syn::visit::visit_item_macro(self, item);
+        }
+    }
+
+    let mut public = PublicOptionalTokenImpls::default();
+    syn::visit::Visit::visit_file(&mut public, &root);
+    assert!(
+        public.0.is_empty(),
+        "private support must not change public token recipes: {:?}",
+        public.0,
+    );
+}
+
+fn enable_arbitrary_and_serde(package: &TempDir) {
+    let manifest_path = package.path().join("Cargo.toml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .expect("read generated grammar fixture manifest")
+        .replace(
+            "recursa = { path = ",
+            "recursa = { features = [\"arbitrary\", \"serde\"], path = ",
+        )
+        .replace(
+            "\n[build-dependencies]",
+            "\nserde_json = \"1\"\n\n[build-dependencies]",
+        );
+    fs::write(&manifest_path, manifest).expect("enable optional local-trait capabilities");
+
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .arg("generate-lockfile")
+        .arg("--offline")
+        .current_dir(package.path())
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .expect("generate optional-capability fixture lock");
+    assert_success(&output);
 }
 
 fn copy(fixture: &Path, package: &Path, relative: &str) {

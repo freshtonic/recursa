@@ -190,16 +190,28 @@ The source-aware generated-behavior plan formed by joining an analyzed grammar's
 _Avoid_: Grammar description, source model
 
 **Configured trait plan**:
-The effective set of supported optional trait implementations selected for a semantic grammar type. Nodes combine grammar defaults with local additions or omissions; generated token types use the grammar defaults.
+The effective set of supported optional trait implementations selected for a semantic grammar type. Nodes combine grammar defaults with local additions or omissions; generated content-token types use the grammar defaults for optional capabilities in addition to their intrinsic structural value traits.
 _Avoid_: Ordinary Rust derives, intrinsic generated behavior
 
 **Configured trait recipe**:
 One generator-owned implementation shape selected from the closed catalog by a canonical configured-trait spelling.
 _Avoid_: Arbitrary trait path, proc-macro derive
 
+**Intrinsic content-token value traits**:
+The fixed `Debug`, `Clone`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, and `Hash` implementations emitted for every generated content-token type so ordinary Rust derives on authored AST Nodes compose through token fields. They participate in generated trait-behavior identity and debug metadata but are not optional configured trait recipes.
+_Avoid_: Grammar defaults, inferred configured traits
+
 **Generated export plan**:
 The source-aware closed set of documented public bindings a generation introduces while preserving the visibility of their source declarations.
 _Avoid_: Generated prelude, hidden loader surface
+
+**Balanced delimiter pair**:
+A normalized pair of distinct fixed opening and closing token kinds whose properly nested occurrences may be proven structurally during analysis.
+_Avoid_: Arbitrary punctuation pair, runtime delimiter heuristic
+
+**Balanced dispatch**:
+A frozen predictive selection strategy for an otherwise unbounded shared opener prefix. Analysis proves the enclosed language balanced for one delimiter pair and freezes the residual post-close trie; generated parsing only counts that pair's nesting and executes the frozen residual decision.
+_Avoid_: Bounded FIRST expansion, runtime grammar rediscovery
 
 **Parse plan**:
 The immutable executable plan for parsing one materialized grammar type, formed by joining source-independent semantic decisions with source construction and capture facts. Generation renders it without rediscovering grammar semantics.

@@ -344,12 +344,30 @@ pub(super) fn render_debug_capability_fragments(
             fragments.push((name, body.to_string()));
         }
     }
+    let intrinsic_token_traits = INTRINSIC_CONTENT_TOKEN_VALUE_TRAITS
+        .iter()
+        .map(|recipe| format!("{recipe:?}"))
+        .collect::<Vec<_>>()
+        .join("+");
     for (index, token) in plan.tokens.iter().enumerate() {
+        let rendered = render_token(plan, token, index).to_string();
+        fragments.push((
+            format!("intrinsic-token:{}:{intrinsic_token_traits}", token.ident),
+            rendered.clone(),
+        ));
         for recipe in &token.configured_traits {
             fragments.push((
                 format!("configured-token:{}:{recipe:?}", token.ident),
-                render_token(plan, token, index).to_string(),
+                rendered.clone(),
             ));
+        }
+        for recipe in PRIVATE_CONTENT_TOKEN_SUPPORT_TRAITS {
+            if content_token_support_required(plan, token.semantic, recipe) {
+                fragments.push((
+                    format!("support-token:{}:{recipe:?}", token.ident),
+                    rendered.clone(),
+                ));
+            }
         }
     }
     #[cfg(feature = "diagrams")]

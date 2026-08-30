@@ -112,6 +112,21 @@ impl KindSet {
         self.combine(other, |left, right| left & right)
     }
 
+    /// Reports whether two equally wide sets share at least one token kind.
+    pub fn intersects(&self, other: &Self) -> Result<bool, KindSetError> {
+        if self.kind_count != other.kind_count {
+            return Err(KindSetError::WidthMismatch {
+                left: self.kind_count,
+                right: other.kind_count,
+            });
+        }
+        Ok(self
+            .words
+            .iter()
+            .zip(&other.words)
+            .any(|(left, right)| left & right != 0))
+    }
+
     /// Returns kinds present here but absent from a set with the same width.
     pub fn difference(&self, other: &Self) -> Result<Self, KindSetError> {
         self.combine(other, |left, right| left & !right)
@@ -119,7 +134,11 @@ impl KindSet {
 
     /// Iterates member kinds in ascending numeric order.
     pub fn iter(&self) -> KindSetIter<'_> {
-        KindSetIter { set: self, next: 0 }
+        KindSetIter {
+            set: self,
+            word: 0,
+            remaining: self.words.first().copied().unwrap_or_default(),
+        }
     }
 
     /// Inserts a kind after validating it against the grammar width.
@@ -185,22 +204,26 @@ impl KindSet {
 pub struct KindSetIter<'a> {
     /// Set whose membership is being traversed.
     set: &'a KindSet,
-    /// Next numeric kind candidate.
-    next: usize,
+    /// Packed word currently being traversed.
+    word: usize,
+    /// Unvisited members of the current packed word.
+    remaining: u64,
 }
 
 impl Iterator for KindSetIter<'_> {
     type Item = KindId;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.next < self.set.kind_count {
-            let index = self.next;
-            self.next += 1;
-            let kind = KindId::new(index as u16);
-            if self.set.contains(kind) {
-                return Some(kind);
+        loop {
+            if self.remaining != 0 {
+                let bit = self.remaining.trailing_zeros() as usize;
+                self.remaining &= self.remaining - 1;
+                let index = self.word * u64::BITS as usize + bit;
+                debug_assert!(index < self.set.kind_count);
+                return Some(KindId::new(index as u16));
             }
+            self.word += 1;
+            self.remaining = *self.set.words.get(self.word)?;
         }
-        None
     }
 }
