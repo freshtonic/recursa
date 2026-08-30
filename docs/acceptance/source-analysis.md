@@ -39,6 +39,8 @@ M3 internal invariant codes occupy `RCA9101` through `RCA9104` for Discovery, Re
 
 Runtime lexical failures use the separate matching-version `RCA4000`, `RCA4001`, `RCA4002`, and `RCA4004` contract. They are intentionally absent from the build-diagnostic registry, and their producer ledger points to generated downstream assertions. The non-contiguous allocation is retained rather than renumbering a published-in-branch identifier.
 
+Runtime parse failures use the adjacent append-only `RCA4100` through `RCA4104` contract for `UnexpectedToken`, `UnexpectedEof`, `PrattAmbiguity`, `InvalidTokenSpan`, and `GrammarMismatch` respectively. `LexicalError` preserves its originating `RCA400x` code rather than allocating a second classification. The separate runtime producer ledger cites generated public-seam assertions for ordinary failures and focused core-boundary assertions for Pratt ambiguity and invalid matching-version inputs.
+
 M3-DIAG-004 verifies the private, line-oriented transport seam without claiming publication behavior. A black-box Cargo build-script fixture would require the public generation/publication surface that M3 deliberately does not provide; that publication-specific transport evidence is deferred to the M4 acceptance row.
 
 ## Immutable projection-candidate workflow

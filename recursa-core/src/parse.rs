@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::lex::LexDiagnosticCode;
 use crate::{ExpectedAtomId, FollowSet, GrammarInfo, Input, Span, TokenKind};
 
 /// A low-level parse failure.
@@ -7,8 +8,12 @@ use crate::{ExpectedAtomId, FollowSet, GrammarInfo, Input, Span, TokenKind};
 pub struct ParseError {
     /// Stable failure classification.
     kind: ParseErrorKind,
+    /// Lexical mechanism code retained only for a classified lexical failure.
+    lexical_code: Option<LexDiagnosticCode>,
     /// Concrete or zero-width source location.
     span: Span,
+    /// Primary source location for the construct that caused the failure.
+    anchor: Span,
     /// Grammar-local found kind, absent at EOF.
     found: Option<TokenKind>,
     /// Symbolic expectations retained in analysis order.
@@ -34,6 +39,20 @@ pub enum ParseErrorKind {
     GrammarMismatch,
 }
 
+impl ParseErrorKind {
+    /// Returns the stable runtime code for a non-lexical failure or the lexical fallback code.
+    const fn default_code(self) -> &'static str {
+        match self {
+            Self::UnexpectedToken => "RCA4100",
+            Self::UnexpectedEof => "RCA4101",
+            Self::PrattAmbiguity => "RCA4102",
+            Self::LexicalError => "RCA4000",
+            Self::InvalidTokenSpan => "RCA4103",
+            Self::GrammarMismatch => "RCA4104",
+        }
+    }
+}
+
 impl ParseError {
     /// Builds an unexpected-input error at the current cursor.
     pub(crate) fn unexpected<A>(input: &Input<'_, A>, expected: &FollowSet) -> Self {
@@ -46,26 +65,36 @@ impl ParseError {
         expected: &FollowSet,
         distance: usize,
     ) -> Self {
-        let (kind, span, found) = match input.peek(distance) {
+        let (kind, lexical_code, span, anchor, found) = match input.peek(distance) {
             Some(record) if record.kind == input.grammar().lexical_error_kind => {
-                (ParseErrorKind::LexicalError, record.span, Some(record.kind))
+                let diagnostic = record.diagnostic;
+                let kind = ParseErrorKind::LexicalError;
+                (
+                    kind,
+                    diagnostic.map(|diagnostic| diagnostic.code),
+                    record.span,
+                    diagnostic.map_or(record.span, |diagnostic| diagnostic.anchor),
+                    Some(record.kind),
+                )
             }
-            Some(record) => (
-                ParseErrorKind::UnexpectedToken,
-                record.span,
-                Some(record.kind),
-            ),
+            Some(record) => {
+                let kind = ParseErrorKind::UnexpectedToken;
+                (kind, None, record.span, record.span, Some(record.kind))
+            }
             None => {
                 let position = input.byte_position_at(distance);
                 let span = Span::new(position, position)
                     .expect("lexing input must fit Recursa's checked span range");
-                (ParseErrorKind::UnexpectedEof, span, None)
+                let kind = ParseErrorKind::UnexpectedEof;
+                (kind, None, span, span, None)
             }
         };
 
         Self {
             kind,
+            lexical_code,
             span,
+            anchor,
             found,
             expected: expected.expected().to_vec(),
             grammar: input.grammar(),
@@ -78,9 +107,12 @@ impl ParseError {
         span: Span,
         found: Option<TokenKind>,
     ) -> Self {
+        let kind = ParseErrorKind::InvalidTokenSpan;
         Self {
-            kind: ParseErrorKind::InvalidTokenSpan,
+            kind,
+            lexical_code: None,
             span,
+            anchor: span,
             found,
             expected: Vec::new(),
             grammar: input.grammar(),
@@ -92,9 +124,12 @@ impl ParseError {
         let record = input
             .peek(0)
             .expect("a Pratt ambiguity is reported only for a matched extender");
+        let kind = ParseErrorKind::PrattAmbiguity;
         Self {
-            kind: ParseErrorKind::PrattAmbiguity,
+            kind,
+            lexical_code: None,
             span: record.span,
+            anchor: record.span,
             found: Some(record.kind),
             expected: expected.expected().to_vec(),
             grammar: input.grammar(),
@@ -114,9 +149,12 @@ impl ParseError {
             },
             |record| (record.span, Some(record.kind)),
         );
+        let kind = ParseErrorKind::GrammarMismatch;
         Self {
-            kind: ParseErrorKind::GrammarMismatch,
+            kind,
+            lexical_code: None,
             span,
+            anchor: span,
             found,
             expected: Vec::new(),
             grammar: input.grammar(),
@@ -128,9 +166,22 @@ impl ParseError {
         self.kind
     }
 
+    /// Returns the append-only machine-readable code for this runtime parse failure.
+    pub const fn code(&self) -> &'static str {
+        match self.lexical_code {
+            Some(code) => code.as_str(),
+            None => self.kind.default_code(),
+        }
+    }
+
     /// Returns the concrete or zero-width failure location.
     pub fn span(&self) -> Span {
         self.span
+    }
+
+    /// Returns the primary source location for the construct that caused this failure.
+    pub const fn anchor(&self) -> Span {
+        self.anchor
     }
 
     /// The grammar-local display name of the found token, when present.

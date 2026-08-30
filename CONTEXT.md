@@ -314,7 +314,7 @@ The deterministic multiline plain-text representation of a structured Recursa di
 _Avoid_: Cargo warning, loader output, debug dump
 
 **Build diagnostic code registry**:
-The append-only assignment of stable generation and loader diagnostic codes to failure classes, stages, severities, locations, evidence, and remedies. Runtime lexical codes use a separate matching-version contract because they classify failures over user input rather than build failures.
+The append-only assignment of stable generation and loader diagnostic codes to failure classes, stages, severities, locations, evidence, and remedies. Runtime lexical and parse codes use separate matching-version contracts because they arise during runtime input recognition or matching-version boundary validation rather than generation or loading.
 _Avoid_: Message catalogue, enum ordering
 
 **Internal diagnostic**:

@@ -56,11 +56,11 @@ struct ProducerEvidence {
     command: &'static str,
 }
 
-/// Executable downstream evidence for stable failures in the matching-version runtime protocol.
+/// Executable evidence for stable failures in the matching-version runtime protocol.
 ///
 /// These codes are not build diagnostics, so this ledger is deliberately separate from the build
 /// diagnostic registry and its producer ledger.
-struct RuntimeLexicalEvidence {
+struct RuntimeDiagnosticEvidence {
     /// Identifies the runtime protocol failures exercised by this evidence row.
     codes: &'static [&'static str],
     /// Points to the runtime branch that creates each classified failure.
@@ -81,7 +81,7 @@ struct RuntimeLexicalEvidence {
 const RUNTIME_LEXICAL_CODES: &[&str] = &["RCA4000", "RCA4001", "RCA4002", "RCA4004"];
 
 /// Maps every runtime lexical failure code to executable downstream evidence.
-const RUNTIME_LEXICAL_EVIDENCE: &[RuntimeLexicalEvidence] = &[RuntimeLexicalEvidence {
+const RUNTIME_LEXICAL_EVIDENCE: &[RuntimeDiagnosticEvidence] = &[RuntimeDiagnosticEvidence {
     codes: &["RCA4000", "RCA4001", "RCA4002", "RCA4004"],
     producer_source: "../recursa-core/src/lex.rs",
     assertion_source: "tests/fixtures/generation/lexing/src/main.rs",
@@ -90,6 +90,49 @@ const RUNTIME_LEXICAL_EVIDENCE: &[RuntimeLexicalEvidence] = &[RuntimeLexicalEvid
     command_test_name: "a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text",
     command: "cargo test -p recursa-codegen --test generated_lexing a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text --locked",
 }];
+
+/// Complete append-only code contract for failures produced while parsing user input.
+const RUNTIME_PARSE_CODES: &[&str] = &["RCA4100", "RCA4101", "RCA4102", "RCA4103", "RCA4104"];
+
+/// Maps every runtime parse failure code to executable public or core-boundary evidence.
+const RUNTIME_PARSE_EVIDENCE: &[RuntimeDiagnosticEvidence] = &[
+    RuntimeDiagnosticEvidence {
+        codes: &["RCA4100", "RCA4101"],
+        producer_source: "../recursa-core/src/parse.rs",
+        assertion_source: "tests/fixtures/generation/one-node/src/main.rs",
+        assertion_name: "main",
+        command_test_source: "tests/generated_one_node.rs",
+        command_test_name: "a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade",
+        command: "cargo test -p recursa-codegen --test generated_one_node a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade --locked",
+    },
+    RuntimeDiagnosticEvidence {
+        codes: &["RCA4102"],
+        producer_source: "../recursa-core/src/parse.rs",
+        assertion_source: "../recursa-core/src/parsed.rs",
+        assertion_name: "pratt_ambiguities_expose_the_runtime_code_at_the_extender_anchor",
+        command_test_source: "../recursa-core/src/parsed.rs",
+        command_test_name: "pratt_ambiguities_expose_the_runtime_code_at_the_extender_anchor",
+        command: "cargo test -p recursa-core parsed::tests::pratt_ambiguities_expose_the_runtime_code_at_the_extender_anchor --locked",
+    },
+    RuntimeDiagnosticEvidence {
+        codes: &["RCA4103"],
+        producer_source: "../recursa-core/src/parse.rs",
+        assertion_source: "../recursa-core/src/parsed.rs",
+        assertion_name: "invalid_generated_record_spans_are_structured_errors",
+        command_test_source: "../recursa-core/src/parsed.rs",
+        command_test_name: "invalid_generated_record_spans_are_structured_errors",
+        command: "cargo test -p recursa-core parsed::tests::invalid_generated_record_spans_are_structured_errors --locked",
+    },
+    RuntimeDiagnosticEvidence {
+        codes: &["RCA4104"],
+        producer_source: "../recursa-core/src/parse.rs",
+        assertion_source: "../recursa-core/src/parsed.rs",
+        assertion_name: "grammar_mismatches_expose_the_runtime_code_at_the_failure_anchor",
+        command_test_source: "../recursa-core/src/parsed.rs",
+        command_test_name: "grammar_mismatches_expose_the_runtime_code_at_the_failure_anchor",
+        command: "cargo test -p recursa-core parsed::tests::grammar_mismatches_expose_the_runtime_code_at_the_failure_anchor --locked",
+    },
+];
 
 macro_rules! phase_producer_evidence {
     ($code:literal, $module:literal, $test:literal) => {
@@ -516,14 +559,35 @@ fn every_registered_code_has_real_producer_evidence() {
 
 #[test]
 fn runtime_lexical_codes_have_public_producer_evidence() {
+    assert_runtime_diagnostic_evidence(
+        RUNTIME_LEXICAL_CODES,
+        RUNTIME_LEXICAL_EVIDENCE,
+        "runtime lexical",
+    );
+}
+
+#[test]
+fn runtime_parse_codes_have_executable_producer_evidence() {
+    assert_runtime_diagnostic_evidence(
+        RUNTIME_PARSE_CODES,
+        RUNTIME_PARSE_EVIDENCE,
+        "runtime parse",
+    );
+}
+
+fn assert_runtime_diagnostic_evidence(
+    expected_codes: &[&str],
+    evidence_rows: &[RuntimeDiagnosticEvidence],
+    contract_name: &str,
+) {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let expected = RUNTIME_LEXICAL_CODES
+    let expected = expected_codes
         .iter()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
     let mut actual = std::collections::BTreeSet::new();
 
-    for evidence in RUNTIME_LEXICAL_EVIDENCE {
+    for evidence in evidence_rows {
         let producer = std::fs::read_to_string(manifest.join(evidence.producer_source)).unwrap();
         let assertion_source =
             std::fs::read_to_string(manifest.join(evidence.assertion_source)).unwrap();
@@ -535,7 +599,7 @@ fn runtime_lexical_codes_have_public_producer_evidence() {
         assert_eq!(
             evidence.command,
             producer_test_command(evidence.command_test_source, evidence.command_test_name),
-            "runtime evidence must provide an exact executable command",
+            "{contract_name} evidence must provide an exact executable command",
         );
         for code in evidence.codes {
             assert!(
@@ -561,7 +625,7 @@ fn runtime_lexical_codes_have_public_producer_evidence() {
 
     assert_eq!(
         actual, expected,
-        "runtime lexical evidence must cover its separate code contract exactly"
+        "{contract_name} evidence must cover its separate code contract exactly"
     );
 }
 

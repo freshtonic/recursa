@@ -20,7 +20,7 @@ fn a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade() {
     let selected = find_selected_generation(&target_dir(&package));
     assert_eq!(
         String::from_utf8(initial.stdout).unwrap().trim(),
-        "one-node-ok"
+        "one-node-ok RCA4100 RCA4101"
     );
 
     fs::write(
@@ -60,7 +60,7 @@ fn a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade() {
     assert_success(&restored);
     assert_eq!(
         String::from_utf8(restored.stdout).unwrap().trim(),
-        "one-node-ok"
+        "one-node-ok RCA4100 RCA4101"
     );
 }
 

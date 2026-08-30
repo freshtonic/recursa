@@ -25,6 +25,28 @@ authored grammar. The hidden `__private` module in this crate exists only for
 matching-version generated code and is not a general-purpose lexer or parser
 API.
 
+## Runtime parse diagnostics
+
+`ParseError::code` returns an append-only machine-readable code, while
+`ParseError::anchor` returns its reported primary source range. Ordinary parse
+failures use the complete failure span as their anchor. A lexical parse failure
+preserves the generated lexical diagnostic's `RCA400x` code and opener or
+failure anchor; a lexical error record without that metadata falls back to
+`RCA4000` and the record span. `InvalidTokenSpan` is the exception to source
+validity: its reported span and anchor can describe a range that is invalid for
+the source.
+
+| Code | `ParseErrorKind` |
+| --- | --- |
+| `RCA4100` | `UnexpectedToken` |
+| `RCA4101` | `UnexpectedEof` |
+| `RCA4102` | `PrattAmbiguity` |
+| `RCA4103` | `InvalidTokenSpan` |
+| `RCA4104` | `GrammarMismatch` |
+
+Published runtime codes are never renumbered or reused for another failure
+class. New classifications receive a new code.
+
 ## Features
 
 No features are enabled by default.

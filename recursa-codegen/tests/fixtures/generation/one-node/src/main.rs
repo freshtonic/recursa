@@ -146,7 +146,21 @@ fn main() {
         panic!("empty input must not parse as the raw-named Node");
     };
     assert_eq!(error.kind(), recursa::ParseErrorKind::UnexpectedEof);
+    assert_eq!(error.code(), "RCA4101");
+    assert_eq!(error.span(), recursa::Span::new(0, 0).unwrap());
+    assert_eq!(error.anchor(), recursa::Span::new(0, 0).unwrap());
     assert_eq!(empty_input.cursor(), 0);
 
-    println!("one-node-ok");
+    let unexpected = grammar::lex("!");
+    let mut unexpected_input = unexpected.input();
+    let Err(error) = grammar::r#match::parse(&mut unexpected_input) else {
+        panic!("the marker token must not begin the raw-named Node");
+    };
+    assert_eq!(error.kind(), recursa::ParseErrorKind::UnexpectedToken);
+    assert_eq!(error.code(), "RCA4100");
+    assert_eq!(error.span(), recursa::Span::new(0, 1).unwrap());
+    assert_eq!(error.anchor(), recursa::Span::new(0, 1).unwrap());
+    assert_eq!(unexpected_input.cursor(), 0);
+
+    println!("one-node-ok RCA4100 RCA4101");
 }
