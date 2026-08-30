@@ -47,8 +47,8 @@ mod tests {
             atoms: vec![0, 2],
         };
         let inactive = ExpectedSet {
-            words: vec![0b1_0000],
-            atoms: vec![4],
+            words: vec![0b1_0001],
+            atoms: vec![0, 4],
         };
 
         assert_eq!(
@@ -4452,7 +4452,9 @@ pub(super) fn pratt_operand_follow(
             PlannedFollow::StaticAndCaller(expected)
         }
     };
-    follow_with_static(&without_active, inactive)
+    let mut inactive_only = inactive.clone();
+    inactive_only.difference_assign(active);
+    follow_with_static(&without_active, &inactive_only)
 }
 
 /// Adds the next-loop starters to a completed non-recursive Pratt LED tail.

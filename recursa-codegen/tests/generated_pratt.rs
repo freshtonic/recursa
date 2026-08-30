@@ -315,6 +315,8 @@ pub enum Expr<'input> {
     #[parse(infix, lbp = 10, rbp = 11)]
     #[tok(PLUS)]
     Add(Box<Self>, Box<Self>),
+    #[parse(infix, lbp = 5, rbp = 6)]
+    LowPlus(Box<Self>, #[tok(PLUS, OTHER, this)] Box<Self>),
     #[parse(infix, lbp = 8, rbp = 9)]
     Concat(Box<Self>, #[tok(CONCAT, this)] Box<Self>),
     #[parse(infix, lbp = 5, rbp = 6)]

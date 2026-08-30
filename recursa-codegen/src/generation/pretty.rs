@@ -99,10 +99,9 @@ pub(super) fn render_content_token_pretty_helper(plan: &EmissionPlan) -> proc_ma
                 &self,
                 context: &mut #facade::PrettyContext,
             ) -> ::core::fmt::Result {
-                for value in self {
-                    value.__recursa_pretty_with(context)?;
-                }
-                Ok(())
+                context.render_repeated_by(self.iter(), |context, value| {
+                    value.__recursa_pretty_with(context)
+                })
             }
         }
 
@@ -114,10 +113,9 @@ pub(super) fn render_content_token_pretty_helper(plan: &EmissionPlan) -> proc_ma
                 &self,
                 context: &mut #facade::PrettyContext,
             ) -> ::core::fmt::Result {
-                for value in self.iter() {
-                    value.__recursa_pretty_with(context)?;
-                }
-                Ok(())
+                context.render_repeated_by(self.iter(), |context, value| {
+                    value.__recursa_pretty_with(context)
+                })
             }
         }
     }
@@ -710,6 +708,8 @@ pub(super) enum PrettyFixedRendering {
     Around,
     /// Opens a delimited group without trailing space.
     Opening,
+    /// Closes a delimited group tightly on both sides.
+    Closing,
     /// Behaves as word-like syntax for adjacency.
     Word,
     /// Behaves as punctuation for adjacency.
@@ -1227,6 +1227,7 @@ pub(super) fn pretty_fixed_rendering(
         PrettySpacing::After => PrettyFixedRendering::After,
         PrettySpacing::Around => PrettyFixedRendering::Around,
         PrettySpacing::Auto if matches!(spelling, "(" | "[" | "{") => PrettyFixedRendering::Opening,
+        PrettySpacing::Auto if matches!(spelling, ")" | "]" | "}") => PrettyFixedRendering::Closing,
         PrettySpacing::Auto if is_word_shaped(spelling) => PrettyFixedRendering::Word,
         PrettySpacing::Auto => PrettyFixedRendering::Punctuation,
     }
@@ -2654,6 +2655,7 @@ pub(super) fn pretty_fixed_method(rendering: PrettyFixedRendering) -> syn::Ident
         PrettyFixedRendering::After => format_ident!("after_token"),
         PrettyFixedRendering::Around => format_ident!("around_token"),
         PrettyFixedRendering::Opening => format_ident!("opening_token"),
+        PrettyFixedRendering::Closing => format_ident!("closing_token"),
         PrettyFixedRendering::Word => format_ident!("token"),
         PrettyFixedRendering::Punctuation => format_ident!("punctuation_token"),
     }

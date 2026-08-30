@@ -616,6 +616,15 @@ impl PrettyContext {
         Ok(())
     }
 
+    /// Emits a grammar-known closing delimiter tightly and suppresses
+    /// conservative punctuation spacing after it.
+    #[doc(hidden)]
+    pub fn closing_token(&mut self, text: &str) -> fmt::Result {
+        self.tight_token(text)?;
+        self.previous_auto_punctuation = false;
+        Ok(())
+    }
+
     /// Marks the preceding punctuation token as a grammar-known closing delimiter.
     #[doc(hidden)]
     pub fn close_delimiter(&mut self) {

@@ -457,6 +457,103 @@ fn main() {
 }
 
 #[test]
+fn generated_pretty_keeps_content_repetition_separators_and_closing_delimiters_tight() {
+    let package = scaffold_fixture();
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"recursa::grammar! {
+    module = crate::r#type,
+    derives(Pretty),
+    keyword_matching = sensitive,
+    max_lookahead = 1,
+}
+
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    punctuation {
+        COMMA => ",",
+        LPAREN => "(",
+        RPAREN => ")",
+        STAR => "*",
+    }
+}
+
+#[derive(recursa::Node)]
+pub struct Word<'input> {
+    #[lex(pattern = r"[A-Za-z]+")]
+    pub value: WordText<'input>,
+}
+
+#[derive(recursa::Node)]
+#[tok(LPAREN, this, RPAREN)]
+pub struct TextList<'input> {
+    #[sep(COMMA)]
+    pub values: recursa::Vec1<WordText<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub enum Open {
+    #[tok(LPAREN)]
+    Value,
+}
+
+#[derive(recursa::Node)]
+pub enum Star {
+    #[tok(STAR)]
+    Value,
+}
+
+#[derive(recursa::Node)]
+pub enum Close {
+    #[tok(RPAREN)]
+    Value,
+}
+
+#[derive(recursa::Node)]
+pub struct StarCall {
+    pub open: Open,
+    pub star: Star,
+    pub close: Close,
+}
+"#,
+    )
+    .expect("write the Pretty boundary grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa::Pretty as _;
+use recursa_generated_one_node::r#type as grammar;
+
+fn main() {
+    let mut failures = Vec::new();
+
+    let lexed = grammar::lex("(alpha,beta)");
+    let mut input = lexed.input();
+    let list = grammar::TextList::parse(&mut input).expect("content list parses");
+    assert!(input.is_eof());
+    let rendered = list.render();
+    if rendered != "(alpha, beta)" {
+        failures.push(format!("content repetition rendered as {rendered:?}"));
+    }
+
+    let lexed = grammar::lex("(*)");
+    let mut input = lexed.input();
+    let call = grammar::StarCall::parse(&mut input).expect("star call parses");
+    assert!(input.is_eof());
+    let rendered = call.render();
+    if rendered != "(*)" {
+        failures.push(format!("star call rendered as {rendered:?}"));
+    }
+
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+"#,
+    )
+    .expect("write the Pretty boundary consumer");
+
+    assert_success(&run_fixture(&package));
+}
+
+#[test]
 fn debug_emission_preserves_compiled_semantics_for_every_capability_combination() {
     for (name, diagrams, explorer) in [
         ("core", false, false),
