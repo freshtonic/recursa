@@ -24,6 +24,67 @@ fn a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text() {
 }
 
 #[test]
+fn a_fixed_match_wins_when_trivia_loses_local_fence_arbitration() {
+    let package = scaffold_fixture();
+    fs::write(
+        package.path().join("src/grammar.rs"),
+        r#"
+recursa::grammar! {
+    module = crate::grammar,
+}
+
+recursa::tokens! {
+    ignore = r"--",
+    punctuation {
+        BANG_DASH_DASH => "!--",
+        DASH_DASH => "--",
+    }
+    matchers {
+        OperatorText => operator_run(
+            characters = "!-",
+            fences = ["--"],
+            trailing = "",
+            qualifying = "",
+            priority = 3
+        ),
+    }
+}
+
+#[derive(recursa::Node)]
+pub struct OperatorDefinition<'input> {
+    #[lex(matcher)]
+    pub operator: OperatorText<'input>,
+}
+"#,
+    )
+    .expect("write local fence-arbitration grammar");
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"
+use recursa_generated_lexing::grammar;
+
+fn main() {
+    let lexed = grammar::lex("!--");
+    assert_eq!(lexed.errors().count(), 0);
+    let tokens = lexed.tokens().collect::<Vec<_>>();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens[0].kind(), grammar::TokenKind::BANG_DASH_DASH);
+    assert_eq!(tokens[0].text(), "!--");
+}
+"#,
+    )
+    .expect("write local fence-arbitration assertion");
+
+    let output = run_fixture(&package);
+    assert!(
+        output.status.success(),
+        "fixture failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
 fn alternative_lexer_cannot_bypass_generated_lexical_validation() {
     let package = scaffold_fixture();
     let grammar_path = package.path().join("src/grammar.rs");
