@@ -134,6 +134,8 @@ struct OperatorRunDecision {
     final_extent: usize,
     /// Interior fence offset and byte length before which this operator run stops.
     interior_fence: Option<(usize, usize)>,
+    /// Whether ordinary local arbitration selects valid trivia over this fence.
+    fence_consumed: bool,
 }
 
 impl OperatorRunDecision {
@@ -429,7 +431,6 @@ fn select_raw_lex_match(
 fn fixed_candidate_crosses_consumed_fence(
     candidate: &[u8],
     operator_runs: &[OperatorRunDecision],
-    local_decisions: &[LocalLexDecision],
 ) -> bool {
     let mut related = operator_runs
         .iter()
@@ -439,14 +440,10 @@ fn fixed_candidate_crosses_consumed_fence(
         .any(|operator_run| operator_run.final_extent >= candidate.len());
     !reaches_candidate
         && related.any(|operator_run| {
-            operator_run
-                .interior_fence
-                .is_some_and(|(start, fence_length)| {
-                    start < candidate.len()
-                        && local_decisions.iter().any(|decision| {
-                            decision.boundary == start && decision.consumes_trivia(fence_length)
-                        })
-                })
+            operator_run.fence_consumed
+                && operator_run
+                    .interior_fence
+                    .is_some_and(|(start, _)| start < candidate.len())
         })
 }
 
@@ -471,6 +468,7 @@ pub fn lex<'input>(
         .collect::<Vec<_>>();
     let mut root_matches = Vec::new();
     let mut operator_decisions = Vec::new();
+    let mut relevant_boundaries = Vec::new();
     let mut local_decisions = Vec::new();
     let mut records = Vec::new();
     let mut offset = 0;
@@ -488,37 +486,39 @@ pub fn lex<'input>(
                     characters,
                     final_extent: found.end,
                     interior_fence: found.interior_operator_fence,
+                    fence_consumed: false,
                 });
             }
         }
+        relevant_boundaries.clear();
+        for (found, _) in root_matches.iter().filter(|(_, rule)| rule.fixed) {
+            let candidate = &remaining.as_bytes()[..found.end];
+            for operator_run in &operator_decisions {
+                let Some((boundary, _)) = operator_run.interior_fence else {
+                    continue;
+                };
+                if boundary < found.end && operator_run.admits(candidate) {
+                    relevant_boundaries.push(boundary);
+                }
+            }
+        }
+        relevant_boundaries.sort_unstable();
+        relevant_boundaries.dedup();
         local_decisions.clear();
-        for boundary in operator_decisions
-            .iter()
-            .filter_map(|decision| decision.interior_fence.map(|(start, _)| start))
-        {
-            let crosses_related_fixed = root_matches.iter().any(|(found, rule)| {
-                rule.fixed
-                    && found.end > boundary
-                    && operator_decisions.iter().any(|decision| {
-                        decision
-                            .interior_fence
-                            .is_some_and(|(start, _)| start == boundary)
-                            && decision.admits(&remaining.as_bytes()[..found.end])
-                    })
-            });
-            if !crosses_related_fixed {
-                continue;
-            }
-            if local_decisions
-                .iter()
-                .any(|decision: &LocalLexDecision| decision.boundary == boundary)
-            {
-                continue;
-            }
+        for &boundary in &relevant_boundaries {
             local_decisions.push(LocalLexDecision {
                 boundary,
                 selected: select_raw_lex_match(&remaining[boundary..], &compiled),
             });
+        }
+        for operator_run in &mut operator_decisions {
+            let Some((boundary, fence_length)) = operator_run.interior_fence else {
+                continue;
+            };
+            operator_run.fence_consumed = local_decisions
+                .binary_search_by_key(&boundary, |decision| decision.boundary)
+                .ok()
+                .is_some_and(|index| local_decisions[index].consumes_trivia(fence_length));
         }
         let selected = root_matches
             .iter()
@@ -528,7 +528,6 @@ pub fn lex<'input>(
                     || !fixed_candidate_crosses_consumed_fence(
                         &remaining.as_bytes()[..found.end],
                         &operator_decisions,
-                        &local_decisions,
                     )
             })
             .max_by_key(|(found, rule)| (found.end, rule.fixed, rule.priority));
