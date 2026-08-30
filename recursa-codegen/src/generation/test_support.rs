@@ -1007,7 +1007,7 @@ pub(super) fn semantic_diagrams_cover_pratt_nodes_content_tokens_and_local_docs(
     let diagrams = plan.diagrams.as_ref().expect("diagram plan");
     assert_eq!(diagrams.nodes.len(), plan.nodes.len());
     assert_eq!(diagrams.tokens.len(), plan.tokens.len());
-    assert_eq!(diagrams.tokens.len(), 2);
+    assert_eq!(diagrams.tokens.len(), 3);
     assert!(
         diagrams
             .tokens
@@ -1023,6 +1023,7 @@ pub(super) fn semantic_diagrams_cover_pratt_nodes_content_tokens_and_local_docs(
     assert!(topology.contains("Choice"));
     assert!(topology.contains("prefix bp=35 Neg"));
     assert!(topology.contains("infix lbp=10 rbp=11 Add"));
+    assert!(topology.contains("infix lbp=15 rbp=16 Custom"));
     assert!(topology.contains("postfix bp=40 Factorial"));
     let aggregate = render_aggregate_diagram_document(diagrams);
     assert!(aggregate.contains("## Content tokens"));
