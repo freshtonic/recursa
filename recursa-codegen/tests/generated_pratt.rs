@@ -249,6 +249,8 @@ recursa::tokens! {
         FROM => "FROM",
         ANY => "ANY",
         BETWEEN => "BETWEEN",
+        SIMILAR => "SIMILAR",
+        TO => "TO",
         AND => "AND",
         BOOL => "BOOL",
         TEXT => "TEXT",
@@ -332,6 +334,8 @@ pub enum Expr<'input> {
         #[tok(BETWEEN, this)] Box<Self>,
         #[tok(AND, this)] Box<Self>,
     ),
+    #[parse(postfix, bp = 5)]
+    SimilarTo(Box<Self>, #[tok(SIMILAR, TO, this)] Box<Self>),
     #[parse(infix, lbp = 2, rbp = 3)]
     And(Box<Self>, #[tok(AND, this)] Box<Self>),
     #[parse(postfix, bp = 20)]
@@ -349,6 +353,13 @@ pub struct GroupFollowed<'input> {
 pub struct FollowedExpr<'input> {
     #[tok(WHEN, this, THEN)]
     pub expression: Expr<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct SimilarDelimited<'input> {
+    #[tok(BEGIN, this, SIMILAR)]
+    pub source: Box<Expr<'input>>,
+    pub pattern: Box<Expr<'input>>,
 }
 "#,
     )
@@ -404,6 +415,19 @@ fn main() {
         grammar::Expr::Cast(lhs, grammar::TypeName::Text)
             if matches!(*lhs, grammar::Expr::Cast(_, grammar::TypeName::Bool))
     ));
+
+    let lexed = grammar::lex("name SIMILAR TO name");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("a complete multi-token LED remains viable");
+    assert!(input.is_eof());
+    assert!(matches!(parsed.into_ast(), grammar::Expr::SimilarTo(_, _)));
+
+    let lexed = grammar::lex("BEGIN name SIMILAR name");
+    let mut input = lexed.input();
+    grammar::SimilarDelimited::parse(&mut input)
+        .expect("an incomplete multi-token LED yields to the caller delimiter");
+    assert!(input.is_eof());
 
     let lexed = grammar::lex("BEGIN GROUP 1 END GROUP GROUP 2");
     let mut input = lexed.input();

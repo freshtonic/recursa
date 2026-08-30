@@ -5166,6 +5166,18 @@ pub(super) fn render_pratt_parse(
     for (index, branch) in pratt.led.iter().enumerate() {
         let metadata_index = led_offset + index;
         let lbp = pratt_led_lbp(branch.position);
+        let required_prefix = pratt_led_required_prefix(branch)
+            .into_iter()
+            .enumerate()
+            .map(|(depth, expected)| {
+                let expected = render_expected_set(plan, expected);
+                quote! {
+                    context.peek(#depth)
+                        .is_some_and(|record| #expected.contains(record.kind))
+                }
+            })
+            .collect::<Vec<_>>();
+        let continuation_viable = quote!(true #(&& #required_prefix)*);
         let body = render_pratt_led_parse(
             plan,
             node_index,
@@ -5188,6 +5200,7 @@ pub(super) fn render_pratt_parse(
             (Some(#index), _) => {
                 if #lbp < min_bp { break; }
                 if context.next_is(context.follow()) {
+                    if !(#continuation_viable) { break; }
                     return Err(context.pratt_ambiguity(
                         __recursa_pratt_guard
                             .as_ref()
@@ -5232,6 +5245,34 @@ pub(super) fn render_pratt_parse(
         quote!(#nud_selection_items #led_selection_items),
         quote!(#(#helper_methods)*),
     )
+}
+
+/// Returns the required fixed prefix that must remain viable before a selected LED reaches its
+/// first semantic operand.
+fn pratt_led_required_prefix(branch: &PrattLedParsePlan) -> Vec<&ExpectedSet> {
+    let mut required = Vec::new();
+    for element in &branch.variant.elements {
+        match &element.kind {
+            ElementParseKind::Fixed { expected, .. } => required.push(expected),
+            ElementParseKind::OptionalFixedTokenGroup { .. } => break,
+            ElementParseKind::Semantic { projection, .. } => {
+                if let SemanticParseProjection::Direct { attachment, .. } = projection.as_ref()
+                    && let Some(attachment) = attachment
+                {
+                    for fixed in &attachment.before {
+                        match fixed {
+                            AttachedFixedSyntaxParsePlan::Required(fixed) => {
+                                required.push(&fixed.expected);
+                            }
+                            AttachedFixedSyntaxParsePlan::Optional(_) => return required,
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    required
 }
 
 /// Returns the left binding power encoded by an extender position.
