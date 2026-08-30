@@ -248,11 +248,17 @@ recursa::tokens! {
         RIGHT => "RIGHT",
         FROM => "FROM",
         ANY => "ANY",
+        BETWEEN => "BETWEEN",
+        AND => "AND",
+        BOOL => "BOOL",
+        TEXT => "TEXT",
         WHEN => "WHEN",
         THEN => "THEN",
     }
     punctuation {
         PLUS => "+",
+        CONCAT => "||",
+        DOUBLE_COLON => "::", spacing = tight,
         GT => ">",
         LPAREN => "(",
         RPAREN => ")",
@@ -274,6 +280,14 @@ pub struct Name<'input> {
 #[derive(recursa::Node)]
 pub enum NameAtom<'input> {
     Plain(Name<'input>),
+}
+
+#[derive(recursa::Node)]
+pub enum TypeName {
+    #[tok(BOOL)]
+    Bool,
+    #[tok(TEXT)]
+    Text,
 }
 
 #[derive(recursa::Node)]
@@ -301,6 +315,8 @@ pub enum Expr<'input> {
     #[parse(infix, lbp = 10, rbp = 11)]
     #[tok(PLUS)]
     Add(Box<Self>, Box<Self>),
+    #[parse(infix, lbp = 8, rbp = 9)]
+    Concat(Box<Self>, #[tok(CONCAT, this)] Box<Self>),
     #[parse(infix, lbp = 5, rbp = 6)]
     Greater(Box<Self>, #[tok(GT, this)] Box<Self>),
     #[parse(postfix, bp = 5)]
@@ -308,6 +324,16 @@ pub enum Expr<'input> {
         Box<Self>,
         #[tok(GT, ANY, LPAREN, this, RPAREN)] Integer<'input>,
     ),
+    #[parse(postfix, bp = 6)]
+    Between(
+        Box<Self>,
+        #[tok(BETWEEN, this)] Box<Self>,
+        #[tok(AND, this)] Box<Self>,
+    ),
+    #[parse(infix, lbp = 2, rbp = 3)]
+    And(Box<Self>, #[tok(AND, this)] Box<Self>),
+    #[parse(postfix, bp = 20)]
+    Cast(Box<Self>, #[tok(DOUBLE_COLON, this)] TypeName),
 }
 
 #[derive(recursa::Node)]
@@ -341,6 +367,40 @@ fn main() {
         grammar::Expr::Add(lhs, rhs)
             if matches!(*lhs, grammar::Expr::Name(grammar::NameAtom::Plain(_)))
                 && matches!(*rhs, grammar::Expr::Integer(_))
+    ));
+
+    let lexed = grammar::lex("name || name + 1");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("an active tighter LED is not mistaken for recursive-operand FOLLOW");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast(),
+        grammar::Expr::Concat(_, rhs)
+            if matches!(*rhs, grammar::Expr::Add(_, _))
+    ));
+
+    let lexed = grammar::lex("name BETWEEN 1 + 2 AND 3 + 4");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("a postfix recursive operand stops at a lower-binding delimiter");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast(),
+        grammar::Expr::Between(_, low, high)
+            if matches!(*low, grammar::Expr::Add(_, _))
+                && matches!(*high, grammar::Expr::Add(_, _))
+    ));
+
+    let lexed = grammar::lex("name::BOOL::TEXT");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("a completed postfix remains eligible for another postfix extender");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast(),
+        grammar::Expr::Cast(lhs, grammar::TypeName::Text)
+            if matches!(*lhs, grammar::Expr::Cast(_, grammar::TypeName::Bool))
     ));
 
     let lexed = grammar::lex("BEGIN GROUP 1 END GROUP GROUP 2");

@@ -324,7 +324,7 @@ impl MaterializedNodeBody {
                         elements: &led.tail,
                         recursive_min_bp: match led.position {
                             MaterializedPrattLedPosition::Infix { rbp, .. } => rbp,
-                            MaterializedPrattLedPosition::Postfix { .. } => 0,
+                            MaterializedPrattLedPosition::Postfix { bp } => bp,
                         },
                     },
                 })
@@ -3172,7 +3172,7 @@ impl Materializer {
                                             (PrattPosition::Infix { lbp, rbp }, rbp)
                                         }
                                         MaterializedPrattLedPosition::Postfix { bp } => {
-                                            (PrattPosition::Postfix { bp }, 0)
+                                            (PrattPosition::Postfix { bp }, bp)
                                         }
                                     };
                                     crate::PrattVariant {

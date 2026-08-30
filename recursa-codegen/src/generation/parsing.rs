@@ -10,7 +10,8 @@ use super::*;
 mod tests {
     use super::super::test_support;
     use super::{
-        PlannedTextPredicate, TextEquivalence, encode_dispatch_positions, render_position_dispatch,
+        ExpectedSet, PlannedFollow, PlannedTextPredicate, TextEquivalence,
+        encode_dispatch_positions, pratt_operand_follow, render_position_dispatch,
     };
     macro_rules! focused_case {
         ($name:ident) => {
@@ -34,6 +35,30 @@ mod tests {
     focused_case!(corrupted_joined_dispatch_fails_before_publication_with_rca9105);
     focused_case!(corrupted_pratt_branch_follow_and_failure_identities_fail_before_publication);
     focused_case!(corrupted_real_plan_family_content_fails_before_publication);
+
+    #[test]
+    fn pratt_operand_follow_removes_active_static_extenders_before_adding_stops() {
+        let follow = PlannedFollow::StaticAndCaller(ExpectedSet {
+            words: vec![0b1111],
+            atoms: vec![0, 1, 2, 3],
+        });
+        let active = ExpectedSet {
+            words: vec![0b0101],
+            atoms: vec![0, 2],
+        };
+        let inactive = ExpectedSet {
+            words: vec![0b1_0000],
+            atoms: vec![4],
+        };
+
+        assert_eq!(
+            pratt_operand_follow(&follow, &active, &inactive),
+            PlannedFollow::StaticAndCaller(ExpectedSet {
+                words: vec![0b1_1010],
+                atoms: vec![1, 3, 4],
+            }),
+        );
+    }
 
     #[test]
     fn large_position_dispatch_uses_one_packed_matcher() {
@@ -804,6 +829,16 @@ impl ExpectedSet {
         self.atoms.sort_unstable();
         self.atoms.dedup();
     }
+
+    /// Removes another expectation's token and diagnostic members in place.
+    pub(super) fn difference_assign(&mut self, other: &Self) {
+        for (left, right) in self.words.iter_mut().zip(&other.words) {
+            *left &= !right;
+        }
+        self.atoms
+            .retain(|atom| other.atoms.binary_search(atom).is_err());
+    }
+
     /// Reports whether empty.
     pub(super) fn is_empty(&self) -> bool {
         self.words.iter().all(|word| *word == 0) && self.atoms.is_empty()
@@ -845,22 +880,29 @@ impl PrattParsePlan {
             return Err("the frozen Pratt caller-FOLLOW guard is corrupt".to_owned());
         }
         for branch in &self.led {
-            let recursive_bp = branch.variant.elements.iter().find_map(|element| {
-                let ElementParseKind::Semantic {
-                    projection: semantic,
-                    ..
-                } = &element.kind
-                else {
-                    return None;
-                };
-                let SemanticParseProjection::Direct { pratt_min_bp, .. } = semantic.as_ref() else {
-                    return None;
-                };
-                *pratt_min_bp
-            });
-            match (branch.position, recursive_bp) {
-                (PrattPosition::Infix { rbp, .. }, Some(actual)) if rbp == actual => {}
-                (PrattPosition::Postfix { .. }, None) => {}
+            let recursive_bps = branch
+                .variant
+                .elements
+                .iter()
+                .filter_map(|element| {
+                    let ElementParseKind::Semantic {
+                        projection: semantic,
+                        ..
+                    } = &element.kind
+                    else {
+                        return None;
+                    };
+                    let SemanticParseProjection::Direct { pratt_min_bp, .. } = semantic.as_ref()
+                    else {
+                        return None;
+                    };
+                    *pratt_min_bp
+                })
+                .collect::<Vec<_>>();
+            match branch.position {
+                PrattPosition::Infix { rbp, .. } if recursive_bps == [rbp] => {}
+                PrattPosition::Postfix { bp }
+                    if recursive_bps.iter().all(|actual| *actual == bp) => {}
                 _ => {
                     return Err("the frozen Pratt led binding-power family is corrupt".to_owned());
                 }
@@ -1496,6 +1538,7 @@ pub(super) fn plan_node(
                 kind_count,
                 &input_lifetime,
                 None,
+                None,
             )?,
         },
         (
@@ -1585,6 +1628,7 @@ pub(super) fn plan_node(
                         atom_index,
                         kind_count,
                         &input_lifetime,
+                        None,
                         None,
                     )?,
                     capture: resolved_variant.capture.map(PlannedCapturePolicy::from),
@@ -2800,6 +2844,7 @@ pub(super) fn plan_pratt_node(
                             kind_count,
                             input_lifetime,
                             operand,
+                            None,
                         )?,
                         capture: resolved.capture.map(PlannedCapturePolicy::from),
                         pretty: common.pretty.clone(),
@@ -2822,7 +2867,7 @@ pub(super) fn plan_pratt_node(
                     .ok_or_else(|| "a frozen Pratt led branch lacks a position".to_owned())?;
                 let operand = match position {
                     PrattPosition::Infix { rbp, .. } => Some((application_type, rbp)),
-                    PrattPosition::Postfix { .. } => None,
+                    PrattPosition::Postfix { bp } => Some((application_type, bp)),
                     PrattPosition::Atom | PrattPosition::Prefix { .. } => {
                         return Err("a frozen led branch has a nud position".to_owned());
                     }
@@ -2851,6 +2896,7 @@ pub(super) fn plan_pratt_node(
                             kind_count,
                             input_lifetime,
                             operand,
+                            Some(application_type),
                         )?,
                         capture: resolved.capture.map(PlannedCapturePolicy::from),
                         pretty: common.pretty.clone(),
@@ -3165,6 +3211,7 @@ pub(super) fn plan_elements(
     kind_count: usize,
     input_lifetime: &syn::Lifetime,
     pratt_operand: Option<(crate::TypeId, u8)>,
+    pratt_continuation: Option<crate::TypeId>,
 ) -> Result<Vec<ElementParsePlan>, String> {
     if elements.len() != sites.len() {
         return Err(format!(
@@ -3187,7 +3234,7 @@ pub(super) fn plan_elements(
         .map(PlannedCapturePolicy::from);
     let variant_capture = variant_override.unwrap_or(node_capture);
     let mut semantic_index = 0;
-    elements
+    let mut planned = elements
         .iter()
         .zip(sites)
         .map(|(element, site)| match element {
@@ -3546,7 +3593,16 @@ pub(super) fn plan_elements(
                 let pratt_min_bp = pratt_operand
                     .filter(|(owner, _)| parse_site_targets(&lowered.grammar, *site, *owner))
                     .map(|(_, min_bp)| min_bp);
-                if let Some((owner, min_bp)) = pratt_operand.filter(|_| pratt_min_bp.is_some()) {
+                let pratt_extenders = if let Some((owner, min_bp)) =
+                    pratt_operand.filter(|_| pratt_min_bp.is_some())
+                {
+                    let active = planned_pratt_extenders(
+                        decisions,
+                        owner,
+                        atom_index,
+                        kind_count,
+                        |position| pratt_led_lbp(position) >= min_bp,
+                    )?;
                     let inactive = planned_pratt_extenders(
                         decisions,
                         owner,
@@ -3556,7 +3612,8 @@ pub(super) fn plan_elements(
                     )?;
                     match &mut container {
                         PlannedContainer::Direct { child_follow, .. } => {
-                            *child_follow = follow_with_static(child_follow, &inactive);
+                            *child_follow =
+                                pratt_operand_follow(child_follow, &active, &inactive);
                         }
                         PlannedContainer::Optional { .. } | PlannedContainer::Repeated { .. } => {
                             return Err(format!(
@@ -3564,7 +3621,10 @@ pub(super) fn plan_elements(
                             ));
                         }
                     }
-                }
+                    Some((active, inactive))
+                } else {
+                    None
+                };
                 let separator = separator
                     .as_ref()
                     .map(|separator| {
@@ -3599,6 +3659,34 @@ pub(super) fn plan_elements(
                     })
                     .map(PlannedRepetitionBreak::TopLevelStatement)
                     .unwrap_or(PlannedRepetitionBreak::Soft);
+                let mut attachment = attachment
+                    .as_ref()
+                    .map(|attachment| {
+                        plan_fixed_attachment(
+                            resolved_field,
+                            attachment,
+                            *site,
+                            lowered,
+                            decisions,
+                            atom_index,
+                            kind_count,
+                            variant_capture,
+                        )
+                        .map(Box::new)
+                    })
+                    .transpose()?;
+                if let (Some((active, inactive)), Some(attachment)) =
+                    (pratt_extenders.as_ref(), attachment.as_mut())
+                {
+                    let PlannedContainer::Direct { child_follow, .. } =
+                        attachment.semantic.as_mut()
+                    else {
+                        return Err(format!(
+                            "Pratt operand attachment `{field_name}` is not a direct frozen container"
+                        ));
+                    };
+                    *child_follow = pratt_operand_follow(child_follow, active, inactive);
+                }
                 Ok(ElementParsePlan {
                     explorer_source: ExplorerElementSource::Semantic(*field),
                     metadata_name,
@@ -3633,22 +3721,7 @@ pub(super) fn plan_elements(
                             child_capture,
                             pratt_min_bp,
                             separator,
-                            attachment: attachment
-                                .as_ref()
-                                .map(|attachment| {
-                                    plan_fixed_attachment(
-                                        resolved_field,
-                                        attachment,
-                                        *site,
-                                        lowered,
-                                        decisions,
-                                        atom_index,
-                                        kind_count,
-                                        variant_capture,
-                                    )
-                                    .map(Box::new)
-                                })
-                                .transpose()?,
+                            attachment,
                             opaque_provenance: false,
                             repetition_break,
                             pretty: pretty.clone(),
@@ -3657,7 +3730,13 @@ pub(super) fn plan_elements(
                 })
             }
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    if let (Some(owner), Some(element)) = (pratt_continuation, planned.last_mut()) {
+        let extenders =
+            planned_pratt_extenders(decisions, owner, atom_index, kind_count, |_| true)?;
+        add_pratt_continuation_follow(element, &extenders);
+    }
+    Ok(planned)
 }
 
 /// Resolves the generated node and application targeted by a parse site.
@@ -4346,6 +4425,73 @@ pub(super) fn follow_with_static(
             let mut expected = expected.clone();
             expected.union_assign(additional);
             PlannedFollow::StaticAndCaller(expected)
+        }
+    }
+}
+
+/// Adapts a frozen site FOLLOW for one recursive Pratt binding-power threshold.
+///
+/// Static FOLLOW analysis can carry extender starters through recursive grammar paths. Active
+/// extenders belong to the nested Pratt loop, while inactive extenders are its stopping tokens.
+/// Caller-relative membership is retained because it remains the runtime ambiguity boundary.
+pub(super) fn pratt_operand_follow(
+    follow: &PlannedFollow,
+    active: &ExpectedSet,
+    inactive: &ExpectedSet,
+) -> PlannedFollow {
+    let without_active = match follow {
+        PlannedFollow::Caller => PlannedFollow::Caller,
+        PlannedFollow::Static(expected) => {
+            let mut expected = expected.clone();
+            expected.difference_assign(active);
+            PlannedFollow::Static(expected)
+        }
+        PlannedFollow::StaticAndCaller(expected) => {
+            let mut expected = expected.clone();
+            expected.difference_assign(active);
+            PlannedFollow::StaticAndCaller(expected)
+        }
+    };
+    follow_with_static(&without_active, inactive)
+}
+
+/// Adds the next-loop starters to a completed non-recursive Pratt LED tail.
+fn add_pratt_continuation_follow(element: &mut ElementParsePlan, extenders: &ExpectedSet) {
+    let ElementParseKind::Semantic { projection, .. } = &mut element.kind else {
+        return;
+    };
+    let SemanticParseProjection::Direct {
+        container,
+        pratt_min_bp,
+        attachment,
+        ..
+    } = projection.as_mut()
+    else {
+        return;
+    };
+    if pratt_min_bp.is_some() {
+        return;
+    }
+    add_container_stop(container, extenders);
+    if let Some(attachment) = attachment {
+        add_container_stop(&mut attachment.semantic, extenders);
+    }
+}
+
+/// Adds one static legal stop to a semantic container's child and loop boundaries.
+fn add_container_stop(container: &mut PlannedContainer, stop: &ExpectedSet) {
+    match container {
+        PlannedContainer::Direct { child_follow, .. }
+        | PlannedContainer::Optional { child_follow, .. } => {
+            *child_follow = follow_with_static(child_follow, stop);
+        }
+        PlannedContainer::Repeated {
+            stop: repetition_stop,
+            child_follow,
+            ..
+        } => {
+            *repetition_stop = follow_with_static(repetition_stop, stop);
+            *child_follow = follow_with_static(child_follow, stop);
         }
     }
 }
