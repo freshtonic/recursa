@@ -116,8 +116,6 @@ pub(crate) struct SourceModel {
     pub(crate) lexer_records: Vec<NonTokenLexerRecord>,
     /// Located references to token definitions from grammar positions.
     pub(crate) token_uses: Vec<TokenUse>,
-    /// Optional opaque post-lex hook path preserved for generation.
-    pub(crate) post_lex: Option<syn::Path>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,6 +123,10 @@ pub(crate) struct SourceModel {
 pub(crate) struct NonTokenLexerRecord {
     /// Preserves the authored lexical pattern for validation and generation.
     pub(crate) pattern: String,
+    /// Preserves the closed matcher executed after the pattern recognizes its starter.
+    pub(crate) closed_matcher: Option<ClosedMatcher>,
+    /// Preserves authored lexical priority for deterministic matcher ordering.
+    pub(crate) priority: Option<u32>,
     /// Supplies the outcome used to correlate authored source with normalized grammar.
     pub(crate) outcome: NonTokenLexerOutcome,
     /// Locates the authored construct represented by this source-model value.
@@ -136,6 +138,66 @@ pub(crate) struct NonTokenLexerRecord {
 pub(crate) enum NonTokenLexerOutcome {
     /// Identifies the non emitting authored-source form.
     NonEmitting,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Closed source-scanning mechanisms accepted by the central token grammar.
+pub(crate) enum ClosedMatcher {
+    /// Closes a region with the exact bytes recognized by its opening pattern.
+    SameDelimiter {
+        /// Regex pattern that recognizes the complete opening delimiter.
+        opener: String,
+    },
+    /// Tracks checked nesting between two fixed delimiters.
+    Nested {
+        /// Nonempty fixed opening delimiter.
+        opener: String,
+        /// Nonempty fixed closing delimiter.
+        closer: String,
+    },
+    /// Rejects a pattern match when the immediately following scalar matches an exclusion.
+    NextExclusion {
+        /// Regex pattern that recognizes the candidate content.
+        pattern: String,
+        /// Regex pattern that recognizes one excluded following scalar.
+        excluded: String,
+    },
+    /// Recognizes a maximal run with configurable fences and trailing preservation.
+    OperatorRun {
+        /// Unique ASCII characters admitted to the run.
+        characters: String,
+        /// Nonempty byte strings that stop a run before their occurrence.
+        fences: Vec<String>,
+        /// Run characters stripped from the end when no qualifier occurs earlier.
+        trailing: String,
+        /// Characters whose presence preserves configured trailing characters.
+        qualifying: String,
+    },
+    /// Extends a matched prefix through one exact physical line ending or end of input.
+    PhysicalLine {
+        /// Regex pattern recognizing the region's nonempty prefix.
+        prefix: String,
+    },
+}
+
+impl ClosedMatcher {
+    /// Returns the regular-language starter used for overlap analysis and arbitration planning.
+    pub(crate) fn starter_pattern(&self) -> String {
+        match self {
+            Self::SameDelimiter { opener } => opener.clone(),
+            Self::Nested { opener, .. } => regex_syntax::escape(opener),
+            Self::NextExclusion { pattern, .. } => pattern.clone(),
+            Self::OperatorRun { characters, .. } => {
+                let alternatives = characters
+                    .chars()
+                    .map(|character| regex_syntax::escape(&character.to_string()))
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!("(?:{alternatives})+")
+            }
+            Self::PhysicalLine { prefix } => prefix.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -405,12 +467,23 @@ pub(crate) enum GrammarElement {
         /// Locates the authored construct represented by this source-model value.
         site: SourceSite,
     },
+    /// Identifies one erased fixed-token sequence selected atomically when present.
+    OptionalFixedTokenGroup {
+        /// Carries the grammar-local identity used by source-model tables.
+        id: GrammarElementId,
+        /// Supplies the source-ordered fixed sequence matched atomically.
+        tokens: Vec<AttachedFixedToken>,
+        /// Locates the authored optional group.
+        site: SourceSite,
+    },
     /// Identifies the semantic field authored-source form.
     SemanticField {
         /// Carries the grammar-local identity used by source-model tables.
         id: GrammarElementId,
         /// Supplies the resolved field used to correlate authored source with normalized grammar.
         resolved_field: ResolvedFieldId,
+        /// Selects direct semantic parsing or a boolean fixed-token presence projection.
+        projection: SemanticFieldProjection,
         /// Preserves the authored name used by generated bindings and diagnostics.
         name: Option<String>,
         /// Supplies the attachment used to correlate authored source with normalized grammar.
@@ -429,12 +502,78 @@ pub(crate) enum GrammarElement {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Classifies how one authored semantic field obtains its public value.
+pub(crate) enum SemanticFieldProjection {
+    /// Parses the field's resolved semantic type directly.
+    Direct,
+    /// Projects one atomic optional fixed-token sequence to an authored boolean.
+    FixedPresence {
+        /// Supplies the source-ordered fixed sequence matched atomically.
+        tokens: Vec<AttachedFixedToken>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 /// Carries the fixed token attachment retained from authored source structure.
 pub(crate) struct FixedTokenAttachment {
     /// Supplies the before used to correlate authored source with normalized grammar.
-    pub(crate) before: Vec<AttachedFixedToken>,
+    pub(crate) before: Vec<AttachedFixedSyntax>,
     /// Supplies the after used to correlate authored source with normalized grammar.
-    pub(crate) after: Vec<AttachedFixedToken>,
+    pub(crate) after: Vec<AttachedFixedSyntax>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Classifies required and erased-optional fixed syntax inside one field attachment.
+pub(crate) enum AttachedFixedSyntax {
+    /// Selects one required fixed token.
+    Required(AttachedFixedToken),
+    /// Selects one erased atomic optional fixed-token group.
+    Optional {
+        /// Supplies the source-ordered fixed sequence.
+        tokens: Vec<AttachedFixedToken>,
+        /// Locates the authored optional group.
+        site: SourceSite,
+    },
+}
+
+impl AttachedFixedSyntax {
+    /// Returns the first fixed token that can bound this attachment entry.
+    pub(crate) fn first(&self) -> Option<&AttachedFixedToken> {
+        match self {
+            Self::Required(token) => Some(token),
+            Self::Optional { tokens, .. } => tokens.first(),
+        }
+    }
+
+    /// Returns the last fixed token that can bound this attachment entry.
+    pub(crate) fn last(&self) -> Option<&AttachedFixedToken> {
+        match self {
+            Self::Required(token) => Some(token),
+            Self::Optional { tokens, .. } => tokens.last(),
+        }
+    }
+
+    /// Returns the authored site for this attachment entry.
+    pub(crate) fn site(&self) -> &SourceSite {
+        match self {
+            Self::Required(token) => &token.site,
+            Self::Optional { site, .. } => site,
+        }
+    }
+
+    /// Visits every fixed token use retained by this attachment entry.
+    fn remap_token_uses(&mut self, use_remap: &[TokenUseId]) {
+        match self {
+            Self::Required(token) => {
+                token.token_use = use_remap[token.token_use.index()];
+            }
+            Self::Optional { tokens, .. } => {
+                for token in tokens {
+                    token.token_use = use_remap[token.token_use.index()];
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -450,21 +589,27 @@ impl GrammarElement {
     /// Derives the id from the retained source model and its correlations.
     pub(crate) const fn id(&self) -> GrammarElementId {
         match self {
-            Self::FixedToken { id, .. } | Self::SemanticField { id, .. } => *id,
+            Self::FixedToken { id, .. }
+            | Self::OptionalFixedTokenGroup { id, .. }
+            | Self::SemanticField { id, .. } => *id,
         }
     }
 
     /// Assigns the grammar-local element identity after source-order normalization.
     fn set_id(&mut self, value: GrammarElementId) {
         match self {
-            Self::FixedToken { id, .. } | Self::SemanticField { id, .. } => *id = value,
+            Self::FixedToken { id, .. }
+            | Self::OptionalFixedTokenGroup { id, .. }
+            | Self::SemanticField { id, .. } => *id = value,
         }
     }
 
     /// Derives the kind from the retained source model and its correlations.
     pub(crate) const fn kind(&self) -> GrammarElementKind {
         match self {
-            Self::FixedToken { .. } => GrammarElementKind::FixedToken,
+            Self::FixedToken { .. } | Self::OptionalFixedTokenGroup { .. } => {
+                GrammarElementKind::FixedToken
+            }
             Self::SemanticField { .. } => GrammarElementKind::SemanticField,
         }
     }
@@ -473,7 +618,7 @@ impl GrammarElement {
     pub(crate) fn separator(&self) -> Option<&Separator> {
         match self {
             Self::SemanticField { separator, .. } => separator.as_ref(),
-            Self::FixedToken { .. } => None,
+            Self::FixedToken { .. } | Self::OptionalFixedTokenGroup { .. } => None,
         }
     }
 
@@ -481,7 +626,7 @@ impl GrammarElement {
     pub(crate) fn attachment(&self) -> Option<&FixedTokenAttachment> {
         match self {
             Self::SemanticField { attachment, .. } => attachment.as_ref(),
-            Self::FixedToken { .. } => None,
+            Self::FixedToken { .. } | Self::OptionalFixedTokenGroup { .. } => None,
         }
     }
 }
@@ -626,10 +771,10 @@ pub(crate) struct ContentTokenDefinition {
     pub(crate) semantic: ContentTokenId,
     /// Preserves the authored lexical pattern for validation and generation.
     pub(crate) pattern: String,
+    /// Preserves the closed matcher used to extend or reject the starter pattern.
+    pub(crate) closed_matcher: Option<ClosedMatcher>,
     /// Supplies the authored diagram label, when it differs from the regex fallback used to correlate authored source with normalized grammar.
     pub(crate) diagram_label: Option<String>,
-    /// Preserves the opaque authored callback path for generation.
-    pub(crate) callback: Option<syn::Path>,
     /// Preserves authored lexical priority for deterministic matcher ordering.
     pub(crate) priority: Option<u32>,
     /// Supplies the admission set used to correlate authored source with normalized grammar.
@@ -647,8 +792,8 @@ pub(crate) struct ContentTokenDefinition {
 pub(crate) struct LexicalBaseTokenDefinition {
     /// Preserves the authored lexical pattern for validation and generation.
     pub(crate) pattern: String,
-    /// Preserves the opaque authored callback path for generation.
-    pub(crate) callback: Option<syn::Path>,
+    /// Preserves the closed matcher used to extend or reject the starter pattern.
+    pub(crate) closed_matcher: Option<ClosedMatcher>,
     /// Preserves authored lexical priority for deterministic matcher ordering.
     pub(crate) priority: Option<u32>,
 }
@@ -772,14 +917,14 @@ pub(crate) enum SourceModelDiagnosticKind {
     InvalidSeparator,
     /// Identifies the unsupported fixed syntax authored-source form.
     UnsupportedFixedSyntax,
+    /// Identifies malformed or conflicting fixed-token presence syntax.
+    InvalidFixedTokenPresence,
     /// Identifies the invalid token placement authored-source form.
     InvalidTokenPlacement,
     /// Identifies the invalid pratt token placement authored-source form.
     InvalidPrattTokenPlacement,
     /// Identifies the configured ordinary derive conflict authored-source form.
     ConfiguredOrdinaryDeriveConflict,
-    /// Identifies the multiple post lex hooks authored-source form.
-    MultiplePostLexHooks,
     /// Identifies duplicate membership introduced by an admission union.
     DuplicateAdmissionMembership,
     /// Identifies an unresolved or ambiguous admission-expression name.
@@ -792,6 +937,14 @@ pub(crate) enum SourceModelDiagnosticKind {
     ContradictoryAdmissionMetadata,
     /// Identifies a subtraction whose right-hand side has no current members.
     IneffectiveAdmissionSubtraction,
+    /// Identifies an obsolete field-local authored lexer callback.
+    ObsoleteFieldLexCallback,
+    /// Identifies an obsolete central authored lexer callback.
+    ObsoleteCentralLexCallback,
+    /// Identifies an obsolete authored post-lex hook.
+    ObsoletePostLexHook,
+    /// Identifies an obsolete authored parser postcondition.
+    ObsoleteParserPostcondition,
 }
 
 impl SourceModelDiagnosticKind {
@@ -823,13 +976,6 @@ pub(crate) fn lower_source_model(input: SourceModelInput<'_>) -> SourceModelRepo
         input.resolved.configuration.syntax.text_equivalence,
         &mut diagnostics,
     );
-    if tokens.post_lex_sites.len() > 1 {
-        diagnostics.push(SourceModelDiagnostic {
-            kind: SourceModelDiagnosticKind::MultiplePostLexHooks,
-            sites: tokens.post_lex_sites.clone(),
-            message: "a grammar accepts exactly one post_lex hook declaration".to_owned(),
-        });
-    }
     let mut builder = SourceModelBuilder {
         resolved: input.resolved,
         cfg: input.cfg,
@@ -1737,7 +1883,9 @@ impl SourceModelBuilder<'_> {
             | ResolvedTypeKind::Reference(inner) => {
                 self.pretty_type_has_soft_opportunity(inner, visiting)
             }
-            ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => false,
+            ResolvedTypeKind::FixedTokenPresence
+            | ResolvedTypeKind::Tuple(_)
+            | ResolvedTypeKind::Unsupported => false,
         }
     }
 
@@ -1801,7 +1949,9 @@ impl SourceModelBuilder<'_> {
             ResolvedTypeKind::Group(inner)
             | ResolvedTypeKind::Parenthesized(inner)
             | ResolvedTypeKind::Reference(inner) => self.is_direct_recursive_operand(inner, node),
-            ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => false,
+            ResolvedTypeKind::FixedTokenPresence
+            | ResolvedTypeKind::Tuple(_)
+            | ResolvedTypeKind::Unsupported => false,
         }
     }
 
@@ -1956,13 +2106,23 @@ impl SourceModelBuilder<'_> {
             kind: PrettyBoundaryKind::Fixed(self.tokens.uses[token.token_use.index()].definition),
             site: token.site.clone(),
         };
-        let before = attachment.before.iter().map(fixed).collect::<Vec<_>>();
-        let after = attachment.after.iter().map(fixed).collect::<Vec<_>>();
+        let before = attachment
+            .before
+            .iter()
+            .filter_map(AttachedFixedSyntax::first)
+            .map(fixed)
+            .collect::<Vec<_>>();
+        let after = attachment
+            .after
+            .iter()
+            .filter_map(AttachedFixedSyntax::first)
+            .map(fixed)
+            .collect::<Vec<_>>();
         let site = attachment
             .before
             .first()
             .or_else(|| attachment.after.first())
-            .map(|token| token.site.clone())
+            .map(|syntax| syntax.site().clone())
             .expect("an attachment has fixed syntax");
         let first = self.pretty_type_boundaries(
             &self.resolved_field(field).ty,
@@ -2004,13 +2164,23 @@ impl SourceModelBuilder<'_> {
             kind: PrettyBoundaryKind::Fixed(self.tokens.uses[token.token_use.index()].definition),
             site: token.site.clone(),
         };
-        let before = attachment.before.iter().map(fixed).collect::<Vec<_>>();
-        let after = attachment.after.iter().map(fixed).collect::<Vec<_>>();
+        let before = attachment
+            .before
+            .iter()
+            .filter_map(AttachedFixedSyntax::first)
+            .map(fixed)
+            .collect::<Vec<_>>();
+        let after = attachment
+            .after
+            .iter()
+            .filter_map(AttachedFixedSyntax::first)
+            .map(fixed)
+            .collect::<Vec<_>>();
         let site = attachment
             .before
             .first()
             .or_else(|| attachment.after.first())
-            .map(|token| token.site.clone())
+            .map(|syntax| syntax.site().clone())
             .expect("an attachment has fixed syntax");
         let first = self.pretty_type_boundaries(
             &self.resolved_field(field).ty,
@@ -2086,7 +2256,9 @@ impl SourceModelBuilder<'_> {
                 ResolvedTypeKind::Group(inner)
                 | ResolvedTypeKind::Parenthesized(inner)
                 | ResolvedTypeKind::Reference(inner) => repeated(builder, inner),
-                ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => Some(false),
+                ResolvedTypeKind::FixedTokenPresence
+                | ResolvedTypeKind::Tuple(_)
+                | ResolvedTypeKind::Unsupported => Some(false),
             }
         }
         repeated(self, &self.resolved_field(field).ty)
@@ -2421,15 +2593,35 @@ impl SourceModelBuilder<'_> {
                 kind: PrettyBoundaryKind::Fixed(self.tokens.uses[token_use.index()].definition),
                 site: site.clone(),
             }],
+            GrammarElement::OptionalFixedTokenGroup { tokens, .. } => {
+                let token = match side {
+                    PrettyBoundarySide::First => tokens.first(),
+                    PrettyBoundarySide::Last => tokens.last(),
+                };
+                token.map_or_else(Vec::new, |token| {
+                    vec![PrettyBoundary {
+                        kind: PrettyBoundaryKind::Fixed(
+                            self.tokens.uses[token.token_use.index()].definition,
+                        ),
+                        site: token.site.clone(),
+                    }]
+                })
+            }
             GrammarElement::SemanticField {
                 resolved_field,
+                projection,
                 attachment,
                 site,
                 ..
             } => {
                 let attached = attachment.as_ref().and_then(|attachment| match side {
-                    PrettyBoundarySide::First => attachment.before.first(),
-                    PrettyBoundarySide::Last => attachment.after.last(),
+                    PrettyBoundarySide::First => attachment
+                        .before
+                        .first()
+                        .and_then(AttachedFixedSyntax::first),
+                    PrettyBoundarySide::Last => {
+                        attachment.after.last().and_then(AttachedFixedSyntax::last)
+                    }
                 });
                 if let Some(attached) = attached {
                     vec![PrettyBoundary {
@@ -2439,12 +2631,28 @@ impl SourceModelBuilder<'_> {
                         site: attached.site.clone(),
                     }]
                 } else {
-                    self.pretty_type_boundaries(
-                        &self.resolved_field(*resolved_field).ty,
-                        side,
-                        site,
-                        visiting,
-                    )
+                    match projection {
+                        SemanticFieldProjection::Direct => self.pretty_type_boundaries(
+                            &self.resolved_field(*resolved_field).ty,
+                            side,
+                            site,
+                            visiting,
+                        ),
+                        SemanticFieldProjection::FixedPresence { tokens } => {
+                            let token = match side {
+                                PrettyBoundarySide::First => tokens.first(),
+                                PrettyBoundarySide::Last => tokens.last(),
+                            };
+                            token.map_or_else(Vec::new, |token| {
+                                vec![PrettyBoundary {
+                                    kind: PrettyBoundaryKind::Fixed(
+                                        self.tokens.uses[token.token_use.index()].definition,
+                                    ),
+                                    site: token.site.clone(),
+                                }]
+                            })
+                        }
+                    }
                 }
             }
         }
@@ -2512,7 +2720,9 @@ impl SourceModelBuilder<'_> {
             | ResolvedTypeKind::Reference(inner) => {
                 self.pretty_type_boundaries(inner, side, site, visiting)
             }
-            ResolvedTypeKind::Tuple(_) | ResolvedTypeKind::Unsupported => vec![PrettyBoundary {
+            ResolvedTypeKind::FixedTokenPresence
+            | ResolvedTypeKind::Tuple(_)
+            | ResolvedTypeKind::Unsupported => vec![PrettyBoundary {
                 kind: PrettyBoundaryKind::Dynamic(String::new()),
                 site: site.clone(),
             }],
@@ -2594,9 +2804,9 @@ impl SourceModelBuilder<'_> {
                     semantic,
                     definition.name,
                     definition.pattern,
+                    definition.closed_matcher,
                     None,
-                    definition.callback,
-                    None,
+                    definition.priority,
                     Vec::new(),
                     AuthoredAdmissions {
                         site: definition.site.clone(),
@@ -2626,7 +2836,6 @@ impl SourceModelBuilder<'_> {
                     token_definitions: self.tokens.definitions,
                     lexer_records: self.tokens.lexer_records,
                     token_uses: self.tokens.uses,
-                    post_lex: self.tokens.post_lex,
                 },
             });
         SourceModelReport {
@@ -2696,6 +2905,12 @@ impl SourceModelBuilder<'_> {
                 source: node.source,
             };
             let configured = &node.metas;
+            reject_obsolete_parser_postconditions(
+                &self.resolved,
+                origin,
+                configured,
+                &mut self.diagnostics,
+            );
             let body = match &node.body {
                 ResolvedNodeBody::Struct { style } => {
                     reject_pratt_marker(
@@ -2770,6 +2985,12 @@ impl SourceModelBuilder<'_> {
                             resolved_variants
                                 .iter()
                                 .map(|variant| {
+                                    reject_obsolete_parser_postconditions(
+                                        &self.resolved,
+                                        origin,
+                                        &variant.metas,
+                                        &mut self.diagnostics,
+                                    );
                                     reject_pratt_marker(
                                         &self.resolved,
                                         origin,
@@ -2819,6 +3040,12 @@ impl SourceModelBuilder<'_> {
                             resolved_variants
                                 .iter()
                                 .map(|variant| {
+                                    reject_obsolete_parser_postconditions(
+                                        &self.resolved,
+                                        origin,
+                                        &variant.metas,
+                                        &mut self.diagnostics,
+                                    );
                                     reject_pratt_marker(
                                         &self.resolved,
                                         origin,
@@ -2891,6 +3118,12 @@ impl SourceModelBuilder<'_> {
             let field = &resolved_field.syntax;
             let field_configured = &resolved_field.metas;
             let site = self.site(origin, span_range(field.span()));
+            reject_obsolete_parser_postconditions(
+                &self.resolved,
+                origin,
+                field_configured,
+                &mut self.diagnostics,
+            );
             reject_pratt_marker(
                 &self.resolved,
                 origin,
@@ -2904,6 +3137,44 @@ impl SourceModelBuilder<'_> {
                 field_configured,
                 &mut self.diagnostics,
             );
+            if matches!(resolved_field.ty.kind, ResolvedTypeKind::FixedTokenPresence) {
+                let pretty =
+                    self.lower_pretty_hints(origin, field_configured, resolved_field.range.clone());
+                if let Some(presence) = PositionalTokenPlanner::lower_presence(
+                    &self.resolved,
+                    &mut self.tokens,
+                    &mut self.diagnostics,
+                    origin,
+                    field_configured,
+                    resolved_field.id,
+                    field.ident.as_ref().map(|ident| ident.unraw().to_string()),
+                    pretty,
+                    site,
+                ) {
+                    let elements = PositionalTokenPlanner::lower(
+                        &self.resolved,
+                        &mut self.tokens,
+                        &mut self.diagnostics,
+                        origin,
+                        field_configured,
+                        vec![presence],
+                        TokenAttachment::Field,
+                    );
+                    body.push_attachment(elements);
+                }
+                continue;
+            }
+            if let Some(meta) = field_configured
+                .iter()
+                .find(|meta| meta.path().is_ident("presence"))
+            {
+                self.diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                    sites: vec![self.site(origin, span_range(meta.span()))],
+                    message: "#[presence(...)] is supported only on an unqualified bool field"
+                        .to_owned(),
+                });
+            }
             self.tokens.lower_content_definition(
                 &self.resolved,
                 &self.semantic_facts,
@@ -2916,6 +3187,7 @@ impl SourceModelBuilder<'_> {
             let semantic = GrammarElement::SemanticField {
                 id: GrammarElementId::next(0),
                 resolved_field: resolved_field.id,
+                projection: SemanticFieldProjection::Direct,
                 name: field.ident.as_ref().map(|ident| ident.unraw().to_string()),
                 attachment: None,
                 separator: SeparatorPlanner::lower(
@@ -3065,10 +3337,6 @@ struct TokenCatalog {
     lexer_records: Vec<NonTokenLexerRecord>,
     /// Supplies the uses used to correlate authored source with normalized grammar.
     uses: Vec<TokenUse>,
-    /// Supplies the post lex used to correlate authored source with normalized grammar.
-    post_lex: Option<syn::Path>,
-    /// Supplies the post lex sites used to correlate authored source with normalized grammar.
-    post_lex_sites: Vec<SourceSite>,
     /// Indexes declared keyword categories and their authored sites.
     categories: BTreeMap<String, Vec<SourceSite>>,
     /// Indexes declared keyword flags and their authored sites.
@@ -3087,8 +3355,10 @@ struct CentralContentDefinition {
     name: String,
     /// Preserves the authored lexical pattern for validation and generation.
     pattern: String,
-    /// Preserves the opaque authored callback path for generation.
-    callback: Option<syn::Path>,
+    /// Preserves the optional closed matcher declared at the central token seam.
+    closed_matcher: Option<ClosedMatcher>,
+    /// Preserves explicit arbitration priority on a closed matcher.
+    priority: Option<u32>,
     /// Locates the authored construct represented by this source-model value.
     site: SourceSite,
 }
@@ -3698,7 +3968,9 @@ impl TokenCatalog {
                         .is_some_and(|segment| segment.ident == "tokens")
                 {
                     match syn::parse2::<CentralTokensSyntax>(item_macro.mac.tokens.clone()) {
-                        Ok(syntax) => self.collect_central_definitions(resolved, origin, syntax),
+                        Ok(syntax) => {
+                            self.collect_central_definitions(resolved, origin, syntax, diagnostics)
+                        }
                         Err(error) => diagnostics.push(SourceModelDiagnostic {
                             kind: SourceModelDiagnosticKind::InvalidConfiguration,
                             sites: vec![source_site(resolved, origin, span_range(error.span()))],
@@ -3772,13 +4044,15 @@ impl TokenCatalog {
         resolved: &ResolvedSourceGrammar,
         origin: SourceOrigin,
         syntax: CentralTokensSyntax,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
     ) {
-        for post_lex in &syntax.post_lex {
-            self.post_lex_sites
-                .push(source_site(resolved, origin, span_range(post_lex.span())));
-            if self.post_lex.is_none() {
-                self.post_lex = Some(post_lex.clone());
-            }
+        for post_lex in syntax.obsolete_post_lex {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::ObsoletePostLexHook,
+                sites: vec![source_site(resolved, origin, span_range(post_lex.span()))],
+                message: "authored `post_lex = path` hooks are unsupported; express tokenization declaratively"
+                    .to_owned(),
+            });
         }
         for fixed in syntax.fixed {
             let declaration_site = source_site(resolved, origin, span_range(fixed.name.span()));
@@ -3829,6 +4103,15 @@ impl TokenCatalog {
                 .map(|admission| pending_admission(resolved, origin, admission)),
         );
         for content in syntax.content {
+            if let Some(callback) = content.obsolete_callback {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::ObsoleteCentralLexCallback,
+                    sites: vec![source_site(resolved, origin, span_range(callback.span()))],
+                    message: "authored central `with path` lexer callbacks are unsupported; use a closed matcher"
+                        .to_owned(),
+                });
+                continue;
+            }
             let name = content.name.unraw().to_string();
             let semantic = resolved
                 .content_tokens
@@ -3838,7 +4121,24 @@ impl TokenCatalog {
                 semantic,
                 name,
                 pattern: content.pattern.value(),
-                callback: content.callback,
+                closed_matcher: None,
+                priority: None,
+                site: source_site(resolved, origin, span_range(content.name.span())),
+            });
+        }
+        for content in syntax.matchers {
+            let name = content.name.unraw().to_string();
+            let semantic = resolved
+                .content_tokens
+                .iter()
+                .find_map(|token| (token.ident == name).then_some(token.id));
+            let pattern = content.matcher.matcher.starter_pattern();
+            self.central_content.push(CentralContentDefinition {
+                semantic,
+                name,
+                pattern,
+                closed_matcher: Some(content.matcher.matcher),
+                priority: content.matcher.priority,
                 site: source_site(resolved, origin, span_range(content.name.span())),
             });
         }
@@ -3849,10 +4149,23 @@ impl TokenCatalog {
                     .into_iter()
                     .map(|record| NonTokenLexerRecord {
                         pattern: record.pattern.value(),
+                        closed_matcher: None,
+                        priority: None,
                         outcome: record.outcome,
                         site: source_site(resolved, origin, span_range(record.pattern.span())),
                     }),
             );
+        self.lexer_records
+            .extend(syntax.ignored_matchers.into_iter().map(|record| {
+                let pattern = record.matcher.matcher.starter_pattern();
+                NonTokenLexerRecord {
+                    pattern,
+                    closed_matcher: Some(record.matcher.matcher),
+                    priority: record.matcher.priority,
+                    outcome: NonTokenLexerOutcome::NonEmitting,
+                    site: source_site(resolved, origin, span_range(record.name.span())),
+                }
+            }));
     }
 
     /// Interns a fixed-token definition or diagnoses incompatible duplicate spellings.
@@ -3961,6 +4274,27 @@ impl TokenCatalog {
                     return None;
                 };
                 (definition, site)
+            }
+            TokenSequenceEntry::Optional { tokens, span } => {
+                let group_site = source_site(resolved, origin, span_range(span));
+                let tokens = tokens
+                    .into_iter()
+                    .filter_map(|token| self.fixed_element(resolved, diagnostics, origin, token))
+                    .filter_map(|element| {
+                        let GrammarElement::FixedToken {
+                            token_use, site, ..
+                        } = element
+                        else {
+                            return None;
+                        };
+                        Some(AttachedFixedToken { token_use, site })
+                    })
+                    .collect::<Vec<_>>();
+                return (!tokens.is_empty()).then_some(GrammarElement::OptionalFixedTokenGroup {
+                    id: GrammarElementId::next(0),
+                    tokens,
+                    site: group_site,
+                });
             }
             TokenSequenceEntry::This(_) => return None,
         };
@@ -4310,6 +4644,110 @@ impl SeparatorPlanner {
 struct PositionalTokenPlanner;
 
 impl PositionalTokenPlanner {
+    /// Lowers one fixed-only presence declaration into its authored boolean field.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_presence(
+        resolved: &ResolvedSourceGrammar,
+        tokens: &mut TokenCatalog,
+        diagnostics: &mut Vec<SourceModelDiagnostic>,
+        origin: SourceOrigin,
+        metas: &[Meta],
+        resolved_field: ResolvedFieldId,
+        name: Option<String>,
+        pretty: PrettyHints,
+        site: SourceSite,
+    ) -> Option<GrammarElement> {
+        let presence_metas = metas
+            .iter()
+            .filter(|meta| meta.path().is_ident("presence"))
+            .collect::<Vec<_>>();
+        let conflicts = metas
+            .iter()
+            .filter(|meta| matches!(path_text(meta.path()).as_str(), "lex" | "sep"))
+            .collect::<Vec<_>>();
+        if presence_metas.len() != 1 || !conflicts.is_empty() {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                sites: presence_metas
+                    .iter()
+                    .chain(conflicts.iter())
+                    .map(|meta| source_site(resolved, origin, span_range(meta.span())))
+                    .collect(),
+                message:
+                    "a bool field accepts exactly one #[presence(...)] and no #[lex] or #[sep]"
+                        .to_owned(),
+            });
+            return None;
+        }
+        let meta = presence_metas[0];
+        let Meta::List(list) = meta else {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+                message: "#[presence] must contain one non-empty fixed-token sequence".to_owned(),
+            });
+            return None;
+        };
+        let sequence = match TokenSequence::parse.parse2(list.tokens.clone()) {
+            Ok(sequence) if !sequence.0.is_empty() => sequence,
+            Ok(_) => {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                    sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+                    message: "#[presence] must contain one non-empty fixed-token sequence"
+                        .to_owned(),
+                });
+                return None;
+            }
+            Err(error) => {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                    sites: vec![source_site(resolved, origin, span_range(error.span()))],
+                    message: error.to_string(),
+                });
+                return None;
+            }
+        };
+        if let Some(span) = sequence.0.iter().find_map(|entry| match entry {
+            TokenSequenceEntry::This(span) => Some(*span),
+            TokenSequenceEntry::Optional { span, .. } => Some(*span),
+            TokenSequenceEntry::Definition(_) | TokenSequenceEntry::Reference(_) => None,
+        }) {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidFixedTokenPresence,
+                sites: vec![source_site(resolved, origin, span_range(span))],
+                message: "#[presence(...)] accepts a flat fixed-token sequence".to_owned(),
+            });
+            return None;
+        }
+        let fixed = sequence
+            .0
+            .into_iter()
+            .filter_map(|token| tokens.fixed_element(resolved, diagnostics, origin, token))
+            .map(|element| {
+                let GrammarElement::FixedToken {
+                    token_use, site, ..
+                } = element
+                else {
+                    unreachable!("fixed-element lowering returns fixed syntax")
+                };
+                AttachedFixedToken { token_use, site }
+            })
+            .collect::<Vec<_>>();
+        (!fixed.is_empty()).then_some(GrammarElement::SemanticField {
+            id: GrammarElementId::next(0),
+            resolved_field,
+            projection: SemanticFieldProjection::FixedPresence { tokens: fixed },
+            name,
+            attachment: None,
+            separator: None,
+            pretty,
+            attachment_before: 0,
+            attachment_after: 0,
+            site,
+        })
+    }
+
     /// Inserts positional fixed tokens around semantic fields according to authored attributes.
     fn lower(
         resolved: &ResolvedSourceGrammar,
@@ -4371,7 +4809,9 @@ impl PositionalTokenPlanner {
             .iter()
             .filter_map(|entry| match entry {
                 TokenSequenceEntry::This(span) => Some(*span),
-                TokenSequenceEntry::Definition(_) | TokenSequenceEntry::Reference(_) => None,
+                TokenSequenceEntry::Definition(_)
+                | TokenSequenceEntry::Reference(_)
+                | TokenSequenceEntry::Optional { .. } => None,
             })
             .collect::<Vec<_>>();
         if this_sites.len() > 1 {
@@ -4415,13 +4855,22 @@ impl PositionalTokenPlanner {
                             if let Some(element) =
                                 tokens.fixed_element(resolved, diagnostics, origin, token)
                             {
-                                let GrammarElement::FixedToken {
-                                    token_use, site, ..
-                                } = element
-                                else {
-                                    unreachable!("fixed-element lowering returns fixed syntax")
+                                let attached = match element {
+                                    GrammarElement::FixedToken {
+                                        token_use, site, ..
+                                    } => AttachedFixedSyntax::Required(AttachedFixedToken {
+                                        token_use,
+                                        site,
+                                    }),
+                                    GrammarElement::OptionalFixedTokenGroup {
+                                        tokens,
+                                        site,
+                                        ..
+                                    } => AttachedFixedSyntax::Optional { tokens, site },
+                                    GrammarElement::SemanticField { .. } => {
+                                        unreachable!("fixed-element lowering returns fixed syntax")
+                                    }
                                 };
-                                let attached = AttachedFixedToken { token_use, site };
                                 if seen_this {
                                     after.push(attached);
                                 } else {
@@ -4431,14 +4880,15 @@ impl PositionalTokenPlanner {
                         }
                     }
                 }
-                let [
-                    GrammarElement::SemanticField {
-                        attachment: field_attachment,
-                        ..
-                    },
-                ] = body.as_mut_slice()
-                else {
+                let [field] = body.as_mut_slice() else {
                     unreachable!("a field attachment owns exactly one semantic element")
+                };
+                let field_attachment = match field {
+                    GrammarElement::SemanticField { attachment, .. } => attachment,
+                    GrammarElement::FixedToken { .. }
+                    | GrammarElement::OptionalFixedTokenGroup { .. } => {
+                        unreachable!("a field attachment owns one semantic element")
+                    }
                 };
                 *field_attachment = Some(FixedTokenAttachment { before, after });
                 return body;
@@ -4640,6 +5090,47 @@ fn reject_pratt_roles_off_pratt(
     }
 }
 
+/// Rejects retired parser predicates at their authored attachment site.
+fn reject_obsolete_parser_postconditions(
+    resolved: &ResolvedSourceGrammar,
+    origin: SourceOrigin,
+    metas: &[Meta],
+    diagnostics: &mut Vec<SourceModelDiagnostic>,
+) {
+    for list in metas.iter().filter_map(|meta| {
+        let Meta::List(list) = meta else { return None };
+        let is_parser_attribute = list.path.is_ident("parse")
+            || list
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "parser");
+        is_parser_attribute.then_some(list)
+    }) {
+        let Ok(options) = syn::punctuated::Punctuated::<Meta, Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())
+        else {
+            continue;
+        };
+        let Some(postcondition) = options
+            .iter()
+            .find(|option| option.path().is_ident("postcondition"))
+        else {
+            continue;
+        };
+        diagnostics.push(SourceModelDiagnostic {
+            kind: SourceModelDiagnosticKind::ObsoleteParserPostcondition,
+            sites: vec![source_site(
+                resolved,
+                origin,
+                span_range(postcondition.span()),
+            )],
+            message: "authored parser postconditions are unsupported; use a named admission"
+                .to_owned(),
+        });
+    }
+}
+
 /// Reports whether an attribute names a prefix, infix, or postfix Pratt role.
 fn is_pratt_role_meta(meta: &Meta) -> bool {
     let Meta::List(list) = meta else {
@@ -4707,8 +5198,8 @@ impl TokenCatalog {
                     &existing.kind,
                     TokenDefinitionKind::LexicalBase(base)
                         if base.pattern == definition.pattern
-                            && base.callback == definition.callback
-                            && base.priority.is_none()
+                            && base.closed_matcher == definition.closed_matcher
+                            && base.priority == definition.priority
                 )
         }) {
             existing.definition_sites.push(definition.site);
@@ -4720,8 +5211,8 @@ impl TokenCatalog {
             name: definition.name,
             kind: TokenDefinitionKind::LexicalBase(LexicalBaseTokenDefinition {
                 pattern: definition.pattern,
-                callback: definition.callback,
-                priority: None,
+                closed_matcher: definition.closed_matcher,
+                priority: definition.priority,
             }),
             definition_sites: vec![definition.site],
         });
@@ -4778,6 +5269,16 @@ impl TokenCatalog {
                 return;
             }
         };
+        if let Some(callback) = syntax.obsolete_callback {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::ObsoleteFieldLexCallback,
+                sites: vec![source_site(resolved, origin, span_range(callback.span()))],
+                message:
+                    "authored `#[lex(..., callback = path)]` is unsupported; use a closed matcher"
+                        .to_owned(),
+            });
+            return;
+        }
         if let Some(display) = syntax.display {
             diagnostics.push(SourceModelDiagnostic {
                 kind: SourceModelDiagnosticKind::ContentDisplayOverride,
@@ -4795,6 +5296,49 @@ impl TokenCatalog {
             });
             return;
         };
+
+        if syntax.matcher {
+            if syntax.diagram.is_some()
+                || syntax.priority.is_some()
+                || !syntax.admissions.is_empty()
+            {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidContentToken,
+                    sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+                    message: "#[lex(matcher)] takes no field-local matcher options; configure the matcher centrally"
+                        .to_owned(),
+                });
+                return;
+            }
+            let bound = self
+                .content_by_name
+                .get(&name)
+                .into_iter()
+                .flatten()
+                .copied()
+                .any(|definition| {
+                    matches!(
+                        &self.definitions[definition.index()].kind,
+                        TokenDefinitionKind::Content(content)
+                            if content.semantic == semantic && content.closed_matcher.is_some()
+                    )
+                });
+            if !bound {
+                diagnostics.push(SourceModelDiagnostic {
+                    kind: SourceModelDiagnosticKind::InvalidContentToken,
+                    sites: vec![source_site(resolved, origin, span_range(meta.span()))],
+                    message: format!(
+                        "#[lex(matcher)] for `{name}` requires a matching central `matchers` declaration"
+                    ),
+                });
+            }
+            return;
+        }
+
+        let pattern = syntax
+            .pattern
+            .as_ref()
+            .expect("a non-matcher lex declaration has a pattern");
 
         let mut authored_definitions = Vec::new();
         for reference in syntax.admissions {
@@ -4834,8 +5378,7 @@ impl TokenCatalog {
                 &definition.kind,
                 TokenDefinitionKind::Content(content)
                     if content.semantic == semantic
-                        && content.pattern == syntax.pattern.value()
-                        && content.callback == syntax.callback
+                        && content.pattern == pattern.value()
                         && content.priority == syntax.priority
                         && content.admission_set == admission_set
                         && content.diagram_label != diagram_label
@@ -4855,9 +5398,9 @@ impl TokenCatalog {
         self.define_content(
             semantic,
             name,
-            syntax.pattern.value(),
+            pattern.value(),
+            None,
             diagram_label,
-            syntax.callback,
             syntax.priority,
             admission_set,
             authored,
@@ -4873,8 +5416,8 @@ impl TokenCatalog {
         semantic: ContentTokenId,
         name: String,
         pattern: String,
+        closed_matcher: Option<ClosedMatcher>,
         diagram_label: Option<String>,
-        callback: Option<syn::Path>,
         priority: Option<u32>,
         admission_set: Vec<TokenDefinitionId>,
         authored: AuthoredAdmissions,
@@ -4886,12 +5429,12 @@ impl TokenCatalog {
                 matches!(
                     &self.definitions[id.index()].kind,
                     TokenDefinitionKind::Content(content)
-                        if content.semantic == semantic
-                            && content.pattern == pattern
-                            && content.diagram_label == diagram_label
-                            && content.callback == callback
-                            && content.priority == priority
-                            && content.admission_set == admission_set
+                    if content.semantic == semantic
+                        && content.pattern == pattern
+                        && content.closed_matcher == closed_matcher
+                        && content.diagram_label == diagram_label
+                        && content.priority == priority
+                        && content.admission_set == admission_set
                 )
             })
         });
@@ -4916,8 +5459,8 @@ impl TokenCatalog {
             kind: TokenDefinitionKind::Content(ContentTokenDefinition {
                 semantic,
                 pattern,
+                closed_matcher,
                 diagram_label,
-                callback,
                 priority,
                 admission_set,
                 authored_admissions: vec![authored],
@@ -4939,10 +5482,14 @@ struct CentralTokensSyntax {
     fixed: Vec<CentralFixedSyntax>,
     /// Supplies the content used to correlate authored source with normalized grammar.
     content: Vec<CentralContentSyntax>,
+    /// Supplies named emitting closed matchers.
+    matchers: Vec<CentralMatcherSyntax>,
     /// Supplies the non token lexer records used to correlate authored source with normalized grammar.
     non_token_lexer_records: Vec<CentralNonTokenLexerRecordSyntax>,
-    /// Supplies the post lex used to correlate authored source with normalized grammar.
-    post_lex: Vec<syn::Path>,
+    /// Supplies named ignored closed matchers.
+    ignored_matchers: Vec<CentralIgnoredMatcherSyntax>,
+    /// Retains obsolete post-lex paths only long enough to diagnose their source sites.
+    obsolete_post_lex: Vec<syn::Path>,
     /// Supplies declared keyword category names.
     categories: Vec<syn::Ident>,
     /// Supplies declared orthogonal keyword flag names.
@@ -4957,6 +5504,14 @@ struct CentralNonTokenLexerRecordSyntax {
     pattern: LitStr,
     /// Supplies the outcome used to correlate authored source with normalized grammar.
     outcome: NonTokenLexerOutcome,
+}
+
+/// Carries one named ignored closed matcher before source locations are retained.
+struct CentralIgnoredMatcherSyntax {
+    /// Preserves the authored name used in diagnostics and later trivia classification.
+    name: syn::Ident,
+    /// Preserves the closed matcher and its source literals.
+    matcher: ClosedMatcherSyntax,
 }
 
 /// Carries the central fixed syntax retained from authored source structure.
@@ -4981,8 +5536,279 @@ struct CentralContentSyntax {
     name: syn::Ident,
     /// Preserves the authored lexical pattern for validation and generation.
     pattern: LitStr,
-    /// Preserves the opaque authored callback path for generation.
-    callback: Option<syn::Path>,
+    /// Retains an obsolete callback path only long enough to diagnose its source site.
+    obsolete_callback: Option<syn::Path>,
+}
+
+/// Carries one named emitting closed matcher before source locations are retained.
+struct CentralMatcherSyntax {
+    /// Preserves the nominal generated content-token name.
+    name: syn::Ident,
+    /// Preserves the closed matcher and its source literals.
+    matcher: ClosedMatcherSyntax,
+}
+
+/// Parsed closed matcher together with its common arbitration metadata.
+struct ClosedMatcherSyntax {
+    /// Validated closed matcher configuration.
+    matcher: ClosedMatcher,
+    /// Explicit priority applied after final extent and fixed-spelling precedence.
+    priority: Option<u32>,
+}
+
+/// One named argument supplied to a closed matcher constructor.
+struct ClosedMatcherArgument {
+    /// Identifies the parameter checked for uniqueness and family-specific applicability.
+    name: syn::Ident,
+    /// Literal or literal-array value.
+    value: syn::Expr,
+}
+
+impl Parse for ClosedMatcherArgument {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let name = syn::Ident::parse_any(input)?;
+        input.parse::<Token![=]>()?;
+        Ok(Self {
+            name,
+            value: input.parse()?,
+        })
+    }
+}
+
+impl Parse for ClosedMatcherSyntax {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let family = syn::Ident::parse_any(input)?;
+        let body;
+        syn::parenthesized!(body in input);
+        let parsed =
+            syn::punctuated::Punctuated::<ClosedMatcherArgument, Token![,]>::parse_terminated(
+                &body,
+            )?;
+        let mut arguments = BTreeMap::<String, (Span, syn::Expr)>::new();
+        for argument in parsed {
+            let name = argument.name.unraw().to_string();
+            if arguments
+                .insert(name.clone(), (argument.name.span(), argument.value))
+                .is_some()
+            {
+                return Err(syn::Error::new(
+                    argument.name.span(),
+                    format!("duplicate `{name}` closed-matcher argument"),
+                ));
+            }
+        }
+        let priority = take_matcher_u32(&mut arguments, "priority")?;
+        let matcher = match family.to_string().as_str() {
+            "same_delimiter" => ClosedMatcher::SameDelimiter {
+                opener: take_matcher_string(&mut arguments, "opener")?,
+            },
+            "nested" => {
+                let opener = take_matcher_string(&mut arguments, "opener")?;
+                let closer = take_matcher_string(&mut arguments, "closer")?;
+                if opener.is_empty() || closer.is_empty() || opener == closer {
+                    return Err(syn::Error::new(
+                        family.span(),
+                        "nested matcher delimiters must be nonempty and distinct",
+                    ));
+                }
+                ClosedMatcher::Nested { opener, closer }
+            }
+            "next_exclusion" => {
+                let pattern = take_matcher_string(&mut arguments, "pattern")?;
+                let excluded = take_matcher_string(&mut arguments, "excluded")?;
+                if !matches_one_complete_scalar(&excluded) {
+                    return Err(syn::Error::new(
+                        family.span(),
+                        "next-exclusion predicate must compile and match at least one complete, nonempty scalar",
+                    ));
+                }
+                ClosedMatcher::NextExclusion { pattern, excluded }
+            }
+            "operator_run" => {
+                let characters = take_matcher_string(&mut arguments, "characters")?;
+                let fences = take_matcher_strings(&mut arguments, "fences")?;
+                let trailing = take_matcher_string(&mut arguments, "trailing")?;
+                let qualifying = take_matcher_string(&mut arguments, "qualifying")?;
+                validate_operator_run(&family, &characters, &fences, &trailing, &qualifying)?;
+                ClosedMatcher::OperatorRun {
+                    characters,
+                    fences,
+                    trailing,
+                    qualifying,
+                }
+            }
+            "physical_line" => ClosedMatcher::PhysicalLine {
+                prefix: take_matcher_string(&mut arguments, "prefix")?,
+            },
+            _ => {
+                return Err(syn::Error::new(
+                    family.span(),
+                    format!("unsupported closed matcher `{family}`"),
+                ));
+            }
+        };
+        if let Some((name, (span, _))) = arguments.into_iter().next() {
+            return Err(syn::Error::new(
+                span,
+                format!("unsupported `{name}` closed-matcher argument"),
+            ));
+        }
+        Ok(Self { matcher, priority })
+    }
+}
+
+/// Proves that a next-exclusion predicate is runtime-compilable and can consume one whole scalar.
+fn matches_one_complete_scalar(pattern: &str) -> bool {
+    if regex_automata::meta::Regex::new(pattern).is_err() {
+        return false;
+    }
+    let Ok(dfa) = dense::DFA::new(pattern) else {
+        return false;
+    };
+    let input = Input::new(b"").anchored(Anchored::Yes);
+    let Ok(start) = dfa.start_state_forward(&input) else {
+        return false;
+    };
+    if dfa_accepts_state(&dfa, start) {
+        return false;
+    }
+    (0..=char::MAX as u32)
+        .filter_map(char::from_u32)
+        .any(|character| {
+            let mut encoded = [0; 4];
+            let mut state = start;
+            for &byte in character.encode_utf8(&mut encoded).as_bytes() {
+                state = dfa.next_state(state, byte);
+                if dfa.is_dead_state(state) || dfa.is_quit_state(state) {
+                    return false;
+                }
+            }
+            dfa_accepts_state(&dfa, state)
+        })
+}
+
+/// Removes one required string argument from a closed matcher constructor.
+fn take_matcher_string(
+    arguments: &mut BTreeMap<String, (Span, syn::Expr)>,
+    name: &str,
+) -> syn::Result<String> {
+    let Some((span, value)) = arguments.remove(name) else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            format!("closed matcher requires `{name} = \"...\"`"),
+        ));
+    };
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(value),
+        ..
+    }) = value
+    else {
+        return Err(syn::Error::new(
+            span,
+            format!("closed matcher `{name}` must be a string literal"),
+        ));
+    };
+    Ok(value.value())
+}
+
+/// Removes one optional unsigned integer argument from a closed matcher constructor.
+fn take_matcher_u32(
+    arguments: &mut BTreeMap<String, (Span, syn::Expr)>,
+    name: &str,
+) -> syn::Result<Option<u32>> {
+    let Some((span, value)) = arguments.remove(name) else {
+        return Ok(None);
+    };
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Int(value),
+        ..
+    }) = value
+    else {
+        return Err(syn::Error::new(
+            span,
+            format!("closed matcher `{name}` must be an unsigned integer literal"),
+        ));
+    };
+    value.base10_parse().map(Some)
+}
+
+/// Removes one required string-array argument from a closed matcher constructor.
+fn take_matcher_strings(
+    arguments: &mut BTreeMap<String, (Span, syn::Expr)>,
+    name: &str,
+) -> syn::Result<Vec<String>> {
+    let Some((span, value)) = arguments.remove(name) else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            format!("closed matcher requires `{name} = [\"...\"]`"),
+        ));
+    };
+    let syn::Expr::Array(array) = value else {
+        return Err(syn::Error::new(
+            span,
+            format!("closed matcher `{name}` must be an array of string literals"),
+        ));
+    };
+    array
+        .elems
+        .into_iter()
+        .map(|element| match element {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(value),
+                ..
+            }) => Ok(value.value()),
+            other => Err(syn::Error::new(
+                other.span(),
+                format!("closed matcher `{name}` accepts only string literals"),
+            )),
+        })
+        .collect()
+}
+
+/// Validates the generic language constraints of an operator-run matcher.
+fn validate_operator_run(
+    family: &syn::Ident,
+    characters: &str,
+    fences: &[String],
+    trailing: &str,
+    qualifying: &str,
+) -> syn::Result<()> {
+    let unique_ascii = |value: &str| {
+        value.is_ascii() && value.bytes().collect::<BTreeSet<_>>().len() == value.len()
+    };
+    if characters.is_empty() || !unique_ascii(characters) {
+        return Err(syn::Error::new(
+            family.span(),
+            "operator-run characters must be a nonempty set of unique ASCII bytes",
+        ));
+    }
+    if !unique_ascii(trailing)
+        || !unique_ascii(qualifying)
+        || !trailing
+            .bytes()
+            .all(|byte| characters.as_bytes().contains(&byte))
+        || !qualifying
+            .bytes()
+            .all(|byte| characters.as_bytes().contains(&byte))
+    {
+        return Err(syn::Error::new(
+            family.span(),
+            "operator-run trailing and qualifying sets must contain unique admitted ASCII bytes",
+        ));
+    }
+    if fences.iter().any(|fence| {
+        fence.is_empty()
+            || !fence.is_ascii()
+            || !fence
+                .bytes()
+                .all(|byte| characters.as_bytes().contains(&byte))
+    }) {
+        return Err(syn::Error::new(
+            family.span(),
+            "operator-run fences must be nonempty admitted ASCII byte strings",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -5063,8 +5889,10 @@ impl Parse for CentralTokensSyntax {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut fixed = Vec::new();
         let mut content = Vec::new();
+        let mut matchers = Vec::new();
         let mut non_token_lexer_records = Vec::new();
-        let mut post_lex = Vec::new();
+        let mut ignored_matchers = Vec::new();
+        let mut obsolete_post_lex = Vec::new();
         let mut categories = Vec::new();
         let mut flags = Vec::new();
         let mut admissions = Vec::new();
@@ -5078,7 +5906,7 @@ impl Parse for CentralTokensSyntax {
                         outcome: NonTokenLexerOutcome::NonEmitting,
                     });
                 } else if section == "post_lex" {
-                    post_lex.push(input.parse()?);
+                    obsolete_post_lex.push(input.parse()?);
                 } else {
                     input.parse::<syn::Expr>()?;
                 }
@@ -5129,12 +5957,28 @@ impl Parse for CentralTokensSyntax {
                             return Err(body.error("expected `,` after admission declaration"));
                         }
                     }
+                } else if section == "matchers" || section == "ignore" {
+                    while !body.is_empty() {
+                        let name = syn::Ident::parse_any(&body)?;
+                        body.parse::<Token![=>]>()?;
+                        let matcher = body.parse()?;
+                        if section == "matchers" {
+                            matchers.push(CentralMatcherSyntax { name, matcher });
+                        } else {
+                            ignored_matchers.push(CentralIgnoredMatcherSyntax { name, matcher });
+                        }
+                        if body.peek(Token![,]) {
+                            body.parse::<Token![,]>()?;
+                        } else if !body.is_empty() {
+                            return Err(body.error("expected `,` after closed matcher"));
+                        }
+                    }
                 } else if section == "literals" || section == "lexer_tokens" {
                     while !body.is_empty() {
                         let name = syn::Ident::parse_any(&body)?;
                         body.parse::<Token![=>]>()?;
                         let pattern = body.parse()?;
-                        let callback = if body.peek(syn::Ident) {
+                        let obsolete_callback = if body.peek(syn::Ident) {
                             let marker = syn::Ident::parse_any(&body)?;
                             if marker != "with" {
                                 return Err(syn::Error::new(
@@ -5149,7 +5993,7 @@ impl Parse for CentralTokensSyntax {
                         content.push(CentralContentSyntax {
                             name,
                             pattern,
-                            callback,
+                            obsolete_callback,
                         });
                         if body.peek(Token![,]) {
                             body.parse::<Token![,]>()?;
@@ -5168,8 +6012,10 @@ impl Parse for CentralTokensSyntax {
         Ok(Self {
             fixed,
             content,
+            matchers,
             non_token_lexer_records,
-            post_lex,
+            ignored_matchers,
+            obsolete_post_lex,
             categories,
             flags,
             admissions,
@@ -5322,6 +6168,13 @@ enum TokenSequenceEntry {
     Reference(syn::Ident),
     /// Identifies the this authored-source form.
     This(Span),
+    /// Identifies one erased, atomic optional fixed-token group.
+    Optional {
+        /// Supplies the non-empty unnested fixed-token sequence.
+        tokens: Vec<TokenSequenceEntry>,
+        /// Locates the authored `optional` entry.
+        span: Span,
+    },
 }
 
 /// Classifies the fixed token syntax forms retained in the source model.
@@ -5446,11 +6299,13 @@ impl Parse for SeparatorSyntax {
 /// Carries the lex syntax retained from authored source structure.
 struct LexSyntax {
     /// Preserves the authored lexical pattern for validation and generation.
-    pattern: LitStr,
+    pattern: Option<LitStr>,
+    /// Binds the field to a centrally declared closed matcher.
+    matcher: bool,
     /// Human-readable content-token label preserved for generated diagrams.
     diagram: Option<LitStr>,
-    /// Preserves the opaque authored callback path for generation.
-    callback: Option<syn::Path>,
+    /// Retains an obsolete callback path only long enough to diagnose its source site.
+    obsolete_callback: Option<syn::Path>,
     /// Preserves authored lexical priority for deterministic matcher ordering.
     priority: Option<u32>,
     /// Supplies the admissions used to correlate authored source with normalized grammar.
@@ -5462,8 +6317,9 @@ struct LexSyntax {
 impl Parse for LexSyntax {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut pattern = None;
+        let mut matcher = false;
         let mut diagram = None;
-        let mut callback = None;
+        let mut obsolete_callback = None;
         let mut priority = None;
         let mut admissions = None;
         let mut display = None;
@@ -5474,6 +6330,11 @@ impl Parse for LexSyntax {
                 if pattern.replace(input.parse()?).is_some() {
                     return Err(syn::Error::new(key.span(), "duplicate lex pattern"));
                 }
+            } else if key == "matcher" {
+                if matcher {
+                    return Err(syn::Error::new(key.span(), "duplicate lex matcher marker"));
+                }
+                matcher = true;
             } else if key == "diagram" {
                 input.parse::<Token![=]>()?;
                 if diagram.replace(input.parse()?).is_some() {
@@ -5481,7 +6342,7 @@ impl Parse for LexSyntax {
                 }
             } else if key == "callback" {
                 input.parse::<Token![=]>()?;
-                if callback.replace(input.parse()?).is_some() {
+                if obsolete_callback.replace(input.parse()?).is_some() {
                     return Err(syn::Error::new(key.span(), "duplicate lex callback"));
                 }
             } else if key == "priority" {
@@ -5514,10 +6375,16 @@ impl Parse for LexSyntax {
                 input.parse::<Token![,]>()?;
             }
         }
+        if pattern.is_some() == matcher {
+            return Err(
+                input.error("#[lex] requires exactly one of `pattern = r\"...\"` or `matcher`")
+            );
+        }
         Ok(Self {
-            pattern: pattern.ok_or_else(|| input.error("#[lex] requires pattern = r\"...\""))?,
+            pattern,
+            matcher,
             diagram,
-            callback,
+            obsolete_callback,
             priority,
             admissions: admissions.unwrap_or_default(),
             display,
@@ -5578,7 +6445,32 @@ impl Parse for TokenSequence {
                 entries.push(TokenSequenceEntry::Definition(input.parse()?));
             } else {
                 let ident = syn::Ident::parse_any(input)?;
-                if ident == "this" {
+                if ident == "optional" && input.peek(syn::token::Paren) {
+                    let content;
+                    syn::parenthesized!(content in input);
+                    let nested = TokenSequence::parse(&content)?;
+                    if nested.0.is_empty() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "optional(...) must contain a non-empty fixed-token sequence",
+                        ));
+                    }
+                    if nested.0.iter().any(|entry| {
+                        matches!(
+                            entry,
+                            TokenSequenceEntry::This(_) | TokenSequenceEntry::Optional { .. }
+                        )
+                    }) {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "optional(...) accepts only an unnested fixed-token sequence",
+                        ));
+                    }
+                    entries.push(TokenSequenceEntry::Optional {
+                        tokens: nested.0,
+                        span: ident.span(),
+                    });
+                } else if ident == "this" {
                     entries.push(TokenSequenceEntry::This(ident.span()));
                 } else {
                     entries.push(TokenSequenceEntry::Reference(ident));
@@ -5739,14 +6631,25 @@ fn assign_ordered_elements(
             GrammarElement::FixedToken { token_use, .. } => {
                 *token_use = use_remap[token_use.index()];
             }
+            GrammarElement::OptionalFixedTokenGroup { tokens, .. } => {
+                for fixed in tokens {
+                    fixed.token_use = use_remap[fixed.token_use.index()];
+                }
+            }
             GrammarElement::SemanticField {
+                projection,
                 attachment,
                 separator,
                 ..
             } => {
+                if let SemanticFieldProjection::FixedPresence { tokens } = projection {
+                    for fixed in tokens {
+                        fixed.token_use = use_remap[fixed.token_use.index()];
+                    }
+                }
                 if let Some(attachment) = attachment {
                     for fixed in attachment.before.iter_mut().chain(&mut attachment.after) {
-                        fixed.token_use = use_remap[fixed.token_use.index()];
+                        fixed.remap_token_uses(use_remap);
                     }
                 }
                 if let Some(separator) = separator {
@@ -5765,11 +6668,12 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        CentralTokensSyntax, ConfiguredTraitOwnership, ConfiguredTraitRecipe, ContentTextStorage,
-        DeclaredRepetition, GrammarElement, GrammarElementKind, LexSyntax, NodeBody, NodeShape,
-        PrettySpacing, SourceModelDiagnosticKind, SourceModelInput, SourcePrattPosition,
-        TokenDefinitionKind, TokenUseRole, fixed_then_pattern_intersects_pattern,
-        lower_source_model, pattern_then_fixed_intersects_pattern,
+        CentralTokensSyntax, ClosedMatcherSyntax, ConfiguredTraitOwnership, ConfiguredTraitRecipe,
+        ContentTextStorage, DeclaredRepetition, GrammarElement, GrammarElementKind, LexSyntax,
+        NodeBody, NodeShape, PrettySpacing, SourceModelDiagnosticKind, SourceModelInput,
+        SourcePrattPosition, TokenDefinitionKind, TokenUseRole,
+        fixed_then_pattern_intersects_pattern, lower_source_model,
+        pattern_then_fixed_intersects_pattern,
     };
     use crate::discovery::{DiscoveryInput, discover_module_tree};
     use crate::lowering::RustEdition;
@@ -5777,6 +6681,31 @@ mod tests {
         ResolutionInput, ResolvedFieldStyle, ResolvedNodeBody, resolve_local_semantics,
     };
     use crate::source_syntax::CargoCfgSnapshot;
+
+    #[test]
+    fn next_exclusion_requires_a_runtime_compilable_nonempty_whole_scalar_predicate() {
+        for valid in [
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Z]")"#,
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"\p{Greek}")"#,
+        ] {
+            syn::parse_str::<ClosedMatcherSyntax>(valid)
+                .unwrap_or_else(|error| panic!("valid predicate was rejected: {valid}: {error}"));
+        }
+        for invalid in [
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"")"#,
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"a*")"#,
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"ab")"#,
+            r#"next_exclusion(pattern = r"[0-9]+", excluded = r"(")"#,
+        ] {
+            let error = syn::parse_str::<ClosedMatcherSyntax>(invalid)
+                .err()
+                .expect("invalid next-exclusion predicate must be rejected");
+            assert!(
+                error.to_string().contains("complete, nonempty scalar"),
+                "{invalid}: {error}"
+            );
+        }
+    }
 
     fn model_with_cfg(source: &str, cfg: &CargoCfgSnapshot) -> super::SourceModelReport {
         let package = TempDir::new().unwrap();
@@ -5811,63 +6740,6 @@ mod tests {
 
     fn model(source: &str) -> super::SourceModelReport {
         model_with_cfg(source, &CargoCfgSnapshot::default())
-    }
-
-    #[test]
-    fn multiple_post_lex_hooks_are_rejected_instead_of_using_source_order() {
-        let report = model(
-            r#"
-recursa::grammar! { module = crate }
-recursa::tokens! { post_lex = crate::first }
-recursa::tokens! { post_lex = crate::second }
-
-#[derive(recursa::Node)]
-struct Root<'input> {
-    #[lex(pattern = r"[a-z]+")]
-    value: Word<'input>,
-}
-"#,
-        );
-        assert_code(
-            &report,
-            SourceModelDiagnosticKind::MultiplePostLexHooks,
-            "RCA3117",
-        );
-        let diagnostic = report
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.kind == SourceModelDiagnosticKind::MultiplePostLexHooks)
-            .expect("a singular grammar hook cannot be selected by source order");
-        assert_eq!(diagnostic.sites.len(), 2);
-        assert!(report.source_modeled.is_none());
-    }
-
-    #[test]
-    fn duplicate_post_lex_hooks_in_one_tokens_block_preserve_both_sites() {
-        let report = model(
-            r#"
-recursa::grammar! { module = crate }
-recursa::tokens! {
-    post_lex = crate::first,
-    post_lex = crate::second,
-}
-
-#[derive(recursa::Node)]
-struct Root;
-"#,
-        );
-        assert_code(
-            &report,
-            SourceModelDiagnosticKind::MultiplePostLexHooks,
-            "RCA3117",
-        );
-        let diagnostic = report
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.kind == SourceModelDiagnosticKind::MultiplePostLexHooks)
-            .expect("both hook declarations produce one grammar-level diagnostic");
-        assert_eq!(diagnostic.sites.len(), 2);
-        assert!(report.source_modeled.is_none());
     }
 
     fn completed(report: super::SourceModelReport) -> super::SourceModel {
@@ -5979,16 +6851,24 @@ struct Present;
         assert_eq!(attachment.before.len(), 1);
         assert_eq!(attachment.after.len(), 1);
         assert_eq!(
-            model.token_definitions[model.token_uses[attachment.before[0].token_use.index()]
-                .definition
+            model.token_definitions[model.token_uses[attachment.before[0]
+                .first()
+                .expect("required prefix token")
+                .token_use
                 .index()]
+            .definition
+            .index()]
             .name,
             "?",
         );
         assert_eq!(
-            model.token_definitions[model.token_uses[attachment.after[0].token_use.index()]
-                .definition
+            model.token_definitions[model.token_uses[attachment.after[0]
+                .last()
+                .expect("required suffix token")
+                .token_use
                 .index()]
+            .definition
+            .index()]
             .name,
             "!",
         );
@@ -7454,6 +8334,9 @@ enum Expr {
                     let definition = model.token_uses[token_use.index()].definition;
                     model.token_definitions[definition.index()].name.as_str()
                 }
+                super::GrammarElement::OptionalFixedTokenGroup { .. } => {
+                    unreachable!("fixture contains only required syntax")
+                }
             })
             .collect::<Vec<_>>();
         assert_eq!(rendered, ["field", "+", "AND", "field"]);
@@ -7749,13 +8632,13 @@ struct Lexeme<'input> {
     }
 
     #[test]
-    fn pretty_spacing_checks_crossing_prefixes_from_callback_lexical_rules() {
+    fn pretty_spacing_checks_crossing_prefixes_from_central_lexical_rules() {
         let report = model(
             r#"
 recursa::grammar! { module = crate, derives(Pretty) }
 recursa::tokens! {
     punctuation { SUFFIX => "+c" }
-    lexer_tokens { MERGED => r"a\+" with crate::extend_merged }
+    lexer_tokens { MERGED => r"a\+" }
 }
 #[derive(recursa::Node)]
 struct Prefix<'input> { #[lex(pattern = "a")] value: PrefixText<'input> }

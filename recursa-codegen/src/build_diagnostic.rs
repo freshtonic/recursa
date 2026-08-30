@@ -61,6 +61,17 @@ pub(crate) struct DiagnosticCodeSpec {
     pub(crate) evidence: DiagnosticEvidenceSchema,
     /// Allowed corrective-action family.
     pub(crate) remedy: DiagnosticRemedySchema,
+    /// Whether the assignment may still be emitted or is retained only to prevent reuse.
+    pub(crate) status: DiagnosticCodeStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Records whether one stable diagnostic assignment remains active.
+pub(crate) enum DiagnosticCodeStatus {
+    /// The failure class may still produce this diagnostic.
+    Active,
+    /// The failure class was removed and its code must never be reassigned.
+    Retired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,6 +179,22 @@ macro_rules! diagnostic_spec {
             primary_location: primary_location_rule($code),
             evidence: evidence_schema($code, DiagnosticStage::$stage),
             remedy: remedy_schema($code, DiagnosticStage::$stage),
+            status: DiagnosticCodeStatus::Active,
+        }
+    };
+}
+
+/// Retains an inactive diagnostic assignment so its stable code cannot be reused.
+macro_rules! retired_diagnostic_spec {
+    ($code:literal, $stage:ident, $severity:ident) => {
+        DiagnosticCodeSpec {
+            code: RecursaDiagnosticCode::new($code),
+            stage: DiagnosticStage::$stage,
+            severity: Severity::$severity,
+            primary_location: primary_location_rule($code),
+            evidence: evidence_schema($code, DiagnosticStage::$stage),
+            remedy: remedy_schema($code, DiagnosticStage::$stage),
+            status: DiagnosticCodeStatus::Retired,
         }
     };
 }
@@ -239,7 +266,7 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA3114", Lowering, Error),
     diagnostic_spec!("RCA3115", Lowering, Error),
     diagnostic_spec!("RCA3116", Lowering, Error),
-    diagnostic_spec!("RCA3117", Lowering, Error),
+    retired_diagnostic_spec!("RCA3117", Lowering, Error),
     diagnostic_spec!("RCA3118", Lowering, Error),
     diagnostic_spec!("RCA3119", Lowering, Warning),
     diagnostic_spec!("RCA3120", Lowering, Error),
@@ -247,6 +274,11 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA3122", Lowering, Error),
     diagnostic_spec!("RCA3123", Lowering, Error),
     diagnostic_spec!("RCA3124", Lowering, Error),
+    diagnostic_spec!("RCA3125", Lowering, Error),
+    diagnostic_spec!("RCA3126", Lowering, Error),
+    diagnostic_spec!("RCA3127", Lowering, Error),
+    diagnostic_spec!("RCA3128", Lowering, Error),
+    diagnostic_spec!("RCA3129", Lowering, Error),
     diagnostic_spec!("RCA3202", Lowering, Error),
     diagnostic_spec!("RCA3203", Lowering, Error),
     diagnostic_spec!("RCA3204", Lowering, Error),
@@ -266,7 +298,7 @@ static DIAGNOSTIC_CODE_REGISTRY: &[DiagnosticCodeSpec] = &[
     diagnostic_spec!("RCA9105", Emission, Error),
 ];
 
-/// Performs the diagnostic code registry phase of this boundary.
+/// Returns the closed contract for diagnostics produced while building or loading a grammar.
 pub(crate) fn diagnostic_code_registry() -> &'static [DiagnosticCodeSpec] {
     DIAGNOSTIC_CODE_REGISTRY
 }
@@ -275,8 +307,8 @@ pub(crate) fn diagnostic_code_registry() -> &'static [DiagnosticCodeSpec] {
 pub(crate) fn diagnostic_code_spec(code: RecursaDiagnosticCode) -> &'static DiagnosticCodeSpec {
     diagnostic_code_registry()
         .iter()
-        .find(|spec| spec.code == code)
-        .expect("every emitted Recursa diagnostic code is registered")
+        .find(|spec| spec.code == code && spec.status == DiagnosticCodeStatus::Active)
+        .expect("every emitted Recursa diagnostic code is actively registered")
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

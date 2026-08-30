@@ -21,6 +21,10 @@ recursa::tokens! {
         READ => "READ",
         SET => "SET",
         AS => "AS",
+        A => "A",
+        B => "B",
+        C => "C",
+        D => "D",
     }
 }
 
@@ -188,3 +192,49 @@ pub struct PrintTail<'input> {
     #[tok(PRINT)]
     pub rest: Rest<'input>,
 }
+
+#[derive(recursa::Node)]
+pub enum OverlappingRectangles {
+    First(FirstRectangle),
+    Second(SecondRectangle),
+}
+
+#[derive(recursa::Node)]
+pub struct FirstRectangle {
+    pub lead: FirstAb,
+    pub tail: TokenC,
+}
+
+#[derive(recursa::Node)]
+pub struct SecondRectangle {
+    pub lead: FirstBc,
+    pub tail: TokenD,
+}
+
+#[derive(recursa::Node)]
+pub enum FirstAb {
+    A(TokenA),
+    B(TokenB),
+}
+
+#[derive(recursa::Node)]
+pub enum FirstBc {
+    B(TokenB),
+    C(TokenC),
+}
+
+#[derive(recursa::Node)]
+#[tok(A)]
+pub struct TokenA;
+
+#[derive(recursa::Node)]
+#[tok(B)]
+pub struct TokenB;
+
+#[derive(recursa::Node)]
+#[tok(C)]
+pub struct TokenC;
+
+#[derive(recursa::Node)]
+#[tok(D)]
+pub struct TokenD;

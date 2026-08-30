@@ -56,6 +56,41 @@ struct ProducerEvidence {
     command: &'static str,
 }
 
+/// Executable downstream evidence for stable failures in the matching-version runtime protocol.
+///
+/// These codes are not build diagnostics, so this ledger is deliberately separate from the build
+/// diagnostic registry and its producer ledger.
+struct RuntimeLexicalEvidence {
+    /// Identifies the runtime protocol failures exercised by this evidence row.
+    codes: &'static [&'static str],
+    /// Points to the runtime branch that creates each classified failure.
+    producer_source: &'static str,
+    /// Points to the function that executes and checks the producer outcome.
+    assertion_source: &'static str,
+    /// Selects that asserting function within its source file.
+    assertion_name: &'static str,
+    /// Points to the Cargo-visible test that runs the assertion source.
+    command_test_source: &'static str,
+    /// Selects the Cargo-visible test used by the executable command.
+    command_test_name: &'static str,
+    /// Records the exact focused command maintainers can rerun for this evidence.
+    command: &'static str,
+}
+
+/// Complete stable-code contract for failures produced while lexing user input.
+const RUNTIME_LEXICAL_CODES: &[&str] = &["RCA4000", "RCA4001", "RCA4002", "RCA4004"];
+
+/// Maps every runtime lexical failure code to executable downstream evidence.
+const RUNTIME_LEXICAL_EVIDENCE: &[RuntimeLexicalEvidence] = &[RuntimeLexicalEvidence {
+    codes: &["RCA4000", "RCA4001", "RCA4002", "RCA4004"],
+    producer_source: "../recursa-core/src/lex.rs",
+    assertion_source: "tests/fixtures/generation/lexing/src/main.rs",
+    assertion_name: "main",
+    command_test_source: "tests/generated_lexing.rs",
+    command_test_name: "a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text",
+    command: "cargo test -p recursa-codegen --test generated_lexing a_downstream_crate_observes_typed_lexing_values_and_exact_matched_text --locked",
+}];
+
 macro_rules! phase_producer_evidence {
     ($code:literal, $module:literal, $test:literal) => {
         ProducerEvidence {
@@ -357,11 +392,18 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_model::tests::rejects_content_display_and_misplacement_before_lexical_planning --locked",
     },
     ProducerEvidence {
-        codes: &["RCA3117"],
+        codes: &["RCA3125", "RCA3126", "RCA3127", "RCA3128"],
         producer_source: "src/source_analysis.rs",
-        test_source: "src/source_model.rs",
-        test_name: "multiple_post_lex_hooks_are_rejected_instead_of_using_source_order",
-        command: "cargo test -p recursa-codegen source_model::tests::multiple_post_lex_hooks_are_rejected_instead_of_using_source_order --locked",
+        test_source: "src/source_analysis_contract_tests.rs",
+        test_name: "obsolete_authored_hooks_fail_directly_at_the_source_analysis_seam",
+        command: "cargo test -p recursa-codegen source_analysis_contract_tests::obsolete_authored_hooks_fail_directly_at_the_source_analysis_seam --locked",
+    },
+    ProducerEvidence {
+        codes: &["RCA3129"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_analysis_tests.rs",
+        test_name: "invalid_presence_and_optional_fixed_syntax_reports_source_analysis_diagnostics",
+        command: "cargo test -p recursa-codegen source_analysis_tests::tests::invalid_presence_and_optional_fixed_syntax_reports_source_analysis_diagnostics --locked",
     },
     ProducerEvidence {
         codes: &["RCA3118", "RCA3210"],
@@ -428,6 +470,7 @@ fn every_registered_code_has_real_producer_evidence() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let expected = crate::build_diagnostic::diagnostic_code_registry()
         .iter()
+        .filter(|spec| spec.status == crate::build_diagnostic::DiagnosticCodeStatus::Active)
         .map(|spec| spec.code.as_str())
         .collect::<std::collections::BTreeSet<_>>();
     let mut actual = std::collections::BTreeSet::new();
@@ -464,7 +507,62 @@ fn every_registered_code_has_real_producer_evidence() {
     );
 }
 
+#[test]
+fn runtime_lexical_codes_have_public_producer_evidence() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let expected = RUNTIME_LEXICAL_CODES
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut actual = std::collections::BTreeSet::new();
+
+    for evidence in RUNTIME_LEXICAL_EVIDENCE {
+        let producer = std::fs::read_to_string(manifest.join(evidence.producer_source)).unwrap();
+        let assertion_source =
+            std::fs::read_to_string(manifest.join(evidence.assertion_source)).unwrap();
+        let assertion_output =
+            asserted_function_output(&assertion_source, evidence.assertion_name, false);
+        let command_test_source =
+            std::fs::read_to_string(manifest.join(evidence.command_test_source)).unwrap();
+        let command_output = asserted_test_output(&command_test_source, evidence.command_test_name);
+        assert_eq!(
+            evidence.command,
+            producer_test_command(evidence.command_test_source, evidence.command_test_name),
+            "runtime evidence must provide an exact executable command",
+        );
+        for code in evidence.codes {
+            assert!(
+                producer.contains(code),
+                "{code} is absent from its cited runtime producer"
+            );
+            assert!(
+                assertion_output.contains(code),
+                "{} does not explicitly assert its claimed {code} output",
+                evidence.assertion_name,
+            );
+            assert!(
+                command_output.contains(code),
+                "{} does not assert the commanded producer's {code} output",
+                evidence.command_test_name,
+            );
+            assert!(
+                actual.insert(*code),
+                "duplicate runtime evidence for {code}"
+            );
+        }
+    }
+
+    assert_eq!(
+        actual, expected,
+        "runtime lexical evidence must cover its separate code contract exactly"
+    );
+}
+
 fn asserted_test_output(source: &str, name: &str) -> String {
+    asserted_function_output(source, name, true)
+}
+
+fn asserted_function_output(source: &str, name: &str, require_test: bool) -> String {
     struct AssertionVisitor {
         tokens: String,
     }
@@ -498,17 +596,19 @@ fn asserted_test_output(source: &str, name: &str) -> String {
         }
     }
 
-    fn find(items: &[syn::Item], name: &str) -> Option<String> {
+    fn find(items: &[syn::Item], name: &str, require_test: bool) -> Option<String> {
         for item in items {
             match item {
                 syn::Item::Fn(function) if function.sig.ident == name => {
-                    assert!(
-                        function
-                            .attrs
-                            .iter()
-                            .any(|attribute| attribute.path().is_ident("test")),
-                        "cited producer evidence {name} is not a test",
-                    );
+                    if require_test {
+                        assert!(
+                            function
+                                .attrs
+                                .iter()
+                                .any(|attribute| attribute.path().is_ident("test")),
+                            "cited producer evidence {name} is not a test",
+                        );
+                    }
                     let mut visitor = AssertionVisitor {
                         tokens: String::new(),
                     };
@@ -517,7 +617,7 @@ fn asserted_test_output(source: &str, name: &str) -> String {
                 }
                 syn::Item::Mod(module) => {
                     if let Some((_, items)) = &module.content
-                        && let Some(found) = find(items, name)
+                        && let Some(found) = find(items, name, require_test)
                     {
                         return Some(found);
                     }
@@ -529,7 +629,8 @@ fn asserted_test_output(source: &str, name: &str) -> String {
     }
 
     let file = syn::parse_file(source).expect("producer test source is valid Rust");
-    find(&file.items, name).unwrap_or_else(|| panic!("missing cited producer test {name}"))
+    find(&file.items, name, require_test)
+        .unwrap_or_else(|| panic!("missing cited producer function {name}"))
 }
 
 fn producer_test_command(source: &str, test: &str) -> String {
@@ -537,7 +638,9 @@ fn producer_test_command(source: &str, test: &str) -> String {
         .file_stem()
         .and_then(std::ffi::OsStr::to_str)
         .expect("Rust test source has a stem");
-    if source.starts_with("tests/") {
+    if source.starts_with("../recursa-core/src/") {
+        format!("cargo test -p recursa-core {stem}::tests::{test} --locked")
+    } else if source.starts_with("tests/") {
         format!("cargo test -p recursa-codegen --test {stem} {test} --locked")
     } else {
         let path = if source == "src/generation/tests.rs" {
@@ -606,6 +709,17 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
     codes.dedup();
 
     assert_eq!(codes.len(), original_len);
+    assert_eq!(
+        registry
+            .iter()
+            .filter(|spec| {
+                spec.status == crate::build_diagnostic::DiagnosticCodeStatus::Retired
+            })
+            .map(|spec| spec.code.as_str())
+            .collect::<Vec<_>>(),
+        ["RCA3117"],
+        "retired diagnostic assignments remain reserved and cannot be reused",
+    );
     assert!(
         registry.len() >= 70,
         "every current failure class is allocated"
@@ -651,6 +765,9 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
                 | crate::build_diagnostic::DiagnosticRemedySchema::ResolveAnalysisConflict
                 | crate::build_diagnostic::DiagnosticRemedySchema::ReportInternalFailure
         ));
+        if spec.status == crate::build_diagnostic::DiagnosticCodeStatus::Retired {
+            continue;
+        }
 
         let evidence = match spec.evidence {
             crate::build_diagnostic::DiagnosticEvidenceSchema::SourceFacts => {
@@ -723,6 +840,73 @@ fn diagnostic_code_registry_is_unique_and_stage_partitioned() {
 }
 
 #[test]
+fn obsolete_authored_hooks_fail_directly_at_the_source_analysis_seam() {
+    let package = write_fixture(
+        r#"
+recursa::grammar! { module = crate }
+recursa::tokens! {
+    post_lex = crate::repair,
+    lexer_tokens { Opaque => r"~[a-z]+" with crate::scan }
+}
+
+#[derive(recursa::Node)]
+#[parse(postcondition = crate::condition)]
+struct Root<'input> {
+    #[lex(pattern = r"[a-z]+", callback = crate::scan)]
+    word: Word<'input>,
+}
+
+#[derive(recursa::Node)]
+#[recursa::parser(postcondition = crate::condition)]
+struct Namespaced;
+"#,
+    );
+    let error = crate::source_analysis::analyze_source_tree(
+        crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect_err("obsolete authored hooks must stop at source-model lowering");
+    let mut actual = error
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| (diagnostic.code().as_str(), diagnostic.summary()))
+        .collect::<Vec<_>>();
+    actual.sort_unstable();
+
+    assert_eq!(
+        actual,
+        [
+            (
+                "RCA3125",
+                "authored `#[lex(..., callback = path)]` is unsupported; use a closed matcher",
+            ),
+            (
+                "RCA3126",
+                "authored central `with path` lexer callbacks are unsupported; use a closed matcher",
+            ),
+            (
+                "RCA3127",
+                "authored `post_lex = path` hooks are unsupported; express tokenization declaratively",
+            ),
+            (
+                "RCA3128",
+                "authored parser postconditions are unsupported; use a named admission",
+            ),
+            (
+                "RCA3128",
+                "authored parser postconditions are unsupported; use a named admission",
+            ),
+        ],
+    );
+    assert!(
+        error
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| diagnostic.stage() == DiagnosticStage::Lowering),
+    );
+}
+
+#[test]
 fn full_source_analysis_pipeline_emits_invalidation_and_stops_at_the_earliest_failing_stage() {
     let package = write_fixture(
         r#"
@@ -755,6 +939,91 @@ struct Root {
             .diagnostics()
             .iter()
             .all(|diagnostic| diagnostic.code().as_str() == "RCA2012")
+    );
+}
+
+#[test]
+fn closed_matcher_priority_ties_fail_at_source_analysis_and_distinct_priorities_succeed() {
+    let source = |second_priority| {
+        format!(
+            r#"
+recursa::grammar! {{ module = crate }}
+
+recursa::tokens! {{
+    matchers {{
+        LineRegion => physical_line(prefix = r"@x", priority = 1),
+        DelimitedRegion => same_delimiter(opener = r"@x", priority = {second_priority}),
+    }}
+}}
+
+#[derive(recursa::Node)]
+struct Root;
+"#
+        )
+    };
+    let tied = write_fixture(&source(1));
+    let error = crate::source_analysis::analyze_source_tree(
+        crate::source_analysis::SourceAnalysisInput::rust_2024(tied.path(), "grammar.rs"),
+        &mut Vec::new(),
+    )
+    .expect_err("equal closed-matcher priorities must not fall back to declaration order");
+    assert_eq!(error.diagnostics().len(), 1);
+    assert_eq!(
+        error.diagnostics()[0].code().as_str(),
+        "RCA3006",
+        "{:?}",
+        error.diagnostics()
+    );
+    assert!(
+        error.diagnostics()[0]
+            .evidence()
+            .canonical_text()
+            .contains("priority=Some(1)")
+    );
+
+    let distinct = write_fixture(&source(2));
+    let analyzed = crate::source_analysis::analyze_source_tree(
+        crate::source_analysis::SourceAnalysisInput::rust_2024(distinct.path(), "grammar.rs"),
+        &mut Vec::new(),
+    );
+    assert!(
+        analyzed.is_ok(),
+        "explicit closed-matcher priority must resolve the tie"
+    );
+
+    let converging_extent = write_fixture(
+        r#"
+recursa::grammar! { module = crate }
+
+recursa::tokens! {
+    keywords { EXACT_A => "a" }
+    matchers {
+        ShortStarter => physical_line(prefix = r"a"),
+        LongStarter => physical_line(prefix = r"ab"),
+    }
+}
+
+#[derive(recursa::Node)]
+struct Root;
+"#,
+    );
+    let error = crate::source_analysis::analyze_source_tree(
+        crate::source_analysis::SourceAnalysisInput::rust_2024(
+            converging_extent.path(),
+            "grammar.rs",
+        ),
+        &mut Vec::new(),
+    )
+    .expect_err("closed starters that converge on one final line extent need a priority");
+    assert_eq!(error.diagnostics().len(), 1, "{:?}", error.diagnostics());
+    assert_eq!(error.diagnostics()[0].code().as_str(), "RCA3005");
+    assert!(
+        error.diagnostics()[0]
+            .evidence()
+            .canonical_text()
+            .contains("witness=ab"),
+        "a shorter fixed spelling must not suppress the closed-matcher tie: {:?}",
+        error.diagnostics()
     );
 }
 

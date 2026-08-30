@@ -140,7 +140,11 @@ fn extra_facade_capabilities_are_harmless() {
     let main = package.path().join("src/main.rs");
     let source = fs::read_to_string(&main).expect("read downstream consumer");
     let source = source.replace(
-        "    fn assert_arbitrary<T: for<'arbitrary> recursa::Arbitrary<'arbitrary>>() {}\n    assert_arbitrary::<grammar::Record<'static>>();\n\n",
+        "    fn assert_arbitrary<T: for<'arbitrary> recursa::Arbitrary<'arbitrary>>() {}\n    fn assert_serde<T>()\n    where\n        T: recursa::__private::serde::Serialize,\n        T: for<'deserialize> recursa::__private::serde::Deserialize<'deserialize>,\n    {\n    }\n",
+        "",
+    );
+    let source = source.replace(
+        "    assert_arbitrary::<grammar::Record<'static>>();\n    assert_arbitrary::<grammar::RequiredThenPresence<'static>>();\n    assert_serde::<grammar::RequiredThenPresence<'static>>();\n",
         "",
     );
     fs::write(
@@ -758,7 +762,7 @@ fn private_protocol_mismatch_is_reported_once_at_the_grammar_root() {
         .expect("published generation");
     let root = generation.join("root.rs");
     let source = fs::read_to_string(&root).expect("read generated root");
-    fs::write(&root, source.replace("protocol_2", "protocol_999"))
+    fs::write(&root, source.replace("protocol_6", "protocol_999"))
         .expect("inject private protocol mismatch");
 
     let output = run_fixture(&package);

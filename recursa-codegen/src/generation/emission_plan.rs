@@ -50,8 +50,6 @@ pub(super) struct EmissionPlan {
     pub(super) word_classifiers: Vec<WordClassifierPlan>,
     /// Kind set eligible for word-shaped fixed-token classification.
     pub(super) word_candidate_kinds: Vec<u16>,
-    /// Optional authored post-lex hook retained as opaque Rust.
-    pub(super) post_lex: Option<syn::Path>,
     /// Grammar-default configured-trait recipes for generated token types.
     pub(super) root_configured_traits: Vec<ConfiguredTraitRecipe>,
     /// Release and protocol handshake embedded into structural loaders.
@@ -423,16 +421,13 @@ impl EmissionPlan {
             };
             let planned = LexRulePlan {
                 pattern,
+                closed_matcher: rule.closed_matcher.clone(),
                 kind: rule
                     .kind
                     .index()
                     .try_into()
                     .map_err(|_| "generated token kind exceeds runtime width".to_owned())?,
                 skip: false,
-                callback: match &lowered.lexical_plan.token_kinds[rule.kind.index()].identity {
-                    TokenKindIdentity::ContentBase(base) => base.callback.clone(),
-                    TokenKindIdentity::Fixed(_) => None,
-                },
                 fixed: matches!(rule.priority, LexicalPriority::Fixed),
                 priority: match rule.priority {
                     LexicalPriority::Fixed => 0,
@@ -440,7 +435,9 @@ impl EmissionPlan {
                 },
             };
             if !lexical_rules.iter().any(|existing| {
-                existing.pattern == planned.pattern && existing.kind == planned.kind
+                existing.pattern == planned.pattern
+                    && existing.closed_matcher == planned.closed_matcher
+                    && existing.kind == planned.kind
             }) {
                 lexical_rules.push(planned);
             }
@@ -454,11 +451,14 @@ impl EmissionPlan {
             };
             lexical_rules.push(LexRulePlan {
                 pattern,
+                closed_matcher: rule.closed_matcher.clone(),
                 kind: 0,
                 skip: true,
-                callback: None,
                 fixed: false,
-                priority: 0,
+                priority: match rule.priority {
+                    LexicalPriority::Fixed => 0,
+                    LexicalPriority::Pattern { authored } => authored.unwrap_or(0),
+                },
             });
         }
         let keyword_classifiers =
@@ -604,8 +604,8 @@ impl EmissionPlan {
         };
 
         let mut canonical = format!(
-            "{EMITTER_IDENTITY};release={};protocol={PRIVATE_PROTOCOL};facade={facade};anchor={};kinds={kind_count};edition={:?};cfg={:?};",
-            env!("CARGO_PKG_VERSION"),
+            "{};facade={facade};anchor={};kinds={kind_count};edition={:?};cfg={:?};",
+            generation_protocol_identity(),
             resolved.build_inputs.module_anchor.segments.join("::"),
             resolved.build_inputs.discovery.edition,
             resolved.build_inputs.discovery.cfg_snapshot,
@@ -647,15 +647,8 @@ impl EmissionPlan {
         }
         for rule in &lexical_rules {
             canonical.push_str(&format!(
-                ";rule={:?}:{}:{}:{}:{}:{}",
-                rule.pattern,
-                rule.kind,
-                rule.skip,
-                rule.callback
-                    .as_ref()
-                    .map_or_else(|| "-".to_owned(), crate::source_syntax::path_text,),
-                rule.fixed,
-                rule.priority,
+                ";rule={:?}:{:?}:{}:{}:{}:{}",
+                rule.pattern, rule.closed_matcher, rule.kind, rule.skip, rule.fixed, rule.priority,
             ));
         }
         for classifier in &keyword_classifiers {
@@ -686,12 +679,6 @@ impl EmissionPlan {
             ";frozen_dispatch_sequences={frozen_dispatch_sequences};frozen_dispatch_nodes={};emitter_dispatch_decisions=0;frozen_parse_identity={frozen_parse_identity:016x}",
             instrumentation.frozen_dispatch_nodes_consumed,
         ));
-        if let Some(post_lex) = &lowered.source_modeled.source_model().post_lex {
-            canonical.push_str(&format!(
-                ";post_lex={}",
-                crate::source_syntax::path_text(post_lex),
-            ));
-        }
         let identity = format!("g_{:016x}", stable_hash(canonical.as_bytes()));
         let plan = Self {
             identity,
@@ -713,7 +700,6 @@ impl EmissionPlan {
             lexical_rules,
             word_classifiers,
             word_candidate_kinds,
-            post_lex: lowered.source_modeled.source_model().post_lex.clone(),
             root_configured_traits,
             private_abi,
             capabilities,
@@ -747,6 +733,15 @@ impl EmissionPlan {
         }
         if self.lexical_rules.is_empty() {
             return Err("the generated lexical plan has no rules".to_owned());
+        }
+        if self.lexical_rules.iter().any(|rule| {
+            rule.closed_matcher
+                .as_ref()
+                .is_some_and(|matcher| matcher.starter_pattern() != rule.pattern)
+        }) {
+            return Err(
+                "the generated closed-matcher plan diverges from its validated starter".to_owned(),
+            );
         }
         #[cfg(feature = "diagrams")]
         if self.diagrams.as_ref().is_some_and(|diagrams| {
@@ -796,10 +791,17 @@ impl EmissionPlan {
                 for elements in pretty_element_sets {
                     for element in elements {
                         let ElementParseKind::Semantic {
+                            projection: semantic,
+                            ..
+                        } = &element.kind
+                        else {
+                            continue;
+                        };
+                        let SemanticParseProjection::Direct {
                             terminal_application,
                             repetition_break,
                             ..
-                        } = &element.kind
+                        } = semantic.as_ref()
                         else {
                             continue;
                         };
@@ -841,10 +843,17 @@ impl EmissionPlan {
             for elements in declaration_elements {
                 for element in elements {
                     let ElementParseKind::Semantic {
+                        projection: semantic,
+                        ..
+                    } = &element.kind
+                    else {
+                        continue;
+                    };
+                    let SemanticParseProjection::Direct {
                         terminal_application,
                         repetition_break,
                         ..
-                    } = &element.kind
+                    } = semantic.as_ref()
                     else {
                         continue;
                     };

@@ -415,12 +415,19 @@ fn diagram_pratt_lhs(
     links: &BTreeMap<String, Option<String>>,
 ) -> Result<DiagramNode, String> {
     let ElementParseKind::Semantic {
-        container,
-        pratt_min_bp,
+        projection: semantic,
         ..
     } = &lhs.kind
     else {
         return Err("Pratt diagram lhs is not semantic".to_owned());
+    };
+    let SemanticParseProjection::Direct {
+        container,
+        pratt_min_bp,
+        ..
+    } = semantic.as_ref()
+    else {
+        return Err("Pratt diagram lhs is not a direct semantic field".to_owned());
     };
     if pratt_min_bp.is_some() {
         return Err("Pratt diagram lhs has a minimum binding power".to_owned());
@@ -459,18 +466,31 @@ fn diagram_sequence(
                     MaterializedElement::FixedToken { .. },
                 ) => Ok(DiagramNode::Terminal(spelling.clone())),
                 (
+                    ElementParseKind::OptionalFixedTokenGroup { .. },
+                    MaterializedElement::OptionalFixedTokenGroup { tokens, .. },
+                ) => Ok(DiagramNode::Optional(Box::new(diagram_fixed_sequence(
+                    tokens, lowered,
+                )?))),
+                (
                     ElementParseKind::Semantic {
-                        container,
-                        attachment: planned,
+                        projection: semantic,
                         ..
                     },
                     MaterializedElement::SemanticField {
-                        ty,
+                        projection:
+                            MaterializedSemanticFieldProjection::Direct { ty, separator, .. },
                         attachment,
-                        separator,
                         ..
                     },
                 ) => {
+                    let SemanticParseProjection::Direct {
+                        container,
+                        attachment: planned,
+                        ..
+                    } = semantic.as_ref()
+                    else {
+                        return Err("diagram semantic projections disagree".to_owned());
+                    };
                     if planned.is_some() != attachment.is_some() {
                         return Err("diagram attachment diverges from parse plan".to_owned());
                     }
@@ -484,10 +504,56 @@ fn diagram_sequence(
                         .map(DiagramNode::Terminal);
                     diagram_semantic_element(node, separator, container)
                 }
+                (
+                    ElementParseKind::Semantic {
+                        projection: semantic,
+                        ..
+                    },
+                    MaterializedElement::SemanticField {
+                        projection: MaterializedSemanticFieldProjection::FixedPresence { tokens },
+                        attachment,
+                        ..
+                    },
+                ) => {
+                    if !matches!(
+                        semantic.as_ref(),
+                        SemanticParseProjection::FixedPresence { .. }
+                    ) {
+                        return Err("diagram presence projections disagree".to_owned());
+                    }
+                    let optional =
+                        DiagramNode::Optional(Box::new(diagram_fixed_sequence(tokens, lowered)?));
+                    if let Some(attachment) = attachment {
+                        diagram_attachment_unit(optional, attachment, lowered)
+                    } else {
+                        Ok(optional)
+                    }
+                }
                 _ => Err("diagram element and materialization disagree".to_owned()),
             },
         )
         .collect::<Result<Vec<_>, String>>()
+        .map(sequence)
+}
+
+/// Renders one fixed-token sequence from materialized token uses.
+fn diagram_fixed_sequence(
+    tokens: &[TokenUseId],
+    lowered: &crate::materialization::LoweredGrammar,
+) -> Result<DiagramNode, String> {
+    let source = lowered.source_modeled.source_model();
+    tokens
+        .iter()
+        .map(|token| {
+            let use_ = &source.token_uses[token.index()];
+            let TokenDefinitionKind::Fixed(fixed) =
+                &source.token_definitions[use_.definition.index()].kind
+            else {
+                return Err("diagram sequence is not fixed syntax".to_owned());
+            };
+            Ok(DiagramNode::Terminal(fixed.spelling.clone()))
+        })
+        .collect::<Result<Vec<_>, _>>()
         .map(sequence)
 }
 
@@ -515,12 +581,24 @@ fn diagram_attachment_unit(
         };
         Ok(DiagramNode::Terminal(fixed.spelling.clone()))
     };
+    let syntax = |syntax: &crate::materialization::MaterializedAttachedFixedSyntax| match syntax {
+        crate::materialization::MaterializedAttachedFixedSyntax::Required(token) => {
+            terminal(*token)
+        }
+        crate::materialization::MaterializedAttachedFixedSyntax::Optional { tokens, .. } => tokens
+            .iter()
+            .map(|token| terminal(*token))
+            .collect::<Result<Vec<_>, _>>()
+            .map(sequence)
+            .map(Box::new)
+            .map(DiagramNode::Optional),
+    };
     attachment
         .before
         .iter()
-        .map(|id| terminal(*id))
+        .map(syntax)
         .chain(std::iter::once(Ok(node)))
-        .chain(attachment.after.iter().map(|id| terminal(*id)))
+        .chain(attachment.after.iter().map(syntax))
         .collect::<Result<Vec<_>, _>>()
         .map(sequence)
 }

@@ -24,6 +24,14 @@ _Avoid_: Display override, normalized input
 A regex-backed token definition proven able to recognize a word-shaped fixed token in place of its standalone lexical rule without changing the resulting token kind or span. Carrier status is derived, not declared.
 _Avoid_: Identifier marker, keyword token type
 
+**Closed lexical matcher**:
+A centrally declared, generator-owned source scanner selected from the fixed vocabulary of same-delimiter regions, nested regions, next-scalar exclusion, operator runs, and physical-line regions. Its configuration is data in the token grammar; authored callbacks do not define its scanning algorithm.
+_Avoid_: Custom lexer callback, inline scanner
+
+**Lexical final extent**:
+The complete byte range proposed by a lexical matcher after applying its closed scanning rules. Arbitration compares final extent before fixed-token status and explicit priority, independently of declaration order.
+_Avoid_: Starter regex length, declaration precedence
+
 **Reclaimable keyword**:
 A word-shaped fixed token whose concrete token kind is admitted as content by a target at selected grammar positions.
 _Avoid_: Soft keyword, context-sensitive keyword
@@ -52,6 +60,14 @@ _Avoid_: Fixed token, token wrapper
 A semantic unit node whose existence records that fixed syntax occurred, without retaining the token text itself.
 _Avoid_: Optional keyword token, token flag
 
+**Fixed-token presence**:
+An authored boolean field whose value records whether one atomic optional fixed-token sequence occurred. It is a semantic field projection, not a public marker node.
+_Avoid_: Presence node, optional keyword token
+
+**Erased optional fixed-token group**:
+A non-empty atomic fixed-token sequence accepted by positional syntax and retained only in provenance, not in the authored AST value.
+_Avoid_: Optional semantic field, public marker node
+
 **Token kind**:
 A grammar-local named classification of a lexical match. Generated APIs expose typed token kinds; numeric runtime identifiers are private implementation details.
 _Avoid_: Token ID, public discriminant
@@ -60,16 +76,9 @@ _Avoid_: Token ID, public discriminant
 The source-borrowing, grammar-bound output of generated lexing. It owns payload-free token records and creates parser input without requiring the caller to supply grammar metadata.
 _Avoid_: Token vector, unbound lex result
 
-**Lexer callback context**:
-The Recursa-owned narrow interface available to advanced lexer callbacks for inspecting and extending the current match. It does not expose the underlying lexer backend.
-_Avoid_: Raw Logos lexer, lexer backend handle
-
-**Post-lex editor**:
-A grammar-aware view used by a post-lex hook to inspect records and perform validated reclassification, replacement, splitting, or contiguous removal. It never exposes the underlying token vector for arbitrary mutation.
-_Avoid_: Mutable lexing result, mutable token vector
-
 **Lex builder**:
-The typed construction path for an alternative lexer. It accepts grammar-local token kinds and validated source spans, then runs the grammar's shared finalization and post-lex hook exactly once.
+The typed construction path for an alternative lexer. It accepts grammar-local token kinds and validated source spans, then runs grammar-owned fixed-word classification and lexical-error normalization.
+Its records must be source-bounded UTF-8, ordered, and non-overlapping; unrecorded source gaps are preserved without rescanning. Classified trivia records and observable trivia-gap behavior are introduced by #93.
 _Avoid_: Raw token-record constructor
 
 **Lowered grammar**:
@@ -101,7 +110,7 @@ The private compatibility contract shared by one Recursa release's generator, st
 _Avoid_: Public ABI, generated-file format
 
 **Grammar element**:
-A source-ordered component of a Node or variant after positional token syntax is lowered: either one fixed-token use or one semantic field.
+A source-ordered component of a Node or variant after positional token syntax is lowered: one fixed-token use, one erased optional fixed-token group, or one semantic field. Fixed-token presence is a semantic field form.
 _Avoid_: Runtime repetition occurrence, separator occurrence
 
 **Token definition**:
@@ -149,7 +158,7 @@ The retained path from one grammar-semantic use site through the chosen imports,
 _Avoid_: Diagnostic search log, terminal name string
 
 **Opaque Rust fragment**:
-Parsed Rust syntax retained for faithful emission but not target-resolved by source analysis because its target does not change the normalized grammar, including callback, hook, derive, and configured trait paths.
+Parsed Rust syntax retained for faithful emission but not target-resolved by source analysis because its target does not change the normalized grammar, including derive and configured trait paths.
 _Avoid_: Grammar-semantic reference, unparsed text
 
 **Module inclusion**:
@@ -288,8 +297,8 @@ _Avoid_: Stack frame, display category
 The deterministic multiline plain-text representation of a structured Recursa diagnostic used for snapshots and generation failures.
 _Avoid_: Cargo warning, loader output, debug dump
 
-**Diagnostic code registry**:
-The append-only assignment of stable Recursa diagnostic codes to failure classes, stages, severities, locations, evidence, and remedies.
+**Build diagnostic code registry**:
+The append-only assignment of stable generation and loader diagnostic codes to failure classes, stages, severities, locations, evidence, and remedies. Runtime lexical codes use a separate matching-version contract because they classify failures over user input rather than build failures.
 _Avoid_: Message catalogue, enum ordering
 
 **Internal diagnostic**:

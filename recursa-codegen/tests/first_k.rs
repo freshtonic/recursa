@@ -157,6 +157,29 @@ fn sequence_kinds(facts: &recursa_codegen::FirstFacts) -> Vec<Vec<Vec<u16>>> {
         .collect()
 }
 
+fn expanded_sequence_kinds(
+    facts: &recursa_codegen::FirstFacts,
+) -> std::collections::BTreeSet<Vec<u16>> {
+    let mut expanded = std::collections::BTreeSet::new();
+    for sequence in &facts.sequences {
+        let mut prefixes = vec![Vec::new()];
+        for position in &sequence.positions {
+            prefixes = prefixes
+                .into_iter()
+                .flat_map(|prefix| {
+                    position.kinds.iter().map(move |kind| {
+                        let mut expanded = prefix.clone();
+                        expanded.push(kind.get());
+                        expanded
+                    })
+                })
+                .collect();
+        }
+        expanded.extend(prefixes);
+    }
+    expanded
+}
+
 #[test]
 fn shared_create_prefix_disambiguates_at_depth_two() {
     let mut builder = Builder::new(2, &["CREATE", "TABLE", "VIEW"]);
@@ -172,7 +195,277 @@ fn shared_create_prefix_disambiguates_at_depth_two() {
     let output = report.output.expect("depth two separates the alternatives");
     assert_eq!(
         sequence_kinds(output.first(statement).expect("Statement FIRST facts")),
-        vec![vec![vec![0], vec![1]], vec![vec![0], vec![2]]],
+        vec![vec![vec![0], vec![1, 2]]],
+    );
+}
+
+#[test]
+fn independent_choices_remain_canonical_at_depth_five() {
+    const NAMES: [&str; 8] = ["A", "B", "C", "D", "E", "F", "G", "H"];
+    for branch_count in [2, 4, 8] {
+        let mut builder = Builder::new(5, &NAMES[..branch_count]);
+        let tokens = (0..branch_count)
+            .map(|index| builder.token(&format!("Token{index}"), index))
+            .collect::<Vec<_>>();
+        let choice = builder.choice("Choice", &tokens);
+        let root = builder.sequence("Root", &[choice, choice, choice, choice, choice]);
+
+        let report = analyze(&builder.grammar);
+        assert!(report.diagnostics.is_empty());
+        let output = report
+            .output
+            .expect("independent choices are conflict-free");
+        let sequences = &output.first(root).expect("Root FIRST facts").sequences;
+
+        assert_eq!(
+            sequences.len(),
+            1,
+            "{branch_count}^5 independent choices should stay one canonical rectangular prefix",
+        );
+        assert_eq!(
+            sequences[0]
+                .positions
+                .iter()
+                .map(|position| position.kinds.iter().count())
+                .collect::<Vec<_>>(),
+            vec![branch_count; 5],
+        );
+    }
+}
+
+#[test]
+fn rectangle_canonicalization_preserves_non_rectangular_language() {
+    let mut builder = Builder::new(2, &["A", "B", "C", "D"]);
+    let a = builder.token("A", 0);
+    let b = builder.token("B", 1);
+    let c = builder.token("C", 2);
+    let d = builder.token("D", 3);
+    let ac = builder.sequence("Ac", &[a, c]);
+    let ad = builder.sequence("Ad", &[a, d]);
+    let bc = builder.sequence("Bc", &[b, c]);
+    let root = builder.choice("Root", &[ac, ad, bc]);
+
+    let report = analyze(&builder.grammar);
+    assert!(report.diagnostics.is_empty());
+    let output = report.output.expect("depth two separates the alternatives");
+    assert_eq!(
+        expanded_sequence_kinds(output.first(root).expect("Root FIRST facts")),
+        std::collections::BTreeSet::from([vec![0, 2], vec![0, 3], vec![1, 2]]),
+    );
+}
+
+#[test]
+fn rectangle_canonicalization_preserves_dispatch_conflicts() {
+    let mut builder = Builder::new(2, &["A", "B", "C", "D"]);
+    let a = builder.token("A", 0);
+    let b = builder.token("B", 1);
+    let c = builder.token("C", 2);
+    let d = builder.token("D", 3);
+    let left = builder.choice("Left", &[a, b]);
+    let right = builder.choice("Right", &[c, d]);
+    let rectangle = builder.sequence("Rectangle", &[left, right]);
+    let ac = builder.sequence("Ac", &[a, c]);
+    builder.choice("Root", &[rectangle, ac]);
+
+    let report = analyze(&builder.grammar);
+    assert!(report.output.is_none());
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::EnumFirstOverlap),
+    );
+}
+
+fn overlapping_rectangle_grammar(reverse: bool) -> (GrammarDescription, TypeId) {
+    let mut builder = Builder::new(2, &["A", "B", "C", "D"]);
+    let left_lead = builder.atom(
+        "LeftLead",
+        AtomExpression::Category(vec![builder.atoms[0], builder.atoms[1]]),
+    );
+    let right_lead = builder.atom(
+        "RightLead",
+        AtomExpression::Category(vec![builder.atoms[1], builder.atoms[2]]),
+    );
+    let left_lead = builder.token_from_atom("LeftLeadToken", left_lead, None);
+    let right_lead = builder.token_from_atom("RightLeadToken", right_lead, None);
+    let c = builder.token("C", 2);
+    let d = builder.token("D", 3);
+    let left = builder.sequence("Left", &[left_lead, c]);
+    let right = builder.sequence("Right", &[right_lead, d]);
+    let root = builder.choice("Root", &[left, right]);
+    if reverse {
+        let TypeShape::Enum { alternatives } = &mut builder.grammar.types[root.index()].shape
+        else {
+            unreachable!("Root is an enum")
+        };
+        alternatives.reverse();
+    }
+    (builder.grammar, root)
+}
+
+#[test]
+fn overlapping_prefix_rectangles_freeze_disjoint_subset_edges() {
+    let (grammar, root) = overlapping_rectangle_grammar(false);
+    let output = analyze(&grammar)
+        .output
+        .expect("full languages are disjoint");
+    let dispatch = output
+        .decisions()
+        .dispatches()
+        .iter()
+        .find(|dispatch| dispatch.owner() == root)
+        .expect("Root dispatch");
+    let root_edges = dispatch.trie().edges();
+    assert_eq!(root_edges.len(), 3, "A, B, and C are distinct cells");
+    for (index, left) in root_edges.iter().enumerate() {
+        for right in &root_edges[index + 1..] {
+            assert!(
+                left.position()
+                    .kinds()
+                    .intersection(right.position().kinds())
+                    .unwrap()
+                    .is_empty(),
+                "frozen root edges must be pairwise disjoint",
+            );
+        }
+    }
+    let shared = root_edges
+        .iter()
+        .find(|edge| {
+            edge.position()
+                .kinds()
+                .contains(recursa_codegen::KindId::new(1))
+        })
+        .expect("B subset cell");
+    assert_eq!(
+        shared.next().edges().len(),
+        2,
+        "B retains both C and D residual languages"
+    );
+
+    let (reversed, reversed_root) = overlapping_rectangle_grammar(true);
+    let reversed = analyze(&reversed)
+        .output
+        .expect("reversed grammar succeeds");
+    let reversed = reversed
+        .decisions()
+        .dispatches()
+        .iter()
+        .find(|dispatch| dispatch.owner() == reversed_root)
+        .expect("reversed Root dispatch");
+    assert_eq!(dispatch.trie(), reversed.trie());
+}
+
+#[test]
+fn overlapping_text_predicates_freeze_exact_and_other_cells() {
+    let mut builder = Builder::new(2, &["WORD", "C", "D"]);
+    let one_of = builder
+        .grammar
+        .push_text_predicate(recursa_codegen::TextPredicate::OneOf(vec![
+            "a".into(),
+            "b".into(),
+        ]));
+    let not_a = builder
+        .grammar
+        .push_text_predicate(recursa_codegen::TextPredicate::NotIn(vec!["a".into()]));
+    let left_lead = builder.token_from_atom("LeftText", builder.atoms[0], Some(one_of));
+    let right_lead = builder.token_from_atom("RightText", builder.atoms[0], Some(not_a));
+    let c = builder.token("C", 1);
+    let d = builder.token("D", 2);
+    let left = builder.sequence("LeftTextSequence", &[left_lead, c]);
+    let right = builder.sequence("RightTextSequence", &[right_lead, d]);
+    let root = builder.choice("TextRoot", &[left, right]);
+
+    let output = analyze(&builder.grammar)
+        .output
+        .expect("suffixes disambiguate overlapping text predicates");
+    let dispatch = output
+        .decisions()
+        .dispatches()
+        .iter()
+        .find(|dispatch| dispatch.owner() == root)
+        .expect("TextRoot dispatch");
+    let predicates = dispatch
+        .trie()
+        .edges()
+        .iter()
+        .map(|edge| edge.position().text_predicate().cloned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        predicates,
+        vec![
+            Some(recursa_codegen::TextPredicate::Exact("a".into())),
+            Some(recursa_codegen::TextPredicate::Exact("b".into())),
+            Some(recursa_codegen::TextPredicate::NotIn(vec![
+                "a".into(),
+                "b".into()
+            ])),
+        ],
+    );
+    let shared = dispatch
+        .trie()
+        .edges()
+        .iter()
+        .find(|edge| {
+            edge.position().text_predicate()
+                == Some(&recursa_codegen::TextPredicate::Exact("b".into()))
+        })
+        .expect("shared b cell");
+    assert_eq!(shared.next().edges().len(), 2);
+}
+
+#[test]
+fn shorter_language_freezes_caller_follow_before_a_longer_suffix() {
+    let mut builder = Builder::new(2, &["A", "B"]);
+    let a = builder.token("A", 0);
+    let b = builder.token("B", 1);
+    let long = builder.sequence("Long", &[a, b]);
+    let root = builder.choice("Root", &[a, long]);
+    let output = analyze(&builder.grammar)
+        .output
+        .expect("end-of-language distinguishes the branches");
+    let dispatch = output
+        .decisions()
+        .dispatches()
+        .iter()
+        .find(|dispatch| dispatch.owner() == root)
+        .expect("Root dispatch");
+    let after_a = dispatch.trie().edges()[0].next();
+    assert!(
+        after_a
+            .terminal()
+            .is_some_and(|terminal| terminal.on_caller_follow()),
+        "the shorter A language consults caller FOLLOW"
+    );
+    assert_eq!(after_a.edges().len(), 1, "B continues the longer language");
+}
+
+#[test]
+fn pg_like_wide_choice_at_depth_five_stays_symbolic() {
+    let names = (0..256)
+        .map(|index| format!("K{index}"))
+        .collect::<Vec<_>>();
+    let borrowed = names.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut builder = Builder::new(5, &borrowed);
+    let tokens = (0..names.len())
+        .map(|index| builder.token(&format!("Token{index}"), index))
+        .collect::<Vec<_>>();
+    let choice = builder.choice("WideChoice", &tokens);
+    let root = builder.sequence("Root", &[choice, choice, choice, choice, choice]);
+
+    let output = analyze(&builder.grammar)
+        .output
+        .expect("wide five-position grammar remains analyzable");
+    let sequences = &output.first(root).expect("Root FIRST facts").sequences;
+    assert_eq!(sequences.len(), 1, "256^5 prefixes stay one rectangle");
+    assert_eq!(
+        sequences[0]
+            .positions
+            .iter()
+            .map(|position| position.kinds.iter().count())
+            .collect::<Vec<_>>(),
+        vec![256; 5],
     );
 }
 
@@ -266,14 +559,7 @@ fn nullable_leading_tokens_produce_all_symbolic_first_two_sequences() {
         .expect("nullable branch separates at depth two");
     assert_eq!(
         sequence_kinds(output.first(statement).expect("Statement FIRST facts")),
-        vec![
-            vec![vec![0], vec![1]],
-            vec![vec![0], vec![2]],
-            vec![vec![0], vec![3]],
-            vec![vec![1]],
-            vec![vec![2]],
-            vec![vec![3]],
-        ],
+        vec![vec![vec![0], vec![1, 2, 3]], vec![vec![1, 2, 3]],],
     );
 }
 

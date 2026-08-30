@@ -6,18 +6,18 @@ grammar edition=Rust2024 anchor=optq max_lookahead=2 equivalence=Sensitive
 [lexical]
 equivalence Sensitive
 selection LongestPrefixThenFixedThenAuthoredPatternPriority
-kind content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None
+kind content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None
 kind fixed:DEBUG
 kind fixed:PRINT
 kind fixed:READ
 kind fixed:SET
-base content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None pattern="[a-zA-Z_][a-zA-Z0-9_]*" targets=[Rest] priority=0
-keyword DEBUG recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
-keyword PRINT recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
-keyword READ recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
-keyword SET recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
-target Rest base=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None accepts=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
-rule Regex("[a-zA-Z_][a-zA-Z0-9_]*") kind=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None priority=Pattern { authored: None }
+base content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None pattern="[a-zA-Z_][a-zA-Z0-9_]*" targets=[Rest] priority=0
+keyword DEBUG recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+keyword PRINT recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+keyword READ recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+keyword SET recognition=carriers[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+target Rest base=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None accepts=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
+rule Regex("[a-zA-Z_][a-zA-Z0-9_]*") kind=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None priority=Pattern { authored: None }
 non-token Regex("[ \\t\\n\\r]+") outcome=NonEmitting
 
 [source-token-definitions]
@@ -51,34 +51,34 @@ field optq::SetStmt::debug -> parse-site(optq::SetStmt::element0)
 field optq::SetStmt::rest -> parse-site(optq::SetStmt::element2)
 
 [analysis]
-facts Rest first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] nullable=false extenders=[-] follow=[EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow
+facts Rest first=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] nullable=false extenders=[-] follow=[EOF] first^k=content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
 facts fixed:DEBUG first=[fixed:DEBUG] nullable=false extenders=[-] follow=[fixed:PRINT,fixed:READ,fixed:SET,EOF] first^k=fixed:DEBUG -> caller-follow
-facts fixed:PRINT first=[fixed:PRINT] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] first^k=fixed:PRINT -> caller-follow
-facts fixed:READ first=[fixed:READ] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] first^k=fixed:READ -> caller-follow
-facts fixed:SET first=[fixed:SET] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] first^k=fixed:SET -> caller-follow
+facts fixed:PRINT first=[fixed:PRINT] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] first^k=fixed:PRINT -> caller-follow
+facts fixed:READ first=[fixed:READ] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] first^k=fixed:READ -> caller-follow
+facts fixed:SET first=[fixed:SET] nullable=false extenders=[-] follow=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] first^k=fixed:SET -> caller-follow
 facts optq::Debug first=[fixed:DEBUG] nullable=false extenders=[-] follow=[fixed:PRINT,fixed:READ,fixed:SET,EOF] first^k=fixed:DEBUG -> caller-follow
-facts optq::PrintStmt first=[fixed:DEBUG,fixed:PRINT] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:PRINT | fixed:PRINT content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow
-facts optq::ReadStmt first=[fixed:DEBUG,fixed:READ] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:READ | fixed:READ content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow
-facts optq::SetStmt first=[fixed:DEBUG,fixed:SET] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:SET | fixed:SET content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow
-facts optq::Stmt first=[fixed:DEBUG,fixed:PRINT,fixed:READ,fixed:SET] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:PRINT | fixed:DEBUG fixed:READ | fixed:DEBUG fixed:SET | fixed:PRINT content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow | fixed:READ content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow | fixed:SET content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None -> caller-follow
+facts optq::PrintStmt first=[fixed:DEBUG,fixed:PRINT] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:PRINT | fixed:PRINT content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
+facts optq::ReadStmt first=[fixed:DEBUG,fixed:READ] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:READ | fixed:READ content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
+facts optq::SetStmt first=[fixed:DEBUG,fixed:SET] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:SET | fixed:SET content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
+facts optq::Stmt first=[fixed:DEBUG,fixed:PRINT,fixed:READ,fixed:SET] nullable=false extenders=[-] follow=[EOF] first^k=fixed:DEBUG fixed:PRINT,fixed:READ,fixed:SET | fixed:PRINT,fixed:READ,fixed:SET content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None -> caller-follow
 
 [decisions]
 dispatch optq::Stmt enum depth=2 caller-fallback=-
-  optq::Stmt::Print: fixed:DEBUG fixed:PRINT | fixed:PRINT content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None <caller-follow>
-  optq::Stmt::Read: fixed:DEBUG fixed:READ | fixed:READ content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None <caller-follow>
-  optq::Stmt::Set: fixed:DEBUG fixed:SET | fixed:SET content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None <caller-follow>
+  optq::Stmt::Print: fixed:DEBUG fixed:PRINT | fixed:PRINT content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None <caller-follow>
+  optq::Stmt::Read: fixed:DEBUG fixed:READ | fixed:READ content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None <caller-follow>
+  optq::Stmt::Set: fixed:DEBUG fixed:SET | fixed:SET content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None <caller-follow>
 follow optq::Debug::element0 caller
 follow optq::Stmt::Print::element0 caller
 follow optq::Stmt::Read::element0 caller
 follow optq::Stmt::Set::element0 caller
 follow optq::PrintStmt::element0 static[fixed:PRINT]
-follow optq::PrintStmt::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow optq::PrintStmt::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 follow optq::PrintStmt::element2 caller
 follow optq::ReadStmt::element0 static[fixed:READ]
-follow optq::ReadStmt::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow optq::ReadStmt::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 follow optq::ReadStmt::element2 caller
 follow optq::SetStmt::element0 static[fixed:SET]
-follow optq::SetStmt::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+follow optq::SetStmt::element1 static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 follow optq::SetStmt::element2 caller
 container optq::Debug::element0 Direct element=[fixed:DEBUG] separator=- separator-first=[] trailing=false stop=caller
   transition Start --ParseElement/static[fixed:DEBUG]--> Done
@@ -91,24 +91,24 @@ container optq::Stmt::Set::element0 Direct element=[fixed:DEBUG,fixed:SET] separ
 container optq::PrintStmt::element0 Optional element=[fixed:DEBUG] separator=- separator-first=[] trailing=false stop=static[fixed:PRINT]
   transition Start --ParseElement/static[fixed:DEBUG]--> Done
   transition Start --Stop/static[fixed:PRINT]--> Done
-container optq::PrintStmt::element1 Direct element=[fixed:PRINT] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+container optq::PrintStmt::element1 Direct element=[fixed:PRINT] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:PRINT]--> Done
-container optq::PrintStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container optq::PrintStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]--> Done
 container optq::ReadStmt::element0 Optional element=[fixed:DEBUG] separator=- separator-first=[] trailing=false stop=static[fixed:READ]
   transition Start --ParseElement/static[fixed:DEBUG]--> Done
   transition Start --Stop/static[fixed:READ]--> Done
-container optq::ReadStmt::element1 Direct element=[fixed:READ] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+container optq::ReadStmt::element1 Direct element=[fixed:READ] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:READ]--> Done
-container optq::ReadStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container optq::ReadStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]--> Done
 container optq::SetStmt::element0 Optional element=[fixed:DEBUG] separator=- separator-first=[] trailing=false stop=static[fixed:SET]
   transition Start --ParseElement/static[fixed:DEBUG]--> Done
   transition Start --Stop/static[fixed:SET]--> Done
-container optq::SetStmt::element1 Direct element=[fixed:SET] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+container optq::SetStmt::element1 Direct element=[fixed:SET] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:SET]--> Done
-container optq::SetStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None] separator=- separator-first=[] trailing=false stop=caller
-  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]--> Done
+container optq::SetStmt::element2 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller
+  transition Start --ParseElement/static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]--> Done
 
 [failures]
 failure optq::Debug optq::Debug::element0 RequiredSite expected=static[fixed:DEBUG]
@@ -117,8 +117,8 @@ failure optq::Stmt optq::Stmt::Print::element0 RequiredSite expected=static[fixe
 failure optq::Stmt optq::Stmt::Read::element0 RequiredSite expected=static[fixed:DEBUG,fixed:READ]
 failure optq::Stmt optq::Stmt::Set::element0 RequiredSite expected=static[fixed:DEBUG,fixed:SET]
 failure optq::PrintStmt optq::PrintStmt::element1 RequiredSite expected=static[fixed:PRINT]
-failure optq::PrintStmt optq::PrintStmt::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure optq::PrintStmt optq::PrintStmt::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 failure optq::ReadStmt optq::ReadStmt::element1 RequiredSite expected=static[fixed:READ]
-failure optq::ReadStmt optq::ReadStmt::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure optq::ReadStmt optq::ReadStmt::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
 failure optq::SetStmt optq::SetStmt::element1 RequiredSite expected=static[fixed:SET]
-failure optq::SetStmt optq::SetStmt::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":callback=-:priority=None]
+failure optq::SetStmt optq::SetStmt::element2 RequiredSite expected=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]

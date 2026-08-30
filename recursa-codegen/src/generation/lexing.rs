@@ -1,7 +1,7 @@
 //! Generated lexing plans, token types, bindings, and lexical rendering.
 //!
 //! Token and rule data remain adjacent to emission so grammar-local token kinds,
-//! callbacks, classifiers, and exact matched text share one review boundary.
+//! classifiers and exact matched text share one review boundary.
 
 use super::*;
 
@@ -49,12 +49,12 @@ pub(super) struct TokenBindingPlan {
 pub(super) struct LexRulePlan {
     /// Backend-independent lexical pattern.
     pub(super) pattern: String,
+    /// Closed scanning mechanism extending or rejecting the starter pattern.
+    pub(super) closed_matcher: Option<ClosedMatcher>,
     /// Numeric token kind produced by a successful match.
     pub(super) kind: u16,
     /// Whether matching text is consumed without a token record.
     pub(super) skip: bool,
-    /// Optional authored lexer callback retained as opaque Rust.
-    pub(super) callback: Option<syn::Path>,
     /// Whether this rule recognizes exact fixed syntax.
     pub(super) fixed: bool,
     /// Stable declaration-derived tie-break priority.
@@ -171,13 +171,13 @@ pub(super) fn lexical_pattern_witness(pattern: &str) -> Result<String, String> {
     }
     Ok(witness)
 }
-/// Renders the grammar-local lexer, typed records, and validated editing surface.
+/// Renders the grammar-local lexer and typed records.
 ///
 /// # Long-function contract
 ///
 /// Rationale: emits the grammar-bound lexer and token API from one frozen lexical plan.
-/// Invariants: priority, longest-match behavior, exact matched text, and post-lex validation remain plan-driven.
-/// Phases: declares kinds and records, emits matching callbacks, finalizes records, then exposes lexing.
+/// Invariants: priority, longest-match behavior, classification, and exact matched text remain plan-driven.
+/// Phases: declares kinds and records, finalizes records, then exposes lexing.
 pub(super) fn render_token(
     plan: &EmissionPlan,
     token: &TokenParsePlan,

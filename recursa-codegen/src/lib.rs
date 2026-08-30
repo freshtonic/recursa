@@ -40,6 +40,8 @@ mod source_analysis;
 mod source_model;
 /// Parsing of generator-owned source configuration syntax.
 mod source_syntax;
+/// Canonical text-cell algebra shared by symbolic analysis and dispatch.
+mod text_partition;
 
 #[cfg(test)]
 mod semantic_projection_tests;
@@ -59,9 +61,9 @@ pub use build_diagnostic::{
 };
 pub use decision_plan::{
     ContainerAction, ContainerMachine, ContainerOperation, ContainerState, ContainerTransition,
-    DecisionProducts, DispatchBranch, DispatchKind, DispatchPlan, DispatchSequence,
-    DispatchTerminal, DispatchTrieEdge, DispatchTrieNode, ExpectedRecipe, FailureEdge,
-    FailureEdgeKind, FollowRecipe,
+    DecisionProducts, DispatchBranch, DispatchKind, DispatchPlan, DispatchPosition,
+    DispatchSequence, DispatchTerminal, DispatchTrieEdge, DispatchTrieNode, ExpectedRecipe,
+    FailureEdge, FailureEdgeKind, FollowRecipe,
 };
 pub use diagnostic::{
     ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic, DiagnosticCode, DiagnosticLabel,

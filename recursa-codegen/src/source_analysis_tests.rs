@@ -346,6 +346,169 @@ struct Root { #[lex(pattern = r"\bword")] word: Word }
     }
 
     #[test]
+    fn invalid_presence_and_optional_fixed_syntax_reports_source_analysis_diagnostics() {
+        let cases = [
+            (
+                r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+struct Root { value: bool }
+"#,
+                "RCA2012",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+struct Root { #[presence(this)] value: bool }
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+struct Root { #[presence()] value: bool }
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+struct Root { #[presence] value: bool }
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or" } }
+#[derive(recursa::Node)]
+struct Root {
+    #[presence(OR)]
+    #[presence(OR)]
+    value: bool,
+}
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or" } }
+#[derive(recursa::Node)]
+struct Root { #[presence(optional(OR))] value: bool }
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or" } }
+#[derive(recursa::Node)]
+#[tok(OR)]
+struct Flag;
+#[derive(recursa::Node)]
+struct Root { #[presence(OR)] value: Flag }
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or", REPLACE => "replace" } }
+#[derive(recursa::Node)]
+#[tok(optional())]
+struct Root;
+"#,
+                "RCA3103",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or", REPLACE => "replace" } }
+#[derive(recursa::Node)]
+#[tok(optional(OR, optional(REPLACE)))]
+struct Root;
+"#,
+                "RCA3103",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or" } }
+#[derive(recursa::Node)]
+#[tok(optional(OR, this))]
+struct Root;
+"#,
+                "RCA3103",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+recursa::tokens! { keywords { OR => "or" } }
+#[derive(recursa::Node)]
+struct Root {
+    #[presence(OR)]
+    #[lex(pattern = "or")]
+    value: bool,
+}
+"#,
+                "RCA3129",
+            ),
+            (
+                r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+#[kwd("OLD")]
+struct Root;
+"#,
+                "RCA3113",
+            ),
+        ];
+
+        for (source, code) in cases {
+            let package = fixture(source);
+            let error = crate::source_analysis::analyze_source_tree(
+                crate::source_analysis::SourceAnalysisInput::rust_2024(
+                    package.path(),
+                    "grammar.rs",
+                ),
+                &mut Vec::new(),
+            )
+            .expect_err("invalid presence/fixed-group syntax must fail source analysis");
+            assert!(
+                error
+                    .diagnostics()
+                    .iter()
+                    .any(|diagnostic| diagnostic.code().as_str() == code),
+                "missing {code} for source:\n{source}\n{}",
+                error.report().canonical_rendering(),
+            );
+        }
+
+        let package = fixture(
+            r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+struct Root { #[presence(this)] value: bool }
+"#,
+        );
+        let error = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect_err("invalid presence syntax must fail source analysis");
+        assert!(
+            error
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code().as_str() == "RCA3129")
+        );
+    }
+
+    #[test]
     fn semantic_analysis_conflict_remedies_keep_typed_semantic_operands_without_ids() {
         let mut grammar = crate::GrammarDescription::new(
             "remedy-adaptation",

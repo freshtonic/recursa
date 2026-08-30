@@ -1,6 +1,5 @@
 use regex_automata::meta::Regex;
 use regex_automata::{Anchored, Input as RegexInput};
-use std::fmt;
 
 use crate::{LexResult, Span, TokenKind, TokenRecord};
 
@@ -8,100 +7,363 @@ use crate::{LexResult, Span, TokenKind, TokenRecord};
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct LexRule {
-    /// Validated regular expression matched at the current source offset.
-    pub pattern: &'static str,
+    /// Validated matcher executed at the current source offset.
+    pub matcher: LexMatcher,
     /// Grammar-local kind emitted by the default action.
     pub kind: TokenKind,
-    /// Whether a callback-free match is ignored as trivia.
+    /// Whether the match is ignored as trivia.
     pub skip: bool,
-    /// Optional generated typed callback shim.
-    pub callback: Option<for<'source> fn(&mut LexContext<'source>) -> LexAction>,
     /// Whether this rule originated from exact fixed syntax.
     pub fixed: bool,
     /// Deterministic tie-break priority after match length and fixed status.
     pub priority: u32,
 }
 
-/// Backend-independent state exposed to one generated lexer-callback shim.
+/// One matching-version generated lexical matcher.
 #[doc(hidden)]
-pub struct LexContext<'source> {
-    /// Complete input source.
-    source: &'source str,
-    /// Inclusive byte offset at which this rule matched.
-    start: usize,
-    /// Mutable exclusive byte offset after callback extension.
-    end: usize,
-}
-
-impl<'source> LexContext<'source> {
-    /// Returns the complete input source.
-    pub fn source(&self) -> &'source str {
-        self.source
-    }
-
-    /// Returns the inclusive match start byte offset.
-    pub const fn start(&self) -> usize {
-        self.start
-    }
-
-    /// Returns the current exclusive match end byte offset.
-    pub const fn end(&self) -> usize {
-        self.end
-    }
-
-    /// Borrows the current complete match.
-    pub fn slice(&self) -> &'source str {
-        &self.source[self.start..self.end]
-    }
-
-    /// Borrows source remaining after the current match.
-    pub fn remainder(&self) -> &'source str {
-        &self.source[self.end..]
-    }
-
-    /// Extends the match by a UTF-8-boundary-aligned byte count.
-    pub fn bump(&mut self, bytes: usize) -> Result<(), LexBumpError> {
-        let Some(end) = self.end.checked_add(bytes) else {
-            return Err(LexBumpError);
-        };
-        if end > self.source.len() || !self.source.is_char_boundary(end) {
-            return Err(LexBumpError);
-        }
-        self.end = end;
-        Ok(())
-    }
-}
-
-/// One erased callback decision after a generated typed shim has run.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LexAction {
-    /// Emit the rule's configured token kind.
-    Emit,
-    /// Emit a different grammar-local token kind.
-    EmitAs(
-        /// Replacement grammar-local token kind.
-        TokenKind,
+#[derive(Clone, Copy, Debug)]
+pub enum LexMatcher {
+    /// Anchored regular expression.
+    Regex(
+        /// Validated regular-expression source.
+        &'static str,
     ),
-    /// Consume the match without producing a record.
-    Skip,
-    /// Emit the distinguished lexical-error kind.
-    Error,
+    /// Region closed by a byte-identical copy of its matched opener.
+    SameDelimiter {
+        /// Validated regular expression matching the complete opening delimiter.
+        opener: &'static str,
+    },
+    /// Region whose fixed opening and closing delimiters may nest.
+    Nested {
+        /// Nonempty fixed opening delimiter.
+        opener: &'static str,
+        /// Nonempty fixed closing delimiter distinct from `opener`.
+        closer: &'static str,
+    },
+    /// Regular expression whose match is rejected when the following scalar matches another expression.
+    NextExclusion {
+        /// Validated regular expression matching the candidate token.
+        pattern: &'static str,
+        /// Validated regular expression matching one excluded following scalar.
+        excluded: &'static str,
+    },
+    /// Maximal run over a configured ASCII alphabet with generic fence and trailing rules.
+    OperatorRun {
+        /// ASCII characters admitted to the run.
+        characters: &'static str,
+        /// Nonempty byte strings that stop the run before their first occurrence.
+        fences: &'static [&'static str],
+        /// Run characters stripped from the end when no qualifying character occurs earlier.
+        trailing: &'static str,
+        /// Characters whose presence preserves configured trailing characters.
+        qualifying: &'static str,
+    },
+    /// Source region extending from a matched prefix through one physical line.
+    PhysicalLine {
+        /// Validated regular expression matching the region's nonempty prefix.
+        prefix: &'static str,
+    },
 }
 
-/// A callback attempted to advance outside the remaining source or between
-/// UTF-8 code units.
+/// Stable classification attached to one generated lexical failure.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LexBumpError;
+pub enum LexDiagnosticCode {
+    /// No generated matcher accepted the current source scalar.
+    Unrecognized,
+    /// A same-delimiter region reached end of input without its matching closer.
+    UnterminatedSameDelimiter,
+    /// A nested region reached end of input with nonzero depth.
+    UnterminatedNested,
+    /// A checked matcher invariant failed before a supported lexical result could be formed.
+    MatcherInvariant,
+    /// A token candidate was followed immediately by an excluded scalar.
+    ExcludedFollowingCharacter,
+}
 
-impl fmt::Display for LexBumpError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("lexer callback bump is outside the remaining UTF-8 source")
+impl LexDiagnosticCode {
+    /// Returns the append-only Recursa diagnostic-code spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unrecognized => "RCA4000",
+            Self::MatcherInvariant => "RCA4000",
+            Self::UnterminatedSameDelimiter => "RCA4001",
+            Self::UnterminatedNested => "RCA4002",
+            Self::ExcludedFollowingCharacter => "RCA4004",
+        }
     }
 }
 
-impl std::error::Error for LexBumpError {}
+/// Structured metadata for one rejected lexical source range.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LexDiagnostic {
+    /// Stable mechanism-specific failure code.
+    pub code: LexDiagnosticCode,
+    /// Primary source range identifying the construct that began the failure.
+    pub anchor: Span,
+}
+
+/// Relative diagnostic metadata produced before an absolute checked span exists.
+#[derive(Clone, Copy)]
+struct RelativeLexDiagnostic {
+    /// Stable mechanism-specific failure code.
+    code: LexDiagnosticCode,
+    /// Inclusive anchor start relative to the current source offset.
+    anchor_start: usize,
+    /// Exclusive anchor end relative to the current source offset.
+    anchor_end: usize,
+}
+
+/// One matcher decision with its final byte extent already known.
+#[derive(Clone, Copy)]
+struct LexMatch {
+    /// Exclusive byte extent relative to the current source offset.
+    end: usize,
+    /// Failure metadata when the matched extent must become an error record.
+    diagnostic: Option<RelativeLexDiagnostic>,
+}
+
+/// Compiled state reused while scanning one source.
+enum CompiledLexMatcher {
+    /// Compiled anchored regular expression.
+    Regex(Regex),
+    /// Compiled opening-delimiter expression.
+    SameDelimiter {
+        /// Anchored expression that returns the exact delimiter bytes to repeat.
+        opener: Regex,
+    },
+    /// Validated fixed delimiters for nested scanning.
+    Nested {
+        /// Nonempty opening delimiter.
+        opener: &'static str,
+        /// Nonempty closing delimiter.
+        closer: &'static str,
+    },
+    /// Compiled candidate and following-scalar exclusion expressions.
+    NextExclusion {
+        /// Candidate token expression.
+        pattern: Regex,
+        /// Excluded following-scalar expression.
+        excluded: Regex,
+    },
+    /// Validated ASCII operator-run configuration.
+    OperatorRun {
+        /// ASCII characters admitted to the run.
+        characters: &'static str,
+        /// Nonempty byte strings that stop the run.
+        fences: &'static [&'static str],
+        /// Conditionally stripped trailing characters.
+        trailing: &'static str,
+        /// Characters that preserve configured trailing characters.
+        qualifying: &'static str,
+    },
+    /// Compiled physical-line prefix expression.
+    PhysicalLine {
+        /// Prefix expression anchored at the current source offset.
+        prefix: Regex,
+    },
+}
+
+impl CompiledLexMatcher {
+    /// Compiles one generated matcher whose authored inputs were already validated.
+    fn new(matcher: LexMatcher) -> Self {
+        match matcher {
+            LexMatcher::Regex(pattern) => {
+                Self::Regex(Regex::new(pattern).expect("generated lexical patterns were validated"))
+            }
+            LexMatcher::SameDelimiter { opener } => Self::SameDelimiter {
+                opener: Regex::new(opener)
+                    .expect("generated same-delimiter openers were validated"),
+            },
+            LexMatcher::Nested { opener, closer } => Self::Nested { opener, closer },
+            LexMatcher::NextExclusion { pattern, excluded } => Self::NextExclusion {
+                pattern: Regex::new(pattern)
+                    .expect("generated next-exclusion patterns were validated"),
+                excluded: Regex::new(excluded)
+                    .expect("generated next-exclusion predicates were validated"),
+            },
+            LexMatcher::OperatorRun {
+                characters,
+                fences,
+                trailing,
+                qualifying,
+            } => Self::OperatorRun {
+                characters,
+                fences,
+                trailing,
+                qualifying,
+            },
+            LexMatcher::PhysicalLine { prefix } => Self::PhysicalLine {
+                prefix: Regex::new(prefix)
+                    .expect("generated physical-line prefixes were validated"),
+            },
+        }
+    }
+
+    /// Returns a decision carrying the final byte extent from `remaining`'s start.
+    fn matched(&self, remaining: &str) -> Option<LexMatch> {
+        let anchored = |matcher: &Regex| {
+            matcher
+                .find(RegexInput::new(remaining).anchored(Anchored::Yes))
+                .filter(|found| found.start() == 0 && found.end() > 0)
+        };
+        match self {
+            Self::Regex(matcher) => anchored(matcher).map(|found| LexMatch {
+                end: found.end(),
+                diagnostic: None,
+            }),
+            Self::SameDelimiter { opener } => {
+                let opened = anchored(opener)?;
+                let delimiter = &remaining[..opened.end()];
+                let body = &remaining[opened.end()..];
+                let Some(close) = body.find(delimiter) else {
+                    return Some(LexMatch {
+                        end: remaining.len(),
+                        diagnostic: Some(RelativeLexDiagnostic {
+                            code: LexDiagnosticCode::UnterminatedSameDelimiter,
+                            anchor_start: 0,
+                            anchor_end: opened.end(),
+                        }),
+                    });
+                };
+                Some(LexMatch {
+                    end: opened.end() + close + delimiter.len(),
+                    diagnostic: None,
+                })
+            }
+            Self::Nested { opener, closer } => {
+                remaining.strip_prefix(opener)?;
+                let mut depth = 1_u32;
+                let mut cursor = opener.len();
+                while cursor < remaining.len() {
+                    let suffix = &remaining[cursor..];
+                    if suffix.starts_with(closer) {
+                        cursor += closer.len();
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(LexMatch {
+                                end: cursor,
+                                diagnostic: None,
+                            });
+                        }
+                    } else if suffix.starts_with(opener) {
+                        cursor += opener.len();
+                        let Some(incremented) = increment_nested_depth(depth) else {
+                            return Some(LexMatch {
+                                end: remaining.len(),
+                                diagnostic: Some(RelativeLexDiagnostic {
+                                    code: LexDiagnosticCode::MatcherInvariant,
+                                    anchor_start: 0,
+                                    anchor_end: opener.len(),
+                                }),
+                            });
+                        };
+                        depth = incremented;
+                    } else {
+                        cursor += suffix
+                            .chars()
+                            .next()
+                            .expect("a nonempty source suffix has one scalar")
+                            .len_utf8();
+                    }
+                }
+                Some(LexMatch {
+                    end: remaining.len(),
+                    diagnostic: Some(RelativeLexDiagnostic {
+                        code: LexDiagnosticCode::UnterminatedNested,
+                        anchor_start: 0,
+                        anchor_end: opener.len(),
+                    }),
+                })
+            }
+            Self::NextExclusion { pattern, excluded } => {
+                let found = anchored(pattern)?;
+                let following = remaining[found.end()..]
+                    .chars()
+                    .next()
+                    .map(|character| &remaining[found.end()..found.end() + character.len_utf8()]);
+                let rejected = following.is_some_and(|scalar| {
+                    excluded
+                        .find(RegexInput::new(scalar).anchored(Anchored::Yes))
+                        .is_some_and(|next| next.start() == 0 && next.end() == scalar.len())
+                });
+                Some(LexMatch {
+                    end: found.end(),
+                    diagnostic: rejected.then_some(RelativeLexDiagnostic {
+                        code: LexDiagnosticCode::ExcludedFollowingCharacter,
+                        anchor_start: 0,
+                        anchor_end: found.end(),
+                    }),
+                })
+            }
+            Self::OperatorRun {
+                characters,
+                fences,
+                trailing,
+                qualifying,
+            } => {
+                let admitted = characters.as_bytes();
+                let mut end = 0;
+                while let Some(&byte) = remaining.as_bytes().get(end) {
+                    if fences
+                        .iter()
+                        .any(|fence| remaining[end..].starts_with(fence))
+                        || !admitted.contains(&byte)
+                    {
+                        break;
+                    }
+                    end += 1;
+                }
+                if end == 0 {
+                    return None;
+                }
+                let trailing = trailing.as_bytes();
+                let qualifying = qualifying.as_bytes();
+                if end > 1
+                    && trailing.contains(&remaining.as_bytes()[end - 1])
+                    && !remaining.as_bytes()[..end - 1]
+                        .iter()
+                        .any(|byte| qualifying.contains(byte))
+                {
+                    while end > 1 && trailing.contains(&remaining.as_bytes()[end - 1]) {
+                        end -= 1;
+                    }
+                }
+                Some(LexMatch {
+                    end,
+                    diagnostic: None,
+                })
+            }
+            Self::PhysicalLine { prefix } => {
+                let opened = anchored(prefix)?;
+                let suffix = &remaining.as_bytes()[opened.end()..];
+                let end = suffix
+                    .iter()
+                    .position(|byte| matches!(byte, b'\r' | b'\n'))
+                    .map_or(remaining.len(), |line_end| {
+                        let line_end = opened.end() + line_end;
+                        if remaining.as_bytes()[line_end] == b'\r'
+                            && remaining.as_bytes().get(line_end + 1) == Some(&b'\n')
+                        {
+                            line_end + 2
+                        } else {
+                            line_end + 1
+                        }
+                    });
+                Some(LexMatch {
+                    end,
+                    diagnostic: None,
+                })
+            }
+        }
+    }
+}
+
+/// Advances the source-domain nesting counter without allowing an impossible wraparound.
+fn increment_nested_depth(depth: u32) -> Option<u32> {
+    depth.checked_add(1)
+}
 
 /// Executes a small generated lexical rule table.
 ///
@@ -115,12 +377,7 @@ pub fn lex<'input>(
 ) -> LexResult<'input> {
     let compiled = rules
         .iter()
-        .map(|rule| {
-            (
-                Regex::new(rule.pattern).expect("generated lexical patterns were validated"),
-                *rule,
-            )
-        })
+        .map(|rule| (CompiledLexMatcher::new(rule.matcher), *rule))
         .collect::<Vec<_>>();
     let mut records = Vec::new();
     let mut offset = 0;
@@ -128,51 +385,53 @@ pub fn lex<'input>(
         let remaining = &source[offset..];
         let selected = compiled
             .iter()
-            .filter_map(|(matcher, rule)| {
-                matcher
-                    .find(RegexInput::new(remaining).anchored(Anchored::Yes))
-                    .filter(|found| found.start() == 0 && found.end() > 0)
-                    .map(|found| (found.end(), *rule))
-            })
-            .max_by_key(|(length, rule)| (*length, rule.fixed, rule.priority));
+            .filter_map(|(matcher, rule)| matcher.matched(remaining).map(|found| (found, *rule)))
+            .max_by_key(|(found, rule)| (found.end, rule.fixed, rule.priority));
 
-        let (end, emitted_kind) = selected.map_or_else(
+        let (end, emitted_kind, diagnostic) = selected.map_or_else(
             || {
                 let length = remaining
                     .chars()
                     .next()
                     .expect("offset is before source end")
                     .len_utf8();
-                (offset + length, Some(lexical_error_kind))
+                let end = offset + length;
+                (
+                    end,
+                    Some(lexical_error_kind),
+                    Some(LexDiagnostic {
+                        code: LexDiagnosticCode::Unrecognized,
+                        anchor: Span::new(offset, end)
+                            .expect("one source scalar is a checked UTF-8 span"),
+                    }),
+                )
             },
-            |(length, rule)| {
-                let mut context = LexContext {
-                    source,
-                    start: offset,
-                    end: offset + length,
-                };
-                let action = rule.callback.map_or_else(
-                    || {
-                        if rule.skip {
-                            LexAction::Skip
-                        } else {
-                            LexAction::Emit
-                        }
-                    },
-                    |callback| callback(&mut context),
-                );
-                let kind = match action {
-                    LexAction::Emit => Some(rule.kind),
-                    LexAction::EmitAs(kind) => Some(kind),
-                    LexAction::Skip => None,
-                    LexAction::Error => Some(lexical_error_kind),
-                };
-                (context.end, kind)
+            |(found, rule)| {
+                if let Some(rejected) = found.diagnostic {
+                    let end = offset + found.end;
+                    return (
+                        end,
+                        Some(lexical_error_kind),
+                        Some(LexDiagnostic {
+                            code: rejected.code,
+                            anchor: Span::new(
+                                offset + rejected.anchor_start,
+                                offset + rejected.anchor_end,
+                            )
+                            .expect("generated matcher anchors are checked UTF-8 spans"),
+                        }),
+                    );
+                }
+                (offset + found.end, (!rule.skip).then_some(rule.kind), None)
             },
         );
         let span = Span::new(offset, end).expect("source accepted by LexResult fits checked spans");
         if let Some(kind) = emitted_kind {
-            records.push(TokenRecord { kind, span });
+            records.push(TokenRecord {
+                kind,
+                span,
+                diagnostic,
+            });
         }
         offset = end;
     }

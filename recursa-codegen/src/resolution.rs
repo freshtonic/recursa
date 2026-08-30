@@ -8,8 +8,8 @@
 //!
 //! Resolution models the supported Rust module, import, re-export, alias, and
 //! visibility rules from the selected-root anchor. It traces only references
-//! that change grammar meaning; callback, derive, and hook paths remain opaque
-//! Rust fragments for faithful generation.
+//! that change grammar meaning; derive paths remain opaque Rust fragments for
+//! faithful generation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -241,6 +241,8 @@ pub(crate) struct ResolvedType {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Classifies the resolved type kind alternatives handled by semantic resolution.
 pub(crate) enum ResolvedTypeKind {
+    /// Identifies a built-in boolean retained for a fixed-token presence field.
+    FixedTokenPresence,
     /// Identifies the semantic resolution alternative.
     Semantic {
         /// Supplies the use site needed either to resolve the reference or diagnose its failure.
@@ -2226,12 +2228,27 @@ impl Resolver<'_> {
             let node = self.nodes[node_index].clone();
             let mut resolved_fields = Vec::new();
             for field in &node.fields {
-                if let Some(ty) = self.resolve_type(
-                    &field.syntax.ty,
-                    node.resolved.module,
-                    SemanticOwner::Node(node.resolved.id),
-                    node.resolved.source,
-                ) {
+                let ty = if field
+                    .metas
+                    .iter()
+                    .any(|meta| meta.path().is_ident("presence"))
+                    && plain_bool_type(&field.syntax.ty)
+                {
+                    Some(ResolvedType {
+                        syntax: field.syntax.ty.clone(),
+                        source: node.resolved.source,
+                        range: span_range(field.syntax.ty.span()),
+                        kind: ResolvedTypeKind::FixedTokenPresence,
+                    })
+                } else {
+                    self.resolve_type(
+                        &field.syntax.ty,
+                        node.resolved.module,
+                        SemanticOwner::Node(node.resolved.id),
+                        node.resolved.source,
+                    )
+                };
+                if let Some(ty) = ty {
                     resolved_fields.push(ResolvedNodeField {
                         id: field.id,
                         syntax: field.syntax.clone(),
@@ -2732,6 +2749,11 @@ impl Resolver<'_> {
             message,
         });
     }
+}
+
+/// Reports whether a field uses the unqualified built-in `bool` spelling.
+fn plain_bool_type(ty: &Type) -> bool {
+    matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.leading_colon.is_none() && path.path.is_ident("bool"))
 }
 
 /// Finds grammar config.

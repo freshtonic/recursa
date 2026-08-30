@@ -70,6 +70,73 @@ subtractions that remove nothing; duplicate union membership is a warning.
 `#[lex(..., admits(WindowRefName))]` applies the compiled canonical membership
 to that generated content-token type.
 
+Use `optional(TOKENS...)` inside the sole `#[tok(...)]` sequence for fixed
+syntax that should be accepted but erased from the AST. Use a separate
+`#[presence(TOKENS...)]` on an unqualified `bool` field when the AST must retain
+whether the sequence occurred. Presence composes with the field's ordinary
+attachment, including required syntax around `this`:
+
+```rust,ignore
+#[derive(recursa::Node)]
+pub struct CreateMaterializedView<'input> {
+    #[tok(CREATE, this, MATERIALIZED, VIEW)]
+    #[presence(UNLOGGED)]
+    pub unlogged: bool,
+    pub name: Identifier<'input>,
+}
+```
+
+These optional sequences are non-empty, unnested, fixed-only, and selected
+atomically. A partial prefix consumes nothing. Pretty reuses parsed source
+syntax, emits a canonical presence sequence for a synthetic `true`, and omits
+both a synthetic `false` and synthetic erased optional groups.
+
+Closed lexical mechanisms live beside the token grammar. Declare an emitting
+matcher in `matchers`, bind its same-named token
+type with `#[lex(matcher)]`, or declare the same matcher vocabulary in `ignore`
+for non-emitting input:
+
+```rust,ignore
+recursa::tokens! {
+    matchers {
+        DollarString => same_delimiter(opener = r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$"),
+        Number => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        MetaCommand => physical_line(prefix = r"\\[A-Za-z]+"),
+    }
+    ignore {
+        BlockComment => nested(opener = "/*", closer = "*/"),
+    }
+}
+
+#[derive(recursa::Node)]
+pub struct Definitions<'input> {
+    #[lex(matcher)]
+    dollar: DollarString<'input>,
+    #[lex(matcher)]
+    number: Number<'input>,
+    #[lex(matcher)]
+    command: MetaCommand<'input>,
+}
+```
+
+The closed vocabulary also includes configurable operator runs. Arbitration
+uses final byte extent, then exact fixed-token status, then optional explicit
+`priority`; declaration order never decides a tie. A physical-line matcher
+includes its LF, CRLF, or CR ending, or reaches EOF. Unterminated delimited and
+nested regions produce opener-anchored lexical errors over the complete
+opener-to-EOF range; generated `LexError::code`, `diagnostic_code`, and `anchor`
+preserve their stable diagnostic identity.
+
+Authored lexer callbacks, post-lex hooks, and parser postconditions are not
+supported. Source analysis reports their retired syntax with targeted stable
+diagnostics; use closed matchers and named admissions instead.
+
+An alternative lexer can construct the same public result through `LexBuilder`. Each supplied
+token or error record must use an exact grammar-local kind and a source-bounded UTF-8 span, in
+source order and without overlap. Finalization preserves those spans and leaves gaps unrecorded;
+it does not rescan missing source regions. Classified trivia records and their observable gap
+behavior belong to the follow-up trivia contract in #93.
+
 This is an excerpt from the
 [compiled JSON grammar](https://github.com/freshtonic/recursa/blob/main/examples/json/src/grammar.rs).
 Its companion

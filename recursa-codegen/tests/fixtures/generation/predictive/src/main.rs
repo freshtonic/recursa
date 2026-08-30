@@ -52,7 +52,7 @@ fn main() {
     assert_eq!(error.span(), recursa::Span::new(14, 22).unwrap());
     assert_eq!(
         error.found(),
-        Some("content:\"[a-zA-Z_][a-zA-Z0-9_]*\":callback=-:priority=None")
+        Some("content:\"[a-zA-Z_][a-zA-Z0-9_]*\":priority=None")
     );
     assert_eq!(input.cursor(), 0, "failed nullable dispatch is transactional");
 
@@ -65,7 +65,7 @@ fn main() {
     assert_eq!(error.span(), recursa::Span::new(7, 14).unwrap());
     assert_eq!(
         error.found(),
-        Some("content:\"[a-zA-Z_][a-zA-Z0-9_]*\":callback=-:priority=None")
+        Some("content:\"[a-zA-Z_][a-zA-Z0-9_]*\":priority=None")
     );
     assert_eq!(
         error.expected().collect::<Vec<_>>(),
@@ -162,6 +162,26 @@ fn main() {
     assert_eq!(parsed.root().span(), None);
     assert_eq!(parsed.root().span_elements().get(0).unwrap().span(), None);
     assert_eq!(parsed.root().span_elements().get(1).unwrap().span(), None);
+
+    let first_rectangle = grammar::lex("B C");
+    let mut input = first_rectangle.input();
+    let parsed = grammar::OverlappingRectangles::parse(&mut input)
+        .expect("B C selects the first complete language");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.root().value(),
+        grammar::OverlappingRectangles::First(_)
+    ));
+
+    let second_rectangle = grammar::lex("B D");
+    let mut input = second_rectangle.input();
+    let parsed = grammar::OverlappingRectangles::parse(&mut input)
+        .expect("B D selects the second complete language");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.root().value(),
+        grammar::OverlappingRectangles::Second(_)
+    ));
 
     println!("predictive-ok");
 }
