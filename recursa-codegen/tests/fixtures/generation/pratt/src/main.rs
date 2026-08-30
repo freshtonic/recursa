@@ -168,6 +168,27 @@ fn assert_pretty_multi_token_operators() {
 
     let word_postfix = grammar::Expr::IsNull(Box::new(name("a")));
     assert_eq!(word_postfix.render(), "a HAS NULL");
+
+    let custom = parse("a ~@ b");
+    assert_eq!(custom.render(), "a ~@ b");
+    let mut traversal = TraversalCount(0);
+    assert!(recursa::Visit::visit(&custom, &mut traversal).is_continue());
+    assert_eq!(traversal.0, 8, "Visit includes the semantic operator field");
+    let mut custom = custom.into_ast();
+    let mut mutations = TraversalCountMut(0);
+    assert!(recursa::VisitMut::visit_mut(&mut custom, &mut mutations).is_continue());
+    assert_eq!(
+        mutations.0, 8,
+        "VisitMut includes the semantic operator field"
+    );
+    match custom {
+        grammar::Expr::Custom(lhs, operator, rhs) => {
+            assert!(matches!(*lhs, grammar::Expr::Name(_)));
+            assert_eq!(operator.text(), "~@");
+            assert!(matches!(*rhs, grammar::Expr::Name(_)));
+        }
+        _ => panic!("content-bearing infix operator must retain lhs, operator, and rhs"),
+    }
 }
 
 fn main() {
@@ -346,7 +367,14 @@ fn main() {
     assert_eq!(error.found(), Some("fixed:*"));
     assert_eq!(
         error.expected().collect::<Vec<_>>(),
-        ["fixed:HAS", "fixed:*", "fixed:^", "fixed:!", "fixed:::"]
+        [
+            "fixed:HAS",
+            "fixed:*",
+            "fixed:^",
+            "fixed:!",
+            "fixed:::",
+            "content:\"[~@]+\":priority=None",
+        ]
     );
 
     println!("pratt-ok");

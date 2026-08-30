@@ -274,9 +274,12 @@ Rules that make this coherent across a large, many-file grammar:
 
 For Pratt variants, the operator's position is implied by the parse
 position: `#[parse(prefix)]` + `#[kwd(NOT)]` consumes the token before the
-operand; `infix` between the two operands; `postfix` after. Interleaved
-shapes (`a BETWEEN b AND c`) put `#[tok(…)]` on the tuple field each token
-sequence precedes:
+operand; `infix` after the implicit first `Box<Self>` lhs and before its one
+recursive `Box<Self>` rhs; `postfix` after. An infix suffix may retain
+additional non-recursive semantic fields, such as a content-bearing operator,
+but exactly one suffix field must be the recursive rhs. Interleaved shapes
+(`a BETWEEN b AND c`) put `#[tok(…)]` on the tuple field each token sequence
+precedes:
 
 ```rust
 #[parse(postfix, bp = 6)]
@@ -311,7 +314,7 @@ emission detail (see the budget note in A4), invisible in the API.
 |---|---|---|
 | `#[pratt]` | enum | Operator-precedence enum; drives the generated `parse_bp` driver. |
 | `#[parse(prefix, bp = N)]` | Pratt variant | Prefix operator; operand field `Box<Self>`. |
-| `#[parse(infix, lbp = N, rbp = M)]` | Pratt variant | Infix; `rbp = lbp + 1` for left-assoc. Operand fields `(Box<Self>, Box<Self>)`. |
+| `#[parse(infix, lbp = N, rbp = M)]` | Pratt variant | Infix; `rbp = lbp + 1` for left-assoc. The first field is the implicit `Box<Self>` lhs; the suffix admits ordinary semantic fields but requires exactly one recursive `Box<Self>` rhs. |
 | `#[parse(postfix, bp = N)]` | Pratt variant | Postfix. |
 | `#[parse(postcondition = path)]` | type | Unsupported legacy syntax; express token eligibility with a named admission set. |
 | `#[parse(skip)]` | type | Item is not a grammar type (helper struct, hand-owned parsing). Diagrams optional via `#[parse(skip, diagram)]`. |

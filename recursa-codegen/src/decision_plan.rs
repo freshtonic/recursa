@@ -152,6 +152,12 @@ impl DispatchPosition {
 }
 
 /// A frozen dispatch-trie node produced by semantic analysis.
+///
+/// Enum tries retain complete alternative and caller-FOLLOW validation before
+/// exposing a terminal. Pratt tries select only a declaration: after a
+/// non-empty prefix leaves one declaration, they may expose an unconditional
+/// terminal leaf and delegate the remaining syntax to that declaration's
+/// parser.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DispatchTrieNode {
     /// Optional decision when the consumed prefix ends here.
@@ -202,6 +208,11 @@ impl DispatchBranch {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Complete source-independent branch selection for one enum or Pratt role.
+///
+/// Enum plans preserve complete-route and caller-FOLLOW selection. Pratt plans
+/// may commit after a non-empty prefix uniquely identifies one declaration;
+/// the selected declaration remains responsible for validating its residual
+/// syntax and producing any deeper parse error.
 pub struct DispatchPlan {
     /// Supplies the owner consumed when generation replays this decision.
     owner: TypeId,
@@ -209,7 +220,7 @@ pub struct DispatchPlan {
     kind: DispatchKind,
     /// Supplies the branches consumed when generation replays this decision.
     branches: Vec<DispatchBranch>,
-    /// Supplies the required lookahead consumed when generation replays this decision.
+    /// Supplies the lookahead needed to select a declaration, not to validate its complete syntax.
     required_lookahead: usize,
     /// Supplies the on caller follow consumed when generation replays this decision.
     on_caller_follow: Option<DeclId>,
@@ -263,7 +274,11 @@ impl DispatchPlan {
         &self.branches
     }
 
-    /// Reports the bounded lookahead depth proven sufficient for selection.
+    /// Reports the bounded lookahead depth proven sufficient for declaration selection.
+    ///
+    /// Enum depths include the complete route and its caller-FOLLOW decision.
+    /// Pratt depths stop once a non-empty prefix leaves one declaration, even
+    /// when that declaration's parser must inspect additional syntax.
     pub const fn required_lookahead(&self) -> usize {
         self.required_lookahead
     }
@@ -1155,7 +1170,7 @@ fn dispatch_plan<'a>(
                 .name
                 .cmp(&grammar.declarations[right.declaration.index()].name)
         });
-        try_freeze_dispatch_trie(&branches, grammar, kind == DispatchKind::PrattNud)
+        try_freeze_dispatch_trie(&branches, grammar, kind != DispatchKind::Enum)
             .map(|(trie, required)| (branches, trie, required))
     });
     let (branches, trie, required_lookahead, balanced) =
@@ -1192,12 +1207,9 @@ fn dispatch_plan<'a>(
             let bounded_branches =
                 ordinary_branches_without_balanced_opener(&branches, balanced.open, grammar)
                     .expect("validated structural dispatch partitions every opener route exactly");
-            let (trie, required_lookahead) = try_freeze_dispatch_trie(
-                &bounded_branches,
-                grammar,
-                kind == DispatchKind::PrattNud,
-            )
-            .expect("validated structural dispatch resolves every non-opener route");
+            let (trie, required_lookahead) =
+                try_freeze_dispatch_trie(&bounded_branches, grammar, kind != DispatchKind::Enum)
+                    .expect("validated structural dispatch resolves every non-opener route");
             (branches, trie, required_lookahead, Some(balanced))
         };
     let on_caller_follow = branches.iter().find_map(|branch| {
@@ -1377,6 +1389,11 @@ struct FrozenDispatchState {
 }
 
 /// Attempts to freeze a dispatch at the supplied bounded-language depth.
+///
+/// `cut_off_unique_pratt_branch` turns every non-root residual state belonging
+/// to one declaration into an unconditional leaf, including states that also
+/// contain same-declaration caller-FOLLOW terminals. Disabling it preserves
+/// complete-route and caller-FOLLOW behavior for ordinary enum dispatch.
 fn try_freeze_dispatch_trie(
     branches: &[DispatchBranch],
     grammar: &GrammarDescription,
@@ -1397,6 +1414,10 @@ fn freeze_dispatch_trie_with_observer(
 }
 
 /// Attempts to freeze dispatch while exposing each unique residual state.
+///
+/// The Pratt cutoff selects declaration identity after a non-empty unique
+/// prefix; without it, residual syntax and caller FOLLOW remain part of the
+/// frozen selection language.
 fn try_freeze_dispatch_trie_with_observer(
     branches: &[DispatchBranch],
     grammar: &GrammarDescription,
@@ -1465,6 +1486,11 @@ fn try_freeze_dispatch_trie_with_observer(
 }
 
 /// Freezes one residual-language state and memoizes equivalent suffix states.
+///
+/// When the Pratt cutoff is enabled, a matched state whose suffixes all name
+/// one declaration becomes an unconditional leaf before terminal or edge
+/// processing. This deliberately delegates residual validation and error
+/// provenance to the selected declaration parser.
 fn freeze_dispatch_state(
     suffixes: &[DispatchSuffix],
     state: &[DispatchSuffixId],
@@ -1497,11 +1523,7 @@ fn freeze_dispatch_state(
                 .then_some(suffixes[suffix.index()].terminal)
         })
         .collect::<Vec<_>>();
-    if cut_off_unique_pratt_branch
-        && matched_prefix
-        && !has_multiple_declarations
-        && terminals.is_empty()
-    {
+    if cut_off_unique_pratt_branch && matched_prefix && !has_multiple_declarations {
         let terminal = suffixes[state.first()?.index()].terminal;
         let frozen = FrozenDispatchState {
             node: DispatchTrieNode {
@@ -2282,6 +2304,36 @@ mod tests {
         assert!(
             maximum_state_width <= 2,
             "equivalent dispatch suffixes must share one residual identity; width={maximum_state_width}",
+        );
+    }
+
+    #[test]
+    fn pratt_led_dispatch_commits_after_its_operator_prefix_is_unique() {
+        let grammar = pratt_and_repeat_grammar();
+        let report = crate::analyze(&grammar);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let output = report.output.expect("the fixture grammar is valid");
+        let led = output
+            .decisions()
+            .dispatches()
+            .iter()
+            .find(|dispatch| dispatch.kind() == DispatchKind::PrattLed)
+            .expect("the Pratt fixture has an LED dispatch");
+        let [operator] = led.trie().edges() else {
+            panic!("the sole LED has one operator route");
+        };
+        let terminal = operator
+            .next()
+            .terminal()
+            .expect("the unique operator prefix commits its LED");
+        assert_eq!(
+            grammar.declarations[terminal.declaration().index()].name,
+            "Expr::Add",
+        );
+        assert!(!terminal.on_caller_follow());
+        assert!(
+            operator.next().edges().is_empty(),
+            "recursive RHS lookahead must not participate in LED selection",
         );
     }
 

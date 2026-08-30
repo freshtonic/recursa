@@ -80,6 +80,14 @@ pub enum Expr<'input> {
     #[tok(PLUS)]
     Add(Box<Self>, Box<Self>),
 
+    #[parse(infix, lbp = 15, rbp = 16)]
+    Custom(
+        Box<Self>,
+        #[lex(pattern = r"[~@]+")]
+        OperatorText<'input>,
+        Box<Self>,
+    ),
+
     #[parse(prefix, bp = 35)]
     #[tok(NEVER, EXISTS)]
     NotExists(Box<Self>),

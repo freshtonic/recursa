@@ -2007,11 +2007,10 @@ impl Materializer {
                     current_application,
                     &mut elements,
                 )?;
-                if !self.validate_single_pratt_operand(
+                if !self.validate_single_pratt_rhs(
                     common.resolved_variant,
                     current_application,
                     &elements,
-                    "infix rhs",
                 ) {
                     return None;
                 }
@@ -2038,7 +2037,7 @@ impl Materializer {
         }
     }
 
-    /// Validates single pratt operand.
+    /// Validates one exact Pratt operand without admitting other semantic fields.
     fn validate_single_pratt_operand(
         &mut self,
         variant: ResolvedVariantId,
@@ -2075,6 +2074,56 @@ impl Materializer {
             Some(resolved_field.range),
             MaterializationDiagnosticKind::InvalidPrattShape,
             format!("a Pratt {role} operand must be an authored Box<Self> for this application"),
+        );
+        false
+    }
+
+    /// Validates exactly one recursive infix rhs while admitting ordinary semantic tail fields.
+    fn validate_single_pratt_rhs(
+        &mut self,
+        variant: ResolvedVariantId,
+        current_application: &MaterializedNodeUse,
+        elements: &[MaterializedElement],
+    ) -> bool {
+        let recursive = elements
+            .iter()
+            .filter(|element| {
+                let MaterializedElement::SemanticField {
+                    projection: MaterializedSemanticFieldProjection::Direct { ty, .. },
+                    ..
+                } = element
+                else {
+                    return false;
+                };
+                is_recursive_pratt_operand(ty, current_application.application)
+            })
+            .collect::<Vec<_>>();
+        if recursive.len() != 1 {
+            let (source, range) = self.resolved_variant_site(variant);
+            self.push_diagnostic(
+                source,
+                Some(range),
+                MaterializationDiagnosticKind::InvalidPrattShape,
+                format!(
+                    "a Pratt infix rhs requires exactly one recursive Box<Self> operand; found {} recursive semantic fields",
+                    recursive.len(),
+                ),
+            );
+            return false;
+        }
+        if exact_pratt_self_operand(recursive[0], current_application) {
+            return true;
+        }
+        let MaterializedElement::SemanticField { field, .. } = recursive[0] else {
+            unreachable!("recursive Pratt rhs selection contains only semantic fields")
+        };
+        let resolved_field = self.resolved_field(*field).clone();
+        self.push_diagnostic(
+            resolved_field.ty.source,
+            Some(resolved_field.range),
+            MaterializationDiagnosticKind::InvalidPrattShape,
+            "a Pratt infix rhs operand must be an authored Box<Self> for this application"
+                .to_owned(),
         );
         false
     }
@@ -5605,6 +5654,137 @@ enum Expr {{ {invalid_variant} }}
             assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
             assert!(report.diagnostics.iter().any(|diagnostic| {
                 diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
+            }));
+        }
+    }
+
+    #[test]
+    fn infix_tail_allows_content_fields_around_one_recursive_rhs() {
+        let report = materialize(resolve(
+            r#"
+recursa::grammar! { module = crate::operators }
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    #[tok("ATOM")]
+    Atom,
+    #[parse(infix, lbp = 8, rbp = 9)]
+    Custom(
+        Box<Self>,
+        #[lex(pattern = r"[~@]+")]
+        OperatorText<'input>,
+        Box<Self>,
+    ),
+}
+"#,
+        ));
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let lowered = report
+            .lowered
+            .expect("one recursive rhs with an ordinary operator field materializes");
+        let expr = lowered
+            .applications
+            .iter()
+            .find(|application| application.display_name == "operators::Expr")
+            .expect("Expr application materializes");
+        let MaterializedNodeBody::Pratt(variants) = &expr.body else {
+            panic!("Expr is Pratt")
+        };
+        let MaterializedPrattVariant::Led(custom) = &variants[1] else {
+            panic!("Custom is led")
+        };
+        assert_eq!(custom.tail.len(), 2);
+        assert!(matches!(
+            &custom.tail[0],
+            MaterializedElement::SemanticField {
+                projection: MaterializedSemanticFieldProjection::Direct {
+                    ty: ClosedType::ContentToken(_),
+                    ..
+                },
+                ..
+            }
+        ));
+        let MaterializedElement::SemanticField {
+            projection:
+                MaterializedSemanticFieldProjection::Direct {
+                    ty: ClosedType::Boxed(rhs),
+                    trace,
+                    separator: None,
+                    ..
+                },
+            ..
+        } = &custom.tail[1]
+        else {
+            panic!("the final infix field is the direct boxed rhs")
+        };
+        let ClosedType::Node(rhs) = rhs.as_ref() else {
+            panic!("the infix rhs targets Expr")
+        };
+        assert_eq!(rhs.application, expr.id);
+        assert!(
+            trace
+                .steps
+                .contains(&MaterializationTraceStep::SelfApplication(expr.id))
+        );
+        let application = lowered
+            .lowering_map
+            .applications
+            .iter()
+            .find(|correlation| correlation.application == expr.id)
+            .expect("Expr retains its lowered type correlation");
+        let TypeShape::Pratt { variants } =
+            &lowered.grammar.types[application.lowered.index()].shape
+        else {
+            panic!("lowered Expr is Pratt")
+        };
+        assert_eq!(
+            variants[1]
+                .sites
+                .iter()
+                .map(|site| lowered.grammar.sites[site.index()].min_bp)
+                .collect::<Vec<_>>(),
+            [0, 9],
+            "only the recursive infix rhs receives rbp",
+        );
+    }
+
+    #[test]
+    fn rejects_zero_multiple_and_non_exact_recursive_infix_rhs_fields() {
+        for (invalid_variant, expected) in [
+            (
+                r#"#[parse(infix, lbp = 1, rbp = 2)] Zero(Box<Self>, Leaf)"#,
+                "found 0 recursive semantic fields",
+            ),
+            (
+                r#"#[parse(infix, lbp = 1, rbp = 2)] Multiple(Box<Self>, Box<Self>, Leaf, Box<Self>)"#,
+                "found 2 recursive semantic fields",
+            ),
+            (
+                r#"#[parse(infix, lbp = 1, rbp = 2)] Optional(Box<Self>, Leaf, Option<Box<Self>>)"#,
+                "must be an authored Box<Self>",
+            ),
+        ] {
+            let source = format!(
+                r#"
+recursa::grammar! {{ module = crate::invalid }}
+#[derive(recursa::Node)]
+#[tok("LEAF")]
+struct Leaf;
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr {{
+    #[tok("ATOM")]
+    Atom,
+    {invalid_variant},
+}}
+"#,
+            );
+            let report = materialize(resolve(&source));
+            assert!(report.lowered.is_none(), "accepted `{invalid_variant}`");
+            assert!(report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.kind == MaterializationDiagnosticKind::InvalidPrattShape
+                    && diagnostic.message.contains(expected)
             }));
         }
     }

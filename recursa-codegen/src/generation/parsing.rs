@@ -4942,7 +4942,20 @@ pub(super) fn render_pratt_parse(
                 #body
             }
         });
-        nud_branches.push(quote!((Some(#index), _) => Self::#helper(context)?));
+        let selected = match branch.position {
+            PrattPosition::Atom => quote! {
+                context.parse_generated(
+                    &#nud_follow_value,
+                    context.capture_policy(),
+                    |context| Self::#helper(context),
+                )?
+            },
+            PrattPosition::Prefix { .. } => quote!(Self::#helper(context)?),
+            PrattPosition::Infix { .. } | PrattPosition::Postfix { .. } => {
+                unreachable!("validated Pratt NUD plan contains only atom or prefix branches")
+            }
+        };
+        nud_branches.push(quote!((Some(#index), _) => #selected));
     }
 
     if pratt.led.is_empty() {
