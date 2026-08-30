@@ -251,6 +251,8 @@ recursa::tokens! {
         BETWEEN => "BETWEEN",
         SIMILAR => "SIMILAR",
         TO => "TO",
+        POSITION => "POSITION",
+        IN => "IN",
         AND => "AND",
         BOOL => "BOOL",
         TEXT => "TEXT",
@@ -336,6 +338,8 @@ pub enum Expr<'input> {
     ),
     #[parse(postfix, bp = 5)]
     SimilarTo(Box<Self>, #[tok(SIMILAR, TO, this)] Box<Self>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    In(Box<Self>, #[tok(IN, this)] Box<Self>),
     #[parse(infix, lbp = 2, rbp = 3)]
     And(Box<Self>, #[tok(AND, this)] Box<Self>),
     #[parse(postfix, bp = 20)]
@@ -360,6 +364,14 @@ pub struct SimilarDelimited<'input> {
     #[tok(BEGIN, this, SIMILAR)]
     pub source: Box<Expr<'input>>,
     pub pattern: Box<Expr<'input>>,
+}
+
+#[derive(recursa::Node)]
+pub struct RestrictedOperand<'input> {
+    #[parse(pratt(exclude(In, And)))]
+    #[tok(POSITION, this, IN)]
+    pub needle: Box<Expr<'input>>,
+    pub haystack: Box<Expr<'input>>,
 }
 "#,
     )
@@ -428,6 +440,23 @@ fn main() {
     grammar::SimilarDelimited::parse(&mut input)
         .expect("an incomplete multi-token LED yields to the caller delimiter");
     assert!(input.is_eof());
+
+    let lexed = grammar::lex("name IN other");
+    let mut input = lexed.input();
+    let parsed = grammar::Expr::parse(&mut input)
+        .expect("an excluded LED remains available to ordinary Pratt callers");
+    assert!(input.is_eof());
+    assert!(matches!(parsed.into_ast(), grammar::Expr::In(_, _)));
+
+    let lexed = grammar::lex("POSITION name + other IN target");
+    let mut input = lexed.input();
+    let parsed = grammar::RestrictedOperand::parse(&mut input)
+        .expect("a restricted Pratt operand yields its excluded LED to the caller delimiter");
+    assert!(input.is_eof());
+    assert!(matches!(
+        *parsed.into_ast().needle,
+        grammar::Expr::Add(_, rhs) if matches!(*rhs, grammar::Expr::Name(_))
+    ));
 
     let lexed = grammar::lex("BEGIN GROUP 1 END GROUP GROUP 2");
     let mut input = lexed.input();

@@ -290,6 +290,12 @@ Every recursive `Box<Self>` field in a postfix tail inherits the postfix
 binding power as its minimum. It therefore consumes tighter operators while
 stopping before lower-binding delimiters such as the `AND` above.
 
+When one grammar position admits only a named subset of a Pratt language,
+`#[parse(pratt(exclude(In, And)))]` on that field disables those LED variants
+for the whole recursive operand parse. A disabled extender yields its token to
+the field's ordinary FOLLOW boundary; other uses of the Pratt Node are
+unchanged.
+
 Optionality of pure syntax is expressed by enum variants (presence = which
 variant parsed), as in `Alias::Explicit` vs `Alias::Bare` above — no
 `Option<AS>`-style keyword storage exists or is needed.
@@ -320,6 +326,7 @@ emission detail (see the budget note in A4), invisible in the API.
 | `#[parse(prefix, bp = N)]` | Pratt variant | Prefix operator; operand field `Box<Self>`. |
 | `#[parse(infix, lbp = N, rbp = M)]` | Pratt variant | Infix; `rbp = lbp + 1` for left-assoc. The first field is the implicit `Box<Self>` lhs; the suffix admits ordinary semantic fields but requires exactly one recursive `Box<Self>` rhs. |
 | `#[parse(postfix, bp = N)]` | Pratt variant | Postfix; recursive tail operands inherit `N` as their minimum binding power. |
+| `#[parse(pratt(exclude(A, B)))]` | field targeting a Pratt Node | Excludes the named LED variants from this field and its recursive operands; each name must identify an infix or postfix variant. |
 | `#[parse(postcondition = path)]` | type | Unsupported legacy syntax; express token eligibility with a named admission set. |
 | `#[parse(skip)]` | type | Item is not a grammar type (helper struct, hand-owned parsing). Diagrams optional via `#[parse(skip, diagram)]`. |
 | `#[parse(lookahead = k)]` | enum | Raises dispatch lookahead for this type (grammar-wide max in the root configuration). |

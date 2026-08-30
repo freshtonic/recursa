@@ -498,6 +498,8 @@ pub(crate) enum GrammarElement {
         attachment: Option<FixedTokenAttachment>,
         /// Supplies the separator used to correlate authored source with normalized grammar.
         separator: Option<Separator>,
+        /// Restricts the Pratt extensions admitted while parsing this field.
+        pratt_extensions: Option<PrattExtensionFilter>,
         /// Preserves Pretty configuration after source-level validation.
         pretty: PrettyHints,
         /// Supplies the attachment before used to correlate authored source with normalized grammar.
@@ -507,6 +509,13 @@ pub(crate) enum GrammarElement {
         /// Locates the authored construct represented by this source-model value.
         site: SourceSite,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Carries an authored restriction on the Pratt extensions available to one field.
+pub(crate) struct PrattExtensionFilter {
+    /// Names Pratt LED variants excluded from this field and its recursive operands.
+    pub(crate) excluded: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -931,6 +940,8 @@ pub(crate) enum SourceModelDiagnosticKind {
     InvalidTokenPlacement,
     /// Identifies the invalid pratt token placement authored-source form.
     InvalidPrattTokenPlacement,
+    /// Identifies an invalid field-local Pratt extension restriction.
+    InvalidPrattExtensionFilter,
     /// Identifies the configured ordinary derive conflict authored-source form.
     ConfiguredOrdinaryDeriveConflict,
     /// Identifies duplicate membership introduced by an admission union.
@@ -5279,6 +5290,12 @@ impl SourceModelBuilder<'_> {
                     field_configured,
                     &resolved_field,
                 ),
+                pratt_extensions: lower_pratt_extension_filter(
+                    &self.resolved,
+                    origin,
+                    field_configured,
+                    &mut self.diagnostics,
+                ),
                 pretty: self.lower_pretty_hints(
                     origin,
                     field_configured,
@@ -6822,6 +6839,7 @@ impl PositionalTokenPlanner {
             name,
             attachment: None,
             separator: None,
+            pratt_extensions: None,
             pretty,
             attachment_before: 0,
             attachment_after: 0,
@@ -7108,6 +7126,53 @@ impl SourcePrattPosition {
     }
 }
 
+/// Lowers one field-local Pratt extension restriction.
+fn lower_pratt_extension_filter(
+    resolved: &ResolvedSourceGrammar,
+    origin: SourceOrigin,
+    metas: &[Meta],
+    diagnostics: &mut Vec<SourceModelDiagnostic>,
+) -> Option<PrattExtensionFilter> {
+    let restrictions = metas
+        .iter()
+        .filter(|meta| is_pratt_filter_meta(meta))
+        .collect::<Vec<_>>();
+    if restrictions.is_empty() {
+        return None;
+    }
+    if restrictions.len() > 1 {
+        diagnostics.push(SourceModelDiagnostic {
+            kind: SourceModelDiagnosticKind::InvalidPrattExtensionFilter,
+            sites: restrictions
+                .iter()
+                .map(|meta| source_site(resolved, origin, span_range(meta.span())))
+                .collect(),
+            message: "a field accepts at most one Pratt extension restriction".to_owned(),
+        });
+        return None;
+    }
+    let Meta::List(list) = restrictions[0] else {
+        unreachable!("field Pratt restrictions use list-form #[parse(...)] syntax")
+    };
+    match syn::parse2::<PrattFieldSyntax>(list.tokens.clone()) {
+        Ok(syntax) => Some(PrattExtensionFilter {
+            excluded: syntax
+                .excluded
+                .into_iter()
+                .map(|ident| ident.unraw().to_string())
+                .collect(),
+        }),
+        Err(error) => {
+            diagnostics.push(SourceModelDiagnostic {
+                kind: SourceModelDiagnosticKind::InvalidPrattExtensionFilter,
+                sites: vec![source_site(resolved, origin, span_range(error.span()))],
+                message: error.to_string(),
+            });
+            None
+        }
+    }
+}
+
 /// Diagnoses Pratt-only attributes used outside a Pratt variant.
 fn reject_pratt_marker(
     resolved: &ResolvedSourceGrammar,
@@ -7224,6 +7289,20 @@ fn is_pratt_role_meta(meta: &Meta) -> bool {
         list.tokens.clone().into_iter().next(),
         Some(proc_macro2::TokenTree::Ident(role))
             if role == "prefix" || role == "infix" || role == "postfix"
+    )
+}
+
+/// Reports whether an attribute names a field-local Pratt restriction.
+fn is_pratt_filter_meta(meta: &Meta) -> bool {
+    let Meta::List(list) = meta else {
+        return false;
+    };
+    if !list.path.is_ident("parse") {
+        return false;
+    }
+    matches!(
+        list.tokens.clone().into_iter().next(),
+        Some(proc_macro2::TokenTree::Ident(keyword)) if keyword == "pratt"
     )
 }
 
@@ -8270,6 +8349,56 @@ enum FixedTokenSyntax {
 struct PrattSyntax {
     /// Supplies the position used to correlate authored source with normalized grammar.
     position: SourcePrattPosition,
+}
+
+/// Carries field-local Pratt extension restriction syntax.
+struct PrattFieldSyntax {
+    /// Names LED variants excluded at this field boundary.
+    excluded: Vec<syn::Ident>,
+}
+
+impl Parse for PrattFieldSyntax {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let pratt = syn::Ident::parse_any(input)?;
+        if pratt != "pratt" {
+            return Err(syn::Error::new(
+                pratt.span(),
+                "field Pratt restriction must start with pratt",
+            ));
+        }
+        let pratt_content;
+        syn::parenthesized!(pratt_content in input);
+        let exclude = syn::Ident::parse_any(&pratt_content)?;
+        if exclude != "exclude" {
+            return Err(syn::Error::new(
+                exclude.span(),
+                "field Pratt restriction supports only exclude(...)",
+            ));
+        }
+        let excluded_content;
+        syn::parenthesized!(excluded_content in pratt_content);
+        let excluded = syn::punctuated::Punctuated::<syn::Ident, Token![,]>::parse_terminated(
+            &excluded_content,
+        )?
+        .into_iter()
+        .collect::<Vec<_>>();
+        if excluded.is_empty() {
+            return Err(excluded_content.error("exclude(...) requires at least one Pratt variant"));
+        }
+        if !pratt_content.is_empty() || !input.is_empty() {
+            return Err(input.error("unexpected tokens after field Pratt restriction"));
+        }
+        let mut names = BTreeSet::new();
+        for ident in &excluded {
+            if !names.insert(ident.unraw().to_string()) {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!("duplicate excluded Pratt variant `{ident}`"),
+                ));
+            }
+        }
+        Ok(Self { excluded })
+    }
 }
 
 impl Parse for PrattSyntax {

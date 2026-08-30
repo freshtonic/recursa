@@ -626,6 +626,8 @@ pub(super) enum SemanticParseProjection {
         child_capture: PlannedCapturePolicy,
         /// Minimum binding power when parsing a Pratt child.
         pratt_min_bp: Option<u8>,
+        /// LED ordinals excluded at this authored field boundary.
+        pratt_excluded_led: Vec<usize>,
         /// Canonical repetition separator spelling, if any.
         separator: Option<String>,
         /// Fixed tokens attached around the semantic child.
@@ -2096,6 +2098,7 @@ pub(super) fn declaration_elements(
                             capture: PlannedCapturePolicy::Inherited,
                             child_capture: PlannedCapturePolicy::Inherited,
                             pratt_min_bp: None,
+                            pratt_excluded_led: Vec::new(),
                             separator: separator_spelling,
                             attachment: attachment
                                 .as_ref()
@@ -3182,6 +3185,7 @@ pub(super) fn plan_pratt_lhs(
                 capture: field_override.unwrap_or(variant_capture),
                 child_capture: field_override.unwrap_or(variant_capture),
                 pratt_min_bp: None,
+                pratt_excluded_led: Vec::new(),
                 separator: None,
                 attachment: None,
                 opaque_provenance: false,
@@ -3526,6 +3530,7 @@ pub(super) fn plan_elements(
                     MaterializedSemanticFieldProjection::Direct {
                         ty,
                         separator,
+                        pratt_extensions,
                         ..
                     },
                 attachment,
@@ -3641,6 +3646,12 @@ pub(super) fn plan_elements(
                     })
                     .transpose()?;
                 let terminal_application = closed_terminal_application(ty);
+                let pratt_excluded_led = planned_pratt_exclusions(
+                    lowered,
+                    terminal_application,
+                    pratt_extensions.as_ref(),
+                    &field_name,
+                )?;
                 let terminal_node = terminal_application.and_then(|application| {
                     lowered
                         .applications
@@ -3720,6 +3731,7 @@ pub(super) fn plan_elements(
                             capture,
                             child_capture,
                             pratt_min_bp,
+                            pratt_excluded_led,
                             separator,
                             attachment,
                             opaque_provenance: false,
@@ -4292,6 +4304,59 @@ pub(super) fn closed_terminal_application(
         | ClosedType::OneOrMore(inner) => closed_terminal_application(inner),
         ClosedType::ContentToken(_) => None,
     }
+}
+
+/// Resolves authored Pratt extension exclusions to the target application's LED ordinals.
+fn planned_pratt_exclusions(
+    lowered: &crate::materialization::LoweredGrammar,
+    terminal_application: Option<MaterializedApplicationId>,
+    filter: Option<&crate::source_model::PrattExtensionFilter>,
+    field_name: &str,
+) -> Result<Vec<usize>, String> {
+    let Some(filter) = filter else {
+        return Ok(Vec::new());
+    };
+    let application_id = terminal_application.ok_or_else(|| {
+        format!("field `{field_name}` applies a Pratt restriction to a non-generated terminal")
+    })?;
+    let application = lowered
+        .applications
+        .iter()
+        .find(|application| application.id == application_id)
+        .ok_or_else(|| {
+            format!("field `{field_name}` targets an unknown materialized application")
+        })?;
+    let MaterializedNodeBody::Pratt(variants) = &application.body else {
+        return Err(format!(
+            "field `{field_name}` applies a Pratt restriction to non-Pratt Node `{}`",
+            application.display_name,
+        ));
+    };
+    filter
+        .excluded
+        .iter()
+        .map(|excluded| {
+            let mut led_index = 0;
+            for variant in variants {
+                match variant {
+                    MaterializedPrattVariant::Nud(nud) if nud.common.name == *excluded => {
+                        return Err(format!(
+                            "field `{field_name}` cannot exclude Pratt NUD variant `{excluded}`; only extensions may be excluded"
+                        ));
+                    }
+                    MaterializedPrattVariant::Nud(_) => {}
+                    MaterializedPrattVariant::Led(led) if led.common.name == *excluded => {
+                        return Ok(led_index);
+                    }
+                    MaterializedPrattVariant::Led(_) => led_index += 1,
+                }
+            }
+            Err(format!(
+                "field `{field_name}` excludes unknown Pratt extension `{excluded}` from `{}`",
+                application.display_name,
+            ))
+        })
+        .collect()
 }
 
 /// Renders the concrete Rust type of a materialized node application.
@@ -5086,6 +5151,7 @@ pub(super) fn render_pratt_parse(
         helper_methods.push(quote! {
             fn #helper #helper_method_generics(
                 context: &mut #facade::__private::ParseContext<'_, '__recursa_input, A>,
+                __recursa_pratt_excluded: &[usize],
             ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
                 #body
             }
@@ -5095,10 +5161,12 @@ pub(super) fn render_pratt_parse(
                 context.parse_generated(
                     &#nud_follow_value,
                     context.capture_policy(),
-                    |context| Self::#helper(context),
+                    |context| Self::#helper(context, __recursa_pratt_excluded),
                 )?
             },
-            PrattPosition::Prefix { .. } => quote!(Self::#helper(context)?),
+            PrattPosition::Prefix { .. } => {
+                quote!(Self::#helper(context, __recursa_pratt_excluded)?)
+            }
             PrattPosition::Infix { .. } | PrattPosition::Postfix { .. } => {
                 unreachable!("validated Pratt NUD plan contains only atom or prefix branches")
             }
@@ -5192,6 +5260,7 @@ pub(super) fn render_pratt_parse(
                 context: &mut #facade::__private::ParseContext<'_, '__recursa_input, A>,
                 lhs: #facade::__private::ParsedNode<Self>,
                 #expression_start: usize,
+                __recursa_pratt_excluded: &[usize],
             ) -> Result<#facade::__private::ParsedNode<Self>, #facade::ParseError> {
                 Ok({ #body })
             }
@@ -5199,6 +5268,7 @@ pub(super) fn render_pratt_parse(
         led_branches.push(quote! {
             (Some(#index), _) => {
                 if #lbp < min_bp { break; }
+                if __recursa_pratt_excluded.contains(&#index) { break; }
                 if context.next_is(context.follow()) {
                     if !(#continuation_viable) { break; }
                     return Err(context.pratt_ambiguity(
@@ -5207,7 +5277,12 @@ pub(super) fn render_pratt_parse(
                             .expect("an active extender contributes an expectation"),
                     ));
                 }
-                lhs = Self::#helper(context, lhs, #expression_start)?;
+                lhs = Self::#helper(
+                    context,
+                    lhs,
+                    #expression_start,
+                    __recursa_pratt_excluded,
+                )?;
                 continue;
             }
         });
@@ -5497,6 +5572,7 @@ fn render_element_parse(
                     capture,
                     child_capture,
                     pratt_min_bp,
+                    pratt_excluded_led,
                     attachment,
                     ..
                 } => render_semantic_parse(
@@ -5512,6 +5588,7 @@ fn render_element_parse(
                     *child_capture,
                     pratt_owner,
                     *pratt_min_bp,
+                    pratt_excluded_led,
                     attachment.as_deref(),
                 ),
             };
@@ -5703,6 +5780,7 @@ pub(super) fn render_semantic_parse(
     child_capture: PlannedCapturePolicy,
     pratt_owner: Option<&proc_macro2::TokenStream>,
     pratt_min_bp: Option<u8>,
+    pratt_excluded_led: &[usize],
     attachment: Option<&FixedAttachmentParsePlan>,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
@@ -5720,15 +5798,32 @@ pub(super) fn render_semantic_parse(
             let (failure_definition, failure_value) =
                 render_follow_value(plan, &failure_name, required_failure);
             let wrapped = render_wrapped_value(quote!(parsed_value), wrappers);
-            let direct_child = match (pratt_owner, pratt_min_bp) {
-                (Some(owner), Some(min_bp)) => quote! {
+            let authored_exclusions = quote!(&[#(#pratt_excluded_led),*]);
+            let direct_child = if !pratt_excluded_led.is_empty() {
+                let min_bp = pratt_min_bp.unwrap_or(0);
+                quote! {
                     context.parse_generated(&#follow_value, #child_capture, |context| {
-                        #owner::__recursa_parse_bp(context, #min_bp)
+                        <#terminal>::__recursa_parse_bp(
+                            context,
+                            #min_bp,
+                            #authored_exclusions,
+                        )
                     })
-                },
-                _ => quote! {
+                }
+            } else if let (Some(owner), Some(min_bp)) = (pratt_owner, pratt_min_bp) {
+                quote! {
+                    context.parse_generated(&#follow_value, #child_capture, |context| {
+                        #owner::__recursa_parse_bp(
+                            context,
+                            #min_bp,
+                            __recursa_pratt_excluded,
+                        )
+                    })
+                }
+            } else {
+                quote! {
                     context.parse_node::<#terminal>(&#follow_value, #child_capture)
-                },
+                }
             };
             let (attachment_definitions, parse_child) = attachment.map_or_else(
                 || (quote!(), direct_child),
@@ -5743,6 +5838,7 @@ pub(super) fn render_semantic_parse(
                         &child_capture,
                         pratt_owner,
                         pratt_min_bp,
+                        pratt_excluded_led,
                     )
                 },
             );
@@ -5783,10 +5879,19 @@ pub(super) fn render_semantic_parse(
                 render_follow_value(plan, &follow_name, child_follow);
             let wrapped = render_wrapped_value(quote!(parsed_value), wrappers);
             let absent = render_absent_value(wrappers);
-            let direct_child = quote!(context.parse_node::<#terminal>(
-                &#follow_value,
-                #child_capture,
-            ));
+            let authored_exclusions = quote!(&[#(#pratt_excluded_led),*]);
+            let direct_child = if pratt_excluded_led.is_empty() {
+                quote!(context.parse_node::<#terminal>(
+                    &#follow_value,
+                    #child_capture,
+                ))
+            } else {
+                quote! {
+                    context.parse_generated(&#follow_value, #child_capture, |context| {
+                        <#terminal>::__recursa_parse_bp(context, 0, #authored_exclusions)
+                    })
+                }
+            };
             let (attachment_definitions, parse_child) = attachment.map_or_else(
                 || (quote!(), direct_child),
                 |attachment| {
@@ -5800,6 +5905,7 @@ pub(super) fn render_semantic_parse(
                         &child_capture,
                         pratt_owner,
                         pratt_min_bp,
+                        pratt_excluded_led,
                     )
                 },
             );
@@ -5854,6 +5960,7 @@ pub(super) fn render_semantic_parse(
             after_separator_failure.as_deref(),
             capture,
             child_capture,
+            pratt_excluded_led,
             attachment,
         ),
     }
@@ -5877,6 +5984,7 @@ pub(super) fn render_attachment_child(
     child_capture: &proc_macro2::TokenStream,
     pratt_owner: Option<&proc_macro2::TokenStream>,
     pratt_min_bp: Option<u8>,
+    pratt_excluded_led: &[usize],
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let facade = &plan.facade;
     let PlannedContainer::Direct {
@@ -5894,15 +6002,24 @@ pub(super) fn render_attachment_child(
         expected_static(node_index, unique_index, "attachment_semantic_failure");
     let (semantic_failure_definition, semantic_failure_value) =
         render_follow_value(plan, &semantic_failure_name, required_failure);
-    let semantic_parse = match (pratt_owner, pratt_min_bp) {
-        (Some(owner), Some(min_bp)) => quote! {
+    let authored_exclusions = quote!(&[#(#pratt_excluded_led),*]);
+    let semantic_parse = if !pratt_excluded_led.is_empty() {
+        let min_bp = pratt_min_bp.unwrap_or(0);
+        quote! {
             context.parse_generated(&#semantic_follow_value, #child_capture, |context| {
-                #owner::__recursa_parse_bp(context, #min_bp)
+                <#terminal>::__recursa_parse_bp(context, #min_bp, #authored_exclusions)
             })
-        },
-        _ => quote! {
+        }
+    } else if let (Some(owner), Some(min_bp)) = (pratt_owner, pratt_min_bp) {
+        quote! {
+            context.parse_generated(&#semantic_follow_value, #child_capture, |context| {
+                #owner::__recursa_parse_bp(context, #min_bp, __recursa_pratt_excluded)
+            })
+        }
+    } else {
+        quote! {
             context.parse_node::<#terminal>(&#semantic_follow_value, #child_capture)
-        },
+        }
     };
     let render_syntax = |syntax: &AttachedFixedSyntaxParsePlan, role: &str, index: usize| {
         let occurrence = format_ident!("__recursa_attachment_{role}_{index}");
@@ -6009,6 +6126,7 @@ pub(super) fn render_repeated_parse(
     after_separator_failure: Option<&PlannedFollow>,
     capture: proc_macro2::TokenStream,
     child_capture: proc_macro2::TokenStream,
+    pratt_excluded_led: &[usize],
     attachment: Option<&FixedAttachmentParsePlan>,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
@@ -6040,10 +6158,19 @@ pub(super) fn render_repeated_parse(
         || (quote!(), quote!()),
         |failure| render_follow_value(plan, &after_separator_name, failure),
     );
-    let direct_child = quote!(context.parse_node::<#terminal>(
-        &#child_follow_value,
-        #child_capture,
-    ));
+    let authored_exclusions = quote!(&[#(#pratt_excluded_led),*]);
+    let direct_child = if pratt_excluded_led.is_empty() {
+        quote!(context.parse_node::<#terminal>(
+            &#child_follow_value,
+            #child_capture,
+        ))
+    } else {
+        quote! {
+            context.parse_generated(&#child_follow_value, #child_capture, |context| {
+                <#terminal>::__recursa_parse_bp(context, 0, #authored_exclusions)
+            })
+        }
+    };
     let (attachment_definitions, parse_child) = attachment.map_or_else(
         || (quote!(), direct_child),
         |attachment| {
@@ -6057,6 +6184,7 @@ pub(super) fn render_repeated_parse(
                 &child_capture,
                 None,
                 None,
+                pratt_excluded_led,
             )
         },
     );
@@ -6515,12 +6643,13 @@ pub(super) fn render_node_parse_application(
     };
     let (parse_body, generated_helpers) = match &application.body {
         NodeBodyPlan::Pratt(_) => (
-            quote!(Self::__recursa_parse_bp(context, 0)),
+            quote!(Self::__recursa_parse_bp(context, 0, &[])),
             quote! {
                 impl #helper_impl_generics #ty #helper_where_clause {
-                    fn __recursa_parse_bp #helper_method_generics(
+                    pub(crate) fn __recursa_parse_bp #helper_method_generics(
                         context: &mut #facade::__private::ParseContext<'_, #input_lifetime, A>,
                         min_bp: u8,
+                        __recursa_pratt_excluded: &[usize],
                     ) -> Result<
                         #facade::__private::ParsedNode<Self>,
                         #facade::ParseError,
