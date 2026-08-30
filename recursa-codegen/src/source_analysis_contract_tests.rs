@@ -406,6 +406,13 @@ const PRODUCER_EVIDENCE: &[ProducerEvidence] = &[
         command: "cargo test -p recursa-codegen source_analysis_tests::tests::invalid_presence_and_optional_fixed_syntax_reports_source_analysis_diagnostics --locked",
     },
     ProducerEvidence {
+        codes: &["RCA3130"],
+        producer_source: "src/source_analysis.rs",
+        test_source: "src/source_analysis_tests.rs",
+        test_name: "invalid_pratt_extension_filter_reports_source_analysis_diagnostic",
+        command: "cargo test -p recursa-codegen source_analysis_tests::tests::invalid_pratt_extension_filter_reports_source_analysis_diagnostic --locked",
+    },
+    ProducerEvidence {
         codes: &["RCA3118", "RCA3210"],
         producer_source: "src/source_analysis.rs",
         test_source: "src/source_model.rs",

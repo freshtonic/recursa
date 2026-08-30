@@ -470,6 +470,10 @@ fn generated_pretty_keeps_content_repetition_separators_and_closing_delimiters_t
 
 recursa::tokens! {
     ignore = r"[ \t\r\n]+",
+    keywords {
+        LIST => "LIST",
+        TAIL => "TAIL",
+    }
     punctuation {
         COMMA => ",",
         LPAREN => "(",
@@ -515,6 +519,26 @@ pub struct StarCall {
     pub star: Star,
     pub close: Close,
 }
+
+#[derive(recursa::Node)]
+#[tok(TAIL)]
+pub struct Tail;
+
+#[derive(recursa::Node)]
+pub struct WordWithOptionalStar<'input> {
+    pub word: Word<'input>,
+    #[presence(STAR)]
+    #[pretty(break_before = soft)]
+    pub star: bool,
+}
+
+#[derive(recursa::Node)]
+#[tok(LIST)]
+pub struct OptionalTailList<'input> {
+    #[sep(COMMA)]
+    pub values: recursa::Vec1<WordWithOptionalStar<'input>>,
+    pub tail: Option<Tail>,
+}
 "#,
     )
     .expect("write the Pretty boundary grammar");
@@ -542,6 +566,16 @@ fn main() {
     let rendered = call.render();
     if rendered != "(*)" {
         failures.push(format!("star call rendered as {rendered:?}"));
+    }
+
+    let lexed = grammar::lex("LIST alpha,beta");
+    let mut input = lexed.input();
+    let list = grammar::OptionalTailList::parse(&mut input)
+        .expect("Node repetition followed by an absent optional tail parses");
+    assert!(input.is_eof());
+    let rendered = list.render();
+    if rendered != "LIST alpha, beta" {
+        failures.push(format!("optional-tail list rendered as {rendered:?}"));
     }
 
     assert!(failures.is_empty(), "{}", failures.join("; "));

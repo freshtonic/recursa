@@ -2601,6 +2601,23 @@ fn render_pretty_fixed_token_presence(
         .iter()
         .enumerate()
         .map(|(offset, fixed)| render_pretty_attached_syntax(presence_index + 1 + offset, fixed));
+    if before.is_empty() && after.is_empty() {
+        let rendered = quote! {
+            context.with_child(#index, |context| {
+                context.with_child(#presence_index, |context| {
+                    #(#sequence_tokens)*
+                    Ok(())
+                })?;
+                Ok(())
+            })?;
+        };
+        let rendered = render_pretty_hints(pretty, rendered);
+        return quote! {
+            if #value {
+                #rendered
+            }
+        };
+    }
     let rendered = quote! {
         context.with_child(#index, |context| {
             #(#before_tokens)*

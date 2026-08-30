@@ -562,6 +562,35 @@ struct Root { #[presence(this)] value: bool }
     }
 
     #[test]
+    fn invalid_pratt_extension_filter_reports_source_analysis_diagnostic() {
+        let package = fixture(
+            r#"
+recursa::grammar! { module = crate }
+#[derive(recursa::Node)]
+struct Value;
+#[derive(recursa::Node)]
+struct Root {
+    #[parse(pratt(exclude()))]
+    value: Value,
+}
+"#,
+        );
+        let error = crate::source_analysis::analyze_source_tree(
+            crate::source_analysis::SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect_err("an empty Pratt extension filter must fail source analysis");
+        assert!(
+            error
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code().as_str() == "RCA3130"),
+            "missing RCA3130:\n{}",
+            error.report().canonical_rendering(),
+        );
+    }
+
+    #[test]
     fn semantic_analysis_conflict_remedies_keep_typed_semantic_operands_without_ids() {
         let mut grammar = crate::GrammarDescription::new(
             "remedy-adaptation",
