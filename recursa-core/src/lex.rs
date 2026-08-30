@@ -124,6 +124,25 @@ struct LexMatch {
     diagnostic: Option<RelativeLexDiagnostic>,
 }
 
+/// One operator-run family's decision at the current source offset.
+struct OperatorRunDecision {
+    /// ASCII alphabet that relates fixed candidates to this operator family.
+    characters: &'static str,
+    /// Final matcher extent after the family's fence and trailing rules.
+    final_extent: Option<usize>,
+    /// Interior fence offset whose complete spelling is consumed by valid trivia.
+    consumed_fence: Option<usize>,
+}
+
+impl OperatorRunDecision {
+    /// Reports whether this family admits every byte of a fixed candidate.
+    fn admits(&self, candidate: &[u8]) -> bool {
+        candidate
+            .iter()
+            .all(|byte| self.characters.as_bytes().contains(byte))
+    }
+}
+
 /// Compiled state reused while scanning one source.
 enum CompiledLexMatcher {
     /// Compiled anchored regular expression.
@@ -358,6 +377,76 @@ impl CompiledLexMatcher {
             }
         }
     }
+
+    /// Computes this operator family's decision and any trivia-consumed interior fence.
+    fn operator_run_decision(
+        &self,
+        remaining: &str,
+        skip_matchers: &[&Self],
+    ) -> Option<OperatorRunDecision> {
+        let Self::OperatorRun {
+            characters, fences, ..
+        } = self
+        else {
+            return None;
+        };
+
+        let admitted = characters.as_bytes();
+        let mut fence = None;
+        let mut end = 0;
+        while let Some(byte) = remaining.as_bytes().get(end) {
+            let fence_length = fences
+                .iter()
+                .filter(|fence| remaining.as_bytes()[end..].starts_with(fence.as_bytes()))
+                .map(|fence| fence.len())
+                .min();
+            if let Some(fence_length) = fence_length {
+                fence = (end > 0).then_some((end, fence_length));
+                break;
+            }
+            if !admitted.contains(byte) {
+                break;
+            }
+            end += 1;
+        }
+
+        let consumed_fence = fence.and_then(|(start, fence_length)| {
+            skip_matchers
+                .iter()
+                .any(|matcher| {
+                    matcher.matched(&remaining[start..]).is_some_and(|found| {
+                        found.diagnostic.is_none() && found.end >= fence_length
+                    })
+                })
+                .then_some(start)
+        });
+        Some(OperatorRunDecision {
+            characters,
+            final_extent: self.matched(remaining).map(|found| found.end),
+            consumed_fence,
+        })
+    }
+}
+
+/// Reports whether valid trailing trivia makes an operator-shaped fixed candidate ineligible.
+fn fixed_candidate_crosses_consumed_fence(
+    candidate: &[u8],
+    operator_runs: &[OperatorRunDecision],
+) -> bool {
+    let mut related = operator_runs
+        .iter()
+        .filter(|operator_run| operator_run.admits(candidate));
+    let reaches_candidate = related.clone().any(|operator_run| {
+        operator_run
+            .final_extent
+            .is_some_and(|end| end >= candidate.len())
+    });
+    !reaches_candidate
+        && related.any(|operator_run| {
+            operator_run
+                .consumed_fence
+                .is_some_and(|start| start < candidate.len())
+        })
 }
 
 /// Advances the source-domain nesting counter without allowing an impossible wraparound.
@@ -379,13 +468,38 @@ pub fn lex<'input>(
         .iter()
         .map(|rule| (CompiledLexMatcher::new(rule.matcher), *rule))
         .collect::<Vec<_>>();
+    let skip_matchers = compiled
+        .iter()
+        .filter(|(_, rule)| rule.skip)
+        .map(|(matcher, _)| matcher)
+        .collect::<Vec<_>>();
+    let operator_matchers = compiled
+        .iter()
+        .filter_map(|(matcher, _)| {
+            matches!(matcher, CompiledLexMatcher::OperatorRun { .. }).then_some(matcher)
+        })
+        .collect::<Vec<_>>();
+    let mut operator_decisions = Vec::with_capacity(operator_matchers.len());
     let mut records = Vec::new();
     let mut offset = 0;
     while offset < source.len() {
         let remaining = &source[offset..];
+        operator_decisions.clear();
+        operator_decisions.extend(operator_matchers.iter().map(|matcher| {
+            matcher
+                .operator_run_decision(remaining, &skip_matchers)
+                .expect("operator matcher produces an operator decision")
+        }));
         let selected = compiled
             .iter()
             .filter_map(|(matcher, rule)| matcher.matched(remaining).map(|found| (found, *rule)))
+            .filter(|(found, rule)| {
+                !rule.fixed
+                    || !fixed_candidate_crosses_consumed_fence(
+                        &remaining.as_bytes()[..found.end],
+                        &operator_decisions,
+                    )
+            })
             .max_by_key(|(found, rule)| (found.end, rule.fixed, rule.priority));
 
         let (end, emitted_kind, diagnostic) = selected.map_or_else(
