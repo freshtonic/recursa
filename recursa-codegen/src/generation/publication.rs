@@ -18,6 +18,7 @@ mod tests {
         };
     }
     focused_case!(incomplete_staging_is_unselectable);
+    focused_case!(same_identity_cannot_reuse_a_different_generated_payload);
     focused_case!(every_failed_publication_checkpoint_invalidates_stale_selection_and_recovers);
     focused_case!(filesystem_invalidation_failure_poisons_stale_selection_and_recovers);
     focused_case!(filesystem_rename_failures_leave_no_loadable_or_staged_generation);
@@ -64,15 +65,7 @@ pub(super) fn publish_with_checkpoint(
         .map_err(|error| format!("cannot create Generation directory: {error}"))?;
     let published = generations.join(identity);
     if published.exists() {
-        if !published.join("root.rs").is_file()
-            || !published.join("loader-map").is_file()
-            || rendered
-                .nodes
-                .iter()
-                .any(|(name, _)| !published.join(name).is_file())
-        {
-            return Err("an existing published Generation is incomplete".to_owned());
-        }
+        validate_reusable_generation(&published, rendered)?;
     } else {
         checkpoint(PublicationCheckpoint::BeforeStaging)?;
         let nonce = staging_nonce()?;
@@ -110,17 +103,49 @@ pub(super) fn stage_and_publish(
         fs::write(staging.join(name), node)
             .map_err(|error| format!("cannot stage generated Node `{name}`: {error}"))?;
     }
-    let loader_map = rendered
-        .node_anchors
-        .iter()
-        .zip(&rendered.nodes)
-        .map(|(anchor, (name, _))| format!("{anchor}\t{name}\n"))
-        .collect::<String>();
+    let loader_map = render_loader_map(rendered);
     fs::write(staging.join("loader-map"), loader_map)
         .map_err(|error| format!("cannot stage the Node loader map: {error}"))?;
     fs::rename(staging, published)
         .map_err(|error| format!("cannot cross the Generation publication barrier: {error}"))?;
     Ok(())
+}
+
+/// Confirms that an immutable payload with the same identity has exactly the rendered content.
+fn validate_reusable_generation(
+    published: &Path,
+    rendered: &RenderedGeneration,
+) -> Result<(), String> {
+    let loader_map = render_loader_map(rendered);
+    let expected_files = std::iter::once(("root.rs", rendered.root.as_str()))
+        .chain(std::iter::once(("loader-map", loader_map.as_str())))
+        .chain(
+            rendered
+                .nodes
+                .iter()
+                .map(|(name, source)| (name.as_str(), source.as_str())),
+        );
+    for (name, expected) in expected_files {
+        let path = published.join(name);
+        let actual = fs::read_to_string(&path)
+            .map_err(|_| "an existing published Generation is incomplete".to_owned())?;
+        if actual != expected {
+            return Err(format!(
+                "Generation identity collision: generated payload `{name}` differs from the existing immutable payload"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Renders the loader map shared by staging and immutable-payload validation.
+fn render_loader_map(rendered: &RenderedGeneration) -> String {
+    rendered
+        .node_anchors
+        .iter()
+        .zip(&rendered.nodes)
+        .map(|(anchor, (name, _))| format!("{anchor}\t{name}\n"))
+        .collect()
 }
 
 /// Atomically replaces the structural-loader selector after its target is fully published.

@@ -2593,6 +2593,29 @@ pub(super) fn incomplete_staging_is_unselectable() {
     assert!(!staging.join("node-0.rs").exists());
 }
 
+pub(super) fn same_identity_cannot_reuse_a_different_generated_payload() {
+    let output = tempfile::tempdir().unwrap();
+    let original = publication_fixture("g_same");
+    publish(output.path(), "g_same", &original).unwrap();
+    invalidate_selection(output.path()).unwrap();
+
+    let mut changed = publication_fixture("g_same");
+    changed.root.push_str(" changed");
+    let error = publish(output.path(), "g_same", &changed).unwrap_err();
+    assert!(error.contains("Generation identity collision"));
+    assert_eq!(selected_generation(output.path()), None);
+    assert_eq!(
+        fs::read_to_string(output.path().join("recursa-generations/g_same/root.rs")).unwrap(),
+        original.root
+    );
+
+    publish(output.path(), "g_same", &original).unwrap();
+    assert_eq!(
+        selected_generation(output.path()).as_deref(),
+        Some("g_same")
+    );
+}
+
 fn publication_fixture(identity: &str) -> RenderedGeneration {
     RenderedGeneration {
         root: format!("// {identity} root"),
