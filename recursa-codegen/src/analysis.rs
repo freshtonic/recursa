@@ -624,20 +624,48 @@ impl PartialOrd for BalancedTailSequenceKey {
 /// grammar is structurally sound, FIRST, Pratt extenders, provenance, FOLLOW,
 /// conflicts, and frozen decisions are computed in dependency order. This
 /// ordering is part of the diagnostic contract: downstream phases never
-/// manufacture findings from invalid upstream facts.
+/// manufacture findings from invalid upstream facts. Successful public
+/// reports compact reachable proofs into canonical dense identities.
 pub fn analyze(grammar: &GrammarDescription) -> AnalysisReport {
-    analyze_with_sequence_materialization(grammar, true)
+    analyze_with_publication_policy(grammar, AnalysisPublicationPolicy::PUBLIC)
 }
 
-/// Validates a grammar for parser generation without eagerly expanding reporting-only FIRST-k rows.
+/// Validates a grammar for parser generation using transient, fully resolvable provenance.
+///
+/// Unlike [`analyze`], this private path neither expands reporting-only FIRST-k rows nor
+/// canonicalizes proof identities. The returned report owns the original proof arena, so every
+/// retained proof identity remains valid until generation drops the report.
 pub(crate) fn analyze_for_generation(grammar: &GrammarDescription) -> AnalysisReport {
-    analyze_with_sequence_materialization(grammar, false)
+    analyze_with_publication_policy(grammar, AnalysisPublicationPolicy::GENERATION)
 }
 
-/// Runs semantic analysis with an explicit reporting-materialization policy.
-fn analyze_with_sequence_materialization(
-    grammar: &GrammarDescription,
+#[derive(Clone, Copy)]
+/// Controls which reporting work is performed before an analysis report is published.
+struct AnalysisPublicationPolicy {
+    /// Whether bounded FIRST rows used only by public reporting are materialized.
     materialize_sequences: bool,
+    /// Whether reachable proof nodes receive canonical dense identities.
+    compact_proofs: bool,
+}
+
+impl AnalysisPublicationPolicy {
+    /// Canonical public analysis with complete reporting artifacts.
+    const PUBLIC: Self = Self {
+        materialize_sequences: true,
+        compact_proofs: true,
+    };
+
+    /// Private generation analysis retaining transient proof identities.
+    const GENERATION: Self = Self {
+        materialize_sequences: false,
+        compact_proofs: false,
+    };
+}
+
+/// Runs semantic analysis with an explicit report-publication policy.
+fn analyze_with_publication_policy(
+    grammar: &GrammarDescription,
+    policy: AnalysisPublicationPolicy,
 ) -> AnalysisReport {
     // Phase boundary: stop after invalid prerequisites so later facts are never derived from an incoherent grammar.
     let locations = grammar.locations.clone();
@@ -709,7 +737,7 @@ fn analyze_with_sequence_materialization(
             }
         }
     };
-    if decisions.is_some() && materialize_sequences {
+    if decisions.is_some() && policy.materialize_sequences {
         populate_first_sequences(&first_sequence_analysis, &mut first_by_type);
     }
     let first_provenance_by_type = first_provenance
@@ -747,7 +775,9 @@ fn analyze_with_sequence_materialization(
         proofs,
         diagnostic_context,
     };
-    compact_report_proofs(&mut report);
+    if policy.compact_proofs {
+        compact_report_proofs(&mut report);
+    }
     report
 }
 
@@ -1040,6 +1070,9 @@ impl<'a> FirstSequenceAnalysis<'a> {
 
 /// Compacts reachable proof nodes and remaps every report reference.
 fn compact_report_proofs(report: &mut AnalysisReport) {
+    #[cfg(test)]
+    REPORT_PROOF_COMPACTIONS.set(REPORT_PROOF_COMPACTIONS.get().saturating_add(1));
+
     let mut roots = Vec::new();
     if let Some(output) = &report.output {
         for positions in &output.first_provenance_by_type {
@@ -1089,6 +1122,91 @@ fn compact_report_proofs(report: &mut AnalysisReport) {
             conflict.witness.left = remap.get(conflict.witness.left);
             conflict.witness.right = remap.get(conflict.witness.right);
         }
+    }
+}
+
+#[cfg(test)]
+mod analysis_publication_tests {
+    use super::*;
+
+    /// Builds one successful grammar whose report contains referenced proofs.
+    fn one_token_grammar() -> GrammarDescription {
+        let mut grammar = GrammarDescription::new("one-token", 1, 1, TextEquivalence::Sensitive);
+        let location = grammar.push_location(Location::new(crate::SourceId::new(0), 0..1));
+        let declaration = grammar.push_declaration(crate::Declaration::new("TOKEN", location));
+        let kind = grammar.push_kind(crate::KindDescription::new("TOKEN", declaration));
+        let atom = grammar.push_atom(crate::AtomDescription::new(
+            "TOKEN",
+            declaration,
+            AtomExpression::Kind(kind),
+        ));
+        let token = grammar.push_type(crate::TypeDescription::new(
+            "Token",
+            declaration,
+            TypeShape::Token {
+                atom,
+                text_predicate: None,
+            },
+        ));
+        grammar.entry_types.push(token);
+        grammar
+    }
+
+    /// Collects every proof identity observable from one analysis report.
+    fn report_proof_roots(report: &AnalysisReport) -> Vec<ProofId> {
+        let mut roots = Vec::new();
+        if let Some(output) = &report.output {
+            for positions in &output.first_provenance_by_type {
+                for position in positions {
+                    roots.extend(position.proof_roots());
+                }
+            }
+            for positions in output.extender_provenance_by_type.iter().flatten() {
+                for position in positions {
+                    roots.extend(position.proof_roots());
+                }
+            }
+            for follow in output.follow_by_type.iter().chain(&output.follow_by_site) {
+                roots.extend(follow.kinds.proof_roots());
+                roots.extend(follow.eof_proof);
+            }
+        }
+        for diagnostic in &report.diagnostics {
+            if let Some(conflict) = &diagnostic.conflict {
+                roots.extend([conflict.witness.left, conflict.witness.right]);
+            }
+        }
+        roots
+    }
+
+    #[test]
+    fn public_analysis_compacts_once_while_generation_analysis_does_not_compact() {
+        let grammar = one_token_grammar();
+
+        reset_report_proof_compactions_for_test();
+        let public = analyze(&grammar);
+        assert!(public.output.is_some());
+        assert_eq!(report_proof_compactions_for_test(), 1);
+
+        reset_report_proof_compactions_for_test();
+        let generation = analyze_for_generation(&grammar);
+        assert!(generation.output.is_some());
+        assert_eq!(
+            report_proof_compactions_for_test(),
+            0,
+            "generation analysis must retain transient proofs without canonical compaction",
+        );
+        let roots = report_proof_roots(&generation);
+        assert!(
+            !roots.is_empty(),
+            "the fixture must exercise proof references"
+        );
+        assert!(
+            roots
+                .iter()
+                .all(|proof| generation.proofs().get(*proof).is_some()),
+            "transient proof identities must remain resolvable for the report lifetime",
+        );
     }
 }
 
@@ -3349,6 +3467,20 @@ thread_local! {
     static BALANCED_TAIL_MATERIALIZED_ROWS: Cell<usize> = const { Cell::new(0) };
     /// Counts cover-only nodes that retain full semantic residual identities.
     static FIRST_LANGUAGE_FULL_COVER_STATE_BUILDS: Cell<usize> = const { Cell::new(0) };
+    /// Counts canonical proof compactions published on the current test thread.
+    static REPORT_PROOF_COMPACTIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+/// Resets canonical report-proof compactions on the current test thread.
+pub(crate) fn reset_report_proof_compactions_for_test() {
+    REPORT_PROOF_COMPACTIONS.set(0);
+}
+
+#[cfg(test)]
+/// Returns canonical report-proof compactions on the current test thread.
+pub(crate) fn report_proof_compactions_for_test() -> usize {
+    REPORT_PROOF_COMPACTIONS.get()
 }
 
 #[cfg(test)]

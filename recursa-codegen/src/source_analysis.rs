@@ -1235,3 +1235,68 @@ fn adapt_analysis_label(
         .and_then(|location| location.with_source_text(&source.text))
         .map(|location| RecursaDiagnosticLabel::located(location, &label.message))
 }
+
+#[cfg(test)]
+mod transient_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn transient_and_compacted_provenance_adapt_to_identical_source_diagnostics() {
+        let package = tempfile::tempdir().expect("temporary diagnostic-provenance fixture");
+        std::fs::write(
+            package.path().join("grammar.rs"),
+            r#"
+recursa::grammar! { module = crate, max_lookahead = 1 }
+recursa::tokens! { keywords { SELECT => "SELECT" } }
+
+#[derive(recursa::Node)]
+#[tok(SELECT)]
+struct Select;
+
+#[derive(recursa::Node)]
+struct Inner {
+    maybe: Option<Select>,
+}
+
+#[derive(recursa::Node)]
+struct Root {
+    #[sep(SELECT)]
+    items: Vec<Inner>,
+}
+"#,
+        )
+        .expect("write diagnostic-provenance fixture");
+        let selected_root = Path::new("grammar.rs");
+        let success = analyze_source_tree(
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .expect("nullable FOLLOW warning coexists with successful analysis");
+        let transient = &success.analyzed.analysis;
+        let compact = crate::analysis::analyze(&success.analyzed.lowered.grammar);
+
+        assert_eq!(
+            transient.canonical_diagnostics(),
+            compact.canonical_diagnostics(),
+            "transient proof identities must render the same semantic diagnostics",
+        );
+        let compact_build_report = BuildReport::new(
+            compact
+                .diagnostics
+                .iter()
+                .map(|diagnostic| {
+                    adapt_analysis(
+                        diagnostic,
+                        &compact,
+                        &success.analyzed.lowered,
+                        selected_root,
+                    )
+                })
+                .collect(),
+        );
+        assert_eq!(
+            success.build_report, compact_build_report,
+            "source adaptation must not expose transient proof identities",
+        );
+    }
+}
