@@ -5,15 +5,299 @@
 
 use super::*;
 
+#[cfg(test)]
+std::thread_local! {
+    /// Structural emission-lookup work isolated to the current test thread.
+    static EMISSION_LOOKUP_INSTRUMENTATION: std::cell::Cell<EmissionLookupInstrumentation> =
+        const { std::cell::Cell::new(EmissionLookupInstrumentation::EMPTY) };
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+/// Structural work performed while joining frozen decisions to one emission plan.
+pub(super) struct EmissionLookupInstrumentation {
+    /// Candidate dispatch records inspected by linear lookups.
+    pub(super) dispatch_candidates: usize,
+    /// Candidate failure-edge records inspected by linear lookups.
+    pub(super) failure_edge_candidates: usize,
+    /// Candidate container-machine records inspected by linear lookups.
+    pub(super) container_machine_candidates: usize,
+    /// Complete Pratt extender ExpectedSets constructed.
+    pub(super) pratt_extender_builds: usize,
+    /// Pratt branches inspected while constructing extender ExpectedSets.
+    pub(super) pratt_extender_branch_candidates: usize,
+}
+
+#[cfg(test)]
+impl EmissionLookupInstrumentation {
+    /// Empty structural-work snapshot.
+    const EMPTY: Self = Self {
+        dispatch_candidates: 0,
+        failure_edge_candidates: 0,
+        container_machine_candidates: 0,
+        pratt_extender_builds: 0,
+        pratt_extender_branch_candidates: 0,
+    };
+}
+
+/// Resets emission lookup instrumentation on the current test thread.
+#[cfg(test)]
+pub(super) fn reset_emission_lookup_instrumentation() {
+    EMISSION_LOOKUP_INSTRUMENTATION.set(EmissionLookupInstrumentation::EMPTY);
+}
+
+/// Returns emission lookup instrumentation on the current test thread.
+#[cfg(test)]
+pub(super) fn emission_lookup_instrumentation() -> EmissionLookupInstrumentation {
+    EMISSION_LOOKUP_INSTRUMENTATION.get()
+}
+
+#[cfg(test)]
+/// Adds structural work to the current test thread's emission snapshot.
+fn observe_emission_lookup_work(update: impl FnOnce(&mut EmissionLookupInstrumentation)) {
+    EMISSION_LOOKUP_INSTRUMENTATION.with(|counter| {
+        let mut instrumentation = counter.get();
+        update(&mut instrumentation);
+        counter.set(instrumentation);
+    });
+}
+
+/// Finds one dispatch while recording aggregate candidate work for focused tests.
+#[inline]
+fn find_dispatch(
+    candidates: &[crate::DispatchPlan],
+    mut predicate: impl FnMut(&crate::DispatchPlan) -> bool,
+) -> Option<&crate::DispatchPlan> {
+    #[cfg(test)]
+    let mut inspected = 0;
+    let result = candidates.iter().find(|candidate| {
+        #[cfg(test)]
+        {
+            inspected += 1;
+        }
+        predicate(candidate)
+    });
+    #[cfg(test)]
+    observe_emission_lookup_work(|work| work.dispatch_candidates += inspected);
+    result
+}
+
+/// Dense, generation-local access to frozen semantic decisions and derived Pratt expectations.
+pub(super) struct EmissionLookupIndex<'a> {
+    /// Authoritative frozen decisions retained for dispatch traversal.
+    decisions: &'a crate::DecisionProducts,
+    /// One container-machine slot per dense parse-site identity.
+    containers_by_site: Vec<Option<&'a crate::ContainerMachine>>,
+    /// Owner-local failure edges indexed by failure kind.
+    failures_by_owner: Vec<[Option<&'a crate::FailureEdge>; 8]>,
+    /// Site-local failure edges indexed by failure kind.
+    failures_by_site: Vec<[Option<&'a crate::FailureEdge>; 8]>,
+    /// Grammar-scoped mapping from token kinds to emitted expectation atoms.
+    atom_index: &'a ExpectedAtomIndex,
+    /// Runtime token-kind width shared by every emitted expectation.
+    kind_count: usize,
+    /// Active and inactive extender sets memoized by semantic owner and binding threshold.
+    pratt_thresholds: std::cell::RefCell<BTreeMap<(crate::TypeId, u8), (ExpectedSet, ExpectedSet)>>,
+    /// Complete extender sets memoized by semantic owner.
+    pratt_all: std::cell::RefCell<BTreeMap<crate::TypeId, ExpectedSet>>,
+}
+
+impl<'a> EmissionLookupIndex<'a> {
+    /// Indexes one validated decision snapshot without changing its canonical order or identity.
+    pub(super) fn new(
+        decisions: &'a crate::DecisionProducts,
+        atom_index: &'a ExpectedAtomIndex,
+        type_count: usize,
+        site_count: usize,
+        kind_count: usize,
+    ) -> Self {
+        let mut containers_by_site = vec![None; site_count];
+        for machine in decisions.container_machines() {
+            if let Some(slot) = containers_by_site.get_mut(machine.site().index())
+                && slot.is_none()
+            {
+                *slot = Some(machine);
+            }
+        }
+        let mut failures_by_owner = vec![[None; 8]; type_count];
+        let mut failures_by_site = vec![[None; 8]; site_count];
+        for edge in decisions.failure_edges() {
+            let slots = edge.site().map_or_else(
+                || failures_by_owner.get_mut(edge.owner().index()),
+                |site| failures_by_site.get_mut(site.index()),
+            );
+            if let Some(slot) =
+                slots.and_then(|slots| slots.get_mut(failure_kind_index(edge.kind())))
+                && slot.is_none()
+            {
+                *slot = Some(edge);
+            }
+        }
+        Self {
+            decisions,
+            containers_by_site,
+            failures_by_owner,
+            failures_by_site,
+            atom_index,
+            kind_count,
+            pratt_thresholds: std::cell::RefCell::new(BTreeMap::new()),
+            pratt_all: std::cell::RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    /// Selects one dispatch through the unchanged canonical linear route.
+    fn dispatch(
+        &self,
+        owner: crate::TypeId,
+        kind: DispatchKind,
+    ) -> Option<&'a crate::DispatchPlan> {
+        find_dispatch(self.decisions.dispatches(), |dispatch| {
+            dispatch.owner() == owner && dispatch.kind() == kind
+        })
+    }
+
+    /// Selects one container machine by its dense semantic site identity.
+    fn container(&self, site: SiteId) -> Option<&'a crate::ContainerMachine> {
+        let indexed = self.containers_by_site.get(site.index()).copied().flatten();
+        #[cfg(test)]
+        assert_eq!(
+            indexed,
+            self.decisions
+                .container_machines()
+                .iter()
+                .find(|machine| machine.site() == site),
+            "dense container lookup diverged from the canonical linear lookup",
+        );
+        indexed
+    }
+
+    /// Selects one failure edge attached to a semantic owner.
+    fn owner_failure(
+        &self,
+        owner: crate::TypeId,
+        kind: FailureEdgeKind,
+    ) -> Option<&'a crate::FailureEdge> {
+        let indexed = self
+            .failures_by_owner
+            .get(owner.index())
+            .and_then(|slots| slots[failure_kind_index(kind)]);
+        #[cfg(test)]
+        assert_eq!(
+            indexed,
+            self.decisions.failure_edges().iter().find(|edge| {
+                edge.owner() == owner && edge.site().is_none() && edge.kind() == kind
+            }),
+            "dense owner failure lookup diverged from the canonical linear lookup",
+        );
+        indexed
+    }
+
+    /// Selects one failure edge attached to a dense parse-site identity.
+    fn site_failure(&self, site: SiteId, kind: FailureEdgeKind) -> Option<&'a crate::FailureEdge> {
+        let indexed = self
+            .failures_by_site
+            .get(site.index())
+            .and_then(|slots| slots[failure_kind_index(kind)]);
+        #[cfg(test)]
+        assert_eq!(
+            indexed,
+            self.decisions
+                .failure_edges()
+                .iter()
+                .find(|edge| edge.site() == Some(site) && edge.kind() == kind),
+            "dense site failure lookup diverged from the canonical linear lookup",
+        );
+        indexed
+    }
+
+    /// Returns active and inactive Pratt extenders for one binding threshold.
+    fn pratt_extenders_at_min_bp(
+        &self,
+        owner: crate::TypeId,
+        min_bp: u8,
+    ) -> Result<(ExpectedSet, ExpectedSet), String> {
+        if let Some(cached) = self
+            .pratt_thresholds
+            .borrow()
+            .get(&(owner, min_bp))
+            .cloned()
+        {
+            #[cfg(test)]
+            {
+                let active = build_pratt_extenders(
+                    self,
+                    owner,
+                    |position| pratt_led_lbp(position) >= min_bp,
+                    false,
+                )?;
+                let inactive = build_pratt_extenders(
+                    self,
+                    owner,
+                    |position| pratt_led_lbp(position) < min_bp,
+                    false,
+                )?;
+                assert_eq!(cached, (active, inactive), "cached Pratt threshold drifted");
+            }
+            return Ok(cached);
+        }
+        let active = build_pratt_extenders(
+            self,
+            owner,
+            |position| pratt_led_lbp(position) >= min_bp,
+            true,
+        )?;
+        let inactive = build_pratt_extenders(
+            self,
+            owner,
+            |position| pratt_led_lbp(position) < min_bp,
+            true,
+        )?;
+        self.pratt_thresholds
+            .borrow_mut()
+            .insert((owner, min_bp), (active.clone(), inactive.clone()));
+        Ok((active, inactive))
+    }
+
+    /// Returns every Pratt extender belonging to one semantic owner.
+    fn pratt_extenders(&self, owner: crate::TypeId) -> Result<ExpectedSet, String> {
+        if let Some(cached) = self.pratt_all.borrow().get(&owner).cloned() {
+            #[cfg(test)]
+            assert_eq!(
+                cached,
+                build_pratt_extenders(self, owner, |_| true, false)?,
+                "cached complete Pratt extender family drifted",
+            );
+            return Ok(cached);
+        }
+        let expected = build_pratt_extenders(self, owner, |_| true, true)?;
+        self.pratt_all.borrow_mut().insert(owner, expected.clone());
+        Ok(expected)
+    }
+}
+
+/// Returns the stable dense slot assigned to one failure-edge kind.
+const fn failure_kind_index(kind: FailureEdgeKind) -> usize {
+    match kind {
+        FailureEdgeKind::RequiredSite => 0,
+        FailureEdgeKind::EnumDispatch => 1,
+        FailureEdgeKind::PrattNudDispatch => 2,
+        FailureEdgeKind::PrattLedDispatch => 3,
+        FailureEdgeKind::PrattCallerFollowGuard => 4,
+        FailureEdgeKind::ContainerMinimum => 5,
+        FailureEdgeKind::ContainerContinuation => 6,
+        FailureEdgeKind::ContainerAfterSeparator => 7,
+    }
+}
+
 #[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::super::test_support;
     use super::{
-        ExpectedAtomIndex, ExpectedSet, OptionalViabilityDecisionTerminalParsePlan,
-        PlannedContainer, PlannedFollow, PlannedTextPredicate, TextEquivalence,
-        encode_dispatch_positions, planned_container, pratt_operand_follow,
-        render_position_dispatch,
+        EmissionLookupIndex, ExpectedAtomIndex, ExpectedSet,
+        OptionalViabilityDecisionTerminalParsePlan, PlannedContainer, PlannedFollow,
+        PlannedTextPredicate, TextEquivalence, encode_dispatch_positions, planned_container,
+        pratt_operand_follow, render_position_dispatch,
     };
     use crate::{
         AtomDescription, AtomExpression, ContainerShape, Declaration, GrammarDescription,
@@ -235,8 +519,15 @@ mod tests {
         let machine = &output.decisions().container_machines()[optional.index()];
         assert!(matches!(machine.stop(), crate::FollowRecipe::Caller));
         let atoms = ExpectedAtomIndex::from_grammar(&grammar).expect("valid direct atom index");
-        let planned = planned_container(machine, output.decisions(), &atoms, grammar.kind_count)
-            .expect("the refined optional joins to generation");
+        let lookups = EmissionLookupIndex::new(
+            output.decisions(),
+            &atoms,
+            grammar.types.len(),
+            grammar.sites.len(),
+            grammar.kind_count,
+        );
+        let planned =
+            planned_container(machine, &lookups).expect("the refined optional joins to generation");
         let PlannedContainer::Optional {
             decision: Some(decision),
             ..
@@ -1784,11 +2075,11 @@ pub(super) fn plan_node(
     node: &ResolvedNode,
     application: &MaterializedNodeApplication,
     lowered: &crate::materialization::LoweredGrammar,
-    decisions: &crate::DecisionProducts,
-    atom_index: &ExpectedAtomIndex,
-    kind_count: usize,
+    lookups: &EmissionLookupIndex<'_>,
     instrumentation: &mut EmissionInstrumentation,
 ) -> Result<NodeParsePlan, String> {
+    let atom_index = lookups.atom_index;
+    let kind_count = lookups.kind_count;
     let inherited_capture = node
         .capture
         .unwrap_or(lowered.source_modeled.resolved().build_inputs.spans);
@@ -1831,9 +2122,7 @@ pub(super) fn plan_node(
                 elements,
                 sites,
                 lowered,
-                decisions,
-                atom_index,
-                kind_count,
+                lookups,
                 &input_lifetime,
                 None,
                 None,
@@ -1846,21 +2135,11 @@ pub(super) fn plan_node(
             },
             TypeShape::Enum { alternatives },
         ) => {
-            let dispatch = decisions
-                .dispatches()
-                .iter()
-                .find(|dispatch| {
-                    dispatch.owner() == application_type && dispatch.kind() == DispatchKind::Enum
-                })
+            let dispatch = lookups
+                .dispatch(application_type, DispatchKind::Enum)
                 .ok_or_else(|| format!("enum Node `{}` lacks its dispatch plan", node.ident))?;
-            let failure_expected = decisions
-                .failure_edges()
-                .iter()
-                .find(|edge| {
-                    edge.owner() == application_type
-                        && edge.site().is_none()
-                        && edge.kind() == FailureEdgeKind::EnumDispatch
-                })
+            let failure_expected = lookups
+                .owner_failure(application_type, FailureEdgeKind::EnumDispatch)
                 .ok_or_else(|| {
                     format!("enum Node `{}` lacks its frozen failure edge", node.ident)
                 })?;
@@ -1922,9 +2201,7 @@ pub(super) fn plan_node(
                         &variant.elements,
                         &alternative.sites,
                         lowered,
-                        decisions,
-                        atom_index,
-                        kind_count,
+                        lookups,
                         &input_lifetime,
                         None,
                         None,
@@ -1989,9 +2266,7 @@ pub(super) fn plan_node(
             resolved,
             semantic,
             lowered,
-            decisions,
-            atom_index,
-            kind_count,
+            lookups,
             &input_lifetime,
             instrumentation,
         )?)),
@@ -3043,34 +3318,22 @@ pub(super) fn plan_pratt_node(
     resolved_variants: &[crate::resolution::ResolvedNodeVariant],
     semantic_variants: &[crate::PrattVariant],
     lowered: &crate::materialization::LoweredGrammar,
-    decisions: &crate::DecisionProducts,
-    atom_index: &ExpectedAtomIndex,
-    kind_count: usize,
+    lookups: &EmissionLookupIndex<'_>,
     input_lifetime: &syn::Lifetime,
     instrumentation: &mut EmissionInstrumentation,
 ) -> Result<PrattParsePlan, String> {
-    let nud_dispatch = decisions
-        .dispatches()
-        .iter()
-        .find(|dispatch| {
-            dispatch.owner() == application_type && dispatch.kind() == DispatchKind::PrattNud
-        })
+    let atom_index = lookups.atom_index;
+    let kind_count = lookups.kind_count;
+    let nud_dispatch = lookups
+        .dispatch(application_type, DispatchKind::PrattNud)
         .ok_or_else(|| format!("Pratt Node `{}` lacks its nud dispatch plan", node.ident))?;
-    let led_dispatch = decisions.dispatches().iter().find(|dispatch| {
-        dispatch.owner() == application_type && dispatch.kind() == DispatchKind::PrattLed
-    });
+    let led_dispatch = lookups.dispatch(application_type, DispatchKind::PrattLed);
 
-    let nud_failure = decisions
-        .failure_edges()
-        .iter()
-        .find(|edge| {
-            edge.owner() == application_type && edge.kind() == FailureEdgeKind::PrattNudDispatch
-        })
+    let nud_failure = lookups
+        .owner_failure(application_type, FailureEdgeKind::PrattNudDispatch)
         .ok_or_else(|| format!("Pratt Node `{}` lacks its nud failure edge", node.ident))?;
     let nud_failure = planned_expected_recipe(nud_failure.expected(), atom_index, kind_count)?;
-    let guard = decisions.failure_edges().iter().find(|edge| {
-        edge.owner() == application_type && edge.kind() == FailureEdgeKind::PrattCallerFollowGuard
-    });
+    let guard = lookups.owner_failure(application_type, FailureEdgeKind::PrattCallerFollowGuard);
     let guard_branches = match guard.map(|edge| edge.expected()) {
         Some(ExpectedRecipe::PrattExtendersAtOrAboveMinBp { branches }) => Some(branches),
         Some(_) => return Err("a Pratt caller-FOLLOW guard has the wrong recipe".to_owned()),
@@ -3139,9 +3402,7 @@ pub(super) fn plan_pratt_node(
                             &materialized_nud.body,
                             &semantic.sites,
                             lowered,
-                            decisions,
-                            atom_index,
-                            kind_count,
+                            lookups,
                             input_lifetime,
                             operand,
                             None,
@@ -3191,9 +3452,7 @@ pub(super) fn plan_pratt_node(
                             &materialized_led.tail,
                             &semantic.sites,
                             lowered,
-                            decisions,
-                            atom_index,
-                            kind_count,
+                            lookups,
                             input_lifetime,
                             operand,
                             Some(application_type),
@@ -3248,13 +3507,8 @@ pub(super) fn plan_pratt_node(
     }
     let caller_follow_guard = match (guard_branches, &led_dispatch) {
         (Some(branches), Some(dispatch)) => {
-            let frozen_led = decisions
-                .dispatches()
-                .iter()
-                .find(|candidate| {
-                    candidate.owner() == application_type
-                        && candidate.kind() == DispatchKind::PrattLed
-                })
+            let frozen_led = lookups
+                .dispatch(application_type, DispatchKind::PrattLed)
                 .expect("the joined led dispatch came from frozen decisions");
             if branches.as_slice() != frozen_led.branches() {
                 return Err("the frozen Pratt guard and led dispatch branches disagree".to_owned());
@@ -3511,9 +3765,7 @@ pub(super) fn plan_elements(
     elements: &[MaterializedElement],
     sites: &[SiteId],
     lowered: &crate::materialization::LoweredGrammar,
-    decisions: &crate::DecisionProducts,
-    atom_index: &ExpectedAtomIndex,
-    kind_count: usize,
+    lookups: &EmissionLookupIndex<'_>,
     input_lifetime: &syn::Lifetime,
     pratt_operand: Option<(crate::TypeId, u8)>,
     pratt_continuation: Option<crate::TypeId>,
@@ -3552,11 +3804,9 @@ pub(super) fn plan_elements(
                     return Err("a fixed element did not reference fixed-token syntax".to_owned());
                 };
                 let PlannedFollow::Static(expected) = planned_failure_edge(
-                    decisions,
+                    lookups,
                     *site,
                     FailureEdgeKind::RequiredSite,
-                    atom_index,
-                    kind_count,
                 )?
                 else {
                     return Err("a fixed element has a dynamic failure recipe".to_owned());
@@ -3599,10 +3849,8 @@ pub(super) fn plan_elements(
                 {
                     return Err("an optional fixed group has mismatched normalized sites".to_owned());
                 }
-                let machine = decisions
-                    .container_machines()
-                    .iter()
-                    .find(|machine| machine.site() == *site)
+                let machine = lookups
+                    .container(*site)
                     .ok_or_else(|| "an optional fixed group lacks its optional machine".to_owned())?;
                 if machine.operation() != ContainerOperation::Optional {
                     return Err("an optional fixed group did not normalize as optional".to_owned());
@@ -3629,11 +3877,9 @@ pub(super) fn plan_elements(
                             return Err("an optional group references non-fixed syntax".to_owned());
                         };
                         let PlannedFollow::Static(expected) = planned_failure_edge(
-                            decisions,
+                            lookups,
                             *token_site,
                             FailureEdgeKind::RequiredSite,
-                            atom_index,
-                            kind_count,
                         )? else {
                             return Err("an optional group token has a dynamic failure recipe".to_owned());
                         };
@@ -3740,11 +3986,9 @@ pub(super) fn plan_elements(
                         return Err("a presence sequence references non-fixed syntax".to_owned());
                     };
                     let PlannedFollow::Static(expected) = planned_failure_edge(
-                        decisions,
+                        lookups,
                         site,
                         FailureEdgeKind::RequiredSite,
-                        atom_index,
-                        kind_count,
                     )?
                     else {
                         return Err("a presence token has a dynamic failure recipe".to_owned());
@@ -3767,9 +4011,7 @@ pub(super) fn plan_elements(
                             syntax,
                             *site,
                             lowered,
-                            decisions,
-                            atom_index,
-                            kind_count,
+                            lookups,
                             capture,
                         )
                     })
@@ -3787,9 +4029,7 @@ pub(super) fn plan_elements(
                             syntax,
                             *site,
                             lowered,
-                            decisions,
-                            atom_index,
-                            kind_count,
+                            lookups,
                             capture,
                         )
                     })
@@ -3799,10 +4039,8 @@ pub(super) fn plan_elements(
                 } else {
                     correlation.envelope_sites[correlation.presence_index]
                 };
-                let machine = decisions
-                    .container_machines()
-                    .iter()
-                    .find(|machine| machine.site() == presence_site)
+                let machine = lookups
+                    .container(presence_site)
                     .ok_or_else(|| "a fixed presence lacks its optional container machine".to_owned())?;
                 if machine.operation() != ContainerOperation::Optional {
                     return Err("a fixed presence did not normalize as optional".to_owned());
@@ -3884,38 +4122,19 @@ pub(super) fn plan_elements(
                     .or(variant_override)
                     .or(terminal_node_capture(ty, lowered).map(PlannedCapturePolicy::from))
                     .unwrap_or(node_capture);
-                let machine = decisions
-                    .container_machines()
-                    .iter()
-                    .find(|machine| machine.site() == *site)
+                let machine = lookups
+                    .container(*site)
                     .ok_or_else(|| format!("field `{field_name}` lacks its container machine"))?;
                 validate_container_wrappers(machine.operation(), &wrappers, &field_name)?;
-                let mut container = planned_container(
-                    machine,
-                    decisions,
-                    atom_index,
-                    kind_count,
-                )?;
+                let mut container = planned_container(machine, lookups)?;
                 let pratt_min_bp = pratt_operand
                     .filter(|(owner, _)| parse_site_targets(&lowered.grammar, *site, *owner))
                     .map(|(_, min_bp)| min_bp);
                 let pratt_extenders = if let Some((owner, min_bp)) =
                     pratt_operand.filter(|_| pratt_min_bp.is_some())
                 {
-                    let active = planned_pratt_extenders(
-                        decisions,
-                        owner,
-                        atom_index,
-                        kind_count,
-                        |position| pratt_led_lbp(position) >= min_bp,
-                    )?;
-                    let inactive = planned_pratt_extenders(
-                        decisions,
-                        owner,
-                        atom_index,
-                        kind_count,
-                        |position| pratt_led_lbp(position) < min_bp,
-                    )?;
+                    let (active, inactive) =
+                        lookups.pratt_extenders_at_min_bp(owner, min_bp)?;
                     match &mut container {
                         PlannedContainer::Direct { child_follow, .. } => {
                             *child_follow =
@@ -3979,9 +4198,7 @@ pub(super) fn plan_elements(
                             attachment,
                             *site,
                             lowered,
-                            decisions,
-                            atom_index,
-                            kind_count,
+                            lookups,
                             variant_capture,
                         )
                         .map(Box::new)
@@ -4045,8 +4262,7 @@ pub(super) fn plan_elements(
         })
         .collect::<Result<Vec<_>, String>>()?;
     if let (Some(owner), Some(element)) = (pratt_continuation, planned.last_mut()) {
-        let extenders =
-            planned_pratt_extenders(decisions, owner, atom_index, kind_count, |_| true)?;
+        let extenders = lookups.pratt_extenders(owner)?;
         add_pratt_continuation_follow(element, &extenders);
     }
     Ok(planned)
@@ -4075,9 +4291,7 @@ fn plan_materialized_attached_syntax(
     syntax: &crate::materialization::MaterializedAttachedFixedSyntax,
     outer_site: SiteId,
     lowered: &crate::materialization::LoweredGrammar,
-    decisions: &crate::DecisionProducts,
-    atom_index: &ExpectedAtomIndex,
-    kind_count: usize,
+    lookups: &EmissionLookupIndex<'_>,
     capture: PlannedCapturePolicy,
 ) -> Result<AttachedFixedSyntaxParsePlan, String> {
     let grammar = &lowered.grammar;
@@ -4090,13 +4304,8 @@ fn plan_materialized_attached_syntax(
         let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
             return Err("an attached fixed element did not reference fixed syntax".to_owned());
         };
-        let PlannedFollow::Static(expected) = planned_failure_edge(
-            decisions,
-            site,
-            FailureEdgeKind::RequiredSite,
-            atom_index,
-            kind_count,
-        )?
+        let PlannedFollow::Static(expected) =
+            planned_failure_edge(lookups, site, FailureEdgeKind::RequiredSite)?
         else {
             return Err("an attached fixed element has a dynamic failure recipe".to_owned());
         };
@@ -4112,10 +4321,8 @@ fn plan_materialized_attached_syntax(
             plan_fixed(*token, outer_site).map(AttachedFixedSyntaxParsePlan::Required)
         }
         crate::materialization::MaterializedAttachedFixedSyntax::Optional { tokens, .. } => {
-            let machine = decisions
-                .container_machines()
-                .iter()
-                .find(|machine| machine.site() == outer_site)
+            let machine = lookups
+                .container(outer_site)
                 .ok_or_else(|| "an optional attachment lacks its optional machine".to_owned())?;
             if machine.operation() != ContainerOperation::Optional {
                 return Err("an optional attachment did not normalize as optional".to_owned());
@@ -4137,16 +4344,13 @@ fn plan_materialized_attached_syntax(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Plans fixed tokens attached around a semantic container.
 pub(super) fn plan_fixed_attachment(
     field: &crate::resolution::ResolvedNodeField,
     attachment: &MaterializedFixedAttachment,
     outer_site: SiteId,
     lowered: &crate::materialization::LoweredGrammar,
-    decisions: &crate::DecisionProducts,
-    atom_index: &ExpectedAtomIndex,
-    kind_count: usize,
+    lookups: &EmissionLookupIndex<'_>,
     variant_capture: PlannedCapturePolicy,
 ) -> Result<FixedAttachmentParsePlan, String> {
     let correlation = lowered
@@ -4169,34 +4373,24 @@ pub(super) fn plan_fixed_attachment(
         .iter()
         .zip(&correlation.sites)
         .map(|(syntax, site)| {
-            plan_materialized_attached_syntax(
-                syntax, *site, lowered, decisions, atom_index, kind_count, capture,
-            )
+            plan_materialized_attached_syntax(syntax, *site, lowered, lookups, capture)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let semantic_site = correlation.sites[correlation.semantic_index];
-    let machine = decisions
-        .container_machines()
-        .iter()
-        .find(|machine| machine.site() == semantic_site)
-        .ok_or_else(|| {
-            "an attachment semantic site lacks its direct container machine".to_owned()
-        })?;
+    let machine = lookups.container(semantic_site).ok_or_else(|| {
+        "an attachment semantic site lacks its direct container machine".to_owned()
+    })?;
     if machine.operation() != ContainerOperation::Direct {
         return Err("an attachment semantic site is not a direct frozen container".to_owned());
     }
-    let semantic = Box::new(planned_container(
-        machine, decisions, atom_index, kind_count,
-    )?);
+    let semantic = Box::new(planned_container(machine, lookups)?);
     let after_start = correlation.semantic_index + 1;
     let after = attachment
         .after
         .iter()
         .zip(&correlation.sites[after_start..])
         .map(|(syntax, site)| {
-            plan_materialized_attached_syntax(
-                syntax, *site, lowered, decisions, atom_index, kind_count, capture,
-            )
+            plan_materialized_attached_syntax(syntax, *site, lowered, lookups, capture)
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(FixedAttachmentParsePlan {
@@ -4207,25 +4401,34 @@ pub(super) fn plan_fixed_attachment(
 }
 
 /// Collects materialized Pratt extenders admitted for an application.
-pub(super) fn planned_pratt_extenders(
-    decisions: &crate::DecisionProducts,
+fn build_pratt_extenders(
+    lookups: &EmissionLookupIndex<'_>,
     owner: crate::TypeId,
-    atom_index: &ExpectedAtomIndex,
-    kind_count: usize,
     include: impl Fn(PrattPosition) -> bool,
+    instrument: bool,
 ) -> Result<ExpectedSet, String> {
-    let edge = decisions
-        .failure_edges()
-        .iter()
-        .find(|edge| {
-            edge.owner() == owner && edge.kind() == FailureEdgeKind::PrattCallerFollowGuard
-        })
+    #[cfg(not(test))]
+    let _ = instrument;
+    #[cfg(test)]
+    if instrument {
+        observe_emission_lookup_work(|work| work.pratt_extender_builds += 1);
+    }
+    let edge = lookups
+        .owner_failure(owner, FailureEdgeKind::PrattCallerFollowGuard)
         .ok_or_else(|| "a Pratt operand lacks its frozen extender family".to_owned())?;
     let ExpectedRecipe::PrattExtendersAtOrAboveMinBp { branches } = edge.expected() else {
         return Err("a Pratt operand has an invalid frozen extender family".to_owned());
     };
     let first = branches
         .iter()
+        .inspect(|_| {
+            #[cfg(test)]
+            if instrument {
+                observe_emission_lookup_work(|work| {
+                    work.pratt_extender_branch_candidates += 1;
+                });
+            }
+        })
         .filter(|branch| branch.position().is_some_and(&include))
         .flat_map(|branch| branch.sequences())
         .filter_map(|sequence| sequence.positions().first())
@@ -4234,7 +4437,7 @@ pub(super) fn planned_pratt_extenders(
             text_predicate: None,
         })
         .collect::<Vec<_>>();
-    ExpectedSet::from_positions(&first, atom_index, kind_count)
+    ExpectedSet::from_positions(&first, lookups.atom_index, lookups.kind_count)
 }
 
 /// Derives child capture policy from the resolved terminal node.
@@ -4426,10 +4629,10 @@ pub(super) fn validate_container_wrappers(
 /// Freezes container control flow, selectors, FOLLOW sets, and failures.
 pub(super) fn planned_container(
     machine: &crate::ContainerMachine,
-    decisions: &crate::DecisionProducts,
-    atom_index: &ExpectedAtomIndex,
-    kind_count: usize,
+    lookups: &EmissionLookupIndex<'_>,
 ) -> Result<PlannedContainer, String> {
+    let atom_index = lookups.atom_index;
+    let kind_count = lookups.kind_count;
     let stop = planned_follow(machine.stop(), atom_index, kind_count)?;
     let element_selector =
         ExpectedSet::from_positions(machine.element_first(), atom_index, kind_count)?;
@@ -4437,11 +4640,9 @@ pub(super) fn planned_container(
         ContainerOperation::Direct => PlannedContainer::Direct {
             child_follow: stop,
             required_failure: planned_failure_edge(
-                decisions,
+                lookups,
                 machine.site(),
                 FailureEdgeKind::RequiredSite,
-                atom_index,
-                kind_count,
             )?,
         },
         ContainerOperation::Optional => PlannedContainer::Optional {
@@ -4483,32 +4684,22 @@ pub(super) fn planned_container(
                     ContainerOperation::OneOrMore | ContainerOperation::OptionalOneOrMore
                 )
                 .then(|| {
-                    planned_failure_edge(
-                        decisions,
-                        machine.site(),
-                        FailureEdgeKind::ContainerMinimum,
-                        atom_index,
-                        kind_count,
-                    )
+                    planned_failure_edge(lookups, machine.site(), FailureEdgeKind::ContainerMinimum)
                 })
                 .transpose()?
                 .map(Box::new),
                 continuation_failure: Box::new(planned_failure_edge(
-                    decisions,
+                    lookups,
                     machine.site(),
                     FailureEdgeKind::ContainerContinuation,
-                    atom_index,
-                    kind_count,
                 )?),
                 after_separator_failure: machine
                     .separator()
                     .map(|_| {
                         planned_failure_edge(
-                            decisions,
+                            lookups,
                             machine.site(),
                             FailureEdgeKind::ContainerAfterSeparator,
-                            atom_index,
-                            kind_count,
                         )
                     })
                     .transpose()?
@@ -4520,23 +4711,17 @@ pub(super) fn planned_container(
 
 /// Converts analyzed failure evidence into its emitted FOLLOW representation.
 pub(super) fn planned_failure_edge(
-    decisions: &crate::DecisionProducts,
+    lookups: &EmissionLookupIndex<'_>,
     site: SiteId,
     kind: FailureEdgeKind,
-    atom_index: &ExpectedAtomIndex,
-    kind_count: usize,
 ) -> Result<PlannedFollow, String> {
-    let edge = decisions
-        .failure_edges()
-        .iter()
-        .find(|edge| edge.site() == Some(site) && edge.kind() == kind)
-        .ok_or_else(|| {
-            format!(
-                "site {} lacks its frozen {kind:?} failure edge",
-                site.index()
-            )
-        })?;
-    planned_expected_recipe(edge.expected(), atom_index, kind_count)
+    let edge = lookups.site_failure(site, kind).ok_or_else(|| {
+        format!(
+            "site {} lacks its frozen {kind:?} failure edge",
+            site.index()
+        )
+    })?;
+    planned_expected_recipe(edge.expected(), lookups.atom_index, lookups.kind_count)
 }
 
 /// Converts an expected-set recipe to the runtime-width representation.

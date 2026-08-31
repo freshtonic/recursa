@@ -356,6 +356,13 @@ impl EmissionPlan {
         let mut nodes = Vec::new();
         let mut instrumentation = EmissionInstrumentation::default();
         let expected_atom_index = ExpectedAtomIndex::from_grammar(&lowered.grammar)?;
+        let emission_lookups = EmissionLookupIndex::new(
+            decisions,
+            &expected_atom_index,
+            lowered.grammar.types.len(),
+            lowered.grammar.sites.len(),
+            kind_count,
+        );
         for node in &resolved.nodes {
             let applications = lowered
                 .applications
@@ -403,9 +410,7 @@ impl EmissionPlan {
                     node,
                     application,
                     lowered,
-                    decisions,
-                    &expected_atom_index,
-                    kind_count,
+                    &emission_lookups,
                     &mut instrumentation,
                 )?;
                 application_plans.push(NodeApplicationParsePlan {
