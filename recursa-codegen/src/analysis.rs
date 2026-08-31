@@ -4636,12 +4636,12 @@ struct ProvenancedFollow {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Provenanced FOLLOW views kept together for exact static-versus-caller classification.
+/// Complete and caller-only FOLLOW provenance used for exact diagnostic classification.
 struct FollowProvenance {
-    /// FOLLOW positions for each callable grammar type.
-    by_type: Vec<ProvenancedFollow>,
-    /// Complete static and caller FOLLOW positions for each parse site.
+    /// Complete static, repetition-continuation, and caller FOLLOW positions for each site.
     by_site: Vec<ProvenancedFollow>,
+    /// Caller-only FOLLOW positions propagated into each site through a nullable suffix.
+    caller_by_site: Vec<ProvenancedFollow>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -4772,6 +4772,7 @@ fn compute_follow(
 
     let mut provenanced_by_type = vec![empty_provenanced_follow(); grammar.types.len()];
     let mut provenanced_by_site = vec![empty_provenanced_follow(); grammar.sites.len()];
+    let mut provenanced_caller_by_site = vec![empty_provenanced_follow(); grammar.sites.len()];
     for entry in entries {
         let declaration = grammar.types[entry.index()].declaration;
         provenanced_by_type[entry.index()].eof_proof = Some(proofs.intern(
@@ -4804,6 +4805,7 @@ fn compute_follow(
         &edges,
         &mut provenanced_by_type,
         &mut provenanced_by_site,
+        &mut provenanced_caller_by_site,
         proofs,
     );
 
@@ -4860,8 +4862,8 @@ fn compute_follow(
         by_type,
         by_site,
         FollowProvenance {
-            by_type: provenanced_by_type,
             by_site: provenanced_by_site,
+            caller_by_site: provenanced_caller_by_site,
         },
     )
 }
@@ -5264,6 +5266,7 @@ fn propagate_provenanced_follow(
     edges: &[FollowEdge],
     by_type: &mut [ProvenancedFollow],
     by_site: &mut [ProvenancedFollow],
+    caller_by_site: &mut [ProvenancedFollow],
     proofs: &mut ProofArena,
 ) {
     let (components, component_of) = follow_component_order(by_type.len(), edges);
@@ -5289,6 +5292,7 @@ fn propagate_provenanced_follow(
                         &previous[local_index[edge.from.index()]],
                         &mut by_type[edge.to.index()],
                         by_site,
+                        caller_by_site,
                         proofs,
                     );
                 }
@@ -5302,7 +5306,7 @@ fn propagate_provenanced_follow(
             }
         }
         for edge in &component_edges.outgoing {
-            apply_current_provenanced_follow_edge(*edge, by_type, by_site, proofs);
+            apply_current_provenanced_follow_edge(*edge, by_type, by_site, caller_by_site, proofs);
         }
     }
 }
@@ -5403,7 +5407,7 @@ mod follow_propagation_tests {
         PROVENANCED_FOLLOW_SNAPSHOT_POSITION_CLONES.set(0);
         PROVENANCED_FOLLOW_SNAPSHOT_PROOF_SLOT_CLONES.set(0);
 
-        propagate_provenanced_follow(&edges, &mut by_type, &mut [], &mut proofs);
+        propagate_provenanced_follow(&edges, &mut by_type, &mut [], &mut [], &mut proofs);
 
         assert!(
             by_type
@@ -5435,6 +5439,7 @@ fn apply_provenanced_follow_source(
     source: &ProvenancedFollow,
     target: &mut ProvenancedFollow,
     by_site: &mut [ProvenancedFollow],
+    caller_by_site: &mut [ProvenancedFollow],
     proofs: &mut ProofArena,
 ) {
     let propagated = wrap_follow_positions(
@@ -5450,6 +5455,11 @@ fn apply_provenanced_follow_source(
     merge_provenanced_positions(&mut target.positions, &propagated, proofs);
     if let Some(site) = edge.site {
         merge_provenanced_positions(&mut by_site[site.index()].positions, &propagated, proofs);
+        merge_provenanced_positions(
+            &mut caller_by_site[site.index()].positions,
+            &propagated,
+            proofs,
+        );
     }
     if let Some(parent) = source.eof_proof {
         let proof = proofs.intern(
@@ -5464,6 +5474,7 @@ fn apply_provenanced_follow_source(
         merge_eof_proof(&mut target.eof_proof, proof, proofs);
         if let Some(site) = edge.site {
             merge_eof_proof(&mut by_site[site.index()].eof_proof, proof, proofs);
+            merge_eof_proof(&mut caller_by_site[site.index()].eof_proof, proof, proofs);
         }
     }
 }
@@ -5473,6 +5484,7 @@ fn apply_current_provenanced_follow_edge(
     edge: FollowEdge,
     by_type: &mut [ProvenancedFollow],
     by_site: &mut [ProvenancedFollow],
+    caller_by_site: &mut [ProvenancedFollow],
     proofs: &mut ProofArena,
 ) {
     let from = edge.from.index();
@@ -5485,6 +5497,7 @@ fn apply_current_provenanced_follow_edge(
             &before_target[from],
             &mut target_and_after[0],
             by_site,
+            caller_by_site,
             proofs,
         );
     } else {
@@ -5494,6 +5507,7 @@ fn apply_current_provenanced_follow_edge(
             &source_and_after[0],
             &mut before_source[to],
             by_site,
+            caller_by_site,
             proofs,
         );
     }
@@ -6848,6 +6862,25 @@ enum DecisionFrontierEvent<'a> {
         rest: &'a [DecisionItem],
         /// Minimum semantic stack depth seen before this token is consumed.
         minimum_stack_depth: usize,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One grammar-head action shared by ordinary and path-labelled frontier traversals.
+enum DecisionHeadStep {
+    /// Consumes one token from the current head.
+    Token {
+        /// Token atom consumed by this step.
+        atom: AtomId,
+        /// Optional exact-text restriction on the consumed token.
+        text_predicate: Option<TextPredicateId>,
+    },
+    /// Replaces the current head with one non-consuming grammar prefix.
+    Expand {
+        /// Prefix inserted before the untouched residual state.
+        prefix: Vec<DecisionItem>,
+        /// Whether this expansion enters a Pratt NUD derivation.
+        enters_pratt_nud: bool,
     },
 }
 
@@ -8495,6 +8528,14 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
     }
 
     /// Expands one path-local Pratt state to its productive one-token frontier.
+    ///
+    /// # Long-function contract
+    ///
+    /// Rationale: path-local Pratt provenance changes closure identity and must remain coupled to
+    /// canonical residual caching, dominance, and transition normalization.
+    /// Invariants: grammar-head branching comes only from `decision_head_steps`, Pratt entry is
+    /// monotonic per path, and cached frontiers retain canonical residual states and exact cells.
+    /// Phases: canonicalizes and memo-checks, closes non-consuming heads, then sorts and interns the frontier.
     fn semantic_frontier(
         &mut self,
         crossed_pratt: bool,
@@ -8531,198 +8572,38 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
                 frontier.ends.push(crossed_pratt);
                 continue;
             };
-            match first {
-                DecisionItem::Type(type_id) => {
-                    let description = &self.analysis.grammar.types[type_id.index()];
-                    match &description.shape {
-                        TypeShape::Token {
-                            atom,
-                            text_predicate,
-                        } => {
-                            #[cfg(test)]
-                            FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(
-                                FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS
-                                    .get()
-                                    .saturating_add(1),
-                            );
-                            frontier.transitions.push(CompactSemanticTransition {
-                                position: FirstPosition {
-                                    kinds: self.analysis.atom_kinds[atom.index()].clone(),
-                                    text_predicate: *text_predicate,
-                                },
-                                crossed_pratt,
-                                next: self.analysis.canonical_state(DecisionState(rest.to_vec())),
-                            });
-                        }
-                        TypeShape::Alias { site } => queue_compact_decision_expansion(
-                            vec![DecisionItem::Site(*site)],
-                            rest,
-                            crossed_pratt,
-                            minimum_stack_depth,
-                            &mut best_minimum_depth,
-                            &mut queue,
-                        ),
-                        TypeShape::Sequence { sites } => queue_compact_decision_expansion(
-                            sites.iter().copied().map(DecisionItem::Site).collect(),
-                            rest,
-                            crossed_pratt,
-                            minimum_stack_depth,
-                            &mut best_minimum_depth,
-                            &mut queue,
-                        ),
-                        TypeShape::Enum { alternatives } => {
-                            for alternative in alternatives {
-                                queue_compact_decision_expansion(
-                                    alternative
-                                        .sites
-                                        .iter()
-                                        .copied()
-                                        .map(DecisionItem::Site)
-                                        .collect(),
-                                    rest,
-                                    crossed_pratt,
-                                    minimum_stack_depth,
-                                    &mut best_minimum_depth,
-                                    &mut queue,
-                                );
-                            }
-                        }
-                        TypeShape::Pratt { variants } => {
-                            for variant in variants
-                                .iter()
-                                .filter(|variant| is_pratt_nud(variant.position))
-                            {
-                                queue_compact_decision_expansion(
-                                    variant
-                                        .sites
-                                        .iter()
-                                        .copied()
-                                        .map(DecisionItem::Site)
-                                        .collect(),
-                                    rest,
-                                    true,
-                                    minimum_stack_depth,
-                                    &mut best_minimum_depth,
-                                    &mut queue,
-                                );
-                            }
-                        }
-                    }
-                }
-                DecisionItem::Site(site_id) => {
-                    let site = &self.analysis.grammar.sites[site_id.index()];
-                    let semantics = container_semantics(site);
-                    match semantics.cardinality {
-                        ContainerCardinality::One => queue_compact_decision_expansion(
-                            vec![DecisionItem::Type(site.target)],
-                            rest,
-                            crossed_pratt,
-                            minimum_stack_depth,
-                            &mut best_minimum_depth,
-                            &mut queue,
-                        ),
-                        ContainerCardinality::Optional => {
-                            queue_compact_decision_expansion(
-                                Vec::new(),
-                                rest,
-                                crossed_pratt,
-                                minimum_stack_depth,
-                                &mut best_minimum_depth,
-                                &mut queue,
-                            );
-                            queue_compact_decision_expansion(
-                                vec![DecisionItem::Type(site.target)],
-                                rest,
-                                crossed_pratt,
-                                minimum_stack_depth,
-                                &mut best_minimum_depth,
-                                &mut queue,
-                            );
-                        }
-                        ContainerCardinality::ZeroOrMore
-                        | ContainerCardinality::OneOrMore
-                        | ContainerCardinality::OptionalOneOrMore => {
-                            if matches!(
-                                semantics.cardinality,
-                                ContainerCardinality::ZeroOrMore
-                                    | ContainerCardinality::OptionalOneOrMore
-                            ) {
-                                queue_compact_decision_expansion(
-                                    Vec::new(),
-                                    rest,
-                                    crossed_pratt,
-                                    minimum_stack_depth,
-                                    &mut best_minimum_depth,
-                                    &mut queue,
-                                );
-                            }
-                            queue_compact_decision_expansion(
-                                vec![
-                                    DecisionItem::Type(site.target),
-                                    DecisionItem::RepeatTail {
-                                        target: site.target,
-                                        separator: semantics.separator_type(),
-                                        optional_trailing: semantics
-                                            .separator
-                                            .is_some_and(|separator| separator.optional_trailing),
-                                    },
-                                ],
-                                rest,
-                                crossed_pratt,
-                                minimum_stack_depth,
-                                &mut best_minimum_depth,
-                                &mut queue,
-                            );
-                        }
-                    }
-                }
-                DecisionItem::RepeatTail {
-                    target,
-                    separator,
-                    optional_trailing,
+            decision_head_steps(first, self.analysis.grammar, |step| match step {
+                DecisionHeadStep::Token {
+                    atom,
+                    text_predicate,
                 } => {
-                    queue_compact_decision_expansion(
-                        Vec::new(),
-                        rest,
-                        crossed_pratt,
-                        minimum_stack_depth,
-                        &mut best_minimum_depth,
-                        &mut queue,
+                    #[cfg(test)]
+                    FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(
+                        FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS
+                            .get()
+                            .saturating_add(1),
                     );
-                    let mut expansion = Vec::new();
-                    if let Some(separator) = separator {
-                        expansion.push(DecisionItem::Type(*separator));
-                    }
-                    expansion.extend([
-                        DecisionItem::Type(*target),
-                        DecisionItem::RepeatTail {
-                            target: *target,
-                            separator: *separator,
-                            optional_trailing: *optional_trailing,
+                    frontier.transitions.push(CompactSemanticTransition {
+                        position: FirstPosition {
+                            kinds: self.analysis.atom_kinds[atom.index()].clone(),
+                            text_predicate,
                         },
-                    ]);
-                    queue_compact_decision_expansion(
-                        expansion,
-                        rest,
                         crossed_pratt,
-                        minimum_stack_depth,
-                        &mut best_minimum_depth,
-                        &mut queue,
-                    );
-                    if *optional_trailing {
-                        let separator = separator
-                            .expect("optional trailing behavior requires a separator type");
-                        queue_compact_decision_expansion(
-                            vec![DecisionItem::Type(separator)],
-                            rest,
-                            crossed_pratt,
-                            minimum_stack_depth,
-                            &mut best_minimum_depth,
-                            &mut queue,
-                        );
-                    }
+                        next: self.analysis.canonical_state(DecisionState(rest.to_vec())),
+                    });
                 }
-            }
+                DecisionHeadStep::Expand {
+                    prefix,
+                    enters_pratt_nud,
+                } => queue_compact_decision_expansion(
+                    prefix,
+                    rest,
+                    crossed_pratt || enters_pratt_nud,
+                    minimum_stack_depth,
+                    &mut best_minimum_depth,
+                    &mut queue,
+                ),
+            });
         }
         frontier.ends.sort_unstable();
         frontier.ends.dedup();
@@ -8781,6 +8662,15 @@ impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
     }
 
     /// Freezes one exact labelled residual subset at a bounded remaining depth.
+    ///
+    /// # Long-function contract
+    ///
+    /// Rationale: path-local Pratt cutoff, root-kind exclusion, caller terminals, and recursive
+    /// discrimination must share one memoized state so the frozen trie cannot mix proof phases.
+    /// Invariants: residual labels are canonical and productive, exact edge cells are disjoint,
+    /// excluded root kinds never reappear, and every child is interned before its parent identity.
+    /// Phases: normalizes and memo-checks, applies path and depth cutoffs, partitions transitions,
+    /// recursively freezes children, then interns and memoizes the completed dispatch node.
     fn freeze(
         &mut self,
         remaining: usize,
@@ -9560,7 +9450,162 @@ fn compact_balanced_dispatch_resolution(
     }
 }
 
+/// Enumerates the consuming token or non-consuming expansions for one normalized grammar head.
+///
+/// # Long-function contract
+///
+/// Rationale: ordinary and path-labelled frontier traversals must share one exhaustive grammar
+/// shape interpretation while retaining different queue identities and canonicalization policies.
+/// Invariants: emitted steps preserve authored alternative order, every expansion leaves residual
+/// appending to its caller, and only Pratt NUD expansions set `enters_pratt_nud`.
+/// Phases: classifies a type, site container, or repeat tail and emits its token or expansion steps.
+fn decision_head_steps(
+    first: &DecisionItem,
+    grammar: &GrammarDescription,
+    mut visit: impl FnMut(DecisionHeadStep),
+) {
+    match first {
+        DecisionItem::Type(type_id) => {
+            let description = &grammar.types[type_id.index()];
+            match &description.shape {
+                TypeShape::Token {
+                    atom,
+                    text_predicate,
+                } => visit(DecisionHeadStep::Token {
+                    atom: *atom,
+                    text_predicate: *text_predicate,
+                }),
+                TypeShape::Alias { site } => visit(DecisionHeadStep::Expand {
+                    prefix: vec![DecisionItem::Site(*site)],
+                    enters_pratt_nud: false,
+                }),
+                TypeShape::Sequence { sites } => visit(DecisionHeadStep::Expand {
+                    prefix: sites.iter().copied().map(DecisionItem::Site).collect(),
+                    enters_pratt_nud: false,
+                }),
+                TypeShape::Enum { alternatives } => {
+                    for alternative in alternatives {
+                        visit(DecisionHeadStep::Expand {
+                            prefix: alternative
+                                .sites
+                                .iter()
+                                .copied()
+                                .map(DecisionItem::Site)
+                                .collect(),
+                            enters_pratt_nud: false,
+                        });
+                    }
+                }
+                TypeShape::Pratt { variants } => {
+                    for variant in variants
+                        .iter()
+                        .filter(|variant| is_pratt_nud(variant.position))
+                    {
+                        visit(DecisionHeadStep::Expand {
+                            prefix: variant
+                                .sites
+                                .iter()
+                                .copied()
+                                .map(DecisionItem::Site)
+                                .collect(),
+                            enters_pratt_nud: true,
+                        });
+                    }
+                }
+            }
+        }
+        DecisionItem::Site(site_id) => {
+            let site = &grammar.sites[site_id.index()];
+            let semantics = container_semantics(site);
+            match semantics.cardinality {
+                ContainerCardinality::One => visit(DecisionHeadStep::Expand {
+                    prefix: vec![DecisionItem::Type(site.target)],
+                    enters_pratt_nud: false,
+                }),
+                ContainerCardinality::Optional => {
+                    visit(DecisionHeadStep::Expand {
+                        prefix: Vec::new(),
+                        enters_pratt_nud: false,
+                    });
+                    visit(DecisionHeadStep::Expand {
+                        prefix: vec![DecisionItem::Type(site.target)],
+                        enters_pratt_nud: false,
+                    });
+                }
+                ContainerCardinality::ZeroOrMore
+                | ContainerCardinality::OneOrMore
+                | ContainerCardinality::OptionalOneOrMore => {
+                    if matches!(
+                        semantics.cardinality,
+                        ContainerCardinality::ZeroOrMore | ContainerCardinality::OptionalOneOrMore
+                    ) {
+                        visit(DecisionHeadStep::Expand {
+                            prefix: Vec::new(),
+                            enters_pratt_nud: false,
+                        });
+                    }
+                    visit(DecisionHeadStep::Expand {
+                        prefix: vec![
+                            DecisionItem::Type(site.target),
+                            DecisionItem::RepeatTail {
+                                target: site.target,
+                                separator: semantics.separator_type(),
+                                optional_trailing: semantics
+                                    .separator
+                                    .is_some_and(|separator| separator.optional_trailing),
+                            },
+                        ],
+                        enters_pratt_nud: false,
+                    });
+                }
+            }
+        }
+        DecisionItem::RepeatTail {
+            target,
+            separator,
+            optional_trailing,
+        } => {
+            visit(DecisionHeadStep::Expand {
+                prefix: Vec::new(),
+                enters_pratt_nud: false,
+            });
+            let mut prefix = Vec::new();
+            if let Some(separator) = separator {
+                prefix.push(DecisionItem::Type(*separator));
+            }
+            prefix.extend([
+                DecisionItem::Type(*target),
+                DecisionItem::RepeatTail {
+                    target: *target,
+                    separator: *separator,
+                    optional_trailing: *optional_trailing,
+                },
+            ]);
+            visit(DecisionHeadStep::Expand {
+                prefix,
+                enters_pratt_nud: false,
+            });
+            if *optional_trailing {
+                let separator =
+                    separator.expect("optional trailing behavior requires a separator type");
+                visit(DecisionHeadStep::Expand {
+                    prefix: vec![DecisionItem::Type(separator)],
+                    enters_pratt_nud: false,
+                });
+            }
+        }
+    }
+}
+
 /// Derives the decision frontier from normalized grammar structure and previously established semantic facts.
+///
+/// # Long-function contract
+///
+/// Rationale: closure dominance, early visitor termination, and borrowed residual events must stay
+/// in one traversal so summary and full-frontier consumers observe identical state ordering.
+/// Invariants: grammar-head branching comes only from `decision_head_steps`, minimum stack depth
+/// increases monotonically per state, and the visitor sees each retained end or token transition.
+/// Phases: initializes the residual queue, closes non-consuming expansions, and emits terminal events.
 fn walk_decision_frontier(
     start: &DecisionState,
     grammar: &GrammarDescription,
@@ -9587,181 +9632,29 @@ fn walk_decision_frontier(
             }
             continue;
         };
-        match first {
-            DecisionItem::Type(type_id) => {
-                let description = &grammar.types[type_id.index()];
-                match &description.shape {
-                    TypeShape::Token {
-                        atom,
-                        text_predicate,
-                    } => {
-                        if !visit(DecisionFrontierEvent::Transition {
-                            atom: *atom,
-                            text_predicate: *text_predicate,
-                            rest,
-                            minimum_stack_depth,
-                        }) {
-                            return;
-                        }
-                    }
-                    TypeShape::Alias { site } => queue_decision_expansion(
-                        vec![DecisionItem::Site(*site)],
-                        rest,
-                        minimum_stack_depth,
-                        &mut best_minimum_depth,
-                        &mut queue,
-                    ),
-                    TypeShape::Sequence { sites } => queue_decision_expansion(
-                        sites.iter().copied().map(DecisionItem::Site).collect(),
-                        rest,
-                        minimum_stack_depth,
-                        &mut best_minimum_depth,
-                        &mut queue,
-                    ),
-                    TypeShape::Enum { alternatives } => {
-                        for alternative in alternatives {
-                            queue_decision_expansion(
-                                alternative
-                                    .sites
-                                    .iter()
-                                    .copied()
-                                    .map(DecisionItem::Site)
-                                    .collect(),
-                                rest,
-                                minimum_stack_depth,
-                                &mut best_minimum_depth,
-                                &mut queue,
-                            );
-                        }
-                    }
-                    TypeShape::Pratt { variants } => {
-                        for variant in variants.iter().filter(|variant| {
-                            matches!(
-                                variant.position,
-                                PrattPosition::Atom | PrattPosition::Prefix { .. }
-                            )
-                        }) {
-                            queue_decision_expansion(
-                                variant
-                                    .sites
-                                    .iter()
-                                    .copied()
-                                    .map(DecisionItem::Site)
-                                    .collect(),
-                                rest,
-                                minimum_stack_depth,
-                                &mut best_minimum_depth,
-                                &mut queue,
-                            );
-                        }
-                    }
-                }
-            }
-            DecisionItem::Site(site_id) => {
-                let site = &grammar.sites[site_id.index()];
-                let semantics = container_semantics(site);
-                match semantics.cardinality {
-                    ContainerCardinality::One => queue_decision_expansion(
-                        vec![DecisionItem::Type(site.target)],
-                        rest,
-                        minimum_stack_depth,
-                        &mut best_minimum_depth,
-                        &mut queue,
-                    ),
-                    ContainerCardinality::Optional => {
-                        queue_decision_expansion(
-                            Vec::new(),
-                            rest,
-                            minimum_stack_depth,
-                            &mut best_minimum_depth,
-                            &mut queue,
-                        );
-                        queue_decision_expansion(
-                            vec![DecisionItem::Type(site.target)],
-                            rest,
-                            minimum_stack_depth,
-                            &mut best_minimum_depth,
-                            &mut queue,
-                        );
-                    }
-                    ContainerCardinality::ZeroOrMore
-                    | ContainerCardinality::OneOrMore
-                    | ContainerCardinality::OptionalOneOrMore => {
-                        if matches!(
-                            semantics.cardinality,
-                            ContainerCardinality::ZeroOrMore
-                                | ContainerCardinality::OptionalOneOrMore
-                        ) {
-                            queue_decision_expansion(
-                                Vec::new(),
-                                rest,
-                                minimum_stack_depth,
-                                &mut best_minimum_depth,
-                                &mut queue,
-                            );
-                        }
-                        queue_decision_expansion(
-                            vec![
-                                DecisionItem::Type(site.target),
-                                DecisionItem::RepeatTail {
-                                    target: site.target,
-                                    separator: semantics.separator_type(),
-                                    optional_trailing: semantics
-                                        .separator
-                                        .is_some_and(|separator| separator.optional_trailing),
-                                },
-                            ],
-                            rest,
-                            minimum_stack_depth,
-                            &mut best_minimum_depth,
-                            &mut queue,
-                        );
-                    }
-                }
-            }
-            DecisionItem::RepeatTail {
-                target,
-                separator,
-                optional_trailing,
+        let mut stopped = false;
+        decision_head_steps(first, grammar, |step| match step {
+            DecisionHeadStep::Token {
+                atom,
+                text_predicate,
             } => {
-                queue_decision_expansion(
-                    Vec::new(),
+                stopped = !visit(DecisionFrontierEvent::Transition {
+                    atom,
+                    text_predicate,
                     rest,
                     minimum_stack_depth,
-                    &mut best_minimum_depth,
-                    &mut queue,
-                );
-                let mut expansion = Vec::new();
-                if let Some(separator) = separator {
-                    expansion.push(DecisionItem::Type(*separator));
-                }
-                expansion.extend([
-                    DecisionItem::Type(*target),
-                    DecisionItem::RepeatTail {
-                        target: *target,
-                        separator: *separator,
-                        optional_trailing: *optional_trailing,
-                    },
-                ]);
-                queue_decision_expansion(
-                    expansion,
-                    rest,
-                    minimum_stack_depth,
-                    &mut best_minimum_depth,
-                    &mut queue,
-                );
-                if *optional_trailing {
-                    let separator =
-                        separator.expect("optional trailing behavior requires a separator type");
-                    queue_decision_expansion(
-                        vec![DecisionItem::Type(separator)],
-                        rest,
-                        minimum_stack_depth,
-                        &mut best_minimum_depth,
-                        &mut queue,
-                    );
-                }
+                });
             }
+            DecisionHeadStep::Expand { prefix, .. } => queue_decision_expansion(
+                prefix,
+                rest,
+                minimum_stack_depth,
+                &mut best_minimum_depth,
+                &mut queue,
+            ),
+        });
+        if stopped {
+            return;
         }
     }
 }
@@ -10564,47 +10457,54 @@ fn detect_follow_conflicts(
     for site_id in sites {
         let site = &grammar.sites[site_id.index()];
         let site_follow = &follow.by_site[site_id.index()].positions;
+        let caller_follow = &follow.caller_by_site[site_id.index()].positions;
         if site_follow.is_empty() {
             continue;
         }
 
-        if site_nullable(site, &semantic[site.target.index()])
-            && let Some(evidence) = overlap_evidence_excluding(
-                &first_provenance[site.target.index()],
-                site_follow,
-                &static_conflict_kinds_by_declaration[site.declaration.index()],
-                grammar,
-                proofs,
-            )
-        {
-            let secondary_declaration =
-                follow_source_declaration(evidence.witness.right, site.declaration, proofs);
-            if !optional_static_tail_is_decidable(
-                site_id,
-                grammar,
-                semantic,
-                first_sequences,
-                &follow.by_type[site.owner.index()].positions,
-            ) {
-                diagnostics.push(Diagnostic::conflict_warning(
-                    DiagnosticCode::NullableFollowOverlap,
-                    format!(
-                        "nullable use site in `{}` may consume a caller FOLLOW kind",
-                        grammar.types[site.owner.index()].name,
-                    ),
-                    declaration_label(
-                        site.declaration,
-                        grammar,
-                        "this nullable use site can consume the witness kind",
-                    ),
-                    declaration_label(
-                        secondary_declaration,
-                        grammar,
-                        "the same kind can follow this use site",
-                    ),
-                    evidence,
-                    ConflictRemedy::ReviewNullableFollow { site: site_id },
-                ));
+        if site_nullable(site, &semantic[site.target.index()]) {
+            let site_first = &first_provenance[site.target.index()];
+            let excluded = &static_conflict_kinds_by_declaration[site.declaration.index()];
+            if provenanced_positions_overlap_excluding(site_first, site_follow, excluded, grammar) {
+                let evidence_follow = if optional_static_tail_is_decidable(
+                    site_id,
+                    grammar,
+                    semantic,
+                    first_sequences,
+                ) {
+                    caller_follow
+                } else {
+                    site_follow
+                };
+                if let Some(evidence) = overlap_evidence_excluding(
+                    site_first,
+                    evidence_follow,
+                    excluded,
+                    grammar,
+                    proofs,
+                ) {
+                    let secondary_declaration =
+                        follow_source_declaration(evidence.witness.right, site.declaration, proofs);
+                    diagnostics.push(Diagnostic::conflict_warning(
+                        DiagnosticCode::NullableFollowOverlap,
+                        format!(
+                            "nullable use site in `{}` may consume a caller FOLLOW kind",
+                            grammar.types[site.owner.index()].name,
+                        ),
+                        declaration_label(
+                            site.declaration,
+                            grammar,
+                            "this nullable use site can consume the witness kind",
+                        ),
+                        declaration_label(
+                            secondary_declaration,
+                            grammar,
+                            "the same kind can follow this use site",
+                        ),
+                        evidence,
+                        ConflictRemedy::ReviewNullableFollow { site: site_id },
+                    ));
+                }
             }
         }
 
@@ -10660,7 +10560,6 @@ fn optional_static_tail_is_decidable(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
     first_sequences: &FirstSequenceAnalysis<'_>,
-    caller_follow: &[ProvenancedPosition],
 ) -> bool {
     let site = &grammar.sites[site_id.index()];
     if site
@@ -10678,16 +10577,12 @@ fn optional_static_tail_is_decidable(
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-    let tail_is_nullable = tail_first
-        .iter()
-        .any(|sequence| sequence.positions.is_empty() && sequence.ends());
     let overlap = classify_optional_follow_overlap(
         &semantic[site.target.index()].positions,
         &tail_first,
-        caller_follow,
         grammar,
     );
-    if !overlap.static_tail || (tail_is_nullable && overlap.caller) {
+    if !overlap.static_tail {
         return false;
     }
     let left = DecisionState::consuming_site_and_tail(site, tail);
@@ -10709,8 +10604,6 @@ enum OptionalOverlapSource {
     Site,
     /// The token may begin the optional site's static sequence tail.
     StaticTail,
-    /// The token may arrive from the owning callable's FOLLOW.
-    Caller,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -10718,15 +10611,12 @@ enum OptionalOverlapSource {
 struct OptionalFollowOverlap {
     /// Whether an exact element cell also begins the static sequence tail.
     static_tail: bool,
-    /// Whether an exact element cell also belongs to the callable's FOLLOW.
-    caller: bool,
 }
 
-/// Classifies exact kind/text cells shared by an optional element and each FOLLOW source.
+/// Classifies exact kind/text cells shared by an optional element and its static sequence tail.
 fn classify_optional_follow_overlap(
     site_first: &[FirstPosition],
     tail_first: &[FirstSequence],
-    caller_follow: &[ProvenancedPosition],
     grammar: &GrammarDescription,
 ) -> OptionalFollowOverlap {
     let mut candidates = site_first
@@ -10741,15 +10631,6 @@ fn classify_optional_follow_overlap(
             .cloned()
             .map(|position| (OptionalOverlapSource::StaticTail, position))
     }));
-    candidates.extend(caller_follow.iter().map(|position| {
-        (
-            OptionalOverlapSource::Caller,
-            FirstPosition {
-                kinds: position.kinds.kinds().clone(),
-                text_predicate: position.text_predicate,
-            },
-        )
-    }));
     partition_by_kind_residual(
         &candidates,
         grammar,
@@ -10763,7 +10644,6 @@ fn classify_optional_follow_overlap(
         |mut overlap, (_, sources, _)| {
             if sources.contains(&OptionalOverlapSource::Site) {
                 overlap.static_tail |= sources.contains(&OptionalOverlapSource::StaticTail);
-                overlap.caller |= sources.contains(&OptionalOverlapSource::Caller);
             }
             overlap
         },
@@ -10883,6 +10763,32 @@ fn overlap_evidence(
         grammar,
         proofs,
     )
+}
+
+/// Reports whether exact provenanced cells overlap after excluding already-diagnosed kinds.
+fn provenanced_positions_overlap_excluding(
+    left: &[ProvenancedPosition],
+    right: &[ProvenancedPosition],
+    excluded: &KindSet,
+    grammar: &GrammarDescription,
+) -> bool {
+    left.iter().any(|left_position| {
+        right.iter().any(|right_position| {
+            predicates_overlap(
+                left_position.text_predicate,
+                right_position.text_predicate,
+                &grammar.text_predicates,
+                grammar.text_equivalence,
+            ) && !left_position
+                .kinds
+                .kinds()
+                .intersection(right_position.kinds.kinds())
+                .expect("positions have the grammar width")
+                .difference(excluded)
+                .expect("excluded kinds have the grammar width")
+                .is_empty()
+        })
+    })
 }
 
 /// Derives the overlap evidence excluding from normalized grammar structure and previously established semantic facts.
