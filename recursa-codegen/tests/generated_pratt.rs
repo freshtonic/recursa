@@ -259,6 +259,7 @@ recursa::tokens! {
         WHEN => "WHEN",
         THEN => "THEN",
         CASE => "CASE",
+        IS => "IS",
     }
     admissions {
         NameWords = { WHEN },
@@ -365,6 +366,9 @@ pub enum Expr<'input> {
     And(Box<Self>, #[tok(AND, this)] Box<Self>),
     #[parse(postfix, bp = 20)]
     Cast(Box<Self>, #[tok(DOUBLE_COLON, this)] TypeName),
+    #[parse(postfix, bp = 4)]
+    #[tok(IS)]
+    Is(Box<Self>),
 }
 
 #[derive(recursa::Node)]
@@ -424,6 +428,44 @@ pub struct RestrictedOperand<'input> {
     pub needle: Box<Expr<'input>>,
     pub haystack: Box<Expr<'input>>,
 }
+
+#[derive(recursa::Node)]
+pub struct SelectExprItem<'input> {
+    pub expression: Expr<'input>,
+    pub alias: Option<Name<'input>>,
+}
+
+#[derive(recursa::Node)]
+#[tok(IS)]
+pub struct IsMarker;
+
+#[derive(recursa::Node)]
+pub struct DeferredIsFollow<'input> {
+    pub item: SelectExprItem<'input>,
+    pub tail: Option<IsMarker>,
+}
+
+#[derive(recursa::Node)]
+pub struct ExprWrapper<'input> {
+    pub expression: Expr<'input>,
+}
+
+#[derive(recursa::Node)]
+pub struct ImmediateIsFollow<'input> {
+    pub wrapper: ExprWrapper<'input>,
+    pub tail: IsMarker,
+}
+
+#[derive(recursa::Node)]
+#[tok(DOUBLE_COLON, BOOL)]
+pub struct CastSuffix;
+
+#[derive(recursa::Node)]
+pub struct ImmediateNestedCastFollow<'input> {
+    pub expression: Expr<'input>,
+    pub tail: CastSuffix,
+}
+
 "#,
     )
     .expect("write caller-FOLLOW overlap grammar");
@@ -627,6 +669,35 @@ fn main() {
     assert_eq!(error.found(), Some("fixed:FROM"));
     assert_eq!(error.expected().collect::<Vec<_>>(), ["fixed:THEN"]);
     assert_eq!(input.cursor(), 0, "the public parse remains transactional");
+
+    let lexed = grammar::lex("name IS");
+    let mut input = lexed.input();
+    let parsed = grammar::DeferredIsFollow::parse(&mut input)
+        .expect("a nearer alias boundary does not flatten a farther Pratt overlap");
+    assert!(input.is_eof());
+    assert!(matches!(
+        parsed.into_ast().item.expression,
+        grammar::Expr::Is(_)
+    ));
+
+    let lexed = grammar::lex("name IS");
+    let mut input = lexed.input();
+    let error = match grammar::ImmediateIsFollow::parse(&mut input) {
+        Ok(_) => panic!("an inherited immediate Pratt/FOLLOW overlap must remain ambiguous"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), recursa::ParseErrorKind::PrattAmbiguity);
+    assert_eq!(input.cursor(), 0, "the public parse remains transactional");
+
+    let lexed = grammar::lex("name + name::BOOL");
+    let mut input = lexed.input();
+    let error = match grammar::ImmediateNestedCastFollow::parse(&mut input) {
+        Ok(_) => panic!("an immediate caller boundary must survive recursive Pratt stops"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), recursa::ParseErrorKind::PrattAmbiguity);
+    assert_eq!(input.cursor(), 0, "the public parse remains transactional");
+
     println!("pratt-dispatch-regressions-ok");
 }
 "#,

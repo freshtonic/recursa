@@ -9371,6 +9371,12 @@ fn compact_dispatch_resolution(
 }
 
 /// Freezes one exact balanced-delimiter enum decision through labelled residuals.
+///
+/// The structural scan owns only the exact opener partition and is useful only
+/// when that partition contains at least two outer declarations. The ordinary
+/// resolution independently proves every route with the opener excluded, and
+/// the post-close resolution proves every opener-bearing tail after its
+/// matching delimiter.
 fn compact_balanced_dispatch_resolution(
     alternatives: &[(crate::DeclId, &[SiteId])],
     first_sequences: &FirstSequenceAnalysis<'_>,
@@ -9413,10 +9419,10 @@ fn compact_balanced_dispatch_resolution(
                 opener_residuals = Some(residuals);
             }
             let opener_residuals = opener_residuals?;
-            let mut seen_declarations = BTreeSet::new();
+            let mut opener_declarations = BTreeSet::new();
             let mut tails = Vec::new();
             for state in opener_residuals {
-                seen_declarations.insert(state.declaration);
+                opener_declarations.insert(state.declaration);
                 let tail = balanced_enclosure_tail_with_pratt(
                     &state.state,
                     &balanced,
@@ -9440,11 +9446,7 @@ fn compact_balanced_dispatch_resolution(
                     });
                 }
             }
-            let expected_declarations = alternatives
-                .iter()
-                .map(|(declaration, _)| *declaration)
-                .collect::<BTreeSet<_>>();
-            if seen_declarations != expected_declarations {
+            if opener_declarations.len() < 2 {
                 return None;
             }
             let ordinary = arena.resolution(roots, false, Some(delimiter.open))?;
@@ -16105,6 +16107,102 @@ mod decision_product_tests {
         assert_eq!(
             wide, narrow,
             "FIRST-language expansion below CASE must stop once only Choice::Expr remains; narrow={narrow:?} wide={wide:?}",
+        );
+    }
+
+    #[test]
+    fn balanced_dispatch_preserves_a_wholly_non_opener_enum_alternative() {
+        let (mut grammar, _) =
+            unique_case_route_fixture(1, UniqueCaseExpressionShape::OrdinaryEnum);
+        grammar.max_lookahead = 1;
+        let choice = TypeId::new(
+            (grammar.types.len() - 1)
+                .try_into()
+                .expect("test type identity width"),
+        );
+        grammar.kind_count += 1;
+        let mut next_byte = 10_000;
+        let (ordinary, ordinary_kind) =
+            compact_test_token(&mut grammar, &mut next_byte, "ORDINARY");
+        let ordinary_declaration =
+            test_declaration(&mut grammar, &mut next_byte, "Choice::Ordinary");
+        let ordinary_alternative = crate::Alternative {
+            declaration: ordinary_declaration,
+            sites: vec![compact_test_site(
+                &mut grammar,
+                &mut next_byte,
+                choice,
+                ordinary,
+                "Choice::Ordinary::value",
+            )],
+        };
+        let TypeShape::Enum {
+            alternatives: authored,
+        } = &mut grammar.types[choice.index()].shape
+        else {
+            unreachable!("choice is an enum")
+        };
+        authored.push(ordinary_alternative);
+        grammar.entry_types.push(choice);
+
+        let report = analyze(&grammar);
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let output = report
+            .output
+            .expect("mixed structural dispatch is generatable");
+        let dispatch = output
+            .decisions()
+            .dispatches()
+            .iter()
+            .find(|dispatch| dispatch.owner() == choice)
+            .expect("choice dispatch");
+        assert!(dispatch.balanced().is_some());
+        assert!(dispatch.trie().edges().iter().any(|edge| {
+            edge.position().kinds().contains(ordinary_kind)
+                && edge
+                    .next()
+                    .terminal()
+                    .is_some_and(|terminal| terminal.declaration() == ordinary_declaration)
+        }));
+    }
+
+    #[test]
+    fn balanced_dispatch_requires_two_opener_declarations() {
+        let (mut grammar, opener_alternatives) =
+            unique_case_route_fixture(1, UniqueCaseExpressionShape::OrdinaryEnum);
+        grammar.max_lookahead = 1;
+        let choice = TypeId::new(
+            (grammar.types.len() - 1)
+                .try_into()
+                .expect("test type identity width"),
+        );
+        grammar.kind_count += 1;
+        let mut next_byte = 10_000;
+        let (ordinary, _) = compact_test_token(&mut grammar, &mut next_byte, "ORDINARY");
+        let ordinary_alternative = crate::Alternative {
+            declaration: test_declaration(&mut grammar, &mut next_byte, "Choice::Ordinary"),
+            sites: vec![compact_test_site(
+                &mut grammar,
+                &mut next_byte,
+                choice,
+                ordinary,
+                "Choice::Ordinary::value",
+            )],
+        };
+        let alternatives = [opener_alternatives[0].clone(), ordinary_alternative];
+        let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let alternatives = alternatives
+            .iter()
+            .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
+            .collect::<Vec<_>>();
+
+        assert!(
+            first_sequences
+                .compact_balanced_enum_dispatch(&alternatives)
+                .is_none(),
+            "one opener declaration does not require structural branch selection",
         );
     }
 

@@ -629,6 +629,8 @@ pub(super) struct PrettyRepetitionBehavior {
     pub(super) leading_separator: bool,
     /// Whether non-leading separators require preceding whitespace.
     pub(super) space_before_separator: bool,
+    /// Whether separators require whitespace before the following item.
+    pub(super) space_after_separator: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1111,6 +1113,7 @@ pub(super) fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<Pret
                         wrappers,
                         attachment,
                         separator,
+                        separator_spacing,
                         opaque_provenance,
                         repetition_break,
                         pretty,
@@ -1118,7 +1121,9 @@ pub(super) fn emitted_pretty_elements(elements: &[ElementParsePlan]) -> Vec<Pret
                     } => PrettySemanticProjection::Direct {
                         repetition: pretty_repetition_behavior(
                             matches!(container.as_ref(), PlannedContainer::Repeated { .. }),
-                            separator.clone(),
+                            separator.clone().map(|spelling| {
+                                (spelling, separator_spacing.unwrap_or(PrettySpacing::Auto))
+                            }),
                             matches!(
                                 repetition_break,
                                 PlannedRepetitionBreak::TopLevelStatement(_)
@@ -1200,19 +1205,38 @@ fn pretty_presence_token(fixed: &AttachedFixedParsePlan) -> PrettyAttachedFixedB
 /// Derives separator placement and break policy for one repetition.
 pub(super) fn pretty_repetition_behavior(
     repeated: bool,
-    separator: Option<String>,
+    separator: Option<(String, PrettySpacing)>,
     hard_break: bool,
     pretty: &PrettyHints,
 ) -> Option<PrettyRepetitionBehavior> {
-    repeated.then(|| PrettyRepetitionBehavior {
-        space_before_separator: separator.as_deref().is_some_and(is_word_shaped),
-        separator,
-        trailing_separator: matches!(
-            pretty.trailing_separator,
-            Some(PrettyTrailingSeparator::Always)
-        ),
-        hard_break,
-        leading_separator: matches!(pretty.separator, Some(PrettySeparatorPosition::Leading)),
+    repeated.then(|| {
+        let (space_before_separator, space_after_separator) =
+            separator
+                .as_ref()
+                .map_or(
+                    (false, true),
+                    |(spelling, spacing)| match pretty_fixed_rendering(spelling, *spacing) {
+                        PrettyFixedRendering::TightSequence | PrettyFixedRendering::Opening => {
+                            (false, false)
+                        }
+                        PrettyFixedRendering::Before => (true, false),
+                        PrettyFixedRendering::After
+                        | PrettyFixedRendering::Closing
+                        | PrettyFixedRendering::Punctuation => (false, true),
+                        PrettyFixedRendering::Around | PrettyFixedRendering::Word => (true, true),
+                    },
+                );
+        PrettyRepetitionBehavior {
+            separator: separator.map(|(spelling, _)| spelling),
+            space_before_separator,
+            space_after_separator,
+            trailing_separator: matches!(
+                pretty.trailing_separator,
+                Some(PrettyTrailingSeparator::Always)
+            ),
+            hard_break,
+            leading_separator: matches!(pretty.separator, Some(PrettySeparatorPosition::Leading)),
+        }
     })
 }
 
@@ -1797,7 +1821,7 @@ pub(super) fn authoritative_pretty_elements(
                         | ContainerOperation::OneOrMore
                         | ContainerOperation::OptionalOneOrMore
                 );
-                let separator_spelling =
+                let separator_behavior =
                     authoritative_pretty_separator(lowered, separator.as_ref())?;
                 let top_level_break = separator.as_ref().is_some_and(|separator| {
                     let usage = &source.token_uses[separator.token_use.index()];
@@ -1817,7 +1841,7 @@ pub(super) fn authoritative_pretty_elements(
                     projection: PrettySemanticProjection::Direct {
                         repetition: pretty_repetition_behavior(
                             repeated,
-                            separator_spelling,
+                            separator_behavior,
                             top_level_break,
                             pretty,
                         ),
@@ -1847,7 +1871,7 @@ pub(super) fn authoritative_pretty_elements(
 pub(super) fn authoritative_pretty_separator(
     lowered: &crate::materialization::LoweredGrammar,
     separator: Option<&crate::source_model::Separator>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<(String, PrettySpacing)>, String> {
     let Some(separator) = separator else {
         return Ok(None);
     };
@@ -1857,9 +1881,9 @@ pub(super) fn authoritative_pretty_separator(
     let TokenDefinitionKind::Fixed(fixed) = &definition.kind else {
         return Err("a Pretty separator is not fixed syntax".to_owned());
     };
-    Ok(Some(fixed_pretty_spelling(
-        &fixed.spelling,
-        lowered.grammar.text_equivalence,
+    Ok(Some((
+        fixed_pretty_spelling(&fixed.spelling, lowered.grammar.text_equivalence),
+        fixed.pretty_spacing,
     )))
 }
 
@@ -2457,8 +2481,9 @@ pub(super) fn render_pretty_semantic(
         let hard_break = repetition.hard_break;
         let leading = repetition.leading_separator;
         let space_before_separator = repetition.space_before_separator;
+        let space_after_separator = repetition.space_after_separator;
         quote! {
-            context.with_repetition_style(#separator, #trailing, #hard_break, #leading, #space_before_separator, |context| {
+            context.with_repetition_style(#separator, #trailing, #hard_break, #leading, (#space_before_separator, #space_after_separator), |context| {
                 #pretty
             })
         }
@@ -2831,6 +2856,7 @@ pub(super) fn render_pretty_attached_semantic(
         let hard_break = repetition.hard_break;
         let leading = repetition.leading_separator;
         let space_before_separator = repetition.space_before_separator;
+        let space_after_separator = repetition.space_after_separator;
         let render_collection = |collection: proc_macro2::TokenStream| {
             quote! {
                 context.with_repetition_style(
@@ -2838,7 +2864,7 @@ pub(super) fn render_pretty_attached_semantic(
                     #trailing,
                     #hard_break,
                     #leading,
-                    #space_before_separator,
+                    (#space_before_separator, #space_after_separator),
                     |context| {
                         context.render_repeated_by(
                             (#collection).iter(),

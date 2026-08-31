@@ -50,6 +50,8 @@ pub struct FollowSet {
     pub(crate) kinds: Cow<'static, [u64]>,
     /// Sorted symbolic expectations used in diagnostics.
     pub(crate) expected: Cow<'static, [ExpectedAtomId]>,
+    /// Nearest static suffix boundary used by Pratt ambiguity checks.
+    pub(crate) pratt_boundary_kinds: Cow<'static, [u64]>,
 }
 
 impl FollowSet {
@@ -79,6 +81,7 @@ impl FollowSet {
             kind_count,
             kinds: Cow::Borrowed(kinds),
             expected: Cow::Borrowed(expected),
+            pratt_boundary_kinds: Cow::Borrowed(kinds),
         }
     }
 
@@ -114,6 +117,12 @@ impl FollowSet {
             .zip(other.kinds.iter())
             .map(|(left, right)| left | right)
             .collect();
+        let pratt_boundary_kinds = self
+            .pratt_boundary_kinds
+            .iter()
+            .zip(other.pratt_boundary_kinds.iter())
+            .map(|(left, right)| left | right)
+            .collect();
 
         let mut expected = Vec::with_capacity(self.expected.len() + other.expected.len());
         let mut left = self.expected.iter().copied().peekable();
@@ -135,7 +144,31 @@ impl FollowSet {
             kind_count: self.kind_count,
             kinds: Cow::Owned(kinds),
             expected: Cow::Owned(expected),
+            pratt_boundary_kinds: Cow::Owned(pratt_boundary_kinds),
         })
+    }
+
+    /// Composes a nearer static suffix with an inherited caller FOLLOW.
+    ///
+    /// Ordinary parsing observes the complete union. Pratt ambiguity checks
+    /// retain the nearer static suffix so a farther nullable suffix cannot
+    /// fabricate an immediate extender collision.
+    pub fn with_caller(&self, caller: &Self) -> Result<Self, FollowSetError> {
+        let mut composed = self.union(caller)?;
+        composed.pratt_boundary_kinds = self.kinds.clone();
+        Ok(composed)
+    }
+
+    /// Reports whether `kind` belongs to the nearest static Pratt boundary.
+    pub(crate) fn pratt_boundary_contains(&self, kind: TokenKind) -> bool {
+        if u32::from(kind) >= self.kind_count {
+            return false;
+        }
+        let word = usize::from(kind) / 64;
+        let bit = usize::from(kind) % 64;
+        self.pratt_boundary_kinds
+            .get(word)
+            .is_some_and(|value| value & (1_u64 << bit) != 0)
     }
 }
 
@@ -196,17 +229,31 @@ mod tests {
 
         assert!(matches!(left.kinds, Cow::Borrowed(_)));
         assert!(matches!(left.expected, Cow::Borrowed(_)));
+        assert!(matches!(left.pratt_boundary_kinds, Cow::Borrowed(_)));
 
         let union = left.union(&right).unwrap();
 
         assert!(matches!(union.kinds, Cow::Owned(_)));
         assert!(matches!(union.expected, Cow::Owned(_)));
+        assert!(matches!(union.pratt_boundary_kinds, Cow::Owned(_)));
         assert_eq!(&*union.kinds, &[0b101]);
         assert_eq!(
             &*union.expected,
             &[ExpectedAtomId(0), ExpectedAtomId(1), ExpectedAtomId(2)]
         );
         assert_eq!(right.union(&left).unwrap(), union);
+    }
+
+    #[test]
+    fn caller_composition_retains_the_nearest_static_pratt_boundary() {
+        let nearer = FollowSet::from_static(3, &[0b001], &[ExpectedAtomId(0)]);
+        let farther = FollowSet::from_static(3, &[0b100], &[ExpectedAtomId(2)]);
+
+        let composed = nearer.with_caller(&farther).unwrap();
+
+        assert_eq!(&*composed.kinds, &[0b101]);
+        assert!(composed.pratt_boundary_contains(0));
+        assert!(!composed.pratt_boundary_contains(2));
     }
 
     #[test]

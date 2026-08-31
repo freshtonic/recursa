@@ -1034,6 +1034,12 @@ impl<'context, 'input, A> ParseContext<'context, 'input, A> {
             .is_some_and(|record| expected.contains(record.kind))
     }
 
+    /// Reports whether the next token belongs to the nearest static Pratt boundary.
+    pub fn next_is_pratt_boundary(&self) -> bool {
+        self.peek(0)
+            .is_some_and(|record| self.follow.pratt_boundary_contains(record.kind))
+    }
+
     /// Reports whether no token remains.
     pub fn is_eof(&self) -> bool {
         self.peek(0).is_none()

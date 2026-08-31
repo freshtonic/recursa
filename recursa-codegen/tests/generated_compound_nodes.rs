@@ -762,7 +762,7 @@ fn private_protocol_mismatch_is_reported_once_at_the_grammar_root() {
         .expect("published generation");
     let root = generation.join("root.rs");
     let source = fs::read_to_string(&root).expect("read generated root");
-    fs::write(&root, source.replace("protocol_7", "protocol_999"))
+    fs::write(&root, source.replace("protocol_8", "protocol_999"))
         .expect("inject private protocol mismatch");
 
     let output = run_fixture(&package);
