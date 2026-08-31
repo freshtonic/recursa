@@ -108,7 +108,9 @@ impl Builder {
     }
 }
 
-fn mixed_static_and_caller_optional_overlap() -> (GrammarDescription, recursa_codegen::SiteId) {
+fn mixed_static_and_caller_optional_overlap(
+    caller_starts_with_a: bool,
+) -> (GrammarDescription, recursa_codegen::SiteId) {
     let mut builder = Builder::with_lookahead("mixed-static-caller", &["X", "A", "B", "C", "D"], 2);
     let x = builder.token("X", 0);
     let a = builder.token("A", 1);
@@ -172,31 +174,36 @@ fn mixed_static_and_caller_optional_overlap() -> (GrammarDescription, recursa_co
         owner,
     );
 
-    let ad = builder.grammar.next_type_id();
-    let ad_decl = builder.declaration("Ad");
-    let ad_a = builder.site(ad, a, "ad_a", ContainerShape::Direct);
-    let ad_d = builder.site(ad, d, "ad_d", ContainerShape::Direct);
-    assert_eq!(
-        builder.grammar.push_type(TypeDescription::new(
-            "Ad",
-            ad_decl,
-            TypeShape::Sequence {
-                sites: vec![ad_a, ad_d],
-            },
-        )),
-        ad,
-    );
+    let caller = if caller_starts_with_a {
+        let ad = builder.grammar.next_type_id();
+        let ad_decl = builder.declaration("Ad");
+        let ad_a = builder.site(ad, a, "ad_a", ContainerShape::Direct);
+        let ad_d = builder.site(ad, d, "ad_d", ContainerShape::Direct);
+        assert_eq!(
+            builder.grammar.push_type(TypeDescription::new(
+                "Ad",
+                ad_decl,
+                TypeShape::Sequence {
+                    sites: vec![ad_a, ad_d],
+                },
+            )),
+            ad,
+        );
+        ad
+    } else {
+        d
+    };
 
     let root = builder.grammar.next_type_id();
     let root_decl = builder.declaration("Root");
     let owner_site = builder.site(root, owner, "owner", ContainerShape::Direct);
-    let caller_ad = builder.site(root, ad, "caller_ad", ContainerShape::Direct);
+    let caller_site = builder.site(root, caller, "caller", ContainerShape::Direct);
     assert_eq!(
         builder.grammar.push_type(TypeDescription::new(
             "Root",
             root_decl,
             TypeShape::Sequence {
-                sites: vec![owner_site, caller_ad],
+                sites: vec![owner_site, caller_site],
             },
         )),
         root,
@@ -390,7 +397,7 @@ fn nested_nullable_tail_warning_is_predicate_aware_and_keeps_output() {
 
 #[test]
 fn decidable_static_optional_tail_does_not_hide_same_cell_caller_follow() {
-    let (grammar, optional_ab) = mixed_static_and_caller_optional_overlap();
+    let (grammar, optional_ab) = mixed_static_and_caller_optional_overlap(true);
     let report = analyze(&grammar);
 
     assert!(report.output.is_some(), "{:?}", report.diagnostics);
@@ -400,6 +407,20 @@ fn decidable_static_optional_tail_does_not_hide_same_cell_caller_follow() {
                 diagnostic.conflict_remedy,
                 Some(ConflictRemedy::ReviewNullableFollow { site }) if site == optional_ab
             )
+    }));
+}
+
+#[test]
+fn decidable_static_optional_tail_ignores_disjoint_caller_follow() {
+    let (grammar, optional_ab) = mixed_static_and_caller_optional_overlap(false);
+    let report = analyze(&grammar);
+
+    assert!(report.output.is_some(), "{:?}", report.diagnostics);
+    assert!(!report.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.conflict_remedy,
+            Some(ConflictRemedy::ReviewNullableFollow { site }) if site == optional_ab
+        )
     }));
 }
 

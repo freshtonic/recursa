@@ -63,8 +63,9 @@ pub use decision_plan::{
     BalancedDispatch, ContainerAction, ContainerMachine, ContainerOperation, ContainerState,
     ContainerTransition, DecisionProducts, DispatchBranch, DispatchKind, DispatchPlan,
     DispatchPosition, DispatchSequence, DispatchTerminal, DispatchTrieEdge, DispatchTrieNode,
-    ExpectedRecipe, FailureEdge, FailureEdgeKind, FollowRecipe, OptionalAction, OptionalDecision,
-    OptionalDecisionEdge, OptionalDecisionNode, OptionalDecisionTerminal,
+    ExpectedRecipe, FailureEdge, FailureEdgeKind, FollowRecipe, OptionalAction,
+    OptionalViabilityDecision, OptionalViabilityDecisionEdge, OptionalViabilityDecisionNode,
+    OptionalViabilityDecisionTerminal,
 };
 pub use diagnostic::{
     ConflictEvidence, ConflictRemedy, ConflictWitness, Diagnostic, DiagnosticCode, DiagnosticLabel,

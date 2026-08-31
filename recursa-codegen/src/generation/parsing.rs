@@ -702,7 +702,7 @@ pub(super) enum PlannedContainer {
         /// FIRST set that decides whether the child begins.
         selector: ExpectedSet,
         /// Frozen bounded consume-vs-skip viability, absent only from declaration-only plans.
-        decision: Option<Box<OptionalDecisionParsePlan>>,
+        decision: Option<Box<OptionalViabilityDecisionParsePlan>>,
         /// FOLLOW context passed while parsing the child.
         child_follow: PlannedFollow,
     },
@@ -731,11 +731,11 @@ pub(super) enum PlannedContainer {
 
 #[derive(Clone, Debug)]
 /// Generated representation of one frozen optional consume-vs-skip decision.
-pub(super) struct OptionalDecisionParsePlan {
-    /// Root state of the compact optional-decision graph.
+pub(super) struct OptionalViabilityDecisionParsePlan {
+    /// Root state of the compact optional viability decision graph.
     root: DispatchStateId,
     /// Canonical graph states; structurally shared suffixes occur once.
-    states: Vec<OptionalDecisionNodeParsePlan>,
+    states: Vec<OptionalViabilityDecisionNodeParsePlan>,
     /// Trie-node count retained for validation.
     frozen_node_count: usize,
     /// Deterministic identity of the joined decision graph.
@@ -744,16 +744,16 @@ pub(super) struct OptionalDecisionParsePlan {
 
 #[derive(Clone, Debug)]
 /// One generated state in an optional consume-vs-skip decision graph.
-pub(super) struct OptionalDecisionNodeParsePlan {
+pub(super) struct OptionalViabilityDecisionNodeParsePlan {
     /// Ordered caller-dependent and unconditional actions at this prefix.
-    terminals: Vec<OptionalDecisionTerminalParsePlan>,
+    terminals: Vec<OptionalViabilityDecisionTerminalParsePlan>,
     /// Pairwise-disjoint exact token/text partitions extending this prefix.
     edges: Vec<DispatchTrieEdgePlan>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// One generated optional action with its caller-FOLLOW condition.
-pub(super) struct OptionalDecisionTerminalParsePlan {
+pub(super) struct OptionalViabilityDecisionTerminalParsePlan {
     /// Consume or skip action selected at this terminal.
     action: crate::OptionalAction,
     /// Whether the action is available only through caller FOLLOW.
@@ -1429,18 +1429,21 @@ pub(super) fn plan_predictive_dispatch(
     Ok((root, states))
 }
 
-/// Joins a source-independent optional-decision trie to runtime-width token expectations.
-fn plan_optional_decision(
-    frozen: &crate::OptionalDecision,
+/// Joins a source-independent optional viability decision trie to runtime-width token expectations.
+fn plan_optional_viability_decision(
+    frozen: &crate::OptionalViabilityDecision,
     atom_index: &ExpectedAtomIndex,
     kind_count: usize,
-) -> Result<OptionalDecisionParsePlan, String> {
+) -> Result<OptionalViabilityDecisionParsePlan, String> {
     fn intern(
-        frozen: &crate::OptionalDecisionNode,
+        frozen: &crate::OptionalViabilityDecisionNode,
         atom_index: &ExpectedAtomIndex,
         kind_count: usize,
-        states: &mut Vec<OptionalDecisionNodeParsePlan>,
-        memo: &mut BTreeMap<(Vec<crate::OptionalDecisionTerminal>, usize, usize), DispatchStateId>,
+        states: &mut Vec<OptionalViabilityDecisionNodeParsePlan>,
+        memo: &mut BTreeMap<
+            (Vec<crate::OptionalViabilityDecisionTerminal>, usize, usize),
+            DispatchStateId,
+        >,
     ) -> Result<DispatchStateId, String> {
         let key = (
             frozen.terminals().to_vec(),
@@ -1453,7 +1456,7 @@ fn plan_optional_decision(
         let terminals = frozen
             .terminals()
             .iter()
-            .map(|terminal| OptionalDecisionTerminalParsePlan {
+            .map(|terminal| OptionalViabilityDecisionTerminalParsePlan {
                 action: terminal.action(),
                 on_caller_follow: terminal.on_caller_follow(),
             })
@@ -1469,7 +1472,7 @@ fn plan_optional_decision(
             })
             .collect::<Result<Vec<_>, String>>()?;
         let state = DispatchStateId(states.len());
-        states.push(OptionalDecisionNodeParsePlan { terminals, edges });
+        states.push(OptionalViabilityDecisionNodeParsePlan { terminals, edges });
         memo.insert(key, state);
         Ok(state)
     }
@@ -1483,49 +1486,51 @@ fn plan_optional_decision(
         &mut BTreeMap::new(),
     )?;
     let frozen_node_count = states.len();
-    let frozen_identity = optional_decision_identity(root, &states);
-    let plan = OptionalDecisionParsePlan {
+    let frozen_identity = optional_viability_decision_identity(root, &states);
+    let plan = OptionalViabilityDecisionParsePlan {
         root,
         states,
         frozen_node_count,
         frozen_identity,
     };
-    validate_optional_decision_parse_plan(&plan)?;
+    validate_optional_viability_decision_parse_plan(&plan)?;
     Ok(plan)
 }
 
-/// Computes the deterministic identity of one generated optional-decision graph.
-fn optional_decision_identity(
+/// Computes the deterministic identity of one generated optional viability decision graph.
+fn optional_viability_decision_identity(
     root: DispatchStateId,
-    states: &[OptionalDecisionNodeParsePlan],
+    states: &[OptionalViabilityDecisionNodeParsePlan],
 ) -> u64 {
     stable_hash(format!("{root:?}:{states:?}").as_bytes())
 }
 
-/// Rejects malformed or stale optional-decision graph structure before rendering.
-fn validate_optional_decision_parse_plan(
-    decision: &OptionalDecisionParsePlan,
+/// Rejects malformed or stale optional viability decision graph structure before rendering.
+fn validate_optional_viability_decision_parse_plan(
+    decision: &OptionalViabilityDecisionParsePlan,
 ) -> Result<(), String> {
     fn visit(
         state: DispatchStateId,
-        states: &[OptionalDecisionNodeParsePlan],
+        states: &[OptionalViabilityDecisionNodeParsePlan],
         visited: &mut BTreeSet<DispatchStateId>,
     ) -> Result<(), String> {
-        let node = states
-            .get(state.index())
-            .ok_or_else(|| "frozen optional decision references an unknown state".to_owned())?;
+        let node = states.get(state.index()).ok_or_else(|| {
+            "frozen optional viability decision references an unknown state".to_owned()
+        })?;
         if !visited.insert(state) {
             return Ok(());
         }
         if node.terminals.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err("frozen optional decision contains a duplicate terminal".to_owned());
+            return Err(
+                "frozen optional viability decision contains a duplicate terminal".to_owned(),
+            );
         }
         if node.edges.iter().enumerate().any(|(index, edge)| {
             node.edges[index + 1..]
                 .iter()
                 .any(|other| other.position == edge.position)
         }) {
-            return Err("frozen optional decision contains duplicate edges".to_owned());
+            return Err("frozen optional viability decision contains duplicate edges".to_owned());
         }
         for edge in &node.edges {
             visit(edge.next, states, visited)?;
@@ -1537,9 +1542,12 @@ fn validate_optional_decision_parse_plan(
     visit(decision.root, &decision.states, &mut visited)?;
     if visited.len() != decision.frozen_node_count
         || decision.frozen_node_count != decision.states.len()
-        || optional_decision_identity(decision.root, &decision.states) != decision.frozen_identity
+        || optional_viability_decision_identity(decision.root, &decision.states)
+            != decision.frozen_identity
     {
-        return Err("the joined optional decision diverges from its frozen identity".to_owned());
+        return Err(
+            "the joined optional viability decision diverges from its frozen identity".to_owned(),
+        );
     }
     Ok(())
 }
@@ -4309,8 +4317,8 @@ pub(super) fn planned_container(
         },
         ContainerOperation::Optional => PlannedContainer::Optional {
             selector: element_selector,
-            decision: Some(Box::new(plan_optional_decision(
-                machine.optional_decision().ok_or_else(|| {
+            decision: Some(Box::new(plan_optional_viability_decision(
+                machine.optional_viability_decision().ok_or_else(|| {
                     "an optional container lacks its frozen viability decision".to_owned()
                 })?,
                 atom_index,
@@ -5935,16 +5943,26 @@ pub(super) fn render_optional_fixed_group_parse(
 }
 
 /// Emits compact table-driven traversal of one optional consume-vs-skip decision.
-fn render_optional_decision_selection(
+///
+/// # Long-function contract
+///
+/// Rationale: the shared packed width, table offsets, decoder, and traversal must be derived from
+/// one canonical registry so emitted cells cannot drift between separately rendered fragments.
+/// Invariants: every state has four cells, every edge has two cells, edge predicates are exact and
+/// disjoint, traversal never consumes input, and caller FOLLOW is tested only at the current depth
+/// after all outgoing edges fail.
+/// Phases: interns expected positions, flattens graph tables, selects one shared packed width,
+/// renders the position decoder, then emits the bounded consume-or-skip traversal.
+fn render_optional_viability_decision_selection(
     plan: &EmissionPlan,
     node_index: usize,
     unique_index: usize,
-    decision: &OptionalDecisionParsePlan,
+    decision: &OptionalViabilityDecisionParsePlan,
 ) -> proc_macro2::TokenStream {
     let facade = &plan.facade;
     let module_anchor = &plan.module_anchor;
-    let state = format_ident!("__recursa_optional_decision_state_{unique_index}");
-    let depth = format_ident!("__recursa_optional_decision_depth_{unique_index}");
+    let state = format_ident!("__recursa_optional_viability_decision_state_{unique_index}");
+    let depth = format_ident!("__recursa_optional_viability_decision_depth_{unique_index}");
     let states_name =
         format_ident!("__RECURSA_OPTIONAL_DECISION_STATES_{node_index}_{unique_index}");
     let edges_name = format_ident!("__RECURSA_OPTIONAL_DECISION_EDGES_{node_index}_{unique_index}");
@@ -5953,9 +5971,9 @@ fn render_optional_decision_selection(
     let spellings_name =
         format_ident!("__RECURSA_OPTIONAL_DECISION_SPELLINGS_{node_index}_{unique_index}");
     let decoder_name =
-        format_ident!("__recursa_decode_optional_decision_{node_index}_{unique_index}");
+        format_ident!("__recursa_decode_optional_viability_decision_{node_index}_{unique_index}");
     let position_dispatcher =
-        format_ident!("__recursa_optional_decision_position_{node_index}_{unique_index}");
+        format_ident!("__recursa_optional_viability_decision_position_{node_index}_{unique_index}");
     let mut position_registry = BTreeMap::<DispatchPositionPlan, usize>::new();
     let mut positions = Vec::new();
     let mut edge_values = Vec::new();
@@ -6023,7 +6041,7 @@ fn render_optional_decision_selection(
         packed_width,
         &encoded_positions.spellings,
         &depth,
-        "frozen optional decision reached an unknown position",
+        "frozen optional viability decision reached an unknown position",
     );
     let decoder_range = render_packed_cell_range(packed_width);
     let state_row_end = render_packed_row_end(4, packed_width);
@@ -6041,7 +6059,7 @@ fn render_optional_decision_selection(
                         b'0'..=b'9' => usize::from(byte - b'0') + 52,
                         b'-' => 62,
                         b'_' => 63,
-                        _ => unreachable!("generated packed optional-decision table is invalid"),
+                        _ => unreachable!("generated packed optional viability decision table is invalid"),
                     };
                     (value << 6) | digit
                 })
@@ -6050,12 +6068,12 @@ fn render_optional_decision_selection(
         static #edges_name: &[u8] = #edges_literal;
         let mut #state = #root;
         let mut #depth = 0usize;
-        '__recursa_optional_decision: loop {
+        '__recursa_optional_viability_decision: loop {
             let state_slot = #state
                 .checked_mul(4)
                 .filter(|slot| #state_row_end <= #states_name.len())
                 .unwrap_or_else(|| {
-                    unreachable!("frozen optional decision reached an unknown state")
+                    unreachable!("frozen optional viability decision reached an unknown state")
                 });
             let caller_action = #decoder_name(#states_name, state_slot);
             let unconditional_action = #decoder_name(#states_name, state_slot + 1);
@@ -6067,7 +6085,7 @@ fn render_optional_decision_selection(
                 if #position_call {
                     #state = next;
                     #depth += 1;
-                    continue '__recursa_optional_decision;
+                    continue '__recursa_optional_viability_decision;
                 }
             }
             if caller_action != 0
@@ -6205,7 +6223,12 @@ pub(super) fn render_semantic_parse(
             let decision = decision
                 .as_deref()
                 .map(|decision| {
-                    render_optional_decision_selection(plan, node_index, unique_index, decision)
+                    render_optional_viability_decision_selection(
+                        plan,
+                        node_index,
+                        unique_index,
+                        decision,
+                    )
                 })
                 .unwrap_or_else(|| quote!(None));
             let follow_name = expected_static(node_index, unique_index, "child_follow");

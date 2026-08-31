@@ -30,8 +30,8 @@ std::thread_local! {
     static INDEPENDENT_DECISION_VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Counts complete decision-plan constructions on the current test thread.
     static DECISION_PLAN_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// Counts optional sites that require max-depth consume-vs-skip FIRST languages.
-    static DEEP_OPTIONAL_LANGUAGE_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Counts optional sites whose static FIRST overlap requires symbolic viability traversal.
+    static OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -419,15 +419,15 @@ pub enum OptionalAction {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// One terminal action in a frozen optional-decision trie.
-pub struct OptionalDecisionTerminal {
+/// One terminal action in a frozen optional viability decision trie.
+pub struct OptionalViabilityDecisionTerminal {
     /// Consume or skip action selected at this terminal.
     action: OptionalAction,
     /// Whether the action is available only through the owning parser's caller FOLLOW.
     on_caller_follow: bool,
 }
 
-impl OptionalDecisionTerminal {
+impl OptionalViabilityDecisionTerminal {
     /// Returns the container action selected by this terminal.
     pub const fn action(self) -> OptionalAction {
         self.action
@@ -440,43 +440,43 @@ impl OptionalDecisionTerminal {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// One exact token/text partition in a frozen optional-decision trie.
-pub struct OptionalDecisionEdge {
+/// One exact token/text partition in a frozen optional viability decision trie.
+pub struct OptionalViabilityDecisionEdge {
     /// Token predicate labeling this edge.
     position: DispatchPosition,
     /// Trie node reached after matching this position.
-    next: OptionalDecisionNode,
+    next: OptionalViabilityDecisionNode,
 }
 
-impl OptionalDecisionEdge {
+impl OptionalViabilityDecisionEdge {
     /// Returns the token predicate labeling this edge.
     pub const fn position(&self) -> &DispatchPosition {
         &self.position
     }
 
     /// Returns the node reached after matching the edge.
-    pub const fn next(&self) -> &OptionalDecisionNode {
+    pub const fn next(&self) -> &OptionalViabilityDecisionNode {
         &self.next
     }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// One state in a frozen optional consume-vs-skip viability trie.
-pub struct OptionalDecisionNode {
+pub struct OptionalViabilityDecisionNode {
     /// Ordered unconditional and caller-FOLLOW actions available at this prefix.
-    terminals: Arc<[OptionalDecisionTerminal]>,
+    terminals: Arc<[OptionalViabilityDecisionTerminal]>,
     /// Pairwise-disjoint token/text partitions extending this prefix.
-    edges: Arc<[OptionalDecisionEdge]>,
+    edges: Arc<[OptionalViabilityDecisionEdge]>,
 }
 
-impl OptionalDecisionNode {
+impl OptionalViabilityDecisionNode {
     /// Returns the terminal actions available when traversal stops at this prefix.
-    pub fn terminals(&self) -> &[OptionalDecisionTerminal] {
+    pub fn terminals(&self) -> &[OptionalViabilityDecisionTerminal] {
         &self.terminals
     }
 
     /// Returns the outgoing exact token/text partitions.
-    pub fn edges(&self) -> &[OptionalDecisionEdge] {
+    pub fn edges(&self) -> &[OptionalViabilityDecisionEdge] {
         &self.edges
     }
 }
@@ -488,29 +488,29 @@ impl OptionalDecisionNode {
 /// skipping language starts at that tail. A terminal may depend on caller FOLLOW when the tail
 /// can end, and unresolved invalid input deliberately yields no action so the established parser
 /// path retains its exact failure diagnostic.
-pub struct OptionalDecision {
+pub struct OptionalViabilityDecision {
     /// Root of the immutable consume-vs-skip trie.
-    trie: OptionalDecisionNode,
+    trie: OptionalViabilityDecisionNode,
     /// Bounded lookahead depth needed to reach every unambiguous action.
     required_lookahead: usize,
-    /// Number of bounded consuming and skipping prefixes represented by the trie.
-    frozen_sequence_count: usize,
+    /// Number of symbolic consume-or-skip root languages represented by the trie.
+    frozen_language_count: usize,
 }
 
-impl OptionalDecision {
+impl OptionalViabilityDecision {
     /// Returns the immutable consume-vs-skip trie.
-    pub const fn trie(&self) -> &OptionalDecisionNode {
+    pub const fn trie(&self) -> &OptionalViabilityDecisionNode {
         &self.trie
     }
 
-    /// Returns the bounded lookahead depth required by this optional decision.
+    /// Returns the bounded lookahead depth required by this optional viability decision.
     pub const fn required_lookahead(&self) -> usize {
         self.required_lookahead
     }
 
-    /// Returns the number of bounded language prefixes frozen into this decision.
-    pub const fn frozen_sequence_count(&self) -> usize {
-        self.frozen_sequence_count
+    /// Returns the number of symbolic root languages frozen into this decision.
+    pub const fn frozen_language_count(&self) -> usize {
+        self.frozen_language_count
     }
 }
 
@@ -530,7 +530,7 @@ pub struct ContainerMachine {
     /// Supplies the stop consumed when generation replays this decision.
     stop: FollowRecipe,
     /// Supplies exact consume-vs-skip viability for an optional site.
-    optional_decision: Option<OptionalDecision>,
+    optional_viability_decision: Option<OptionalViabilityDecision>,
     /// Supplies the transitions consumed when generation replays this decision.
     transitions: Vec<ContainerTransition>,
 }
@@ -575,8 +575,8 @@ impl ContainerMachine {
     }
 
     /// Returns exact consume-vs-skip viability when this machine is optional.
-    pub const fn optional_decision(&self) -> Option<&OptionalDecision> {
-        self.optional_decision.as_ref()
+    pub const fn optional_viability_decision(&self) -> Option<&OptionalViabilityDecision> {
+        self.optional_viability_decision.as_ref()
     }
 
     /// Derives the canonical transitions recorded in the immutable decision plan.
@@ -782,18 +782,18 @@ impl DecisionProducts {
             .expect("writing to a String cannot fail");
         }
         for machine in &self.container_machines {
-            let Some(decision) = &machine.optional_decision else {
+            let Some(decision) = &machine.optional_viability_decision else {
                 continue;
             };
             let declaration =
                 &grammar.declarations[grammar.sites[machine.site.index()].declaration.index()].name;
             write!(
                 output,
-                "optional {declaration} depth={} sequences={} trie=",
-                decision.required_lookahead, decision.frozen_sequence_count,
+                "optional-viability {declaration} depth={} languages={} trie=",
+                decision.required_lookahead, decision.frozen_language_count,
             )
             .expect("writing to a String cannot fail");
-            render_optional_decision_trie(&decision.trie, grammar, &mut output);
+            render_optional_viability_decision_trie(&decision.trie, grammar, &mut output);
             output.push('\n');
         }
         output
@@ -836,18 +836,21 @@ impl DecisionProducts {
             return Err(DecisionInvariant::DuplicateSiteProduct);
         }
         for machine in &self.container_machines {
-            match (machine.operation, machine.optional_decision.as_ref()) {
+            match (
+                machine.operation,
+                machine.optional_viability_decision.as_ref(),
+            ) {
                 (ContainerOperation::Optional, Some(decision)) => {
-                    if decision.frozen_sequence_count == 0
+                    if decision.frozen_language_count == 0
                         || decision.required_lookahead > grammar.max_lookahead
                         || !optional_edges_are_disjoint(&decision.trie, grammar)
-                        || !optional_decision_terminals_are_valid(&decision.trie)
+                        || !optional_viability_decision_terminals_are_valid(&decision.trie)
                     {
-                        return Err(DecisionInvariant::InvalidOptionalDecision);
+                        return Err(DecisionInvariant::InvalidOptionalViabilityDecision);
                     }
                 }
                 (ContainerOperation::Optional, None) | (_, Some(_)) => {
-                    return Err(DecisionInvariant::InvalidOptionalDecision);
+                    return Err(DecisionInvariant::InvalidOptionalViabilityDecision);
                 }
                 (_, None) => {}
             }
@@ -1039,7 +1042,7 @@ pub(crate) enum DecisionInvariant {
     /// Selects the duplicate site use decision for generation.
     DuplicateSiteUse,
     /// Selects malformed or missing optional consume-vs-skip viability.
-    InvalidOptionalDecision,
+    InvalidOptionalViabilityDecision,
     /// Selects the multiple caller fallbacks decision for generation.
     MultipleCallerFallbacks,
     /// Selects the duplicate failure edge decision for generation.
@@ -1155,50 +1158,28 @@ pub(crate) fn plan_decisions(
             .then_with(|| left.kind.cmp(&right.kind))
     });
 
-    let mut optional_decisions_by_site = vec![None; grammar.sites.len()];
-    for description in &grammar.types {
-        match &description.shape {
-            TypeShape::Alias { site } => plan_optional_decisions_for_sites(
-                &[*site],
+    let mut optional_viability_decisions_by_site = vec![None; grammar.sites.len()];
+    for index in 0..grammar.sites.len() {
+        let site_id = SiteId::new(index as u32);
+        if grammar.sites[index]
+            .container
+            .semantics()
+            .is_some_and(|semantics| {
+                semantics.cardinality == crate::ir::ContainerCardinality::Optional
+            })
+        {
+            let tail = first_sequences
+                .site_tail(site_id)
+                .expect("validated parse sites have one pre-indexed sequence tail");
+            plan_optional_viability_decision_for_site(
+                site_id,
+                tail,
                 grammar,
                 semantic,
                 first_sequences,
                 &follow_recipes_by_site,
-                &mut optional_decisions_by_site,
-            ),
-            TypeShape::Sequence { sites } => plan_optional_decisions_for_sites(
-                sites,
-                grammar,
-                semantic,
-                first_sequences,
-                &follow_recipes_by_site,
-                &mut optional_decisions_by_site,
-            ),
-            TypeShape::Enum { alternatives } => {
-                for alternative in alternatives {
-                    plan_optional_decisions_for_sites(
-                        &alternative.sites,
-                        grammar,
-                        semantic,
-                        first_sequences,
-                        &follow_recipes_by_site,
-                        &mut optional_decisions_by_site,
-                    );
-                }
-            }
-            TypeShape::Pratt { variants } => {
-                for variant in variants {
-                    plan_optional_decisions_for_sites(
-                        &variant.sites,
-                        grammar,
-                        semantic,
-                        first_sequences,
-                        &follow_recipes_by_site,
-                        &mut optional_decisions_by_site,
-                    );
-                }
-            }
-            TypeShape::Token { .. } => {}
+                &mut optional_viability_decisions_by_site,
+            );
         }
     }
 
@@ -1242,7 +1223,7 @@ pub(crate) fn plan_decisions(
                 element_first,
                 separator_first,
                 stop,
-                optional_decision: optional_decisions_by_site[index].clone(),
+                optional_viability_decision: optional_viability_decisions_by_site[index].clone(),
                 transitions,
             }
         })
@@ -1256,57 +1237,88 @@ pub(crate) fn plan_decisions(
     })
 }
 
-/// Freezes optional consume-vs-skip decisions for one authored site sequence.
-fn plan_optional_decisions_for_sites(
-    sites: &[SiteId],
+/// Freezes the optional consume-vs-skip decision for one pre-indexed site suffix.
+fn plan_optional_viability_decision_for_site(
+    site_id: SiteId,
+    tail: &[SiteId],
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
     first_sequences: &FirstSequenceAnalysis<'_>,
     follow_recipes: &[FollowRecipe],
-    decisions: &mut [Option<OptionalDecision>],
+    decisions: &mut [Option<OptionalViabilityDecision>],
 ) {
-    for (index, site_id) in sites.iter().copied().enumerate() {
-        let site = &grammar.sites[site_id.index()];
-        let semantics = site
-            .container
-            .semantics()
-            .expect("validated containers have normalized semantics");
-        if semantics.cardinality != crate::ir::ContainerCardinality::Optional {
-            continue;
-        }
-        let element_first = &semantic[site.target.index()].positions;
-        let stop = &follow_recipes[site_id.index()];
-        let [consuming, skipping] =
-            if first_positions_overlap(element_first, stop.static_first(), grammar) {
-                #[cfg(test)]
-                DEEP_OPTIONAL_LANGUAGE_CONSTRUCTIONS
-                    .set(DEEP_OPTIONAL_LANGUAGE_CONSTRUCTIONS.get().saturating_add(1));
-                first_sequences.optional_viability_languages(site_id, &sites[index + 1..])
-            } else {
-                let consuming = element_first
-                    .iter()
-                    .cloned()
-                    .map(FirstSequence::from_position)
-                    .collect();
-                let mut skipping = stop
-                    .static_first()
-                    .iter()
-                    .cloned()
-                    .map(FirstSequence::from_position)
-                    .collect::<Vec<_>>();
-                if stop.uses_caller() {
-                    skipping.push(FirstSequence::caller_follow());
-                }
-                [consuming, skipping]
-            };
-        let frozen_sequence_count = consuming.len() + skipping.len();
-        let trie = freeze_optional_decision(&consuming, &skipping, grammar);
-        let required_lookahead = optional_decision_lookahead(&trie).min(grammar.max_lookahead);
-        decisions[site_id.index()] = Some(OptionalDecision {
-            trie,
-            required_lookahead,
-            frozen_sequence_count,
-        });
+    let site = &grammar.sites[site_id.index()];
+    let element_first = &semantic[site.target.index()].positions;
+    let stop = &follow_recipes[site_id.index()];
+    let (trie, required_lookahead, frozen_language_count) =
+        if first_positions_overlap(element_first, stop.static_first(), grammar) {
+            #[cfg(test)]
+            OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS.set(
+                OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS
+                    .get()
+                    .saturating_add(1),
+            );
+            let resolution = first_sequences.compact_optional_viability(site_id, tail);
+            (
+                optional_viability_decision_from_compact(&resolution.root),
+                resolution.required_lookahead,
+                resolution.frozen_language_count,
+            )
+        } else {
+            let consuming = element_first
+                .iter()
+                .cloned()
+                .map(FirstSequence::from_position)
+                .collect::<Vec<_>>();
+            let mut skipping = stop
+                .static_first()
+                .iter()
+                .cloned()
+                .map(FirstSequence::from_position)
+                .collect::<Vec<_>>();
+            if stop.uses_caller() {
+                skipping.push(FirstSequence::caller_follow());
+            }
+            let frozen_language_count = 2;
+            let trie = freeze_optional_viability_decision(&consuming, &skipping, grammar);
+            let required_lookahead =
+                optional_viability_decision_lookahead(&trie).min(grammar.max_lookahead);
+            (trie, required_lookahead, frozen_language_count)
+        };
+    decisions[site_id.index()] = Some(OptionalViabilityDecision {
+        trie,
+        required_lookahead,
+        frozen_language_count,
+    });
+}
+
+/// Projects one symbolic action-labelled analysis node into the public viability plan.
+fn optional_viability_decision_from_compact(
+    node: &crate::analysis::CompactOptionalNode,
+) -> OptionalViabilityDecisionNode {
+    OptionalViabilityDecisionNode {
+        terminals: node
+            .terminals
+            .iter()
+            .map(|terminal| OptionalViabilityDecisionTerminal {
+                action: match terminal.action {
+                    crate::analysis::CompactOptionalAction::Consume => OptionalAction::Consume,
+                    crate::analysis::CompactOptionalAction::Skip => OptionalAction::Skip,
+                },
+                on_caller_follow: terminal.on_caller_follow,
+            })
+            .collect(),
+        edges: node
+            .edges
+            .iter()
+            .map(|edge| OptionalViabilityDecisionEdge {
+                position: DispatchPosition {
+                    kinds: edge.kinds.clone(),
+                    text_predicate: edge.text.clone().into_predicate(),
+                },
+                next: optional_viability_decision_from_compact(&edge.next),
+            })
+            .collect(),
     }
 }
 
@@ -1332,7 +1344,7 @@ fn first_positions_overlap(
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// Dense identity of one optional-decision language suffix.
+/// Dense identity of one optional viability decision language suffix.
 struct OptionalSuffixId(usize);
 
 impl OptionalSuffixId {
@@ -1346,7 +1358,7 @@ impl OptionalSuffixId {
 /// One canonical suffix belonging to a consuming or skipping optional path.
 struct OptionalSuffix {
     /// Action selected after every remaining position matches.
-    terminal: OptionalDecisionTerminal,
+    terminal: OptionalViabilityDecisionTerminal,
     /// Current symbolic position, absent only at the suffix terminal.
     position: Option<FirstPosition>,
     /// Canonical residual after consuming the current position.
@@ -1354,22 +1366,22 @@ struct OptionalSuffix {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-/// Structural identity used to hash-cons optional-decision suffixes.
+/// Structural identity used to hash-cons optional viability decision suffixes.
 struct OptionalSuffixKey {
     /// Action and caller-FOLLOW condition selected by this suffix.
-    terminal: OptionalDecisionTerminal,
+    terminal: OptionalViabilityDecisionTerminal,
     /// Packed current token kinds and optional text predicate.
     position: Option<(Vec<u64>, Option<TextPredicateId>)>,
     /// Canonical successor suffix, absent at the terminal.
     next: Option<OptionalSuffixId>,
 }
 
-/// Freezes one optional decision from its exact bounded consuming and skipping languages.
-fn freeze_optional_decision(
+/// Freezes one optional viability decision from exact bounded consuming and skipping languages.
+fn freeze_optional_viability_decision(
     consuming: &[FirstSequence],
     skipping: &[FirstSequence],
     grammar: &GrammarDescription,
-) -> OptionalDecisionNode {
+) -> OptionalViabilityDecisionNode {
     let mut suffixes = Vec::<OptionalSuffix>::new();
     let mut suffix_ids = BTreeMap::<OptionalSuffixKey, OptionalSuffixId>::new();
     let mut state = Vec::new();
@@ -1378,7 +1390,7 @@ fn freeze_optional_decision(
         (OptionalAction::Skip, skipping),
     ] {
         for sequence in language {
-            let terminal = OptionalDecisionTerminal {
+            let terminal = OptionalViabilityDecisionTerminal {
                 action,
                 on_caller_follow: sequence.ends(),
             };
@@ -1422,14 +1434,14 @@ fn freeze_optional_decision(
     trie
 }
 
-/// Freezes and hash-conses one residual optional-decision state.
+/// Freezes and hash-conses one residual optional viability decision state.
 fn freeze_optional_state(
     suffixes: &[OptionalSuffix],
     state: &[OptionalSuffixId],
     matched_prefix: bool,
     grammar: &GrammarDescription,
-    memo: &mut BTreeMap<(bool, Vec<OptionalSuffixId>), OptionalDecisionNode>,
-) -> OptionalDecisionNode {
+    memo: &mut BTreeMap<(bool, Vec<OptionalSuffixId>), OptionalViabilityDecisionNode>,
+) -> OptionalViabilityDecisionNode {
     let memo_key = (matched_prefix, state.to_vec());
     if let Some(frozen) = memo.get(&memo_key) {
         return frozen.clone();
@@ -1444,10 +1456,10 @@ fn freeze_optional_state(
             .any(|suffix| suffixes[suffix.index()].terminal.action != first)
     });
     if matched_prefix && !has_multiple_actions {
-        let frozen = OptionalDecisionNode {
+        let frozen = OptionalViabilityDecisionNode {
             terminals: first_action
                 .map(|action| {
-                    Arc::from([OptionalDecisionTerminal {
+                    Arc::from([OptionalViabilityDecisionTerminal {
                         action,
                         on_caller_follow: false,
                     }])
@@ -1497,7 +1509,7 @@ fn freeze_optional_state(
     );
     let mut edges = partitions
         .into_iter()
-        .map(|(text, residual, kinds)| OptionalDecisionEdge {
+        .map(|(text, residual, kinds)| OptionalViabilityDecisionEdge {
             position: DispatchPosition {
                 kinds,
                 text_predicate: text.into_predicate(),
@@ -1516,7 +1528,7 @@ fn freeze_optional_state(
                 )
             })
     });
-    let frozen = OptionalDecisionNode {
+    let frozen = OptionalViabilityDecisionNode {
         terminals: terminals.into(),
         edges: edges.into(),
     };
@@ -1526,15 +1538,15 @@ fn freeze_optional_state(
 
 /// Normalizes optional terminals while retaining explicit caller-FOLLOW fallback.
 fn normalize_optional_terminals(
-    terminals: &[OptionalDecisionTerminal],
+    terminals: &[OptionalViabilityDecisionTerminal],
     matched_prefix: bool,
-) -> Vec<OptionalDecisionTerminal> {
+) -> Vec<OptionalViabilityDecisionTerminal> {
     let preferred_action = if matched_prefix {
         OptionalAction::Consume
     } else {
         OptionalAction::Skip
     };
-    let preferred = |terminals: &[OptionalDecisionTerminal], caller: bool| {
+    let preferred = |terminals: &[OptionalViabilityDecisionTerminal], caller: bool| {
         let actions = terminals
             .iter()
             .filter(|terminal| caller || !terminal.on_caller_follow)
@@ -1552,17 +1564,17 @@ fn normalize_optional_terminals(
         if caller != unconditional
             && let Some(caller_action) = caller
         {
-            normalized.push(OptionalDecisionTerminal {
+            normalized.push(OptionalViabilityDecisionTerminal {
                 action: caller_action,
                 on_caller_follow: true,
             });
         }
-        normalized.push(OptionalDecisionTerminal {
+        normalized.push(OptionalViabilityDecisionTerminal {
             action,
             on_caller_follow: false,
         });
     } else if let Some(action) = caller {
-        normalized.push(OptionalDecisionTerminal {
+        normalized.push(OptionalViabilityDecisionTerminal {
             action,
             on_caller_follow: true,
         });
@@ -1570,17 +1582,20 @@ fn normalize_optional_terminals(
     normalized
 }
 
-/// Returns the deepest token prefix inspected by one optional-decision trie.
-fn optional_decision_lookahead(root: &OptionalDecisionNode) -> usize {
+/// Returns the deepest token prefix inspected by one optional viability decision trie.
+fn optional_viability_decision_lookahead(root: &OptionalViabilityDecisionNode) -> usize {
     root.edges
         .iter()
-        .map(|edge| 1 + optional_decision_lookahead(&edge.next))
+        .map(|edge| 1 + optional_viability_decision_lookahead(&edge.next))
         .max()
         .unwrap_or(0)
 }
 
-/// Verifies every optional-decision state uses pairwise-disjoint edge predicates.
-fn optional_edges_are_disjoint(node: &OptionalDecisionNode, grammar: &GrammarDescription) -> bool {
+/// Verifies every optional viability decision state uses pairwise-disjoint edge predicates.
+fn optional_edges_are_disjoint(
+    node: &OptionalViabilityDecisionNode,
+    grammar: &GrammarDescription,
+) -> bool {
     for (index, left) in node.edges.iter().enumerate() {
         for right in &node.edges[index + 1..] {
             let kinds_overlap = left
@@ -1604,8 +1619,8 @@ fn optional_edges_are_disjoint(node: &OptionalDecisionNode, grammar: &GrammarDes
     true
 }
 
-/// Verifies normalized terminal ordering and uniqueness throughout an optional decision.
-fn optional_decision_terminals_are_valid(node: &OptionalDecisionNode) -> bool {
+/// Verifies normalized terminal ordering and uniqueness throughout an optional viability decision.
+fn optional_viability_decision_terminals_are_valid(node: &OptionalViabilityDecisionNode) -> bool {
     if node.terminals.len() > 2
         || node.terminals.windows(2).any(|pair| pair[0] == pair[1])
         || node
@@ -1627,7 +1642,7 @@ fn optional_decision_terminals_are_valid(node: &OptionalDecisionNode) -> bool {
     }
     node.edges
         .iter()
-        .all(|edge| optional_decision_terminals_are_valid(&edge.next))
+        .all(|edge| optional_viability_decision_terminals_are_valid(&edge.next))
 }
 
 /// Derives the canonical container transitions recorded in the immutable decision plan.
@@ -2828,9 +2843,9 @@ fn render_dispatch_trie(
     output.push_str("])");
 }
 
-/// Renders one optional-decision trie without incidental node identities.
-fn render_optional_decision_trie(
-    node: &OptionalDecisionNode,
+/// Renders one optional viability decision trie without incidental node identities.
+fn render_optional_viability_decision_trie(
+    node: &OptionalViabilityDecisionNode,
     grammar: &GrammarDescription,
     output: &mut String,
 ) {
@@ -2851,7 +2866,7 @@ fn render_optional_decision_trie(
         }
         output.push_str(&render_dispatch_position(&edge.position, grammar));
         output.push_str("=>");
-        render_optional_decision_trie(&edge.next, grammar, output);
+        render_optional_viability_decision_trie(&edge.next, grammar, output);
     }
     output.push_str("])");
 }
@@ -3110,10 +3125,204 @@ mod tests {
         grammar
     }
 
+    fn branching_optional_overlap_grammar() -> GrammarDescription {
+        let mut grammar =
+            GrammarDescription::new("branching-optional", 5, 19, TextEquivalence::Sensitive);
+        let a = token(&mut grammar, "A", 0);
+        let b = token(&mut grammar, "B", 2);
+        let c = token(&mut grammar, "C", 4);
+        let left = token(&mut grammar, "LEFT", 6);
+        let right = token(&mut grammar, "RIGHT", 8);
+        let mut next_byte = 10;
+
+        let mut branching = left;
+        for depth in 0..8 {
+            let branching_state = grammar.next_type_id();
+            let branching_declaration =
+                declaration(&mut grammar, &format!("Branching{depth}"), next_byte);
+            next_byte += 1;
+            let left_declaration =
+                declaration(&mut grammar, &format!("Branching{depth}::Left"), next_byte);
+            next_byte += 1;
+            let left_token_declaration = declaration(
+                &mut grammar,
+                &format!("Branching{depth}::Left::token"),
+                next_byte,
+            );
+            next_byte += 1;
+            let left_token = grammar.push_site(ParseSite::new(
+                branching_state,
+                left,
+                left_token_declaration,
+                ContainerShape::Direct,
+            ));
+            let left_tail_declaration = declaration(
+                &mut grammar,
+                &format!("Branching{depth}::Left::tail"),
+                next_byte,
+            );
+            next_byte += 1;
+            let left_tail = grammar.push_site(ParseSite::new(
+                branching_state,
+                branching,
+                left_tail_declaration,
+                ContainerShape::Direct,
+            ));
+            let left_close_declaration = declaration(
+                &mut grammar,
+                &format!("Branching{depth}::Left::close"),
+                next_byte,
+            );
+            next_byte += 1;
+            let left_close = grammar.push_site(ParseSite::new(
+                branching_state,
+                left,
+                left_close_declaration,
+                ContainerShape::Direct,
+            ));
+            let right_declaration =
+                declaration(&mut grammar, &format!("Branching{depth}::Right"), next_byte);
+            next_byte += 1;
+            let right_token_declaration = declaration(
+                &mut grammar,
+                &format!("Branching{depth}::Right::token"),
+                next_byte,
+            );
+            next_byte += 1;
+            let right_token = grammar.push_site(ParseSite::new(
+                branching_state,
+                right,
+                right_token_declaration,
+                ContainerShape::Direct,
+            ));
+            let right_tail_declaration = declaration(
+                &mut grammar,
+                &format!("Branching{depth}::Right::tail"),
+                next_byte,
+            );
+            next_byte += 1;
+            let right_tail = grammar.push_site(ParseSite::new(
+                branching_state,
+                branching,
+                right_tail_declaration,
+                ContainerShape::Direct,
+            ));
+            let right_close_declaration = declaration(
+                &mut grammar,
+                &format!("Branching{depth}::Right::close"),
+                next_byte,
+            );
+            next_byte += 1;
+            let right_close = grammar.push_site(ParseSite::new(
+                branching_state,
+                right,
+                right_close_declaration,
+                ContainerShape::Direct,
+            ));
+            assert_eq!(
+                grammar.push_type(TypeDescription::new(
+                    format!("Branching{depth}"),
+                    branching_declaration,
+                    TypeShape::Enum {
+                        alternatives: vec![
+                            crate::Alternative {
+                                declaration: left_declaration,
+                                sites: vec![left_token, left_tail, left_close],
+                            },
+                            crate::Alternative {
+                                declaration: right_declaration,
+                                sites: vec![right_token, right_tail, right_close],
+                            },
+                        ],
+                    },
+                )),
+                branching_state,
+            );
+            branching = branching_state;
+        }
+
+        let path =
+            |grammar: &mut GrammarDescription, name: &str, second: TypeId, next_byte: &mut u32| {
+                let path = grammar.next_type_id();
+                let path_declaration = declaration(grammar, name, *next_byte);
+                *next_byte += 1;
+                let first_declaration = declaration(grammar, &format!("{name}::first"), *next_byte);
+                *next_byte += 1;
+                let first = grammar.push_site(ParseSite::new(
+                    path,
+                    a,
+                    first_declaration,
+                    ContainerShape::Direct,
+                ));
+                let second_declaration =
+                    declaration(grammar, &format!("{name}::second"), *next_byte);
+                *next_byte += 1;
+                let second = grammar.push_site(ParseSite::new(
+                    path,
+                    second,
+                    second_declaration,
+                    ContainerShape::Direct,
+                ));
+                let branching_declaration =
+                    declaration(grammar, &format!("{name}::branching"), *next_byte);
+                *next_byte += 1;
+                let branching_site = grammar.push_site(ParseSite::new(
+                    path,
+                    branching,
+                    branching_declaration,
+                    ContainerShape::Direct,
+                ));
+                assert_eq!(
+                    grammar.push_type(TypeDescription::new(
+                        name,
+                        path_declaration,
+                        TypeShape::Sequence {
+                            sites: vec![first, second, branching_site],
+                        },
+                    )),
+                    path,
+                );
+                path
+            };
+        let consuming = path(&mut grammar, "Consuming", b, &mut next_byte);
+        let skipping = path(&mut grammar, "Skipping", c, &mut next_byte);
+
+        let owner = grammar.next_type_id();
+        let owner_declaration = declaration(&mut grammar, "Owner", next_byte);
+        next_byte += 1;
+        let optional_declaration = declaration(&mut grammar, "Owner::optional", next_byte);
+        next_byte += 1;
+        let optional = grammar.push_site(ParseSite::new(
+            owner,
+            consuming,
+            optional_declaration,
+            ContainerShape::optional(ContainerShape::Direct),
+        ));
+        let required_declaration = declaration(&mut grammar, "Owner::required", next_byte);
+        let required = grammar.push_site(ParseSite::new(
+            owner,
+            skipping,
+            required_declaration,
+            ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Owner",
+                owner_declaration,
+                TypeShape::Sequence {
+                    sites: vec![optional, required],
+                },
+            )),
+            owner,
+        );
+        grammar.entry_types = vec![owner];
+        grammar
+    }
+
     #[test]
     fn disjoint_optional_paths_keep_a_single_position_viability_decision() {
         let grammar = disjoint_optional_grammar();
-        DEEP_OPTIONAL_LANGUAGE_CONSTRUCTIONS.set(0);
+        OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS.set(0);
         let report = crate::analyze(&grammar);
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         let output = report
@@ -3126,7 +3335,7 @@ mod tests {
             .find(|machine| machine.operation() == ContainerOperation::Optional)
             .expect("the fixture contains one optional machine");
         let decision = machine
-            .optional_decision()
+            .optional_viability_decision()
             .expect("optional machines freeze consume-vs-skip viability");
         assert_eq!(decision.required_lookahead(), 1);
         assert_eq!(decision.trie().edges().len(), 2);
@@ -3137,19 +3346,19 @@ mod tests {
                 .iter()
                 .find(|edge| edge.position().kinds().contains(KindId::new(kind)))
                 .and_then(|edge| edge.next().terminals().first().copied())
-                .map(OptionalDecisionTerminal::action)
+                .map(OptionalViabilityDecisionTerminal::action)
         };
         assert_eq!(action_for(0), Some(OptionalAction::Consume));
         assert_eq!(action_for(1), Some(OptionalAction::Skip));
         assert_eq!(
-            DEEP_OPTIONAL_LANGUAGE_CONSTRUCTIONS.get(),
+            OVERLAPPING_OPTIONAL_VIABILITY_CONSTRUCTIONS.get(),
             0,
             "disjoint optionals must not materialize max-depth FIRST languages",
         );
     }
 
     #[test]
-    fn optional_decisions_retain_static_and_caller_follow_skip_paths() {
+    fn optional_viability_decisions_retain_static_and_caller_follow_skip_paths() {
         let grammar = static_and_caller_optional_grammar();
         let report = crate::analyze(&grammar);
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
@@ -3163,12 +3372,12 @@ mod tests {
             .expect("the fixture has a first optional machine");
         assert!(matches!(first.stop(), FollowRecipe::StaticAndCaller { .. }));
         let decision = first
-            .optional_decision()
+            .optional_viability_decision()
             .expect("the optional machine retains exact viability");
         assert_eq!(decision.required_lookahead(), 1);
         assert_eq!(
             decision.trie().terminals(),
-            [OptionalDecisionTerminal {
+            [OptionalViabilityDecisionTerminal {
                 action: OptionalAction::Skip,
                 on_caller_follow: true,
             }],
@@ -3186,6 +3395,32 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(actions, [OptionalAction::Consume, OptionalAction::Skip]);
+    }
+
+    #[test]
+    fn overlapping_optional_paths_cut_off_before_exponential_suffixes() {
+        let grammar = branching_optional_overlap_grammar();
+        crate::analysis::reset_first_sequence_peak_rows_for_test();
+        let output = crate::analysis::analyze_for_generation(&grammar)
+            .output
+            .expect("the depth-two optional overlap is decidable");
+        let decision = output
+            .decisions()
+            .container_machines()
+            .iter()
+            .find_map(ContainerMachine::optional_viability_decision)
+            .expect("the fixture contains one optional decision");
+
+        assert_eq!(decision.required_lookahead(), 2);
+        assert_eq!(
+            decision.frozen_language_count(),
+            2,
+            "the frozen decision must retain two symbolic languages, not 2^8 sequence rows",
+        );
+        assert!(
+            crate::analysis::first_sequence_peak_rows_for_test() <= 8,
+            "optional viability must not eagerly enumerate the correlated suffix language",
+        );
     }
 
     #[test]
