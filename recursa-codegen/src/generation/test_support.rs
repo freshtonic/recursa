@@ -328,7 +328,7 @@ pub(super) fn predictive_compilation_rejects_missing_and_conflicting_frozen_prod
         DispatchTrieNodePlan {
             target: Some(DispatchTargetPlan {
                 variant: 0,
-                on_caller_follow: false,
+                mode: crate::DispatchTerminalMode::Immediate,
             }),
             edges: Vec::new(),
         },
@@ -356,6 +356,22 @@ pub(super) fn predictive_compilation_rejects_missing_and_conflicting_frozen_prod
     );
 
     dispatch.states[0].target.as_mut().unwrap().variant = 0;
+    dispatch.states[0].target.as_mut().unwrap().mode =
+        crate::DispatchTerminalMode::FallbackAfterEdges;
+    assert_eq!(
+        validate_predictive_dispatch(&dispatch, 1).unwrap_err(),
+        "frozen predictive dispatch fallback lacks competitor edges",
+    );
+    dispatch.states[0].target.as_mut().unwrap().mode = crate::DispatchTerminalMode::Immediate;
+    dispatch.states[dispatch.root.index()].target = Some(DispatchTargetPlan {
+        variant: 0,
+        mode: crate::DispatchTerminalMode::Immediate,
+    });
+    assert_eq!(
+        validate_predictive_dispatch(&dispatch, 1).unwrap_err(),
+        "frozen predictive dispatch extends an immediate terminal",
+    );
+    dispatch.states[dispatch.root.index()].target = None;
     dispatch.states[dispatch.root.index()].edges[0]
         .position
         .text_predicate = Some(PlannedTextPredicate::Exact("corrupt".to_owned()));
@@ -399,7 +415,7 @@ pub(super) fn large_predictive_selection_emits_each_position_matcher_once() {
     let mut states = vec![DispatchTrieNodePlan {
         target: Some(DispatchTargetPlan {
             variant: 0,
-            on_caller_follow: false,
+            mode: crate::DispatchTerminalMode::Immediate,
         }),
         edges: Vec::new(),
     }];
@@ -593,7 +609,7 @@ pub(super) fn large_ordinary_predictive_dispatch_uses_compact_tables() {
     let mut states = vec![DispatchTrieNodePlan {
         target: Some(DispatchTargetPlan {
             variant: 0,
-            on_caller_follow: false,
+            mode: crate::DispatchTerminalMode::Immediate,
         }),
         edges: Vec::new(),
     }];
@@ -674,7 +690,7 @@ pub(super) fn single_digit_packed_dispatch_is_clippy_clean() {
     let states = vec![DispatchTrieNodePlan {
         target: Some(DispatchTargetPlan {
             variant: 0,
-            on_caller_follow: false,
+            mode: crate::DispatchTerminalMode::Immediate,
         }),
         edges: Vec::new(),
     }];
@@ -691,9 +707,9 @@ pub(super) fn single_digit_packed_dispatch_is_clippy_clean() {
     let rendered = quote!(#items #selection).to_string();
 
     assert!(rendered.contains("table [slot .. slot + 1]"));
-    assert!(rendered.contains("target / 2 , target & 1 != 0"));
+    assert!(rendered.contains("target / 3 , target % 3"));
     assert!(!rendered.contains("* 1usize"));
-    assert!(!rendered.contains("% 2"));
+    assert!(!rendered.contains("target / 2"));
 }
 
 pub(super) fn grammar_wide_expected_set_pool_is_canonical() {
@@ -914,7 +930,7 @@ pub(super) fn overlapping_rectangles_preserve_full_ordinary_routes() {
                 .expect("every complete two-token rectangle route is terminal");
             assert!(terminal.edges.is_empty());
             assert!(
-                target.on_caller_follow,
+                matches!(target.mode, crate::DispatchTerminalMode::CallerFollow),
                 "complete ordinary routes retain the caller-FOLLOW guard before selection",
             );
             complete_routes += 1;

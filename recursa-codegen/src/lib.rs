@@ -62,8 +62,8 @@ pub use build_diagnostic::{
 pub use decision_plan::{
     BalancedDispatch, ContainerAction, ContainerMachine, ContainerOperation, ContainerState,
     ContainerTransition, DecisionProducts, DispatchBranch, DispatchKind, DispatchPlan,
-    DispatchPosition, DispatchSequence, DispatchTerminal, DispatchTrieEdge, DispatchTrieNode,
-    ExpectedRecipe, FailureEdge, FailureEdgeKind, FollowRecipe, OptionalAction,
+    DispatchPosition, DispatchSequence, DispatchTerminal, DispatchTerminalMode, DispatchTrieEdge,
+    DispatchTrieNode, ExpectedRecipe, FailureEdge, FailureEdgeKind, FollowRecipe, OptionalAction,
     OptionalViabilityDecision, OptionalViabilityDecisionEdge, OptionalViabilityDecisionNode,
     OptionalViabilityDecisionTerminal,
 };
