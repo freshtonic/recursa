@@ -243,7 +243,6 @@ pub(super) fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStre
             }
 
             #[doc(hidden)]
-            #[allow(non_camel_case_types, private_interfaces)]
             pub enum __RecursaVisitEvent<'__recursa_visit, '__recursa_input>
             where
                 '__recursa_input: '__recursa_visit,
@@ -355,7 +354,6 @@ pub(super) fn render_visit_events(plan: &EmissionPlan) -> proc_macro2::TokenStre
             }
 
             #[doc(hidden)]
-            #[allow(non_camel_case_types, private_interfaces)]
             pub enum __RecursaVisitEventMut<'__recursa_visit, '__recursa_input>
             where
                 '__recursa_input: '__recursa_visit,

@@ -7,6 +7,30 @@ use tempfile::TempDir;
 const FIXTURE: &str = "tests/fixtures/generation/one-node";
 
 #[test]
+fn generated_downstream_code_is_warning_free_under_clippy() {
+    let package = scaffold_fixture();
+    let output = lint_fixture(&package);
+
+    assert_success(&output);
+
+    let library = package.path().join("src/lib.rs");
+    let authored = fs::read_to_string(&library).expect("read downstream library");
+    fs::write(
+        &library,
+        format!("{authored}\nfn handwritten_dead_code() {{}}\n"),
+    )
+    .expect("introduce a handwritten warning");
+    let rejected = lint_fixture(&package);
+    let stderr = String::from_utf8_lossy(&rejected.stderr);
+    assert!(!rejected.status.success(), "handwritten warnings must fail");
+    assert!(stderr.contains("src/lib.rs"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("handwritten_dead_code"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn a_downstream_crate_loads_and_parses_one_generated_node_through_the_facade() {
     let package = scaffold_fixture();
     let grammar = package.path().join("src/grammar.rs");
@@ -454,6 +478,7 @@ fn main() {
 
     assert_success(&run_fixture(&package));
     assert_no_public_optional_token_impls(&package);
+    assert_success(&lint_fixture(&package));
 }
 
 #[test]
@@ -681,6 +706,9 @@ fn debug_emission_preserves_compiled_semantics_for_every_capability_combination(
             syn::parse_file(&fs::read_to_string(bundle.join("root.rs")).unwrap())
                 .expect("a rerun replaces human edits instead of loading them");
         }
+        if name == "explorer" {
+            assert_success(&lint_fixture(&package));
+        }
     }
 }
 
@@ -903,6 +931,26 @@ fn run_fixture(package: &TempDir) -> Output {
         .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", target_dir(package));
     command.output().expect("run generated grammar fixture")
+}
+
+fn lint_fixture(package: &TempDir) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(cargo);
+    command
+        .arg("clippy")
+        .arg("--offline")
+        .arg("--locked")
+        .arg("--all-targets")
+        .arg("--message-format=short")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .current_dir(package.path())
+        .env_remove("RECURSA_GENERATION")
+        .env_remove("RECURSA_DEBUG_DIR")
+        .env("CARGO_TERM_COLOR", "never")
+        .env("CARGO_TARGET_DIR", target_dir(package));
+    command.output().expect("lint generated grammar fixture")
 }
 
 fn run_fixture_with_debug(package: &TempDir, debug_directory: &Path) -> Output {
