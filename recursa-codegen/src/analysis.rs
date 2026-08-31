@@ -878,6 +878,22 @@ impl<'a> FirstSequenceAnalysis<'a> {
             .collect()
     }
 
+    /// Freezes one enum's labelled branch selection before bounded FIRST languages are materialized.
+    pub(crate) fn compact_enum_dispatch(
+        &self,
+        alternatives: &[(crate::DeclId, &[SiteId])],
+    ) -> Option<CompactDispatchResolution> {
+        compact_dispatch_resolution(alternatives, self)
+    }
+
+    /// Freezes one enum's structural delimiter selection without materializing branch languages.
+    pub(crate) fn compact_balanced_enum_dispatch(
+        &self,
+        alternatives: &[(crate::DeclId, &[SiteId])],
+    ) -> Option<CompactBalancedDispatchResolution> {
+        compact_balanced_dispatch_resolution(alternatives, self)
+    }
+
     /// Derives one arbitrary semantic decision-state root with a fresh root-local arena.
     #[cfg(test)]
     fn sequences_for_state(&self, state: DecisionState) -> Vec<FirstSequence> {
@@ -6307,6 +6323,155 @@ struct DecisionFrontier {
     transitions: Vec<DecisionTransition>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// One terminal selected by a compact labelled dispatch traversal.
+pub(crate) struct CompactDispatchTerminal {
+    /// Outer enum declaration selected at this terminal.
+    pub(crate) declaration: crate::DeclId,
+    /// Whether exhaustion delegates selection to the caller FOLLOW set.
+    pub(crate) on_caller_follow: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One exact token-kind and text partition in a compact dispatch trie.
+pub(crate) struct CompactDispatchEdge {
+    /// Token kinds belonging to this disjoint edge.
+    pub(crate) kinds: KindSet,
+    /// Canonical text cell belonging to this disjoint edge.
+    pub(crate) text: TextPartition,
+    /// Residual dispatch after matching the edge.
+    pub(crate) next: CompactDispatchNode,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// One immutable node in a compact labelled dispatch trie.
+pub(crate) struct CompactDispatchNode {
+    /// Optional terminal at this consumed prefix.
+    pub(crate) terminal: Option<CompactDispatchTerminal>,
+    /// Pairwise-disjoint consuming edges.
+    pub(crate) edges: Rc<[CompactDispatchEdge]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One bounded enum decision frozen without materializing FIRST-sequence rows.
+pub(crate) struct CompactDispatchResolution {
+    /// Root of the frozen branch-selection trie.
+    pub(crate) root: CompactDispatchNode,
+    /// Maximum token prefix needed to distinguish outer declarations.
+    pub(crate) required_lookahead: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One structural enum decision frozen without materializing FIRST-sequence rows.
+pub(crate) struct CompactBalancedDispatchResolution {
+    /// Fixed opening token kind that starts the structural scan.
+    pub(crate) open: KindId,
+    /// Fixed closing token kind that ends the scan at nesting depth zero.
+    pub(crate) close: KindId,
+    /// Ordinary dispatch for every route outside the exact opener partition.
+    pub(crate) ordinary: CompactDispatchResolution,
+    /// Branch selection beginning immediately after the matching close.
+    pub(crate) after_close: CompactDispatchResolution,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// One productive enum derivation with its path-local Pratt provenance.
+struct CompactLabelledDecisionState {
+    /// Outer enum declaration retained across nested grammar expansion.
+    declaration: crate::DeclId,
+    /// Whether this exact derivation has expanded a Pratt NUD.
+    crossed_pratt: bool,
+    /// Remaining normalized grammar state for this exact derivation.
+    state: DecisionState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// One productive end reached by a labelled non-consuming closure.
+struct CompactLabelledEnd {
+    /// Outer enum declaration retained at exhaustion.
+    declaration: crate::DeclId,
+    /// Whether this exact exhausting derivation crossed a Pratt NUD.
+    crossed_pratt: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One consuming transition reached by a labelled non-consuming closure.
+struct CompactLabelledTransition {
+    /// Exact symbolic position consumed by this transition.
+    position: FirstPosition,
+    /// Labelled residual after consuming the position.
+    next: CompactLabelledDecisionState,
+}
+
+#[derive(Clone, Debug, Default)]
+/// Productive ends and transitions for one path-local Pratt state.
+struct CompactSemanticFrontier {
+    /// Distinct path-local Pratt values capable of ending.
+    ends: Vec<bool>,
+    /// Distinct consuming transitions retaining path-local Pratt values.
+    transitions: Vec<CompactSemanticTransition>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One consuming transition before its outer enum label is attached.
+struct CompactSemanticTransition {
+    /// Exact symbolic position consumed by this transition.
+    position: FirstPosition,
+    /// Whether the transition's derivation has expanded a Pratt NUD.
+    crossed_pratt: bool,
+    /// Residual semantic state after consuming the position.
+    next: DecisionState,
+}
+
+#[derive(Clone, Debug)]
+/// One memoized compact dispatch state and its relative discrimination depth.
+struct FrozenCompactDispatchState {
+    /// Frozen immutable dispatch node.
+    node: CompactDispatchNode,
+    /// Further positions needed while more than one outer declaration remains.
+    relative_required_lookahead: usize,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Structural identity of one already-interned compact dispatch child.
+struct CompactDispatchNodeIdentity {
+    /// Terminal retained by the child.
+    terminal: Option<CompactDispatchTerminal>,
+    /// Stable address of the child's immutable edge allocation.
+    edges: usize,
+    /// Number of edges in the immutable allocation.
+    edge_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Structural hash-consing key for one compact dispatch node.
+struct CompactDispatchNodeKey {
+    /// Terminal retained by this node.
+    terminal: Option<CompactDispatchTerminal>,
+    /// Canonical edge labels and already-interned child identities.
+    edges: Vec<(Vec<u64>, TextPartition, CompactDispatchNodeIdentity)>,
+}
+
+/// Memoization key for one depth-bounded compact labelled dispatch state.
+type CompactDispatchMemoKey = (
+    usize,
+    bool,
+    Option<KindId>,
+    Vec<CompactLabelledDecisionState>,
+);
+
+/// Shared caches for one compact labelled dispatch construction.
+struct CompactDispatchArena<'analysis, 'grammar> {
+    /// Semantic support and canonical site identities for this analysis run.
+    analysis: &'analysis FirstSequenceAnalysis<'grammar>,
+    /// Non-consuming closure results keyed without the independent outer declaration.
+    semantic_frontiers: BTreeMap<(bool, DecisionState), CompactSemanticFrontier>,
+    /// Canonical compact nodes shared by equivalent residual languages.
+    interned_nodes: BTreeMap<CompactDispatchNodeKey, CompactDispatchNode>,
+    /// Frozen dispatch states keyed by depth, matched-prefix status, root exclusion, and full labels.
+    frozen: BTreeMap<CompactDispatchMemoKey, Option<FrozenCompactDispatchState>>,
+}
+
 #[derive(Clone, Copy)]
 /// One semantic event emitted while traversing a decision state's non-consuming closure.
 enum DecisionFrontierEvent<'a> {
@@ -7056,6 +7221,177 @@ fn decision_item_is_balanced(
     }
 }
 
+/// A productive derivation avoids expanding a Pratt NUD.
+const PRATT_CROSSING_AVOID: u8 = 1;
+/// A productive derivation expands at least one Pratt NUD.
+const PRATT_CROSSING_CROSSES: u8 = 2;
+
+/// Composes path-local Pratt crossing possibilities in source order.
+fn compose_pratt_crossings(left: u8, right: u8) -> u8 {
+    if left == 0 || right == 0 {
+        return 0;
+    }
+    let avoids = if left & PRATT_CROSSING_AVOID != 0 && right & PRATT_CROSSING_AVOID != 0 {
+        PRATT_CROSSING_AVOID
+    } else {
+        0
+    };
+    let crosses = if left & PRATT_CROSSING_CROSSES != 0 || right & PRATT_CROSSING_CROSSES != 0 {
+        PRATT_CROSSING_CROSSES
+    } else {
+        0
+    };
+    avoids | crosses
+}
+
+/// Derives crossing possibilities for one normalized parse-site container.
+fn site_pratt_crossings(site: &crate::ParseSite, by_type: &[u8]) -> u8 {
+    let semantics = container_semantics(site);
+    let target = by_type[site.target.index()];
+    let separator = semantics
+        .separator
+        .map_or(0, |separator| by_type[separator.type_id.index()]);
+    let separator_crosses = if target != 0 && separator & PRATT_CROSSING_CROSSES != 0 {
+        PRATT_CROSSING_CROSSES
+    } else {
+        0
+    };
+    let repeated = target | separator_crosses;
+    match semantics.cardinality {
+        ContainerCardinality::One => target,
+        ContainerCardinality::Optional => PRATT_CROSSING_AVOID | target,
+        ContainerCardinality::ZeroOrMore | ContainerCardinality::OptionalOneOrMore => {
+            PRATT_CROSSING_AVOID | repeated
+        }
+        ContainerCardinality::OneOrMore => repeated,
+    }
+}
+
+/// Derives path-local Pratt crossing possibilities through productive grammar derivations.
+fn pratt_crossings_for_grammar(
+    grammar: &GrammarDescription,
+    summaries: &DecisionSummaryFacts,
+) -> (Vec<u8>, Vec<u8>) {
+    let sequence = |sites: &[SiteId], by_site: &[u8]| {
+        sites.iter().fold(PRATT_CROSSING_AVOID, |crossings, site| {
+            compose_pratt_crossings(crossings, by_site[site.index()])
+        })
+    };
+    let mut by_type = vec![0; grammar.types.len()];
+    loop {
+        let by_site = grammar
+            .sites
+            .iter()
+            .map(|site| site_pratt_crossings(site, &by_type))
+            .collect::<Vec<_>>();
+        let next = grammar
+            .types
+            .iter()
+            .enumerate()
+            .map(|(index, description)| {
+                if !summaries.productive_by_type[index] {
+                    return 0;
+                }
+                match &description.shape {
+                    TypeShape::Token { .. } => PRATT_CROSSING_AVOID,
+                    TypeShape::Alias { site } => by_site[site.index()],
+                    TypeShape::Sequence { sites } => sequence(sites, &by_site),
+                    TypeShape::Enum { alternatives } => alternatives
+                        .iter()
+                        .map(|alternative| sequence(&alternative.sites, &by_site))
+                        .fold(0, std::ops::BitOr::bitor),
+                    // Expanding the type itself crosses a Pratt NUD before a
+                    // productive variant body is chosen.
+                    TypeShape::Pratt { .. } => PRATT_CROSSING_CROSSES,
+                }
+            })
+            .collect::<Vec<_>>();
+        debug_assert!(
+            next.iter()
+                .zip(&by_type)
+                .all(|(next, previous)| next | previous == *next),
+            "Pratt crossing possibilities must grow monotonically",
+        );
+        if next == by_type {
+            let by_site = grammar
+                .sites
+                .iter()
+                .map(|site| site_pratt_crossings(site, &by_type))
+                .collect();
+            return (by_type, by_site);
+        }
+        by_type = next;
+    }
+}
+
+/// Returns path-local Pratt crossing possibilities for one residual item.
+fn decision_item_pratt_crossings(item: &DecisionItem, by_type: &[u8], by_site: &[u8]) -> u8 {
+    match item {
+        DecisionItem::Type(type_id) => by_type[type_id.index()],
+        DecisionItem::Site(site_id) => by_site[site_id.index()],
+        DecisionItem::RepeatTail {
+            target, separator, ..
+        } => {
+            let target = by_type[target.index()];
+            let separator = separator.map_or(0, |separator| by_type[separator.index()]);
+            let separator_crosses = if target != 0 && separator & PRATT_CROSSING_CROSSES != 0 {
+                PRATT_CROSSING_CROSSES
+            } else {
+                0
+            };
+            PRATT_CROSSING_AVOID | (target & PRATT_CROSSING_CROSSES) | separator_crosses
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+/// Tail and path-local Pratt crossing possibilities after one balanced enclosure.
+struct BalancedEnclosureTail {
+    /// Residual semantic state beginning after the matching close.
+    state: DecisionState,
+    /// Whether productive derivations through the skipped enclosure avoid or cross Pratt.
+    pratt_crossings: u8,
+}
+
+/// Splits a balanced enclosure while retaining exact Pratt crossing possibilities.
+fn balanced_enclosure_tail_with_pratt(
+    residual: &DecisionState,
+    balanced: &[bool],
+    grammar: &GrammarDescription,
+    delimiter_roles: &[Option<DelimiterRole>],
+    pratt_crossings_by_type: &[u8],
+    pratt_crossings_by_site: &[u8],
+) -> Option<BalancedEnclosureTail> {
+    let mut nested_depth = 0usize;
+    let mut pratt_crossings = PRATT_CROSSING_AVOID;
+    for (index, item) in residual.0.iter().enumerate() {
+        match decision_item_delimiter_role(item, grammar, delimiter_roles) {
+            Some(DelimiterRole::Open) => {
+                nested_depth = nested_depth.checked_add(1)?;
+            }
+            Some(DelimiterRole::Close) if nested_depth == 0 => {
+                return Some(BalancedEnclosureTail {
+                    state: DecisionState(residual.0[index + 1..].to_vec()),
+                    pratt_crossings,
+                });
+            }
+            Some(DelimiterRole::Close) => nested_depth -= 1,
+            None if decision_item_is_balanced(item, balanced, grammar) => {
+                pratt_crossings = compose_pratt_crossings(
+                    pratt_crossings,
+                    decision_item_pratt_crossings(
+                        item,
+                        pratt_crossings_by_type,
+                        pratt_crossings_by_site,
+                    ),
+                );
+            }
+            None => return None,
+        }
+    }
+    None
+}
+
 /// Splits the residual after an opener into balanced interior, matching close, and tail.
 fn balanced_enclosure_tail(
     residual: &DecisionState,
@@ -7711,6 +8047,689 @@ fn decision_items_equivalent(
                 && left_optional_trailing == right_optional_trailing
         }
         _ => false,
+    }
+}
+
+impl<'analysis, 'grammar> CompactDispatchArena<'analysis, 'grammar> {
+    /// Creates one compact traversal over shared grammar-wide semantic facts.
+    fn new(analysis: &'analysis FirstSequenceAnalysis<'grammar>) -> Self {
+        Self {
+            analysis,
+            semantic_frontiers: BTreeMap::new(),
+            interned_nodes: BTreeMap::new(),
+            frozen: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the stable identity of one already-interned compact node.
+    fn node_identity(node: &CompactDispatchNode) -> CompactDispatchNodeIdentity {
+        CompactDispatchNodeIdentity {
+            terminal: node.terminal,
+            edges: node.edges.as_ptr() as usize,
+            edge_count: node.edges.len(),
+        }
+    }
+
+    /// Hash-conses one compact node after all child nodes have been interned.
+    fn intern_node(&mut self, node: CompactDispatchNode) -> CompactDispatchNode {
+        let key = CompactDispatchNodeKey {
+            terminal: node.terminal,
+            edges: node
+                .edges
+                .iter()
+                .map(|edge| {
+                    (
+                        edge.kinds.words().to_vec(),
+                        edge.text.clone(),
+                        Self::node_identity(&edge.next),
+                    )
+                })
+                .collect(),
+        };
+        if let Some(interned) = self.interned_nodes.get(&key) {
+            return interned.clone();
+        }
+        self.interned_nodes.insert(key, node.clone());
+        node
+    }
+
+    /// Seeds labelled residuals from outer enum alternatives.
+    fn roots(
+        &self,
+        alternatives: &[(crate::DeclId, &[SiteId])],
+    ) -> Vec<CompactLabelledDecisionState> {
+        alternatives
+            .iter()
+            .map(|(declaration, sites)| CompactLabelledDecisionState {
+                declaration: *declaration,
+                crossed_pratt: false,
+                state: self
+                    .analysis
+                    .canonical_state(DecisionState::from_sites(sites)),
+            })
+            .collect()
+    }
+
+    /// Removes non-productive residuals and canonicalizes complete path labels.
+    fn normalize_states(
+        &self,
+        states: impl IntoIterator<Item = CompactLabelledDecisionState>,
+    ) -> Vec<CompactLabelledDecisionState> {
+        let mut states = states
+            .into_iter()
+            .map(|mut state| {
+                state.state = self.analysis.canonical_state(state.state);
+                state
+            })
+            .filter(|state| {
+                self.analysis
+                    .decision_summary_facts
+                    .summarize_state(&state.state)
+                    != 0
+            })
+            .collect::<Vec<_>>();
+        states.sort_unstable();
+        states.dedup();
+        states
+    }
+
+    /// Expands one path-local Pratt state to its productive one-token frontier.
+    fn semantic_frontier(
+        &mut self,
+        crossed_pratt: bool,
+        state: &DecisionState,
+    ) -> CompactSemanticFrontier {
+        let state = self.analysis.canonical_state(state.clone());
+        let key = (crossed_pratt, state.clone());
+        if let Some(frontier) = self.semantic_frontiers.get(&key) {
+            return frontier.clone();
+        }
+        #[cfg(test)]
+        FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(
+            FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS
+                .get()
+                .saturating_add(1),
+        );
+
+        let start = HashedDecisionState::new(state);
+        let start_depth = start.state.0.len();
+        let mut best_minimum_depth = HashMap::from([((start.clone(), crossed_pratt), start_depth)]);
+        let mut queue = VecDeque::from([(start, start_depth, crossed_pratt)]);
+        let mut frontier = CompactSemanticFrontier::default();
+        while let Some((state, minimum_stack_depth, crossed_pratt)) = queue.pop_front() {
+            #[cfg(test)]
+            FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.set(
+                FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS
+                    .get()
+                    .saturating_add(1),
+            );
+            if best_minimum_depth.get(&(state.clone(), crossed_pratt)) != Some(&minimum_stack_depth)
+            {
+                continue;
+            }
+            let Some((first, rest)) = state.state.0.split_first() else {
+                frontier.ends.push(crossed_pratt);
+                continue;
+            };
+            match first {
+                DecisionItem::Type(type_id) => {
+                    let description = &self.analysis.grammar.types[type_id.index()];
+                    match &description.shape {
+                        TypeShape::Token {
+                            atom,
+                            text_predicate,
+                        } => {
+                            #[cfg(test)]
+                            FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(
+                                FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS
+                                    .get()
+                                    .saturating_add(1),
+                            );
+                            frontier.transitions.push(CompactSemanticTransition {
+                                position: FirstPosition {
+                                    kinds: self.analysis.atom_kinds[atom.index()].clone(),
+                                    text_predicate: *text_predicate,
+                                },
+                                crossed_pratt,
+                                next: self.analysis.canonical_state(DecisionState(rest.to_vec())),
+                            });
+                        }
+                        TypeShape::Alias { site } => queue_compact_decision_expansion(
+                            vec![DecisionItem::Site(*site)],
+                            rest,
+                            crossed_pratt,
+                            minimum_stack_depth,
+                            &mut best_minimum_depth,
+                            &mut queue,
+                        ),
+                        TypeShape::Sequence { sites } => queue_compact_decision_expansion(
+                            sites.iter().copied().map(DecisionItem::Site).collect(),
+                            rest,
+                            crossed_pratt,
+                            minimum_stack_depth,
+                            &mut best_minimum_depth,
+                            &mut queue,
+                        ),
+                        TypeShape::Enum { alternatives } => {
+                            for alternative in alternatives {
+                                queue_compact_decision_expansion(
+                                    alternative
+                                        .sites
+                                        .iter()
+                                        .copied()
+                                        .map(DecisionItem::Site)
+                                        .collect(),
+                                    rest,
+                                    crossed_pratt,
+                                    minimum_stack_depth,
+                                    &mut best_minimum_depth,
+                                    &mut queue,
+                                );
+                            }
+                        }
+                        TypeShape::Pratt { variants } => {
+                            for variant in variants
+                                .iter()
+                                .filter(|variant| is_pratt_nud(variant.position))
+                            {
+                                queue_compact_decision_expansion(
+                                    variant
+                                        .sites
+                                        .iter()
+                                        .copied()
+                                        .map(DecisionItem::Site)
+                                        .collect(),
+                                    rest,
+                                    true,
+                                    minimum_stack_depth,
+                                    &mut best_minimum_depth,
+                                    &mut queue,
+                                );
+                            }
+                        }
+                    }
+                }
+                DecisionItem::Site(site_id) => {
+                    let site = &self.analysis.grammar.sites[site_id.index()];
+                    let semantics = container_semantics(site);
+                    match semantics.cardinality {
+                        ContainerCardinality::One => queue_compact_decision_expansion(
+                            vec![DecisionItem::Type(site.target)],
+                            rest,
+                            crossed_pratt,
+                            minimum_stack_depth,
+                            &mut best_minimum_depth,
+                            &mut queue,
+                        ),
+                        ContainerCardinality::Optional => {
+                            queue_compact_decision_expansion(
+                                Vec::new(),
+                                rest,
+                                crossed_pratt,
+                                minimum_stack_depth,
+                                &mut best_minimum_depth,
+                                &mut queue,
+                            );
+                            queue_compact_decision_expansion(
+                                vec![DecisionItem::Type(site.target)],
+                                rest,
+                                crossed_pratt,
+                                minimum_stack_depth,
+                                &mut best_minimum_depth,
+                                &mut queue,
+                            );
+                        }
+                        ContainerCardinality::ZeroOrMore
+                        | ContainerCardinality::OneOrMore
+                        | ContainerCardinality::OptionalOneOrMore => {
+                            if matches!(
+                                semantics.cardinality,
+                                ContainerCardinality::ZeroOrMore
+                                    | ContainerCardinality::OptionalOneOrMore
+                            ) {
+                                queue_compact_decision_expansion(
+                                    Vec::new(),
+                                    rest,
+                                    crossed_pratt,
+                                    minimum_stack_depth,
+                                    &mut best_minimum_depth,
+                                    &mut queue,
+                                );
+                            }
+                            queue_compact_decision_expansion(
+                                vec![
+                                    DecisionItem::Type(site.target),
+                                    DecisionItem::RepeatTail {
+                                        target: site.target,
+                                        separator: semantics.separator_type(),
+                                        optional_trailing: semantics
+                                            .separator
+                                            .is_some_and(|separator| separator.optional_trailing),
+                                    },
+                                ],
+                                rest,
+                                crossed_pratt,
+                                minimum_stack_depth,
+                                &mut best_minimum_depth,
+                                &mut queue,
+                            );
+                        }
+                    }
+                }
+                DecisionItem::RepeatTail {
+                    target,
+                    separator,
+                    optional_trailing,
+                } => {
+                    queue_compact_decision_expansion(
+                        Vec::new(),
+                        rest,
+                        crossed_pratt,
+                        minimum_stack_depth,
+                        &mut best_minimum_depth,
+                        &mut queue,
+                    );
+                    let mut expansion = Vec::new();
+                    if let Some(separator) = separator {
+                        expansion.push(DecisionItem::Type(*separator));
+                    }
+                    expansion.extend([
+                        DecisionItem::Type(*target),
+                        DecisionItem::RepeatTail {
+                            target: *target,
+                            separator: *separator,
+                            optional_trailing: *optional_trailing,
+                        },
+                    ]);
+                    queue_compact_decision_expansion(
+                        expansion,
+                        rest,
+                        crossed_pratt,
+                        minimum_stack_depth,
+                        &mut best_minimum_depth,
+                        &mut queue,
+                    );
+                    if *optional_trailing {
+                        let separator = separator
+                            .expect("optional trailing behavior requires a separator type");
+                        queue_compact_decision_expansion(
+                            vec![DecisionItem::Type(separator)],
+                            rest,
+                            crossed_pratt,
+                            minimum_stack_depth,
+                            &mut best_minimum_depth,
+                            &mut queue,
+                        );
+                    }
+                }
+            }
+        }
+        frontier.ends.sort_unstable();
+        frontier.ends.dedup();
+        frontier.transitions.sort_by(|left, right| {
+            compare_first_positions(&left.position, &right.position)
+                .then_with(|| left.crossed_pratt.cmp(&right.crossed_pratt))
+                .then_with(|| left.next.cmp(&right.next))
+        });
+        frontier.transitions.dedup_by(|left, right| {
+            left.position == right.position
+                && left.crossed_pratt == right.crossed_pratt
+                && left.next == right.next
+        });
+        self.semantic_frontiers.insert(key, frontier.clone());
+        frontier
+    }
+
+    /// Unions labelled semantic frontiers without erasing outer declaration or Pratt provenance.
+    fn labelled_frontier(
+        &mut self,
+        states: &[CompactLabelledDecisionState],
+    ) -> (Vec<CompactLabelledEnd>, Vec<CompactLabelledTransition>) {
+        let mut ends = Vec::new();
+        let mut transitions = Vec::new();
+        for state in states {
+            let frontier = self.semantic_frontier(state.crossed_pratt, &state.state);
+            ends.extend(
+                frontier
+                    .ends
+                    .into_iter()
+                    .map(|crossed_pratt| CompactLabelledEnd {
+                        declaration: state.declaration,
+                        crossed_pratt,
+                    }),
+            );
+            transitions.extend(frontier.transitions.into_iter().map(|transition| {
+                CompactLabelledTransition {
+                    position: transition.position,
+                    next: CompactLabelledDecisionState {
+                        declaration: state.declaration,
+                        crossed_pratt: transition.crossed_pratt,
+                        state: transition.next,
+                    },
+                }
+            }));
+        }
+        ends.sort_unstable();
+        ends.dedup();
+        transitions.sort_by(|left, right| {
+            compare_first_positions(&left.position, &right.position)
+                .then_with(|| left.next.cmp(&right.next))
+        });
+        transitions
+            .dedup_by(|left, right| left.position == right.position && left.next == right.next);
+        (ends, transitions)
+    }
+
+    /// Freezes one exact labelled residual subset at a bounded remaining depth.
+    fn freeze(
+        &mut self,
+        remaining: usize,
+        states: Vec<CompactLabelledDecisionState>,
+        matched_prefix: bool,
+        excluded_root_kind: Option<KindId>,
+    ) -> Option<FrozenCompactDispatchState> {
+        let states = self.normalize_states(states);
+        let memo_key = (
+            remaining,
+            matched_prefix,
+            excluded_root_kind,
+            states.clone(),
+        );
+        if let Some(frozen) = self.frozen.get(&memo_key) {
+            return frozen.clone();
+        }
+
+        let unique_declaration = states
+            .first()
+            .map(|first| first.declaration)
+            .filter(|declaration| states.iter().all(|state| state.declaration == *declaration));
+        if matched_prefix
+            && states.iter().all(|state| state.crossed_pratt)
+            && let Some(declaration) = unique_declaration
+        {
+            let frozen = FrozenCompactDispatchState {
+                node: self.intern_node(CompactDispatchNode {
+                    terminal: Some(CompactDispatchTerminal {
+                        declaration,
+                        on_caller_follow: false,
+                    }),
+                    edges: Rc::default(),
+                }),
+                relative_required_lookahead: 0,
+            };
+            self.frozen.insert(memo_key, Some(frozen.clone()));
+            return Some(frozen);
+        }
+
+        let (ends, mut transitions) = self.labelled_frontier(&states);
+        if let Some(excluded) = excluded_root_kind {
+            let excluded = KindSet::singleton(self.analysis.grammar.kind_count, excluded).ok()?;
+            let mut filtered = Vec::with_capacity(transitions.len());
+            for mut transition in transitions {
+                if transition.position.kinds.intersects(&excluded).ok()? {
+                    if transition.position.text_predicate.is_some() {
+                        self.frozen.insert(memo_key, None);
+                        return None;
+                    }
+                    transition.position.kinds =
+                        transition.position.kinds.difference(&excluded).ok()?;
+                }
+                if !transition.position.kinds.is_empty() {
+                    filtered.push(transition);
+                }
+            }
+            transitions = filtered;
+        }
+
+        let first_end = ends.first().copied();
+        if first_end.is_some_and(|first| {
+            ends.iter()
+                .any(|candidate| candidate.declaration != first.declaration)
+        }) {
+            self.frozen.insert(memo_key, None);
+            return None;
+        }
+
+        if remaining == 0 {
+            let mut declarations = ends
+                .iter()
+                .map(|end| end.declaration)
+                .chain(
+                    transitions
+                        .iter()
+                        .map(|transition| transition.next.declaration),
+                )
+                .collect::<Vec<_>>();
+            declarations.sort_unstable();
+            declarations.dedup();
+            let node = match declarations.as_slice() {
+                [] => CompactDispatchNode::default(),
+                [declaration] if !transitions.is_empty() => CompactDispatchNode {
+                    terminal: Some(CompactDispatchTerminal {
+                        declaration: *declaration,
+                        on_caller_follow: false,
+                    }),
+                    edges: Rc::default(),
+                },
+                [declaration] => CompactDispatchNode {
+                    terminal: Some(CompactDispatchTerminal {
+                        declaration: *declaration,
+                        on_caller_follow: true,
+                    }),
+                    edges: Rc::default(),
+                },
+                _ => {
+                    self.frozen.insert(memo_key, None);
+                    return None;
+                }
+            };
+            let frozen = FrozenCompactDispatchState {
+                node: self.intern_node(node),
+                relative_required_lookahead: 0,
+            };
+            self.frozen.insert(memo_key, Some(frozen.clone()));
+            return Some(frozen);
+        }
+
+        let terminal = first_end.map(|end| CompactDispatchTerminal {
+            declaration: end.declaration,
+            on_caller_follow: true,
+        });
+        let partitions = partition_by_kind_residual(
+            &transitions,
+            self.analysis.grammar,
+            |transition| transition.position.text_predicate,
+            |transition| &transition.position.kinds,
+            |transition| transition.next.clone(),
+        );
+        let mut edges = Vec::with_capacity(partitions.len());
+        let mut maximum_child_lookahead = 0;
+        for (text, residuals, kinds) in partitions {
+            let next = self.freeze(remaining - 1, residuals, true, None)?;
+            maximum_child_lookahead = maximum_child_lookahead.max(next.relative_required_lookahead);
+            edges.push(CompactDispatchEdge {
+                kinds,
+                text,
+                next: next.node,
+            });
+        }
+        edges.sort_by(|left, right| {
+            left.kinds
+                .words()
+                .cmp(right.kinds.words())
+                .then_with(|| left.text.cmp(&right.text))
+        });
+        let has_multiple_declarations = states.first().is_some_and(|first| {
+            states
+                .iter()
+                .skip(1)
+                .any(|state| state.declaration != first.declaration)
+        });
+        let node = self.intern_node(CompactDispatchNode {
+            terminal,
+            edges: edges.into(),
+        });
+        let frozen = FrozenCompactDispatchState {
+            node,
+            relative_required_lookahead: if has_multiple_declarations {
+                maximum_child_lookahead.saturating_add(1)
+            } else {
+                0
+            },
+        };
+        self.frozen.insert(memo_key, Some(frozen.clone()));
+        Some(frozen)
+    }
+
+    /// Freezes a root set and applies the non-empty dispatch depth convention.
+    fn resolution(
+        &mut self,
+        states: Vec<CompactLabelledDecisionState>,
+        matched_prefix: bool,
+        excluded_root_kind: Option<KindId>,
+    ) -> Option<CompactDispatchResolution> {
+        let has_roots = !states.is_empty();
+        let frozen = self.freeze(
+            self.analysis.grammar.max_lookahead,
+            states,
+            matched_prefix,
+            excluded_root_kind,
+        )?;
+        Some(CompactDispatchResolution {
+            root: frozen.node,
+            required_lookahead: usize::from(has_roots)
+                .max(frozen.relative_required_lookahead)
+                .min(self.analysis.grammar.max_lookahead),
+        })
+    }
+}
+
+/// Enqueues one non-consuming compact traversal expansion while preserving Pratt provenance.
+fn queue_compact_decision_expansion(
+    mut expansion: Vec<DecisionItem>,
+    rest: &[DecisionItem],
+    crossed_pratt: bool,
+    minimum_stack_depth: usize,
+    best_minimum_depth: &mut HashMap<(HashedDecisionState, bool), usize>,
+    queue: &mut VecDeque<(HashedDecisionState, usize, bool)>,
+) {
+    expansion.extend_from_slice(rest);
+    let state = HashedDecisionState::new(DecisionState(expansion));
+    let minimum_stack_depth = minimum_stack_depth.min(state.state.0.len());
+    let key = (state.clone(), crossed_pratt);
+    if best_minimum_depth
+        .get(&key)
+        .is_none_or(|best| *best < minimum_stack_depth)
+    {
+        best_minimum_depth.insert(key, minimum_stack_depth);
+        queue.push_back((state, minimum_stack_depth, crossed_pratt));
+    }
+}
+
+/// Freezes one ordinary enum decision through the compact labelled traversal.
+fn compact_dispatch_resolution(
+    alternatives: &[(crate::DeclId, &[SiteId])],
+    first_sequences: &FirstSequenceAnalysis<'_>,
+) -> Option<CompactDispatchResolution> {
+    let mut arena = CompactDispatchArena::new(first_sequences);
+    let roots = arena.roots(alternatives);
+    arena.resolution(roots, false, None)
+}
+
+/// Freezes one exact balanced-delimiter enum decision through labelled residuals.
+fn compact_balanced_dispatch_resolution(
+    alternatives: &[(crate::DeclId, &[SiteId])],
+    first_sequences: &FirstSequenceAnalysis<'_>,
+) -> Option<CompactBalancedDispatchResolution> {
+    if alternatives.len() < 2 {
+        return None;
+    }
+    let grammar = first_sequences.grammar;
+    let (pratt_crossings_by_type, pratt_crossings_by_site) =
+        pratt_crossings_for_grammar(grammar, &first_sequences.decision_summary_facts);
+    let mut resolutions = Vec::new();
+    for delimiter in &grammar.balanced_delimiters {
+        let candidate = (|| {
+            let delimiter_roles =
+                delimiter_roles_for_types(*delimiter, grammar, &first_sequences.atom_kinds);
+            let balanced = balanced_types_for_delimiter(
+                *delimiter,
+                grammar,
+                &first_sequences.atom_kinds,
+                &delimiter_roles,
+            );
+            let mut arena = CompactDispatchArena::new(first_sequences);
+            let roots = arena.roots(alternatives);
+            let (_, transitions) = arena.labelled_frontier(&roots);
+            let partitions = partition_by_kind_residual(
+                &transitions,
+                grammar,
+                |transition| transition.position.text_predicate,
+                |transition| &transition.position.kinds,
+                |transition| transition.next.clone(),
+            );
+            let mut opener_residuals = None;
+            for (text, residuals, kinds) in partitions {
+                if !kinds.contains(delimiter.open) {
+                    continue;
+                }
+                if text != TextPartition::Any || opener_residuals.is_some() {
+                    return None;
+                }
+                opener_residuals = Some(residuals);
+            }
+            let opener_residuals = opener_residuals?;
+            let mut seen_declarations = BTreeSet::new();
+            let mut tails = Vec::new();
+            for state in opener_residuals {
+                seen_declarations.insert(state.declaration);
+                let tail = balanced_enclosure_tail_with_pratt(
+                    &state.state,
+                    &balanced,
+                    grammar,
+                    &delimiter_roles,
+                    &pratt_crossings_by_type,
+                    &pratt_crossings_by_site,
+                )?;
+                if state.crossed_pratt || tail.pratt_crossings & PRATT_CROSSING_CROSSES != 0 {
+                    tails.push(CompactLabelledDecisionState {
+                        declaration: state.declaration,
+                        crossed_pratt: true,
+                        state: tail.state.clone(),
+                    });
+                }
+                if !state.crossed_pratt && tail.pratt_crossings & PRATT_CROSSING_AVOID != 0 {
+                    tails.push(CompactLabelledDecisionState {
+                        declaration: state.declaration,
+                        crossed_pratt: false,
+                        state: tail.state,
+                    });
+                }
+            }
+            let expected_declarations = alternatives
+                .iter()
+                .map(|(declaration, _)| *declaration)
+                .collect::<BTreeSet<_>>();
+            if seen_declarations != expected_declarations {
+                return None;
+            }
+            let ordinary = arena.resolution(roots, false, Some(delimiter.open))?;
+            // Matching the exact opener and its structurally paired close is a non-empty prefix.
+            let after_close = arena.resolution(tails, true, None)?;
+            Some(CompactBalancedDispatchResolution {
+                open: delimiter.open,
+                close: delimiter.close,
+                ordinary,
+                after_close,
+            })
+        })();
+        if let Some(candidate) = candidate {
+            resolutions.push(candidate);
+        }
+    }
+    match resolutions.as_slice() {
+        [resolution] => Some(resolution.clone()),
+        _ => None,
     }
 }
 
@@ -9473,6 +10492,47 @@ mod decision_product_tests {
         let location =
             grammar.push_location(Location::new(crate::SourceId::new(0), start..start + 1));
         grammar.push_declaration(crate::Declaration::new(name, location))
+    }
+
+    /// Adds one deterministic fixed-token type used by compact dispatch fixtures.
+    fn compact_test_token(
+        grammar: &mut GrammarDescription,
+        next_byte: &mut u32,
+        name: &str,
+    ) -> (TypeId, KindId) {
+        let declaration = test_declaration(grammar, next_byte, name);
+        let kind = grammar.push_kind(crate::KindDescription::new(name, declaration));
+        let atom = grammar.push_atom(crate::AtomDescription::new(
+            name,
+            declaration,
+            AtomExpression::Kind(kind),
+        ));
+        let ty = grammar.push_type(crate::TypeDescription::new(
+            name,
+            declaration,
+            TypeShape::Token {
+                atom,
+                text_predicate: None,
+            },
+        ));
+        (ty, kind)
+    }
+
+    /// Adds one required unseparated site used by compact dispatch fixtures.
+    fn compact_test_site(
+        grammar: &mut GrammarDescription,
+        next_byte: &mut u32,
+        owner: TypeId,
+        target: TypeId,
+        name: &str,
+    ) -> SiteId {
+        let declaration = test_declaration(grammar, next_byte, name);
+        grammar.push_site(crate::ParseSite::new(
+            owner,
+            target,
+            declaration,
+            crate::ContainerShape::Direct,
+        ))
     }
 
     /// Builds one small grammar covering every decision-closure branch.
@@ -13902,6 +14962,622 @@ mod decision_product_tests {
         assert!(
             balanced_dispatch_resolution(&sites, &first_sequences).is_some(),
             "recursive neutral interiors must permit a structural cut after the nested close",
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    /// Selects whether the unique CASE route passes through a Pratt or ordinary enum type.
+    enum UniqueCaseExpressionShape {
+        /// Exercises the declaration-unique Pratt cutoff.
+        Pratt,
+        /// Preserves complete-route validation as a scope control.
+        OrdinaryEnum,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    /// Compact counters for work that would otherwise expand below the unique CASE route.
+    struct UniqueCaseExpansionWork {
+        /// Bounded FIRST-language states constructed after the counters are reset.
+        states: usize,
+        /// Non-consuming decision states visited while deriving consuming frontiers.
+        closure_visits: usize,
+        /// Consuming transitions materialized from decision frontiers.
+        transition_materializations: usize,
+        /// Recursive bounded-language components projected from decision states.
+        projected_components: usize,
+    }
+
+    /// Resets the independent expansion counters sampled by the unique CASE fixture.
+    fn reset_unique_case_expansion_work() {
+        FIRST_LANGUAGE_STATE_COUNT.set(0);
+        FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.set(0);
+        FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.set(0);
+        FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.set(0);
+    }
+
+    /// Samples the independent expansion counters used by the unique CASE fixture.
+    fn unique_case_expansion_work() -> UniqueCaseExpansionWork {
+        UniqueCaseExpansionWork {
+            states: FIRST_LANGUAGE_STATE_COUNT.get(),
+            closure_visits: FIRST_LANGUAGE_DECISION_CLOSURE_STATE_VISITS.get(),
+            transition_materializations: FIRST_LANGUAGE_DECISION_TRANSITION_MATERIALIZATIONS.get(),
+            projected_components: FIRST_LANGUAGE_PROJECTED_COMPONENT_BUILDS.get(),
+        }
+    }
+
+    /// Builds a balanced dispatch fixture with fixed grammar tables and variable reachable CASE routes.
+    fn unique_case_route_fixture(
+        reachable_case_routes: usize,
+        expression_shape: UniqueCaseExpressionShape,
+    ) -> (GrammarDescription, Vec<crate::Alternative>) {
+        macro_rules! token {
+            ($grammar:ident, $next_byte:ident, $name:expr) => {{
+                let declaration = test_declaration(&mut $grammar, &mut $next_byte, $name);
+                let kind = $grammar.push_kind(crate::KindDescription::new($name, declaration));
+                let atom = $grammar.push_atom(crate::AtomDescription::new(
+                    $name,
+                    declaration,
+                    AtomExpression::Kind(kind),
+                ));
+                let ty = $grammar.push_type(crate::TypeDescription::new(
+                    $name,
+                    declaration,
+                    TypeShape::Token {
+                        atom,
+                        text_predicate: None,
+                    },
+                ));
+                (ty, kind)
+            }};
+        }
+
+        macro_rules! sites {
+            ($grammar:ident, $next_byte:ident, $owner:expr, $name:expr, $targets:expr) => {{
+                $targets
+                    .iter()
+                    .enumerate()
+                    .map(|(index, target)| {
+                        let declaration = test_declaration(
+                            &mut $grammar,
+                            &mut $next_byte,
+                            &format!("{}::{index}", $name),
+                        );
+                        $grammar.push_site(crate::ParseSite::new(
+                            $owner,
+                            *target,
+                            declaration,
+                            crate::ContainerShape::Direct,
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            }};
+        }
+
+        macro_rules! alternative {
+            ($grammar:ident, $next_byte:ident, $owner:expr, $name:expr, $targets:expr $(,)?) => {{
+                crate::Alternative {
+                    declaration: test_declaration(&mut $grammar, &mut $next_byte, $name),
+                    sites: sites!($grammar, $next_byte, $owner, $name, $targets),
+                }
+            }};
+        }
+
+        const CASE_ROUTE_CAPACITY: usize = 12;
+        assert!((1..=CASE_ROUTE_CAPACITY).contains(&reachable_case_routes));
+        let mut grammar = GrammarDescription::new(
+            format!("unique-case-route-{reachable_case_routes}"),
+            CASE_ROUTE_CAPACITY * 2 + 4,
+            3,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let (open, open_kind) = token!(grammar, next_byte, "LPAREN");
+        let (close, close_kind) = token!(grammar, next_byte, "RPAREN");
+        let (case, _) = token!(grammar, next_byte, "CASE");
+        let (query_tail, _) = token!(grammar, next_byte, "QUERY_TAIL");
+        let case_routes = (0..CASE_ROUTE_CAPACITY)
+            .map(|index| {
+                let (head, _) = token!(grammar, next_byte, &format!("CASE_HEAD_{index}"));
+                let (tail, _) = token!(grammar, next_byte, &format!("CASE_TAIL_{index}"));
+                (head, tail)
+            })
+            .collect::<Vec<_>>();
+        grammar.push_balanced_delimiter(open_kind, close_kind);
+
+        let case_body = grammar.next_type_id();
+        let case_body_declaration = test_declaration(&mut grammar, &mut next_byte, "CaseBody");
+        let mut case_body_alternatives = case_routes
+            .iter()
+            .enumerate()
+            .map(|(index, (head, tail))| {
+                alternative!(
+                    grammar,
+                    next_byte,
+                    case_body,
+                    &format!("CaseBody::Route{index}"),
+                    &[*head, *tail],
+                )
+            })
+            .collect::<Vec<_>>();
+        case_body_alternatives.truncate(reachable_case_routes);
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "CaseBody",
+                case_body_declaration,
+                TypeShape::Enum {
+                    alternatives: case_body_alternatives,
+                },
+            )),
+            case_body,
+        );
+
+        let expr = grammar.next_type_id();
+        let expr_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr");
+        let expression_routes = [
+            ("Expr::Group", vec![open, expr, close]),
+            ("Expr::Case", vec![case, case_body]),
+        ]
+        .into_iter()
+        .map(|(name, targets)| {
+            (
+                test_declaration(&mut grammar, &mut next_byte, name),
+                sites!(grammar, next_byte, expr, name, &targets),
+            )
+        })
+        .collect::<Vec<_>>();
+        let expression_shape = match expression_shape {
+            UniqueCaseExpressionShape::Pratt => TypeShape::Pratt {
+                variants: expression_routes
+                    .into_iter()
+                    .map(|(declaration, sites)| crate::PrattVariant {
+                        declaration,
+                        position: PrattPosition::Atom,
+                        sites,
+                    })
+                    .collect(),
+            },
+            UniqueCaseExpressionShape::OrdinaryEnum => TypeShape::Enum {
+                alternatives: expression_routes
+                    .into_iter()
+                    .map(|(declaration, sites)| crate::Alternative { declaration, sites })
+                    .collect(),
+            },
+        };
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Expr",
+                expr_declaration,
+                expression_shape,
+            )),
+            expr,
+        );
+
+        let query = grammar.next_type_id();
+        let query_declaration = test_declaration(&mut grammar, &mut next_byte, "Query");
+        let query_sites = sites!(
+            grammar,
+            next_byte,
+            query,
+            "Query",
+            &[open, case_routes[0].0, close, query_tail]
+        );
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Query",
+                query_declaration,
+                TypeShape::Sequence { sites: query_sites },
+            )),
+            query,
+        );
+
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let alternatives = vec![
+            alternative!(grammar, next_byte, choice, "Choice::Expr", &[expr]),
+            alternative!(grammar, next_byte, choice, "Choice::Query", &[query]),
+        ];
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: alternatives.clone(),
+                },
+            )),
+            choice,
+        );
+        (grammar, alternatives)
+    }
+
+    /// Measures balanced-dispatch expansion after grammar-wide fixed-point support is built.
+    fn unique_case_dispatch_expansion_work(
+        reachable_case_routes: usize,
+        expression_shape: UniqueCaseExpressionShape,
+    ) -> UniqueCaseExpansionWork {
+        let (grammar, alternatives) =
+            unique_case_route_fixture(reachable_case_routes, expression_shape);
+        let atom_kinds = expand_atoms(&grammar);
+        let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
+        let alternatives = alternatives.iter().collect::<Vec<_>>();
+        reset_unique_case_expansion_work();
+        assert!(
+            crate::decision_plan::balanced_dispatch_is_supported(
+                &alternatives,
+                &grammar,
+                &first_sequences,
+            ),
+            "the shared opener is resolved structurally",
+        );
+        unique_case_expansion_work()
+    }
+
+    #[test]
+    fn balanced_dispatch_preserves_a_unique_ordinary_enum_route() {
+        let ordinary_narrow =
+            unique_case_dispatch_expansion_work(1, UniqueCaseExpressionShape::OrdinaryEnum);
+        let ordinary_wide =
+            unique_case_dispatch_expansion_work(12, UniqueCaseExpressionShape::OrdinaryEnum);
+        assert!(
+            ordinary_wide.projected_components > ordinary_narrow.projected_components,
+            "ordinary enum selection must retain complete-route validation below CASE; narrow={ordinary_narrow:?} wide={ordinary_wide:?}",
+        );
+    }
+
+    #[test]
+    fn balanced_dispatch_stops_expanding_a_pratt_route_after_its_declaration_is_unique() {
+        let narrow = unique_case_dispatch_expansion_work(1, UniqueCaseExpressionShape::Pratt);
+        let wide = unique_case_dispatch_expansion_work(12, UniqueCaseExpressionShape::Pratt);
+        assert_eq!(
+            wide, narrow,
+            "FIRST-language expansion below CASE must stop once only Choice::Expr remains; narrow={narrow:?} wide={wide:?}",
+        );
+    }
+
+    #[test]
+    fn compact_dispatch_keeps_an_ordinary_sibling_of_a_crossed_pratt_derivation_live() {
+        let mut grammar = GrammarDescription::new(
+            "mixed-path-pratt-provenance",
+            4,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let (head, head_kind) = compact_test_token(&mut grammar, &mut next_byte, "HEAD");
+        let (pratt_tail, pratt_tail_kind) =
+            compact_test_token(&mut grammar, &mut next_byte, "PRATT_TAIL");
+        let (ordinary_tail, ordinary_tail_kind) =
+            compact_test_token(&mut grammar, &mut next_byte, "ORDINARY_TAIL");
+        let (other, _) = compact_test_token(&mut grammar, &mut next_byte, "OTHER");
+
+        let expr = grammar.next_type_id();
+        let expr_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr");
+        let expr_variant = test_declaration(&mut grammar, &mut next_byte, "Expr::Atom");
+        let expr_sites = [head, pratt_tail]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                compact_test_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    expr,
+                    target,
+                    &format!("Expr::Atom::{index}"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Expr",
+                expr_declaration,
+                TypeShape::Pratt {
+                    variants: vec![crate::PrattVariant {
+                        declaration: expr_variant,
+                        position: PrattPosition::Atom,
+                        sites: expr_sites,
+                    }],
+                },
+            )),
+            expr,
+        );
+
+        let ordinary = grammar.next_type_id();
+        let ordinary_declaration = test_declaration(&mut grammar, &mut next_byte, "Ordinary");
+        let ordinary_sites = [head, ordinary_tail]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target)| {
+                compact_test_site(
+                    &mut grammar,
+                    &mut next_byte,
+                    ordinary,
+                    target,
+                    &format!("Ordinary::{index}"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Ordinary",
+                ordinary_declaration,
+                TypeShape::Sequence {
+                    sites: ordinary_sites,
+                },
+            )),
+            ordinary,
+        );
+
+        let mixed = grammar.next_type_id();
+        let mixed_declaration = test_declaration(&mut grammar, &mut next_byte, "Mixed");
+        let mixed_pratt = crate::Alternative {
+            declaration: test_declaration(&mut grammar, &mut next_byte, "Mixed::Pratt"),
+            sites: vec![compact_test_site(
+                &mut grammar,
+                &mut next_byte,
+                mixed,
+                expr,
+                "Mixed::Pratt::value",
+            )],
+        };
+        let mixed_ordinary = crate::Alternative {
+            declaration: test_declaration(&mut grammar, &mut next_byte, "Mixed::Ordinary"),
+            sites: vec![compact_test_site(
+                &mut grammar,
+                &mut next_byte,
+                mixed,
+                ordinary,
+                "Mixed::Ordinary::value",
+            )],
+        };
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Mixed",
+                mixed_declaration,
+                TypeShape::Enum {
+                    alternatives: vec![mixed_pratt, mixed_ordinary],
+                },
+            )),
+            mixed,
+        );
+
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let mixed_choice = crate::Alternative {
+            declaration: test_declaration(&mut grammar, &mut next_byte, "Choice::Mixed"),
+            sites: vec![compact_test_site(
+                &mut grammar,
+                &mut next_byte,
+                choice,
+                mixed,
+                "Choice::Mixed::value",
+            )],
+        };
+        let other_choice = crate::Alternative {
+            declaration: test_declaration(&mut grammar, &mut next_byte, "Choice::Other"),
+            sites: vec![compact_test_site(
+                &mut grammar,
+                &mut next_byte,
+                choice,
+                other,
+                "Choice::Other::value",
+            )],
+        };
+        let alternatives = vec![mixed_choice, other_choice];
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: alternatives.clone(),
+                },
+            )),
+            choice,
+        );
+
+        let first_sequences = FirstSequenceAnalysis::for_grammar(&grammar);
+        let alternatives = alternatives
+            .iter()
+            .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
+            .collect::<Vec<_>>();
+        let resolution = first_sequences
+            .compact_enum_dispatch(&alternatives)
+            .expect("two-token mixed paths are bounded");
+        let head = resolution
+            .root
+            .edges
+            .iter()
+            .find(|edge| edge.kinds.contains(head_kind))
+            .expect("mixed route retains its HEAD entry");
+        assert!(
+            head.next.terminal.is_none(),
+            "the crossed Pratt derivation cannot hide its ordinary sibling",
+        );
+        assert!(
+            head.next
+                .edges
+                .iter()
+                .any(|edge| edge.kinds.contains(pratt_tail_kind)),
+        );
+        assert!(
+            head.next
+                .edges
+                .iter()
+                .any(|edge| edge.kinds.contains(ordinary_tail_kind)),
+        );
+    }
+
+    #[test]
+    fn compact_balanced_dispatch_keeps_same_residual_outer_declarations_distinct() {
+        let mut grammar = GrammarDescription::new(
+            "same-balanced-tail-labels",
+            3,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let (open, open_kind) = compact_test_token(&mut grammar, &mut next_byte, "LPAREN");
+        let (body, _) = compact_test_token(&mut grammar, &mut next_byte, "BODY");
+        let (close, close_kind) = compact_test_token(&mut grammar, &mut next_byte, "RPAREN");
+        grammar.push_balanced_delimiter(open_kind, close_kind);
+
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let alternatives = ["Choice::Left", "Choice::Right"]
+            .into_iter()
+            .map(|name| crate::Alternative {
+                declaration: test_declaration(&mut grammar, &mut next_byte, name),
+                sites: [open, body, close]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, target)| {
+                        compact_test_site(
+                            &mut grammar,
+                            &mut next_byte,
+                            choice,
+                            target,
+                            &format!("{name}::{index}"),
+                        )
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: alternatives.clone(),
+                },
+            )),
+            choice,
+        );
+        let first_sequences = FirstSequenceAnalysis::for_grammar(&grammar);
+        let alternatives = alternatives
+            .iter()
+            .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
+            .collect::<Vec<_>>();
+        assert!(
+            first_sequences
+                .compact_balanced_enum_dispatch(&alternatives)
+                .is_none(),
+            "identical empty post-close states still name two competing outer declarations",
+        );
+    }
+
+    #[test]
+    fn compact_balanced_dispatch_carries_pratt_provenance_through_the_enclosure() {
+        let mut grammar = GrammarDescription::new(
+            "balanced-enclosure-pratt-provenance",
+            7,
+            2,
+            TextEquivalence::Sensitive,
+        );
+        let mut next_byte = 0;
+        let (open, open_kind) = compact_test_token(&mut grammar, &mut next_byte, "LPAREN");
+        let (close, close_kind) = compact_test_token(&mut grammar, &mut next_byte, "RPAREN");
+        let (value, _) = compact_test_token(&mut grammar, &mut next_byte, "VALUE");
+        let (plain, _) = compact_test_token(&mut grammar, &mut next_byte, "PLAIN");
+        let (pratt_head, pratt_head_kind) =
+            compact_test_token(&mut grammar, &mut next_byte, "PRATT_HEAD");
+        let (pratt_extra, _) = compact_test_token(&mut grammar, &mut next_byte, "PRATT_EXTRA");
+        let (plain_head, _) = compact_test_token(&mut grammar, &mut next_byte, "PLAIN_HEAD");
+        grammar.push_balanced_delimiter(open_kind, close_kind);
+
+        let expr = grammar.next_type_id();
+        let expr_declaration = test_declaration(&mut grammar, &mut next_byte, "Expr");
+        let expr_variant = test_declaration(&mut grammar, &mut next_byte, "Expr::Value");
+        let expr_value = compact_test_site(
+            &mut grammar,
+            &mut next_byte,
+            expr,
+            value,
+            "Expr::Value::value",
+        );
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Expr",
+                expr_declaration,
+                TypeShape::Pratt {
+                    variants: vec![crate::PrattVariant {
+                        declaration: expr_variant,
+                        position: PrattPosition::Atom,
+                        sites: vec![expr_value],
+                    }],
+                },
+            )),
+            expr,
+        );
+
+        let choice = grammar.next_type_id();
+        let choice_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice");
+        let pratt_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice::Pratt");
+        let plain_declaration = test_declaration(&mut grammar, &mut next_byte, "Choice::Plain");
+        let alternatives = [
+            (
+                pratt_declaration,
+                "Choice::Pratt",
+                vec![open, expr, close, pratt_head, pratt_extra],
+            ),
+            (
+                plain_declaration,
+                "Choice::Plain",
+                vec![open, plain, close, plain_head],
+            ),
+        ]
+        .into_iter()
+        .map(|(declaration, name, targets)| crate::Alternative {
+            declaration,
+            sites: targets
+                .into_iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    compact_test_site(
+                        &mut grammar,
+                        &mut next_byte,
+                        choice,
+                        target,
+                        &format!("{name}::{index}"),
+                    )
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(
+            grammar.push_type(crate::TypeDescription::new(
+                "Choice",
+                choice_declaration,
+                TypeShape::Enum {
+                    alternatives: alternatives.clone(),
+                },
+            )),
+            choice,
+        );
+
+        let first_sequences = FirstSequenceAnalysis::for_grammar(&grammar);
+        let alternatives = alternatives
+            .iter()
+            .map(|alternative| (alternative.declaration, alternative.sites.as_slice()))
+            .collect::<Vec<_>>();
+        let resolution = first_sequences
+            .compact_balanced_enum_dispatch(&alternatives)
+            .expect("the shared opener is resolved after its matching close");
+        let pratt_edge = resolution
+            .after_close
+            .root
+            .edges
+            .iter()
+            .find(|edge| edge.kinds.contains(pratt_head_kind))
+            .expect("the Pratt route retains its post-close head");
+        assert_eq!(
+            pratt_edge.next.terminal,
+            Some(CompactDispatchTerminal {
+                declaration: pratt_declaration,
+                on_caller_follow: false,
+            }),
+            "the structurally skipped Pratt NUD must remain crossed after the close",
+        );
+        assert!(
+            pratt_edge.next.edges.is_empty(),
+            "the Pratt route must cut before expanding its declaration-private suffix",
         );
     }
 

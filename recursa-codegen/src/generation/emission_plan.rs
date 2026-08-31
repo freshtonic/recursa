@@ -826,7 +826,7 @@ impl EmissionPlan {
                 }
                 match &application.body {
                     NodeBodyPlan::Enum { variants, dispatch } => {
-                        if dispatch.frozen_sequence_count == 0 {
+                        if dispatch.frozen_sequence_count == 0 && dispatch.balanced.is_none() {
                             return Err(
                                 "the emitted predictive plan has no frozen sequences".to_owned()
                             );
