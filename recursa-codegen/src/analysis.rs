@@ -1068,11 +1068,8 @@ impl<'a> FirstSequenceAnalysis<'a> {
     }
 }
 
-/// Compacts reachable proof nodes and remaps every report reference.
-fn compact_report_proofs(report: &mut AnalysisReport) {
-    #[cfg(test)]
-    REPORT_PROOF_COMPACTIONS.set(REPORT_PROOF_COMPACTIONS.get().saturating_add(1));
-
+/// Collects every proof identity retained by published facts or diagnostics.
+fn report_proof_roots(report: &AnalysisReport) -> Vec<ProofId> {
     let mut roots = Vec::new();
     if let Some(output) = &report.output {
         for positions in &output.first_provenance_by_type {
@@ -1095,8 +1092,15 @@ fn compact_report_proofs(report: &mut AnalysisReport) {
             roots.extend([conflict.witness.left, conflict.witness.right]);
         }
     }
+    roots
+}
 
-    let remap = report.proofs.retain_reachable(roots);
+/// Compacts reachable proof nodes and remaps every report reference.
+fn compact_report_proofs(report: &mut AnalysisReport) {
+    #[cfg(test)]
+    REPORT_PROOF_COMPACTIONS.set(REPORT_PROOF_COMPACTIONS.get().saturating_add(1));
+
+    let remap = report.proofs.retain_reachable(report_proof_roots(report));
     if let Some(output) = &mut report.output {
         for positions in &mut output.first_provenance_by_type {
             for position in positions {
@@ -1150,33 +1154,6 @@ mod analysis_publication_tests {
         ));
         grammar.entry_types.push(token);
         grammar
-    }
-
-    /// Collects every proof identity observable from one analysis report.
-    fn report_proof_roots(report: &AnalysisReport) -> Vec<ProofId> {
-        let mut roots = Vec::new();
-        if let Some(output) = &report.output {
-            for positions in &output.first_provenance_by_type {
-                for position in positions {
-                    roots.extend(position.proof_roots());
-                }
-            }
-            for positions in output.extender_provenance_by_type.iter().flatten() {
-                for position in positions {
-                    roots.extend(position.proof_roots());
-                }
-            }
-            for follow in output.follow_by_type.iter().chain(&output.follow_by_site) {
-                roots.extend(follow.kinds.proof_roots());
-                roots.extend(follow.eof_proof);
-            }
-        }
-        for diagnostic in &report.diagnostics {
-            if let Some(conflict) = &diagnostic.conflict {
-                roots.extend([conflict.witness.left, conflict.witness.right]);
-            }
-        }
-        roots
     }
 
     #[test]

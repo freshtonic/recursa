@@ -24,7 +24,7 @@ fn warnings_publish_one_complete_generation_and_remain_on_the_result() {
 }
 
 #[test]
-fn transient_provenance_preserves_semantic_plan_and_generated_artifact_identity() {
+fn transient_provenance_preserves_semantics_and_normalized_generated_artifacts() {
     let package = tempfile::tempdir().expect("temporary generation-provenance fixture");
     fs::write(
         package.path().join("grammar.rs"),
@@ -78,6 +78,22 @@ fn transient_provenance_preserves_semantic_plan_and_generated_artifact_identity(
             .frozen_dispatch_nodes_consumed,
         compact_plan.instrumentation.frozen_dispatch_nodes_consumed,
     );
+
+    // Each independently joined plan owns a fresh cache identity. First prove that each identity
+    // is propagated coherently, then remove only that value from the generated-byte comparison.
+    for (plan, rendered) in [
+        (&transient_plan, &transient_rendered),
+        (&compact_plan, &compact_rendered),
+    ] {
+        assert!(rendered.root.contains(&plan.identity));
+        assert!(
+            rendered
+                .nodes
+                .iter()
+                .all(|(_, source)| source.contains(&plan.identity))
+        );
+        assert!(rendered.selector.contains(&plan.identity));
+    }
     let transient_root = transient_rendered
         .root
         .replace(&transient_plan.identity, "<generation>");
