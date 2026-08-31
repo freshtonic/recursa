@@ -46,14 +46,79 @@ pub(super) struct FacadeCapability {
     /// Whether the facade provides generated Serde support.
     pub(super) serde: bool,
 }
-/// Hashes the parse plans in their canonical Debug field and source order.
+/// Hashes parse-plan semantic Debug fields in canonical source order without allocation-local spans.
 pub(super) fn parse_plan_identity(nodes: &[NodeParsePlan]) -> u64 {
-    stable_hash(format!("{nodes:?}").as_bytes())
+    canonical_debug_identity(nodes)
 }
 
-/// Hashes one capability plan without erasing Debug field or variant order.
+/// Hashes one capability plan without erasing semantic Debug fields or variant order.
 pub(super) fn plan_family_identity(value: &impl std::fmt::Debug) -> u64 {
-    stable_hash(format!("{value:?}").as_bytes())
+    canonical_debug_identity(value)
+}
+
+/// Hashes semantic Debug structure after removing allocation-local proc-macro span offsets.
+fn canonical_debug_identity(value: &(impl std::fmt::Debug + ?Sized)) -> u64 {
+    let rendered = format!("{value:?}");
+    stable_hash(debug_without_span_offsets(&rendered).as_bytes())
+}
+
+/// Removes `bytes(N..M)` span renderings outside quoted Debug strings.
+///
+/// `syn` includes proc-macro allocation offsets in the derived Debug output for identifiers and
+/// lifetimes. Those offsets change when the same plan is joined again in one process, but do not
+/// describe generated behavior. Span-looking authored strings remain byte-for-byte significant.
+fn debug_without_span_offsets(rendered: &str) -> String {
+    const PREFIX: &[u8] = b"bytes(";
+
+    let input = rendered.as_bytes();
+    let mut output = Vec::with_capacity(input.len());
+    let mut index = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < input.len() {
+        let byte = input[index];
+        if in_string {
+            output.push(byte);
+            index += 1;
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            output.push(byte);
+            index += 1;
+            continue;
+        }
+        if input[index..].starts_with(PREFIX)
+            && let Some(relative_end) = input[index + PREFIX.len()..]
+                .iter()
+                .position(|byte| *byte == b')')
+        {
+            let body_start = index + PREFIX.len();
+            let body_end = body_start + relative_end;
+            let body = &input[body_start..body_end];
+            let separator = body.windows(2).position(|window| window == b"..");
+            if separator.is_some_and(|separator| {
+                !body[..separator].is_empty()
+                    && body[..separator].iter().all(u8::is_ascii_digit)
+                    && !body[separator + 2..].is_empty()
+                    && body[separator + 2..].iter().all(u8::is_ascii_digit)
+            }) {
+                output.extend_from_slice(b"bytes(_)");
+                index = body_end + 1;
+                continue;
+            }
+        }
+        output.push(byte);
+        index += 1;
+    }
+    String::from_utf8(output).expect("normalizing UTF-8 Debug output preserves UTF-8")
 }
 
 /// Returns the compatibility handshake that will be embedded in generated output.
@@ -313,7 +378,7 @@ pub(super) fn capability_plan_from_recipes(
 mod tests {
     use super::{
         EMITTER_IDENTITY, GENERATOR_SOURCE_FINGERPRINT, PRIVATE_PROTOCOL,
-        generation_protocol_identity, generation_protocol_identity_for,
+        debug_without_span_offsets, generation_protocol_identity, generation_protocol_identity_for,
     };
 
     #[test]
@@ -342,5 +407,46 @@ mod tests {
             generation_protocol_identity_for(7, "1111111111111111"),
             generation_protocol_identity_for(7, "2222222222222222")
         );
+    }
+
+    #[test]
+    fn canonical_debug_ignores_spans_without_erasing_span_shaped_authored_text() {
+        let first = r#"Ident { sym: Word, span: bytes(10..14), authored: "bytes(1..2)" }"#;
+        let second = r#"Ident { sym: Word, span: bytes(90..94), authored: "bytes(1..2)" }"#;
+        let changed_text = r#"Ident { sym: Word, span: bytes(10..14), authored: "bytes(3..4)" }"#;
+
+        assert_eq!(
+            debug_without_span_offsets(first),
+            debug_without_span_offsets(second)
+        );
+        assert_ne!(
+            debug_without_span_offsets(first),
+            debug_without_span_offsets(changed_text)
+        );
+    }
+
+    #[test]
+    fn canonical_debug_preserves_escaped_and_malformed_span_shaped_text() {
+        let escaped_first =
+            r#"Node { span: bytes(1..2), text: "quote: \"bytes(3..4)\"; slash: \\bytes(5..6)" }"#;
+        let escaped_second =
+            r#"Node { span: bytes(8..9), text: "quote: \"bytes(3..4)\"; slash: \\bytes(5..6)" }"#;
+        assert_eq!(
+            debug_without_span_offsets(escaped_first),
+            debug_without_span_offsets(escaped_second),
+        );
+        assert!(debug_without_span_offsets(escaped_first).contains(r#"\"bytes(3..4)\""#));
+        assert!(debug_without_span_offsets(escaped_first).contains(r#"\\bytes(5..6)"#));
+
+        for malformed in [
+            "bytes(..2)",
+            "bytes(1..)",
+            "bytes(1.2)",
+            "bytes(x..2)",
+            "bytes(1..y)",
+            "bytes(1..2",
+        ] {
+            assert_eq!(debug_without_span_offsets(malformed), malformed);
+        }
     }
 }

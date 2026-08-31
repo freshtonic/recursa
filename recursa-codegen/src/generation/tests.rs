@@ -24,7 +24,7 @@ fn warnings_publish_one_complete_generation_and_remain_on_the_result() {
 }
 
 #[test]
-fn transient_provenance_preserves_semantics_and_normalized_generated_artifacts() {
+fn transient_provenance_preserves_semantics_identity_and_generated_artifacts() {
     let package = tempfile::tempdir().expect("temporary generation-provenance fixture");
     fs::write(
         package.path().join("grammar.rs"),
@@ -78,54 +78,16 @@ fn transient_provenance_preserves_semantics_and_normalized_generated_artifacts()
             .frozen_dispatch_nodes_consumed,
         compact_plan.instrumentation.frozen_dispatch_nodes_consumed,
     );
-
-    // Each independently joined plan owns a fresh cache identity. First prove that each identity
-    // is propagated coherently, then remove only that value from the generated-byte comparison.
-    for (plan, rendered) in [
-        (&transient_plan, &transient_rendered),
-        (&compact_plan, &compact_rendered),
-    ] {
-        assert!(rendered.root.contains(&plan.identity));
-        assert!(
-            rendered
-                .nodes
-                .iter()
-                .all(|(_, source)| source.contains(&plan.identity))
-        );
-        assert!(rendered.selector.contains(&plan.identity));
-    }
-    let transient_root = transient_rendered
-        .root
-        .replace(&transient_plan.identity, "<generation>");
-    let compact_root = compact_rendered
-        .root
-        .replace(&compact_plan.identity, "<generation>");
-    assert_eq!(transient_root, compact_root);
     assert_eq!(
-        transient_rendered
-            .nodes
-            .iter()
-            .map(|(name, source)| (
-                name,
-                source.replace(&transient_plan.identity, "<generation>")
-            ))
-            .collect::<Vec<_>>(),
-        compact_rendered
-            .nodes
-            .iter()
-            .map(|(name, source)| (name, source.replace(&compact_plan.identity, "<generation>")))
-            .collect::<Vec<_>>(),
+        transient_plan.plan_families.parse, compact_plan.plan_families.parse,
+        "frozen parse identity differs",
     );
+    assert_eq!(transient_plan.identity, compact_plan.identity);
+    assert_eq!(transient_rendered.root, compact_rendered.root);
+    assert_eq!(transient_rendered.nodes, compact_rendered.nodes);
     assert_eq!(
         transient_rendered.node_anchors,
         compact_rendered.node_anchors
     );
-    assert_eq!(
-        transient_rendered
-            .selector
-            .replace(&transient_plan.identity, "<generation>"),
-        compact_rendered
-            .selector
-            .replace(&compact_plan.identity, "<generation>"),
-    );
+    assert_eq!(transient_rendered.selector, compact_rendered.selector);
 }
