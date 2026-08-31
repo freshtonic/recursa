@@ -1146,6 +1146,45 @@ fn diagnostics_use_unicode_scalar_coordinates_semantic_dedup_and_lossless_cargo_
 }
 
 #[test]
+fn cargo_warning_transport_collapses_indistinguishable_semantic_findings() {
+    let warning = |range: std::ops::Range<u32>, origin: &str| {
+        RecursaDiagnostic::new(
+            DiagnosticStage::Analysis,
+            RecursaDiagnosticCode::new("RCA0301"),
+            Severity::Warning,
+            "Pratt use site may consume an active extender from caller FOLLOW",
+            DiagnosticLocation::new(PathBuf::from("grammar.rs"), Some(range)).unwrap(),
+            DiagnosticEvidence::SemanticWitness {
+                subject: "overlapping grammar paths".to_owned(),
+                witness: vec!["NOTNULL".to_owned()],
+            },
+            vec![DiagnosticRemedy::ReviewPrattFollow {
+                site: "Expr::__recursa_attachment_element1".to_owned(),
+                min_bp: 6,
+            }],
+        )
+        .with_order(1, origin)
+    };
+    let report = BuildReport::new(vec![
+        warning(4..8, "logical=expr;attachment=one"),
+        warning(12..16, "logical=expr;attachment=two"),
+    ]);
+    assert_eq!(
+        report.warnings().count(),
+        2,
+        "the structured build report retains distinct semantic origins",
+    );
+
+    let mut cargo = Vec::new();
+    crate::source_analysis::emit_warnings(&report, &mut cargo);
+    assert_eq!(
+        cargo.len(),
+        1,
+        "Cargo must not print indistinguishable warning directives repeatedly",
+    );
+}
+
+#[test]
 fn semantic_dedup_is_not_adjacent_or_summary_dependent() {
     let same_failure = |summary: &str| {
         RecursaDiagnostic::new(
