@@ -820,9 +820,12 @@ pub(super) enum PlannedContainer {
     },
     /// Parses at most one child when its selector matches.
     Optional {
-        /// FIRST set that decides whether the child begins.
+        /// Root FIRST-kind fallback that decides paths omitted from the sparse viability graph.
         selector: ExpectedSet,
-        /// Frozen bounded consume-vs-skip viability, absent only from declaration-only plans.
+        /// Sparse bounded consume-vs-skip overrides when the root selector is insufficient.
+        ///
+        /// This is absent for declaration-only plans and when analysis proves an unrefined
+        /// element FIRST exact-disjoint from static FOLLOW.
         decision: Option<Box<OptionalViabilityDecisionParsePlan>>,
         /// FOLLOW context passed while parsing the child.
         child_follow: PlannedFollow,
@@ -851,7 +854,9 @@ pub(super) enum PlannedContainer {
 }
 
 #[derive(Clone, Debug)]
-/// Generated representation of one frozen optional consume-vs-skip decision.
+/// Generated representation of one sparse frozen optional consume-vs-skip decision.
+///
+/// Missing graph actions deliberately delegate to the optional container's root kind selector.
 pub(super) struct OptionalViabilityDecisionParsePlan {
     /// Root state of the compact optional viability decision graph.
     root: DispatchStateId,
@@ -1550,7 +1555,10 @@ pub(super) fn plan_predictive_dispatch(
     Ok((root, states))
 }
 
-/// Joins a source-independent optional viability decision trie to runtime-width token expectations.
+/// Joins sparse optional viability overrides to runtime-width token expectations.
+///
+/// The resulting graph retains exact override/defer paths only. An action omitted by the frozen
+/// graph remains a deliberate delegation to the optional container's root kind selector.
 fn plan_optional_viability_decision(
     frozen: &crate::OptionalViabilityDecision,
     atom_index: &ExpectedAtomIndex,
@@ -6062,15 +6070,15 @@ pub(super) fn render_optional_fixed_group_parse(
     }
 }
 
-/// Emits compact table-driven traversal of one optional consume-vs-skip decision.
+/// Emits compact table-driven traversal of sparse optional consume-vs-skip overrides.
 ///
 /// # Long-function contract
 ///
 /// Rationale: the shared packed width, table offsets, decoder, and traversal must be derived from
 /// one canonical registry so emitted cells cannot drift between separately rendered fragments.
 /// Invariants: every state has four cells, every edge has two cells, edge predicates are exact and
-/// disjoint, traversal never consumes input, and caller FOLLOW is tested only at the current depth
-/// after all outgoing edges fail.
+/// disjoint, traversal never consumes input, a missing action delegates to the root kind selector,
+/// and caller FOLLOW is tested only at the current depth after all outgoing edges fail.
 /// Phases: interns expected positions, flattens graph tables, selects one shared packed width,
 /// renders the position decoder, then emits the bounded consume-or-skip traversal.
 fn render_optional_viability_decision_selection(
