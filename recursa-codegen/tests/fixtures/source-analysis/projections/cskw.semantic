@@ -96,6 +96,7 @@ container cskw::Col::element0 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":p
 container cskw::Col::element1 Optional element=[fixed:AS] separator=- separator-first=[] trailing=false stop=caller
   transition Start --ParseElement/static[fixed:AS]--> Done
   transition Start --Stop/caller--> Done
+  optional-decision depth=1 sequences=2 trie=(terminals=[Skip@caller-follow] edges=[fixed:AS=>(terminals=[Consume] edges=[])])
 container cskw::AsAlias::element0 Direct element=[fixed:AS] separator=- separator-first=[] trailing=false stop=static[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None]
   transition Start --ParseElement/static[fixed:AS]--> Done
 container cskw::AsAlias::element1 Direct element=[content:"[a-zA-Z_][a-zA-Z0-9_]*":priority=None] separator=- separator-first=[] trailing=false stop=caller

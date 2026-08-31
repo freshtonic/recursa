@@ -701,6 +701,8 @@ pub(super) enum PlannedContainer {
     Optional {
         /// FIRST set that decides whether the child begins.
         selector: ExpectedSet,
+        /// Frozen bounded consume-vs-skip viability, absent only from declaration-only plans.
+        decision: Option<Box<OptionalDecisionParsePlan>>,
         /// FOLLOW context passed while parsing the child.
         child_follow: PlannedFollow,
     },
@@ -725,6 +727,37 @@ pub(super) enum PlannedContainer {
         /// Failure when a separator is not followed by an element.
         after_separator_failure: Option<Box<PlannedFollow>>,
     },
+}
+
+#[derive(Clone, Debug)]
+/// Generated representation of one frozen optional consume-vs-skip decision.
+pub(super) struct OptionalDecisionParsePlan {
+    /// Root state of the compact optional-decision graph.
+    root: DispatchStateId,
+    /// Canonical graph states; structurally shared suffixes occur once.
+    states: Vec<OptionalDecisionNodeParsePlan>,
+    /// Trie-node count retained for validation.
+    frozen_node_count: usize,
+    /// Deterministic identity of the joined decision graph.
+    frozen_identity: u64,
+}
+
+#[derive(Clone, Debug)]
+/// One generated state in an optional consume-vs-skip decision graph.
+pub(super) struct OptionalDecisionNodeParsePlan {
+    /// Ordered caller-dependent and unconditional actions at this prefix.
+    terminals: Vec<OptionalDecisionTerminalParsePlan>,
+    /// Pairwise-disjoint exact token/text partitions extending this prefix.
+    edges: Vec<DispatchTrieEdgePlan>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One generated optional action with its caller-FOLLOW condition.
+pub(super) struct OptionalDecisionTerminalParsePlan {
+    /// Consume or skip action selected at this terminal.
+    action: crate::OptionalAction,
+    /// Whether the action is available only through caller FOLLOW.
+    on_caller_follow: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1064,9 +1097,20 @@ fn collect_container_expected_sets(
         }
         PlannedContainer::Optional {
             selector,
+            decision,
             child_follow,
         } => {
             values.insert(selector.clone());
+            if let Some(decision) = decision {
+                for state in &decision.states {
+                    values.extend(
+                        state
+                            .edges
+                            .iter()
+                            .map(|edge| edge.position.expected.clone()),
+                    );
+                }
+            }
             collect_follow_expected_set(child_follow, values);
         }
         PlannedContainer::Repeated {
@@ -1383,6 +1427,121 @@ pub(super) fn plan_predictive_dispatch(
     )?;
     instrumentation.frozen_dispatch_nodes_consumed += states.len();
     Ok((root, states))
+}
+
+/// Joins a source-independent optional-decision trie to runtime-width token expectations.
+fn plan_optional_decision(
+    frozen: &crate::OptionalDecision,
+    atom_index: &ExpectedAtomIndex,
+    kind_count: usize,
+) -> Result<OptionalDecisionParsePlan, String> {
+    fn intern(
+        frozen: &crate::OptionalDecisionNode,
+        atom_index: &ExpectedAtomIndex,
+        kind_count: usize,
+        states: &mut Vec<OptionalDecisionNodeParsePlan>,
+        memo: &mut BTreeMap<(Vec<crate::OptionalDecisionTerminal>, usize, usize), DispatchStateId>,
+    ) -> Result<DispatchStateId, String> {
+        let key = (
+            frozen.terminals().to_vec(),
+            frozen.edges().as_ptr() as usize,
+            frozen.edges().len(),
+        );
+        if let Some(state) = memo.get(&key) {
+            return Ok(*state);
+        }
+        let terminals = frozen
+            .terminals()
+            .iter()
+            .map(|terminal| OptionalDecisionTerminalParsePlan {
+                action: terminal.action(),
+                on_caller_follow: terminal.on_caller_follow(),
+            })
+            .collect();
+        let edges = frozen
+            .edges()
+            .iter()
+            .map(|edge| {
+                Ok(DispatchTrieEdgePlan {
+                    position: planned_dispatch_position(edge.position(), atom_index, kind_count)?,
+                    next: intern(edge.next(), atom_index, kind_count, states, memo)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let state = DispatchStateId(states.len());
+        states.push(OptionalDecisionNodeParsePlan { terminals, edges });
+        memo.insert(key, state);
+        Ok(state)
+    }
+
+    let mut states = Vec::new();
+    let root = intern(
+        frozen.trie(),
+        atom_index,
+        kind_count,
+        &mut states,
+        &mut BTreeMap::new(),
+    )?;
+    let frozen_node_count = states.len();
+    let frozen_identity = optional_decision_identity(root, &states);
+    let plan = OptionalDecisionParsePlan {
+        root,
+        states,
+        frozen_node_count,
+        frozen_identity,
+    };
+    validate_optional_decision_parse_plan(&plan)?;
+    Ok(plan)
+}
+
+/// Computes the deterministic identity of one generated optional-decision graph.
+fn optional_decision_identity(
+    root: DispatchStateId,
+    states: &[OptionalDecisionNodeParsePlan],
+) -> u64 {
+    stable_hash(format!("{root:?}:{states:?}").as_bytes())
+}
+
+/// Rejects malformed or stale optional-decision graph structure before rendering.
+fn validate_optional_decision_parse_plan(
+    decision: &OptionalDecisionParsePlan,
+) -> Result<(), String> {
+    fn visit(
+        state: DispatchStateId,
+        states: &[OptionalDecisionNodeParsePlan],
+        visited: &mut BTreeSet<DispatchStateId>,
+    ) -> Result<(), String> {
+        let node = states
+            .get(state.index())
+            .ok_or_else(|| "frozen optional decision references an unknown state".to_owned())?;
+        if !visited.insert(state) {
+            return Ok(());
+        }
+        if node.terminals.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err("frozen optional decision contains a duplicate terminal".to_owned());
+        }
+        if node.edges.iter().enumerate().any(|(index, edge)| {
+            node.edges[index + 1..]
+                .iter()
+                .any(|other| other.position == edge.position)
+        }) {
+            return Err("frozen optional decision contains duplicate edges".to_owned());
+        }
+        for edge in &node.edges {
+            visit(edge.next, states, visited)?;
+        }
+        Ok(())
+    }
+
+    let mut visited = BTreeSet::new();
+    visit(decision.root, &decision.states, &mut visited)?;
+    if visited.len() != decision.frozen_node_count
+        || decision.frozen_node_count != decision.states.len()
+        || optional_decision_identity(decision.root, &decision.states) != decision.frozen_identity
+    {
+        return Err("the joined optional decision diverges from its frozen identity".to_owned());
+    }
+    Ok(())
 }
 
 /// Computes the deterministic identity used to validate a predictive graph.
@@ -2273,6 +2432,7 @@ pub(super) fn declaration_container(
         },
         ContainerOperation::Optional => PlannedContainer::Optional {
             selector: ExpectedSet::empty(kind_count),
+            decision: None,
             child_follow: PlannedFollow::Caller,
         },
         operation @ (ContainerOperation::ZeroOrMore
@@ -4149,6 +4309,13 @@ pub(super) fn planned_container(
         },
         ContainerOperation::Optional => PlannedContainer::Optional {
             selector: element_selector,
+            decision: Some(Box::new(plan_optional_decision(
+                machine.optional_decision().ok_or_else(|| {
+                    "an optional container lacks its frozen viability decision".to_owned()
+                })?,
+                atom_index,
+                kind_count,
+            )?)),
             child_follow: stop,
         },
         operation @ (ContainerOperation::ZeroOrMore
@@ -5767,6 +5934,158 @@ pub(super) fn render_optional_fixed_group_parse(
     }
 }
 
+/// Emits compact table-driven traversal of one optional consume-vs-skip decision.
+fn render_optional_decision_selection(
+    plan: &EmissionPlan,
+    node_index: usize,
+    unique_index: usize,
+    decision: &OptionalDecisionParsePlan,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    let module_anchor = &plan.module_anchor;
+    let state = format_ident!("__recursa_optional_decision_state_{unique_index}");
+    let depth = format_ident!("__recursa_optional_decision_depth_{unique_index}");
+    let states_name =
+        format_ident!("__RECURSA_OPTIONAL_DECISION_STATES_{node_index}_{unique_index}");
+    let edges_name = format_ident!("__RECURSA_OPTIONAL_DECISION_EDGES_{node_index}_{unique_index}");
+    let positions_name =
+        format_ident!("__RECURSA_OPTIONAL_DECISION_POSITIONS_{node_index}_{unique_index}");
+    let spellings_name =
+        format_ident!("__RECURSA_OPTIONAL_DECISION_SPELLINGS_{node_index}_{unique_index}");
+    let decoder_name =
+        format_ident!("__recursa_decode_optional_decision_{node_index}_{unique_index}");
+    let position_dispatcher =
+        format_ident!("__recursa_optional_decision_position_{node_index}_{unique_index}");
+    let mut position_registry = BTreeMap::<DispatchPositionPlan, usize>::new();
+    let mut positions = Vec::new();
+    let mut edge_values = Vec::new();
+    let mut state_values = Vec::with_capacity(decision.states.len() * 4);
+    let encode_action = |action: crate::OptionalAction| match action {
+        crate::OptionalAction::Consume => 1usize,
+        crate::OptionalAction::Skip => 2usize,
+    };
+    for node in &decision.states {
+        let mut caller_action = 0usize;
+        let mut unconditional_action = 0usize;
+        for terminal in &node.terminals {
+            if terminal.on_caller_follow {
+                caller_action = encode_action(terminal.action);
+            } else {
+                unconditional_action = encode_action(terminal.action);
+            }
+        }
+        let edge_start = edge_values.len() / 2;
+        for edge in &node.edges {
+            let position = if let Some(position) = position_registry.get(&edge.position) {
+                *position
+            } else {
+                let position = positions.len();
+                let expected_index = plan
+                    .expected_sets
+                    .id(&edge.position.expected)
+                    .expect("validated optional expectation belongs to the grammar-wide pool");
+                positions.push((edge.position.clone(), expected_index));
+                position_registry.insert(edge.position.clone(), position);
+                position
+            };
+            edge_values.extend([position, edge.next.index()]);
+        }
+        let edge_end = edge_values.len() / 2;
+        state_values.extend([
+            caller_action,
+            unconditional_action,
+            edge_start,
+            edge_end - edge_start,
+        ]);
+    }
+    let encoded_positions = encode_dispatch_positions(
+        plan.text_equivalence,
+        &positions
+            .iter()
+            .map(|(position, expected_index)| (*expected_index, position.text_predicate.clone()))
+            .collect::<Vec<_>>(),
+    );
+    let mut packed_values = state_values.clone();
+    packed_values.extend(&edge_values);
+    packed_values.extend(&encoded_positions.table);
+    let (packed_width, _) = packed_table(&packed_values);
+    let (_, states_literal) = packed_table_with_width(&state_values, packed_width);
+    let (_, edges_literal) = packed_table_with_width(&edge_values, packed_width);
+    let (_, positions_literal) = packed_table_with_width(&encoded_positions.table, packed_width);
+    let (position_items, position_call) = render_position_dispatch(
+        facade,
+        module_anchor,
+        &position_dispatcher,
+        &decoder_name,
+        &positions_name,
+        &spellings_name,
+        &positions_literal,
+        packed_width,
+        &encoded_positions.spellings,
+        &depth,
+        "frozen optional decision reached an unknown position",
+    );
+    let decoder_range = render_packed_cell_range(packed_width);
+    let state_row_end = render_packed_row_end(4, packed_width);
+    let root = decision.root.index();
+    quote! {{
+        #position_items
+        fn #decoder_name(table: &[u8], slot: usize) -> usize {
+            table[#decoder_range]
+                .iter()
+                .copied()
+                .fold(0usize, |value, byte| {
+                    let digit = match byte {
+                        b'A'..=b'Z' => usize::from(byte - b'A'),
+                        b'a'..=b'z' => usize::from(byte - b'a') + 26,
+                        b'0'..=b'9' => usize::from(byte - b'0') + 52,
+                        b'-' => 62,
+                        b'_' => 63,
+                        _ => unreachable!("generated packed optional-decision table is invalid"),
+                    };
+                    (value << 6) | digit
+                })
+        }
+        static #states_name: &[u8] = #states_literal;
+        static #edges_name: &[u8] = #edges_literal;
+        let mut #state = #root;
+        let mut #depth = 0usize;
+        '__recursa_optional_decision: loop {
+            let state_slot = #state
+                .checked_mul(4)
+                .filter(|slot| #state_row_end <= #states_name.len())
+                .unwrap_or_else(|| {
+                    unreachable!("frozen optional decision reached an unknown state")
+                });
+            let caller_action = #decoder_name(#states_name, state_slot);
+            let unconditional_action = #decoder_name(#states_name, state_slot + 1);
+            let edge_start = #decoder_name(#states_name, state_slot + 2);
+            let edge_count = #decoder_name(#states_name, state_slot + 3);
+            for edge in edge_start..edge_start + edge_count {
+                let position = #decoder_name(#edges_name, edge * 2);
+                let next = #decoder_name(#edges_name, edge * 2 + 1);
+                if #position_call {
+                    #state = next;
+                    #depth += 1;
+                    continue '__recursa_optional_decision;
+                }
+            }
+            if caller_action != 0
+                && (context.peek(#depth).is_none()
+                    || context
+                        .peek(#depth)
+                        .is_some_and(|record| context.follow().contains(record.kind)))
+            {
+                break Some(caller_action == 1);
+            }
+            if unconditional_action != 0 {
+                break Some(unconditional_action == 1);
+            }
+            break None;
+        }
+    }}
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Emits parsing, capture, and storage for one semantic field.
 ///
@@ -5879,9 +6198,16 @@ pub(super) fn render_semantic_parse(
         }
         PlannedContainer::Optional {
             selector,
+            decision,
             child_follow,
         } => {
             let selector = render_expected_set(plan, selector);
+            let decision = decision
+                .as_deref()
+                .map(|decision| {
+                    render_optional_decision_selection(plan, node_index, unique_index, decision)
+                })
+                .unwrap_or_else(|| quote!(None));
             let follow_name = expected_static(node_index, unique_index, "child_follow");
             let (follow_definition, follow_value) =
                 render_follow_value(plan, &follow_name, child_follow);
@@ -5919,7 +6245,9 @@ pub(super) fn render_semantic_parse(
             );
             quote! {
                 #follow_definition
-                let (#value, #occurrence) = if context.next_is(&#selector) {
+                let (#value, #occurrence) = if #decision
+                    .unwrap_or_else(|| context.next_is(&#selector))
+                {
                     let element_start = context.cursor();
                     #attachment_definitions
                     let (parsed_value, child_occurrence) = #parse_child?.into_parts();

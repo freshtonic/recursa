@@ -28,6 +28,10 @@ recursa::tokens! {
         SELECT => "SELECT",
         UNION => "UNION",
         END => "END",
+        WITH => "WITH",
+        TIME => "TIME",
+        ZONE => "ZONE",
+        UNIQUE => "UNIQUE",
     }
     punctuation {
         LPAREN => "(",
@@ -171,6 +175,20 @@ pub struct Column<'input> {
 pub struct AsAlias<'input> {
     #[tok(AS)]
     pub alias: Rest<'input>,
+}
+
+#[derive(recursa::Node)]
+#[tok(WITH, TIME, ZONE)]
+pub struct TimeZoneQualifier;
+
+#[derive(recursa::Node)]
+#[tok(WITH, UNIQUE)]
+pub struct WithUnique;
+
+#[derive(recursa::Node)]
+pub struct OptionalTimeZoneBeforeUnique {
+    pub time_zone: Option<TimeZoneQualifier>,
+    pub unique: WithUnique,
 }
 
 #[derive(recursa::Node)]

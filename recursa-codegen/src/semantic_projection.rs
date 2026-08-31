@@ -340,6 +340,55 @@ fn render_container_machine(
         )
         .expect("writing to a String cannot fail");
     }
+    if let Some(decision) = machine.optional_decision() {
+        write!(
+            rendered,
+            "  optional-decision depth={} sequences={} trie=",
+            decision.required_lookahead(),
+            decision.frozen_sequence_count(),
+        )
+        .expect("writing to a String cannot fail");
+        render_optional_decision_node(rendered, decision.trie(), grammar);
+        rendered.push('\n');
+    }
+}
+
+/// Appends one optional consume-vs-skip trie in canonical semantic order.
+fn render_optional_decision_node(
+    rendered: &mut String,
+    node: &crate::OptionalDecisionNode,
+    grammar: &crate::GrammarDescription,
+) {
+    rendered.push_str("(terminals=[");
+    for (index, terminal) in node.terminals().iter().enumerate() {
+        if index != 0 {
+            rendered.push(',');
+        }
+        write!(rendered, "{:?}", terminal.action()).expect("writing to a String cannot fail");
+        if terminal.on_caller_follow() {
+            rendered.push_str("@caller-follow");
+        }
+    }
+    rendered.push_str("] edges=[");
+    for (index, edge) in node.edges().iter().enumerate() {
+        if index != 0 {
+            rendered.push(',');
+        }
+        let kinds = edge
+            .position()
+            .kinds()
+            .iter()
+            .map(|kind| grammar.kinds[kind.index()].name.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        rendered.push_str(&kinds);
+        if let Some(predicate) = edge.position().text_predicate() {
+            write!(rendered, "@{predicate:?}").expect("writing to a String cannot fail");
+        }
+        rendered.push_str("=>");
+        render_optional_decision_node(rendered, edge.next(), grammar);
+    }
+    rendered.push_str("])");
 }
 
 /// Appends one parser failure edge and its expectation recipe.

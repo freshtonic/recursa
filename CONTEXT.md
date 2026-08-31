@@ -217,6 +217,10 @@ _Avoid_: Arbitrary punctuation pair, runtime delimiter heuristic
 A frozen predictive selection strategy for an otherwise unbounded shared opener prefix. Analysis proves the enclosed language balanced for one delimiter pair and freezes the residual post-close trie; generated parsing only counts that pair's nesting and executes the frozen residual decision.
 _Avoid_: Bounded FIRST expansion, runtime grammar rediscovery
 
+**Optional viability decision**:
+A frozen predictive consume-or-skip strategy for one optional parse site. Analysis compares one occurrence plus the owning sequence tail against that tail alone, retaining exact token-text partitions and an explicit caller-FOLLOW fallback; generated parsing only executes the frozen decision.
+_Avoid_: Trial parsing, first-token optional commitment
+
 **Parse plan**:
 The immutable executable plan for parsing one materialized grammar type, formed by joining source-independent semantic decisions with source construction and capture facts. Generation renders it without rediscovering grammar semantics.
 _Avoid_: Generated parse body, analysis facts
