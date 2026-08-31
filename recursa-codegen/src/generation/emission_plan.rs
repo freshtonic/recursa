@@ -669,14 +669,33 @@ impl EmissionPlan {
             resolved.build_inputs.discovery.edition,
             resolved.build_inputs.discovery.cfg_snapshot,
         );
-        for source in &resolved.tree.files {
-            canonical.push_str(&format!(
-                ";source={}:{}:{:016x}",
-                source.id.index(),
-                source.path.display(),
-                stable_hash(source.text.as_bytes())
-            ));
-        }
+        // Raw source text stays out of the identity: hashing it relocates the whole
+        // immutable Generation on semantically neutral edits (comments, inline test
+        // modules), which defeats downstream incremental compilation of the include
+        // tree. The span-stripped family identities and explicit plan facts below
+        // cover every semantic input rendering consumes; publication still verifies
+        // byte-for-byte payload equality whenever an identity is reused.
+        canonical.push_str(&format!(
+            ";families=configured_traits:{:016x},private_abi:{:016x},capabilities:{:016x},pretty:{:?},diagrams:{:?},explorer:{:?}",
+            plan_families.configured_traits,
+            plan_families.private_abi,
+            plan_families.capabilities,
+            plan_families.pretty,
+            plan_families.diagrams,
+            plan_families.explorer,
+        ));
+        canonical.push_str(&format!(
+            ";grammar={:?}:{:?};pretty_defaults={}x{};lexical_error_kind={lexical_error_kind}",
+            lowered.grammar.name,
+            lowered.grammar.text_equivalence,
+            resolved.build_inputs.pretty.max_width,
+            resolved.build_inputs.pretty.indent,
+        ));
+        canonical.push_str(&format!(
+            ";kind_tables={:016x};atom_names={:016x}",
+            plan_family_identity(&(&kind_variants, &kind_static_texts, &kind_names)),
+            plan_family_identity(&atom_names),
+        ));
         for node in &nodes {
             canonical.push_str(&format!(
                 ";node={}:{}:{}:{}",
@@ -693,11 +712,13 @@ impl EmissionPlan {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>();
             canonical.push_str(&format!(
-                ";token={}:{}:{}:{:?}",
+                ";token={}:{}:{}:{:?}:{}:{}",
                 token.ident,
                 token.kind,
                 token.capture.canonical_name(),
                 accepted_kind_variants,
+                token.kind_variant,
+                token.arbitrary_spelling,
             ));
         }
         for binding in &token_bindings {
