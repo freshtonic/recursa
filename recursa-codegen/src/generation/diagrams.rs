@@ -560,7 +560,11 @@ fn diagram_sequence(
                     let label = diagram_terminal_name(ty, lowered)?;
                     let reference = closed_type_targets_node(ty);
                     let node = if let Some(value) = attachment {
-                        diagram_attachment_unit(non_terminal(label, reference, links), value, lowered)?
+                        diagram_attachment_unit(
+                            non_terminal(label, reference, links),
+                            value,
+                            lowered,
+                        )?
                     } else {
                         non_terminal(label, reference, links)
                     };
