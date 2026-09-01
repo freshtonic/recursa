@@ -5,7 +5,11 @@ recursa::grammar! {
 }
 
 recursa::tokens! {
-    ignore = r"[ \t\n\r]+|--[^\n]+",
+    trivia {
+        Whitespace => r"[ \t\n\r]+",
+        LineComment => r"--[^\n]+",
+        BlockComment => nested(opener = "/*", closer = "*/"),
+    }
     categories { UNRESERVED, RESERVED }
     flags { bare_label }
     keywords {
@@ -61,9 +65,6 @@ recursa::tokens! {
         PriorityHigh => physical_line(prefix = r"§", priority = 2),
         PriorityHighFirst => physical_line(prefix = r"¤", priority = 2),
         PriorityLowSecond => physical_line(prefix = r"¤", priority = 1),
-    }
-    ignore {
-        BlockComment => nested(opener = "/*", closer = "*/"),
     }
 }
 

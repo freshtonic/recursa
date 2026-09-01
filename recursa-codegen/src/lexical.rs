@@ -210,13 +210,13 @@ impl LexicalPlan {
                 &left.matcher,
                 &left.closed_matcher,
                 lexical_priority_projection_key(left.priority),
-                left.outcome,
+                &left.outcome,
             )
                 .cmp(&(
                     &right.matcher,
                     &right.closed_matcher,
                     lexical_priority_projection_key(right.priority),
-                    right.outcome,
+                    &right.outcome,
                 ))
         });
         for rule in non_token_rules {
@@ -537,11 +537,16 @@ pub(crate) struct NonTokenLexicalRule {
     pub(crate) sites: NonEmpty<SourceSite>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Classifies the non token lexical outcome alternatives recognized by lexical planning.
 pub(crate) enum NonTokenLexicalOutcome {
     /// Selects the non emitting lexical alternative.
     NonEmitting,
+    /// Selects an immutable classified-trivia record outside significant parsing.
+    RetainedTrivia {
+        /// Authored grammar-local trivia classification.
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -906,6 +911,8 @@ pub(crate) enum LexicalPatternOutcome {
     EmitsTokenKind,
     /// Selects the non emitting lexical alternative.
     NonEmitting,
+    /// Selects a classified trivia record excluded from significant parsing.
+    RetainedTrivia,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -953,7 +960,7 @@ fn non_token_rule_groups(source: &SourceModeledGrammar) -> Vec<NonTokenRuleGroup
                 pattern: record.pattern.clone(),
                 closed_matcher: record.closed_matcher.clone(),
                 authored_priority: record.priority,
-                outcome: record.outcome,
+                outcome: record.outcome.clone(),
                 sites: NonEmpty::new(record.site.clone()),
             });
         }
@@ -968,32 +975,36 @@ fn non_token_rule_groups(source: &SourceModeledGrammar) -> Vec<NonTokenRuleGroup
             &left.pattern,
             &left.closed_matcher,
             left.authored_priority,
-            non_token_source_outcome_key(left.outcome),
+            non_token_source_outcome_key(&left.outcome),
         )
             .cmp(&(
                 &right.pattern,
                 &right.closed_matcher,
                 right.authored_priority,
-                non_token_source_outcome_key(right.outcome),
+                non_token_source_outcome_key(&right.outcome),
             ))
     });
     groups
 }
 
 /// Derives the non token source outcome key under the grammar keyword and lexical-selection policies.
-const fn non_token_source_outcome_key(outcome: crate::source_model::NonTokenLexerOutcome) -> u8 {
+fn non_token_source_outcome_key(outcome: &crate::source_model::NonTokenLexerOutcome) -> (u8, &str) {
     match outcome {
-        crate::source_model::NonTokenLexerOutcome::NonEmitting => 0,
+        crate::source_model::NonTokenLexerOutcome::NonEmitting => (0, ""),
+        crate::source_model::NonTokenLexerOutcome::RetainedTrivia { name } => (1, name),
     }
 }
 
 /// Plans non token outcome.
-const fn plan_non_token_outcome(
+fn plan_non_token_outcome(
     outcome: crate::source_model::NonTokenLexerOutcome,
 ) -> NonTokenLexicalOutcome {
     match outcome {
         crate::source_model::NonTokenLexerOutcome::NonEmitting => {
             NonTokenLexicalOutcome::NonEmitting
+        }
+        crate::source_model::NonTokenLexerOutcome::RetainedTrivia { name } => {
+            NonTokenLexicalOutcome::RetainedTrivia { name }
         }
     }
 }
@@ -1660,9 +1671,12 @@ fn lexical_diagnostics(
                 authored_priority: group.authored_priority,
                 priority_authorable: group.closed_matcher.is_some(),
                 final_extent: closed_pattern_final_extent(group.closed_matcher.as_ref()),
-                outcome: match group.outcome {
+                outcome: match &group.outcome {
                     crate::source_model::NonTokenLexerOutcome::NonEmitting => {
                         LexicalPatternOutcome::NonEmitting
+                    }
+                    crate::source_model::NonTokenLexerOutcome::RetainedTrivia { .. } => {
+                        LexicalPatternOutcome::RetainedTrivia
                     }
                 },
                 sites: group.sites.iter().cloned().collect(),
