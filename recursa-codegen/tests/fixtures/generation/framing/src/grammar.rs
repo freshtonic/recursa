@@ -40,6 +40,18 @@ pub enum Entry<'input> {
     CopyFromStdin(Name<'input>),
     #[tok(PUT, LPAREN, this, RPAREN)]
     Nested(Pair<'input>),
+    Tagged(TagTriple<'input>),
+}
+
+// Three declared semantic targets share one content base kind.
+#[derive(recursa::Node)]
+pub struct TagTriple<'input> {
+    #[lex(pattern = r"[A-Z]+")]
+    pub tag: TagName<'input>,
+    #[lex(pattern = r"[A-Z]+")]
+    pub value: TagValue<'input>,
+    #[lex(pattern = r"[A-Z]+")]
+    pub unit: TagUnit<'input>,
 }
 
 #[derive(recursa::Node)]

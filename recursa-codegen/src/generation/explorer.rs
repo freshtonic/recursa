@@ -33,6 +33,10 @@ mod tests {
     fn explorer_method_collisions_are_rejected_at_the_emission_plan_seam() {
         test_support::explorer_method_collisions_are_rejected_at_the_emission_plan_seam();
     }
+    #[test]
+    fn explorer_generation_supports_semantic_targets_sharing_a_base_kind() {
+        test_support::explorer_generation_supports_semantic_targets_sharing_a_base_kind();
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,8 +116,11 @@ pub(super) struct ExplorerCapabilityPlan {
 pub(super) struct ExplorerTokenPlan {
     /// Grammar-local numeric kind used only to align static metadata.
     pub(super) kind_index: u16,
-    /// Content-token identity, or `None` for fixed syntax.
-    pub(super) semantic: Option<ContentTokenId>,
+    /// Every content-token identity lexed as this kind, empty for fixed syntax.
+    ///
+    /// Multiple declared semantic targets may share one content base kind; they all
+    /// resolve to this kind-level schema entry.
+    pub(super) semantics: Vec<ContentTokenId>,
     /// Grammar-local token display name.
     pub(super) name: String,
     /// Collision-free schema identity within the selected grammar.
@@ -444,12 +451,13 @@ pub(super) fn explorer_token_plans(
                 .map_err(|_| "an explorer token kind exceeds runtime width".to_owned())?;
             let name = variant.unraw().to_string();
             let qualified_name = format!("{}::{name}", lowered.grammar.name);
-            let semantic = lowered
+            let semantics = lowered
                 .lexical_plan
                 .parser_targets
                 .iter()
-                .find(|target| target.base_kind == kind.id)
-                .map(|target| target.semantic);
+                .filter(|target| target.base_kind == kind.id)
+                .map(|target| target.semantic)
+                .collect::<Vec<_>>();
             let (token_kind, canonical_text, highlight, display) = match &kind.identity {
                 TokenKindIdentity::Fixed(spelling) => {
                     let highlight = if lowered
@@ -484,7 +492,7 @@ pub(super) fn explorer_token_plans(
             };
             Ok(ExplorerTokenPlan {
                 kind_index,
-                semantic,
+                semantics,
                 name,
                 qualified_name,
                 kind_name: lowered.grammar.kinds[kind.id.index()].name.clone(),
@@ -1546,7 +1554,7 @@ pub(super) fn render_token_explorer(
     let explorer = explorer_plan
         .tokens
         .iter()
-        .find(|candidate| candidate.semantic == Some(token.semantic))
+        .find(|candidate| candidate.semantics.contains(&token.semantic))
         .expect("typed explorer plan retains every content token");
     let schema = explorer_token_schema_static(explorer.kind_index);
     match explorer.display {
@@ -3183,6 +3191,9 @@ pub(super) fn explorer_application_schema_static(
 }
 
 /// Resolves the static schema name for a semantic content token.
+///
+/// The resolution is kind-level: every semantic target sharing one content base kind
+/// reaches the same kind schema static, so the lookup is total by construction.
 pub(super) fn explorer_content_token_schema_static(
     explorer: &ExplorerPlan,
     token: ContentTokenId,
@@ -3190,7 +3201,7 @@ pub(super) fn explorer_content_token_schema_static(
     let kind_index = explorer
         .tokens
         .iter()
-        .find(|candidate| candidate.semantic == Some(token))
+        .find(|candidate| candidate.semantics.contains(&token))
         .expect("typed explorer target retains its content token")
         .kind_index;
     explorer_token_schema_static(kind_index)
