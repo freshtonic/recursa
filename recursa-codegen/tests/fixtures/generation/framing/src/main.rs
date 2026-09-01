@@ -287,23 +287,73 @@ fn main() {
         .any(|part| matches!(part, grammar::RecoveredPart::Unresolved(_))));
     assert_owned_once(unrelated_source, unrelated.parts().map(|part| part.span()));
 
+    // A final island that parses strictly to end of input without its
+    // boundary is Complete and keeps its authored value.
+    let final_island_source = "put 'one'";
+    let final_island = grammar::Entry::frame(final_island_source)
+        .expect("a strict boundary-less final island has valid ownership");
+    let grammar::FrameResult::Complete(final_island) = final_island else {
+        panic!("a strict boundary-less final island must frame complete")
+    };
+    assert_eq!(final_island.render_exact(), final_island_source);
+    let final_typed = final_island.typed_islands().collect::<Vec<_>>();
+    assert_eq!(final_typed.len(), 1);
+    assert_eq!(
+        final_typed[0].source().expect("final island provenance"),
+        "put 'one'",
+    );
+    assert_owned_once(
+        final_island_source,
+        final_island.parts().map(|part| part.span()),
+    );
+
+    // Earlier bounded islands and a strict boundary-less final island agree.
+    let mixed_final_source = "put 'a';\r\nput 'b'";
+    let mixed_final = grammar::Entry::frame(mixed_final_source)
+        .expect("a mixed document with a strict final island has valid ownership");
+    let grammar::FrameResult::Complete(mixed_final) = mixed_final else {
+        panic!("a strict boundary-less final island must not erase earlier islands")
+    };
+    assert_eq!(mixed_final.render_exact(), mixed_final_source);
+    assert_eq!(
+        mixed_final
+            .typed_islands()
+            .map(|parsed| parsed.source().expect("mixed final island provenance"))
+            .collect::<Vec<_>>(),
+        ["put 'a';", "put 'b'"],
+    );
+    assert_owned_once(mixed_final_source, mixed_final.parts().map(|part| part.span()));
+
+    // An earlier failure still erases a strict boundary-less final island.
+    let failed_then_final_source = "broken;\nput 'later'";
+    let failed_then_final = grammar::Entry::frame(failed_then_final_source)
+        .expect("an earlier island failure is recoverable");
+    let grammar::FrameResult::Recovered(failed_then_final) = failed_then_final else {
+        panic!("an earlier island failure cannot frame complete")
+    };
+    assert_eq!(failed_then_final.render_exact(), failed_then_final_source);
+    assert_eq!(failed_then_final.islands().count(), 2);
+    assert_owned_once(
+        failed_then_final_source,
+        failed_then_final.parts().map(|part| part.span()),
+    );
+
     let trailing_trivia_source = "put 'one' \r\n-- trailing";
     let trailing_trivia = grammar::Entry::frame(trailing_trivia_source)
         .expect("trailing trivia has deterministic EOF-gap ownership");
-    let grammar::FrameResult::Recovered(trailing_trivia) = trailing_trivia else {
-        panic!("a missing island boundary cannot be complete")
+    let grammar::FrameResult::Complete(trailing_trivia) = trailing_trivia else {
+        panic!("trailing trivia after a strict final island must frame complete")
     };
+    assert_eq!(trailing_trivia.render_exact(), trailing_trivia_source);
     let trailing_parts = trailing_trivia.parts().collect::<Vec<_>>();
     assert_eq!(trailing_parts.len(), 2);
-    assert!(matches!(trailing_parts[0], grammar::RecoveredPart::Island(_)));
-    let grammar::RecoveredPart::Gap(gap) = trailing_parts[1] else {
+    assert!(matches!(trailing_parts[0], grammar::CompletePart::Island(_)));
+    let grammar::CompletePart::Gap(gap) = trailing_parts[1] else {
         panic!("pure trailing trivia must be the right EOF gap")
     };
     assert_eq!(gap.span(), recursa::Span::new(9, 23).unwrap());
     assert_eq!(gap.text(), " \r\n-- trailing");
-    assert!(!trailing_parts
-        .iter()
-        .any(|part| matches!(part, grammar::RecoveredPart::Unresolved(_))));
+    assert_eq!(trailing_trivia.typed_islands().count(), 1);
     assert_owned_once(
         trailing_trivia_source,
         trailing_trivia.parts().map(|part| part.span()),

@@ -506,10 +506,12 @@ enum EofTail {
 /// and the decision to erase every typed value after any ordinary failure. Invariants: every draft
 /// span is checked in whole-source coordinates, each strict/recovery input is bounded to its island,
 /// a boundary advances the hard progress key even for a missing island, and no typed value survives
-/// a recovered outcome. Phases: scan exact framing regions and candidate boundaries, parse each
-/// island in a bounded window, freeze payload or fail-closed suffix ownership, validate the complete
-/// partition, then either publish strict parts or replay all islands through construction-free
-/// recovery.
+/// a recovered outcome. A final island whose strict parse consumes every significant token to end
+/// of input completes without a trailing boundary and keeps its authored value; any other
+/// boundary-less candidate fails closed. Phases: scan exact framing regions and candidate
+/// boundaries, parse each island in a bounded window, freeze payload or fail-closed suffix
+/// ownership, validate the complete partition, then either publish strict parts or replay all
+/// islands through construction-free recovery.
 #[doc(hidden)]
 pub fn frame_document<'input, T>(
     source: &'input str,
@@ -646,21 +648,16 @@ where
             match parse_spanned_with_root_follow::<T, ()>(&mut input, plan.boundary_follow) {
                 Ok(parsed) => {
                     let root_end = consumed_end(&input, island_start);
+                    // A strict parse that consumes every significant token to end of
+                    // input is a complete final island; only leftover significant
+                    // source keeps fail-closed ownership.
                     let (root_end, tail, diagnostic_span) = match input.peek(0) {
                         Some(next) if recovery_root_restart_matches(plan.recovery, next) => {
-                            (root_end, EofTail::Unresolved, next.span)
+                            (root_end, EofTail::Unresolved, Some(next.span))
                         }
-                        Some(next) => (source.len(), EofTail::None, next.span),
-                        None if root_end < source.len() => (
-                            root_end,
-                            EofTail::Gap,
-                            checked_span(source, root_end, root_end)?,
-                        ),
-                        None => (
-                            root_end,
-                            EofTail::None,
-                            checked_span(source, root_end, root_end)?,
-                        ),
+                        Some(next) => (source.len(), EofTail::None, Some(next.span)),
+                        None if root_end < source.len() => (root_end, EofTail::Gap, None),
+                        None => (root_end, EofTail::None, None),
                     };
                     (
                         Some(parsed),
@@ -668,9 +665,9 @@ where
                         None,
                         root_end,
                         tail,
-                        Some(FrameDiagnostic {
+                        diagnostic_span.map(|span| FrameDiagnostic {
                             kind: FrameDiagnosticKind::AmbiguousOwnership,
-                            span: diagnostic_span,
+                            span,
                             message: "framing island lacks its required boundary; source ownership failed closed"
                                 .into(),
                         }),
@@ -716,8 +713,15 @@ where
             }
         };
         let Some(boundary) = boundary else {
-            recovered = true;
             let root_span = checked_span(source, island_start, root_end)?;
+            let strict_to_eof = eof_diagnostic.is_none();
+            if strict_to_eof && parsed.is_none() {
+                return Err(fatal(
+                    source,
+                    root_span,
+                    "boundary-less framing candidate omitted its ownership diagnostic",
+                ));
+            }
             drafts.push(DraftPart::Island {
                 span: root_span,
                 parsed,
@@ -731,13 +735,13 @@ where
                     EofTail::Unresolved => drafts.push(DraftPart::Unresolved(suffix)),
                 }
             }
-            framing_diagnostics.push(eof_diagnostic.ok_or_else(|| {
-                fatal(
-                    source,
-                    root_span,
-                    "boundary-less framing candidate omitted its ownership diagnostic",
-                )
-            })?);
+            // A strict final island that parsed exactly to end of input keeps its
+            // authored value and completes without a trailing boundary; any other
+            // boundary-less candidate fails closed into recovery.
+            if let Some(diagnostic) = eof_diagnostic {
+                recovered = true;
+                framing_diagnostics.push(diagnostic);
+            }
             break;
         };
         let island_end = boundary.span.end() as usize;

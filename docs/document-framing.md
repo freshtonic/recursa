@@ -53,11 +53,16 @@ construction-free recovery interpreter. A later valid island is therefore a
 and finite-machine progress trace.
 
 Only a wholly successful document selects `FrameResult::Complete`. Its islands
-retain strict `Parsed<Entry>` values. Both results expose the borrowed source
+retain strict `Parsed<Entry>` values. A final island does not need a trailing
+boundary: when its strict parse consumes every significant token to end of
+input, the document completes and the island keeps its authored value, with
+only trivia permitted after it as the end-of-file gap. A final island that
+fails strictly, or that leaves significant source unconsumed, keeps the
+fail-closed recovered behavior. Both results expose the borrowed source
 and `render_exact`; only authored values have structured `Pretty` rendering.
 
 Each island's `Parsed::source()` is the bounded island slice, including its
-framing boundary. Captured occurrence spans remain absolute offsets in the
+framing boundary when one is present. Captured occurrence spans remain absolute offsets in the
 complete framed document; they are not rebased into that slice. Call
 `Parsed::source_bounds()` to inspect the absolute window and
 `Parsed::local_source_range(span)` before using an occurrence span to index
