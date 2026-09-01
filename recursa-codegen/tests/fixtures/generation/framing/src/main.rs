@@ -309,6 +309,25 @@ fn main() {
         trailing_trivia.parts().map(|part| part.span()),
     );
 
+    let shared_base_source = "put 'lead';\r\nALPHA BETA GAMMA;";
+    let shared_base = grammar::Entry::frame(shared_base_source)
+        .expect("shared-base-kind framing invariants hold");
+    let grammar::FrameResult::Complete(shared_base) = shared_base else {
+        panic!("semantic targets sharing a base kind must frame strictly")
+    };
+    assert_eq!(shared_base.render_exact(), shared_base_source);
+    assert_eq!(
+        shared_base
+            .typed_islands()
+            .map(|parsed| parsed.source().expect("shared-base island provenance"))
+            .collect::<Vec<_>>(),
+        ["put 'lead';", "ALPHA BETA GAMMA;"],
+    );
+    assert_owned_once(
+        shared_base_source,
+        shared_base.parts().map(|part| part.span()),
+    );
+
     println!("framing-ok");
 }
 

@@ -1523,6 +1523,85 @@ pub(super) fn explorer_output_omits_only_redundant_lifetimes() {
 }
 
 #[cfg(feature = "explorer")]
+pub(super) fn explorer_generation_supports_semantic_targets_sharing_a_base_kind() {
+    let shared_pattern_pair = r#"
+recursa::grammar! {
+    module = crate,
+    spans = mandatory,
+    framing(island = Item, boundary = SEMI),
+}
+
+recursa::tokens! {
+    trivia {
+        Whitespace => r"[ \t\n\r]+",
+    }
+    punctuation {
+        SEMI => ";",
+    }
+}
+
+#[derive(recursa::Node)]
+pub struct Item<'input> {
+    #[lex(pattern = r"[a-z]+")]
+    pub first: FirstWord<'input>,
+    #[lex(pattern = r"[a-z]+")]
+    pub second: SecondWord<'input>,
+}
+"#;
+    let keyword_admission_trio = r#"
+recursa::grammar! {
+    module = crate,
+    spans = mandatory,
+    framing(island = Item, boundary = SEMI),
+}
+
+recursa::tokens! {
+    trivia {
+        Whitespace => r"[ \t\n\r]+",
+    }
+    categories { UNRESERVED, RESERVED }
+    keywords {
+        SELECT => "select" in RESERVED,
+        WINDOW => "window" in UNRESERVED,
+    }
+    admissions {
+        NonReservedWord = UNRESERVED,
+        ColId = NonReservedWord + RESERVED,
+    }
+    punctuation {
+        SEMI => ";",
+    }
+}
+
+#[derive(recursa::Node)]
+pub struct Item<'input> {
+    #[lex(pattern = r"[a-z]+", admits(ColId))]
+    pub name: ColIdWord<'input>,
+    #[lex(pattern = r"[a-z]+", admits(NonReservedWord))]
+    pub label: NonReservedWordText<'input>,
+    #[lex(pattern = r"[a-z]+")]
+    pub bare: BareWord<'input>,
+}
+"#;
+    for (label, source) in [
+        ("two shared-pattern targets", shared_pattern_pair),
+        ("three keyword-admission targets", keyword_admission_trio),
+    ] {
+        let package = tempfile::tempdir().expect("temporary shared-base-kind fixture");
+        fs::write(package.path().join("grammar.rs"), source)
+            .expect("write shared-base-kind fixture");
+        let success = analyze_source_tree(
+            SourceAnalysisInput::rust_2024(package.path(), "grammar.rs"),
+            &mut Vec::new(),
+        )
+        .unwrap_or_else(|report| panic!("analyze the {label} fixture: {report:?}"));
+        let plan = EmissionPlan::join_for_test(&success.analyzed, &CargoCfgSnapshot::default())
+            .unwrap_or_else(|detail| panic!("join the {label} plan: {detail}"));
+        render(&plan).unwrap_or_else(|detail| panic!("render the {label} plan: {detail}"));
+    }
+}
+
+#[cfg(feature = "explorer")]
 fn compound_fixture_join_error(source: String) -> String {
     let package = tempfile::tempdir().expect("temporary compound plan fixture");
     fs::write(package.path().join("grammar.rs"), source).expect("write compound plan fixture");
