@@ -41,6 +41,13 @@ pub(super) enum DiagramNode {
     },
     /// A non-consuming branch or cardinality annotation.
     Comment(String),
+    /// A branch annotation linking to a Rustdoc anchor when its owner is public.
+    LinkedComment {
+        /// Annotation text.
+        label: String,
+        /// Rustdoc-relative anchor target, or `None` for private owners.
+        link: Option<String>,
+    },
     /// Elements consumed in source order.
     Sequence(Vec<Self>),
     /// Ordered alternative productions.
@@ -174,7 +181,13 @@ pub(super) fn plan_diagrams(
                 .map(|(materialized, planned)| {
                     Ok((
                         materialized.display_name.clone(),
-                        diagram_production(&planned.body, materialized, lowered, &links)?,
+                        diagram_production(
+                            &planned.body,
+                            materialized,
+                            lowered,
+                            &links,
+                            public_path.as_deref(),
+                        )?,
                     ))
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -377,6 +390,7 @@ fn diagram_production(
     application: &MaterializedNodeApplication,
     lowered: &crate::materialization::LoweredGrammar,
     links: &BTreeMap<String, Option<String>>,
+    variant_anchor: Option<&str>,
 ) -> Result<DiagramNode, String> {
     match (body, &application.body) {
         (
@@ -392,8 +406,12 @@ fn diagram_production(
                 .iter()
                 .zip(materialized)
                 .map(|(variant, materialized)| {
+                    let ident = variant.ident.unraw().to_string();
                     Ok(sequence(vec![
-                        DiagramNode::Comment(variant.ident.unraw().to_string()),
+                        DiagramNode::LinkedComment {
+                            link: variant_anchor.map(|base| format!("{base}#variant.{ident}")),
+                            label: ident,
+                        },
                         diagram_sequence(
                             &variant.elements,
                             &materialized.elements,
@@ -406,7 +424,7 @@ fn diagram_production(
                 .map(DiagramNode::Choice)
         }
         (NodeBodyPlan::Pratt(pratt), MaterializedNodeBody::Pratt(materialized)) => {
-            diagram_pratt_production(pratt, materialized, lowered, links)
+            diagram_pratt_production(pratt, materialized, lowered, links, variant_anchor)
         }
         _ => Err("diagram and materialized Node shapes disagree".to_owned()),
     }
@@ -418,6 +436,7 @@ fn diagram_pratt_production(
     materialized: &[MaterializedPrattVariant],
     lowered: &crate::materialization::LoweredGrammar,
     links: &BTreeMap<String, Option<String>>,
+    variant_anchor: Option<&str>,
 ) -> Result<DiagramNode, String> {
     if pratt.expected_nud_count + pratt.expected_led_count != materialized.len() {
         return Err("Pratt diagram lost a materialized variant".to_owned());
@@ -459,7 +478,10 @@ fn diagram_pratt_production(
                 }
             };
             Ok(sequence(vec![
-                DiagramNode::Comment(format!("{role} {name}")),
+                DiagramNode::LinkedComment {
+                    link: variant_anchor.map(|base| format!("{base}#variant.{name}")),
+                    label: format!("{role} {name}"),
+                },
                 body,
             ]))
         })
@@ -735,7 +757,8 @@ fn diagram_leaf_count(node: &DiagramNode) -> usize {
         DiagramNode::Empty
         | DiagramNode::Terminal(_)
         | DiagramNode::NonTerminal { .. }
-        | DiagramNode::Comment(_) => 1,
+        | DiagramNode::Comment(_)
+        | DiagramNode::LinkedComment { .. } => 1,
         DiagramNode::Inline { body, .. } => diagram_leaf_count(body),
         DiagramNode::Sequence(nodes) | DiagramNode::Choice(nodes) => {
             nodes.iter().map(diagram_leaf_count).sum()
@@ -821,7 +844,8 @@ fn collect_body_references(node: &DiagramNode, references: &mut Vec<String>) {
         DiagramNode::Empty
         | DiagramNode::Terminal(_)
         | DiagramNode::NonTerminal { .. }
-        | DiagramNode::Comment(_) => {}
+        | DiagramNode::Comment(_)
+        | DiagramNode::LinkedComment { .. } => {}
         DiagramNode::Inline { body, .. } => collect_body_references(body, references),
         DiagramNode::Sequence(nodes) | DiagramNode::Choice(nodes) => {
             for node in nodes {
@@ -869,7 +893,8 @@ fn rewrite_planned_references(
         DiagramNode::Empty
         | DiagramNode::Terminal(_)
         | DiagramNode::NonTerminal { .. }
-        | DiagramNode::Comment(_) => node.clone(),
+        | DiagramNode::Comment(_)
+        | DiagramNode::LinkedComment { .. } => node.clone(),
         DiagramNode::Inline { label, link, body } => DiagramNode::Inline {
             label: label.clone(),
             link: link.clone(),
@@ -1193,6 +1218,15 @@ fn to_railroad_uncached(node: &DiagramNode, link_prefix: &str) -> RailroadNode {
             ))
         }
         DiagramNode::Comment(label) => Box::new(railroad::Comment::new(label.clone())),
+        DiagramNode::LinkedComment { label, link } => {
+            let comment: RailroadNode = Box::new(railroad::Comment::new(label.clone()));
+            match link {
+                Some(href) => {
+                    Box::new(railroad::Link::new(comment, format!("{link_prefix}{href}")))
+                }
+                None => comment,
+            }
+        }
         DiagramNode::Sequence(nodes) => Box::new(railroad::Sequence::new(
             nodes
                 .iter()
@@ -1577,6 +1611,33 @@ mod tests {
             matches!(&elements[2], DiagramNode::Inline { label, .. } if label == "WhereClause"),
             "a later depth-one reference expands before any grandchild starves it: {:?}",
             elements[2],
+        );
+    }
+
+    #[test]
+    fn variant_labels_render_as_anchored_links_when_public() {
+        let production = DiagramNode::Choice(vec![sequence(vec![
+            DiagramNode::LinkedComment {
+                label: "prefix AtHashAtPrefix".to_owned(),
+                link: Some("ast/shared/expr/enum.Expr.html#variant.AtHashAtPrefix".to_owned()),
+            },
+            DiagramNode::Terminal("@#@".to_owned()),
+        ])]);
+        let svg = diagram_svg_with_prefix(&production, "Expr", "../");
+        assert!(
+            svg.contains("href=\"../ast/shared/expr/enum.Expr.html#variant.AtHashAtPrefix\""),
+            "svg:\n{svg}"
+        );
+        assert!(svg.contains(">prefix AtHashAtPrefix</text>"), "svg:\n{svg}");
+
+        let private = DiagramNode::LinkedComment {
+            label: "prefix Hidden".to_owned(),
+            link: None,
+        };
+        let svg = diagram_svg_with_prefix(&private, "Hidden", "");
+        assert!(
+            !svg.contains("href="),
+            "a private owner stays unlinked:\n{svg}"
         );
     }
 
