@@ -759,6 +759,8 @@ pub(super) struct NodeApplicationParsePlan {
     pub(super) static_ty: Type,
     /// Frozen parse body specialized for the application.
     pub(super) body: NodeBodyPlan,
+    /// Frozen FIRST set proving which tokens can restart this exact application.
+    pub(super) recovery_restart: ExpectedSet,
 }
 
 #[derive(Clone, Debug)]
@@ -1459,6 +1461,7 @@ impl ExpectedSetPool {
         let mut values = BTreeSet::new();
         values.extend(tokens.iter().map(|token| token.expected.clone()));
         for application in nodes.iter().flat_map(|node| &node.parse_applications) {
+            values.insert(application.recovery_restart.clone());
             collect_body_expected_sets(&application.body, kind_count, &mut values);
         }
         Self::from_values(values)

@@ -138,6 +138,13 @@ views then expose immutable beginning, inter-record, and end gaps while the
 significant-token parser remains unchanged. Non-retaining grammars continue to
 discard `ignore` matches without a trivia sidecar.
 
+Document-oriented grammars can declare generated exact-source framing under
+the `explorer` capability. Framing recognizes repeated typed islands, atomic
+closed regions, and optional payload data opened only by a complete island
+variant. The result is transactional: either every island remains a strict
+`Parsed<T>`, or every island is replayed as a construction-free recovery node.
+See the [document-framing contract](docs/document-framing.md).
+
 Run both compiled examples from a checkout:
 
 ```console
@@ -178,7 +185,7 @@ The `recursa` facade has no default features. Optional features are:
 |---|---|
 | `arbitrary` | Generated `arbitrary::Arbitrary` implementations when configured by the grammar |
 | `diagrams` | Matching facade support for generated Rustdoc railroad diagrams |
-| `explorer` | Grammar-erased Explorer adapter and document contracts |
+| `explorer` | Grammar-erased Explorer adapter, recovery, and document-framing contracts |
 | `serde` | Generated Serde implementations when configured by the grammar |
 
 Build-time `diagrams` and `explorer` generation also require the corresponding

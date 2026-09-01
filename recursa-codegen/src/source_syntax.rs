@@ -188,6 +188,133 @@ pub(crate) struct GrammarConfigSyntax {
     pub(crate) diagrams: bool,
     /// Grammar-wide Pretty layout defaults.
     pub(crate) pretty: PrettyDefaults,
+    /// Optional generated exact-source document framing declaration.
+    pub(crate) framing: Option<FramingSyntax>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Compile-time document framing declaration before semantic identity resolution.
+pub(crate) struct FramingSyntax {
+    /// Generated Node application parsed as each strict typed island.
+    pub(crate) island: Path,
+    /// Fixed token separating adjacent island roots.
+    pub(crate) boundary: syn::Ident,
+    /// Closed physical-line token kinds owned as atomic raw regions.
+    pub(crate) line: Vec<syn::Ident>,
+    /// Closed same- or nested-delimiter token kinds owned as atomic raw regions.
+    pub(crate) delimited: Vec<syn::Ident>,
+    /// Optional fully committed island variant that opens a payload region.
+    pub(crate) payload: Option<FramingPayloadSyntax>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Compile-time payload transition attached to one complete island variant.
+pub(crate) struct FramingPayloadSyntax {
+    /// Root-and-variant path whose complete strict occurrence enters payload mode.
+    pub(crate) after: Path,
+    /// Exact text required as one standalone physical line to terminate payload data.
+    pub(crate) terminator: syn::LitStr,
+}
+
+impl Parse for FramingSyntax {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut island = None;
+        let mut boundary = None;
+        let mut line = None;
+        let mut delimited = None;
+        let mut payload = None;
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            if key == "payload" {
+                reject_duplicate(&payload, key.span(), "framing payload")?;
+                let content;
+                syn::parenthesized!(content in input);
+                payload = Some(content.parse()?);
+            } else {
+                input.parse::<Token![=]>()?;
+                if key == "island" {
+                    reject_duplicate(&island, key.span(), "framing island")?;
+                    island = Some(Path::parse_mod_style(input)?);
+                } else if key == "boundary" {
+                    reject_duplicate(&boundary, key.span(), "framing boundary")?;
+                    boundary = Some(input.call(syn::Ident::parse_any)?);
+                } else if key == "line" {
+                    reject_duplicate(&line, key.span(), "framing line")?;
+                    line = Some(parse_ident_list(input)?);
+                } else if key == "delimited" {
+                    reject_duplicate(&delimited, key.span(), "framing delimited")?;
+                    delimited = Some(parse_ident_list(input)?);
+                } else {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        format!("unsupported framing setting `{key}`"),
+                    ));
+                }
+            }
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
+            }
+        }
+        Ok(Self {
+            island: island.ok_or_else(|| input.error("framing requires island"))?,
+            boundary: boundary.ok_or_else(|| input.error("framing requires boundary"))?,
+            line: line.unwrap_or_default(),
+            delimited: delimited.unwrap_or_default(),
+            payload,
+        })
+    }
+}
+
+impl Parse for FramingPayloadSyntax {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut after = None;
+        let mut terminator = None;
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            if key == "after" {
+                reject_duplicate(&after, key.span(), "payload after")?;
+                after = Some(Path::parse_mod_style(input)?);
+            } else if key == "terminator" {
+                reject_duplicate(&terminator, key.span(), "payload terminator")?;
+                terminator = Some(input.parse()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("unsupported payload setting `{key}`"),
+                ));
+            }
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
+            }
+        }
+        let terminator: syn::LitStr =
+            terminator.ok_or_else(|| input.error("payload requires terminator"))?;
+        if terminator.value().is_empty() || terminator.value().contains(['\r', '\n']) {
+            return Err(syn::Error::new(
+                terminator.span(),
+                "payload terminator must be nonempty single-line text",
+            ));
+        }
+        Ok(Self {
+            after: after.ok_or_else(|| input.error("payload requires after"))?,
+            terminator,
+        })
+    }
+}
+
+/// Parses one bracketed, comma-separated fixed-token name list.
+fn parse_ident_list(input: ParseStream<'_>) -> syn::Result<Vec<syn::Ident>> {
+    let content;
+    syn::bracketed!(content in input);
+    Ok(
+        Punctuated::<syn::Ident, Token![,]>::parse_terminated_with(
+            &content,
+            syn::Ident::parse_any,
+        )?
+        .into_iter()
+        .collect(),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -293,7 +420,42 @@ pub(crate) fn capture_override(metas: &[Meta]) -> syn::Result<Option<CaptureMode
 
 #[cfg(test)]
 mod capture_tests {
-    use super::{CaptureMode, GrammarConfigSyntax, capture_override};
+    use super::{CaptureMode, GrammarConfigSyntax, capture_override, path_text};
+
+    #[test]
+    fn framing_requires_a_complete_island_variant_payload_transition() {
+        let syntax: GrammarConfigSyntax = syn::parse_str(
+            r#"module = crate, framing(
+                island = Entry,
+                boundary = SEMI,
+                line = [MetaLine],
+                delimited = [RawBlock],
+                payload(after = Entry::CopyFromStdin, terminator = "\\.")
+            )"#,
+        )
+        .expect("complete-variant framing declaration parses");
+        let framing = syntax.framing.expect("framing retained");
+        assert_eq!(path_text(&framing.island), "Entry");
+        assert_eq!(framing.boundary, "SEMI");
+        assert_eq!(framing.line, ["MetaLine"]);
+        assert_eq!(framing.delimited, ["RawBlock"]);
+        let payload = framing.payload.expect("payload retained");
+        assert_eq!(path_text(&payload.after), "Entry::CopyFromStdin");
+        assert_eq!(payload.terminator.value(), "\\.");
+
+        let token_trigger = syn::parse_str::<GrammarConfigSyntax>(
+            r#"module = crate, framing(
+                island = Entry,
+                boundary = SEMI,
+                payload(trigger = COPY, terminator = "\\.")
+            )"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            token_trigger.to_string(),
+            "unsupported payload setting `trigger`"
+        );
+    }
 
     #[test]
     fn grammar_span_modes_are_typed_and_the_compatibility_default_is_optional() {
@@ -404,6 +566,7 @@ impl Parse for GrammarConfigSyntax {
         let mut derives = None;
         let mut diagrams = false;
         let mut pretty = None;
+        let mut framing = None;
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
             if key == "derives" {
@@ -425,6 +588,11 @@ impl Parse for GrammarConfigSyntax {
                 let content;
                 syn::parenthesized!(content in input);
                 pretty = Some(content.parse()?);
+            } else if key == "framing" {
+                reject_duplicate(&framing, key.span(), "framing")?;
+                let content;
+                syn::parenthesized!(content in input);
+                framing = Some(content.parse()?);
             } else {
                 input.parse::<Token![=]>()?;
                 if key == "module" {
@@ -478,6 +646,7 @@ impl Parse for GrammarConfigSyntax {
             derives: derives.unwrap_or_default(),
             diagrams,
             pretty: pretty.unwrap_or_default(),
+            framing,
         })
     }
 }

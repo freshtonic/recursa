@@ -27,6 +27,11 @@ impl GrammarInfo {
         self.name
     }
 
+    /// Returns the exact grammar-local token-kind cardinality.
+    pub(crate) fn kind_count(&self) -> usize {
+        self.kind_names.len()
+    }
+
     /// Resolves a grammar-local token kind to its diagnostic name.
     pub(crate) fn kind_name(&self, kind: TokenKind) -> Option<&'static str> {
         self.kind_names.get(usize::from(kind)).copied()
@@ -100,6 +105,15 @@ impl FollowSet {
     /// Symbolic expectations carried for diagnostics.
     pub fn expected(&self) -> &[ExpectedAtomId] {
         &self.expected
+    }
+
+    /// Reports whether this set is exactly one kind at the supplied width.
+    pub(crate) fn is_exact_kind(&self, kind_count: usize, kind: TokenKind) -> bool {
+        self.kind_count as usize == kind_count
+            && usize::from(kind) < kind_count
+            && self.expected.is_empty()
+            && self.kinds.iter().map(|word| word.count_ones()).sum::<u32>() == 1
+            && self.contains(kind)
     }
 
     /// Combines two sets of the same grammar width into owned storage.

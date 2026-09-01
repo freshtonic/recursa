@@ -93,6 +93,18 @@ _Avoid_: Trivia token, ignored token
 An immutable exact source range before, between, or after non-trivia lexical records, containing zero or more ordered classified-trivia records. Retained documents always expose beginning and end gaps, including empty and trivia-only inputs.
 _Avoid_: Reconstructed whitespace, token attachment
 
+**Document framing**:
+Generated exact-source partitioning of a repeated island Node, its fixed boundary, atomic raw regions, and an optional committed-variant payload transition. It returns either a wholly strict typed partition or a wholly grammar-erased recovered partition.
+_Avoid_: Statement splitter, parser callback, partially typed document
+
+**Framing island**:
+One boundary-terminated occurrence of the Node selected by a document-framing declaration. A complete partition retains its `Parsed<T>`; after any ordinary failure, every framing island is replayed as a construction-free recovery node.
+_Avoid_: Best-effort AST, recovered statement
+
+**Payload transition**:
+A generated framing transition entered only after strict parsing commits the configured framing-island variant. Its data and standalone physical-line terminator have distinct exact spans; an incomplete island prefix cannot enter payload mode.
+_Avoid_: Token trigger, lexer mode callback
+
 **Lowered grammar**:
 The immutable aggregate that keeps a normalized grammar together with its authoring-source context and their correlations.
 _Avoid_: Emission model, enriched grammar description

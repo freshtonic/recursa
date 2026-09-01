@@ -2,6 +2,8 @@
 
 #[cfg(feature = "explorer")]
 pub mod explorer;
+#[cfg(feature = "explorer")]
+pub mod framing;
 /// Static grammar metadata and recursive FOLLOW storage.
 mod grammar;
 /// Grammar-bound lexical output and parser cursor state.
@@ -121,6 +123,11 @@ pub mod __private {
         sample_error as explorer_sample_error, token_node as explorer_token_node,
         token_schema as explorer_token_schema, variant_schema as explorer_variant_schema,
     };
+    #[cfg(feature = "explorer")]
+    pub use crate::framing::{
+        PayloadPlanData as FramingPayloadPlanData, PlanData as FramingPlanData, frame_document,
+        payload_plan as framing_payload_plan, plan as framing_plan,
+    };
     pub use crate::grammar::{ExpectedAtomId, FollowSet, FollowSetError, GrammarInfo, TokenKind};
     pub use crate::input::{
         Input, LexResult, SourceGap, SourceGaps, TokenRecord, TriviaRecord, TriviaRecordView,
@@ -188,7 +195,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        11,
+        12,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -259,7 +266,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            11,
+            12,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }

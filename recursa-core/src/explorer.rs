@@ -1,5 +1,6 @@
 //! Grammar-erased, allocation-bounded explorer contracts.
 
+use crate::input::TokenRecord;
 use crate::parsed::GeneratedParse;
 use crate::parsed::ViewCursor;
 use crate::{
@@ -263,6 +264,37 @@ impl<'input> ParseFailure<'input> {
     }
 }
 
+/// Converts one transactional generated parse failure to the erased diagnostic contract.
+pub(crate) fn parse_failure_from_error<'input>(
+    source: &'input str,
+    error: crate::ParseError,
+) -> ParseFailure<'input> {
+    let span = error.span();
+    let kind = match error.kind() {
+        ParseErrorKind::UnexpectedToken => ParseDiagnosticKind::UnexpectedToken,
+        ParseErrorKind::UnexpectedEof => ParseDiagnosticKind::UnexpectedEof,
+        ParseErrorKind::PrattAmbiguity => ParseDiagnosticKind::PrattAmbiguity,
+        ParseErrorKind::LexicalError => ParseDiagnosticKind::LexicalError,
+        ParseErrorKind::InvalidTokenSpan => ParseDiagnosticKind::InvalidTokenSpan,
+        ParseErrorKind::GrammarMismatch => ParseDiagnosticKind::GrammarMismatch,
+    };
+    ParseFailure {
+        source,
+        diagnostics: vec![ParseDiagnostic {
+            kind,
+            span,
+            text: source.get(span.range()).unwrap_or(""),
+            found: error.found(),
+            expected: error.expected().collect(),
+            message: error.to_string().into(),
+            action: None,
+            owner: None,
+            site: None,
+        }]
+        .into_boxed_slice(),
+    }
+}
+
 impl fmt::Display for ParseFailure<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.diagnostics.as_ref() {
@@ -296,6 +328,35 @@ pub struct RecoveryDocument<'input> {
     diagnostics: Box<[ParseDiagnostic<'input>]>,
     /// Retained execution evidence for the bounded iterative recovery machine.
     progress: RecoveryProgressTrace,
+}
+
+/// Internal construction-free projection that does not imply a parse failure.
+pub(crate) struct RecoveryProjection<'input> {
+    /// Complete coordinate source borrowed by recovery.
+    source: &'input str,
+    /// Eager grammar-erased recovery root.
+    root: RecoveryNode,
+    /// Optional seed and recovery diagnostics.
+    diagnostics: Box<[ParseDiagnostic<'input>]>,
+    /// Retained bounded-machine progress evidence.
+    progress: RecoveryProgressTrace,
+}
+
+impl RecoveryProjection<'_> {
+    /// Borrows the eager grammar-erased root.
+    pub(crate) const fn root(&self) -> &RecoveryNode {
+        &self.root
+    }
+
+    /// Borrows optional seed and recovery diagnostics.
+    pub(crate) fn diagnostics(&self) -> &[ParseDiagnostic<'_>] {
+        &self.diagnostics
+    }
+
+    /// Returns retained bounded-machine progress evidence.
+    pub(crate) const fn progress_trace(&self) -> RecoveryProgressTrace {
+        self.progress
+    }
 }
 
 impl RecoveryDocument<'_> {
@@ -1496,10 +1557,12 @@ pub struct RecoveryNodePlanData {
 /// Construction-free body recipe selected during generation.
 pub enum RecoveryNodeBodyPlanData {
     /// One source-order structural sequence.
-    Struct(
+    Struct {
         /// Immutable element recipes in source order.
-        &'static [RecoveryElementPlanData],
-    ),
+        elements: &'static [RecoveryElementPlanData],
+        /// Frozen FIRST set proving a distinct occurrence can restart this struct root.
+        restart: &'static FollowSet,
+    },
     /// Enum support is generated in #94 and interpreted through its frozen dispatch.
     Enum {
         /// Variant recipes in dispatch-target order.
@@ -1946,6 +2009,48 @@ pub unsafe trait ExplorerRoot: ExplorerNode + Sized {
     ) -> Option<PrettyOutput>;
 }
 
+/// Tests one complete strict root against a generated static variant identity.
+pub(crate) fn parsed_active_variant_is<T: ExplorerRoot>(
+    parsed: &Parsed<'_, T>,
+    expected: &'static VariantSchemaData,
+) -> bool {
+    let (value, cursor) = parsed.explorer_parts();
+    value
+        .__recursa_explorer_node(cursor)
+        .active_variant
+        .is_some_and(|active| std::ptr::eq(active, expected))
+}
+
+/// Validates one generated recovery plan against its framing root identities.
+pub(crate) fn recovery_plan_matches_root(
+    plan: &RecoveryPlanData,
+    grammar: &'static GrammarInfo,
+    schema: &'static GrammarSchemaData,
+) -> bool {
+    std::ptr::eq(plan.grammar, grammar) && std::ptr::eq(plan.root.schema, schema.root)
+}
+
+/// Reports whether one token has frozen evidence to restart the recovery root.
+pub(crate) fn recovery_root_restart_matches(plan: &RecoveryPlanData, record: TokenRecord) -> bool {
+    match &plan.root.body {
+        RecoveryNodeBodyPlanData::Struct { restart, .. } => restart.contains(record.kind),
+        RecoveryNodeBodyPlanData::Enum { restart, .. } => restart.contains(record.kind),
+        RecoveryNodeBodyPlanData::Pratt(pratt) => pratt.nud_restart.contains(record.kind),
+    }
+}
+
+/// Reports whether one static variant belongs directly to the selected root.
+pub(crate) fn root_contains_variant(
+    schema: &'static GrammarSchemaData,
+    variant: &'static VariantSchemaData,
+) -> bool {
+    schema
+        .root
+        .variants
+        .iter()
+        .any(|candidate| std::ptr::eq(*candidate, variant))
+}
+
 #[doc(hidden)]
 /// Constructs generated static grammar schema under the matching protocol.
 pub const fn grammar_schema(
@@ -2212,10 +2317,11 @@ pub const fn recovery_text_not_in(text: &'static [&'static str]) -> RecoveryText
 pub const fn recovery_struct_plan(
     schema: &'static NodeSchemaData,
     elements: &'static [RecoveryElementPlanData],
+    restart: &'static FollowSet,
 ) -> RecoveryNodePlanData {
     RecoveryNodePlanData {
         schema,
-        body: RecoveryNodeBodyPlanData::Struct(elements),
+        body: RecoveryNodeBodyPlanData::Struct { elements, restart },
     }
 }
 
@@ -2771,7 +2877,7 @@ impl RecoveryFrame {
         minimum_binding_power: RecoveryBindingPower,
     ) -> Self {
         let (elements, committed_variant, pending_dispatch, pratt) = match &plan.body {
-            RecoveryNodeBodyPlanData::Struct(elements) => (*elements, None, None, None),
+            RecoveryNodeBodyPlanData::Struct { elements, .. } => (*elements, None, None, None),
             RecoveryNodeBodyPlanData::Enum {
                 variants,
                 dispatch,
@@ -3729,10 +3835,6 @@ fn recovery_finalize_diagnostics<'input>(
             unique.push(diagnostic);
         }
     }
-    debug_assert!(
-        !unique.is_empty(),
-        "strict failure seeds recovery diagnostics"
-    );
     unique.into_boxed_slice()
 }
 
@@ -3962,7 +4064,9 @@ fn recovery_frame_state_slots(plan: &'static RecoveryNodePlanData) -> usize {
     }
 
     let body_slots = match &plan.body {
-        RecoveryNodeBodyPlanData::Struct(elements) => elements.iter().map(element_slots).sum(),
+        RecoveryNodeBodyPlanData::Struct { elements, .. } => {
+            elements.iter().map(element_slots).sum()
+        }
         RecoveryNodeBodyPlanData::Enum { variants, .. } => variants
             .iter()
             .map(|variant| variant.elements.iter().map(element_slots).sum())
@@ -4106,6 +4210,54 @@ pub fn recover_document<'input>(
     failure: ParseFailure<'input>,
     plan: &'static RecoveryPlanData,
 ) -> Result<RecoveryDocument<'input>, ExplorationError<'input>> {
+    input.restore(0);
+    recover_document_with_root_follow(input, failure, plan, plan.root_follow)
+}
+
+/// Interprets recovery from the current cursor with a generated framing root FOLLOW.
+pub(crate) fn recover_document_with_root_follow<'input>(
+    input: &mut Input<'input>,
+    failure: ParseFailure<'input>,
+    plan: &'static RecoveryPlanData,
+    root_follow: &'static FollowSet,
+) -> Result<RecoveryDocument<'input>, ExplorationError<'input>> {
+    if failure.diagnostics.is_empty() {
+        let position = input.byte_position();
+        let span = Span::new(position, position).unwrap_or_else(|_| Span::new(0, 0).unwrap());
+        return Err(recovery_fatal(
+            input.source(),
+            span,
+            ParseDiagnosticKind::InvariantViolation,
+            "public recovery requires a nonempty strict failure",
+        ));
+    }
+    let projection =
+        recover_document_from_seed_with_root_follow(input, failure.diagnostics, plan, root_follow)?;
+    if projection.diagnostics.is_empty() {
+        let position = input.byte_position();
+        let span = Span::new(position, position).unwrap_or_else(|_| Span::new(0, 0).unwrap());
+        return Err(recovery_fatal(
+            input.source(),
+            span,
+            ParseDiagnosticKind::InvariantViolation,
+            "public recovery completed without its strict diagnostic",
+        ));
+    }
+    Ok(RecoveryDocument {
+        source: projection.source,
+        root: projection.root,
+        diagnostics: projection.diagnostics,
+        progress: projection.progress,
+    })
+}
+
+/// Interprets framing recovery from an internal seed that may be empty.
+pub(crate) fn recover_document_from_seed_with_root_follow<'input>(
+    input: &mut Input<'input>,
+    diagnostics: Box<[ParseDiagnostic<'input>]>,
+    plan: &'static RecoveryPlanData,
+    root_follow: &'static FollowSet,
+) -> Result<RecoveryProjection<'input>, ExplorationError<'input>> {
     let source = input.source();
     if !std::ptr::eq(input.grammar(), plan.grammar) {
         let position = input.byte_position();
@@ -4117,7 +4269,7 @@ pub fn recover_document<'input>(
             "recovery input belongs to a different grammar",
         ));
     }
-    if failure.diagnostics.iter().any(|diagnostic| {
+    if diagnostics.iter().any(|diagnostic| {
         matches!(
             diagnostic.kind,
             ParseDiagnosticKind::InvalidTokenSpan | ParseDiagnosticKind::GrammarMismatch
@@ -4125,18 +4277,17 @@ pub fn recover_document<'input>(
     }) {
         return Err(ExplorationError {
             source,
-            diagnostics: failure.diagnostics,
+            diagnostics,
         });
     }
 
-    input.restore(0);
     let mut progress = RecoveryProgress::new(input.record_count());
     let root_start = input.byte_position();
     let root_id = progress.enter_frame(plan.root);
     let root = RecoveryFrame::new(
         root_id,
         plan.root,
-        plan.root_follow.clone(),
+        root_follow.clone(),
         root_start,
         None,
         RecoveryBindingPower(0),
@@ -4145,7 +4296,7 @@ pub fn recover_document<'input>(
         input,
         plan,
         source,
-        diagnostics: failure.diagnostics.into_vec(),
+        diagnostics: diagnostics.into_vec(),
         frames: vec![root],
         progress,
     }
@@ -5106,14 +5257,19 @@ impl<'machine, 'input> RecoveryMachine<'machine, 'input> {
         frame_index: RecoveryFrameIndex,
     ) -> Result<RecoveryFrameClose, ExplorationError<'input>> {
         let frame = &self.frames[frame_index.get()];
-        if frame.return_element.is_none() && !self.input.is_eof() {
+        let root_stops = self
+            .input
+            .peek(0)
+            .is_some_and(|record| frame.caller_follow.contains(record.kind));
+        if frame.return_element.is_none() && !self.input.is_eof() && !root_stops {
+            let root_follow = frame.caller_follow.clone();
             recovery_push_skipped(
                 self.input,
                 self.plan,
                 frame.plan.schema,
                 None,
-                self.plan.root_follow,
-                self.plan.root_follow,
+                &root_follow,
+                &root_follow,
                 &mut self.frames[frame_index.get()],
                 &mut self.diagnostics,
                 "skipped recovery input is not a checked UTF-8 range",
@@ -5234,7 +5390,7 @@ impl<'machine, 'input> RecoveryMachine<'machine, 'input> {
     fn finish_document(
         self,
         node: RecoveryNode,
-    ) -> Result<RecoveryDocument<'input>, ExplorationError<'input>> {
+    ) -> Result<RecoveryProjection<'input>, ExplorationError<'input>> {
         let progress = self.progress.finish().map_err(|()| {
             recovery_fatal(
                 self.source,
@@ -5243,7 +5399,7 @@ impl<'machine, 'input> RecoveryMachine<'machine, 'input> {
                 "recovery progress exceeded its explicit finite bound",
             )
         })?;
-        Ok(RecoveryDocument {
+        Ok(RecoveryProjection {
             source: self.source,
             root: node,
             diagnostics: recovery_finalize_diagnostics(self.diagnostics),
@@ -5252,7 +5408,7 @@ impl<'machine, 'input> RecoveryMachine<'machine, 'input> {
     }
 
     /// Executes one transition at a time under the global progress guard.
-    fn run(mut self) -> Result<RecoveryDocument<'input>, ExplorationError<'input>> {
+    fn run(mut self) -> Result<RecoveryProjection<'input>, ExplorationError<'input>> {
         loop {
             let Some(raw_frame_index) = self.frames.len().checked_sub(1) else {
                 let span = Span::new(0, 0).unwrap();
@@ -5386,32 +5542,8 @@ where
         });
     }
 
-    let parsed = crate::parsed::parse_spanned::<T, A>(input).map_err(|error| {
-        let span = error.span();
-        let kind = match error.kind() {
-            ParseErrorKind::UnexpectedToken => ParseDiagnosticKind::UnexpectedToken,
-            ParseErrorKind::UnexpectedEof => ParseDiagnosticKind::UnexpectedEof,
-            ParseErrorKind::PrattAmbiguity => ParseDiagnosticKind::PrattAmbiguity,
-            ParseErrorKind::LexicalError => ParseDiagnosticKind::LexicalError,
-            ParseErrorKind::InvalidTokenSpan => ParseDiagnosticKind::InvalidTokenSpan,
-            ParseErrorKind::GrammarMismatch => ParseDiagnosticKind::GrammarMismatch,
-        };
-        ParseFailure {
-            source,
-            diagnostics: vec![ParseDiagnostic {
-                kind,
-                span,
-                text: source.get(span.range()).unwrap_or(""),
-                found: error.found(),
-                expected: error.expected().collect(),
-                message: error.to_string().into(),
-                action: None,
-                owner: None,
-                site: None,
-            }]
-            .into_boxed_slice(),
-        }
-    })?;
+    let parsed = crate::parsed::parse_spanned::<T, A>(input)
+        .map_err(|error| parse_failure_from_error(source, error))?;
 
     if let Some(record) = input.peek(0) {
         let found = input.grammar().kind_name(record.kind);

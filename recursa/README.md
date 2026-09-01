@@ -158,6 +158,40 @@ grammar-local kind and a source-bounded UTF-8 span, in global source order and
 without overlap. Finalization preserves unrecorded source gaps verbatim and
 never rescans them.
 
+## Document framing
+
+With `explorer` enabled for both `recursa` and `recursa-codegen`, a grammar may
+freeze an exact-source document partition at generation time:
+
+```rust,ignore
+recursa::grammar! {
+    module = crate::grammar,
+    spans = mandatory,
+    framing(
+        island = Entry,
+        boundary = SEMI,
+        line = [MetaCommand],
+        delimited = [RawBlock],
+        payload(after = Entry::CopyFromStdin, terminator = "\\.")
+    ),
+}
+```
+
+`Entry::frame(source)` returns `FrameResult::Complete` only when every island
+parses strictly and every payload terminates. Complete islands expose
+`Parsed<Entry>`. Any ordinary island, ownership, or payload failure instead
+returns `FrameResult::Recovered`: all strict values are discarded and every
+island is replayed through construction-free recovery, including later valid
+islands. Recovery, atomic raw regions, and payload regions provide exact text,
+spans, and diagnostics but no AST conversion or `Pretty` capability.
+
+`payload(after = ...)` must name a reachable variant of the framing island. It
+is selected only after the complete strict island commits that variant; a COPY-
+like token prefix cannot guess payload mode. The terminator is exact nonempty
+single-line text and matches only at a physical-line start with an LF or CRLF
+line ending. Payload data and the terminator retain distinct spans. See the repository's
+[full framing contract](../docs/document-framing.md).
+
 This is an excerpt from the
 [compiled JSON grammar](https://github.com/freshtonic/recursa/blob/main/examples/json/src/grammar.rs).
 Its companion
@@ -173,7 +207,7 @@ No features are enabled by default.
   implementations.
 - `diagrams` supplies the matching facade capability for generated diagrams.
 - `explorer` exposes grammar-erased strict documents and construction-free
-  recovery projections. `Adapter::explore` returns `None` when a reachable
+  recovery projections plus generated document framing. `Adapter::explore` returns `None` when a reachable
   grammar form does not yet support recovery; `Adapter::parse` is unchanged.
 - `serde` supplies facade support for configured generated Serde
   implementations.

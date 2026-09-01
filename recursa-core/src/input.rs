@@ -59,8 +59,11 @@ impl<'src> LexResult<'src> {
         grammar: &'static GrammarInfo,
         builder: A,
     ) -> Input<'src, A> {
+        let bounds = Span::new(0, self.source.len())
+            .expect("lexed source length was validated before input construction");
         Input {
             source: self.source,
+            bounds,
             records: Cow::Owned(self.records.clone()),
             trivia: self
                 .trivia
@@ -70,6 +73,39 @@ impl<'src> LexResult<'src> {
             grammar,
             builder,
         }
+    }
+
+    /// Creates a parser input restricted to one absolute source-coordinate window.
+    pub(crate) fn input_bounded(
+        &self,
+        grammar: &'static GrammarInfo,
+        bounds: Span,
+    ) -> Option<Input<'src>> {
+        self.source.get(bounds.range())?;
+        if self
+            .records
+            .iter()
+            .any(|record| record.span.start() < bounds.start() || record.span.end() > bounds.end())
+            || self.trivia.as_ref().is_some_and(|trivia| {
+                trivia.iter().any(|record| {
+                    record.span.start() < bounds.start() || record.span.end() > bounds.end()
+                })
+            })
+        {
+            return None;
+        }
+        Some(Input {
+            source: self.source,
+            bounds,
+            records: Cow::Owned(self.records.clone()),
+            trivia: self
+                .trivia
+                .as_ref()
+                .map(|records| Cow::Owned(records.clone())),
+            cursor: 0,
+            grammar,
+            builder: (),
+        })
     }
 
     /// Returns the exact source retained by this result.
@@ -89,7 +125,12 @@ impl<'src> LexResult<'src> {
 
     /// Projects immutable beginning, inter-record, and end gaps.
     pub fn source_gaps(&self) -> Option<SourceGaps<'_>> {
-        SourceGaps::new(self.source, &self.records, self.trivia.as_deref()?)
+        SourceGaps::new(
+            self.source,
+            &self.records,
+            self.trivia.as_deref()?,
+            Span::new(0, self.source.len()).ok()?,
+        )
     }
 }
 
@@ -97,6 +138,8 @@ impl<'src> LexResult<'src> {
 pub struct Input<'i, A = ()> {
     /// Complete borrowed source for token text and diagnostics.
     source: &'i str,
+    /// Absolute UTF-8 source window visible to this parse session.
+    bounds: Span,
     /// Grammar-bound finalized records in source order.
     records: Cow<'i, [TokenRecord]>,
     /// Classified trivia retained by the grammar without entering the parser cursor.
@@ -113,6 +156,11 @@ impl<'i, A> Input<'i, A> {
     /// Returns the complete source borrowed by this parse session.
     pub fn source(&self) -> &'i str {
         self.source
+    }
+
+    /// Returns the absolute checked source window for retained provenance.
+    pub(crate) const fn bounds(&self) -> Span {
+        self.bounds
     }
 
     /// Returns static metadata for the grammar that produced these records.
@@ -170,7 +218,9 @@ impl<'i, A> Input<'i, A> {
     /// Returns a lookahead token start, or the source end beyond available input.
     pub(crate) fn byte_position_at(&self, distance: usize) -> usize {
         self.peek(distance)
-            .map_or(self.source.len(), |record| record.span.start() as usize)
+            .map_or(self.bounds.end() as usize, |record| {
+                record.span.start() as usize
+            })
     }
 
     /// Reports whether every finalized token record has been consumed.
@@ -204,6 +254,8 @@ pub struct SourceGaps<'view> {
     records: &'view [TokenRecord],
     /// Classified trivia records ordered within those gaps.
     trivia: &'view [TriviaRecord],
+    /// Absolute source window bounding the first and final gaps.
+    bounds: Span,
     /// Next gap ordinal.
     index: usize,
     /// First trivia record not assigned to an earlier gap.
@@ -216,12 +268,14 @@ impl<'view> SourceGaps<'view> {
         source: &'view str,
         records: &'view [TokenRecord],
         trivia: &'view [TriviaRecord],
+        bounds: Span,
     ) -> Option<Self> {
-        Span::new(0, source.len()).ok()?;
+        source.get(bounds.range())?;
         Some(Self {
             source,
             records,
             trivia,
+            bounds,
             index: 0,
             trivia_index: 0,
         })
@@ -239,11 +293,15 @@ impl<'view> Iterator for SourceGaps<'view> {
             .index
             .checked_sub(1)
             .and_then(|index| self.records.get(index))
-            .map_or(0, |record| record.span.end() as usize);
+            .map_or(self.bounds.start() as usize, |record| {
+                record.span.end() as usize
+            });
         let end = self
             .records
             .get(self.index)
-            .map_or(self.source.len(), |record| record.span.start() as usize);
+            .map_or(self.bounds.end() as usize, |record| {
+                record.span.start() as usize
+            });
         let trivia_start = self.trivia_index;
         while self
             .trivia

@@ -5,6 +5,8 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+mod support;
+
 const FIXTURE: &str = "tests/fixtures/generation/compound-nodes";
 
 /// Exclusive access to the stable downstream fixture workspace.
@@ -1476,7 +1478,7 @@ fn private_protocol_mismatch_is_reported_once_at_the_grammar_root() {
         .expect("published generation");
     let root = generation.join("root.rs");
     let source = fs::read_to_string(&root).expect("read generated root");
-    fs::write(&root, source.replace("protocol_11", "protocol_999"))
+    fs::write(&root, source.replace("protocol_12", "protocol_999"))
         .expect("inject private protocol mismatch");
 
     let output = run_fixture(&package);
@@ -1986,7 +1988,6 @@ fn scaffold_fixture() -> Fixture {
     let fixture = manifest_dir.join(FIXTURE);
     let package_path = workspace.join("target/generated-fixtures/compound-nodes/package");
     fs::create_dir_all(&package_path).expect("create stable compound fixture package");
-    clear_generated_state(&package_path.join("target"));
 
     for relative in ["build.rs", "src/lib.rs", "src/grammar.rs", "src/main.rs"] {
         copy(&fixture, &package_path, relative);
@@ -2010,39 +2011,14 @@ fn scaffold_fixture() -> Fixture {
         );
     fs::write(package_path.join("Cargo.toml"), manifest)
         .expect("write compound grammar fixture manifest");
+    support::clean_downstream_package(
+        &package_path,
+        "recursa-generated-compound-nodes",
+        &package_path.join("target"),
+    );
     Fixture {
         path: package_path,
         _guard: guard,
-    }
-}
-
-/// Removes scenario-owned generated output while retaining compiled dependencies.
-fn clear_generated_state(target: &Path) {
-    let docs = target.join("doc");
-    if docs.exists() {
-        fs::remove_dir_all(docs).expect("remove previous fixture rustdoc");
-    }
-    remove_generation_directories(target);
-}
-
-/// Recursively removes published Generation directories from a shared Cargo target.
-fn remove_generation_directories(root: &Path) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        if path
-            .file_name()
-            .is_some_and(|name| name == "recursa-generations")
-        {
-            fs::remove_dir_all(path).expect("remove previous fixture Generations");
-        } else {
-            remove_generation_directories(&path);
-        }
     }
 }
 
@@ -2092,6 +2068,7 @@ fn run_fixture_unlocked(package: &Fixture) -> Output {
 }
 
 fn run_fixture_doc(package: &Fixture, private_items: bool) -> Output {
+    support::clean_downstream_docs(package.path(), &target_dir(package));
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
     command
@@ -2226,7 +2203,11 @@ fn target_dir(package: &Fixture) -> PathBuf {
     package.path().join("target")
 }
 
-fn generation_directories(root: &Path) -> BTreeSet<PathBuf> {
+fn generation_directories(target: &Path) -> BTreeSet<PathBuf> {
+    generation_directories_below(&target.join("debug/build"))
+}
+
+fn generation_directories_below(root: &Path) -> BTreeSet<PathBuf> {
     let mut found = BTreeSet::new();
     let Ok(entries) = fs::read_dir(root) else {
         return found;
@@ -2249,7 +2230,7 @@ fn generation_directories(root: &Path) -> BTreeSet<PathBuf> {
                 );
             }
         } else {
-            found.extend(generation_directories(&path));
+            found.extend(generation_directories_below(&path));
         }
     }
     found

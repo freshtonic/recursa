@@ -121,10 +121,34 @@ pub(crate) struct ResolvedSourceGrammar {
 pub(crate) struct SelectedGrammarConfiguration {
     /// Supplies the syntax needed either to resolve the reference or diagnose its failure.
     pub(crate) syntax: GrammarConfigSyntax,
+    /// Identifies the selected root module containing the grammar configuration.
+    pub(crate) module: ModuleId,
     /// Identifies the authored source file used for resolution diagnostics.
     pub(crate) source: SourceId,
     /// Locates the authored syntax used for resolution diagnostics.
     pub(crate) range: Range<u32>,
+    /// Carries the resolved typed identities selected by document framing.
+    pub(crate) framing: Option<ResolvedFramingConfiguration>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Carries typed framing references after ordinary source resolution.
+pub(crate) struct ResolvedFramingConfiguration {
+    /// Exact semantic type authored as the island root.
+    pub(crate) island: ResolvedType,
+    /// Exact Node declaration reached through imports and type aliases.
+    pub(crate) island_node: NodeId,
+    /// Optional completed island variant that commits payload mode.
+    pub(crate) payload: Option<ResolvedFramingPayloadConfiguration>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Carries one typed payload transition after ordinary source resolution.
+pub(crate) struct ResolvedFramingPayloadConfiguration {
+    /// Exact semantic type owning the completed payload-trigger variant.
+    pub(crate) after: ResolvedType,
+    /// Exact authored variant identity reached below that type.
+    pub(crate) variant: ResolvedVariantId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -291,6 +315,8 @@ pub(crate) struct ResolvedGenericParameter {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Classifies the semantic owner alternatives handled by semantic resolution.
 pub(crate) enum SemanticOwner {
+    /// Identifies a typed reference authored by the grammar configuration.
+    Grammar,
     /// Identifies the node resolution alternative.
     Node(NodeId),
     /// Identifies the type alias resolution alternative.
@@ -856,6 +882,14 @@ struct Resolver<'cfg> {
     traces: Vec<ResolutionTrace>,
     /// Supplies the diagnostics needed either to resolve the reference or diagnose its failure.
     diagnostics: Vec<ResolutionDiagnostic>,
+}
+
+/// Typed framing references retained while aliases finish resolving.
+struct PendingResolvedFraming {
+    /// Exact semantic type authored as the island root.
+    island: ResolvedType,
+    /// Optional semantic payload owner and authored variant name.
+    payload: Option<(ResolvedType, String)>,
 }
 
 /// Resolves local semantics.
@@ -2261,6 +2295,7 @@ impl Resolver<'_> {
             }
             self.nodes[node_index].resolved.fields = resolved_fields;
         }
+        let framing = self.resolve_framing_types();
         let mut resolved_aliases = BTreeSet::new();
         let mut resolution_index = 0;
         while resolution_index < self.resolutions.len() {
@@ -2299,6 +2334,166 @@ impl Resolver<'_> {
                 }
             }
             self.type_aliases[alias_id.index()].resolved.defaults = defaults;
+        }
+        self.configuration.framing = framing.and_then(|framing| self.finish_framing(framing));
+    }
+
+    /// Resolves framing paths through the same typed lookup used by semantic fields.
+    fn resolve_framing_types(&mut self) -> Option<PendingResolvedFraming> {
+        let syntax = self.configuration.syntax.framing.clone()?;
+        let module = self.configuration.module;
+        let source = self.configuration.source;
+        let island = self.resolve_type(
+            &Type::Path(syn::TypePath {
+                qself: None,
+                path: syntax.island,
+            }),
+            module,
+            SemanticOwner::Grammar,
+            source,
+        )?;
+        let payload = if let Some(payload) = syntax.payload {
+            let mut after = payload.after;
+            let Some(variant) = after
+                .segments
+                .pop()
+                .map(|pair| pair.into_value().ident.unraw().to_string())
+                .filter(|_| !after.segments.is_empty())
+            else {
+                self.push_site_diagnostic(
+                    ResolutionDiagnosticKind::InvalidConfiguration,
+                    module,
+                    source,
+                    Some(self.configuration.range.clone()),
+                    "payload `after` requires an island variant path".to_owned(),
+                );
+                return None;
+            };
+            let after = self.resolve_type(
+                &Type::Path(syn::TypePath {
+                    qself: None,
+                    path: after,
+                }),
+                module,
+                SemanticOwner::Grammar,
+                source,
+            )?;
+            Some((after, variant))
+        } else {
+            None
+        };
+        Some(PendingResolvedFraming { island, payload })
+    }
+
+    /// Correlates resolved framing types with exact Node and variant identities.
+    ///
+    /// # Long-function contract
+    ///
+    /// Rationale: framing references must finish in the same typed source-resolution transaction as
+    /// ordinary grammar-semantic paths so aliases, imports, ambiguity, and diagnostics cannot drift
+    /// into an emission-only name lookup. Invariants: the island terminates at one generated Node,
+    /// the payload owner terminates at that same Node, and the configured payload variant is an exact
+    /// member of that resolved enum. Major phases: close the island's resolution trace, close and
+    /// correlate the optional payload owner and variant, suppress a partial framing configuration
+    /// after any payload error, then freeze exact identities for materialization.
+    fn finish_framing(
+        &mut self,
+        framing: PendingResolvedFraming,
+    ) -> Option<ResolvedFramingConfiguration> {
+        let module = self.configuration.module;
+        let source = self.configuration.source;
+        let Some(island_node) = self.terminal_node(&framing.island) else {
+            self.push_site_diagnostic(
+                ResolutionDiagnosticKind::InvalidConfiguration,
+                module,
+                source,
+                Some(framing.island.range.clone()),
+                "framing island must resolve to a generated Node type".to_owned(),
+            );
+            return None;
+        };
+        let payload = framing
+            .payload
+            .and_then(|(after, variant_name)| {
+                let Some(after_node) = self.terminal_node(&after) else {
+                    self.push_site_diagnostic(
+                        ResolutionDiagnosticKind::InvalidConfiguration,
+                        module,
+                        source,
+                        Some(after.range.clone()),
+                        "payload `after` owner must resolve to the framing island Node".to_owned(),
+                    );
+                    return None;
+                };
+                if after_node != island_node {
+                    self.push_site_diagnostic(
+                        ResolutionDiagnosticKind::InvalidConfiguration,
+                        module,
+                        source,
+                        Some(after.range.clone()),
+                        "payload `after` must name a variant of the configured framing island"
+                            .to_owned(),
+                    );
+                    return None;
+                }
+                let variant = match &self.nodes[island_node.index()].resolved.body {
+                    ResolvedNodeBody::Enum { variants } => variants
+                        .iter()
+                        .find(|variant| variant.ident == variant_name)
+                        .map(|variant| variant.id),
+                    ResolvedNodeBody::Struct { .. } => None,
+                };
+                let Some(variant) = variant else {
+                    self.push_site_diagnostic(
+                        ResolutionDiagnosticKind::InvalidConfiguration,
+                        module,
+                        source,
+                        Some(after.range.clone()),
+                        format!(
+                            "payload `after` variant `{variant_name}` is not reachable from framing island `{}`",
+                            self.nodes[island_node.index()].resolved.ident,
+                        ),
+                    );
+                    return None;
+                };
+                Some(ResolvedFramingPayloadConfiguration {
+                    after,
+                    variant,
+                })
+            });
+        if self
+            .configuration
+            .syntax
+            .framing
+            .as_ref()?
+            .payload
+            .is_some()
+            && payload.is_none()
+        {
+            return None;
+        }
+        Some(ResolvedFramingConfiguration {
+            island: framing.island,
+            island_node,
+            payload,
+        })
+    }
+
+    /// Follows resolved type aliases to the terminal Node declaration, if any.
+    fn terminal_node(&self, ty: &ResolvedType) -> Option<NodeId> {
+        let mut current = ty;
+        let mut visited = BTreeSet::new();
+        loop {
+            let ResolvedTypeKind::Semantic { target, .. } = &current.kind else {
+                return None;
+            };
+            match *target {
+                SemanticTarget::Node(node) => return Some(node),
+                SemanticTarget::TypeAlias(alias) if visited.insert(alias) => {
+                    current = self.type_aliases[alias.index()].resolved.target.as_ref()?;
+                }
+                _ => return None,
+            }
         }
     }
 
@@ -2594,6 +2789,7 @@ impl Resolver<'_> {
     /// Derives the generic parameter while resolving typed grammar-semantic references.
     fn generic_parameter(&self, owner: SemanticOwner, name: &str) -> Option<GenericParameterId> {
         match owner {
+            SemanticOwner::Grammar => None,
             SemanticOwner::Node(node) => self.nodes[node.index()]
                 .generic_parameters
                 .get(name)
@@ -2886,6 +3082,8 @@ fn find_grammar_config(
         syntax,
         source: inclusion.source,
         range: span_range(item.span()),
+        module: inclusion.id,
+        framing: None,
     };
     (
         Some((anchor, FacadeMapping { ident: facade }, configuration)),
@@ -3495,6 +3693,48 @@ mod consumer {
     use super::two::*;
     #[derive(recursa::Node)] struct Root { value: Shared }
 }
+"#,
+            &["RCA2006"],
+        );
+    }
+
+    #[test]
+    fn framing_island_reports_normal_ambiguous_import_diagnostics() {
+        assert_source_analysis_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! {
+    module = crate::sql,
+    framing(island = Shared, boundary = SEMI),
+}
+recursa::tokens! { punctuation { SEMI => ";" } }
+mod one { #[derive(recursa::Node)] pub struct Shared; }
+mod two { #[derive(recursa::Node)] pub struct Shared; }
+use one::*;
+use two::*;
+"#,
+            &["RCA2006"],
+        );
+    }
+
+    #[test]
+    fn framing_payload_owner_reports_normal_ambiguous_import_diagnostics() {
+        assert_source_analysis_codes(
+            &TempDir::new().unwrap(),
+            r#"
+recursa::grammar! {
+    module = crate::sql,
+    framing(
+        island = one::Shared,
+        boundary = SEMI,
+        payload(after = Shared::Payload, terminator = "\\."),
+    ),
+}
+recursa::tokens! { punctuation { SEMI => ";" } }
+mod one { #[derive(recursa::Node)] pub enum Shared { Payload } }
+mod two { #[derive(recursa::Node)] pub enum Shared { Payload } }
+use one::*;
+use two::*;
 "#,
             &["RCA2006"],
         );
@@ -4771,6 +5011,9 @@ mod consumer {{
                         node_key(
                             resolved,
                             match use_site.owner {
+                                super::SemanticOwner::Grammar => {
+                                    panic!("fixture projection contains only Node fields")
+                                }
                                 super::SemanticOwner::Node(node) => node,
                                 super::SemanticOwner::TypeAlias(_) => {
                                     panic!("fixture projection contains only Node fields")

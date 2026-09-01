@@ -125,6 +125,8 @@ pub(crate) struct LoweringMap {
     pub(crate) content_targets: Vec<ContentTargetTypeCorrelation>,
     /// Materialized Node applications correlated with normalized grammar types.
     pub(crate) applications: Vec<ApplicationTypeCorrelation>,
+    /// Typed document-framing identities correlated with one exact application.
+    pub(crate) framing: Option<FramingApplicationCorrelation>,
     /// Authored variants correlated with normalized alternatives.
     pub(crate) variants: Vec<VariantAlternativeCorrelation>,
     /// Authored fields correlated with parse sites or implicit Pratt operands.
@@ -135,6 +137,17 @@ pub(crate) struct LoweringMap {
     pub(crate) presences: Vec<FixedPresenceCorrelation>,
     /// Erased optional fixed-token groups correlated with their normalized sequences.
     pub(crate) optional_fixed_groups: Vec<OptionalFixedGroupCorrelation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Correlates typed framing declarations with materialized parser identities.
+pub(crate) struct FramingApplicationCorrelation {
+    /// Exact resolved Node declaration selected by source resolution.
+    pub(crate) node: NodeId,
+    /// Exact closed Node application used for every typed island.
+    pub(crate) application: MaterializedApplicationId,
+    /// Optional exact resolved variant that commits payload mode.
+    pub(crate) payload_variant: Option<ResolvedVariantId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -948,6 +961,8 @@ struct Materializer {
     application_by_key: BTreeMap<ApplicationKey, MaterializedApplicationId>,
     /// Supplies the applications needed to materialize a concrete grammar application.
     applications: Vec<MaterializedNodeApplication>,
+    /// Exact closed framing identities, withheld until typed references materialize.
+    framing: Option<FramingApplicationCorrelation>,
     /// Supplies the diagnostics needed to materialize a concrete grammar application.
     diagnostics: Vec<MaterializationDiagnostic>,
     /// Supplies the active aliases needed to materialize a concrete grammar application.
@@ -1093,6 +1108,7 @@ pub(crate) fn materialize(source_modeled: SourceModeledGrammar) -> Materializati
         lexical_plan: lexical.plan,
         application_by_key: BTreeMap::new(),
         applications: Vec::new(),
+        framing: None,
         diagnostics: Vec::new(),
         active_aliases: Vec::new(),
         active_applications: Vec::new(),
@@ -1152,6 +1168,7 @@ impl Materializer {
         for node in seeds {
             self.ensure_application(node, Vec::new());
         }
+        self.materialize_framing();
         if self.diagnostics.is_empty() && lexical_diagnostics.is_empty() {
             self.validate_closed_pretty_boundaries();
         }
@@ -1199,6 +1216,77 @@ impl Materializer {
             #[cfg(test)]
             closed_pretty_summary_counts,
         }
+    }
+
+    /// Closes typed framing references and freezes their exact application correlation.
+    ///
+    /// # Long-function contract
+    ///
+    /// Rationale: resolved Node identity alone is insufficient once generic applications exist; the
+    /// generated framing plan must select the same closed application used by parsing and recovery.
+    /// Invariants: the island evaluates to one Node application correlated to its resolved Node, the
+    /// payload owner evaluates to that exact application, and only the previously resolved variant ID
+    /// crosses into the lowering map. Major phases: evaluate and validate the island type, evaluate
+    /// and compare the optional payload owner, retain its exact variant correlation, then publish the
+    /// single immutable framing application correlation consumed by emission planning.
+    fn materialize_framing(&mut self) {
+        let Some(framing) = self.resolved().configuration.framing.clone() else {
+            return;
+        };
+        let environment = EvaluationEnvironment::default();
+        let Some(island) = self.evaluate_type(&framing.island, None, &environment) else {
+            return;
+        };
+        let ClosedType::Node(island) = island.closed else {
+            self.push_diagnostic(
+                framing.island.source,
+                Some(framing.island.range),
+                MaterializationDiagnosticKind::UnsupportedType,
+                "framing island must close to one Node application".to_owned(),
+            );
+            return;
+        };
+        if self.applications[island.application.index()].node != framing.island_node {
+            self.push_diagnostic(
+                framing.island.source,
+                Some(framing.island.range),
+                MaterializationDiagnosticKind::UnsupportedType,
+                "framing island application diverges from its resolved Node correlation".to_owned(),
+            );
+            return;
+        }
+        let payload_variant = if let Some(payload) = framing.payload {
+            let Some(after) = self.evaluate_type(&payload.after, None, &environment) else {
+                return;
+            };
+            let ClosedType::Node(after) = after.closed else {
+                self.push_diagnostic(
+                    payload.after.source,
+                    Some(payload.after.range),
+                    MaterializationDiagnosticKind::UnsupportedType,
+                    "payload `after` owner must close to the framing island application".to_owned(),
+                );
+                return;
+            };
+            if after.application != island.application {
+                self.push_diagnostic(
+                    framing.island.source,
+                    Some(framing.island.range),
+                    MaterializationDiagnosticKind::UnsupportedType,
+                    "payload `after` must resolve to the exact framing island application"
+                        .to_owned(),
+                );
+                return;
+            }
+            Some(payload.variant)
+        } else {
+            None
+        };
+        self.framing = Some(FramingApplicationCorrelation {
+            node: framing.island_node,
+            application: island.application,
+            payload_variant,
+        });
     }
 
     /// Validates closed pretty boundaries.
@@ -3476,6 +3564,7 @@ impl Materializer {
                     })
                     .collect(),
                 applications: reservations.applications,
+                framing: self.framing,
                 variants: variant_correlations,
                 fields: projected_fields,
                 attachments: attachment_correlations,
