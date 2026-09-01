@@ -293,6 +293,18 @@ _Avoid_: Error Node, invalid AST node
 A source-ordered recognized element or separator, zero-width missing marker, or skipped source span owned by a recovery node.
 _Avoid_: Synthetic AST field, inserted token
 
+**Recovery plan**:
+The generated immutable, construction-free static payload that joins frozen dispatch, FIRST, FOLLOW, and container products to Explorer schemas for one root's recovery interpreter.
+_Avoid_: Recovery grammar, error-recovery table
+
+**Recovery commitment**:
+The frozen dispatch-trie fact that one consumed distinguishing prefix leaves exactly one declaration reachable, letting recovery retain that variant before its terminal.
+_Avoid_: Speculative variant choice, declaration-order tie-break
+
+**Recovery progress trace**:
+The read-only execution evidence retained by a recovery document proving no zero-consumption progress key repeated and total work stayed within the finite state bound.
+_Avoid_: Debug log, profiler output
+
 **Explorer node**:
 A grammar-erased read-only handle to one Node or content-token occurrence in an explorer document, without exposing its semantic Rust type or occurrence identity.
 _Avoid_: Dynamic Node, Node key, AST address

@@ -172,7 +172,9 @@ No features are enabled by default.
 - `arbitrary` supplies facade support for configured generated `Arbitrary`
   implementations.
 - `diagrams` supplies the matching facade capability for generated diagrams.
-- `explorer` exposes grammar-erased Explorer adapter and document contracts.
+- `explorer` exposes grammar-erased strict documents and construction-free
+  recovery projections. `Adapter::explore` returns `None` when a reachable
+  grammar form does not yet support recovery; `Adapter::parse` is unchanged.
 - `serde` supplies facade support for configured generated Serde
   implementations.
 

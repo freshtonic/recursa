@@ -51,7 +51,12 @@ grammar-erased projection plus a non-empty ordered diagnostic collection. It
 uses static Explorer schema references rather than copying schema.
 
 ```text
-RecoveryDocument { source, root: RecoveryNode, diagnostics }
+RecoveryDocument {
+  source,
+  root: RecoveryNode,
+  diagnostics,
+  progress: RecoveryProgressTrace,
+}
 
 RecoveryNode {
   schema,
@@ -158,6 +163,21 @@ A zero-consumption key may never be entered twice. In particular, inserting a
 missing part cannot retry the same operation, and an uncommitted dispatch
 cannot retry at the same cursor. Generated debug assertions and black-box trace
 tests must reject duplicate zero-consumption keys.
+
+Each recovered document retains a public, read-only `progress_trace()`. The
+trace records the finalized input-record count, entered and closed frame counts,
+guarded zero-consumption states, and the execution's explicit finite state
+bound. Frame identity and element, repetition, and fixed-syntax states are typed
+machine values rather than addresses or numeric phase conventions. The bound is
+the input positions (`input_records + 1`) multiplied by the finite guarded state
+slots contributed by every entered frame. A successful recovery has no duplicate
+guarded key, has closed every entered frame, and reports `is_within_bound()`.
+
+Fixed syntax participates in the same transition guard: one machine transition
+may recognize or emit at most one fixed-syntax part. It cannot emit a sequence of
+missing parts while bypassing the zero-consumption key invariant. Multi-token
+optional and presence groups are selected atomically, then retain a typed
+committed token index so each token advances in its own guarded transition.
 
 The cursor is bounded by the finite recovery input, and every same-cursor action
 irreversibly consumes a finite parse state or stack frame. Recovery therefore
@@ -285,6 +305,18 @@ The existing strict adapter parse operation remains unchanged. Recovery adds a
 separate exploration operation and an advertised `recovery` capability under
 the existing `explorer` feature. Without that feature there are no recovery
 types, callbacks, generated payload, or protocol fields.
+
+Recovery availability is root-wide. A root advertises the capability only when
+every reachable generated Node has an implemented recovery interpreter body.
+Compound structs, predictive enums, and their containers are available in the
+first implementation slice. A root that reaches a Pratt Node reports
+`recovery = false` until the binding-power-aware Pratt slice is present; its
+strict `Adapter::parse` behavior and Explorer schema remain available. The same
+root-wide rule covers two other frozen products this slice cannot interpret
+yet: an enum selected through a balanced-delimiter dispatch cut, and an
+optional container refined by a sparse consume-vs-skip viability decision.
+Recovery never falls back to a raw selector where the frozen plan refines the
+choice.
 
 The matching-version private JSON protocol uses mutually exclusive responses:
 
