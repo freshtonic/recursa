@@ -237,19 +237,24 @@ fn assert_application_qualified_diagrams(package: &TempDir) {
         })
         .expect("aggregate generic application diagram");
     for application in [
-        "grammar::Wrap&lt;grammar::Name&gt;",
-        "grammar::Wrap&lt;Vec&lt;grammar::Name&gt;&gt;",
-        "grammar::Atom&lt;grammar::Integer&gt;",
-        "grammar::Atom&lt;grammar::Name&gt;",
-        "grammar::Chain&lt;grammar::Integer&gt;",
-        "grammar::Chain&lt;grammar::Name&gt;",
+        "Wrap&lt;Name&gt;",
+        "Wrap&lt;Vec&lt;Name&gt;&gt;",
+        "Atom&lt;Integer&gt;",
+        "Atom&lt;Name&gt;",
+        "Chain&lt;Integer&gt;",
+        "Chain&lt;Name&gt;",
     ] {
         assert!(
             aggregate.1.contains(application),
-            "missing application-qualified railroad branch `{application}`:\n{}",
+            "missing application-distinguishing railroad branch `{application}`:\n{}",
             aggregate.1,
         );
     }
+    assert!(
+        !aggregate.1.contains("grammar::Wrap&lt;") && !aggregate.1.contains("&lt;grammar::"),
+        "railroad labels must drop module qualifiers:\n{}",
+        aggregate.1,
+    );
     assert!(aggregate.1.contains("class=\"choice\""));
     assert!(aggregate.1.contains("class=\"optional\""));
     assert!(aggregate.1.contains("class=\"repeat\""));

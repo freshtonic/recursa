@@ -145,7 +145,7 @@ fn pratt_diagrams_render_frozen_roles_binding_powers_and_operands() {
         .expect("Pratt expression documentation page");
     let diagram = diagram_svg(&expression.1);
     assert!(
-        contains_text_sequence(diagram, &["atom Paren", "[", "grammar::Expr", "]"]),
+        contains_text_sequence(diagram, &["atom Paren", "[", "Expr", "]"]),
         "attached grouping tokens must come from the frozen materialized body:\n{}",
         expression.1,
     );
@@ -154,12 +154,12 @@ fn pratt_diagrams_render_frozen_roles_binding_powers_and_operands() {
         "private attachment units must not surface in Pratt diagrams",
     );
     assert!(
-        contains_text_sequence(diagram, &["prefix bp=35 Neg", "-", "grammar::Expr"]),
+        contains_text_sequence(diagram, &["prefix bp=35 Neg", "-", "Expr"]),
         "prefix role and binding power must be rendered:\n{}",
         expression.1,
     );
     assert!(
-        contains_text_sequence(diagram, &["postfix bp=40 Factorial", "grammar::Expr", "!"],),
+        contains_text_sequence(diagram, &["postfix bp=40 Factorial", "Expr", "!"],),
         "postfix lhs placement and binding power must be rendered:\n{}",
         expression.1,
     );
@@ -168,9 +168,9 @@ fn pratt_diagrams_render_frozen_roles_binding_powers_and_operands() {
             diagram,
             &[
                 "infix lbp=30 rbp=30 Power",
-                "grammar::Expr",
+                "Expr",
                 "^",
-                "grammar::Expr",
+                "Expr",
             ],
         ),
         "infix lhs, tail, and binding powers must be rendered:\n{}",

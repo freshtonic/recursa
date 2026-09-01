@@ -503,12 +503,28 @@ fn diagrams_are_published_in_aggregate_and_declaration_local_rustdoc() {
     let pair = rendered_diagram(&aggregate.1, "grammar::Pair");
     assert!(pair.contains(">PAIR</text>"), "Pair diagram:\n{pair}");
     assert!(
-        pair.contains(">grammar::Label</text>"),
-        "Pair diagram:\n{pair}"
+        pair.contains(">Label</text>") && !pair.contains(">grammar::Label</text>"),
+        "reference labels must drop module qualifiers:\n{pair}"
     );
     assert!(
-        pair.contains("<g class=\"optional\">") && pair.contains(">grammar::Count</text>"),
+        pair.contains("<g class=\"optional\">") && pair.contains(">Count</text>"),
         "tuple fields must use referenced frozen terminal names:\n{pair}",
+    );
+    assert!(
+        pair.contains("class=\"labeledbox\"")
+            && pair.contains(">LabelText</text>")
+            && pair.contains(">CountText</text>"),
+        "first references must expand inline as labeled boxes:\n{pair}",
+    );
+
+    let entry = rendered_diagram(&aggregate.1, "grammar::Entry");
+    assert!(
+        entry.matches(">LabelText</text>").count() == 1,
+        "each application must expand at most once per diagram:\n{entry}",
+    );
+    assert!(
+        entry.matches(">Label</text>").count() >= 2,
+        "repeated references must stay opaque labeled references:\n{entry}",
     );
 
     let many_labels = rendered_diagram(&aggregate.1, "grammar::ManyLabels");
@@ -522,7 +538,7 @@ fn diagrams_are_published_in_aggregate_and_declaration_local_rustdoc() {
     );
     assert!(
         many_labels.contains("<g class=\"repeat\">")
-            && many_labels.contains(">grammar::Label</text>")
+            && many_labels.contains(">Label</text>")
             && many_labels.matches(">:</text>").count() == 2,
         "zero-or-more separator and optional-trailing semantics must be rendered:\n{many_labels}",
     );
@@ -539,7 +555,7 @@ fn diagrams_are_published_in_aggregate_and_declaration_local_rustdoc() {
     assert!(
         some_counts.contains("<g class=\"optional\">")
             && some_counts.contains("<g class=\"repeat\">")
-            && some_counts.contains(">grammar::Count</text>")
+            && some_counts.contains(">Count</text>")
             && some_counts.contains(">:</text>"),
         "OptionalOneOrMore semantics must remain distinct:\n{some_counts}",
     );
