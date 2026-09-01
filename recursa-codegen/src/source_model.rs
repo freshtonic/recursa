@@ -3553,10 +3553,16 @@ impl SourceModelBuilder<'_> {
                 &self.resolved_field(*resolved_field).ty,
                 analysis,
             );
-            proof.cyclic |= nested.cyclic;
+            let context_is_transparent = before == 0 && after == 0;
+            let context_is_enclosure = before > 0 && after > 0;
+            // A half-open fixed context (required syntax on exactly one side)
+            // can never contribute a witness, so an under-enumerated cyclic
+            // subtree behind it cannot hide one either; only witness-capable
+            // contexts propagate cyclic incompleteness into the proof.
+            if context_is_transparent || context_is_enclosure {
+                proof.cyclic |= nested.cyclic;
+            }
             for witness in nested.witnesses {
-                let context_is_transparent = before == 0 && after == 0;
-                let context_is_enclosure = before > 0 && after > 0;
                 let witness_is_transparent = witness.before == 0 && witness.after == 0;
                 if context_is_transparent || (context_is_enclosure && witness_is_transparent) {
                     proof.push_witness(PrettyPrattGroupingBounds {
@@ -12261,6 +12267,71 @@ enum Expr<'input> {
     Integer(Integer<'input>),
     Quantified(QuantifiedExpr<'input>),
     Parenthesized(ParenthesizedExpr<'input>),
+    #[parse(infix, lbp = 10, rbp = 11)]
+    #[tok(PLUS)]
+    Add(Box<Self>, Box<Self>),
+}
+"#,
+        );
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.source_modeled.is_some());
+    }
+
+    #[test]
+    fn pretty_pratt_grouping_ignores_cycles_in_witness_dead_branches() {
+        // `Sub`'s `items` sits after required fixed syntax with nothing
+        // following (before=1, after=0): that context can never contribute a
+        // grouping witness, so the self-recursive `R` it reaches must not
+        // poison the proof carried by the sibling `Exprs` witness.
+        let report = model(
+            r#"
+recursa::grammar! { module = crate, derives(Pretty) }
+recursa::tokens! {
+    ignore = r"[ \t\r\n]+",
+    keywords { KW => "kw" }
+    punctuation {
+        OPEN => "(", CLOSE => ")", COMMA => ",",
+        LBRACKET => "[", RBRACKET => "]", PLUS => "+"
+    }
+}
+
+#[derive(recursa::Node)]
+struct Integer<'input> {
+    #[lex(pattern = r"[0-9]+")]
+    value: IntegerText<'input>,
+}
+
+#[derive(recursa::Node)]
+enum R<'input> {
+    Nested(#[tok(LBRACKET, this, RBRACKET)] Box<R<'input>>),
+    Leaf(Integer<'input>),
+}
+
+#[derive(recursa::Node)]
+#[tok(KW, this)]
+struct S<'input> {
+    #[sep(COMMA)]
+    items: recursa::Vec1<R<'input>>,
+}
+
+#[derive(recursa::Node)]
+enum C<'input> {
+    Exprs(#[sep(COMMA)] recursa::Vec1<Expr<'input>>),
+    Sub(Box<S<'input>>),
+}
+
+#[derive(recursa::Node)]
+struct P<'input> {
+    #[tok(OPEN, this, CLOSE)]
+    content: C<'input>,
+}
+
+#[derive(recursa::Node)]
+#[pratt]
+enum Expr<'input> {
+    Integer(Integer<'input>),
+    Parenthesized(P<'input>),
     #[parse(infix, lbp = 10, rbp = 11)]
     #[tok(PLUS)]
     Add(Box<Self>, Box<Self>),
