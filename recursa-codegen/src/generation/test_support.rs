@@ -330,10 +330,12 @@ pub(super) fn predictive_compilation_rejects_missing_and_conflicting_frozen_prod
                 variant: 0,
                 mode: crate::DispatchTerminalMode::Immediate,
             }),
+            recovery_commit: Some(0),
             edges: Vec::new(),
         },
         DispatchTrieNodePlan {
             target: None,
+            recovery_commit: None,
             edges: vec![DispatchTrieEdgePlan {
                 position,
                 next: DispatchStateId::new(0),
@@ -344,6 +346,10 @@ pub(super) fn predictive_compilation_rejects_missing_and_conflicting_frozen_prod
         frozen_identity: predictive_dispatch_identity(root, &states),
         root,
         states,
+        restart: ExpectedSet {
+            words: vec![1],
+            atoms: vec![0],
+        },
         frozen_sequence_count: 1,
         frozen_node_count: 2,
         balanced: None,
@@ -417,11 +423,13 @@ pub(super) fn large_predictive_selection_emits_each_position_matcher_once() {
             variant: 0,
             mode: crate::DispatchTerminalMode::Immediate,
         }),
+        recovery_commit: None,
         edges: Vec::new(),
     }];
     for state in 1..=128 {
         states.push(DispatchTrieNodePlan {
             target: None,
+            recovery_commit: None,
             edges: positions
                 .iter()
                 .cloned()
@@ -433,9 +441,14 @@ pub(super) fn large_predictive_selection_emits_each_position_matcher_once() {
         });
     }
     let root = DispatchStateId::new(states.len() - 1);
+    let mut restart = ExpectedSet::empty(plan.kind_count);
+    for position in &positions {
+        restart.union_assign(&position.expected);
+    }
     let dispatch = PredictiveDispatchPlan {
         frozen_identity: predictive_dispatch_identity(root, &states),
         root,
+        restart,
         frozen_sequence_count: positions.len(),
         frozen_node_count: states.len(),
         states,
@@ -611,11 +624,13 @@ pub(super) fn large_ordinary_predictive_dispatch_uses_compact_tables() {
             variant: 0,
             mode: crate::DispatchTerminalMode::Immediate,
         }),
+        recovery_commit: None,
         edges: Vec::new(),
     }];
     for state in 1..=128 {
         states.push(DispatchTrieNodePlan {
             target: None,
+            recovery_commit: None,
             edges: positions
                 .iter()
                 .cloned()
@@ -692,6 +707,7 @@ pub(super) fn single_digit_packed_dispatch_is_clippy_clean() {
             variant: 0,
             mode: crate::DispatchTerminalMode::Immediate,
         }),
+        recovery_commit: None,
         edges: Vec::new(),
     }];
     let mut expected_index = 3_000_000;
