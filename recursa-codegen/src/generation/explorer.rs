@@ -1979,9 +1979,7 @@ pub(super) fn render_node_application_explorer(
     }
 }
 
-/// Reports whether every Node reachable from one root has a #94 recovery body.
-/// Pratt reachability keeps the entire root unavailable until #97 supplies its
-/// binding-power-aware interpreter states.
+/// Reports whether every Node reachable from one root has a generated recovery body.
 fn explorer_recovery_available(plan: &EmissionPlan, root: MaterializedApplicationId) -> bool {
     let mut pending = vec![root];
     let mut visited = BTreeSet::new();
@@ -2004,7 +2002,29 @@ fn explorer_recovery_available(plan: &EmissionPlan, root: MaterializedApplicatio
                     .map(|variant| variant.elements.as_slice())
                     .collect()
             }
-            NodeBodyPlan::Pratt(_) => return false,
+            NodeBodyPlan::Pratt(pratt) => {
+                // Pratt recovery interprets the bounded trie only; a balanced
+                // cut inside either selector keeps the same exclusion.
+                if pratt.nud_dispatch.balanced.is_some()
+                    || pratt
+                        .led_dispatch
+                        .as_ref()
+                        .is_some_and(|dispatch| dispatch.balanced.is_some())
+                {
+                    return false;
+                }
+                pratt
+                    .nud
+                    .iter()
+                    .map(|variant| variant.variant.elements.as_slice())
+                    .chain(
+                        pratt
+                            .led
+                            .iter()
+                            .map(|variant| variant.variant.elements.as_slice()),
+                    )
+                    .collect()
+            }
         };
         for element in element_groups.into_iter().flatten() {
             let ElementParseKind::Semantic { projection, .. } = &element.kind else {
@@ -2502,6 +2522,7 @@ fn render_recovery_element_plan(
 fn render_recovery_dispatch_graph(
     plan: &EmissionPlan,
     node_index: usize,
+    stem: &str,
     dispatch: &PredictiveDispatchPlan,
 ) -> (proc_macro2::TokenStream, Ident) {
     let facade = &plan.facade;
@@ -2510,7 +2531,7 @@ fn render_recovery_dispatch_graph(
         let mut edges = Vec::new();
         for edge in &state.edges {
             let child = format_ident!(
-                "__RECURSA_EXPLORER_RECOVERY_DISPATCH_{node_index}_{}",
+                "__RECURSA_EXPLORER_RECOVERY_{stem}_{node_index}_{}",
                 edge.next.index()
             );
             let expected = recovery_expected_ref(plan, &edge.position.expected);
@@ -2538,8 +2559,8 @@ fn render_recovery_dispatch_graph(
         }
         let edge_count = edges.len();
         let edges_name =
-            format_ident!("__RECURSA_EXPLORER_RECOVERY_DISPATCH_EDGES_{node_index}_{index}");
-        let node_name = format_ident!("__RECURSA_EXPLORER_RECOVERY_DISPATCH_{node_index}_{index}");
+            format_ident!("__RECURSA_EXPLORER_RECOVERY_{stem}_EDGES_{node_index}_{index}");
+        let node_name = format_ident!("__RECURSA_EXPLORER_RECOVERY_{stem}_{node_index}_{index}");
         // The runtime selector tries exact edges before terminals, so both
         // immediate and fallback-after-edges terminals select unconditionally
         // once no edge matches; only caller-FOLLOW terminals stay conditional.
@@ -2575,13 +2596,59 @@ fn render_recovery_dispatch_graph(
         });
     }
     let root = format_ident!(
-        "__RECURSA_EXPLORER_RECOVERY_DISPATCH_{node_index}_{}",
+        "__RECURSA_EXPLORER_RECOVERY_{stem}_{node_index}_{}",
         dispatch.root.index()
     );
     (quote!(#(#definitions)*), root)
 }
 
+/// Renders one branch's frozen recursive-operand associations as a static slice.
+fn render_recovery_pratt_operands(
+    facade: &Ident,
+    name: &Ident,
+    operands: &[PrattOperandParsePlan],
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    if operands.is_empty() {
+        return (quote!(), quote!(&[]));
+    }
+    let values = operands
+        .iter()
+        .map(|operand| {
+            let element_index = operand.element_index;
+            let minimum_binding_power = operand.minimum_binding_power;
+            quote! {
+                #facade::__private::explorer_recovery_pratt_operand(
+                    #facade::__private::explorer_recovery_element_index(#element_index),
+                    #minimum_binding_power,
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    let count = values.len();
+    let definition = quote! {
+        static #name:
+            [#facade::__private::ExplorerRecoveryPrattOperandPlanData; #count] =
+            [#(#values),*];
+    };
+    (definition, quote!(&#name))
+}
+
 /// Renders the immutable grammar-erased recovery payload shared by root callbacks.
+///
+/// # Long-function contract
+///
+/// Rationale: one traversal must preserve the frozen parse-application indices shared by
+/// Explorer schemas, recovery elements, dispatch tries, and root callbacks. Splitting that
+/// traversal would invite a second authority for static names, variant order, or element
+/// positions. The function only serializes validated plans; it must not rediscover syntax,
+/// operands, binding powers, or FOLLOW policy while rendering.
+///
+/// Its major phases emit each struct, predictive enum, or Pratt application; emit the dense
+/// token-schema table; and finally bind each eligible root to its application plan. The Pratt
+/// phase keeps NUD then LED source order, emits dispatch and synchronization sets before their
+/// users, and carries each recursive operand's typed element index beside its binding power.
+/// Every generated reference therefore resolves to one earlier static definition from the same
+/// frozen application.
 fn render_recovery_static_plan(
     plan: &EmissionPlan,
     explorer: &ExplorerPlan,
@@ -2626,7 +2693,7 @@ fn render_recovery_static_plan(
                 }
                 NodeBodyPlan::Enum { variants, dispatch } => {
                     let (dispatch_definitions, dispatch_name) =
-                        render_recovery_dispatch_graph(plan, node_index, dispatch);
+                        render_recovery_dispatch_graph(plan, node_index, "DISPATCH", dispatch);
                     let restart = recovery_expected_ref(plan, &dispatch.restart);
                     let variant_definitions = variants
                         .iter()
@@ -2692,10 +2759,257 @@ fn render_recovery_static_plan(
                             );
                     }
                 }
-                NodeBodyPlan::Pratt(_) => quote! {
-                    static #recovery_node: #facade::__private::ExplorerRecoveryNodePlanData =
-                        #facade::__private::explorer_recovery_pratt_unavailable_plan(&#schema);
-                },
+                NodeBodyPlan::Pratt(pratt) => {
+                    let (nud_dispatch_definitions, nud_dispatch) = render_recovery_dispatch_graph(
+                        plan,
+                        node_index,
+                        "PRATT_NUD_DISPATCH",
+                        &pratt.nud_dispatch,
+                    );
+                    let (led_dispatch_definitions, led_dispatch) = pratt
+                        .led_dispatch
+                        .as_ref()
+                        .map_or_else(
+                            || (quote!(), quote!(None)),
+                            |dispatch| {
+                                let (definitions, name) = render_recovery_dispatch_graph(
+                                    plan,
+                                    node_index,
+                                    "PRATT_LED_DISPATCH",
+                                    dispatch,
+                                );
+                                (definitions, quote!(Some(&#name)))
+                            },
+                        );
+                    let nud_restart = recovery_expected_ref(plan, &pratt.nud_dispatch.restart);
+                    let nud_failure = render_recovery_follow(plan, &pratt.nud_failure);
+                    let nud_selection_follow =
+                        recovery_expected_ref(plan, &pratt.nud_selection_follow);
+
+                    let nud_definitions = pratt
+                        .nud
+                        .iter()
+                        .enumerate()
+                        .map(|(variant_index, branch)| {
+                            let elements_name = format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_PRATT_NUD_ELEMENTS_{node_index}_{variant_index}"
+                            );
+                            let elements = branch
+                                .variant
+                                .elements
+                                .iter()
+                                .enumerate()
+                                .map(|(element_index, element)| {
+                                    render_recovery_element_plan(
+                                        plan,
+                                        explorer,
+                                        node_index,
+                                        Some(variant_index),
+                                        element_index,
+                                        element,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            let element_count = elements.len();
+                            let variant_schema = explorer_schema_static(node_index, Some(variant_index));
+                            let variant_name = format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_PRATT_NUD_VARIANT_{node_index}_{variant_index}"
+                            );
+                            let plan_name = format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_PRATT_NUD_{node_index}_{variant_index}"
+                            );
+                            let operands_name = format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_PRATT_NUD_OPERANDS_{node_index}_{variant_index}"
+                            );
+                            let (operands_definition, operands) = render_recovery_pratt_operands(
+                                facade,
+                                &operands_name,
+                                &branch.operands,
+                            );
+                            let constructor = match branch.position {
+                                PrattPosition::Atom => quote!(
+                                    #facade::__private::explorer_recovery_pratt_atom(#variant_name)
+                                ),
+                                PrattPosition::Prefix { .. } => quote!(
+                                    #facade::__private::explorer_recovery_pratt_prefix(
+                                        #variant_name,
+                                        #operands,
+                                    )
+                                ),
+                                PrattPosition::Infix { .. } | PrattPosition::Postfix { .. } => {
+                                    unreachable!("validated Pratt nud plan has a nud position")
+                                }
+                            };
+                            quote! {
+                                static #elements_name:
+                                    [#facade::__private::ExplorerRecoveryElementPlanData; #element_count] =
+                                    [#(#elements),*];
+                                static #variant_name: #facade::__private::ExplorerRecoveryVariantPlanData =
+                                    #facade::__private::explorer_recovery_variant_plan(
+                                        &#variant_schema,
+                                        &#elements_name,
+                                    );
+                                #operands_definition
+                                static #plan_name: #facade::__private::ExplorerRecoveryPrattNudPlanData =
+                                    #constructor;
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let nud_names = (0..pratt.nud.len()).map(|variant_index| {
+                        format_ident!(
+                            "__RECURSA_EXPLORER_RECOVERY_PRATT_NUD_{node_index}_{variant_index}"
+                        )
+                    });
+                    let nud_name =
+                        format_ident!("__RECURSA_EXPLORER_RECOVERY_PRATT_NUD_{node_index}");
+                    let nud_count = pratt.nud.len();
+
+                    let led_definitions = pratt
+                        .led
+                        .iter()
+                        .enumerate()
+                        .map(|(led_index, branch)| {
+                            let variant_index = nud_count + led_index;
+                            let elements_name = format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_PRATT_LED_ELEMENTS_{node_index}_{led_index}"
+                            );
+                            let elements = branch
+                                .variant
+                                .elements
+                                .iter()
+                                .enumerate()
+                                .map(|(tail_index, element)| {
+                                    render_recovery_element_plan(
+                                        plan,
+                                        explorer,
+                                        node_index,
+                                        Some(variant_index),
+                                        tail_index + 1,
+                                        element,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            let element_count = elements.len();
+                            let variant_schema = explorer_schema_static(node_index, Some(variant_index));
+                            let lhs_schema =
+                                explorer_element_schema_static(node_index, Some(variant_index), 0);
+                            let variant_name = format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_PRATT_LED_VARIANT_{node_index}_{led_index}"
+                            );
+                            let plan_name = format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_PRATT_LED_{node_index}_{led_index}"
+                            );
+                            let operands_name = format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_PRATT_LED_OPERANDS_{node_index}_{led_index}"
+                            );
+                            let (operands_definition, operands) = render_recovery_pratt_operands(
+                                facade,
+                                &operands_name,
+                                &branch.operands,
+                            );
+                            let constructor = match branch.position {
+                                PrattPosition::Infix { lbp, .. } => quote!(
+                                    #facade::__private::explorer_recovery_pratt_infix(
+                                        #variant_name,
+                                        &#lhs_schema,
+                                        #lbp,
+                                        #operands,
+                                    )
+                                ),
+                                PrattPosition::Postfix { bp } => quote!(
+                                    #facade::__private::explorer_recovery_pratt_postfix(
+                                        #variant_name,
+                                        &#lhs_schema,
+                                        #bp,
+                                        #operands,
+                                    )
+                                ),
+                                PrattPosition::Atom | PrattPosition::Prefix { .. } => {
+                                    unreachable!("validated Pratt led plan has a led position")
+                                }
+                            };
+                            quote! {
+                                static #elements_name:
+                                    [#facade::__private::ExplorerRecoveryElementPlanData; #element_count] =
+                                    [#(#elements),*];
+                                static #variant_name: #facade::__private::ExplorerRecoveryVariantPlanData =
+                                    #facade::__private::explorer_recovery_variant_plan(
+                                        &#variant_schema,
+                                        &#elements_name,
+                                    );
+                                #operands_definition
+                                static #plan_name: #facade::__private::ExplorerRecoveryPrattLedPlanData =
+                                    #constructor;
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let led_names = (0..pratt.led.len()).map(|led_index| {
+                        format_ident!(
+                            "__RECURSA_EXPLORER_RECOVERY_PRATT_LED_{node_index}_{led_index}"
+                        )
+                    });
+                    let led_name =
+                        format_ident!("__RECURSA_EXPLORER_RECOVERY_PRATT_LED_{node_index}");
+                    let led_count = pratt.led.len();
+
+                    let guards = pratt.caller_follow_guard.as_deref().unwrap_or(&[]);
+                    let guard_definitions = guards
+                        .iter()
+                        .enumerate()
+                        .map(|(guard_index, guard)| {
+                            let guard_name = format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_PRATT_GUARD_{node_index}_{guard_index}"
+                            );
+                            let expected = recovery_expected_ref(plan, &guard.expected);
+                            let left_binding_power = pratt_led_lbp(guard.position);
+                            quote! {
+                                static #guard_name: #facade::__private::ExplorerRecoveryPrattGuardPlanData =
+                                    #facade::__private::explorer_recovery_pratt_guard(
+                                        #left_binding_power,
+                                        #expected,
+                                    );
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let guard_names = (0..guards.len())
+                        .map(|guard_index| {
+                            format_ident!(
+                                "__RECURSA_EXPLORER_RECOVERY_PRATT_GUARD_{node_index}_{guard_index}"
+                            )
+                        });
+                    let guard_name =
+                        format_ident!("__RECURSA_EXPLORER_RECOVERY_PRATT_GUARDS_{node_index}");
+                    let guard_count = guards.len();
+
+                    quote! {
+                        #nud_dispatch_definitions
+                        #led_dispatch_definitions
+                        #(#nud_definitions)*
+                        static #nud_name:
+                            [#facade::__private::ExplorerRecoveryPrattNudPlanData; #nud_count] =
+                            [#(#nud_names),*];
+                        #(#led_definitions)*
+                        static #led_name:
+                            [#facade::__private::ExplorerRecoveryPrattLedPlanData; #led_count] =
+                            [#(#led_names),*];
+                        #(#guard_definitions)*
+                        static #guard_name:
+                            [#facade::__private::ExplorerRecoveryPrattGuardPlanData; #guard_count] =
+                            [#(#guard_names),*];
+                        static #recovery_node: #facade::__private::ExplorerRecoveryNodePlanData =
+                            #facade::__private::explorer_recovery_pratt_plan(
+                                &#schema,
+                                &#nud_name,
+                                &#led_name,
+                                &#nud_dispatch,
+                                #nud_restart,
+                                #nud_failure,
+                                #nud_selection_follow,
+                                #led_dispatch,
+                                &#guard_name,
+                            );
+                    }
+                }
             }
         })
     });

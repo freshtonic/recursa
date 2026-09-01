@@ -294,7 +294,7 @@ A source-ordered recognized element or separator, zero-width missing marker, or 
 _Avoid_: Synthetic AST field, inserted token
 
 **Recovery plan**:
-The generated immutable, construction-free static payload that joins frozen dispatch, FIRST, FOLLOW, and container products to Explorer schemas for one root's recovery interpreter.
+The generated immutable, construction-free static payload that joins frozen dispatch, FIRST, FOLLOW, container, and Pratt binding products to Explorer schemas for one root's recovery interpreter.
 _Avoid_: Recovery grammar, error-recovery table
 
 **Recovery commitment**:

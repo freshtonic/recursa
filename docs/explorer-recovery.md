@@ -308,15 +308,15 @@ types, callbacks, generated payload, or protocol fields.
 
 Recovery availability is root-wide. A root advertises the capability only when
 every reachable generated Node has an implemented recovery interpreter body.
-Compound structs, predictive enums, and their containers are available in the
-first implementation slice. A root that reaches a Pratt Node reports
-`recovery = false` until the binding-power-aware Pratt slice is present; its
-strict `Adapter::parse` behavior and Explorer schema remain available. The same
-root-wide rule covers two other frozen products this slice cannot interpret
-yet: an enum selected through a balanced-delimiter dispatch cut, and an
-optional container refined by a sparse consume-vs-skip viability decision.
-Recovery never falls back to a raw selector where the frozen plan refines the
-choice.
+Compound structs, predictive enums, their containers, and Pratt expressions
+share the construction-free interpreter. Pratt frames retain their exact
+minimum binding power and frozen nud/led products; strict `Adapter::parse`
+behavior and Explorer schema remain unchanged. The root-wide rule still covers
+two frozen products this slice cannot interpret yet: an enum selected through
+a balanced-delimiter dispatch cut, and an optional container refined by a
+sparse consume-vs-skip viability decision. A Pratt selector that contains a
+balanced cut keeps the same exclusion. Recovery never falls back to a raw
+selector where the frozen plan refines the choice.
 
 The matching-version private JSON protocol uses mutually exclusive responses:
 

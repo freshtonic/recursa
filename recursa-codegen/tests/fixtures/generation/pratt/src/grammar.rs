@@ -126,3 +126,10 @@ pub struct NestedFollowed<'input> {
     pub expression: Expr<'input>,
     pub tail: Integer<'input>,
 }
+
+#[derive(recursa::Node)]
+pub struct FollowedHas<'input> {
+    #[tok(this, HAS)]
+    pub expression: Expr<'input>,
+    pub tail: Integer<'input>,
+}

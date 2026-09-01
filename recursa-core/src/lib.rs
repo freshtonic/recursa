@@ -53,6 +53,7 @@ pub mod __private {
         RecoveryDispatchNodeData as ExplorerRecoveryDispatchNodeData,
         RecoveryDispatchTargetData as ExplorerRecoveryDispatchTargetData,
         RecoveryDispatchTerminalConditionData as ExplorerRecoveryDispatchTerminalConditionData,
+        RecoveryElementIndexData as ExplorerRecoveryElementIndexData,
         RecoveryElementKindData as ExplorerRecoveryElementKindData,
         RecoveryElementPlanData as ExplorerRecoveryElementPlanData,
         RecoveryFixedPlanData as ExplorerRecoveryFixedPlanData,
@@ -61,6 +62,10 @@ pub mod __private {
         RecoveryMinimumData as ExplorerRecoveryMinimumData,
         RecoveryNodePlanData as ExplorerRecoveryNodePlanData,
         RecoveryPlanData as ExplorerRecoveryPlanData,
+        RecoveryPrattGuardPlanData as ExplorerRecoveryPrattGuardPlanData,
+        RecoveryPrattLedPlanData as ExplorerRecoveryPrattLedPlanData,
+        RecoveryPrattNudPlanData as ExplorerRecoveryPrattNudPlanData,
+        RecoveryPrattOperandPlanData as ExplorerRecoveryPrattOperandPlanData,
         RecoveryRepetitionPresenceData as ExplorerRecoveryRepetitionPresenceData,
         RecoveryTerminalPlanData as ExplorerRecoveryTerminalPlanData,
         RecoveryTextEquivalenceData as ExplorerRecoveryTextEquivalenceData,
@@ -83,6 +88,7 @@ pub mod __private {
         recovery_dispatch_edge as explorer_recovery_dispatch_edge,
         recovery_dispatch_node as explorer_recovery_dispatch_node,
         recovery_dispatch_target as explorer_recovery_dispatch_target,
+        recovery_element_index as explorer_recovery_element_index,
         recovery_element_plan as explorer_recovery_element_plan,
         recovery_enum_plan as explorer_recovery_enum_plan,
         recovery_fixed_kind as explorer_recovery_fixed_kind,
@@ -93,7 +99,13 @@ pub mod __private {
         recovery_optional_fixed_kind as explorer_recovery_optional_fixed_kind,
         recovery_optional_fixed_syntax as explorer_recovery_optional_fixed_syntax,
         recovery_plan as explorer_recovery_plan,
-        recovery_pratt_unavailable_plan as explorer_recovery_pratt_unavailable_plan,
+        recovery_pratt_atom as explorer_recovery_pratt_atom,
+        recovery_pratt_guard as explorer_recovery_pratt_guard,
+        recovery_pratt_infix as explorer_recovery_pratt_infix,
+        recovery_pratt_operand as explorer_recovery_pratt_operand,
+        recovery_pratt_plan as explorer_recovery_pratt_plan,
+        recovery_pratt_postfix as explorer_recovery_pratt_postfix,
+        recovery_pratt_prefix as explorer_recovery_pratt_prefix,
         recovery_repeated_container as explorer_recovery_repeated_container,
         recovery_required_fixed_syntax as explorer_recovery_required_fixed_syntax,
         recovery_semantic_kind as explorer_recovery_semantic_kind,
@@ -176,7 +188,7 @@ pub mod __private {
     /// Compatibility capability supplied by this exact facade/runtime build.
     pub const FACADE_COMPATIBILITY: FacadeCompatibility<
         { release_stamp(env!("CARGO_PKG_VERSION")) },
-        10,
+        11,
     > = FacadeCompatibility { _private: () };
 
     /// Builds a borrowed set constant emitted by matching Recursa codegen.
@@ -247,7 +259,7 @@ mod compatibility_tests {
     fn core_exposes_the_exact_release_and_private_protocol_capability() {
         let _: super::__private::FacadeCompatibility<
             { super::__private::release_stamp("0.1.0") },
-            10,
+            11,
         > = super::__private::FACADE_COMPATIBILITY;
     }
 }
