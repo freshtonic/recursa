@@ -42,29 +42,234 @@ fn repeated_generation_of_the_pratt_grammar_is_deterministic() {
 }
 
 #[test]
-fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() {
+fn pratt_explorer_recovers_committed_infix_without_constructing_an_operand() {
     let package = scaffold_fixture();
-    let manifest = package.path().join("Cargo.toml");
-    let source = fs::read_to_string(&manifest).expect("read Pratt manifest");
-    fs::write(
-        &manifest,
-        source
-            .replace(
-                "features = [\"arbitrary\", \"serde\"]",
-                "features = [\"arbitrary\", \"serde\", \"explorer\"]",
-            )
-            .replace(
-                "recursa-codegen = { path = \"",
-                "recursa-codegen = { features = [\"explorer\"], path = \"",
-            ),
-    )
-    .expect("enable Pratt explorer facade payload");
+    enable_explorer(&package);
     let main = package.path().join("src/main.rs");
     let source = fs::read_to_string(&main).expect("read Pratt consumer");
     let assertions = r#"
     let explorer = grammar::Expr::explorer();
-    assert!(!explorer.capabilities().recovery());
-    assert!(explorer.explore("a +").is_none());
+    assert!(explorer.capabilities().recovery());
+    let recursa::explorer::Exploration::Recovered(incomplete_add) = explorer
+        .explore("a +")
+        .expect("Pratt roots advertise construction-free recovery")
+        .expect("incomplete infix syntax is recoverable")
+    else {
+        panic!("an incomplete infix expression must not construct a complete document")
+    };
+    assert_eq!(
+        incomplete_add.root().committed_variant().unwrap().name(),
+        "Add",
+    );
+    let add_parts = incomplete_add.root().parts().collect::<Vec<_>>();
+    assert_eq!(add_parts.len(), 3);
+    let recursa::explorer::RecoveryPart::Element(lhs) = add_parts[0] else {
+        panic!("the recovered lhs remains the first Add element")
+    };
+    let recursa::explorer::RecoveryValue::Node(lhs) = lhs.value() else {
+        panic!("a Pratt lhs remains a construction-free recovery node")
+    };
+    assert_eq!(lhs.committed_variant().unwrap().name(), "Name");
+    assert!(matches!(
+        add_parts[1],
+        recursa::explorer::RecoveryPart::Element(_),
+    ));
+    let recursa::explorer::RecoveryPart::Missing(rhs) = add_parts[2] else {
+        panic!("the absent right operand is represented only as missing syntax")
+    };
+    assert_eq!(rhs.at(), recursa::Span::new(3, 3).unwrap());
+    assert!(incomplete_add.progress_trace().is_within_bound());
+
+    let recursa::explorer::Exploration::Recovered(prefix) = explorer
+        .explore("-").unwrap().unwrap()
+    else { panic!("missing prefix operand recovers") };
+    assert_eq!(prefix.root().committed_variant().unwrap().name(), "Neg");
+    assert!(matches!(
+        prefix.root().parts().collect::<Vec<_>>().as_slice(),
+        [recursa::explorer::RecoveryPart::Element(_), recursa::explorer::RecoveryPart::Missing(_)],
+    ));
+    assert!(prefix.progress_trace().is_within_bound());
+
+    let recursa::explorer::Exploration::Recovered(multi_prefix) = explorer
+        .explore("NEVER").unwrap().unwrap()
+    else { panic!("partially recognized multi-token prefix recovers") };
+    assert_eq!(multi_prefix.root().committed_variant().unwrap().name(), "NotExists");
+    assert_eq!(
+        multi_prefix.root().parts().filter(|part| matches!(part, recursa::explorer::RecoveryPart::Missing(_))).count(),
+        2,
+        "the missing EXISTS token and operand are separate guarded transitions",
+    );
+
+    let recursa::explorer::Exploration::Recovered(postfix) = explorer
+        .explore("a HAS").unwrap().unwrap()
+    else { panic!("partially recognized multi-token postfix recovers") };
+    assert_eq!(postfix.root().committed_variant().unwrap().name(), "IsNull");
+    let postfix_parts = postfix.root().parts().collect::<Vec<_>>();
+    assert!(matches!(postfix_parts[2], recursa::explorer::RecoveryPart::Missing(_)));
+
+    let recursa::explorer::Exploration::Recovered(restarted) = explorer
+        .explore("! 2").unwrap().unwrap()
+    else { panic!("unexpected input before a valid nud restart recovers") };
+    assert_eq!(restarted.root().committed_variant().unwrap().name(), "Integer");
+    let restarted_parts = restarted.root().parts().collect::<Vec<_>>();
+    let recursa::explorer::RecoveryPart::Skipped(skipped) = restarted_parts[0] else {
+        panic!("the unexpected token is retained as one skipped run")
+    };
+    assert_eq!(skipped.span(), recursa::Span::new(0, 1).unwrap());
+    assert_eq!(
+        restarted.diagnostics()[0].action(),
+        Some(recursa::explorer::RecoveryAction::Skipped {
+            span: recursa::Span::new(0, 1).unwrap(),
+        }),
+    );
+
+    let recursa::explorer::Exploration::Recovered(unicode_restart) = explorer
+        .explore("é 2").unwrap().unwrap()
+    else { panic!("a UTF-8 lexical failure before a nud restart recovers") };
+    let recursa::explorer::RecoveryPart::Skipped(unicode) =
+        unicode_restart.root().parts().next().unwrap()
+    else { panic!("the lexical error remains one skipped run") };
+    assert_eq!(unicode.span(), recursa::Span::new(0, 2).unwrap());
+
+    let recursa::explorer::Exploration::Recovered(high_then_missing) = explorer
+        .explore("a + 2 *").unwrap().unwrap()
+    else { panic!("a higher-power extender recovers inside an infix rhs") };
+    assert_eq!(high_then_missing.root().committed_variant().unwrap().name(), "Add");
+    let recursa::explorer::RecoveryPart::Element(rhs) =
+        high_then_missing.root().parts().nth(2).unwrap()
+    else { panic!("Add retains its recovered rhs") };
+    let recursa::explorer::RecoveryValue::Node(rhs) = rhs.value()
+    else { panic!("Add rhs is a recovery node") };
+    assert_eq!(rhs.committed_variant().unwrap().name(), "Multiply");
+    assert!(matches!(rhs.parts().last().unwrap(), recursa::explorer::RecoveryPart::Missing(_)));
+
+    let recursa::explorer::Exploration::Recovered(low_after_high) = explorer
+        .explore("a * 2 +").unwrap().unwrap()
+    else { panic!("a lower-power extender remains outside the infix rhs") };
+    assert_eq!(low_after_high.root().committed_variant().unwrap().name(), "Add");
+    let recursa::explorer::RecoveryPart::Element(lhs) =
+        low_after_high.root().parts().next().unwrap()
+    else { panic!("Add retains its lhs") };
+    let recursa::explorer::RecoveryValue::Node(lhs) = lhs.value()
+    else { panic!("Add lhs is a recovery node") };
+    assert_eq!(lhs.committed_variant().unwrap().name(), "Multiply");
+
+    let recursa::explorer::Exploration::Recovered(right_associative) = explorer
+        .explore("a ^ b ^").unwrap().unwrap()
+    else { panic!("equal right binding power recovers on the rhs") };
+    assert_eq!(right_associative.root().committed_variant().unwrap().name(), "Power");
+    let recursa::explorer::RecoveryPart::Element(rhs) =
+        right_associative.root().parts().nth(2).unwrap()
+    else { panic!("Power retains its recovered rhs") };
+    let recursa::explorer::RecoveryValue::Node(rhs) = rhs.value()
+    else { panic!("Power rhs is a recovery node") };
+    assert_eq!(rhs.committed_variant().unwrap().name(), "Power");
+
+    let followed = grammar::Followed::explorer();
+    let recursa::explorer::Exploration::Recovered(ambiguous) = followed
+        .explore("a + 1").unwrap().unwrap()
+    else { panic!("a qualifying extender in caller FOLLOW stays recovered") };
+    assert_eq!(ambiguous.diagnostics()[0].kind(), recursa::explorer::ParseDiagnosticKind::PrattAmbiguity);
+    assert_eq!(ambiguous.diagnostics()[0].span(), recursa::Span::new(2, 3).unwrap());
+    assert_eq!(ambiguous.diagnostics()[0].action(), None);
+    let recursa::explorer::RecoveryPart::Element(expression) = ambiguous.root().parts().next().unwrap()
+    else { panic!("the caller retains the stopped expression") };
+    let recursa::explorer::RecoveryValue::Node(expression) = expression.value()
+    else { panic!("the caller expression is a recovery node") };
+    assert_eq!(expression.committed_variant().unwrap().name(), "Name");
+
+    let nested_followed = grammar::NestedFollowed::explorer();
+    let recursa::explorer::Exploration::Recovered(nested_ambiguity) = nested_followed
+        .explore("1 + 2 * 3").unwrap().unwrap()
+    else { panic!("nested Pratt caller overlap remains construction-free") };
+    let nested_diagnostics = nested_ambiguity.diagnostics();
+    assert_eq!(nested_diagnostics.len(), 2);
+    assert_eq!(
+        nested_diagnostics.iter().map(|diagnostic| (
+            diagnostic.kind(),
+            diagnostic.span(),
+            diagnostic.found(),
+            diagnostic.expected().collect::<Vec<_>>(),
+            diagnostic.owner().map(|owner| owner.name()),
+            diagnostic.site().map(|site| site.name()),
+            diagnostic.action(),
+        )).collect::<Vec<_>>(),
+        [
+            (
+                recursa::explorer::ParseDiagnosticKind::PrattAmbiguity,
+                recursa::Span::new(6, 7).unwrap(),
+                Some("fixed:*"),
+                vec![
+                    "fixed:HAS",
+                    "fixed:*",
+                    "fixed:^",
+                    "fixed:!",
+                    "fixed:::",
+                    "content:\"[~@]+\":priority=None"
+                ],
+                Some("Expr"),
+                None,
+                None,
+            ),
+            (
+                recursa::explorer::ParseDiagnosticKind::PrattAmbiguity,
+                recursa::Span::new(6, 7).unwrap(),
+                Some("fixed:*"),
+                vec![
+                    "fixed:IS",
+                    "fixed:HAS",
+                    "fixed:LIKE",
+                    "fixed:+",
+                    "fixed:*",
+                    "fixed:^",
+                    "fixed:!",
+                    "fixed:::",
+                    "content:\"[~@]+\":priority=None"
+                ],
+                Some("Expr"),
+                None,
+                None,
+            ),
+        ],
+        "the min_bp=11 rhs diagnostic precedes the distinct min_bp=0 outer diagnostic",
+    );
+
+    let recursa::explorer::Exploration::Recovered(nested_eof) = explorer
+        .explore("[a +").unwrap().unwrap()
+    else { panic!("nested Pratt and grouping EOF failures recover") };
+    assert_eq!(nested_eof.root().committed_variant().unwrap().name(), "Paren");
+    let nested_parts = nested_eof.root().parts().collect::<Vec<_>>();
+    let recursa::explorer::RecoveryPart::Element(nested_expression) = nested_parts[1]
+    else { panic!("the grouped expression remains nested") };
+    let recursa::explorer::RecoveryValue::Node(nested_expression) = nested_expression.value()
+    else { panic!("the grouped expression is a recovery node") };
+    assert_eq!(nested_expression.committed_variant().unwrap().name(), "Add");
+    assert!(matches!(nested_expression.parts().last().unwrap(), recursa::explorer::RecoveryPart::Missing(_)));
+    assert!(matches!(nested_parts.last().unwrap(), recursa::explorer::RecoveryPart::Missing(_)));
+    assert_eq!(nested_eof.diagnostics()[0].kind(), recursa::explorer::ParseDiagnosticKind::UnexpectedEof);
+    assert!(nested_eof.diagnostics().iter().all(|diagnostic|
+        diagnostic.span() == recursa::Span::new(4, 4).unwrap()
+    ));
+    assert!(nested_eof.progress_trace().is_within_bound());
+    assert!(ambiguous.root().is_complete());
+    assert!(ambiguous.progress_trace().is_within_bound());
+
+    let followed_has = grammar::FollowedHas::explorer();
+    let recursa::explorer::Exploration::Recovered(incomplete_caller) = followed_has
+        .explore("a HAS").unwrap().unwrap()
+    else { panic!("an incomplete caller tail recovers") };
+    assert_eq!(
+        incomplete_caller.diagnostics()[0].kind(),
+        recursa::explorer::ParseDiagnosticKind::PrattAmbiguity,
+        "the frozen terminal condition leaves the overlapping extender to its caller",
+    );
+    assert_eq!(incomplete_caller.diagnostics()[0].action(), None);
+    let recursa::explorer::RecoveryPart::Element(expression) =
+        incomplete_caller.root().parts().next().unwrap()
+    else { panic!("the caller retains the unextended expression") };
+    let recursa::explorer::RecoveryValue::Node(expression) = expression.value()
+    else { panic!("the caller expression is a recovery node") };
+    assert_eq!(expression.committed_variant().unwrap().name(), "Name");
     let variants = explorer
         .schema()
         .root()
@@ -128,6 +333,33 @@ fn pratt_explorer_schema_exposes_inactive_variants_and_active_lhs_occurrences() 
     .expect("add Pratt explorer assertions");
 
     assert_success(&run_fixture(&package));
+    assert_eq!(
+        generation_directories(&target_dir(&package)).len(),
+        1,
+        "the recovery matrix publishes exactly one scenario Generation",
+    );
+
+    reset_fixture(&package);
+    assert!(
+        target_dir(&package).join("debug/deps").is_dir(),
+        "scenario reset retains the fixture target and compiled dependencies",
+    );
+    assert!(
+        generation_directories(&target_dir(&package)).is_empty(),
+        "scenario reset removes the preceding immutable Generation",
+    );
+    configure_edge_first_recovery(&package);
+    let output = run_fixture(&package);
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "edge-first-ok",
+    );
+    assert_eq!(
+        generation_directories(&target_dir(&package)).len(),
+        1,
+        "the independently configured edge-first scenario publishes one Generation",
+    );
 }
 
 #[test]
@@ -197,11 +429,17 @@ fn contains_text_sequence(svg: &str, expected: &[&str]) -> bool {
 
 fn scaffold_fixture() -> TempDir {
     let package = tempfile::tempdir().expect("temporary Pratt grammar package");
+    reset_fixture(&package);
+    package
+}
+
+fn reset_fixture(package: &TempDir) {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace = manifest_dir
         .parent()
         .expect("recursa-codegen belongs to the workspace root");
     let fixture = manifest_dir.join(FIXTURE);
+    clear_generated_state(&target_dir(package));
 
     for relative in ["build.rs", "src/lib.rs", "src/grammar.rs", "src/main.rs"] {
         copy(&fixture, package.path(), relative);
@@ -217,7 +455,36 @@ fn scaffold_fixture() -> TempDir {
         );
     fs::write(package.path().join("Cargo.toml"), manifest)
         .expect("write Pratt grammar fixture manifest");
-    package
+}
+
+/// Removes scenario-owned output while retaining the fixture target and compiled dependencies.
+fn clear_generated_state(root: &Path) {
+    let docs = root.join("doc");
+    if docs.exists() {
+        fs::remove_dir_all(docs).expect("remove previous Pratt fixture rustdoc");
+    }
+    remove_generation_directories(root);
+}
+
+/// Recursively removes immutable Generations selected by the preceding fixture scenario.
+fn remove_generation_directories(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path
+            .file_name()
+            .is_some_and(|name| name == "recursa-generations")
+        {
+            fs::remove_dir_all(path).expect("remove previous Pratt fixture Generations");
+        } else {
+            remove_generation_directories(&path);
+        }
+    }
 }
 
 fn scaffold_pratt_dispatch_overlap_fixture() -> TempDir {
@@ -751,6 +1018,81 @@ fn run_fixture_doc(package: &TempDir) -> Output {
         .env("CARGO_TARGET_DIR", target_dir(package))
         .output()
         .expect("render Pratt grammar fixture documentation")
+}
+
+fn enable_explorer(package: &TempDir) {
+    let manifest = package.path().join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).expect("read Pratt manifest");
+    fs::write(
+        &manifest,
+        source
+            .replace(
+                "features = [\"arbitrary\", \"serde\"]",
+                "features = [\"arbitrary\", \"serde\", \"explorer\"]",
+            )
+            .replace(
+                "recursa-codegen = { path = \"",
+                "recursa-codegen = { features = [\"explorer\"], path = \"",
+            ),
+    )
+    .expect("enable Pratt explorer facade payload");
+}
+
+fn configure_edge_first_recovery(package: &TempDir) {
+    enable_explorer(package);
+    let grammar = package.path().join("src/grammar.rs");
+    let source = fs::read_to_string(&grammar).expect("read Pratt grammar");
+    fs::write(
+        &grammar,
+        format!(
+            "{}\n\n{}",
+            source
+                .replace("max_lookahead = 1", "max_lookahead = 2")
+                // At lookahead 2 the optional escape clause acquires a sparse
+                // consume-vs-skip viability decision, a frozen product the
+                // recovery slice deliberately does not interpret; this scenario
+                // exercises edge-first dispatch, not optional viability.
+                .replace("        Option<EscapeClause<'input>>,\n", "")
+                .replace(
+                    "    IsNull(Box<Self>),\n}",
+                    "    IsNull(Box<Self>),\n\n    #[parse(postfix, bp = 40)]\n    #[tok(HAS)]\n    Has(Box<Self>),\n}",
+                ),
+            r#"#[derive(recursa::Node)]
+pub struct FollowedNull<'input> {
+    #[tok(this, NULL)]
+    pub expression: Expr<'input>,
+    pub tail: Integer<'input>,
+}"#,
+        ),
+    )
+    .expect("add shared-prefix Pratt recovery fixture");
+
+    fs::write(
+        package.path().join("src/main.rs"),
+        r#"use recursa_generated_pratt::grammar;
+
+fn main() {
+    let explorer = grammar::FollowedNull::explorer();
+    let recursa::explorer::Exploration::Recovered(document) = explorer
+        .explore("a HAS NULL 1")
+        .expect("shared-prefix Pratt recovery is available")
+        .expect("the strict caller mismatch is recoverable")
+    else { panic!("the caller mismatch must retain a recovery tree") };
+    let recursa::explorer::RecoveryPart::Element(expression) =
+        document.root().parts().next().unwrap()
+    else { panic!("the caller retains its expression") };
+    let recursa::explorer::RecoveryValue::Node(expression) = expression.value()
+    else { panic!("the expression remains construction-free") };
+    assert_eq!(
+        expression.committed_variant().unwrap().name(),
+        "IsNull",
+        "the matching NULL edge outranks the shorter HAS terminal even when NULL is caller FOLLOW",
+    );
+    println!("edge-first-ok");
+}
+"#,
+    )
+    .expect("write shared-prefix Pratt recovery assertion");
 }
 
 fn configure_diagrams(package: &TempDir) {

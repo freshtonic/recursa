@@ -1509,8 +1509,106 @@ pub enum RecoveryNodeBodyPlanData {
         /// Frozen union of branch prefixes that can restart dispatch.
         restart: &'static FollowSet,
     },
-    /// Pratt applications deliberately advertise no recovery until #97.
-    PrattUnavailable,
+    /// One binding-power-aware Pratt expression family.
+    Pratt(
+        /// Immutable nud, led, binding-power, and caller-FOLLOW products.
+        RecoveryPrattPlanData,
+    ),
+}
+
+#[doc(hidden)]
+/// Immutable construction-free recovery recipe for one Pratt expression family.
+pub struct RecoveryPrattPlanData {
+    /// Null-denotation variants in frozen dispatch-target order.
+    nud: &'static [RecoveryPrattNudPlanData],
+    /// Left-denotation variants in frozen dispatch-target order.
+    led: &'static [RecoveryPrattLedPlanData],
+    /// Bounded frozen selector for the initial null denotation.
+    nud_dispatch: &'static RecoveryDispatchNodeData,
+    /// Frozen union of null-denotation prefixes used for synchronization.
+    nud_restart: &'static FollowSet,
+    /// Exact frozen failure evidence when no null denotation can start.
+    nud_failure: RecoveryFollowData,
+    /// Frozen extender starters admitted while completing nud dispatch.
+    nud_selection_follow: &'static FollowSet,
+    /// Bounded frozen selector for extenders, absent when none are authored.
+    led_dispatch: Option<&'static RecoveryDispatchNodeData>,
+    /// Frozen caller-FOLLOW guard branches paired with extender binding powers.
+    caller_follow_guard: &'static [RecoveryPrattGuardPlanData],
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+/// One null-denotation recovery variant and its exact binding role.
+pub struct RecoveryPrattNudPlanData {
+    /// Schema and source-ordered body elements of the committed variant.
+    variant: RecoveryVariantPlanData,
+    /// Exact recursive operands frozen with their minimum binding powers.
+    ///
+    /// An atom freezes no operands; a prefix freezes each recursive operand
+    /// beside its exact minimum binding power. The interpreter never needs the
+    /// nud role itself because operand thresholds carry the whole distinction.
+    operands: &'static [RecoveryPrattOperandPlanData],
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+/// Direct association between one Pratt branch element and its recursive threshold.
+pub struct RecoveryPrattOperandPlanData {
+    /// Generated element index that owns the recursive occurrence.
+    element_index: RecoveryElementIndexData,
+    /// Minimum binding power supplied when entering that occurrence.
+    minimum_binding_power: u8,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+/// One left-denotation recovery variant and its exact binding role.
+pub struct RecoveryPrattLedPlanData {
+    /// Schema and source-ordered tail elements of the committed variant.
+    variant: RecoveryVariantPlanData,
+    /// Static schema of the distinguished already-recovered left operand.
+    lhs: &'static ElementSchemaData,
+    /// Infix or postfix role frozen by semantic analysis.
+    position: RecoveryPrattLedPositionData,
+    /// Exact recursive tail operands frozen with their minimum binding powers.
+    operands: &'static [RecoveryPrattOperandPlanData],
+}
+
+#[doc(hidden)]
+/// Frozen left-denotation binding role retained without associativity inference.
+#[derive(Clone, Copy)]
+pub enum RecoveryPrattLedPositionData {
+    /// An infix extender with independent left and right thresholds.
+    Infix {
+        /// Minimum binding power required to select this extender.
+        left_binding_power: u8,
+    },
+    /// A postfix extender with one selection threshold.
+    Postfix {
+        /// Minimum binding power required to select this extender.
+        binding_power: u8,
+    },
+}
+
+impl RecoveryPrattLedPositionData {
+    /// Returns the frozen left threshold used by strict and recovery selection.
+    const fn left_binding_power(self) -> u8 {
+        match self {
+            Self::Infix { left_binding_power } => left_binding_power,
+            Self::Postfix { binding_power } => binding_power,
+        }
+    }
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+/// One frozen caller-FOLLOW guard contribution for a Pratt extender family.
+pub struct RecoveryPrattGuardPlanData {
+    /// Extender threshold at which this guard contribution qualifies.
+    left_binding_power: u8,
+    /// Token set admitted by the matching frozen extender branch.
+    expected: &'static FollowSet,
 }
 
 #[doc(hidden)]
@@ -2066,6 +2164,12 @@ pub const fn recovery_variant_index(index: usize) -> RecoveryVariantIndexData {
 }
 
 #[doc(hidden)]
+/// Constructs one typed generated recovery-element position.
+pub const fn recovery_element_index(index: usize) -> RecoveryElementIndexData {
+    RecoveryElementIndexData(index)
+}
+
+#[doc(hidden)]
 /// Constructs one predictive-dispatch edge.
 pub const fn recovery_dispatch_edge(
     expected: &'static FollowSet,
@@ -2116,13 +2220,105 @@ pub const fn recovery_struct_plan(
 }
 
 #[doc(hidden)]
-/// Constructs one Pratt marker whose adapter must not advertise recovery yet.
-pub const fn recovery_pratt_unavailable_plan(
+/// Constructs one binding-power-aware Pratt recovery Node recipe.
+#[allow(clippy::too_many_arguments)]
+pub const fn recovery_pratt_plan(
     schema: &'static NodeSchemaData,
+    nud: &'static [RecoveryPrattNudPlanData],
+    led: &'static [RecoveryPrattLedPlanData],
+    nud_dispatch: &'static RecoveryDispatchNodeData,
+    nud_restart: &'static FollowSet,
+    nud_failure: RecoveryFollowData,
+    nud_selection_follow: &'static FollowSet,
+    led_dispatch: Option<&'static RecoveryDispatchNodeData>,
+    caller_follow_guard: &'static [RecoveryPrattGuardPlanData],
 ) -> RecoveryNodePlanData {
     RecoveryNodePlanData {
         schema,
-        body: RecoveryNodeBodyPlanData::PrattUnavailable,
+        body: RecoveryNodeBodyPlanData::Pratt(RecoveryPrattPlanData {
+            nud,
+            led,
+            nud_dispatch,
+            nud_restart,
+            nud_failure,
+            nud_selection_follow,
+            led_dispatch,
+            caller_follow_guard,
+        }),
+    }
+}
+
+#[doc(hidden)]
+/// Constructs one atom-shaped null-denotation recovery variant.
+pub const fn recovery_pratt_atom(variant: RecoveryVariantPlanData) -> RecoveryPrattNudPlanData {
+    RecoveryPrattNudPlanData {
+        variant,
+        operands: &[],
+    }
+}
+
+#[doc(hidden)]
+/// Constructs one prefix null-denotation recovery variant.
+pub const fn recovery_pratt_prefix(
+    variant: RecoveryVariantPlanData,
+    operands: &'static [RecoveryPrattOperandPlanData],
+) -> RecoveryPrattNudPlanData {
+    RecoveryPrattNudPlanData { variant, operands }
+}
+
+#[doc(hidden)]
+/// Constructs one infix left-denotation recovery variant.
+pub const fn recovery_pratt_infix(
+    variant: RecoveryVariantPlanData,
+    lhs: &'static ElementSchemaData,
+    left_binding_power: u8,
+    operands: &'static [RecoveryPrattOperandPlanData],
+) -> RecoveryPrattLedPlanData {
+    RecoveryPrattLedPlanData {
+        variant,
+        lhs,
+        position: RecoveryPrattLedPositionData::Infix { left_binding_power },
+        operands,
+    }
+}
+
+#[doc(hidden)]
+/// Constructs one postfix left-denotation recovery variant.
+pub const fn recovery_pratt_postfix(
+    variant: RecoveryVariantPlanData,
+    lhs: &'static ElementSchemaData,
+    binding_power: u8,
+    operands: &'static [RecoveryPrattOperandPlanData],
+) -> RecoveryPrattLedPlanData {
+    RecoveryPrattLedPlanData {
+        variant,
+        lhs,
+        position: RecoveryPrattLedPositionData::Postfix { binding_power },
+        operands,
+    }
+}
+
+#[doc(hidden)]
+/// Constructs one exact recursive Pratt operand association.
+pub const fn recovery_pratt_operand(
+    element_index: RecoveryElementIndexData,
+    minimum_binding_power: u8,
+) -> RecoveryPrattOperandPlanData {
+    RecoveryPrattOperandPlanData {
+        element_index,
+        minimum_binding_power,
+    }
+}
+
+#[doc(hidden)]
+/// Constructs one frozen caller-FOLLOW guard contribution.
+pub const fn recovery_pratt_guard(
+    left_binding_power: u8,
+    expected: &'static FollowSet,
+) -> RecoveryPrattGuardPlanData {
+    RecoveryPrattGuardPlanData {
+        left_binding_power,
+        expected,
     }
 }
 
@@ -2308,11 +2504,12 @@ impl RecoveryFrameIndex {
 /// Absolute token-record boundary within one recovery input.
 struct RecoveryInputIndex(usize);
 
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// Source-order position of one generated element operation.
-struct RecoveryElementIndex(usize);
+pub struct RecoveryElementIndexData(usize);
 
-impl RecoveryElementIndex {
+impl RecoveryElementIndexData {
     /// Returns the raw index only at a generated-plan lookup boundary.
     const fn get(self) -> usize {
         self.0
@@ -2426,7 +2623,7 @@ enum RecoveryRepeatedPhase {
 /// Active repeated-container state retained on its owning recovery frame.
 struct RecoveryRepeatedState {
     /// Element-plan index that owns this container state.
-    element: RecoveryElementIndex,
+    element: RecoveryElementIndexData,
     /// Number of semantic occurrences already retained.
     count: RecoveryOccurrenceCount,
     /// Next irreversible transition required for the container.
@@ -2448,7 +2645,7 @@ enum RecoverySemanticPhase {
 /// Active semantic-attachment state retained on its owning recovery frame.
 struct RecoverySemanticState {
     /// Element-plan index that owns the attachment.
-    element: RecoveryElementIndex,
+    element: RecoveryElementIndexData,
     /// Next irreversible transition required for the attachment.
     phase: RecoverySemanticPhase,
 }
@@ -2468,7 +2665,7 @@ enum RecoveryPresencePhase {
 /// Active fixed-presence state retained on its owning frame.
 struct RecoveryPresenceState {
     /// Element-plan index that owns this presence state.
-    element: RecoveryElementIndex,
+    element: RecoveryElementIndexData,
     /// Next irreversible presence transition.
     phase: RecoveryPresencePhase,
 }
@@ -2477,7 +2674,7 @@ struct RecoveryPresenceState {
 /// Active standalone optional fixed sequence retained on its owning frame.
 struct RecoveryOptionalFixedState {
     /// Element-plan index that owns the optional sequence.
-    element: RecoveryElementIndex,
+    element: RecoveryElementIndexData,
     /// Atomic selection or committed token progress.
     phase: RecoverySequencePhase,
 }
@@ -2493,6 +2690,39 @@ struct RecoveryPendingDispatch {
     restart: &'static FollowSet,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Exact Pratt minimum binding power retained in a guarded frame state.
+struct RecoveryBindingPower(u8);
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Irreversible control phase of one construction-free Pratt frame.
+enum RecoveryPrattPhase {
+    /// Select and permanently commit one null-denotation variant.
+    NudDispatch,
+    /// Interpret the committed null-denotation body.
+    NudElements,
+    /// Select one qualifying extender or close the expression.
+    LedDispatch,
+    /// Interpret one committed extender tail around the retained lhs.
+    LedElements,
+    /// The final recovered expression is ready to leave the frame.
+    Complete,
+}
+
+/// Binding-power-aware state owned by one Pratt recovery frame.
+struct RecoveryPrattState {
+    /// Immutable generated Pratt recipe for this application.
+    plan: &'static RecoveryPrattPlanData,
+    /// Exact threshold supplied by the parse site that entered this frame.
+    minimum_binding_power: RecoveryBindingPower,
+    /// Next irreversible Pratt transition.
+    phase: RecoveryPrattPhase,
+    /// Direct recursive operands of the committed branch, empty for atoms.
+    active_operands: &'static [RecoveryPrattOperandPlanData],
+    /// Recognized expression accumulated between extender selections.
+    lhs: Option<RecoveryNode>,
+}
+
 /// One explicit iterative recovery frame. It contains no authored value,
 /// builder, construction callback, or typed parser state.
 struct RecoveryFrame {
@@ -2506,8 +2736,10 @@ struct RecoveryFrame {
     committed_variant: Option<&'static VariantSchemaData>,
     /// Uncommitted enum alternatives, trie, and synchronization restart set.
     pending_dispatch: Option<RecoveryPendingDispatch>,
+    /// Binding-power state when this frame interprets a Pratt application.
+    pratt: Option<RecoveryPrattState>,
     /// Source-order index of the next element operation.
-    next_element: RecoveryElementIndex,
+    next_element: RecoveryElementIndexData,
     /// FOLLOW set supplied by the parent application at frame entry.
     caller_follow: FollowSet,
     /// First byte covered by this Node occurrence.
@@ -2529,16 +2761,17 @@ struct RecoveryFrame {
 }
 
 impl RecoveryFrame {
-    /// Opens one struct or predictive-enum frame from an immutable recipe.
+    /// Opens one struct, predictive-enum, or Pratt frame from an immutable recipe.
     fn new(
         id: RecoveryFrameId,
         plan: &'static RecoveryNodePlanData,
         caller_follow: FollowSet,
         start: usize,
         return_element: Option<&'static RecoveryElementPlanData>,
-    ) -> Result<Self, ()> {
-        let (elements, committed_variant, pending_dispatch) = match &plan.body {
-            RecoveryNodeBodyPlanData::Struct(elements) => (*elements, None, None),
+        minimum_binding_power: RecoveryBindingPower,
+    ) -> Self {
+        let (elements, committed_variant, pending_dispatch, pratt) = match &plan.body {
+            RecoveryNodeBodyPlanData::Struct(elements) => (*elements, None, None, None),
             RecoveryNodeBodyPlanData::Enum {
                 variants,
                 dispatch,
@@ -2551,16 +2784,29 @@ impl RecoveryFrame {
                     dispatch,
                     restart,
                 }),
+                None,
             ),
-            RecoveryNodeBodyPlanData::PrattUnavailable => return Err(()),
+            RecoveryNodeBodyPlanData::Pratt(pratt) => (
+                &[][..],
+                None,
+                None,
+                Some(RecoveryPrattState {
+                    plan: pratt,
+                    minimum_binding_power,
+                    phase: RecoveryPrattPhase::NudDispatch,
+                    active_operands: &[],
+                    lhs: None,
+                }),
+            ),
         };
-        Ok(Self {
+        Self {
             id,
             plan,
             elements,
             committed_variant,
             pending_dispatch,
-            next_element: RecoveryElementIndex(0),
+            pratt,
+            next_element: RecoveryElementIndexData(0),
             caller_follow,
             start: RecoveryByteOffset(start),
             end: RecoveryByteOffset(start),
@@ -2570,7 +2816,7 @@ impl RecoveryFrame {
             semantic: None,
             presence: None,
             optional_fixed: None,
-        })
+        }
     }
 
     /// Seals the accumulated frame into the public construction-free projection.
@@ -3247,7 +3493,7 @@ fn recovery_semantic_attachment_transition<'input>(
     plan: &'static RecoveryPlanData,
     owner: &'static NodeSchemaData,
     element: &'static RecoveryElementPlanData,
-    element_index: RecoveryElementIndex,
+    element_index: RecoveryElementIndexData,
     before: &[RecoveryFixedSyntaxPlanData],
     after: &[RecoveryFixedSyntaxPlanData],
     frame: &mut RecoveryFrame,
@@ -3334,18 +3580,33 @@ fn recovery_semantic_attachment_transition<'input>(
     Ok(false)
 }
 
-/// Selects a committed enum variant through the frozen bounded dispatch trie.
+#[derive(Clone, Copy)]
+/// Distinguishes an early unique recovery commitment from a strict trie terminal.
+enum RecoveryDispatchSelection {
+    /// Every terminal below the current prefix selects this variant.
+    RecoveryCommit(RecoveryVariantIndexData),
+    /// The complete frozen selection condition chose this variant.
+    Terminal(RecoveryVariantIndexData),
+}
+
+impl RecoveryDispatchSelection {
+    /// Returns the selected variant identity at the generated table boundary.
+    const fn variant(self) -> RecoveryVariantIndexData {
+        match self {
+            Self::RecoveryCommit(variant) | Self::Terminal(variant) => variant,
+        }
+    }
+}
+
+/// Selects a committed variant through the frozen bounded dispatch trie.
 fn recovery_dispatch_select(
     input: &Input<'_>,
     plan: &'static RecoveryPlanData,
     mut node: &'static RecoveryDispatchNodeData,
     caller_follow: &FollowSet,
-) -> Result<Option<RecoveryVariantIndexData>, ()> {
+) -> Result<Option<RecoveryDispatchSelection>, ()> {
     let mut depth = 0;
     loop {
-        if let Some(variant) = node.commit {
-            return Ok(Some(variant));
-        }
         let mut selected = None;
         if let Some(record) = input.peek(depth) {
             let text = input.source().get(record.span.range()).ok_or(())?;
@@ -3380,20 +3641,21 @@ fn recovery_dispatch_select(
             depth += 1;
             continue;
         }
-        return Ok(node.target.and_then(|target| {
-            if matches!(
+        if let Some(target) = node.target
+            && (matches!(
                 target.condition,
                 RecoveryDispatchTerminalConditionData::Unconditional
             ) || input.peek(depth).is_none()
                 || input
                     .peek(depth)
-                    .is_some_and(|record| caller_follow.contains(record.kind))
-            {
-                Some(target.variant)
-            } else {
-                None
-            }
-        }));
+                    .is_some_and(|record| caller_follow.contains(record.kind)))
+        {
+            return Ok(Some(RecoveryDispatchSelection::Terminal(target.variant)));
+        }
+        if let Some(variant) = node.commit {
+            return Ok(Some(RecoveryDispatchSelection::RecoveryCommit(variant)));
+        }
+        return Ok(None);
     }
 }
 
@@ -3403,6 +3665,7 @@ fn recovery_unresolved<'input>(
     plan: &'static RecoveryPlanData,
     owner: &'static NodeSchemaData,
     restart: &FollowSet,
+    message: &'static str,
     diagnostics: &mut Vec<ParseDiagnostic<'input>>,
 ) -> Result<Span, ()> {
     let position = input.byte_position();
@@ -3429,7 +3692,7 @@ fn recovery_unresolved<'input>(
         text: "",
         found: None,
         expected: recovery_expected_names(plan.grammar, restart),
-        message: "no enum alternative committed before recovery stopped".into(),
+        message: message.into(),
         action: Some(action),
         owner: Some(owner),
         site: None,
@@ -3518,7 +3781,16 @@ enum RecoveryFrameProgress {
     /// Predictive enum dispatch has not yet committed.
     Dispatch,
     /// One generated element and its active substate.
-    Element(RecoveryElementIndex, RecoveryElementProgress),
+    Element(RecoveryElementIndexData, RecoveryElementProgress),
+    /// One exact binding-power Pratt transition.
+    Pratt {
+        /// Minimum binding power supplied at frame entry.
+        minimum_binding_power: RecoveryBindingPower,
+        /// Current irreversible Pratt phase.
+        phase: RecoveryPrattPhase,
+        /// Active element and substate for a committed variant body.
+        element: Option<(RecoveryElementIndexData, RecoveryElementProgress)>,
+    },
     /// Every generated element has permanently closed.
     Complete,
 }
@@ -3535,15 +3807,9 @@ struct RecoveryProgressKey {
 }
 
 impl RecoveryFrame {
-    /// Returns the complete typed state guarded before the next transition.
-    fn progress(&self) -> RecoveryFrameProgress {
-        if self.pending_dispatch.is_some() {
-            return RecoveryFrameProgress::Dispatch;
-        }
-        if self.next_element.get() == self.elements.len() {
-            return RecoveryFrameProgress::Complete;
-        }
-        let substate = if let Some(state) = self.optional_fixed {
+    /// Returns the typed substate of the active generated element, when any.
+    fn element_progress(&self) -> RecoveryElementProgress {
+        if let Some(state) = self.optional_fixed {
             RecoveryElementProgress::OptionalFixed(state.phase)
         } else if let Some(state) = self.presence {
             RecoveryElementProgress::Presence(state.phase)
@@ -3553,8 +3819,30 @@ impl RecoveryFrame {
             RecoveryElementProgress::Semantic(state.phase)
         } else {
             RecoveryElementProgress::Ready
-        };
-        RecoveryFrameProgress::Element(self.next_element, substate)
+        }
+    }
+
+    /// Returns the complete typed state guarded before the next transition.
+    fn progress(&self) -> RecoveryFrameProgress {
+        if self.pending_dispatch.is_some() {
+            return RecoveryFrameProgress::Dispatch;
+        }
+        if let Some(pratt) = &self.pratt {
+            let element = matches!(
+                pratt.phase,
+                RecoveryPrattPhase::NudElements | RecoveryPrattPhase::LedElements
+            )
+            .then(|| (self.next_element, self.element_progress()));
+            return RecoveryFrameProgress::Pratt {
+                minimum_binding_power: pratt.minimum_binding_power,
+                phase: pratt.phase,
+                element,
+            };
+        }
+        if self.next_element.get() == self.elements.len() {
+            return RecoveryFrameProgress::Complete;
+        }
+        RecoveryFrameProgress::Element(self.next_element, self.element_progress())
     }
 }
 
@@ -3680,7 +3968,21 @@ fn recovery_frame_state_slots(plan: &'static RecoveryNodePlanData) -> usize {
             .map(|variant| variant.elements.iter().map(element_slots).sum())
             .max()
             .unwrap_or(0),
-        RecoveryNodeBodyPlanData::PrattUnavailable => 0,
+        RecoveryNodeBodyPlanData::Pratt(pratt) => {
+            let nud = pratt
+                .nud
+                .iter()
+                .map(|variant| variant.variant.elements.iter().map(element_slots).sum())
+                .max()
+                .unwrap_or(0usize);
+            let led = pratt
+                .led
+                .iter()
+                .map(|variant| variant.variant.elements.iter().map(element_slots).sum())
+                .max()
+                .unwrap_or(0usize);
+            nud.saturating_add(led).saturating_add(5)
+        }
     };
     body_slots.saturating_add(2)
 }
@@ -3707,7 +4009,7 @@ struct RecoveryElementContext {
     /// Owning frame within the explicit stack.
     frame: RecoveryFrameIndex,
     /// Source-order element position within the frame.
-    element_index: RecoveryElementIndex,
+    element_index: RecoveryElementIndexData,
     /// Static schema owner for diagnostics.
     owner: &'static NodeSchemaData,
     /// Immutable generated element recipe.
@@ -3789,10 +4091,15 @@ enum RecoveryFrameClose {
 ///
 /// Rationale: one machine owns cursor movement, the explicit frame stack, and
 /// the zero-consumption key set, so no transition can bypass the global progress
-/// invariant. Its small iterative dispatcher guards the current state, commits
-/// pending enum dispatch, closes completed frames, or invokes exactly one typed
-/// fixed, attachment, or container transition method. Those non-recursive
-/// methods share the same machine state and progress identity.
+/// invariant. Its small iterative dispatcher first guards the current state,
+/// then performs exactly one transition: it commits pending enum dispatch;
+/// advances Pratt NUD dispatch, NUD/LED elements, completed-variant folding, LED
+/// dispatch, or final completion; closes an ordinary completed frame; or invokes
+/// one typed fixed, attachment, or container transition method. Pratt phases keep
+/// frozen dispatch, operand binding power, and accumulated lhs state on the same
+/// frame, so extender loops obey the same one-part transition and progress
+/// identity as ordinary elements. All transition methods are non-recursive and
+/// share the machine-owned cursor, stack, diagnostics, and progress proof.
 #[doc(hidden)]
 pub fn recover_document<'input>(
     input: &mut Input<'input>,
@@ -3832,16 +4139,8 @@ pub fn recover_document<'input>(
         plan.root_follow.clone(),
         root_start,
         None,
-    )
-    .map_err(|()| {
-        let span = Span::new(root_start, root_start).unwrap_or_else(|_| Span::new(0, 0).unwrap());
-        recovery_fatal(
-            source,
-            span,
-            ParseDiagnosticKind::InvariantViolation,
-            "unsupported recovery root reached an advertised callback",
-        )
-    })?;
+        RecoveryBindingPower(0),
+    );
     RecoveryMachine {
         input,
         plan,
@@ -3870,19 +4169,26 @@ impl<'machine, 'input> RecoveryMachine<'machine, 'input> {
                 "recovery content span is not a checked UTF-8 source range",
             ),
             RecoveryTerminalPlanData::Node(node) => {
+                let minimum_binding_power = self.frames[context.frame.get()]
+                    .pratt
+                    .as_ref()
+                    .and_then(|pratt| {
+                        pratt
+                            .active_operands
+                            .iter()
+                            .find(|operand| operand.element_index == context.element_index)
+                    })
+                    .map_or(0, |operand| operand.minimum_binding_power);
                 let start = self.input.byte_position();
                 let child_id = self.progress.enter_frame(node);
-                self.frames.push(
-                    RecoveryFrame::new(child_id, node, child_follow, start, Some(context.element))
-                        .map_err(|()| {
-                            recovery_fatal(
-                                self.source,
-                                Span::new(0, 0).unwrap(),
-                                ParseDiagnosticKind::InvariantViolation,
-                                "unsupported nested recovery application",
-                            )
-                        })?,
-                );
+                self.frames.push(RecoveryFrame::new(
+                    child_id,
+                    node,
+                    child_follow,
+                    start,
+                    Some(context.element),
+                    RecoveryBindingPower(minimum_binding_power),
+                ));
                 Ok(())
             }
         }
@@ -4312,6 +4618,380 @@ impl<'machine, 'input> RecoveryMachine<'machine, 'input> {
         self.enter_semantic_occurrence(context, terminal, stop)
     }
 
+    /// Starts one permanently committed Pratt variant body.
+    fn begin_pratt_variant(
+        &mut self,
+        frame_index: RecoveryFrameIndex,
+        variant: RecoveryVariantPlanData,
+        operands: &'static [RecoveryPrattOperandPlanData],
+        phase: RecoveryPrattPhase,
+    ) {
+        let frame = &mut self.frames[frame_index.get()];
+        frame.elements = variant.elements;
+        frame.committed_variant = Some(variant.schema);
+        frame.next_element = RecoveryElementIndexData(0);
+        frame.semantic = None;
+        frame.repeated = None;
+        frame.presence = None;
+        frame.optional_fixed = None;
+        let pratt = frame
+            .pratt
+            .as_mut()
+            .expect("Pratt variant belongs to a Pratt frame");
+        pratt.active_operands = operands;
+        pratt.phase = phase;
+    }
+
+    /// Seals one completed Pratt variant and retains it as the next extender lhs.
+    fn finish_pratt_variant(
+        &mut self,
+        frame_index: RecoveryFrameIndex,
+    ) -> Result<(), ExplorationError<'input>> {
+        let frame = &mut self.frames[frame_index.get()];
+        let extent = Span::new(frame.start.get(), frame.end.get()).map_err(|_| {
+            recovery_fatal(
+                self.source,
+                Span::new(0, 0).unwrap(),
+                ParseDiagnosticKind::InvalidTokenSpan,
+                "Pratt recovery variant extent is not a checked UTF-8 range",
+            )
+        })?;
+        let node = RecoveryNode {
+            schema: frame.plan.schema,
+            committed_variant: frame.committed_variant,
+            extent,
+            parts: std::mem::take(&mut frame.parts).into_boxed_slice(),
+        };
+        frame.elements = &[];
+        frame.committed_variant = None;
+        frame.next_element = RecoveryElementIndexData(0);
+        let pratt = frame
+            .pratt
+            .as_mut()
+            .expect("completed Pratt variant belongs to a Pratt frame");
+        pratt.active_operands = &[];
+        pratt.lhs = Some(node);
+        pratt.phase = RecoveryPrattPhase::LedDispatch;
+        Ok(())
+    }
+
+    /// Materializes the final accumulated lhs into the ordinary frame close path.
+    fn complete_pratt_expression(
+        &mut self,
+        frame_index: RecoveryFrameIndex,
+    ) -> Result<(), ExplorationError<'input>> {
+        let frame = &mut self.frames[frame_index.get()];
+        let pratt = frame
+            .pratt
+            .as_mut()
+            .expect("completed expression belongs to a Pratt frame");
+        let Some(lhs) = pratt.lhs.take() else {
+            return Err(recovery_fatal(
+                self.source,
+                Span::new(frame.start.get(), frame.start.get())
+                    .unwrap_or_else(|_| Span::new(0, 0).unwrap()),
+                ParseDiagnosticKind::InvariantViolation,
+                "Pratt recovery completed without a null denotation",
+            ));
+        };
+        frame.start = RecoveryByteOffset(lhs.extent.start() as usize);
+        frame.end = RecoveryByteOffset(lhs.extent.end() as usize);
+        frame.committed_variant = lhs.committed_variant;
+        frame.parts = lhs.parts.into_vec();
+        frame.elements = &[];
+        frame.next_element = RecoveryElementIndexData(0);
+        pratt.phase = RecoveryPrattPhase::Complete;
+        Ok(())
+    }
+
+    /// Closes an uncommitted Pratt nud at its owner FOLLOW without guessing.
+    fn close_unresolved_pratt_nud(
+        &mut self,
+        frame_index: RecoveryFrameIndex,
+        expected: &FollowSet,
+    ) -> Result<(), ExplorationError<'input>> {
+        let owner = self.frames[frame_index.get()].plan.schema;
+        let unresolved_at = recovery_unresolved(
+            self.input,
+            self.plan,
+            owner,
+            expected,
+            "no Pratt null denotation committed before recovery stopped",
+            &mut self.diagnostics,
+        )
+        .map_err(|()| {
+            recovery_fatal(
+                self.source,
+                Span::new(0, 0).unwrap(),
+                ParseDiagnosticKind::InvalidTokenSpan,
+                "unresolved Pratt recovery position exceeds checked span range",
+            )
+        })?;
+        let frame = &mut self.frames[frame_index.get()];
+        frame.end.include(unresolved_at.end());
+        frame
+            .pratt
+            .as_mut()
+            .expect("unresolved nud belongs to a Pratt frame")
+            .phase = RecoveryPrattPhase::Complete;
+        Ok(())
+    }
+
+    /// Selects, synchronizes, or closes one Pratt null denotation.
+    fn pratt_nud_transition(
+        &mut self,
+        frame_index: RecoveryFrameIndex,
+    ) -> Result<(), ExplorationError<'input>> {
+        let frame = &self.frames[frame_index.get()];
+        let pratt = frame
+            .pratt
+            .as_ref()
+            .expect("nud transition has Pratt state");
+        let plan = pratt.plan;
+        let caller_follow = frame.caller_follow.clone();
+        let expected = plan.nud_failure.evaluate(&caller_follow).map_err(|()| {
+            recovery_fatal(
+                self.source,
+                Span::new(0, 0).unwrap(),
+                ParseDiagnosticKind::InvariantViolation,
+                "Pratt nud failure width differs from caller FOLLOW",
+            )
+        })?;
+        let selection_follow = plan
+            .nud_selection_follow
+            .union(&caller_follow)
+            .map_err(|_| {
+                recovery_fatal(
+                    self.source,
+                    Span::new(0, 0).unwrap(),
+                    ParseDiagnosticKind::InvariantViolation,
+                    "Pratt nud selection FOLLOW width differs from caller FOLLOW",
+                )
+            })?;
+        let selected =
+            recovery_dispatch_select(self.input, self.plan, plan.nud_dispatch, &selection_follow)
+                .map_err(|()| {
+                recovery_fatal(
+                    self.source,
+                    Span::new(0, 0).unwrap(),
+                    ParseDiagnosticKind::InvalidTokenSpan,
+                    "Pratt nud lookahead is not a UTF-8 source range",
+                )
+            })?;
+        if let Some(selected) = selected {
+            let Some(variant) = plan.nud.get(selected.variant().get()) else {
+                return Err(recovery_fatal(
+                    self.source,
+                    Span::new(0, 0).unwrap(),
+                    ParseDiagnosticKind::InvariantViolation,
+                    "Pratt nud dispatch selected an unknown variant",
+                ));
+            };
+            self.begin_pratt_variant(
+                frame_index,
+                variant.variant,
+                variant.operands,
+                RecoveryPrattPhase::NudElements,
+            );
+            return Ok(());
+        }
+
+        let overlap = self.input.peek(0).is_some_and(|record| {
+            plan.nud_restart.contains(record.kind) && caller_follow.contains(record.kind)
+        });
+        if overlap {
+            return self.close_unresolved_pratt_nud(frame_index, &expected);
+        }
+
+        let stops = self.input.peek(0).is_none()
+            || self
+                .input
+                .peek(0)
+                .is_some_and(|record| caller_follow.contains(record.kind));
+        let restarts = self
+            .input
+            .peek(0)
+            .is_some_and(|record| plan.nud_restart.contains(record.kind));
+        if stops || restarts {
+            return self.close_unresolved_pratt_nud(frame_index, &expected);
+        }
+        recovery_push_skipped(
+            self.input,
+            self.plan,
+            frame.plan.schema,
+            None,
+            plan.nud_restart,
+            &caller_follow,
+            &mut self.frames[frame_index.get()],
+            &mut self.diagnostics,
+            "Pratt nud synchronization input is not a checked UTF-8 range",
+        )
+    }
+
+    /// Returns the exact frozen caller-FOLLOW guard active at this minimum power.
+    fn active_pratt_guard(
+        plan: &'static RecoveryPrattPlanData,
+        minimum: RecoveryBindingPower,
+    ) -> Result<Option<FollowSet>, ()> {
+        let mut active: Option<FollowSet> = None;
+        for branch in plan
+            .caller_follow_guard
+            .iter()
+            .filter(|branch| branch.left_binding_power >= minimum.0)
+        {
+            active = Some(match active {
+                Some(expected) => expected.union(branch.expected).map_err(|_| ())?,
+                None => branch.expected.clone(),
+            });
+        }
+        Ok(active)
+    }
+
+    /// Retains one Pratt ambiguity while reconciling its exact strict seed.
+    fn retain_pratt_ambiguity(
+        &mut self,
+        owner: &'static NodeSchemaData,
+        expected: &FollowSet,
+    ) -> Result<(), ExplorationError<'input>> {
+        let record = self.input.peek(0).expect("selected Pratt extender exists");
+        let text = self.source.get(record.span.range()).ok_or_else(|| {
+            recovery_fatal(
+                self.source,
+                record.span,
+                ParseDiagnosticKind::InvalidTokenSpan,
+                "Pratt ambiguity span is not a UTF-8 source range",
+            )
+        })?;
+        let found = self.plan.grammar.kind_name(record.kind);
+        let expected = recovery_expected_names(self.plan.grammar, expected);
+        if let Some(seed) = self.diagnostics.iter_mut().find(|diagnostic| {
+            diagnostic.kind == ParseDiagnosticKind::PrattAmbiguity
+                && diagnostic.span == record.span
+                && diagnostic.found == found
+                && diagnostic.expected == expected
+                && diagnostic.action.is_none()
+                && diagnostic.owner.is_none()
+                && diagnostic.site.is_none()
+        }) {
+            seed.owner = Some(owner);
+        }
+        self.diagnostics.push(ParseDiagnostic {
+            kind: ParseDiagnosticKind::PrattAmbiguity,
+            span: record.span,
+            text,
+            found,
+            expected,
+            message: "Pratt extender overlaps caller FOLLOW".into(),
+            action: None,
+            owner: Some(owner),
+            site: None,
+        });
+        Ok(())
+    }
+
+    /// Selects one qualifying extender or permanently closes the Pratt frame.
+    fn pratt_led_transition(
+        &mut self,
+        frame_index: RecoveryFrameIndex,
+    ) -> Result<(), ExplorationError<'input>> {
+        let frame = &self.frames[frame_index.get()];
+        let pratt = frame
+            .pratt
+            .as_ref()
+            .expect("led transition has Pratt state");
+        let plan = pratt.plan;
+        let minimum = pratt.minimum_binding_power;
+        let caller_follow = frame.caller_follow.clone();
+        let Some(dispatch) = plan.led_dispatch else {
+            return self.complete_pratt_expression(frame_index);
+        };
+        let selected = recovery_dispatch_select(self.input, self.plan, dispatch, &caller_follow)
+            .map_err(|()| {
+                recovery_fatal(
+                    self.source,
+                    Span::new(0, 0).unwrap(),
+                    ParseDiagnosticKind::InvalidTokenSpan,
+                    "Pratt led lookahead is not a UTF-8 source range",
+                )
+            })?;
+        let Some(selected) = selected else {
+            return self.complete_pratt_expression(frame_index);
+        };
+        let Some(variant) = plan.led.get(selected.variant().get()) else {
+            return Err(recovery_fatal(
+                self.source,
+                Span::new(0, 0).unwrap(),
+                ParseDiagnosticKind::InvariantViolation,
+                "Pratt led dispatch selected an unknown variant",
+            ));
+        };
+        let left_binding_power = variant.position.left_binding_power();
+        if left_binding_power < minimum.0 {
+            return self.complete_pratt_expression(frame_index);
+        }
+
+        if self
+            .input
+            .peek(0)
+            .is_some_and(|record| caller_follow.contains(record.kind))
+        {
+            if matches!(selected, RecoveryDispatchSelection::RecoveryCommit(_)) {
+                return self.complete_pratt_expression(frame_index);
+            }
+            let Some(guard) = Self::active_pratt_guard(plan, minimum).map_err(|()| {
+                recovery_fatal(
+                    self.source,
+                    Span::new(0, 0).unwrap(),
+                    ParseDiagnosticKind::InvariantViolation,
+                    "Pratt caller-FOLLOW guard widths disagree",
+                )
+            })?
+            else {
+                return Err(recovery_fatal(
+                    self.source,
+                    Span::new(0, 0).unwrap(),
+                    ParseDiagnosticKind::InvariantViolation,
+                    "qualifying Pratt extender lacks its frozen caller-FOLLOW guard",
+                ));
+            };
+            let record = self.input.peek(0).expect("selected Pratt extender exists");
+            if !guard.contains(record.kind) {
+                return Err(recovery_fatal(
+                    self.source,
+                    record.span,
+                    ParseDiagnosticKind::InvariantViolation,
+                    "selected Pratt extender disagrees with its frozen caller-FOLLOW guard",
+                ));
+            }
+            self.retain_pratt_ambiguity(frame.plan.schema, &guard)?;
+            return self.complete_pratt_expression(frame_index);
+        }
+
+        let frame = &mut self.frames[frame_index.get()];
+        let lhs = frame
+            .pratt
+            .as_mut()
+            .expect("selected extender belongs to a Pratt frame")
+            .lhs
+            .take()
+            .expect("selected extender retains a recovered lhs");
+        let lhs_span = lhs.extent;
+        frame.start = RecoveryByteOffset(lhs_span.start() as usize);
+        frame.end = RecoveryByteOffset(lhs_span.end() as usize);
+        frame.parts = vec![RecoveryPart::Element(RecoveryElement {
+            schema: variant.lhs,
+            span: lhs_span,
+            value: RecoveryValue::Node(Box::new(lhs)),
+        })];
+        self.begin_pratt_variant(
+            frame_index,
+            variant.variant,
+            variant.operands,
+            RecoveryPrattPhase::LedElements,
+        );
+        Ok(())
+    }
+
     /// Executes one pending enum-dispatch transition without guessing on restart/FOLLOW overlap.
     fn dispatch_transition(
         &mut self,
@@ -4343,7 +5023,8 @@ impl<'machine, 'input> RecoveryMachine<'machine, 'input> {
                         "predictive recovery lookahead is not a UTF-8 source range",
                     )
                 })?;
-        if let Some(variant) = selected {
+        if let Some(selection) = selected {
+            let variant = selection.variant();
             let Some(variant) = pending.variants.get(variant.get()) else {
                 return Err(recovery_fatal(
                     self.source,
@@ -4397,16 +5078,22 @@ impl<'machine, 'input> RecoveryMachine<'machine, 'input> {
         invalid_message: &'static str,
     ) -> Result<(), ExplorationError<'input>> {
         let owner = self.frames[frame_index.get()].plan.schema;
-        let unresolved_at =
-            recovery_unresolved(self.input, self.plan, owner, restart, &mut self.diagnostics)
-                .map_err(|()| {
-                    recovery_fatal(
-                        self.source,
-                        Span::new(0, 0).unwrap(),
-                        ParseDiagnosticKind::InvalidTokenSpan,
-                        invalid_message,
-                    )
-                })?;
+        let unresolved_at = recovery_unresolved(
+            self.input,
+            self.plan,
+            owner,
+            restart,
+            "no enum alternative committed before recovery stopped",
+            &mut self.diagnostics,
+        )
+        .map_err(|()| {
+            recovery_fatal(
+                self.source,
+                Span::new(0, 0).unwrap(),
+                ParseDiagnosticKind::InvalidTokenSpan,
+                invalid_message,
+            )
+        })?;
         let frame = &mut self.frames[frame_index.get()];
         frame.end.include(unresolved_at.end());
         frame.pending_dispatch = None;
@@ -4543,6 +5230,27 @@ impl<'machine, 'input> RecoveryMachine<'machine, 'input> {
         }
     }
 
+    /// Freezes one closed root and the public proof of bounded machine progress.
+    fn finish_document(
+        self,
+        node: RecoveryNode,
+    ) -> Result<RecoveryDocument<'input>, ExplorationError<'input>> {
+        let progress = self.progress.finish().map_err(|()| {
+            recovery_fatal(
+                self.source,
+                Span::new(0, 0).unwrap(),
+                ParseDiagnosticKind::InvariantViolation,
+                "recovery progress exceeded its explicit finite bound",
+            )
+        })?;
+        Ok(RecoveryDocument {
+            source: self.source,
+            root: node,
+            diagnostics: recovery_finalize_diagnostics(self.diagnostics),
+            progress,
+        })
+    }
+
     /// Executes one transition at a time under the global progress guard.
     fn run(mut self) -> Result<RecoveryDocument<'input>, ExplorationError<'input>> {
         loop {
@@ -4564,25 +5272,44 @@ impl<'machine, 'input> RecoveryMachine<'machine, 'input> {
                 continue;
             }
 
+            if let Some(pratt) = &frame.pratt {
+                match pratt.phase {
+                    RecoveryPrattPhase::NudDispatch => {
+                        self.pratt_nud_transition(frame_index)?;
+                    }
+                    RecoveryPrattPhase::NudElements | RecoveryPrattPhase::LedElements => {
+                        if frame.next_element.get() == frame.elements.len() {
+                            self.finish_pratt_variant(frame_index)?;
+                        } else {
+                            let context = RecoveryElementContext {
+                                frame: frame_index,
+                                element_index: frame.next_element,
+                                owner: frame.plan.schema,
+                                element: &frame.elements[frame.next_element.get()],
+                            };
+                            self.element_transition(context)?;
+                        }
+                    }
+                    RecoveryPrattPhase::LedDispatch => {
+                        self.pratt_led_transition(frame_index)?;
+                    }
+                    RecoveryPrattPhase::Complete => {
+                        let close = self.close_frame_transition(frame_index)?;
+                        let RecoveryFrameClose::Root(node) = close else {
+                            continue;
+                        };
+                        return self.finish_document(node);
+                    }
+                }
+                continue;
+            }
+
             if frame.next_element.get() == frame.elements.len() {
                 let close = self.close_frame_transition(frame_index)?;
                 let RecoveryFrameClose::Root(node) = close else {
                     continue;
                 };
-                let progress = self.progress.finish().map_err(|()| {
-                    recovery_fatal(
-                        self.source,
-                        Span::new(0, 0).unwrap(),
-                        ParseDiagnosticKind::InvariantViolation,
-                        "recovery progress exceeded its explicit finite bound",
-                    )
-                })?;
-                return Ok(RecoveryDocument {
-                    source: self.source,
-                    root: node,
-                    diagnostics: recovery_finalize_diagnostics(self.diagnostics),
-                    progress,
-                });
+                return self.finish_document(node);
             }
 
             let frame = &self.frames[frame_index.get()];
@@ -4973,7 +5700,7 @@ mod tests {
             input: RecoveryInputIndex(0),
             frame: RecoveryFrameId(0),
             state: RecoveryFrameProgress::Element(
-                RecoveryElementIndex(0),
+                RecoveryElementIndexData(0),
                 RecoveryElementProgress::Ready,
             ),
         };

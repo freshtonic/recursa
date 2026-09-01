@@ -814,6 +814,8 @@ pub(super) struct PrattNudParsePlan {
     pub(super) variant: VariantParsePlan,
     /// Binding-power position assigned by semantic analysis.
     pub(super) position: PrattPosition,
+    /// Direct recursive operand associations, empty for atoms.
+    pub(super) operands: Vec<PrattOperandParsePlan>,
 }
 
 #[derive(Clone, Debug)]
@@ -827,6 +829,17 @@ pub(super) struct PrattLedParsePlan {
     pub(super) lhs: ElementParsePlan,
     /// Binding-power position assigned by semantic analysis.
     pub(super) position: PrattPosition,
+    /// Direct recursive tail operand associations, empty without recursion.
+    pub(super) operands: Vec<PrattOperandParsePlan>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One generated recursive Pratt operand and its exact threshold.
+pub(super) struct PrattOperandParsePlan {
+    /// Index of the associated element in the branch tail.
+    pub(super) element_index: usize,
+    /// Minimum binding power supplied at that element.
+    pub(super) minimum_binding_power: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -1371,29 +1384,16 @@ impl PrattParsePlan {
             return Err("the frozen Pratt caller-FOLLOW guard is corrupt".to_owned());
         }
         for branch in &self.led {
-            let recursive_bps = branch
-                .variant
-                .elements
-                .iter()
-                .filter_map(|element| {
-                    let ElementParseKind::Semantic {
-                        projection: semantic,
-                        ..
-                    } = &element.kind
-                    else {
-                        return None;
-                    };
-                    let SemanticParseProjection::Direct { pratt_min_bp, .. } = semantic.as_ref()
-                    else {
-                        return None;
-                    };
-                    *pratt_min_bp
+            let operands_agree = |threshold: u8| {
+                branch.operands.iter().all(|operand| {
+                    operand.minimum_binding_power == threshold
+                        && operand.element_index < branch.variant.elements.len()
                 })
-                .collect::<Vec<_>>();
+            };
             match branch.position {
-                PrattPosition::Infix { rbp, .. } if recursive_bps == [rbp] => {}
-                PrattPosition::Postfix { bp }
-                    if recursive_bps.iter().all(|actual| *actual == bp) => {}
+                PrattPosition::Infix { rbp, .. }
+                    if !branch.operands.is_empty() && operands_agree(rbp) => {}
+                PrattPosition::Postfix { bp } if operands_agree(bp) => {}
                 _ => {
                     return Err("the frozen Pratt led binding-power family is corrupt".to_owned());
                 }
@@ -1410,22 +1410,17 @@ impl PrattParsePlan {
             return Err("the frozen Pratt nud FOLLOW family is corrupt".to_owned());
         }
         for branch in &self.nud {
-            if let PrattPosition::Prefix { bp } = branch.position {
-                let recursive_bp = branch.variant.elements.iter().find_map(|element| {
-                    let ElementParseKind::Semantic {
-                        projection: semantic,
-                        ..
-                    } = &element.kind
-                    else {
-                        return None;
-                    };
-                    let SemanticParseProjection::Direct { pratt_min_bp, .. } = semantic.as_ref()
-                    else {
-                        return None;
-                    };
-                    *pratt_min_bp
-                });
-                if recursive_bp != Some(bp) {
+            let operands_agree = |threshold: u8| {
+                branch.operands.iter().all(|operand| {
+                    operand.minimum_binding_power == threshold
+                        && operand.element_index < branch.variant.elements.len()
+                })
+            };
+            match branch.position {
+                PrattPosition::Atom if branch.operands.is_empty() => {}
+                PrattPosition::Prefix { bp }
+                    if !branch.operands.is_empty() && operands_agree(bp) => {}
+                _ => {
                     return Err(
                         "the frozen Pratt prefix binding-power family is corrupt".to_owned()
                     );
@@ -2491,6 +2486,7 @@ pub(super) fn structural_body(
                             source_index,
                             variant,
                             position,
+                            operands: Vec::new(),
                         });
                     }
                     PrattPosition::Infix { .. } | PrattPosition::Postfix { .. } => {
@@ -2509,6 +2505,7 @@ pub(super) fn structural_body(
                             variant,
                             lhs,
                             position,
+                            operands: Vec::new(),
                         });
                     }
                 }
@@ -3435,6 +3432,30 @@ pub(super) fn disambiguate_fixed_accessors(body: &mut NodeBodyPlan) -> Result<()
     Ok(())
 }
 
+/// Collects the recursive Pratt operands already frozen into one branch body.
+fn planned_pratt_operands(elements: &[ElementParsePlan]) -> Vec<PrattOperandParsePlan> {
+    elements
+        .iter()
+        .enumerate()
+        .filter_map(|(element_index, element)| {
+            let ElementParseKind::Semantic {
+                projection: semantic,
+                ..
+            } = &element.kind
+            else {
+                return None;
+            };
+            let SemanticParseProjection::Direct { pratt_min_bp, .. } = semantic.as_ref() else {
+                return None;
+            };
+            pratt_min_bp.map(|minimum_binding_power| PrattOperandParsePlan {
+                element_index,
+                minimum_binding_power,
+            })
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Freezes Pratt prefix/extender roles, dispatch, guards, and failure evidence.
 ///
@@ -3517,6 +3538,23 @@ pub(super) fn plan_pratt_node(
                         return Err("a frozen nud branch has a led position".to_owned());
                     }
                 };
+                let elements = plan_elements(
+                    node,
+                    Some(&MaterializedVariant {
+                        resolved_variant: common.resolved_variant,
+                        name: common.name.clone(),
+                        elements: materialized_nud.body.clone(),
+                        pretty: common.pretty.clone(),
+                    }),
+                    &materialized_nud.body,
+                    &semantic.sites,
+                    lowered,
+                    lookups,
+                    input_lifetime,
+                    operand,
+                    None,
+                )?;
+                let operands = planned_pratt_operands(&elements);
                 nud_by_declaration.push((branch.declaration(), nud.len()));
                 nud.push(PrattNudParsePlan {
                     source_index,
@@ -3524,26 +3562,12 @@ pub(super) fn plan_pratt_node(
                         resolved_variant: common.resolved_variant,
                         ident: emitted_ident(&common.name)?,
                         style: resolved.style,
-                        elements: plan_elements(
-                            node,
-                            Some(&MaterializedVariant {
-                                resolved_variant: common.resolved_variant,
-                                name: common.name.clone(),
-                                elements: materialized_nud.body.clone(),
-                                pretty: common.pretty.clone(),
-                            }),
-                            &materialized_nud.body,
-                            &semantic.sites,
-                            lowered,
-                            lookups,
-                            input_lifetime,
-                            operand,
-                            None,
-                        )?,
+                        elements,
                         capture: resolved.capture.map(PlannedCapturePolicy::from),
                         pretty: common.pretty.clone(),
                     },
                     position,
+                    operands,
                 });
             }
             MaterializedPrattVariant::Led(materialized_led) => {
@@ -3572,6 +3596,18 @@ pub(super) fn plan_pratt_node(
                     elements: materialized_led.tail.clone(),
                     pretty: common.pretty.clone(),
                 };
+                let elements = plan_elements(
+                    node,
+                    Some(&synthetic_variant),
+                    &materialized_led.tail,
+                    &semantic.sites,
+                    lowered,
+                    lookups,
+                    input_lifetime,
+                    operand,
+                    Some(application_type),
+                )?;
+                let operands = planned_pratt_operands(&elements);
                 led_by_declaration.push((branch.declaration(), led.len()));
                 led.push(PrattLedParsePlan {
                     source_index,
@@ -3579,22 +3615,13 @@ pub(super) fn plan_pratt_node(
                         resolved_variant: common.resolved_variant,
                         ident: emitted_ident(&common.name)?,
                         style: resolved.style,
-                        elements: plan_elements(
-                            node,
-                            Some(&synthetic_variant),
-                            &materialized_led.tail,
-                            &semantic.sites,
-                            lowered,
-                            lookups,
-                            input_lifetime,
-                            operand,
-                            Some(application_type),
-                        )?,
+                        elements,
                         capture: resolved.capture.map(PlannedCapturePolicy::from),
                         pretty: common.pretty.clone(),
                     },
                     lhs: plan_pratt_lhs(node, resolved, materialized_led, lowered, input_lifetime)?,
                     position,
+                    operands,
                 });
             }
         }
