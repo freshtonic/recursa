@@ -82,8 +82,16 @@ _Avoid_: Token vector, unbound lex result
 
 **Lex builder**:
 The typed construction path for an alternative lexer. It accepts grammar-local token kinds and validated source spans, then runs grammar-owned fixed-word classification and lexical-error normalization.
-Its records must be source-bounded UTF-8, ordered, and non-overlapping; unrecorded source gaps are preserved without rescanning. Classified trivia records and observable trivia-gap behavior are introduced by #93.
+Its token and classified-trivia records must be source-bounded UTF-8, globally ordered, and non-overlapping; unrecorded source gaps are preserved without rescanning.
 _Avoid_: Raw token-record constructor
+
+**Classified trivia**:
+An opt-in named whitespace or comment match retained with exact text and a checked span outside the significant-token stream. It is observable in source gaps and never participates in parsing, FIRST, or dispatch.
+_Avoid_: Trivia token, ignored token
+
+**Source gap**:
+An immutable exact source range before, between, or after non-trivia lexical records, containing zero or more ordered classified-trivia records. Retained documents always expose beginning and end gaps, including empty and trivia-only inputs.
+_Avoid_: Reconstructed whitespace, token attachment
 
 **Lowered grammar**:
 The immutable aggregate that keeps a normalized grammar together with its authoring-source context and their correlations.

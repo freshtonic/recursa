@@ -68,6 +68,8 @@ pub(super) struct EmissionPlan {
     pub(super) token_bindings: Vec<TokenBindingPlan>,
     /// Backend-independent lexer rules in precedence order.
     pub(super) lexical_rules: Vec<LexRulePlan>,
+    /// Generated typed trivia classifications in numeric kind order.
+    pub(super) trivia_kinds: Vec<Ident>,
     /// Keyword-carrier reclassification plans in declaration order.
     pub(super) word_classifiers: Vec<WordClassifierPlan>,
     /// Kind set eligible for word-shaped fixed-token classification.
@@ -487,6 +489,7 @@ impl EmissionPlan {
                     .try_into()
                     .map_err(|_| "generated token kind exceeds runtime width".to_owned())?,
                 skip: false,
+                trivia_kind: None,
                 fixed: matches!(rule.priority, LexicalPriority::Fixed),
                 priority: match rule.priority {
                     LexicalPriority::Fixed => 0,
@@ -501,6 +504,31 @@ impl EmissionPlan {
                 lexical_rules.push(planned);
             }
         }
+        let trivia_names = lowered
+            .lexical_plan
+            .non_token_rules
+            .iter()
+            .filter_map(|rule| match &rule.outcome {
+                NonTokenLexicalOutcome::NonEmitting => None,
+                NonTokenLexicalOutcome::RetainedTrivia { name } => Some(name.clone()),
+            })
+            .collect::<BTreeSet<_>>();
+        if trivia_names.len() > u16::MAX as usize {
+            return Err("generated trivia-kind plan exceeds runtime width".to_owned());
+        }
+        let trivia_kind_indexes = trivia_names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                u16::try_from(index)
+                    .map(|index| (name.clone(), index))
+                    .map_err(|_| "generated trivia kind exceeds runtime width".to_owned())
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let trivia_kinds = trivia_names
+            .iter()
+            .map(|name| emitted_ident(name))
+            .collect::<Result<Vec<_>, _>>()?;
         for rule in &lowered.lexical_plan.non_token_rules {
             let pattern = match &rule.matcher {
                 LexicalMatcher::Regex(pattern) => pattern.clone(),
@@ -508,11 +536,20 @@ impl EmissionPlan {
                     fixed_lexical_pattern(text, resolved.build_inputs.text_equivalence)
                 }
             };
+            let trivia_kind = match &rule.outcome {
+                NonTokenLexicalOutcome::NonEmitting => None,
+                NonTokenLexicalOutcome::RetainedTrivia { name } => {
+                    Some(*trivia_kind_indexes.get(name).ok_or_else(|| {
+                        "retained trivia rule lacks a generated classification".to_owned()
+                    })?)
+                }
+            };
             lexical_rules.push(LexRulePlan {
                 pattern,
                 closed_matcher: rule.closed_matcher.clone(),
                 kind: 0,
                 skip: true,
+                trivia_kind,
                 fixed: false,
                 priority: match rule.priority {
                     LexicalPriority::Fixed => 0,
@@ -732,8 +769,14 @@ impl EmissionPlan {
         }
         for rule in &lexical_rules {
             canonical.push_str(&format!(
-                ";rule={:?}:{:?}:{}:{}:{}:{}",
-                rule.pattern, rule.closed_matcher, rule.kind, rule.skip, rule.fixed, rule.priority,
+                ";rule={:?}:{:?}:{}:{}:{:?}:{}:{}",
+                rule.pattern,
+                rule.closed_matcher,
+                rule.kind,
+                rule.skip,
+                rule.trivia_kind,
+                rule.fixed,
+                rule.priority,
             ));
         }
         for classifier in &keyword_classifiers {
@@ -752,6 +795,13 @@ impl EmissionPlan {
             ));
         }
         canonical.push_str(&format!(";word_candidates={word_candidate_kinds:?}"));
+        canonical.push_str(&format!(
+            ";trivia_kinds={:?}",
+            trivia_kinds
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        ));
         #[cfg(feature = "diagrams")]
         canonical.push_str(if diagrams.is_some() {
             ";capabilities=core,diagrams"
@@ -784,6 +834,7 @@ impl EmissionPlan {
             tokens,
             token_bindings,
             lexical_rules,
+            trivia_kinds,
             word_classifiers,
             word_candidate_kinds,
             root_configured_traits,

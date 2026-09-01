@@ -131,11 +131,32 @@ Authored lexer callbacks, post-lex hooks, and parser postconditions are not
 supported. Source analysis reports their retired syntax with targeted stable
 diagnostics; use closed matchers and named admissions instead.
 
-An alternative lexer can construct the same public result through `LexBuilder`. Each supplied
-token or error record must use an exact grammar-local kind and a source-bounded UTF-8 span, in
-source order and without overlap. Finalization preserves those spans and leaves gaps unrecorded;
-it does not rescan missing source regions. Classified trivia records and their observable gap
-behavior belong to the follow-up trivia contract in #93.
+Opt into exact whitespace and comment provenance by declaring named rules in
+`trivia`. Regular expressions and the closed matcher vocabulary are both
+supported:
+
+```rust,ignore
+recursa::tokens! {
+    trivia {
+        Whitespace => r"[ \t\r\n]+",
+        LineComment => r"--[^\n]*",
+        BlockComment => nested(opener = "/*", closer = "*/"),
+    }
+}
+```
+
+Retained trivia never enters significant parsing, FIRST, or dispatch. Generated
+`LexResult::trivia_gaps` and a complete parsed root view expose immutable
+beginning, inter-record, and end gaps with exact text, checked spans, ordered
+records, and grammar-local `TriviaKind` values. An empty or trivia-only source
+still has one beginning/end gap. Grammars that use only `ignore` retain no
+trivia sidecar.
+
+An alternative lexer constructs the same public result through `LexBuilder`.
+Each supplied token, error, or `append_trivia` record must use an exact
+grammar-local kind and a source-bounded UTF-8 span, in global source order and
+without overlap. Finalization preserves unrecorded source gaps verbatim and
+never rescans them.
 
 This is an excerpt from the
 [compiled JSON grammar](https://github.com/freshtonic/recursa/blob/main/examples/json/src/grammar.rs).

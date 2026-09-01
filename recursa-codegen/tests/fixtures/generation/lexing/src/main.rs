@@ -55,6 +55,294 @@ fn main() {
     assert_eq!(downstream_error_code(errors[0].diagnostic_code()), "RCA4000");
     assert_eq!(errors[0].anchor(), recursa::Span::new(13, 14).unwrap());
 
+    let retained_source = " /* lead */\nselect -- one\n\t/* two */ alpha\r\n";
+    let retained = grammar::lex(retained_source);
+    let gaps = retained.trivia_gaps().collect::<Vec<_>>();
+    assert_eq!(gaps.len(), 3);
+    assert_eq!(gaps[0].text(), " /* lead */\n");
+    assert_eq!(gaps[0].span(), recursa::Span::new(0, 12).unwrap());
+    assert_eq!(
+        gaps[0]
+            .trivia()
+            .map(|trivia| (trivia.kind(), trivia.text(), trivia.span()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                grammar::TriviaKind::Whitespace,
+                " ",
+                recursa::Span::new(0, 1).unwrap(),
+            ),
+            (
+                grammar::TriviaKind::BlockComment,
+                "/* lead */",
+                recursa::Span::new(1, 11).unwrap(),
+            ),
+            (
+                grammar::TriviaKind::Whitespace,
+                "\n",
+                recursa::Span::new(11, 12).unwrap(),
+            ),
+        ],
+    );
+    assert_eq!(gaps[1].text(), " -- one\n\t/* two */ ");
+    assert_eq!(gaps[2].text(), "\r\n");
+    let retained_tokens = retained.tokens().collect::<Vec<_>>();
+    let mut reconstructed = String::new();
+    for (index, gap) in gaps.iter().enumerate() {
+        reconstructed.push_str(gap.text());
+        if let Some(token) = retained_tokens.get(index) {
+            reconstructed.push_str(token.text());
+        }
+    }
+    assert_eq!(reconstructed, retained_source);
+
+    let mut retained_input = retained.input();
+    let parsed = grammar::Selection::parse(&mut retained_input)
+        .expect("significant parsing ignores retained trivia");
+    assert!(retained_input.is_eof());
+    assert_eq!(
+        parsed
+            .root()
+            .trivia_gaps()
+            .map(|gap| gap.text())
+            .collect::<Vec<_>>(),
+        vec![" /* lead */\n", " -- one\n\t/* two */ ", "\r\n"],
+    );
+
+    // Comment-only input: with no significant records the beginning and end
+    // gaps coincide in one source gap that covers the complete source, and its
+    // ordered classified-trivia records tile that gap without overlap or loss.
+    let comments_only_source = "-- first\n/* second */";
+    let comments_only = grammar::lex(comments_only_source);
+    assert_eq!(comments_only.tokens().count(), 0);
+    assert_eq!(comments_only.errors().count(), 0);
+    let comments_only_gaps = comments_only.trivia_gaps().collect::<Vec<_>>();
+    assert_eq!(comments_only_gaps.len(), 1);
+    assert_eq!(comments_only_gaps[0].text(), comments_only_source);
+    assert_eq!(
+        comments_only_gaps[0].span(),
+        recursa::Span::new(0, comments_only_source.len()).unwrap(),
+    );
+    assert_eq!(
+        comments_only_gaps[0]
+            .trivia()
+            .map(|trivia| (trivia.kind(), trivia.text(), trivia.span()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                grammar::TriviaKind::LineComment,
+                "-- first",
+                recursa::Span::new(0, 8).unwrap(),
+            ),
+            (
+                grammar::TriviaKind::Whitespace,
+                "\n",
+                recursa::Span::new(8, 9).unwrap(),
+            ),
+            (
+                grammar::TriviaKind::BlockComment,
+                "/* second */",
+                recursa::Span::new(9, 21).unwrap(),
+            ),
+        ],
+    );
+    assert_eq!(
+        comments_only_gaps[0]
+            .trivia()
+            .map(|trivia| trivia.text())
+            .collect::<String>(),
+        comments_only_source,
+    );
+    let empty = grammar::lex("");
+    let empty_gaps = empty.trivia_gaps().collect::<Vec<_>>();
+    assert_eq!(empty_gaps.len(), 1);
+    assert_eq!(empty_gaps[0].span(), recursa::Span::new(0, 0).unwrap());
+    assert_eq!(empty_gaps[0].text(), "");
+
+    let alternative_trivia_source = " select -- tail";
+    let mut alternative_trivia = grammar::LexBuilder::new(alternative_trivia_source);
+    alternative_trivia
+        .append_trivia(
+            grammar::TriviaKind::Whitespace,
+            recursa::Span::new(0, 1).unwrap(),
+        )
+        .unwrap()
+        .append(
+            grammar::TokenKind::WordText,
+            recursa::Span::new(1, 7).unwrap(),
+        )
+        .unwrap()
+        .append_trivia(
+            grammar::TriviaKind::Whitespace,
+            recursa::Span::new(7, 8).unwrap(),
+        )
+        .unwrap()
+        .append_trivia(
+            grammar::TriviaKind::LineComment,
+            recursa::Span::new(8, 15).unwrap(),
+        )
+        .unwrap();
+    let alternative_trivia = alternative_trivia.finish();
+    assert_eq!(
+        alternative_trivia
+            .tokens()
+            .map(|token| (token.kind(), token.text(), token.span()))
+            .collect::<Vec<_>>(),
+        vec![(
+            grammar::TokenKind::SELECT,
+            "select",
+            recursa::Span::new(1, 7).unwrap(),
+        )],
+    );
+    assert_eq!(
+        alternative_trivia
+            .trivia_gaps()
+            .map(|gap| {
+                (
+                    gap.text(),
+                    gap.trivia()
+                        .map(|trivia| trivia.kind())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (" ", vec![grammar::TriviaKind::Whitespace]),
+            (
+                " -- tail",
+                vec![
+                    grammar::TriviaKind::Whitespace,
+                    grammar::TriviaKind::LineComment,
+                ],
+            ),
+        ],
+    );
+
+    // Alternative-lexer parity: the same source observed through generated
+    // lexing and through an alternative lexer exposes identical significant
+    // records and identical classified-trivia source gaps.
+    let generated_parity = grammar::lex(alternative_trivia_source);
+    assert_eq!(
+        generated_parity
+            .tokens()
+            .map(|token| (token.kind(), token.text(), token.span()))
+            .collect::<Vec<_>>(),
+        alternative_trivia
+            .tokens()
+            .map(|token| (token.kind(), token.text(), token.span()))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        generated_parity
+            .trivia_gaps()
+            .map(|gap| {
+                (
+                    gap.span(),
+                    gap.text(),
+                    gap.trivia()
+                        .map(|trivia| (trivia.kind(), trivia.text(), trivia.span()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        alternative_trivia
+            .trivia_gaps()
+            .map(|gap| {
+                (
+                    gap.span(),
+                    gap.text(),
+                    gap.trivia()
+                        .map(|trivia| (trivia.kind(), trivia.text(), trivia.span()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    // Alternative-lexer comment-only parity: appending only classified trivia
+    // still exposes the coinciding beginning and end gap that generated lexing
+    // exposes for the same trivia-only source.
+    let mut alternative_comments_only = grammar::LexBuilder::new(comments_only_source);
+    alternative_comments_only
+        .append_trivia(
+            grammar::TriviaKind::LineComment,
+            recursa::Span::new(0, 8).unwrap(),
+        )
+        .unwrap()
+        .append_trivia(
+            grammar::TriviaKind::Whitespace,
+            recursa::Span::new(8, 9).unwrap(),
+        )
+        .unwrap()
+        .append_trivia(
+            grammar::TriviaKind::BlockComment,
+            recursa::Span::new(9, 21).unwrap(),
+        )
+        .unwrap();
+    let alternative_comments_only = alternative_comments_only.finish();
+    assert_eq!(alternative_comments_only.tokens().count(), 0);
+    assert_eq!(
+        alternative_comments_only
+            .trivia_gaps()
+            .map(|gap| {
+                (
+                    gap.span(),
+                    gap.text(),
+                    gap.trivia()
+                        .map(|trivia| (trivia.kind(), trivia.text(), trivia.span()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        comments_only
+            .trivia_gaps()
+            .map(|gap| {
+                (
+                    gap.span(),
+                    gap.text(),
+                    gap.trivia()
+                        .map(|trivia| (trivia.kind(), trivia.text(), trivia.span()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    let mut alternative_overlap = grammar::LexBuilder::new(" ab");
+    alternative_overlap
+        .append_trivia(
+            grammar::TriviaKind::Whitespace,
+            recursa::Span::new(0, 1).unwrap(),
+        )
+        .unwrap();
+    assert!(
+        alternative_overlap
+            .append(grammar::TokenKind::WordText, recursa::Span::new(0, 2).unwrap())
+            .is_err()
+    );
+    let mut alternative_invalid_utf8 = grammar::LexBuilder::new("é");
+    assert!(
+        alternative_invalid_utf8
+            .append_trivia(
+                grammar::TriviaKind::Whitespace,
+                recursa::Span::new(1, 2).unwrap(),
+            )
+            .is_err()
+    );
+
+    let rejected_after_trivia = grammar::lex(" /* retained */ @");
+    let rejected = rejected_after_trivia.errors().next().unwrap();
+    assert_eq!(rejected.text(), "@");
+    assert_eq!(rejected.code(), "RCA4000");
+    assert_eq!(
+        rejected_after_trivia
+            .trivia_gaps()
+            .flat_map(|gap| gap.trivia())
+            .map(|trivia| trivia.text())
+            .collect::<Vec<_>>(),
+        vec![" ", "/* retained */", " "],
+    );
+
     let alternative_source = String::from("sElEcT");
     let mut alternative = grammar::LexBuilder::new(&alternative_source);
     alternative
@@ -158,6 +446,12 @@ fn main() {
     );
     assert_eq!(sparse_errors[0].text(), "?");
     assert_eq!(sparse_errors[0].code(), "RCA4000");
+    let sparse_gaps = sparse.trivia_gaps().collect::<Vec<_>>();
+    assert_eq!(
+        sparse_gaps.iter().map(|gap| gap.text()).collect::<Vec<_>>(),
+        vec!["", " unscanned ", ""],
+    );
+    assert!(sparse_gaps.iter().all(|gap| gap.trivia().len() == 0));
 
     let dollar = grammar::lex("$tag$body$tag$");
     assert_eq!(dollar.errors().count(), 0);

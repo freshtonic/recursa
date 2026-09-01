@@ -132,6 +132,12 @@ configured fence is ineligible only when ordinary local arbitration at the
 fence selects diagnostic-free skip trivia covering the fence. The candidate
 remains eligible when another related operator run reaches its full extent.
 
+Grammars that need exact whitespace or comments can opt into classified trivia
+with named `trivia { ... }` rules. Generated lexing and complete parsed-root
+views then expose immutable beginning, inter-record, and end gaps while the
+significant-token parser remains unchanged. Non-retaining grammars continue to
+discard `ignore` matches without a trivia sidecar.
+
 Run both compiled examples from a checkout:
 
 ```console
