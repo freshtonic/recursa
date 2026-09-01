@@ -1023,7 +1023,7 @@ fn scrollable_diagram(svg: &str) -> String {
 /// Renders the aggregate grammar Rustdoc containing every Node and token diagram.
 pub(super) fn render_aggregate_diagram_document(plan: &DiagramPlan) -> String {
     let mut document = format!(
-        "# Generated grammar diagrams\n\nRECURSA_GRAMMAR_DIAGRAM\n\nGrammar `{}` is rendered from its frozen semantic Generation plan.\n\n",
+        "# Generated grammar diagrams\n\n<!-- RECURSA_GRAMMAR_DIAGRAM -->\n\nGrammar `{}` is rendered from its frozen semantic Generation plan.\n\n",
         plan.grammar_name
     );
     for node in &plan.nodes {
@@ -1073,7 +1073,7 @@ pub(super) fn render_aggregate_diagram_document(plan: &DiagramPlan) -> String {
 /// Renders declaration-local Rustdoc for one generated Node.
 pub(super) fn render_node_diagram_document(node: &NodeDiagramPlan, anchor_depth: usize) -> String {
     format!(
-        "## Generated grammar diagram\n\nRECURSA_NODE_DIAGRAM: {}\n\n{}\n\nFixed-token terminals are syntax-only and do not add AST fields. Boxed subdiagrams expand a referenced production in place; repeated references stay opaque.\n",
+        "<!-- RECURSA_NODE_DIAGRAM: {} -->\n{}\n\nFixed-token terminals are syntax-only and do not add AST fields. Boxed subdiagrams expand a referenced production in place; repeated references stay opaque.\n",
         node.ident,
         scrollable_diagram(&diagram_svg_with_prefix(
             &node.production,
@@ -1089,7 +1089,7 @@ pub(super) fn render_token_diagram_document(
     anchor_depth: usize,
 ) -> String {
     format!(
-        "## Generated token diagram\n\nRECURSA_TOKEN_DIAGRAM: {}\n\n{}\n\nThe label `{}` represents the content-token regex `{}`; parsed values retain exact matched text.\n",
+        "<!-- RECURSA_TOKEN_DIAGRAM: {} -->\n{}\n\nThe label `{}` represents the content-token regex `{}`; parsed values retain exact matched text.\n",
         token.ident,
         scrollable_diagram(&diagram_svg_with_prefix(
             &token.production,
