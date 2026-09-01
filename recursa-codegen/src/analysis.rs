@@ -727,8 +727,13 @@ fn analyze_with_publication_policy(
     let decisions = if has_errors {
         None
     } else {
-        let planned =
-            crate::decision_plan::plan_decisions(grammar, &first_by_type, &first_sequence_analysis);
+        let caller_first_by_site = follow_provenance.caller_first_by_site();
+        let planned = crate::decision_plan::plan_decisions(
+            grammar,
+            &first_by_type,
+            &first_sequence_analysis,
+            &caller_first_by_site,
+        );
         match publish_decisions(grammar, planned) {
             Ok(decisions) => Some(decisions),
             Err(diagnostic) => {
@@ -944,6 +949,22 @@ impl<'a> FirstSequenceAnalysis<'a> {
                     .map(|resolution| (site, resolution))
             })
             .collect()
+    }
+
+    /// Derives the bounded FIRST prefixes of one optional site's element language.
+    ///
+    /// The state strips the site's optional cardinality: the prefixes describe one committed
+    /// occurrence of the element, so a suffix-proving viability decision can compare input
+    /// against the element's own continuations rather than the site's nullable expansion.
+    pub(crate) fn element_sequences_at_depth(
+        &self,
+        site: SiteId,
+        depth: usize,
+    ) -> Vec<FirstSequence> {
+        let state = DecisionState::consuming_site_and_tail(&self.grammar.sites[site.index()], &[]);
+        self.state_sequences_batch_at_depth(std::iter::once(state), depth)
+            .pop()
+            .expect("one element root state yields one sequence batch")
     }
 
     /// Derives decision-site roots through the shared arena at one bounded depth.
@@ -4642,6 +4663,38 @@ struct FollowProvenance {
     by_site: Vec<ProvenancedFollow>,
     /// Caller-only FOLLOW positions propagated into each site through a nullable suffix.
     caller_by_site: Vec<ProvenancedFollow>,
+}
+
+#[cfg(test)]
+/// Recomputes per-site caller-only FOLLOW positions for independent decision replay.
+pub(crate) fn caller_first_by_site_for_replay(
+    grammar: &GrammarDescription,
+) -> Vec<Vec<FirstPosition>> {
+    let atom_kinds = expand_atoms(grammar);
+    let first_by_type = compute_first(grammar, &atom_kinds);
+    let (mut proofs, first_provenance) = compute_first_provenance(grammar, &first_by_type);
+    let (_, _, follow_provenance) =
+        compute_follow(grammar, &first_by_type, &first_provenance, &mut proofs);
+    follow_provenance.caller_first_by_site()
+}
+
+impl FollowProvenance {
+    /// Projects per-site caller-only FOLLOW into plain FIRST positions for decision planning.
+    fn caller_first_by_site(&self) -> Vec<Vec<FirstPosition>> {
+        self.caller_by_site
+            .iter()
+            .map(|follow| {
+                follow
+                    .positions
+                    .iter()
+                    .map(|position| FirstPosition {
+                        kinds: position.kinds.kinds().clone(),
+                        text_predicate: position.text_predicate,
+                    })
+                    .collect()
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -18900,7 +18953,8 @@ mod decision_product_tests {
         let grammar = GrammarDescription::new("empty", 0, 1, TextEquivalence::Sensitive);
         let atom_kinds = expand_atoms(&grammar);
         let first_sequences = FirstSequenceAnalysis::new(&grammar, &atom_kinds);
-        let mut decisions = crate::decision_plan::plan_decisions(&grammar, &[], &first_sequences);
+        let mut decisions =
+            crate::decision_plan::plan_decisions(&grammar, &[], &first_sequences, &[]);
         decisions.corrupt_site_product_for_test();
 
         let diagnostic = publish_decisions(&grammar, decisions)

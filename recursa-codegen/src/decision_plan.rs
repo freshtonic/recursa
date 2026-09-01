@@ -846,7 +846,8 @@ impl DecisionProducts {
         INDEPENDENT_DECISION_VALIDATIONS
             .set(INDEPENDENT_DECISION_VALIDATIONS.get().saturating_add(1));
         let first_sequences = FirstSequenceAnalysis::for_grammar(grammar);
-        self.validate_with_first_sequences(grammar, semantic, &first_sequences)
+        let caller_first_by_site = crate::analysis::caller_first_by_site_for_replay(grammar);
+        self.validate_with_first_sequences(grammar, semantic, &first_sequences, &caller_first_by_site)
     }
 
     /// Validates cross-table identities that are independent of decision reconstruction.
@@ -1011,9 +1012,11 @@ impl DecisionProducts {
         grammar: &GrammarDescription,
         semantic: &[FirstFacts],
         first_sequences: &FirstSequenceAnalysis<'_>,
+        caller_first_by_site: &[Vec<FirstPosition>],
     ) -> Result<(), DecisionInvariant> {
         self.validate_structure(grammar)?;
-        let expected = plan_decisions(grammar, semantic, first_sequences).0;
+        let expected =
+            plan_decisions(grammar, semantic, first_sequences, caller_first_by_site).0;
         if self.follow_recipes_by_site != expected.follow_recipes_by_site {
             return Err(DecisionInvariant::FollowRecipeMismatch);
         }
@@ -1113,6 +1116,7 @@ pub(crate) fn plan_decisions(
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
     first_sequences: &FirstSequenceAnalysis<'_>,
+    caller_first_by_site: &[Vec<FirstPosition>],
 ) -> ConstructedDecisionProducts {
     #[cfg(test)]
     DECISION_PLAN_CONSTRUCTIONS.set(DECISION_PLAN_CONSTRUCTIONS.get().saturating_add(1));
@@ -1214,6 +1218,8 @@ pub(crate) fn plan_decisions(
                 site_id,
                 grammar,
                 semantic,
+                first_sequences,
+                caller_first_by_site.get(index).map_or(&[], Vec::as_slice),
                 &follow_recipes_by_site,
                 &mut optional_viability_decisions_by_site,
                 &mut overlapping_optional_sites,
@@ -1285,12 +1291,17 @@ pub(crate) fn plan_decisions(
 
 /// Elides selector-complete optionals, freezes refined selectors, and queues exact static overlaps.
 ///
-/// Elision is valid only for unrefined element FIRST positions disjoint from exact static FOLLOW.
+/// Elision is valid only for unrefined element FIRST positions disjoint from exact static FOLLOW
+/// and from caller FOLLOW. A caller-FOLLOW-only overlap freezes a suffix-proving decision:
+/// the caller FOLLOW carries no continuation past its first token, so viability is proven by
+/// matching the input against the element's own bounded prefix language instead.
 /// Generated parsing then uses the existing root kind selector for both consume and skip.
 fn plan_nonoverlapping_optional_viability_for_site(
     site_id: SiteId,
     grammar: &GrammarDescription,
     semantic: &[FirstFacts],
+    first_sequences: &FirstSequenceAnalysis<'_>,
+    caller_first: &[FirstPosition],
     follow_recipes: &[FollowRecipe],
     decisions: &mut [Option<OptionalViabilityDecision>],
     overlapping_sites: &mut Vec<(SiteId, KindSet)>,
@@ -1312,6 +1323,30 @@ fn plan_nonoverlapping_optional_viability_for_site(
         }
         overlapping_sites.push((site_id, selector));
         return;
+    }
+    if stop.uses_caller() && first_positions_overlap(element_first, caller_first, grammar) {
+        let consuming = first_sequences.element_sequences_at_depth(site_id, grammar.max_lookahead);
+        // Divergence-skip is sound only for a closed element language: every bounded
+        // prefix must provably end, so a non-matching continuation cannot belong to an
+        // expansion the bounded sequences approximate away (Pratt extenders, cut-off
+        // depth). Open element languages keep the greedy legacy selector below.
+        if !consuming.is_empty() && consuming.iter().all(FirstSequence::ends) {
+            let mut skipping = stop
+                .static_first()
+                .iter()
+                .cloned()
+                .map(FirstSequence::from_position)
+                .collect::<Vec<_>>();
+            skipping.push(FirstSequence::caller_follow());
+            let trie = freeze_optional_viability_decision(&consuming, &skipping, grammar, true);
+            let required_lookahead =
+                optional_viability_decision_lookahead(&trie).min(grammar.max_lookahead);
+            decisions[site_id.index()] = Some(OptionalViabilityDecision {
+                trie,
+                required_lookahead,
+            });
+            return;
+        }
     }
     let element_is_kind_only = element_first.iter().all(|position| {
         matches!(
@@ -1341,7 +1376,7 @@ fn plan_nonoverlapping_optional_viability_for_site(
     if stop.uses_caller() {
         skipping.push(FirstSequence::caller_follow());
     }
-    let trie = freeze_optional_viability_decision(&consuming, &skipping, grammar);
+    let trie = freeze_optional_viability_decision(&consuming, &skipping, grammar, false);
     let required_lookahead =
         optional_viability_decision_lookahead(&trie).min(grammar.max_lookahead);
     decisions[site_id.index()] = Some(OptionalViabilityDecision {
@@ -1453,10 +1488,16 @@ struct OptionalSuffixKey {
 }
 
 /// Freezes one optional viability decision from exact bounded consuming and skipping languages.
+///
+/// With `suffix_proving`, the consuming language is the element's own bounded prefix set and the
+/// decision proves viability by suffix: a fully matched or depth-exhausted consuming prefix
+/// consumes unconditionally, while input that diverges from every consuming prefix skips through
+/// a sticky unconditional fallback so the caller keeps tokens the element cannot claim.
 fn freeze_optional_viability_decision(
     consuming: &[FirstSequence],
     skipping: &[FirstSequence],
     grammar: &GrammarDescription,
+    suffix_proving: bool,
 ) -> OptionalViabilityDecisionNode {
     let mut suffixes = Vec::<OptionalSuffix>::new();
     let mut suffix_ids = BTreeMap::<OptionalSuffixKey, OptionalSuffixId>::new();
@@ -1468,7 +1509,8 @@ fn freeze_optional_viability_decision(
         for sequence in language {
             let terminal = OptionalViabilityDecisionTerminal {
                 action,
-                on_caller_follow: sequence.ends(),
+                on_caller_follow: sequence.ends()
+                    && !(suffix_proving && action == OptionalAction::Consume),
             };
             let terminal_key = OptionalSuffixKey {
                 terminal,
@@ -1503,18 +1545,45 @@ fn freeze_optional_viability_decision(
             state.push(suffix);
         }
     }
+    let sticky = suffix_proving.then(|| {
+        let terminal = OptionalViabilityDecisionTerminal {
+            action: OptionalAction::Skip,
+            on_caller_follow: false,
+        };
+        let key = OptionalSuffixKey {
+            terminal,
+            position: None,
+            next: None,
+        };
+        let id = *suffix_ids.entry(key).or_insert_with(|| {
+            let id = OptionalSuffixId(suffixes.len());
+            suffixes.push(OptionalSuffix {
+                terminal,
+                position: None,
+                next: None,
+            });
+            id
+        });
+        state.push(id);
+        id
+    });
     state.sort_unstable();
     state.dedup();
-    let trie = freeze_optional_state(&suffixes, &state, false, grammar, &mut BTreeMap::new());
+    let trie = freeze_optional_state(&suffixes, &state, false, sticky, grammar, &mut BTreeMap::new());
     assert!(optional_edges_are_disjoint(&trie, grammar));
     trie
 }
 
 /// Freezes and hash-conses one residual optional viability decision state.
+///
+/// A `sticky` divergence-fallback suffix propagates into every matched residual so input that
+/// leaves the consuming prefix language resolves to its unconditional action instead of
+/// delegating back to the greedy root kind selector.
 fn freeze_optional_state(
     suffixes: &[OptionalSuffix],
     state: &[OptionalSuffixId],
     matched_prefix: bool,
+    sticky: Option<OptionalSuffixId>,
     grammar: &GrammarDescription,
     memo: &mut BTreeMap<(bool, Vec<OptionalSuffixId>), OptionalViabilityDecisionNode>,
 ) -> OptionalViabilityDecisionNode {
@@ -1585,12 +1654,20 @@ fn freeze_optional_state(
     );
     let mut edges = partitions
         .into_iter()
-        .map(|(text, residual, kinds)| OptionalViabilityDecisionEdge {
-            position: DispatchPosition {
-                kinds,
-                text_predicate: text.into_predicate(),
-            },
-            next: freeze_optional_state(suffixes, &residual, true, grammar, memo),
+        .map(|(text, residual, kinds)| {
+            let mut residual = residual;
+            if let Some(sticky) = sticky {
+                residual.push(sticky);
+                residual.sort_unstable();
+                residual.dedup();
+            }
+            OptionalViabilityDecisionEdge {
+                position: DispatchPosition {
+                    kinds,
+                    text_predicate: text.into_predicate(),
+                },
+                next: freeze_optional_state(suffixes, &residual, true, sticky, grammar, memo),
+            }
         })
         .collect::<Vec<_>>();
     edges.sort_by(|left, right| {
@@ -3884,6 +3961,203 @@ mod tests {
         );
         grammar.entry_types = vec![outer];
         (grammar, first)
+    }
+
+    /// `Cast = TIMESTAMP [Optional(Qualifier)]` directly followed by
+    /// `UniqueKeys`, where `Qualifier = WITH TIME ZONE` and
+    /// `UniqueKeys = WITH UNIQUE KEYS`.
+    ///
+    /// The optional element FIRST and the caller FOLLOW share exactly one kind
+    /// (`WITH`) and no static tail exists, so only the second lookahead token
+    /// (`TIME` versus `UNIQUE`) proves whether the optional is viable.
+    fn suffix_proving_caller_overlap_optional_grammar() -> (GrammarDescription, SiteId) {
+        let mut grammar =
+            GrammarDescription::new("caller-suffix-overlap", 6, 5, TextEquivalence::Sensitive);
+        let with_tok = token(&mut grammar, "WITH", 0);
+        let time_tok = token(&mut grammar, "TIME", 2);
+        let zone_tok = token(&mut grammar, "ZONE", 4);
+        let unique_tok = token(&mut grammar, "UNIQUE", 6);
+        let keys_tok = token(&mut grammar, "KEYS", 8);
+        let timestamp_tok = token(&mut grammar, "TIMESTAMP", 40);
+        let triple = |grammar: &mut GrammarDescription,
+                      name: &str,
+                      first: TypeId,
+                      second: TypeId,
+                      third: TypeId,
+                      byte: u32| {
+            let sequence = grammar.next_type_id();
+            let sequence_declaration = declaration(grammar, name, byte);
+            let sites = [(first, "::a", 1), (second, "::b", 2), (third, "::c", 3)]
+                .into_iter()
+                .map(|(target, suffix, offset)| {
+                    let site_declaration =
+                        declaration(grammar, &format!("{name}{suffix}"), byte + offset);
+                    grammar.push_site(ParseSite::new(
+                        sequence,
+                        target,
+                        site_declaration,
+                        ContainerShape::Direct,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                grammar.push_type(TypeDescription::new(
+                    name,
+                    sequence_declaration,
+                    TypeShape::Sequence { sites },
+                )),
+                sequence,
+            );
+            sequence
+        };
+        let qualifier = triple(
+            &mut grammar,
+            "Qualifier",
+            with_tok,
+            time_tok,
+            zone_tok,
+            10,
+        );
+        let unique_keys = triple(
+            &mut grammar,
+            "UniqueKeys",
+            with_tok,
+            unique_tok,
+            keys_tok,
+            20,
+        );
+        let cast = grammar.next_type_id();
+        let cast_declaration = declaration(&mut grammar, "Cast", 30);
+        let base_declaration = declaration(&mut grammar, "Cast::base", 32);
+        let base = grammar.push_site(ParseSite::new(
+            cast,
+            timestamp_tok,
+            base_declaration,
+            ContainerShape::Direct,
+        ));
+        let tz_declaration = declaration(&mut grammar, "Cast::tz", 31);
+        let tz = grammar.push_site(ParseSite::new(
+            cast,
+            qualifier,
+            tz_declaration,
+            ContainerShape::optional(ContainerShape::Direct),
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Cast",
+                cast_declaration,
+                TypeShape::Sequence {
+                    sites: vec![base, tz],
+                },
+            )),
+            cast,
+        );
+        let outer = grammar.next_type_id();
+        let outer_declaration = declaration(&mut grammar, "Outer", 34);
+        let cast_site_declaration = declaration(&mut grammar, "Outer::cast", 35);
+        let cast_site = grammar.push_site(ParseSite::new(
+            outer,
+            cast,
+            cast_site_declaration,
+            ContainerShape::Direct,
+        ));
+        let unique_site_declaration = declaration(&mut grammar, "Outer::unique", 36);
+        let unique_site = grammar.push_site(ParseSite::new(
+            outer,
+            unique_keys,
+            unique_site_declaration,
+            ContainerShape::Direct,
+        ));
+        assert_eq!(
+            grammar.push_type(TypeDescription::new(
+                "Outer",
+                outer_declaration,
+                TypeShape::Sequence {
+                    sites: vec![cast_site, unique_site],
+                },
+            )),
+            outer,
+        );
+        grammar.entry_types = vec![outer];
+        (grammar, tz)
+    }
+
+    #[test]
+    fn caller_follow_overlap_builds_a_suffix_proving_viability_decision() {
+        let (grammar, optional) = suffix_proving_caller_overlap_optional_grammar();
+        let report = crate::analyze(&grammar);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == crate::DiagnosticCode::NullableFollowOverlap),
+            "the caller overlap retains RCA0300 until the warning policy is revisited",
+        );
+        let output = report.output.unwrap_or_else(|| {
+            panic!(
+                "caller overlap remains a warning rather than blocking generation: {:?}",
+                report.diagnostics,
+            )
+        });
+        let decision = output
+            .decisions()
+            .container_machines()
+            .iter()
+            .find(|machine| machine.site() == optional)
+            .and_then(ContainerMachine::optional_viability_decision)
+            .expect("a caller-FOLLOW-only overlap must freeze a suffix-proving decision");
+        assert_eq!(
+            decision.required_lookahead(),
+            3,
+            "the full element prefix WITH TIME ZONE proves viability",
+        );
+        let with_edge = decision
+            .trie()
+            .edges()
+            .iter()
+            .find(|edge| edge.position().kinds().contains(KindId::new(0)))
+            .expect("the root branches on the shared WITH kind");
+        let after_with = with_edge.next();
+        assert_eq!(
+            after_with.terminals(),
+            [OptionalViabilityDecisionTerminal {
+                action: OptionalAction::Skip,
+                on_caller_follow: false,
+            }],
+            "input that diverges after WITH belongs to the caller",
+        );
+        let time_edge = after_with
+            .edges()
+            .iter()
+            .find(|edge| edge.position().kinds().contains(KindId::new(1)))
+            .expect("the WITH node extends only through the element's own TIME");
+        let after_time = time_edge.next();
+        assert_eq!(
+            after_time.terminals(),
+            [OptionalViabilityDecisionTerminal {
+                action: OptionalAction::Skip,
+                on_caller_follow: false,
+            }],
+            "input that diverges after WITH TIME belongs to the caller",
+        );
+        let zone_edge = after_time
+            .edges()
+            .iter()
+            .find(|edge| edge.position().kinds().contains(KindId::new(2)))
+            .expect("the WITH TIME node extends only through the element's own ZONE");
+        let proven = zone_edge.next();
+        assert_eq!(
+            proven.terminals(),
+            [OptionalViabilityDecisionTerminal {
+                action: OptionalAction::Consume,
+                on_caller_follow: false,
+            }],
+            "a fully matched element prefix consumes unconditionally",
+        );
+        assert!(
+            proven.edges().is_empty(),
+            "the proven prefix needs no further lookahead",
+        );
     }
 
     #[test]
