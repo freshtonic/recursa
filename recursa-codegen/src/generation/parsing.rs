@@ -776,7 +776,7 @@ pub(super) enum NodeBodyPlan {
         /// Variant bodies in authored declaration order.
         variants: Vec<VariantParsePlan>,
         /// Validated predictive selector for those variants.
-        dispatch: PredictiveDispatchPlan,
+        dispatch: Box<PredictiveDispatchPlan>,
     },
     /// Parses an expression family using frozen Pratt roles.
     Pratt(Box<PrattParsePlan>),
@@ -862,6 +862,8 @@ pub(super) struct PredictiveDispatchPlan {
     pub(super) root: DispatchStateId,
     /// Canonical predictive states; shared suffixes occur once.
     pub(super) states: Vec<DispatchTrieNodePlan>,
+    /// Analysis-ordered root selector used to restart uncommitted recovery.
+    pub(super) restart: ExpectedSet,
     /// Sequence count used to detect stale semantic products.
     pub(super) frozen_sequence_count: usize,
     /// Trie-node count used to detect incomplete reconstruction.
@@ -911,6 +913,8 @@ impl DispatchStateId {
 pub(super) struct DispatchTrieNodePlan {
     /// Selection made when the consumed prefix ends here.
     pub(super) target: Option<DispatchTargetPlan>,
+    /// Variant uniquely established by every terminal below this prefix.
+    pub(super) recovery_commit: Option<usize>,
     /// Outgoing positions in canonical predictive order.
     pub(super) edges: Vec<DispatchTrieEdgePlan>,
 }
@@ -971,6 +975,8 @@ pub(super) struct ElementParsePlan {
     pub(super) explorer_source: ExplorerElementSource,
     /// Stable element name used by generated metadata.
     pub(super) metadata_name: String,
+    /// Frozen FOLLOW at this element site, present on materialized application plans.
+    pub(super) recovery_stop: Option<PlannedFollow>,
     /// Fixed or semantic parsing recipe.
     pub(super) kind: ElementParseKind,
 }
@@ -1606,6 +1612,9 @@ fn collect_element_expected_sets(
     values: &mut BTreeSet<ExpectedSet>,
 ) {
     for element in elements {
+        if let Some(recovery_stop) = &element.recovery_stop {
+            collect_follow_expected_set(recovery_stop, values);
+        }
         match &element.kind {
             ElementParseKind::Fixed { expected, .. } => {
                 values.insert(expected.clone());
@@ -1815,6 +1824,14 @@ pub(super) fn planned_dispatch_position(
     })
 }
 
+/// Identity of one shared frozen dispatch node, including its recovery commitment.
+type InternKey = (
+    Option<crate::DispatchTerminal>,
+    Option<crate::DeclId>,
+    usize,
+    usize,
+);
+
 /// Reconstructs a frozen predictive graph while preserving shared suffix states.
 pub(super) fn plan_predictive_dispatch(
     frozen: &crate::DispatchTrieNode,
@@ -1829,10 +1846,11 @@ pub(super) fn plan_predictive_dispatch(
         atom_index: &ExpectedAtomIndex,
         kind_count: usize,
         states: &mut Vec<DispatchTrieNodePlan>,
-        memo: &mut BTreeMap<(Option<crate::DispatchTerminal>, usize, usize), DispatchStateId>,
+        memo: &mut BTreeMap<InternKey, DispatchStateId>,
     ) -> Result<DispatchStateId, String> {
         let key = (
             frozen.terminal(),
+            frozen.recovery_commitment(),
             frozen.edges().as_ptr() as usize,
             frozen.edges().len(),
         );
@@ -1852,6 +1870,16 @@ pub(super) fn plan_predictive_dispatch(
                     .ok_or_else(|| "frozen dispatch terminal lacks a source variant".to_owned())
             })
             .transpose()?;
+        let recovery_commit = frozen
+            .recovery_commitment()
+            .map(|declaration| {
+                variants
+                    .iter()
+                    .find(|(candidate, _)| *candidate == declaration)
+                    .map(|(_, variant)| *variant)
+                    .ok_or_else(|| "frozen recovery commitment lacks a source variant".to_owned())
+            })
+            .transpose()?;
         let edges = frozen
             .edges()
             .iter()
@@ -1863,7 +1891,11 @@ pub(super) fn plan_predictive_dispatch(
             })
             .collect::<Result<Vec<_>, String>>()?;
         let state = DispatchStateId(states.len());
-        states.push(DispatchTrieNodePlan { target, edges });
+        states.push(DispatchTrieNodePlan {
+            target,
+            recovery_commit,
+            edges,
+        });
         memo.insert(key, state);
         Ok(state)
     }
@@ -2039,6 +2071,14 @@ pub(super) fn validate_predictive_dispatch(
         if node.target.is_some_and(|target| target.variant >= variants) {
             return Err("frozen predictive dispatch references an unknown variant".to_owned());
         }
+        if node
+            .recovery_commit
+            .is_some_and(|variant| variant >= variants)
+        {
+            return Err(
+                "frozen predictive recovery commitment references an unknown variant".to_owned(),
+            );
+        }
         if node.target.is_some_and(|target| {
             matches!(target.mode, crate::DispatchTerminalMode::Immediate) && !node.edges.is_empty()
         }) {
@@ -2071,6 +2111,18 @@ pub(super) fn validate_predictive_dispatch(
         &mut BTreeSet::new(),
         dispatch.balanced.is_some(),
     )?;
+    let mut restart = dispatch.restart.clone();
+    restart.words.fill(0);
+    restart.atoms.clear();
+    for edge in &dispatch.states[dispatch.root.index()].edges {
+        restart.union_assign(&edge.position.expected);
+    }
+    if let Some(balanced) = &dispatch.balanced {
+        restart.union_assign(&balanced.open);
+    }
+    if restart != dispatch.restart {
+        return Err("frozen predictive recovery restart is stale".to_owned());
+    }
     if count != dispatch.frozen_node_count
         || count != dispatch.states.len()
         || predictive_dispatch_identity(dispatch.root, &dispatch.states) != dispatch.frozen_identity
@@ -2296,7 +2348,7 @@ pub(super) fn plan_node(
             }
             NodeBodyPlan::Enum {
                 variants: planned,
-                dispatch,
+                dispatch: Box::new(dispatch),
             }
         }
         (
@@ -2397,7 +2449,7 @@ pub(super) fn structural_body(
                 .collect::<Result<Vec<_>, String>>()?;
             NodeBodyPlan::Enum {
                 variants,
-                dispatch: empty_declaration_dispatch(),
+                dispatch: Box::new(empty_declaration_dispatch()),
             }
         }
         (
@@ -2518,6 +2570,7 @@ pub(super) fn empty_declaration_dispatch() -> PredictiveDispatchPlan {
         frozen_identity: predictive_dispatch_identity(root, &states),
         root,
         states,
+        restart: ExpectedSet::empty(0),
         frozen_sequence_count: 0,
         frozen_node_count: 1,
         balanced: None,
@@ -2556,6 +2609,7 @@ pub(super) fn declaration_elements(
                 Ok(ElementParsePlan {
                     explorer_source: ExplorerElementSource::Fixed(*token_use),
                     metadata_name: name.clone(),
+                    recovery_stop: None,
                     kind: ElementParseKind::Fixed {
                         kind: explorer_kind_index(lowered, definition.id)?,
                         expected: ExpectedSet::empty(kind_count),
@@ -2600,6 +2654,7 @@ pub(super) fn declaration_elements(
                 Ok(ElementParsePlan {
                     explorer_source: ExplorerElementSource::OptionalFixed(*id),
                     metadata_name: metadata_name.clone(),
+                    recovery_stop: None,
                     kind: ElementParseKind::OptionalFixedTokenGroup {
                         tokens: tokens.iter().map(plan_fixed).collect::<Result<_, _>>()?,
                         accessor: fixed_accessor_ident(&metadata_name)?,
@@ -2766,6 +2821,7 @@ pub(super) fn declaration_elements(
                 Ok(ElementParsePlan {
                     explorer_source: ExplorerElementSource::Semantic(*resolved_field),
                     metadata_name,
+                    recovery_stop: None,
                     kind: ElementParseKind::Semantic {
                         field: FieldPlan {
                             ident: field.syntax.ident.clone(),
@@ -3715,10 +3771,18 @@ pub(super) fn plan_joined_dispatch(
             })
         })
         .transpose()?;
+    let mut restart = ExpectedSet::empty(kind_count);
+    for edge in &states[root.index()].edges {
+        restart.union_assign(&edge.position.expected);
+    }
+    if let Some(balanced) = &balanced {
+        restart.union_assign(&balanced.open);
+    }
     Ok(PredictiveDispatchPlan {
         frozen_identity: predictive_dispatch_identity(root, &states),
         root,
         states,
+        restart,
         frozen_sequence_count: dispatch
             .branches()
             .iter()
@@ -3800,6 +3864,7 @@ pub(super) fn plan_pratt_lhs(
     Ok(ElementParsePlan {
         explorer_source: ExplorerElementSource::PrattLhs(led.lhs.field),
         metadata_name: format!("{}_{}", variant_name, base.unraw()),
+        recovery_stop: None,
         kind: ElementParseKind::Semantic {
             field: FieldPlan {
                 ident: resolved_field.syntax.ident.clone(),
@@ -3900,6 +3965,11 @@ pub(super) fn plan_elements(
                 Ok(ElementParsePlan {
                     explorer_source: ExplorerElementSource::Fixed(token_use_id),
                     metadata_name: name,
+                    recovery_stop: Some(planned_follow(
+                        &lookups.decisions.follow_recipes_by_site()[site.index()],
+                        lookups.atom_index,
+                        lookups.kind_count,
+                    )?),
                     kind: ElementParseKind::Fixed {
                         kind: explorer_kind_index(lowered, definition.id)?,
                         expected,
@@ -3977,6 +4047,11 @@ pub(super) fn plan_elements(
                 Ok(ElementParsePlan {
                     explorer_source: ExplorerElementSource::OptionalFixed(*element),
                     metadata_name: metadata_name.clone(),
+                    recovery_stop: Some(planned_follow(
+                        &lookups.decisions.follow_recipes_by_site()[site.index()],
+                        lookups.atom_index,
+                        lookups.kind_count,
+                    )?),
                     kind: ElementParseKind::OptionalFixedTokenGroup {
                         tokens,
                         accessor: fixed_accessor_ident(&metadata_name)?,
@@ -4128,6 +4203,11 @@ pub(super) fn plan_elements(
                 Ok(ElementParsePlan {
                     explorer_source: ExplorerElementSource::Semantic(*field),
                     metadata_name,
+                    recovery_stop: Some(planned_follow(
+                        &lookups.decisions.follow_recipes_by_site()[site.index()],
+                        lookups.atom_index,
+                        lookups.kind_count,
+                    )?),
                     kind: ElementParseKind::Semantic {
                         field: FieldPlan {
                             ident: resolved_field.syntax.ident.clone(),
@@ -4304,6 +4384,11 @@ pub(super) fn plan_elements(
                 Ok(ElementParsePlan {
                     explorer_source: ExplorerElementSource::Semantic(*field),
                     metadata_name,
+                    recovery_stop: Some(planned_follow(
+                        &lookups.decisions.follow_recipes_by_site()[site.index()],
+                        lookups.atom_index,
+                        lookups.kind_count,
+                    )?),
                     kind: ElementParseKind::Semantic {
                         field: FieldPlan {
                             ident: resolved_field.syntax.ident.clone(),
