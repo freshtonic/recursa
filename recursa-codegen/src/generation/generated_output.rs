@@ -664,6 +664,62 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         .as_ref()
         .map(|explorer| render_explorer_static_schema(plan, explorer));
     let explorer_lex = plan.explorer.as_ref().map(|_| render_explorer_lex(plan));
+    let framing_lex = plan.framing.as_ref().map(|_| {
+        quote! {
+            pub(super) fn __recursa_frame_lex(
+                source: &str,
+            ) -> #facade::__private::LexResult<'_> {
+                lex(source).inner
+            }
+        }
+    });
+    let framing_root = plan.framing.as_ref().map(|framing| {
+        let boundary_kind = framing.boundary_kind;
+        let line_kinds = &framing.line_kinds;
+        let delimited_kinds = &framing.delimited_kinds;
+        let mut boundary_words = vec![0_u64; plan.kind_count.div_ceil(64)];
+        boundary_words[usize::from(boundary_kind) / 64] |=
+            1_u64 << (usize::from(boundary_kind) % 64);
+        let node = &plan.nodes[framing.node_index];
+        let application = &node.parse_applications[framing.application_index];
+        let recovery_plan = explorer_recovery_plan_static(application.parse_index);
+        let payload = framing.payload.as_ref().map_or_else(
+            || quote!(None),
+            |payload| {
+                let variant =
+                    explorer_schema_static(application.parse_index, Some(payload.variant_index));
+                let terminator = &payload.terminator;
+                quote!(Some(#facade::__private::framing_payload_plan(
+                    &#variant,
+                    #terminator,
+                )))
+            },
+        );
+        quote! {
+            static __RECURSA_FRAMING_BOUNDARY_FOLLOW: #facade::__private::FollowSet =
+                #facade::__private::follow_set(
+                    #kind_count as u32,
+                    &[#(#boundary_words),*],
+                    &[],
+                );
+            static __RECURSA_FRAMING_PLAN: #facade::__private::FramingPlanData =
+                #facade::__private::framing_plan(
+                    &__RECURSA_GRAMMAR,
+                    #boundary_kind,
+                    &[#(#line_kinds),*],
+                    &[#(#delimited_kinds),*],
+                    #payload,
+                    &#recovery_plan,
+                    &__RECURSA_FRAMING_BOUNDARY_FOLLOW,
+                );
+
+            pub use #facade::framing::{
+                CompleteFrame, CompleteIsland, CompletePart, FrameDiagnostic,
+                FrameDiagnosticKind, FrameError, FrameResult, PayloadRegion,
+                RecoveredFrame, RecoveredIsland, RecoveredPart, SourceRegion,
+            };
+        }
+    });
     let loader_arms = plan.nodes.iter().enumerate().map(|(index, node)| {
         let ident = &node.ident;
         let anchor = syn::LitStr::new(&node.loader_anchor, proc_macro2::Span::call_site());
@@ -715,6 +771,7 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
         static __RECURSA_EXPECTED_SETS: [#facade::__private::FollowSet; #expected_set_count] = [
             #(#expected_sets),*
         ];
+        #framing_root
 
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub enum TokenKind {
@@ -1162,6 +1219,8 @@ pub(super) fn render_root(plan: &EmissionPlan) -> proc_macro2::TokenStream {
             let trivia = #facade::__private::lex_trivia(&scanned).map(<[_]>::to_vec);
             LexResult { inner: __recursa_finalize(source, records, trivia) }
         }
+
+        #framing_lex
 
         }
 

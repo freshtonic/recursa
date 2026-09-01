@@ -104,6 +104,8 @@ enum Origin<'input> {
     Captured {
         /// Complete source used by occurrence spans.
         source: &'input str,
+        /// Exact absolute input window retained by this parse.
+        bounds: Span,
         /// Root of the immutable occurrence sidecar.
         provenance: Box<Provenance>,
     },
@@ -114,9 +116,14 @@ impl Origin<'_> {
     fn view_cursor(&self) -> ViewCursor<'_> {
         match self {
             Self::Synthetic | Self::Uncaptured => ViewCursor::absent(),
-            Self::Captured { source, provenance } => ViewCursor {
+            Self::Captured {
+                source,
+                bounds,
+                provenance,
+            } => ViewCursor {
                 occurrence: provenance.root.as_ref(),
                 source: Some(*source),
+                bounds: Some(*bounds),
                 records: provenance
                     .document
                     .as_ref()
@@ -444,17 +451,54 @@ impl<'input, T> Parsed<'input, T> {
         }
     }
 
-    /// Returns captured source text, if this parse captured provenance.
+    /// Returns the captured parse-window text, if this parse captured provenance.
+    ///
+    /// Framing bounds this slice to one island, while occurrence spans retain absolute offsets in
+    /// the complete document. Use [`Parsed::local_source_range`] before indexing this slice with an
+    /// occurrence span; [`Parsed::source_bounds`] exposes the absolute window and its base offset.
     pub fn source(&self) -> Option<&'input str> {
+        let (source, bounds) = self.captured_source_window()?;
+        source.get(bounds.range())
+    }
+
+    /// Returns the absolute source-coordinate window retained by this parse.
+    ///
+    /// The window starts at zero for ordinary whole-input parsing and at the island's document
+    /// offset for framing. Every captured occurrence span uses these absolute coordinates.
+    pub fn source_bounds(&self) -> Option<Span> {
+        self.captured_source_window().map(|(_, bounds)| bounds)
+    }
+
+    /// Translates one absolute captured span into a range suitable for [`Parsed::source`].
+    ///
+    /// Returns `None` when source was not captured, the span escapes this parse's window, or either
+    /// endpoint is not a UTF-8 boundary. The returned range is local to the bounded source slice.
+    pub fn local_source_range(&self, span: Span) -> Option<std::ops::Range<usize>> {
+        let (source, bounds) = self.captured_source_window()?;
+        if span.start() < bounds.start() || span.end() > bounds.end() {
+            return None;
+        }
+        source.get(span.range())?;
+        let start = usize::try_from(span.start() - bounds.start()).ok()?;
+        let end = usize::try_from(span.end() - bounds.start()).ok()?;
+        Some(start..end)
+    }
+
+    /// Returns captured full source and absolute bounds under the public provenance policy.
+    fn captured_source_window(&self) -> Option<(&'input str, Span)> {
         match &self.origin {
-            Origin::Captured { source, provenance }
-                if provenance.document.is_some()
-                    || provenance
-                        .root
-                        .as_ref()
-                        .is_some_and(OccurrenceNode::has_public_capture) =>
+            Origin::Captured {
+                source,
+                bounds,
+                provenance,
+            } if provenance.document.is_some()
+                || provenance
+                    .root
+                    .as_ref()
+                    .is_some_and(OccurrenceNode::has_public_capture) =>
             {
-                Some(*source)
+                source.get(bounds.range())?;
+                Some((*source, *bounds))
             }
             Origin::Captured { .. } => None,
             Origin::Synthetic | Origin::Uncaptured => None,
@@ -555,6 +599,8 @@ pub struct ViewCursor<'view> {
     occurrence: Option<&'view OccurrenceNode>,
     /// Complete parsed source used by occurrence spans.
     source: Option<&'view str>,
+    /// Exact source window bounding retained document gaps.
+    bounds: Option<Span>,
     /// Significant and rejected lexical records retained for opted-in gap views.
     records: Option<&'view [TokenRecord]>,
     /// Classified trivia retained for opted-in gap views.
@@ -567,6 +613,7 @@ impl<'view> ViewCursor<'view> {
         Self {
             occurrence: None,
             source: None,
+            bounds: None,
             records: None,
             trivia: None,
         }
@@ -584,6 +631,7 @@ impl<'view> ViewCursor<'view> {
                 .occurrence
                 .and_then(|occurrence| occurrence.children.get(index)),
             source: self.source,
+            bounds: self.bounds,
             records: self.records,
             trivia: self.trivia,
         }
@@ -609,6 +657,7 @@ impl<'view> ViewCursor<'view> {
                 ViewCursor {
                     occurrence: Some(child),
                     source: self.source,
+                    bounds: self.bounds,
                     records: self.records,
                     trivia: self.trivia,
                 }
@@ -652,7 +701,7 @@ impl<'view> ViewCursor<'view> {
 
     /// Projects immutable beginning, inter-record, and end gaps for an opted-in document.
     pub fn source_gaps(self) -> Option<SourceGaps<'view>> {
-        SourceGaps::new(self.source?, self.records?, self.trivia?)
+        SourceGaps::new(self.source?, self.records?, self.trivia?, self.bounds?)
     }
 }
 
@@ -1297,10 +1346,37 @@ where
     parse_with_request::<T, A>(input, CaptureRequest::Spanned)
 }
 
+/// Runs the generated root parser with one generated caller FOLLOW.
+///
+/// Document framing uses this seam to keep its separator outside the authored
+/// root while preserving ordinary transactional parse behavior.
+#[cfg(feature = "explorer")]
+pub(crate) fn parse_spanned_with_root_follow<'input, T, A>(
+    input: &mut Input<'input, A>,
+    follow: &FollowSet,
+) -> Result<Parsed<'input, T>, ParseError>
+where
+    T: GeneratedParse<'input, A>,
+{
+    parse_with_request_and_follow::<T, A>(input, CaptureRequest::Spanned, follow)
+}
+
 /// Runs a root parser transactionally under one capture request.
 fn parse_with_request<'input, T, A>(
     input: &mut Input<'input, A>,
     request: CaptureRequest,
+) -> Result<Parsed<'input, T>, ParseError>
+where
+    T: GeneratedParse<'input, A>,
+{
+    parse_with_request_and_follow::<T, A>(input, request, T::root_follow())
+}
+
+/// Runs a root parser transactionally under an explicit caller FOLLOW.
+fn parse_with_request_and_follow<'input, T, A>(
+    input: &mut Input<'input, A>,
+    request: CaptureRequest,
+    follow: &FollowSet,
 ) -> Result<Parsed<'input, T>, ParseError>
 where
     T: GeneratedParse<'input, A>,
@@ -1310,7 +1386,8 @@ where
     }
     let checkpoint = input.cursor();
     let source = input.source();
-    let mut context = ParseContext::new(input, T::root_follow(), T::CAPTURE_POLICY, request);
+    let bounds = input.bounds();
+    let mut context = ParseContext::new(input, follow, T::CAPTURE_POLICY, request);
     let ParsedNode { value, occurrence } = match T::parse(&mut context) {
         Ok(parsed) => parsed,
         Err(error) => {
@@ -1324,6 +1401,7 @@ where
         debug_assert!(root.as_ref().is_none_or(OccurrenceNode::is_captured));
         Origin::Captured {
             source,
+            bounds,
             provenance: Box::new(Provenance { root, document }),
         }
     } else {

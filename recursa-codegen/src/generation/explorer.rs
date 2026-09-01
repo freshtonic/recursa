@@ -313,13 +313,17 @@ pub(super) fn emitted_explorer_plan(
     nodes: &[NodeParsePlan],
     lowered: &crate::materialization::LoweredGrammar,
     kind_variants: &[Ident],
+    framing_root: Option<MaterializedApplicationId>,
 ) -> Result<Option<ExplorerPlan>, String> {
     let mut roots = nodes
         .iter()
-        .filter(|node| explorer_emitted_application_is_eligible(node))
         .flat_map(|node| {
             node.parse_applications
                 .iter()
+                .filter(move |application| {
+                    explorer_emitted_application_is_eligible(node)
+                        || framing_root == Some(application.application)
+                })
                 .map(move |application| ExplorerRootPlan {
                     node: node.node,
                     application: application.application,
@@ -377,7 +381,13 @@ pub(super) fn authoritative_explorer_plan(
             .iter()
             .find(|source_node| source_node.resolved_node == node.id)
             .ok_or_else(|| format!("Node `{}` lacks configured explorer traits", node.ident))?;
-        if explorer_source_application_is_eligible(resolved, node, application, configured) {
+        let framing_root = lowered
+            .lowering_map
+            .framing
+            .is_some_and(|framing| framing.application == application.id);
+        if explorer_source_application_is_eligible(resolved, node, application, configured)
+            || framing_root
+        {
             roots.push(ExplorerRootPlan {
                 node: node.id,
                 application: application.id,
@@ -1828,6 +1838,38 @@ pub(super) fn render_node_application_explorer(
             }
         };
         let arbitrary = root.capabilities.arbitrary;
+        let framing_method = plan
+            .framing
+            .as_ref()
+            .filter(|framing| {
+                plan.nodes[framing.node_index].node == node.node
+                    && plan.nodes[framing.node_index].parse_applications[framing.application_index]
+                        .application
+                        == application.application
+            })
+            .map(|_| {
+                let method_generics = if explorer_generics.params.is_empty() {
+                    quote!(<'__recursa_input>)
+                } else {
+                    quote!()
+                };
+                quote! {
+                    /// Partitions exact source into strict typed islands or one
+                    /// wholly construction-free recovery projection.
+                    pub fn frame #method_generics(
+                        source: &'__recursa_input str,
+                    ) -> Result<
+                        #facade::framing::FrameResult<'__recursa_input, Self>,
+                        #facade::framing::FrameError<'__recursa_input>,
+                    > {
+                        #facade::__private::frame_document::<Self>(
+                            source,
+                            #module_anchor::__recursa_lexical::__recursa_frame_lex,
+                            &#module_anchor::__RECURSA_FRAMING_PLAN,
+                        )
+                    }
+                }
+            });
         let sample_function = arbitrary.then(|| {
             quote! {
                 __recursa_if_arbitrary! {
@@ -1943,6 +1985,8 @@ pub(super) fn render_node_application_explorer(
                         )
                     }
                 }
+
+                #framing_method
             }
         }
     });
@@ -2680,6 +2724,7 @@ fn render_recovery_static_plan(
                         })
                         .collect::<Vec<_>>();
                     let count = elements.len();
+                    let restart = recovery_expected_ref(plan, &application.recovery_restart);
                     quote! {
                         static #elements_name:
                             [#facade::__private::ExplorerRecoveryElementPlanData; #count] =
@@ -2688,6 +2733,7 @@ fn render_recovery_static_plan(
                             #facade::__private::explorer_recovery_struct_plan(
                                 &#schema,
                                 &#elements_name,
+                                #restart,
                             );
                     }
                 }

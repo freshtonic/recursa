@@ -87,6 +87,8 @@ pub(super) struct EmissionPlan {
     pub(super) diagrams: Option<DiagramPlan>,
     /// Optional grammar-erased schema and callback plan.
     pub(super) explorer: Option<ExtensionEmissionPlan>,
+    /// Optional generated exact-source document framing plan.
+    pub(super) framing: Option<FramingEmissionPlan>,
     /// Validation counters proving frozen dispatch consumption.
     pub(super) instrumentation: EmissionInstrumentation,
     /// Independent identities used to detect capability-plan drift.
@@ -103,6 +105,32 @@ impl std::ops::Deref for ValidatedEmissionPlan {
     fn deref(&self) -> &Self::Target {
         &self.0
     }
+}
+
+#[derive(Clone, Debug)]
+/// Resolved compile-time document framing identities consumed by generated code.
+pub(super) struct FramingEmissionPlan {
+    /// Index of the Node family used for typed islands and recovery.
+    pub(super) node_index: usize,
+    /// Index of the exact materialized application selected by typed lowering.
+    pub(super) application_index: usize,
+    /// Grammar-local fixed-token kind separating adjacent islands.
+    pub(super) boundary_kind: u16,
+    /// Closed physical-line token kinds owned atomically outside island parsing.
+    pub(super) line_kinds: Vec<u16>,
+    /// Closed delimited token kinds owned atomically outside island parsing.
+    pub(super) delimited_kinds: Vec<u16>,
+    /// Optional complete variant identity that enters payload mode.
+    pub(super) payload: Option<FramingPayloadPlan>,
+}
+
+#[derive(Clone, Debug)]
+/// Resolved payload transition in one framing declaration.
+pub(super) struct FramingPayloadPlan {
+    /// Source-order variant index under the framing island Node.
+    pub(super) variant_index: usize,
+    /// Exact nonempty standalone physical-line terminator.
+    pub(super) terminator: String,
 }
 
 #[derive(Clone, Debug)]
@@ -136,6 +164,151 @@ pub(super) struct EmissionInstrumentation {
 pub(super) struct RenderInstrumentation {
     /// Number of frozen Node dispatch tries consumed during rendering.
     pub(super) frozen_dispatch_nodes_rendered: usize,
+}
+
+/// Resolves one authored framing declaration to generated Node, token, and variant identities.
+///
+/// # Long-function contract
+///
+/// Rationale: framing is a cross-product of typed lowering, lexical ownership, payload dispatch,
+/// and generated parser identity; freezing those joins together prevents rendering from repeating
+/// source resolution. Invariants: the island uses exactly one materialized application correlation,
+/// payload uses its exact resolved variant, and boundary/atomic token ownership is disjoint and
+/// matcher-validated. Phases: consume typed application correlations, validate fixed and atomic
+/// lexical kinds, correlate the optional payload variant with that application, then publish the
+/// immutable framing plan.
+fn plan_framing(
+    syntax: &crate::source_syntax::FramingSyntax,
+    lowered: &crate::materialization::LoweredGrammar,
+    nodes: &[NodeParsePlan],
+) -> Result<FramingEmissionPlan, String> {
+    let correlation = lowered
+        .lowering_map
+        .framing
+        .ok_or_else(|| "framing declaration lacks its typed lowering correlation".to_owned())?;
+    let (node_index, application_index) = nodes
+        .iter()
+        .enumerate()
+        .find_map(|(node_index, node)| {
+            node.parse_applications
+                .iter()
+                .position(|application| application.application == correlation.application)
+                .map(|application_index| (node_index, application_index))
+        })
+        .ok_or_else(|| "framing island lacks its exact generated application".to_owned())?;
+    if nodes[node_index].node != correlation.node {
+        return Err("framing application diverges from its resolved Node identity".to_owned());
+    }
+
+    let definitions = &lowered.source_modeled.source_model().token_definitions;
+    let resolve_token =
+        |ident: &syn::Ident| -> Result<&crate::source_model::TokenDefinition, String> {
+            let name = ident.unraw().to_string();
+            let mut matches = definitions
+                .iter()
+                .filter(|definition| definition.name == name);
+            let definition = matches
+                .next()
+                .ok_or_else(|| format!("framing token `{name}` is not defined"))?;
+            if matches.next().is_some() {
+                return Err(format!("framing token `{name}` is ambiguous"));
+            }
+            Ok(definition)
+        };
+    let boundary = resolve_token(&syntax.boundary)?;
+    if !matches!(boundary.kind, TokenDefinitionKind::Fixed(_)) {
+        return Err("framing boundary must name one fixed token".to_owned());
+    }
+    let boundary_kind = explorer_kind_index(lowered, boundary.id)?;
+
+    let resolve_atomic = |ident: &syn::Ident, physical_line: bool| -> Result<u16, String> {
+        let definition = resolve_token(ident)?;
+        let matcher = match &definition.kind {
+            TokenDefinitionKind::Content(content) => content.closed_matcher.as_ref(),
+            TokenDefinitionKind::LexicalBase(base) => base.closed_matcher.as_ref(),
+            TokenDefinitionKind::Fixed(_) => None,
+        };
+        let accepted = if physical_line {
+            matches!(matcher, Some(ClosedMatcher::PhysicalLine { .. }))
+        } else {
+            matches!(
+                matcher,
+                Some(ClosedMatcher::SameDelimiter { .. } | ClosedMatcher::Nested { .. })
+            )
+        };
+        if !accepted {
+            let class = if physical_line {
+                "physical-line"
+            } else {
+                "same- or nested-delimiter"
+            };
+            return Err(format!(
+                "framing token `{}` must use a closed {class} matcher",
+                ident.unraw()
+            ));
+        }
+        explorer_kind_index(lowered, definition.id)
+    };
+    let line_kinds = syntax
+        .line
+        .iter()
+        .map(|ident| resolve_atomic(ident, true))
+        .collect::<Result<Vec<_>, _>>()?;
+    let delimited_kinds = syntax
+        .delimited
+        .iter()
+        .map(|ident| resolve_atomic(ident, false))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut atomic = line_kinds
+        .iter()
+        .chain(&delimited_kinds)
+        .copied()
+        .collect::<Vec<_>>();
+    atomic.sort_unstable();
+    if atomic.windows(2).any(|pair| pair[0] == pair[1]) || atomic.contains(&boundary_kind) {
+        return Err(
+            "framing boundary, line, and delimited token ownership must be disjoint".to_owned(),
+        );
+    }
+
+    let payload = syntax
+        .payload
+        .as_ref()
+        .map(|payload| -> Result<FramingPayloadPlan, String> {
+            let resolved_variant = correlation.payload_variant.ok_or_else(|| {
+                "payload declaration lacks its resolved variant correlation".to_owned()
+            })?;
+            let variant_index = match &nodes[node_index].parse_applications[application_index].body
+            {
+                NodeBodyPlan::Enum { variants, .. } => variants
+                    .iter()
+                    .position(|variant| variant.resolved_variant == resolved_variant),
+                NodeBodyPlan::Pratt(pratt) => pratt
+                    .nud
+                    .iter()
+                    .map(|branch| &branch.variant)
+                    .chain(pratt.led.iter().map(|branch| &branch.variant))
+                    .position(|variant| variant.resolved_variant == resolved_variant),
+                NodeBodyPlan::Struct { .. } => None,
+            }
+            .ok_or_else(|| {
+                "payload `after` variant lacks its generated framing identity".to_owned()
+            })?;
+            Ok(FramingPayloadPlan {
+                variant_index,
+                terminator: payload.terminator.value(),
+            })
+        })
+        .transpose()?;
+
+    Ok(FramingEmissionPlan {
+        node_index,
+        application_index,
+        boundary_kind,
+        line_kinds,
+        delimited_kinds,
+        payload,
+    })
 }
 
 /// Reports whether every module segment and the declaration itself are public.
@@ -415,6 +588,23 @@ impl EmissionPlan {
                     &emission_lookups,
                     &mut instrumentation,
                 )?;
+                let application_type = lowered
+                    .lowering_map
+                    .applications
+                    .iter()
+                    .find(|correlation| correlation.application == application.id)
+                    .ok_or_else(|| {
+                        format!("Node `{}` lacks a normalized type correlation", node.ident)
+                    })?
+                    .lowered;
+                let recovery_restart = ExpectedSet::from_positions(
+                    &output
+                        .first(application_type)
+                        .ok_or_else(|| format!("Node `{}` lacks frozen FIRST facts", node.ident))?
+                        .positions,
+                    &expected_atom_index,
+                    kind_count,
+                )?;
                 application_plans.push(NodeApplicationParsePlan {
                     application: application.id,
                     node: application.node,
@@ -432,6 +622,7 @@ impl EmissionPlan {
                         &syn::parse_quote!('static),
                     )?,
                     body: planned.body.clone(),
+                    recovery_restart,
                 });
                 if source_plan.is_none() {
                     source_plan = Some(planned);
@@ -619,6 +810,13 @@ impl EmissionPlan {
                     .map_err(|_| "generated token kind exceeds runtime width".to_owned())
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let framing = resolved
+            .configuration
+            .syntax
+            .framing
+            .as_ref()
+            .map(|syntax| plan_framing(syntax, lowered, &nodes))
+            .transpose()?;
         #[cfg(feature = "diagrams")]
         let authoritative_diagrams = resolved
             .build_inputs
@@ -661,16 +859,27 @@ impl EmissionPlan {
         let frozen_diagrams = None;
         let private_abi = emitted_private_abi_plan();
         #[cfg(feature = "explorer")]
-        let explorer = emitted_explorer_plan(&nodes, lowered, &kind_variants)?.map(|explorer| {
-            ExtensionEmissionPlan {
-                artifacts: Vec::new(),
-                explorer,
-            }
+        let explorer = emitted_explorer_plan(
+            &nodes,
+            lowered,
+            &kind_variants,
+            framing.as_ref().map(|framing| {
+                nodes[framing.node_index].parse_applications[framing.application_index].application
+            }),
+        )?
+        .map(|explorer| ExtensionEmissionPlan {
+            artifacts: Vec::new(),
+            explorer,
         });
         #[cfg(not(feature = "explorer"))]
         let explorer: Option<ExtensionEmissionPlan> = None;
         if let Some(explorer) = explorer.as_ref() {
             validate_explorer_collisions(resolved, cfg, &nodes, &explorer.explorer)?;
+        }
+        if framing.is_some() && explorer.is_none() {
+            return Err(
+                "document framing requires the Recursa `explorer` generation feature".to_owned(),
+            );
         }
         let pretty = emitted_pretty_plan(&nodes, &tokens);
         let capabilities =
@@ -802,6 +1011,7 @@ impl EmissionPlan {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
         ));
+        canonical.push_str(&format!(";framing={framing:?}"));
         #[cfg(feature = "diagrams")]
         canonical.push_str(if diagrams.is_some() {
             ";capabilities=core,diagrams"
@@ -844,6 +1054,7 @@ impl EmissionPlan {
             #[cfg(feature = "diagrams")]
             diagrams,
             explorer,
+            framing,
             instrumentation,
             plan_families,
         };
@@ -878,6 +1089,37 @@ impl EmissionPlan {
         )?;
         if self.lexical_rules.is_empty() {
             return Err("the generated lexical plan has no rules".to_owned());
+        }
+        if let Some(framing) = &self.framing {
+            if framing.node_index >= self.nodes.len()
+                || self.nodes[framing.node_index]
+                    .parse_applications
+                    .get(framing.application_index)
+                    .is_none()
+                || framing
+                    .line_kinds
+                    .iter()
+                    .chain(&framing.delimited_kinds)
+                    .any(|kind| usize::from(*kind) >= self.kind_count)
+                || usize::from(framing.boundary_kind) >= self.kind_count
+            {
+                return Err(
+                    "the document framing plan contains an invalid generated identity".to_owned(),
+                );
+            }
+            if framing.payload.as_ref().is_some_and(|payload| {
+                match &self.nodes[framing.node_index].parse_applications[framing.application_index]
+                    .body
+                {
+                    NodeBodyPlan::Enum { variants, .. } => payload.variant_index >= variants.len(),
+                    NodeBodyPlan::Pratt(pratt) => {
+                        payload.variant_index >= pratt.nud.len() + pratt.led.len()
+                    }
+                    NodeBodyPlan::Struct { .. } => true,
+                }
+            }) {
+                return Err("the document framing payload variant identity is invalid".to_owned());
+            }
         }
         if self.lexical_rules.iter().any(|rule| {
             rule.closed_matcher
