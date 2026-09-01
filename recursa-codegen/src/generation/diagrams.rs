@@ -215,7 +215,9 @@ pub(super) fn plan_diagrams(
                         .collect(),
                 )
             };
-            let production = inline_references(&production, &application_bodies, &mut expanded);
+            let mut budget = INLINE_EXPANSION_BUDGET;
+            let production =
+                inline_references(&production, &application_bodies, &mut expanded, &mut budget);
             NodeDiagramPlan {
                 semantic_key,
                 ident,
@@ -677,17 +679,29 @@ fn shorten_label(label: &str) -> String {
     output
 }
 
+/// Most inline expansions one diagram may perform before references stay linked.
+///
+/// First-use inlining alone bounds each diagram to one expansion per
+/// application, but on a large grammar that is still the whole reachable
+/// subgraph: every diagram re-expands it, and railroad layout over thousands
+/// of inlined applications per diagram made generation effectively hang.
+/// The budget keeps diagrams readable and generation linear; small fixture
+/// grammars stay below it, so their rendering is unchanged.
+const INLINE_EXPANSION_BUDGET: usize = 16;
+
 /// Expands each first same-grammar Node reference in place, linking later ones.
 ///
 /// This ports pg-proto's railroad strategy: `expanded` starts with the diagram's
 /// own applications, every newly seen reference is inserted before its body is
 /// expanded, and any reference already in the set stays an opaque linked box.
 /// The set therefore bounds each diagram to one expansion per application and
-/// terminates recursive grammars.
+/// terminates recursive grammars; `budget` additionally caps the total number
+/// of expansions per diagram in deterministic traversal order.
 fn inline_references(
     node: &DiagramNode,
     bodies: &BTreeMap<String, DiagramNode>,
     expanded: &mut BTreeSet<String>,
+    budget: &mut usize,
 ) -> DiagramNode {
     match node {
         DiagramNode::NonTerminal {
@@ -695,11 +709,17 @@ fn inline_references(
             link,
             reference: Some(reference),
         } if bodies.contains_key(reference) => {
-            if expanded.insert(reference.clone()) {
+            if *budget > 0 && expanded.insert(reference.clone()) {
+                *budget -= 1;
                 DiagramNode::Inline {
                     label: label.clone(),
                     link: link.clone(),
-                    body: Box::new(inline_references(&bodies[reference], bodies, expanded)),
+                    body: Box::new(inline_references(
+                        &bodies[reference],
+                        bodies,
+                        expanded,
+                        budget,
+                    )),
                 }
             } else {
                 node.clone()
@@ -712,26 +732,26 @@ fn inline_references(
         DiagramNode::Inline { label, link, body } => DiagramNode::Inline {
             label: label.clone(),
             link: link.clone(),
-            body: Box::new(inline_references(body, bodies, expanded)),
+            body: Box::new(inline_references(body, bodies, expanded, budget)),
         },
         DiagramNode::Sequence(nodes) => DiagramNode::Sequence(
             nodes
                 .iter()
-                .map(|node| inline_references(node, bodies, expanded))
+                .map(|node| inline_references(node, bodies, expanded, budget))
                 .collect(),
         ),
         DiagramNode::Choice(nodes) => DiagramNode::Choice(
             nodes
                 .iter()
-                .map(|node| inline_references(node, bodies, expanded))
+                .map(|node| inline_references(node, bodies, expanded, budget))
                 .collect(),
         ),
         DiagramNode::Optional(node) => {
-            DiagramNode::Optional(Box::new(inline_references(node, bodies, expanded)))
+            DiagramNode::Optional(Box::new(inline_references(node, bodies, expanded, budget)))
         }
         DiagramNode::Repeat { item, separator } => DiagramNode::Repeat {
-            item: Box::new(inline_references(item, bodies, expanded)),
-            separator: Box::new(inline_references(separator, bodies, expanded)),
+            item: Box::new(inline_references(item, bodies, expanded, budget)),
+            separator: Box::new(inline_references(separator, bodies, expanded, budget)),
         },
     }
 }
@@ -1137,7 +1157,13 @@ mod tests {
         );
 
         let mut expanded = BTreeSet::from(["grammar::Root".to_owned()]);
-        let inlined = inline_references(&bodies["grammar::Root"], &bodies, &mut expanded);
+        let mut budget = INLINE_EXPANSION_BUDGET;
+        let inlined = inline_references(
+            &bodies["grammar::Root"],
+            &bodies,
+            &mut expanded,
+            &mut budget,
+        );
         let DiagramNode::Sequence(elements) = &inlined else {
             panic!("inline expansion preserves the sequence: {inlined:?}");
         };
@@ -1164,6 +1190,53 @@ mod tests {
             matches!(recursive, DiagramNode::NonTerminal { .. }),
             "a self-reference stays opaque: {recursive:?}"
         );
+    }
+
+    #[test]
+    fn an_exhausted_inline_budget_keeps_references_linked() {
+        let mut bodies = BTreeMap::new();
+        let chain = (0..INLINE_EXPANSION_BUDGET + 4)
+            .map(|index| format!("grammar::Chain{index}"))
+            .collect::<Vec<_>>();
+        for (index, name) in chain.iter().enumerate() {
+            let tail = match chain.get(index + 1) {
+                Some(next) => DiagramNode::NonTerminal {
+                    label: shorten_label(next),
+                    link: None,
+                    reference: Some(next.clone()),
+                },
+                None => DiagramNode::Empty,
+            };
+            bodies.insert(
+                name.clone(),
+                sequence(vec![DiagramNode::Terminal("T".into()), tail]),
+            );
+        }
+
+        let mut expanded = BTreeSet::from([chain[0].clone()]);
+        let mut budget = INLINE_EXPANSION_BUDGET;
+        let inlined = inline_references(&bodies[&chain[0]], &bodies, &mut expanded, &mut budget);
+        let mut depth = 0usize;
+        let mut node = &inlined;
+        loop {
+            let DiagramNode::Sequence(elements) = node else {
+                panic!("chain bodies stay sequences: {node:?}");
+            };
+            match &elements[1] {
+                DiagramNode::Inline { body, .. } => {
+                    depth += 1;
+                    node = body;
+                }
+                DiagramNode::NonTerminal { .. } => break,
+                DiagramNode::Empty => panic!("the chain outlives the budget"),
+                other => panic!("unexpected chain tail: {other:?}"),
+            }
+        }
+        assert_eq!(
+            depth, INLINE_EXPANSION_BUDGET,
+            "expansions stop exactly at the budget and the rest stay linked",
+        );
+        assert_eq!(budget, 0);
     }
 
     #[test]
